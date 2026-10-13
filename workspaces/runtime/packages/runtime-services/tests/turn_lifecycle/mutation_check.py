@@ -34,6 +34,7 @@ def main():
             destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(source, destination)
     mutations = json.loads(Path(__file__).with_name("mutations.json").read_text())
+    mutations += json.loads(Path(__file__).parents[1].joinpath("turn_prepare/mutations.json").read_text())
     assert len({m["id"] for m in mutations}) == len(mutations), "duplicate mutation ID"
     if args.only:
         wanted = set(args.only.split(","))
@@ -54,7 +55,8 @@ def main():
                        CARGO_TARGET_DIR=str(target / "cargo"), CARGO_BUILD_JOBS="2",
                        CARGO_NET_OFFLINE="true", PYTHONDONTWRITEBYTECODE="1")
     command = ["cargo", "nextest", "run", "--no-fail-fast", "-p", "studio-runtime-services", "-E",
-               "binary(/^(turn_lifecycle|notification_dispatch)_corpus$/)"]
+               ("binary(turn_prepare_corpus)" if all(m.get("suite") == "turn_prepare" for m in mutations)
+                else "binary(/^(turn_lifecycle|notification_dispatch|turn_prepare)_corpus$/)")]
     results = []
 
     def run(identity, tier):

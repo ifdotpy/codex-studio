@@ -33,6 +33,7 @@ pub mod sync_views;
 pub mod terminal_driver;
 pub mod transcript;
 pub mod turn_driver;
+pub mod turn_prepare;
 pub mod usage;
 pub mod work_policy;
 pub mod work_write;

@@ -78,9 +78,9 @@ test-browser-smoke:
 test-heavy:
     @node {{quote(facade)}} test-heavy
 
-[doc("Run the full Rust lifecycle and notification matrices (manual heavy tier; no load generators).")]
+[doc("Run the full Rust lifecycle, notification and preparation matrices (manual heavy tier; no load generators).")]
 test-rust-runtime-corpora:
-    @STUDIO_RUNTIME_CORPUS_FULL=1 cargo nextest run -p studio-runtime-services -E 'binary(/^(turn_lifecycle|notification_dispatch)_corpus$/)'
+    @STUDIO_RUNTIME_CORPUS_FULL=1 cargo nextest run -p studio-runtime-services -E 'binary(/^(turn_lifecycle|notification_dispatch|turn_prepare)_corpus$/)'
 
 [doc("Run isolated Rust corpus mutations (manual heavy tier; two build jobs, no load generators).")]
 test-rust-runtime-corpora-mutations *args:
