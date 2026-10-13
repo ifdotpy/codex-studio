@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+import subprocess
 import sys
 from pathlib import Path
 from urllib.parse import urlencode
@@ -27,6 +28,13 @@ class WorkspaceViewsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         cls.rust_backend = bool(os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"))
         cls.backend = start_contract_backend(cls)
         cls.backend.stop()
+        subprocess.run(["git", "init", "-q"], cwd=cls.backend.cwd, check=True)
+        subprocess.run(["git", "config", "user.name", "Workspace Views Test"], cwd=cls.backend.cwd, check=True)
+        subprocess.run(["git", "config", "user.email", "workspace-views@example.invalid"], cwd=cls.backend.cwd, check=True)
+        (cls.backend.cwd / "tracked.txt").write_text("committed\n", encoding="utf-8")
+        subprocess.run(["git", "add", "tracked.txt"], cwd=cls.backend.cwd, check=True)
+        subprocess.run(["git", "commit", "-qm", "baseline"], cwd=cls.backend.cwd, check=True)
+        (cls.backend.cwd / "tracked.txt").write_text("working tree change\n", encoding="utf-8")
         from codex_runtime import Runtime
 
         environment = cls.backend._environment()
@@ -71,6 +79,58 @@ class WorkspaceViewsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
                         "kind": "command",
                         "status": "completed",
                         "created": 500.0,
+                    })
+                    runtime.put(db, "work", {
+                        "id": "workspace-view-work",
+                        "rootId": lead["id"],
+                        "title": "Review workspace state",
+                        "status": "ready",
+                        "created": 1.0,
+                        "updated": 1.0,
+                        "version": 1,
+                        "dependencies": [],
+                    })
+                    runtime.put(db, "annotations", {
+                        "id": "workspace-view-annotation",
+                        "agent": lead["id"],
+                        "rootId": lead["id"],
+                        "path": "tracked.txt",
+                        "line": 1,
+                        "text": "Review this line",
+                        "created": 1.0,
+                    })
+                    runtime.put(db, "requests", {
+                        "id": "workspace-view-request",
+                        "agent": lead["id"],
+                        "method": "agent/asyncQuestion",
+                        "status": "pending",
+                        "createdAt": 1.0,
+                    })
+                    runtime.put(db, "complaints", {
+                        "id": "workspace-view-complaint",
+                        "leadId": lead["id"],
+                        "author": worker["id"],
+                        "text": "Needs a lead response",
+                        "status": "open",
+                        "created": 1.0,
+                        "updated": 1.0,
+                        "readAt": None,
+                        "version": 1,
+                        "recipient": lead["id"],
+                        "responses": [],
+                    })
+                    runtime.put(db, "complaints", {
+                        "id": "workspace-view-older-complaint",
+                        "leadId": lead["id"],
+                        "author": worker["id"],
+                        "text": "Older complaint",
+                        "status": "open",
+                        "created": 0.5,
+                        "updated": 0.5,
+                        "readAt": None,
+                        "version": 1,
+                        "recipient": lead["id"],
+                        "responses": [],
                     })
                 cls.lead_id = lead["id"]
                 cls.worker_id = worker["id"]
@@ -243,22 +303,78 @@ class WorkspaceViewsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         finally:
             self._write_record("runtime_tasks", row_id, original)
 
-    def test_workspace_and_changes_report_their_unavailable_services(self) -> None:
-        workspace = self.backend.request("GET", "/api/workspace")
+    def test_workspace_snapshot_and_work_views_use_python_written_state(self) -> None:
+        workspace = self.backend.request(
+            "GET", "/api/workspace?agent=" + self.lead_id,
+        )
+        self.assertEqual(workspace.status, 200, workspace.body[:1000])
+        snapshot = workspace.json()
+        self.assertEqual(snapshot["work"][0]["id"], "workspace-view-work")
+        self.assertEqual(snapshot["work"][0]["displayStatus"], "ready")
+        self.assertEqual(snapshot["annotations"][0]["id"], "workspace-view-annotation")
+        self.assertIn("workspace-task-104", {task["id"] for task in snapshot["tasks"]})
+        self.assertIn("workspace-view-complaint", {item["id"] for item in snapshot["inbox"]})
+        complaint_ids = [item["id"] for item in snapshot["inbox"] if item["kind"] == "complaint"]
+        self.assertEqual(
+            complaint_ids,
+            ["workspace-view-complaint", "workspace-view-older-complaint"],
+        )
+
+        work = self.backend.request(
+            "GET", "/api/workspace?agent=" + self.lead_id + "&view=work",
+        )
+        annotations = self.backend.request(
+            "GET", "/api/workspace?agent=" + self.lead_id + "&view=annotations",
+        )
+        inbox = self.backend.request(
+            "GET", "/api/workspace?agent=" + self.lead_id + "&view=inbox",
+        )
+        self.assertEqual(work.status, 200, work.body[:1000])
+        self.assertEqual(annotations.status, 200, annotations.body[:1000])
+        self.assertEqual(inbox.status, 200, inbox.body[:1000])
+        self.assertEqual(work.json()["work"][0]["id"], "workspace-view-work")
+        self.assertEqual(annotations.json()["annotations"][0]["id"], "workspace-view-annotation")
+        self.assertIn("workspace-view-complaint", {item["id"] for item in inbox.json()["inbox"]})
+
+        etag = workspace.headers.get("etag", "")
+        self.assertRegex(etag, r'^"[0-9a-f]{64}"$')
+        conditional = self.backend.request(
+            "GET",
+            "/api/workspace?agent=" + self.lead_id,
+            headers={"If-None-Match": etag},
+        )
+        self.assertEqual(conditional.status, 304, conditional.body[:1000])
+        self.assertEqual(conditional.headers.get("etag"), etag)
+
+    def test_changes_reports_git_output_etag_and_image_execution_dependency(self) -> None:
         changes = self.backend.request(
             "GET", "/api/changes?" + urlencode({"agent": self.lead_id}),
         )
-        if self.rust_backend:
-            self.assertEqual(workspace.status, 501, workspace.body[:1000])
-            self.assertIn("work-policy/views", workspace.json()["error"])
-            self.assertIn("coordination-policy/inbox", workspace.json()["error"])
-            self.assertEqual(changes.status, 501, changes.body[:1000])
-            self.assertIn("workspace-state/git-changes", changes.json()["error"])
-        else:
-            self.assertEqual(workspace.status, 200, workspace.body[:1000])
-            self.assertIn("tasks", workspace.json())
-            self.assertEqual(changes.status, 200, changes.body[:1000])
-            self.assertIn("files", changes.json())
+        self.assertEqual(changes.status, 200, changes.body[:1000])
+        self.assertIn("tracked.txt", {file["path"] for file in changes.json()["files"]})
+        self.assertIn("working tree change", changes.json()["diff"])
+        etag = changes.headers.get("etag", "")
+        self.assertRegex(etag, r'^"[0-9a-f]{64}"$')
+        conditional = self.backend.request(
+            "GET",
+            "/api/changes?" + urlencode({"agent": self.lead_id}),
+            headers={"If-None-Match": etag},
+        )
+        self.assertEqual(conditional.status, 304, conditional.body[:1000])
+
+        original = self._record("runtime_agents", self.lead_id)
+        self._write_record("runtime_agents", self.lead_id, {**original, "executionMode": "vm"})
+        try:
+            unsupported = self.backend.request(
+                "GET", "/api/changes?" + urlencode({"agent": self.lead_id}),
+            )
+            if self.rust_backend:
+                self.assertEqual(unsupported.status, 501, unsupported.body[:1000])
+                self.assertIn("workspace-state/image-execution", unsupported.json()["error"])
+            else:
+                self.assertEqual(unsupported.status, 200, unsupported.body[:1000])
+        finally:
+            self._write_record("runtime_agents", self.lead_id, original)
 
     def _task_count(self) -> int:
         uri = f"file:{self.backend.state / 'canvas.sqlite3'}?mode=ro"
