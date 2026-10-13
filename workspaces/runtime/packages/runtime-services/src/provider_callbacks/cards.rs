@@ -81,11 +81,21 @@ pub(super) fn admit(
         return Err(CallbackError::Invalid("Too many pending provider requests"));
     }
     let id = uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_URL, key.as_bytes()).to_string();
-    let card = json!({"id":id,"rpcId":input.id,"method":input.method,"params":input.params,"agent":context.agent,"accountKey":context.account,"connectionId":context.connection,"epoch":context.epoch,"supervisor":{"generation":context.generation},"status":"pending","createdAt":now});
+    let mut card = json!({"id":id,"rpcId":input.id,"method":input.method,"params":input.params,"agent":context.agent,"accountKey":context.account,"connectionId":context.connection,"epoch":context.epoch,"supervisor":{"generation":context.generation},"status":"pending","createdAt":now});
+    if let Some(item_id) = input.params["itemId"].as_str() {
+        let key = format!("{}:{item_id}", context.agent);
+        if let Some(item) = records::get(tx, "runtime_items", &key)?
+            && let Some(preview) = item["text"]
+                .as_str()
+                .and_then(|text| serde_json::from_str::<Value>(text).ok())
+        {
+            card["preview"] = preview;
+        }
+    }
     save(tx, &card)?;
     let mut actor = snapshot.actor().clone();
     actor["status"] = json!("approval");
-    crate::agents_create::publish_agent(tx, &actor)?;
+    storage::save_actor(tx, &actor)?;
     storage::save(
         tx,
         &key,
@@ -247,7 +257,7 @@ pub fn answer(
         card["deferred"] = json!(false);
         card["answerHistory"] = history;
         card["status"] = json!("answering");
-        let reply = Reply::new(identity, ResponseBody::Result(result));
+        let reply = Reply::new(identity, ResponseBody::Result(result))?;
         storage::save_reply(tx, &input, &reply)?;
         let key = reply.identity.key();
         let mut outbox = storage::read(tx, &key)?.ok_or(CallbackError::Unknown)?;
@@ -287,7 +297,11 @@ pub fn resolve(
     store: &RuntimeStore,
     context: &CallbackContext,
     rpc_id: &RequestId,
+    now: f64,
 ) -> Result<usize, CallbackError> {
+    if !now.is_finite() || now < 0.0 {
+        return Err(CallbackError::Invalid("Invalid callback clock"));
+    }
     store.transaction_with(|tx| {
         let mut count = 0;
         for mut card in records::all(tx, "runtime_requests")? {
@@ -300,11 +314,23 @@ pub fn resolve(
                     .and_then(Value::as_u64)
                     == Some(context.generation)
                 && card["rpcId"] == serde_json::to_value(rpc_id)?
-                && card["status"] == "pending"
+                && matches!(card["status"].as_str(), Some("pending" | "answering" | "uncertain" | "blocked"))
             {
                 card["status"] = json!("resolved");
+                card["resolvedAt"] = json!(now);
+                // Retire prepared/submitted replies before any delayed worker can
+                // submit or settle them; provider resolution is not approval.
+                tx.execute("UPDATE runtime_operation_receipts SET result=json_set(result,'$.delivery','resolved') WHERE json_extract(result,'$.card')=?1 AND json_extract(result,'$.delivery')!='written'", [card["id"].as_str().ok_or(CallbackError::Stored("runtime_requests/id".into()))?])?;
                 save(tx, &card)?;
                 count += 1;
+            }
+        }
+        let pending: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM runtime_requests WHERE json_extract(record,'$.agent')=?1 AND json_extract(record,'$.status')='pending')", [&context.agent], |r| r.get(0))?;
+        if !pending {
+            let mut actor = storage::snapshot(tx, context)?.actor().clone();
+            if actor["status"] == "approval" && studio_runtime_store::truthy(actor.get("inFlight")) && actor["autoWake"] == true {
+                actor["status"] = json!("running");
+                storage::save_actor(tx, &actor)?;
             }
         }
         Ok(count)

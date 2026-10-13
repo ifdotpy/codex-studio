@@ -17,6 +17,21 @@ pub(super) fn snapshot(
     )?;
     CallbackSnapshot::from_record(&raw, context)
 }
+pub(super) fn save_actor(tx: &Transaction<'_>, actor: &Value) -> Result<(), CallbackError> {
+    let id = actor["id"]
+        .as_str()
+        .ok_or(CallbackError::Stored("runtime_agents/id".into()))?;
+    records::validate("runtime_agents", id, actor.clone())?;
+    let changed = tx.execute(
+        "UPDATE runtime_agents SET record=?2 WHERE id=?1",
+        params![id, actor.to_string()],
+    )?;
+    if changed != 1 {
+        return Err(CallbackError::Stale);
+    }
+    crate::agents_create::publish_agent(tx, actor)?;
+    Ok(())
+}
 pub(super) fn read(tx: &Transaction<'_>, key: &str) -> Result<Option<Value>, CallbackError> {
     EventWriteRepository::receipt(tx, key)?
         .map(|row| serde_json::from_str(&row.result).map_err(|_| CallbackError::Stored(key.into())))
@@ -78,7 +93,8 @@ pub(super) fn saved_reply(
         return Ok(None);
     };
     if saved["signature"] != input.signature()
-        || saved["identity"] != serde_json::to_value(identity)?
+        || saved["identity"]["context"] != serde_json::to_value(&identity.context)?
+        || saved["identity"]["rpc_id"] != serde_json::to_value(&identity.rpc_id)?
     {
         return Err(CallbackError::Conflict);
     }
@@ -94,7 +110,10 @@ pub(super) fn saved_reply(
     } else {
         return Err(CallbackError::Stored(identity.key()));
     };
-    Ok(Some(Reply::new(identity.clone(), body)))
+    Ok(Some(Reply {
+        identity: serde_json::from_value(saved["identity"].clone())?,
+        body,
+    }))
 }
 #[derive(Clone, Copy, Debug)]
 pub enum DeliveryOutcome {
@@ -156,8 +175,7 @@ pub fn delivery(
                     && actor["autoWake"] == true
                 {
                     actor["status"] = json!("running");
-                    records::validate("runtime_agents", &identity.context.agent, actor.clone())?;
-                    crate::agents_create::publish_agent(tx, &actor)?;
+                    save_actor(tx, &actor)?;
                 }
             }
         }

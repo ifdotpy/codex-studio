@@ -125,12 +125,16 @@ impl CallbackSnapshot {
 pub struct ReplyIdentity {
     pub context: CallbackContext,
     pub rpc_id: RequestId,
+    /// Opaque prepared-body attempt; never reused after a proven NotSent.
+    #[serde(default)]
+    pub attempt: String,
 }
 impl ReplyIdentity {
     pub(super) fn new(context: &CallbackContext, rpc_id: &RequestId) -> Self {
         Self {
             context: context.clone(),
             rpc_id: rpc_id.clone(),
+            attempt: String::new(),
         }
     }
     pub(super) fn key(&self) -> String {
@@ -155,8 +159,15 @@ pub struct Reply {
     pub body: ResponseBody,
 }
 impl Reply {
-    pub(super) fn new(identity: ReplyIdentity, body: ResponseBody) -> Self {
-        Self { identity, body }
+    pub(super) fn new(
+        mut identity: ReplyIdentity,
+        body: ResponseBody,
+    ) -> Result<Self, CallbackError> {
+        let mut bytes = [0u8; 16];
+        getrandom::fill(&mut bytes)
+            .map_err(|_| CallbackError::Invalid("Reply entropy unavailable"))?;
+        identity.attempt = uuid::Uuid::from_bytes(bytes).to_string();
+        Ok(Self { identity, body })
     }
     pub fn frame(&self) -> Frame {
         Frame::Response {

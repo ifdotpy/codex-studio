@@ -59,7 +59,7 @@ pub fn dispatch(
         let Some(body) = result else {
             return Ok(CallbackDecision::Unsupported);
         };
-        let reply = Reply::new(identity, body);
+        let reply = Reply::new(identity, body)?;
         storage::save_reply(tx, &request, &reply)?;
         Ok(CallbackDecision::Answer(reply))
     })

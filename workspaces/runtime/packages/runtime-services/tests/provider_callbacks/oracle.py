@@ -151,6 +151,90 @@ for supplied in [worker["id"][:8], resolver_agents[0]["id"], "aaaaaaaa", "aaaaaa
         resolutions.append({"supplied":supplied,"result":result})
     except ValueError as error:
         resolutions.append({"supplied":supplied,"error":str(error)})
+# Review regressions use real Python model-work and callback handlers.
+import copy
+review_cases = []
+seed = runtime.work_action(lead["id"], {"action":"create","title":"Review fixture","description":"Details"}, actor=lead["id"], epoch=3)
+with runtime.db() as db:
+    base_work = json.loads(db.execute("SELECT record FROM runtime_work WHERE id=?", (seed["id"],)).fetchone()[0])
+for args in [
+    {"action":"cancel","reason":"No longer needed"},
+    {"action":"cancel","result":"Wrong field"},
+    {"action":"cancel","reason":"x"*32001},
+    {"action":"reject","result":"More evidence required"},
+    {"action":"reject","result":"x"*32001},
+    *[{"action":action, **{field:value}} for action in ["create","update"] for field,value in [
+        ("title","x"*160),("title","x"*161),("description","x"*32001),("description",None),("status",None),
+        ("dependencies",["x"]*101), ("title", " "), ("status","blocked"), ("description", "x"*32000)]],
+]:
+    before = copy.deepcopy(base_work)
+    if args["action"] == "reject":
+        before.update(status="review",owner=lead["id"],results=[{"id":"review-result","agent":lead["id"],"text":"Evidence","created":10.0}])
+    args = {"title":"Valid title",**args,"task_id":before["id"]}
+    with runtime.db() as db:
+        runtime.put(db,"work",before)
+        db.execute("DELETE FROM runtime_events")
+    try:
+        with patch("time.time", return_value=20.0):
+            value = runtime.model_work(lead["id"],args,None,3)
+        expected = {"success":True,"value":value}
+    except ValueError as error:
+        expected = {"success":False,"error":str(error)}
+    with runtime.db() as db:
+        after = json.loads(db.execute("SELECT record FROM runtime_work WHERE id=?",(before["id"],)).fetchone()[0])
+        events = [dict(row) for row in db.execute("SELECT agent,kind,text FROM runtime_events")]
+    review_cases.append({"args":args,"before":before,"after":after,"expected":expected,"events":events})
+with runtime.db() as db:
+    db.execute("DELETE FROM runtime_work")
+    db.execute("DELETE FROM runtime_events")
+# Exact model projection corpus, including an already paginated response.
+projections = []
+for raw, success in [("字"*12000,True),(json.dumps({"id":"large","description":"z"*32000,"status":"ready"},sort_keys=True,separators=(",",":")),True),("failure"*4000,False), (json.dumps({"outputRef":"saved","offset":0,"totalChars":32000,"text":"q"*20000},sort_keys=True,separators=(",",":")),True)]:
+    result={"success":success,"contentItems":[{"type":"inputText","text":raw},{"type":"inputText","text":"[Time awareness] fixed"}]}
+    projected=runtime.model_tool_result(lead["id"],"projection",copy.deepcopy(result))
+    projections.append({"result":result,"expected":projected,"key":"projection","outcome":"unknown"})
+preview = {"command":"printf review","cwd":"/fixture","changes":[{"path":"file.txt","kind":"update"}]}
+item={"id":lead["id"]+":preview","agent":lead["id"],"type":"tool","title":"commandExecution","text":json.dumps(preview),"created":10.0}
+with runtime.db() as db:
+    runtime.item(db, lead["id"], "preview", "tool", json.dumps(preview), "commandExecution", index_search=False)
+    item=json.loads(db.execute("SELECT record FROM runtime_items WHERE id=?",(lead["id"]+":preview",)).fetchone()[0])
+preview_request={"id":"preview-rpc","method":methods[0],"params":{"threadId":lead["threadId"],"turnId":lead["turnId"],"itemId":"preview"}}
+with patch("time.time",return_value=20.0):
+    runtime.request(preview_request,"default","connection")
+with runtime.db() as db:
+    preview_expected=next(r for r in runtime.records(db,"requests") if r.get("rpcId")=="preview-rpc")["preview"]
+from native_notifications.dispatch import consume_native_notification
+resolved_cases=[]
+for status in ["pending","answering","uncertain","blocked"]:
+    card={"id":"resolve-card","rpcId":"resolve-rpc","method":methods[0],"params":{"threadId":lead["threadId"]},"agent":lead["id"],"accountKey":"default","connectionId":"connection","epoch":3,"supervisor":{"generation":7},"status":status,"createdAt":10.0}
+    with runtime.db() as db:
+        db.execute("DELETE FROM runtime_requests")
+        runtime.put(db,"requests",card)
+        runtime.put(db,"agents",{**lead,"status":"approval","inFlight":True})
+    with patch("time.time",return_value=20.0):
+        consume_native_notification(runtime,{"method":"serverRequest/resolved","params":{"threadId":lead["threadId"],"requestId":"resolve-rpc"}},"default","connection")
+    with runtime.db() as db:
+        resolved_cases.append({"card":card,"expected":runtime.records(db,"requests")[0],"agentStatus":runtime.agent(lead["id"],db)["status"]})
+with runtime.db() as db:
+    runtime.put(db,"agents",lead)
+# A chat message is no longer readable when its private-room member is archived.
+room={"id":"private-review","kind":"private","updated":10.0,"members":[lead["id"],worker["id"]]}
+with runtime.db() as db:
+    runtime.put(db,"rooms",room)
+    db.execute("INSERT INTO runtime_chat_messages(id,room,sender,text,created,deliveries) VALUES(?,?,?,?,?,?)",("review-chat",room["id"],worker["id"],"Private text",10.0,"{}"))
+chat_visibility=[]
+for archived in [False,True]:
+    with runtime.db() as db:
+        runtime.put(db,"agents",{**worker,"deletedAt":15.0 if archived else None})
+    try:
+        value=runtime.model_read(lead["id"],{"output_ref":"chat-message:review-chat"})
+        chat_visibility.append({"archived":archived,"success":True,"value":value})
+    except ValueError as error:
+        chat_visibility.append({"archived":archived,"success":False,"error":str(error)})
+with runtime.db() as db:
+    runtime.put(db,"agents",worker)
+    db.execute("DELETE FROM runtime_rooms WHERE id=?",(room["id"],))
+    db.execute("DELETE FROM runtime_chat_messages")
 # Leave only the requested admission corpus in the cloned starting state.
 with runtime.lock, runtime.db() as db:
     for case in [*dynamic_cases,{"message":warmup}]:
@@ -170,4 +254,4 @@ with runtime.lock, runtime.db() as db:
         runtime.put(db,"agents",actor)
     db.commit()
 runtime.close()
-print(json.dumps({"agents":[lead,worker,foreign],"answers":answers,"reservations":reservations,"chat":{"page":chat_page,"expected":chat_expected},"dynamic":dynamic_cases,"resolutions":resolutions,"legacyCard":legacy_card,"template":str(root)},ensure_ascii=False))
+print(json.dumps({"agents":[lead,worker,foreign],"answers":answers,"reservations":reservations,"chat":{"page":chat_page,"expected":chat_expected},"dynamic":dynamic_cases,"resolutions":resolutions,"legacyCard":legacy_card,"reviewCases":review_cases,"baseWork":base_work,"projections":projections,"preview":{"item":item,"request":preview_request,"expected":preview_expected},"resolved":resolved_cases,"chatVisibility":chat_visibility,"template":str(root)},ensure_ascii=False))

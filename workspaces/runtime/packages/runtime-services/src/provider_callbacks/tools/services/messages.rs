@@ -63,6 +63,15 @@ pub(super) fn authorize_room(
     }
     let room = records::get(tx, "runtime_rooms", id)?
         .ok_or(CallbackError::Invalid("Unknown agent chat"))?;
+    let directory = crate::sync_entity_context::RoomDirectory::load(tx)?;
+    let view = crate::sync_views::room_entity_view(&room, &directory.for_room(tx, &room, false)?)
+        .ok_or(CallbackError::Invalid("Chat room is no longer visible"))?;
+    if !view["members"]
+        .as_array()
+        .is_some_and(|members| members.iter().any(|id| id == &snapshot.context().agent))
+    {
+        return Err(CallbackError::Invalid("Chat room is no longer visible"));
+    }
     let sender = if room["kind"] == "private" {
         room["members"]
             .as_array()
@@ -240,6 +249,7 @@ pub(super) fn peers(
         .collect::<Vec<_>>();
     agents.sort_by(|a, b| a["id"].as_str().cmp(&b["id"].as_str()));
     let mut rooms = Vec::new();
+    let directory = crate::sync_entity_context::RoomDirectory::load(tx)?;
     for room in records::all(tx, "runtime_rooms")? {
         let visible = match authorize_room(tx, snapshot, text(&room, "id")?) {
             Ok(()) => true,
@@ -247,6 +257,11 @@ pub(super) fn peers(
             Err(error) => return Err(error),
         };
         if visible {
+            let Some(room) =
+                crate::sync_views::room_entity_view(&room, &directory.for_room(tx, &room, false)?)
+            else {
+                continue;
+            };
             rooms.push(Value::Object(
                 [
                     "id",

@@ -235,7 +235,8 @@ pub(super) fn dispatch(
                 tool_result(json!({"requestId":call.id,"outcome":record["outcome"],"stage":record["stage"],"recovery":"Read orchestration_request with this requestId. Do not repeat the mutation with a new id."}), true)
             }
         };
-        let reply = Reply::new(identity, ResponseBody::Result(result));
+        let projected = super::project_tool_result(&result, &call.id, &record["outcome"])?;
+        let reply = Reply::new(identity, ResponseBody::Result(projected))?;
         storage::save_reply(tx, input, &reply)?;
         let key = reply.identity.key();
         let mut outbox = storage::read(tx, &key)?.ok_or(CallbackError::Unknown)?;

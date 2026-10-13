@@ -758,15 +758,9 @@ fn provider_callbacks_python_dynamic_read_and_title() {
         );
         let result = reply(dispatch(&store, &context, &frame, 20.0).unwrap());
         let expected = &case["expected"];
-        assert_eq!(body(&result)["success"], expected["success"]);
         assert_eq!(
-            tool_value(&result),
-            serde_json::from_str::<Value>(expected["contentItems"][0]["text"].as_str().unwrap())
-                .unwrap()
-        );
-        assert_eq!(
-            body(&result)["contentItems"][1],
-            expected["contentItems"][1]
+            review_regressions::canonical_response(body(&result)),
+            review_regressions::canonical_response(expected)
         );
     }
 }
@@ -864,3 +858,6 @@ fn provider_callbacks_existing_python_card_uses_stored_identity() {
         .unwrap();
     assert_eq!(status, "answered");
 }
+
+#[path = "provider_callbacks/review.rs"]
+mod review_regressions;

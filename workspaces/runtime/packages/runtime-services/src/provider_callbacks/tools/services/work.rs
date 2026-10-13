@@ -1,11 +1,12 @@
 use super::*;
-use crate::work_write::{self, CreateWork, WorkMutation, WorkWrite};
+use crate::work_write::{self, CreateWork, WorkActorWrite as WorkWrite, WorkMutation};
 pub(super) fn execute(
     tx: &Transaction<'_>,
     snapshot: &CallbackSnapshot,
     args: &Value,
     id: &str,
 ) -> Result<Value, CallbackError> {
+    validate_command(args)?;
     if args
         .get("version")
         .is_some_and(|v| !v.is_null() && v.as_i64().is_none())
@@ -25,6 +26,9 @@ pub(super) fn execute(
         .into_iter()
         .filter(|r| r["rootId"] == root)
         .collect::<Vec<_>>();
+    for record in &records {
+        validate_record(record)?;
+    }
     let statuses = work_policy::work_statuses(&records);
     let action = args["action"].as_str().unwrap_or("list");
     if action == "list" {
@@ -129,7 +133,7 @@ pub(super) fn execute(
         "cancel" => WorkWrite::Mutate(WorkMutation::Cancel {
             task_id: text(args, "task_id")?.into(),
             version: args["version"].as_i64(),
-            reason: text(args, "result")?.into(),
+            reason: text(args, "reason")?.into(),
         }),
         "reject" => WorkWrite::Mutate(WorkMutation::Reject {
             task_id: text(args, "task_id")?.into(),
@@ -143,8 +147,9 @@ pub(super) fn execute(
         }
         _ => return Err(CallbackError::Invalid("Unknown task action")),
     };
-    let result = work_write::write(
+    let result = work_write::write_as_agent(
         tx,
+        who,
         who,
         Some(id),
         &crate::event_write::request_signature(args),
@@ -155,4 +160,52 @@ pub(super) fn execute(
     receipt["requestId"] = json!(id);
     receipt["detail"] = json!({"tool":"orchestration_task","action":"get","task_id":result["id"]});
     Ok(receipt)
+}
+
+fn validate_command(args: &Value) -> Result<(), CallbackError> {
+    static SCHEMA: std::sync::OnceLock<Result<studio_runtime_schema::Validator, String>> =
+        std::sync::OnceLock::new();
+    let schema = SCHEMA.get_or_init(|| {
+        studio_runtime_schema::Validator::new(&json!({
+            "type":"object", "properties":{
+                "title":{"type":"string","minLength":1,"maxLength":160},
+                "description":{"type":"string","maxLength":32000},
+                "status":{"enum":["ready","blocked"]},
+                "result":{"type":"string","minLength":1,"maxLength":32000},
+                "reason":{"type":"string","minLength":1,"maxLength":32000},
+                "owner":{"type":["string","null"]},
+                "dependencies":{"type":"array","maxItems":100,"items":{"type":"string"}},
+                "version":{"type":["integer","null"]}
+            }
+        }))
+        .map_err(|e| e.to_string())
+    });
+    let schema = schema
+        .as_ref()
+        .map_err(|_| CallbackError::Stored("callback work schema".into()))?;
+    if !schema.is_valid(args) {
+        return Err(CallbackError::Invalid(
+            "Invalid task command field or bound",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_record(record: &Value) -> Result<(), CallbackError> {
+    let id = record["id"].as_str().unwrap_or("<unknown>");
+    if !record.is_object()
+        || record["id"].as_str().is_none()
+        || record["status"].as_str().is_none()
+        || ["results", "decisions"].iter().any(|field| {
+            !record[*field]
+                .as_array()
+                .is_some_and(|rows| rows.iter().all(Value::is_object))
+        })
+        || !record["dependencies"]
+            .as_array()
+            .is_some_and(|rows| rows.iter().all(Value::is_string))
+    {
+        return Err(CallbackError::Stored(format!("runtime_work/{id}")));
+    }
+    Ok(())
 }
