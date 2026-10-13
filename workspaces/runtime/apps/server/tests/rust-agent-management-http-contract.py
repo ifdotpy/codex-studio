@@ -47,7 +47,7 @@ class AgentManagementHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         with closing(sqlite3.connect(self.backend.state / "canvas.sqlite3")) as db:
             return db.execute("SELECT deleted,payload FROM sync_entities WHERE collection='agent' AND id=?", (identity,)).fetchone()
 
-    def test_stop_idle_draft_and_repeat_preserve_pause_and_advance_epoch(self):
+    def test_stop_idle_draft(self):
         identity = self.draft()
         epoch = self.record(identity)["epoch"]
         for offset in (1, 2):
@@ -61,7 +61,7 @@ class AgentManagementHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             self.assertEqual(record["error"], "Stopped by user")
             self.assertEqual(self.projection(identity)[0], 0)
 
-    def test_delete_idle_draft_keeps_tombstone_and_replays_without_recreation(self):
+    def test_delete_idle_draft(self):
         identity = self.draft()
         first = self.post("/api/conversation/delete", {"id": identity})
         self.assertEqual(first.status, 200, first.body)
@@ -74,7 +74,7 @@ class AgentManagementHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         self.assertEqual(self.record(identity)["deletedAt"], before["deletedAt"])
         self.assertFalse(self.record(identity)["autoWake"])
 
-    def test_native_action_refusal_does_not_reserve_an_attempt(self):
+    def test_native_action_refusal_no_write(self):
         identity = self.draft()
         self.assertEqual(self.post("/api/stop", {"id": identity}).status, 200)
         before = self.record(identity)

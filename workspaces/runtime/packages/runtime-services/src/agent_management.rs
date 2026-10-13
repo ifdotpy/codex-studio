@@ -121,8 +121,26 @@ pub struct Records {
     pub tables: BTreeMap<String, Vec<Value>>,
 }
 
+#[derive(Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct WorkIdentity {
+    owner: Option<String>,
+    root_id: Option<String>,
+    status: Option<String>,
+    #[serde(default)]
+    version: i64,
+    #[serde(default)]
+    releases: Vec<Value>,
+}
+
+struct Work {
+    identity: WorkIdentity,
+    record: Value,
+}
+
 pub struct ManagementSnapshot {
     agents: Vec<Agent>,
+    work: Vec<Work>,
     tables: BTreeMap<String, Vec<Value>>,
 }
 
@@ -158,6 +176,7 @@ impl ManagementSnapshot {
     /// The only constructor: validate each stored row before any decision.
     pub fn from_records(records: Records) -> Result<Self, ManagementError> {
         let mut agents = Vec::new();
+        let mut work = Vec::new();
         for (table, rows) in &records.tables {
             if rows.len() > MAX_ROWS {
                 return Err(ManagementError::Unavailable(
@@ -183,6 +202,12 @@ impl ManagementSnapshot {
                 {
                     return Err(invalid());
                 }
+                if table == "runtime_work" {
+                    work.push(Work {
+                        identity: serde_json::from_value(row.clone()).map_err(|_| invalid())?,
+                        record: row.clone(),
+                    });
+                }
                 if table == "runtime_agents" {
                     agents.push(Agent {
                         identity: serde_json::from_value(row.clone()).map_err(|_| invalid())?,
@@ -193,6 +218,7 @@ impl ManagementSnapshot {
         }
         Ok(Self {
             agents,
+            work,
             tables: records.tables,
         })
     }
@@ -406,16 +432,23 @@ impl ManagementSnapshot {
                 "assigned_work",
                 self.open_work(agent)
                     .iter()
-                    .map(|r| r["id"].clone())
+                    .map(|r| r.record["id"].clone())
                     .collect(),
             );
         }
         blocks
     }
-    fn open_work(&self, agent: &Agent) -> Vec<&Value> {
-        self.owned("runtime_work", "owner", agent.id())
-            .into_iter()
-            .filter(|r| !is_status(r, &["accepted", "cancelled"]))
+    fn open_work(&self, agent: &Agent) -> Vec<&Work> {
+        self.work
+            .iter()
+            .filter(|work| {
+                work.identity.owner.as_deref() == Some(agent.id())
+                    && !work
+                        .identity
+                        .status
+                        .as_deref()
+                        .is_some_and(|status| matches!(status, "accepted" | "cancelled"))
+            })
             .collect()
     }
 }
@@ -660,21 +693,21 @@ fn archive(
     let mut unassigned = Vec::new();
     if unassign {
         for work in snapshot.open_work(agent) {
-            if work.get("rootId").and_then(Value::as_str) != Some(&agent.identity.root_id) {
+            if work.identity.root_id.as_deref() != Some(&agent.identity.root_id) {
                 return Err(ManagementError::Invalid(
                     "An assigned task belongs to another team",
                 ));
             }
-            let mut work = work.clone();
             let version = work
-                .get("version")
-                .and_then(Value::as_i64)
-                .unwrap_or(0)
+                .identity
+                .version
                 .checked_add(1)
                 .filter(|v| *v <= MAX_SAFE_EPOCH)
                 .ok_or(ManagementError::Invalid("Work version limit reached"))?;
+            let releases = work.identity.releases.clone();
+            let mut work = work.record.clone();
             if work.get("releases").is_none() {
-                work["releases"] = json!([]);
+                work["releases"] = json!(releases);
             }
             let id = work_id(work.get("id"));
             work["releases"]
