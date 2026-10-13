@@ -671,6 +671,51 @@ impl<R: ProviderAuthReader> AccountDriver<R> {
         existing_login(&state.value, request)
     }
 
+    /// Reconcile local Codex auth without sending a request. A still-pending
+    /// receipt writes nothing, including when the retained session is absent.
+    pub fn reconcile_codex_login(
+        &self,
+        request: &str,
+    ) -> Result<Option<Value>, AccountMutationError> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| AccountDriverError::Poisoned)?;
+        let Some(receipt) = state.value.get("logins").and_then(|rows| rows.get(request)) else {
+            return Ok(None);
+        };
+        if login_terminal(receipt) {
+            return Ok(Some(receipt.clone()));
+        }
+        let account = receipt["accountKey"]
+            .as_str()
+            .ok_or(AccountDriverError::InvalidRegistry)?
+            .to_owned();
+        if registry_account(&state.value, &account)?
+            .get("provider")
+            .and_then(Value::as_str)
+            .unwrap_or("codex")
+            != "codex"
+        {
+            return Err(AccountMutationError::Refused(
+                "Select a Codex sign-in request",
+            ));
+        }
+        let mut value = state.value.clone();
+        if self.refresh_value(&mut value, &account, true)? != AccountStatus::Ready {
+            return Ok(None);
+        }
+        reconcile_local_login(&mut value, &state.order, request, &account)?;
+        let result = value["logins"][request].clone();
+        if !login_terminal(&result) {
+            return Ok(None);
+        }
+        if value != state.value {
+            self.persist(&mut state, value)?;
+        }
+        Ok(Some(result))
+    }
+
     /// `home` is prepared by the caller without holding this registry lock or a
     /// store transaction. A successful return is the durable intent commit point.
     pub fn reserve_codex_login(
@@ -2001,15 +2046,26 @@ fn atomic_replace_with(
     sync_parent: impl FnOnce(&Path) -> std::io::Result<()>,
 ) -> Result<(), ReplaceError> {
     let parent = path.parent().ok_or(ReplaceError::NotReplaced)?;
-    let permissions = fs::metadata(path)
-        .map_err(|_| ReplaceError::NotReplaced)?
-        .permissions();
+    // Registry rows may contain login codes and verification URLs. Unix
+    // permissions must be private even when the previous file or directory was
+    // created with broader permissions. Other platforms rely on their default
+    // temporary-file ACLs; this code does not explicitly rewrite those ACLs.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(parent, fs::Permissions::from_mode(0o700))
+            .map_err(|_| ReplaceError::NotReplaced)?;
+    }
     let mut temp =
         tempfile::NamedTempFile::new_in(parent).map_err(|_| ReplaceError::NotReplaced)?;
     (|| {
-        temp.as_file()
-            .set_permissions(permissions)
-            .map_err(|_| ReplaceError::NotReplaced)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            temp.as_file()
+                .set_permissions(fs::Permissions::from_mode(0o600))
+                .map_err(|_| ReplaceError::NotReplaced)?;
+        }
         temp.write_all(bytes)
             .map_err(|_| ReplaceError::NotReplaced)?;
         temp.as_file()
@@ -2543,26 +2599,29 @@ print(store.path)
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(&path, fs::Permissions::from_mode(0o640))
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o644))
                 .expect("set original file permissions");
-            fs::set_permissions(&fixture.path, fs::Permissions::from_mode(0o750))
+            fs::set_permissions(&fixture.path, fs::Permissions::from_mode(0o755))
                 .expect("set parent directory permissions");
         }
-        let parent_permissions = fs::metadata(&fixture.path)
-            .expect("read parent metadata")
-            .permissions();
         let fail = |_: &Path, _: &Path| Err(std::io::Error::other("refused"));
         assert!(matches!(
             atomic_replace_with(&path, b"after", fail, |_| Ok(())),
             Err(ReplaceError::NotReplaced)
         ));
         assert_eq!(fs::read(&path).expect("read unchanged registry"), b"before");
-        assert_eq!(
-            fs::metadata(&fixture.path)
-                .expect("read parent after failed replacement")
-                .permissions(),
-            parent_permissions
-        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                fs::metadata(&fixture.path)
+                    .expect("read parent after failed replacement")
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o700
+            );
+        }
         assert!(matches!(atomic_replace(&path, b"after"), Ok(())));
         assert_eq!(fs::read(&path).expect("read replaced registry"), b"after");
         assert!(matches!(
@@ -2584,7 +2643,15 @@ print(store.path)
                     .permissions()
                     .mode()
                     & 0o777,
-                0o640
+                0o600
+            );
+            assert_eq!(
+                fs::metadata(&fixture.path)
+                    .expect("read directory permissions")
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o700
             );
         }
     }

@@ -74,6 +74,22 @@ async fn limits(
         .typed_value("cached")
         .and_then(serde_json::Value::as_str)
         == Some("1");
+    if let Some(port) = state.account_session.clone() {
+        let account = account_key.to_owned();
+        let response = tokio::task::spawn_blocking(move || {
+            studio_runtime_services::account_session_runtime::limits(
+                port.as_ref(),
+                &account,
+                cached,
+            )
+        })
+        .await
+        .map_err(|_| ApiError::internal())?
+        .map_err(super::account_login::session_error)?;
+        return serde_json::from_value(response)
+            .map(Json)
+            .map_err(|_| ApiError::internal());
+    }
     let account_policy = state
         .account_policy
         .as_ref()

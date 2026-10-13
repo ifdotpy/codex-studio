@@ -12,6 +12,9 @@ use std::sync::Arc;
 use studio_runtime_services::account_driver::{
     AccountDriver, AccountDriverError, SystemProviderAuthReader,
 };
+use studio_runtime_services::account_session_runtime::{
+    AccountSessionError, LoginRequest, ProfileRequest,
+};
 
 use crate::error::ApiError;
 use crate::router::HttpState;
@@ -242,6 +245,16 @@ fn account_error(error: AccountDriverError) -> ApiError {
 async fn discover(
     State(state): State<HttpState>,
 ) -> Result<Json<crate::generated::AccountsResponse>, ApiError> {
+    if let Some(port) = state.account_session.clone() {
+        let response = tokio::task::spawn_blocking(move || port.discover())
+            .await
+            .map_err(|_| ApiError::internal())?
+            .map_err(session_error)?;
+        state.event_wake.notify_one();
+        return serde_json::from_value(response)
+            .map(Json)
+            .map_err(|_| ApiError::internal());
+    }
     let Some(driver) = state.account_driver.clone() else {
         return Err(ApiError::new(
             StatusCode::NOT_IMPLEMENTED,
@@ -259,14 +272,36 @@ async fn discover(
     accounts_response(snapshot)
 }
 
-async fn codex_login() -> Result<Json<Value>, ApiError> {
-    Err(unavailable("POST", "/api/accounts/login", &CODEX_LOGIN))
+async fn codex_login(
+    State(state): State<HttpState>,
+    ApiJson(body): ApiJson<LoginRequest>,
+) -> Result<Json<Value>, ApiError> {
+    let port = state
+        .account_session
+        .clone()
+        .ok_or_else(|| unavailable("POST", "/api/accounts/login", &CODEX_LOGIN))?;
+    let result = tokio::task::spawn_blocking(move || port.login(body))
+        .await
+        .map_err(|_| ApiError::internal())?
+        .map_err(session_error)?;
+    state.event_wake.notify_one();
+    super::generated_json::<crate::generated::AccountLoginResponse>(result).map(Json)
 }
 
 async fn codex_login_cancel(
     State(state): State<HttpState>,
     ApiJson(body): ApiJson<CancelLoginBody>,
 ) -> Result<Json<crate::generated::AccountLoginResponse>, ApiError> {
+    if let Some(port) = state.account_session.clone() {
+        let result = tokio::task::spawn_blocking(move || port.cancel_login(&body.login_id))
+            .await
+            .map_err(|_| ApiError::internal())?
+            .map_err(session_error)?;
+        state.event_wake.notify_one();
+        return serde_json::from_value(result)
+            .map(Json)
+            .map_err(|_| ApiError::internal());
+    }
     let Some(driver) = state.account_driver.clone() else {
         return Err(ApiError::new(
             StatusCode::NOT_IMPLEMENTED,
@@ -282,8 +317,31 @@ async fn codex_login_cancel(
         .map_err(|_| ApiError::internal())
 }
 
-async fn claude_profile() -> Result<Json<Value>, ApiError> {
-    Err(unavailable("POST", "/api/claude/profiles", &CLAUDE_PROFILE))
+async fn claude_profile(
+    State(state): State<HttpState>,
+    ApiJson(body): ApiJson<ProfileRequest>,
+) -> Result<Json<Value>, ApiError> {
+    let port = state
+        .account_session
+        .clone()
+        .ok_or_else(|| unavailable("POST", "/api/claude/profiles", &CLAUDE_PROFILE))?;
+    let result = tokio::task::spawn_blocking(move || port.profile(body))
+        .await
+        .map_err(|_| ApiError::internal())?
+        .map_err(session_error)?;
+    state.event_wake.notify_one();
+    super::generated_json::<crate::generated::AccountsResponse>(result).map(Json)
+}
+
+pub(super) fn session_error(error: AccountSessionError) -> ApiError {
+    let status = match error {
+        AccountSessionError::Requires(_) => StatusCode::NOT_IMPLEMENTED,
+        AccountSessionError::Refused(_) => StatusCode::BAD_REQUEST,
+        AccountSessionError::InvalidResponse(_) | AccountSessionError::Persistence => {
+            StatusCode::INTERNAL_SERVER_ERROR
+        }
+    };
+    ApiError::new(status, error.to_string())
 }
 
 fn unavailable(method: &str, path: &str, dependencies: &[Dependency]) -> ApiError {

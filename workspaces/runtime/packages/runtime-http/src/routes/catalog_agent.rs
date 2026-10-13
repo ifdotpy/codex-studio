@@ -31,7 +31,7 @@ const TOOL_CATALOG_DEPENDENCIES: &[Dependency] =
     &[Dependency::new("thread-preparation/tool-catalog")];
 const DISCOVERY_TIMEOUT: Duration = Duration::from_secs(5);
 const NATIVE_COMMAND_DEPENDENCIES: &[Dependency] =
-    &[Dependency::new("turn-path/native-command-input")];
+    &[Dependency::new("native-command/request-identity")];
 const SYNC_NOTIFY_DEPENDENCIES: &[Dependency] = &[Dependency::new("sync-policy/resource-notify")];
 const VM_FINDER_DEPENDENCIES: &[Dependency] = &[Dependency::new("vm-agents/finder-view")];
 
@@ -262,8 +262,7 @@ async fn native_command(
             "This native command has no active session",
         ));
     }
-    let process_id = task
-        .get("processId")
+    task.get("processId")
         .and_then(|value| {
             value
                 .as_str()
@@ -296,44 +295,15 @@ async fn native_command(
             )?)
         }
         NativeCommandAction::Cancel => {
-            let item_id = task
-                .get("itemId")
+            task.get("itemId")
                 .and_then(Value::as_str)
                 .filter(|value| !value.is_empty())
-                .ok_or_else(invalid_stored_task)?
-                .to_owned();
-            let account = account_context(&state, &agent)?;
-            ensure_codex(&account, "POST", "/api/native-command")?;
-            let thread_id = agent
-                .get("threadId")
-                .and_then(Value::as_str)
-                .map(str::to_owned);
-            let result = studio_runtime_services::catalog_reads::cancel_terminal(
-                state.native_path.as_deref().map(Path::new),
-                &account.home,
-                account.key != "default",
-                thread_id,
-                &item_id,
-                &process_id,
-                DISCOVERY_TIMEOUT,
-            )
-            .await
-            .map_err(|_| ApiError::new(StatusCode::BAD_REQUEST, "Provider request failed"))?;
-            let result = result.ok_or_else(|| {
-                ApiError::new(
-                    StatusCode::BAD_REQUEST,
-                    "This command no longer has an active native session",
-                )
-            })?;
-            if result.get("terminated").and_then(Value::as_bool) != Some(true) {
-                return Err(ApiError::new(
-                    StatusCode::BAD_REQUEST,
-                    "Codex did not confirm that the command stopped",
-                ));
-            }
-            Ok(Json(super::generated_json::<
-                crate::generated::NativeCommandResponse,
-            >(result)?))
+                .ok_or_else(invalid_stored_task)?;
+            Err(dependency_error(
+                "POST",
+                "/api/native-command",
+                NATIVE_COMMAND_DEPENDENCIES,
+            )?)
         }
     }
 }
@@ -430,7 +400,10 @@ fn account_context(state: &HttpState, agent: &Value) -> Result<AccountContext, A
         .account_policy
         .as_ref()
         .ok_or_else(ApiError::internal)?;
-    let snapshot = policy.accounts();
+    let snapshot = match &state.account_driver {
+        Some(driver) => driver.snapshot().map_err(|_| ApiError::internal())?,
+        None => policy.accounts(),
+    };
     let account = snapshot
         .accounts
         .iter()
@@ -479,7 +452,7 @@ inventory::submit! {
             "provider-service/claude-discovery",
             "sync-policy/resource-notify",
             "thread-preparation/tool-catalog",
-            "turn-path/native-command-input",
+            "native-command/request-identity",
             "vm-agents/finder-view",
         ],
     }

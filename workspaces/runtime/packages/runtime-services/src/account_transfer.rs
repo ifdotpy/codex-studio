@@ -190,6 +190,11 @@ impl Snapshot {
     pub fn operation(&self) -> &Value {
         &self.operation
     }
+    pub fn agent(&self, id: &str) -> Result<&Value, TransferError> {
+        self.agents
+            .get(id)
+            .ok_or(TransferError::Refused("Unknown transfer member"))
+    }
     fn phase(&self, id: &str) -> Result<Phase, TransferError> {
         serde_json::from_value(self.operation["members"][id]["phase"].clone())
             .map_err(|_| invalid("account transfer", "/members/phase"))
@@ -463,6 +468,17 @@ impl Snapshot {
             return Err(TransferError::Refused("Invalid native transfer request"));
         }
         let agent = &self.agents[id];
+        if flag(agent, "inFlight")
+            || matches!(
+                agent["status"].as_str(),
+                Some("running" | "starting" | "approval")
+            )
+            || truthy(agent.get("workspaceOperation"))
+        {
+            return Err(TransferError::Refused(
+                "Waiting for the current turn or workspace operation",
+            ));
+        }
         let source = m
             .get("source")
             .and_then(Value::as_object)
@@ -496,6 +512,26 @@ impl Snapshot {
         m["nativeParams"] = params;
         m["targetConnection"] = json!(ticket.connection);
         Ok(self.decision(op, self.agents.clone(), vec![]))
+    }
+
+    /// Release a failed preparation without changing a submitted request or a
+    /// newer source snapshot. Restart also recovers a crash before this write.
+    pub fn preparation_failed(
+        &self,
+        agent: &str,
+        source: &Value,
+    ) -> Result<Decision, TransferError> {
+        if !self.pending()
+            || self.phase(agent)? != Phase::Reading
+            || self.operation["members"][agent].get("source") != Some(source)
+        {
+            return Ok(self.decision(self.operation.clone(), self.agents.clone(), vec![]));
+        }
+        let mut operation = self.operation.clone();
+        operation["members"][agent]["phase"] = json!("blocked");
+        operation["members"][agent]["error"] =
+            json!("Transfer preparation failed before native submission");
+        Ok(self.decision(operation, self.agents.clone(), vec![]))
     }
 
     /// Receipts can arrive after restart or cancellation. Preserve the success

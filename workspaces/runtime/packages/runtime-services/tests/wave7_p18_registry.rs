@@ -165,6 +165,8 @@ fn registry_failpoints_before_every_login_write_leave_a_recoverable_receipt() {
         "start_receipt",
         "cancel_intent",
         "cancel_receipt",
+        "auth_completion",
+        "restart_recovery",
     ] {
         let root = tempfile::tempdir().expect("state");
         let path = root.path().join("registry.json");
@@ -200,6 +202,12 @@ fn registry_failpoints_before_every_login_write_leave_a_recoverable_receipt() {
                     .is_err()
             ),
             "cancel_intent" => assert!(driver.reserve_codex_cancel(REQUEST).is_err()),
+            "auth_completion" => assert!(
+                driver
+                    .complete_codex_login(REQUEST, &account, "native", false, None)
+                    .is_err()
+            ),
+            "restart_recovery" => assert!(driver.recover_codex_logins().is_err()),
             _ => assert!(driver.finish_codex_cancel(REQUEST, &account, true).is_err()),
         }
         std::fs::remove_dir(&path).expect("clear failure");
@@ -219,5 +227,111 @@ fn registry_failpoints_before_every_login_write_leave_a_recoverable_receipt() {
                 "{boundary}"
             );
         }
+    }
+}
+
+#[test]
+fn local_auth_reconciliation_only_commits_a_terminal_result() {
+    use studio_runtime_services::account_driver::{
+        AuthMetadata, AuthProfile, AuthStatus, ProviderAuthReader,
+    };
+    struct Reader(AuthMetadata);
+    impl ProviderAuthReader for Reader {
+        fn read(&self, _: &AuthProfile) -> AuthMetadata {
+            self.0.clone()
+        }
+    }
+    for ready in [false, true] {
+        let root = tempfile::tempdir().expect("state");
+        let path = root.path().join("registry.json");
+        std::fs::write(&path,json!({"version":1,"defaultAccountKey":"default","accounts":{"default":{"id":"default","home":root.path(),"label":"Default","source":"Fixture","status":"signedOut"}},"logins":{}}).to_string()).expect("registry");
+        let driver = AccountDriver::open_with_reader(
+            &path,
+            Reader(AuthMetadata {
+                status: if ready {
+                    AuthStatus::Ready
+                } else {
+                    AuthStatus::SignedOut
+                },
+                account_id: ready.then(|| "fixture-account".into()),
+                email: None,
+                plan: None,
+                credential_identity: None,
+                error: None,
+                error_kind: None,
+            }),
+        )
+        .expect("driver");
+        driver
+            .reserve_codex_login(&request(false), root.path(), 1.0)
+            .expect("intent");
+        let before = std::fs::read(&path).expect("before");
+        if ready {
+            let saved = root.path().join("saved.json");
+            std::fs::rename(&path, &saved).expect("hold state");
+            std::fs::create_dir(&path).expect("fail replacement");
+            assert!(driver.reconcile_codex_login(REQUEST).is_err());
+            std::fs::remove_dir(&path).expect("clear failure");
+            std::fs::rename(saved, &path).expect("restore");
+            assert_eq!(std::fs::read(&path).expect("unchanged"), before);
+        }
+        let result = driver.reconcile_codex_login(REQUEST).expect("reconcile");
+        if ready {
+            assert_eq!(result.expect("terminal")["status"], "ready");
+            assert_eq!(read(&path)["logins"][REQUEST]["status"], "ready");
+        } else {
+            assert!(result.is_none());
+            assert_eq!(std::fs::read(&path).expect("after"), before);
+        }
+    }
+}
+
+#[test]
+fn discovery_and_settings_registry_rows_match_python() {
+    use studio_runtime_services::account_driver::{AuthMetadata, AuthStatus};
+    let source = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let output = Command::new(prepared_python_support::prepared_python(
+        &source.join("../../apps/server/src"),
+    ))
+    .arg(source.join("tests/wave7_p18_profile_registry_oracle.py"))
+    .output()
+    .expect("oracle");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let cases: Vec<Value> = serde_json::from_slice(&output.stdout).expect("cases");
+    assert_eq!(cases.len(), 2);
+    for case in cases {
+        let root = tempfile::tempdir().expect("state");
+        let path = root.path().join("registry.json");
+        std::fs::write(&path, case["initial"].to_string()).expect("initial");
+        let driver = AccountDriver::open(&path).expect("driver");
+        if case["kind"] == "discover" {
+            driver
+                .discover_claude_verified(
+                    Path::new(case["home"].as_str().expect("home")),
+                    &AuthMetadata {
+                        status: AuthStatus::Ready,
+                        account_id: Some("claude:fixture@example.invalid".into()),
+                        email: Some("fixture@example.invalid".into()),
+                        plan: Some("max".into()),
+                        credential_identity: None,
+                        error: None,
+                        error_kind: None,
+                    },
+                )
+                .expect("discover");
+        } else {
+            driver
+                .update_claude_settings(
+                    "claude-local",
+                    case["options"].clone(),
+                    Some("  Updated  "),
+                )
+                .expect("update");
+        }
+        assert_eq!(read(&path), case["expected"], "{}", case["kind"]);
     }
 }
