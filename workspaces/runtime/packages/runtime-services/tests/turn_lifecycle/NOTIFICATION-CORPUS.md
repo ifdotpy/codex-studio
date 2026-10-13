@@ -82,17 +82,32 @@ replayed frames from writing or recreating buffered deltas.
 
 ## Deviations and tiers
 
-Only the five notification deviation groups in `deviations.json` are allowed:
-token budget/cache/token-rate captures; async questions; module-table unhandled
-kinds; `radio_turn` policy; and the 8,192 open-stream bound. Token and question
-cases execute the Python path and assert exact allowed field differences. Unhandled
-kind cases deliberately compare only their exact named counter and receipt, using
-Python's real put/save_receipt writers; they do not claim equivalence for the omitted
-Python effects. At the bound, the Rust entry point returns `StreamCapacity` with no
-write or buffer change. Its unit witness consumes the same corpus case data.
+The notification registry now retains only `radio-policy` and the 8,192
+open-stream bound. Token-usage, async-question and unhandled-kind deviation
+groups are removed. Every notification fixture calls real `Runtime.notification`.
+The token fixture records the budget owner's actual Python capture and injects
+only that agent patch into Rust; budget tables belong to the budget corpus.
+Notification-owned agent/context usage, transcript, tasks, plans, requests,
+complaints, events, sync, search and receipt rows remain in this comparison.
+
+Missing account, login, rate-limit, provider-generation, realtime, monitor and
+thread-recovery services return `RequiresService` with a typed dependency.
+The oracle still executes Python and compares its stored rows. This typed outcome
+is a transport contract; it is not a claim that the missing effect ran.
+The default production dispatcher turns these outcomes into an error and rolls
+back its savepoint, preventing the worker from acknowledging an absent service.
+The injected dispatcher may only be acknowledged after its caller handles the
+named dependency in the owning transaction. Token usage defaults to a named
+budget-capture refusal until the worker supplies the budget adapter.
+
+Turn-start and terminal-turn notices belong to the scheduler and account worker.
+Their real Python comparison remains in `turn_lifecycle_corpus.rs` (`started_notice`
+and terminal transition witnesses); they no longer appear as unhandled inventory.
+At the stream bound, the dispatcher returns `StreamCapacity` without changing
+stored rows or the caller's stream buffer.
 
 Fast cases cover every method, all six orders, every review regression and the
-transaction/replay witnesses. Unhandled methods share a single sequence to avoid
+transaction/replay witnesses. Remaining notification methods share a single sequence to avoid
 repeated state initialization. The full matrix additionally covers all timer masks,
 empty/full completions and independent state/policy/corruption combinations. Timers
 and generation permutations do not apply to prepared submissions or token usage;
@@ -100,7 +115,7 @@ Python represents stopped agents as paused with autoWake false. Radio-turn polic
 is refused upstream by the scheduler; plain radio is tested as an ordinary kind.
 
 Both corpora use the sole declaration list in `deviations.json`: the lifecycle's
-three classes and notification's five. Per-case field patches must reference a
+three classes and notification's two. Per-case field patches must reference a
 declared class and exact field inventory. An absent, equal, or otherwise stale
 declared difference fails. The `rust_receipts` declaration owns the return contract:
 Python first-call effects are compared as rows; Rust entry-point results are pinned
@@ -140,3 +155,45 @@ The combined CPU cost was 2.341 seconds; other observed default wall times were
 7.955 and 26.861 seconds. Full-matrix wall times were 61.864 and 117.691 seconds.
 Each run now writes a `.timing.json` sidecar with CPU, phase and wall measurements;
 Linux Rust CPU comes from `/proc/self/stat`, and Python uses `getrusage`.
+
+## Notification-kind integration
+
+`dispatch_notification_with_effects` uses the same provider delivery identity,
+receipt and staged-buffer contract as `dispatch_notification`. The worker's
+`account_worker/store.rs` is intentionally not changed by this leaf. Its normal
+notification call must invoke `dispatch_notification_with_effects` with its
+transaction, agent ID, state path, stream buffer, identity, frame, receipt clock
+and `&WorkerNotificationEffects`. Keep existing scheduler routing for
+`turn/started`, `turn/completed`, and native user-message delivery acknowledgements.
+A `RequiresService` result must be handled or converted into a transaction error
+before acknowledging the provider cursor.
+
+The agreed effect implementation is:
+
+- Usage: `budget_service::capture(tx, agent, params, at,
+budget::CaptureSource::Live, at)`; map its result to `()` and its located error
+  into the worker error. This is the single budget accounting authority.
+- Move: `agent_move::capture_cache(tx, agent_id, params, at)`; use its result in
+  the same receipt transaction when an active move requires cache capture.
+- Analytics: prepare and capture through the analytics owner outside the writer
+  transaction. Do not let analytics failure consume lifecycle success.
+
+`notices::error_message` temporarily delegates to the existing message catalog in
+`account_worker::history::message`; the integration commit changes only its
+visibility. When moving the catalog, the integrator moves that existing function
+body to `notification_dispatch/notices.rs::error_message` and replaces the history
+call `message(&error)` with
+`crate::notification_dispatch::notices::error_message(&error)` (adjusting the
+borrow at the existing call site). There must be one catalog, never two copies.
+The task-window adapter reuses `sync_policy::maintain_task_window` through its
+approved crate-visible accessor.
+
+New witness families cover native warnings/hooks/safety/errors, exact native
+request resolution, repeated and child async questions, command output with
+Unicode truncation and repeated starts, failed tool completion, malformed stored
+state and caught late-write errors. Full mode additionally injects SQLite trigger
+failures before and after writes to each notification table. Every caught failure
+must leave the raw rows unchanged even when unrelated caller work commits.
+`notification_kinds_mutations.json` is the separate mutation inventory for these
+rules; run it with the shared runner's `--manifest` option and notification-corpus
+`--filter`. Infrastructure failure is not mutation detection.

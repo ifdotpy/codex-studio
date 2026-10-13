@@ -102,7 +102,7 @@ pub(super) fn task_transition(
     }
     if let (Some(start), Some(end)) = (task["startedAtMs"].as_f64(), task["completedAtMs"].as_f64())
     {
-        task["durationMs"] = json!((end - start).max(0.0));
+        task["durationMs"] = duration(&task["startedAtMs"], &task["completedAtMs"], start, end);
     }
     for key in ["arguments", "error"] {
         if let Some(value) = item.get(key).filter(|v| !v.is_null()) {
@@ -219,7 +219,12 @@ pub(super) fn non_text(
         params["startedAtMs"].as_f64(),
         params["completedAtMs"].as_f64(),
     ) {
-        (Some(start), Some(end)) => Some(json!((end - start).max(0.0))),
+        (Some(start), Some(end)) => Some(duration(
+            &params["startedAtMs"],
+            &params["completedAtMs"],
+            start,
+            end,
+        )),
         _ => item
             .get("durationMs")
             .filter(|v| !v.is_null())
@@ -263,5 +268,13 @@ pub(super) fn advance_reasoning(agent: &mut Value, params: &Value, at: f64) {
     {
         remove(agent, "nativeStatus");
         agent["activity"] = json!({"phase":"thinking","at":at});
+    }
+}
+
+fn duration(start_value: &Value, end_value: &Value, start: f64, end: f64) -> Value {
+    if let (Some(start), Some(end)) = (start_value.as_i64(), end_value.as_i64()) {
+        json!(end.saturating_sub(start).max(0))
+    } else {
+        json!((end - start).max(0.0))
     }
 }

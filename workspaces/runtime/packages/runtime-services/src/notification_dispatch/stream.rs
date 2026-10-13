@@ -21,6 +21,8 @@ struct Entry {
     base: Option<String>,
     pending: String,
     count: u64,
+    #[serde(default)]
+    characters: u64,
     params: Value,
 }
 
@@ -92,6 +94,7 @@ impl NotificationStreamBuffer {
                 base: None,
                 pending: String::new(),
                 count: 0,
+                characters: 0,
                 params: params.clone(),
             });
             self.entries.len() - 1
@@ -100,6 +103,9 @@ impl NotificationStreamBuffer {
         if entry.count == 0 {
             entry.params = params.clone();
         }
+        entry.characters = entry
+            .characters
+            .saturating_add(delta.chars().count() as u64);
         entry.pending.push_str(delta);
         if entry.key.method == "item/commandExecution/outputDelta" {
             entry.pending = entry
@@ -158,7 +164,9 @@ impl NotificationStreamBuffer {
                 .collect();
         }
         let count = std::mem::take(&mut entry.count);
-        Some((text, count, std::mem::take(&mut entry.params)))
+        let mut params = std::mem::take(&mut entry.params);
+        params["_streamCharacters"] = Value::from(std::mem::take(&mut entry.characters));
+        Some((text, count, params))
     }
 
     pub(super) fn close(&mut self, key: &StreamKey) {
