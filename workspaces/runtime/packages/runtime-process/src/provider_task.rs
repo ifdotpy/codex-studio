@@ -84,6 +84,7 @@ impl ProviderTaskFactory for SupervisorProviderTaskFactory {
                 initialization: InitializationStatus::AwaitingReply,
             });
             let actor = AdapterTask {
+                clock: options.clock,
                 handle,
                 open,
                 identity: self.identity.clone(),
@@ -204,6 +205,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Rpc<S> {
 }
 
 struct AdapterTask {
+    clock: SessionClock,
     handle: ProviderHandle,
     open: OpenRequest,
     identity: BackendIdentity,
@@ -407,13 +409,14 @@ impl AdapterTask {
                     let result: NextResult = rpc.call(SupervisorAction::Next, CursorRequest {
                         handle: self.open.handle.clone(), cursor, extra: Default::default(),
                     }, &mut self.stop).await?;
+                    let received_at_ms = self.clock.now_ms();
                     if let Some(event) = result.event {
                         if event.sequence <= cursor {
                             // A stale replay cannot be delivered twice or create a hot loop.
                             return Err(SupervisorError::InvalidFrame("non-advancing journal cursor".into()).into());
                         }
                         cursor = event.sequence;
-                        slot.send(self.journal_entry(event)?);
+                        slot.send(self.journal_entry(event, received_at_ms)?);
                         poll_at = Instant::now();
                     } else if result.return_code.is_some() && !result.stdout_reader_alive && !result.stderr_reader_alive {
                         return Ok(());
@@ -562,7 +565,11 @@ impl AdapterTask {
         })
     }
 
-    fn journal_entry(&mut self, mut event: SupervisorEvent) -> Result<JournalEntry, AdapterError> {
+    fn journal_entry(
+        &mut self,
+        mut event: SupervisorEvent,
+        received_at_ms: u64,
+    ) -> Result<JournalEntry, AdapterError> {
         let payload = match event.kind {
             EventKind::Stdout => {
                 let current = self
@@ -613,6 +620,7 @@ impl AdapterTask {
             },
         };
         Ok(JournalEntry {
+            received_at_ms,
             cursor: event.sequence,
             generation: event.generation,
             payload,

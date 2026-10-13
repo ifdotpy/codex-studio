@@ -195,7 +195,7 @@ mappings are retained. Startup replay uses the same channel and no deferred queu
 A receive slot is reserved before issuing `next`. Write/ACK receipts and shutdown
 never depend on journal capacity. The sole 50 ms empty-`next` pause is cancellable.
 
-`JournalEntry { cursor, generation, payload }` distinguishes `Frame`, `RawStdout`,
+`JournalEntry { cursor, generation, received_at_ms, payload }` distinguishes `Frame`, `RawStdout`,
 `Stderr`, `Exit`, and future supervisor event kinds. `PreparedWrite::new` validates
 a frame before command admission. `AdapterCommand::write` and `::ack` return a
 command and `Receipt`; `Receipt::receive` distinguishes `Written`,

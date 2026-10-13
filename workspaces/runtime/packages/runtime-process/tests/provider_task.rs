@@ -55,6 +55,7 @@ fn empty() -> Value {
 }
 fn options(state: &DisposableState) -> OpenOptions {
     OpenOptions {
+        clock: SessionClock::default(),
         launch: ProviderLaunchSpec::new(
             vec!["unused-fake-child".into()],
             BTreeMap::new(),
@@ -464,6 +465,7 @@ for line in sys.stdin:
     let factory = SupervisorProviderTaskFactory::new(state.identity());
     let handle = ProviderHandle::for_account("recover-init");
     let opts = || OpenOptions {
+        clock: SessionClock::default(),
         launch: launch.clone(),
         initialize_params: json!({}),
         expected_generation: None,
@@ -790,6 +792,7 @@ async fn real_supervisor_lost_write_receipt_is_sent_once_without_flush_retry() {
         .open(
             ProviderHandle::for_account("write-once"),
             OpenOptions {
+                clock: SessionClock::default(),
                 launch,
                 initialize_params: json!({}),
                 expected_generation: None,

@@ -17,7 +17,29 @@ use crate::{EventCursor, Generation, OperationId, ProviderHandle, ProviderLaunch
 pub const LANE_CAPACITY: usize = 16;
 pub const MAX_PENDING_RESPONSES: usize = 32;
 
+/// Shared monotonic epoch, injected into an attachment and its session.
+/// Tokio's clock makes arrival/deadline tests independent of wall time.
+#[derive(Clone)]
+pub struct SessionClock(tokio::time::Instant);
+impl Default for SessionClock {
+    fn default() -> Self {
+        Self(tokio::time::Instant::now())
+    }
+}
+impl SessionClock {
+    pub fn from_origin(origin: tokio::time::Instant) -> Self {
+        Self(origin)
+    }
+    pub fn now_ms(&self) -> u64 {
+        u64::try_from(self.0.elapsed().as_millis()).unwrap_or(u64::MAX)
+    }
+    pub fn instant_at(&self, milliseconds: u64) -> tokio::time::Instant {
+        self.0 + std::time::Duration::from_millis(milliseconds)
+    }
+}
+
 pub struct JournalEntry {
+    pub received_at_ms: u64,
     pub cursor: EventCursor,
     pub generation: Generation,
     pub payload: JournalPayload,
@@ -252,6 +274,7 @@ impl Drop for ProviderAttachment {
 /// Launch resolution runs at the caller's bounded blocking boundary. The async
 /// factory never runs an arbitrary synchronous resolver on a runtime worker.
 pub struct OpenOptions {
+    pub clock: SessionClock,
     pub launch: ProviderLaunchSpec,
     pub initialize_params: Value,
     /// Persisted identity from a previous attachment, if available.

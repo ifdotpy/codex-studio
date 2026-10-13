@@ -161,6 +161,7 @@ fn actor(
         initialization: InitializationStatus::AwaitingReply,
     };
     let actor = AdapterTask {
+        clock: SessionClock::default(),
         handle: ProviderHandle::for_account("unit"),
         open: OpenRequest {
             handle: SupervisorHandle("account:unit".into()),
@@ -304,6 +305,37 @@ async fn shutdown_interrupts_registered_connect_wait() {
         .await
     });
     waiting.await.unwrap();
+    shutdown.cancel();
+    assert!(matches!(task.await.unwrap(), Err(AdapterError::Cancelled)));
+}
+
+#[tokio::test(start_paused = true)]
+async fn journal_arrival_clock_is_sampled_before_consumer_admission() {
+    let shutdown = Shutdown::default();
+    let (mut actor, _commands, mut journal) = actor(&shutdown);
+    let (socket, server) = tokio::io::duplex(4096);
+    let mut server = BufReader::new(server);
+    let task = tokio::spawn(async move {
+        let mut rpc = Rpc {
+            stream: BufReader::new(socket),
+            sequence: 0,
+            started: false,
+        };
+        actor.serve(&mut rpc, EventCursor(0)).await
+    });
+    let request = read_request(&mut server).await;
+    tokio::time::advance(Duration::from_millis(7)).await;
+    let response = serde_json::json!({"requestId":request["requestId"],"result":{
+        "event":{"sequence":1,"generation":1,"kind":"stderr","payload":"{\"data\":\"output\"}"},
+        "returnCode":null,"backpressure":false,"stdoutReaderAlive":true,"stderrReaderAlive":true}});
+    server
+        .get_mut()
+        .write_all(format!("{response}\n").as_bytes())
+        .await
+        .unwrap();
+    read_request(&mut server).await; // proves previous response is queued
+    tokio::time::advance(Duration::from_secs(5)).await;
+    assert_eq!(journal.recv().await.unwrap().received_at_ms, 7);
     shutdown.cancel();
     assert!(matches!(task.await.unwrap(), Err(AdapterError::Cancelled)));
 }
