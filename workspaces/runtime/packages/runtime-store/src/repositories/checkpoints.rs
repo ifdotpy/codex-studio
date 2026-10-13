@@ -196,6 +196,25 @@ impl CheckpointsRepository {
         }))
     }
 
+    /// Recheck the durable activity snapshot in the transaction that reserves an operation.
+    /// Filesystem idle resolution and live provider/task checks belong to the caller.
+    pub fn workspace_unchanged(
+        transaction: &Transaction<'_>,
+        expected: &WorkspaceSnapshot,
+    ) -> StoreResult<bool> {
+        Ok(Self::workspace_snapshot(transaction, &expected.agent.id)?
+            .is_some_and(|current| same_workspace_activity(&current, expected)))
+    }
+
+    /// The persisted identity shared by workspace and Claude control reservations.
+    pub fn workspace_source(agent: &Value) -> Value {
+        json!({
+            "accountKey": agent.get("accountKey").and_then(Value::as_str).unwrap_or("default"),
+            "threadId": agent.get("threadId"),
+            "cwd": agent.get("cwd"),
+        })
+    }
+
     pub fn reserve_capture(
         transaction: &Transaction<'_>,
         expected: &WorkspaceSnapshot,
@@ -231,11 +250,7 @@ impl CheckpointsRepository {
             current.agent.record.as_object().ok_or_else(|| {
                 StoreError::SchemaMismatch("invalid stored agents record".to_owned())
             })?;
-        let source = json!({
-            "accountKey": agent.get("accountKey").and_then(Value::as_str).unwrap_or("default"),
-            "threadId": agent.get("threadId"),
-            "cwd": agent.get("cwd"),
-        });
+        let source = Self::workspace_source(&current.agent.record);
         let mut operation = json!({
             "id": operation_id,
             "kind": kind.as_str(),
@@ -319,11 +334,7 @@ impl CheckpointsRepository {
         {
             return Ok(false);
         }
-        let source = json!({
-            "accountKey": agent.get("accountKey").and_then(Value::as_str).unwrap_or("default"),
-            "threadId": agent.get("threadId"),
-            "cwd": agent.get("cwd"),
-        });
+        let source = Self::workspace_source(&current.agent.record);
         if object.get("source") != Some(&source)
             || (object.get("kind").and_then(Value::as_str) == Some("checkpoint")
                 && object.get("completionSource")
@@ -396,11 +407,7 @@ impl CheckpointsRepository {
             || operation_record.get("agent").and_then(Value::as_str) != Some(agent_id)
             || checkpoint.get("agent").and_then(Value::as_str) != Some(agent_id)
             || operation_record.get("epoch") != agent_record.get("epoch")
-            || operation_record.get("source")
-                != Some(&json!({
-                    "accountKey": agent_record.get("accountKey").and_then(Value::as_str).unwrap_or("default"),
-                    "threadId": agent_record.get("threadId"), "cwd": agent_record.get("cwd"),
-                }))
+            || operation_record.get("source") != Some(&Self::workspace_source(&agent.record))
             || (operation_record.get("kind").and_then(Value::as_str) == Some("checkpoint")
                 && operation_record.get("completionSource")
                     != Some(&completion_source(&agent.record)))
