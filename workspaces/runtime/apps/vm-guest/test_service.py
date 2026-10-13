@@ -471,6 +471,38 @@ class GuestTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(await self.call("project.exec", params, "op-exec"), result)
         self.assertEqual(forwarded, [("op-exec", "project.exec", params)])
 
+    async def test_a_seed_expands_the_upload_once_and_the_broker_takes_it(self):
+        forwarded = []
+
+        async def admin_request(request_id, method, params, emit=None):
+            source = Path(params["source"])
+            forwarded.append((request_id, method, params["projectId"], params["path"], source.name,
+                              (source / "src/BUILD.gn").read_bytes()))
+            return {"projectId": "app", "stateId": "warm", "path": "chromium", "seeded": True}
+
+        data = archive({"src/BUILD.gn": b"group", "src/.git/HEAD": b"ref"})
+        await self.stage_upload("seed-up", data)
+        params = {"projectId": "app", "path": "chromium", "uploadId": "seed-up"}
+        with patch("layr_admin_client.admin_request", admin_request), patch("service.Service.apply_upload") as rsync:
+            result = await self.call("project.seed", params, "op-seed")
+            self.assertEqual(await self.call("project.seed", params, "op-seed-again"), result)
+        rsync.assert_not_called()
+        self.assertEqual(forwarded, [("op-seed", "project.seed", "app", "chromium", "expanded", b"group")])
+        self.assertEqual(result["stateId"], "warm")
+        self.assertFalse((self.service.uploads.path / "seed-up").exists())
+        # A later commit returns the seed receipt; it never applies the archive to the upload root.
+        self.assertEqual(await self.call("upload.commit", {"uploadId": "seed-up"}), result)
+        self.assertFalse((self.service.projects / "repo").exists())
+
+    async def test_a_seed_needs_the_whole_upload(self):
+        data = archive({"src/BUILD.gn": b"group"})
+        root = self.service.projects / "repo"
+        await self.call("upload.begin", {"uploadId": "seed-part", "root": str(root), "totalBytes": len(data),
+                                         "sha256": hashlib.sha256(data).hexdigest(), "mode": "full", "deletePaths": []})
+        await self.call("upload.chunk", {"uploadId": "seed-part", "seq": 0, "data": encoded(data[:100])})
+        with self.assertRaisesRegex(GuestError, "incomplete"):
+            await self.call("project.seed", {"projectId": "app", "path": "chromium", "uploadId": "seed-part"})
+
     async def test_extraction_syncs_the_tree_once_not_each_file(self):
         from upload import extract_tree
         destination = self.root / "expanded"

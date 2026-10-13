@@ -23,6 +23,8 @@ def expect(condition, message, code):
 
 
 class Projects:
+    UPLOADS = Path("/var/lib/codex-studio/guest/uploads")
+
     def __init__(self, state, root, share, agents):
         self.state, self.root, self.share, self.agents = state, root, share, agents
         self.locks = {}
@@ -114,6 +116,62 @@ class Projects:
         directory = self.state / "commands" / uuid.uuid5(uuid.NAMESPACE_URL, request_id).hex
         return await supervised(directory, config, {"projectId": project, "requestId": request_id}, timeout + 5)
 
+    async def seed(self, request_id, params):
+        """Give main a warm layer from the Mac (docs/vm-layr.md, "Seeded layers"): an uploaded
+        folder becomes main/<path>, owned by the owner of main, who then saves caches, so each
+        new line starts with a copy-on-write copy. An existing folder is never replaced."""
+        project = project_id(params.get("projectId"))
+        main = self.folder(project) / "lines/main"
+        expect(main.is_dir(), "The layr project does not exist", "not_found")
+        path = params.get("path")
+        require(isinstance(path, str) and 0 < len(path) <= 512 and "\0" not in path and not path.startswith("/")
+                and all(part not in {"", ".", ".."} for part in path.split("/")), "The layer path is invalid")
+        marker = self.state / ("seed-" + hashlib.sha256(request_id.encode()).hexdigest() + ".json")
+        if marker.exists():
+            return json.loads(marker.read_text())
+        source = params.get("source")
+        require(isinstance(source, str) and Path(source).is_absolute(), "The seed source must be absolute")
+        source = Path(source)
+        # The guest service expands the upload in its private folder (root only, mode 0700);
+        # no agent can change it, so it needs no frozen copy.
+        require(source.parent.parent == self.UPLOADS and source.name == "expanded" and not source.is_symlink()
+                and source.resolve() == source and source.is_dir(), "The seed source must be an expanded upload")
+        async with bounded_lock(self.locks, project):
+            user = pwd.getpwuid(main.stat().st_uid)
+            target = main / path
+            parent = main
+            for part in path.split("/")[:-1]:
+                parent = parent / part
+                require(not parent.is_symlink(), "The layer path has a symbolic link parent")
+                if not parent.exists():
+                    parent.mkdir(mode=0o755)
+                    os.chown(parent, user.pw_uid, user.pw_gid)
+                require(parent.is_dir(), "The layer path has a file parent")
+            seeded = not (target.exists() or target.is_symlink())
+            if seeded:
+                partial = parent / (".layr-seed-" + hashlib.sha256(request_id.encode()).hexdigest()[:16])
+                try:
+                    if partial.exists():
+                        await remove_tree(partial)
+                    # A subvolume is already a layr cache: `save --caches` keeps it and makes no
+                    # second copy. Reflinks share the uploaded blocks; one sync for the tree.
+                    await command(["btrfs", "subvolume", "create", partial], timeout=120)
+                    await command(["cp", "-a", "--reflink=always", "--", str(source) + "/.", partial], timeout=1800)
+                    await command(["chown", "-R", "--no-dereference", user.pw_name + ":" + user.pw_name, partial],
+                                  timeout=1800)
+                    partial.chmod(0o755)
+                    await command(["sync", "-f", partial], timeout=600)
+                    os.rename(partial, target)
+                except BaseException:
+                    await remove_tree(partial)
+                    raise
+            # Also after an earlier attempt that placed the folder but did not save. The layer
+            # rules decide: the folder must be ignored and marked regenerable in main.
+            await self.layr(["save", "--caches", "-m", "Seed layer " + path], cwd=main, owner=user.pw_name)
+            result = {**await self.ensure(project), "path": path, "seeded": seeded}
+            atomic_json(marker, result)
+        return result
+
     async def dispatch(self, request_id, method, params):
         project = project_id(params.get("projectId"))
         if method == "project.ensure":
@@ -200,6 +258,15 @@ class Projects:
         return {"version": version, "state": "ready" if daemon else "unavailable", "root": str(self.root),
                 "storeBytes": usage.total - usage.free, "freeBytes": usage.free,
                 "totalBytes": usage.total, "share": await self.share.status()}
+
+
+async def remove_tree(path):
+    if not (path.exists() or path.is_symlink()):
+        return
+    try:
+        await command(["btrfs", "subvolume", "delete", path], timeout=1800)
+    except GuestError:
+        await command(["rm", "-rf", "--one-file-system", path], timeout=1800)
 
 
 def copy_source(source, target):
