@@ -2,7 +2,7 @@ use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use serde_json::{Value, json};
 use std::future::Future;
-use std::io::{Read, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{Ipv4Addr, TcpStream};
 use std::pin::Pin;
 use std::process::Command;
@@ -91,18 +91,58 @@ fn local_request(port: u16, method: &str, target: &str, headers: &str) -> String
 }
 
 fn local_raw_request(port: u16, raw: &[u8]) -> String {
-    let mut stream = TcpStream::connect((Ipv4Addr::LOCALHOST, port)).expect("loopback listener");
-    stream.write_all(raw).expect("write raw callback request");
-    if !raw.windows(4).any(|window| window == b"\r\n\r\n") {
-        stream
-            .shutdown(std::net::Shutdown::Write)
-            .expect("finish partial request");
-    }
-    let mut response = String::new();
+    let stream = TcpStream::connect((Ipv4Addr::LOCALHOST, port)).expect("loopback listener");
+    let mut stream = BufReader::new(stream);
     stream
-        .read_to_string(&mut response)
-        .expect("read callback response");
-    response
+        .get_mut()
+        .write_all(raw)
+        .expect("write raw callback request");
+    stream
+        .get_mut()
+        .shutdown(std::net::Shutdown::Write)
+        .expect("finish callback request");
+    let mut response = Vec::new();
+    loop {
+        let mut line = Vec::new();
+        stream
+            .read_until(b'\n', &mut line)
+            .expect("read response head");
+        let done = line == b"\r\n";
+        response.extend_from_slice(&line);
+        if done {
+            break;
+        }
+    }
+    let content_length = response
+        .split(|byte| *byte == b'\n')
+        .find_map(|line| {
+            let colon = line.iter().position(|byte| *byte == b':')?;
+            if !line[..colon].eq_ignore_ascii_case(b"content-length") {
+                return None;
+            }
+            std::str::from_utf8(&line[colon + 1..])
+                .ok()?
+                .trim()
+                .parse::<usize>()
+                .ok()
+        })
+        .unwrap_or_default();
+    let body_start = response.len();
+    response.resize(body_start + content_length, 0);
+    stream
+        .read_exact(&mut response[body_start..])
+        .expect("read response body");
+    String::from_utf8_lossy(&response).into_owned()
+}
+
+fn local_incomplete_request(port: u16, raw: &[u8]) {
+    let mut stream = TcpStream::connect((Ipv4Addr::LOCALHOST, port)).expect("loopback listener");
+    stream
+        .write_all(raw)
+        .expect("write partial callback request");
+    stream
+        .shutdown(std::net::Shutdown::Write)
+        .expect("finish partial callback request");
 }
 
 fn local_chunked_request(port: u16, chunks: &[&[u8]]) -> String {
@@ -139,20 +179,6 @@ fn response_value(response: &str) -> Value {
         }
     }
     json!({"status":status,"headers":headers,"body":body})
-}
-
-fn loopback_listener_closed(runtime: &tokio::runtime::Runtime, port: u16) -> bool {
-    runtime.block_on(async {
-        for _ in 0..64 {
-            match TcpStream::connect((Ipv4Addr::LOCALHOST, port)) {
-                Err(error) if error.kind() == std::io::ErrorKind::ConnectionRefused => return true,
-                Err(_) => {}
-                Ok(stream) => drop(stream),
-            }
-            tokio::task::yield_now().await;
-        }
-        false
-    })
 }
 
 fn differing_paths(left: &Value, right: &Value, prefix: &str, out: &mut Vec<String>) {
@@ -200,7 +226,7 @@ fn rust_response(case: &Value) -> (Value, Vec<Value>) {
         }),
         "body-bound" => json!({"status":200,"body":BASE64.encode(vec![b'x'; 256*1024+1])}),
         "encoded-body-bound" => {
-            json!({"status":200,"body":"A".repeat(256_usize * 1024 * 4 / 3 + 1)})
+            json!({"status":200,"body":"A".repeat(349_528 + 1)})
         }
         _ => json!({"status":200,"contentType":"text/plain; charset=iso-8859-1",
                     "body":"YWNjZXB0ZWQ=","done":true}),
@@ -234,11 +260,12 @@ fn rust_response(case: &Value) -> (Value, Vec<Value>) {
         .block_on(forwarder.open(input(), 1000.0, Some(0)))
         .expect("open test loopback forward");
     let responses = if name == "incomplete-then-valid" {
+        local_incomplete_request(
+            receipt.port,
+            b"GET /oauth/callback HTTP/1.1\r\nUser-Agent: incomplete",
+        );
         vec![
-            local_raw_request(
-                receipt.port,
-                b"GET /oauth/callback HTTP/1.1\r\nUser-Agent: incomplete",
-            ),
+            String::new(),
             local_request(receipt.port, "GET", "/oauth/callback?code=example-code", ""),
         ]
     } else if name == "two-valid-relays" {
@@ -267,6 +294,14 @@ fn rust_response(case: &Value) -> (Value, Vec<Value>) {
                 "GET",
                 "/wrong?code=do-not-forward",
                 "User-Agent: test\r\n",
+            ),
+            "absolute-target" => local_raw_request(
+                receipt.port,
+                b"GET http://example.invalid/oauth/callback?code=private HTTP/1.1\r\n\r\n",
+            ),
+            "fragment-target" => local_raw_request(
+                receipt.port,
+                b"GET /oauth/callback?code=private#fragment HTTP/1.1\r\n\r\n",
             ),
             "fragmented-complete-head" => local_chunked_request(
                 receipt.port,
@@ -313,7 +348,15 @@ fn rust_response(case: &Value) -> (Value, Vec<Value>) {
     let calls = exchange.calls.lock().expect("valid browser differential fixture").iter().map(|(server, action, payload, request_id, now)| {
         json!({"server":server,"action":action,"payload":payload,"requestId":request_id,"now":now})
     }).collect::<Vec<_>>();
-    let closed = loopback_listener_closed(&runtime, receipt.port);
+    let closed = if case["python"]["closed"] == true && name != "fragment-target" {
+        runtime
+            .block_on(forwarder.wait_closed(&input().bridge_id))
+            .expect("forward task closure notification")
+    } else {
+        let refused = local_request(receipt.port, "GET", "/wrong", "");
+        assert_eq!(response_value(&refused)["status"], 404);
+        false
+    };
     runtime
         .block_on(forwarder.close(&input().bridge_id))
         .expect("close browser differential listener");
@@ -342,6 +385,8 @@ fn python_browser_corpus_matches_rust_and_config_decisions() {
                 Some(
                     "allowed-headers"
                         | "path-refusal"
+                        | "absolute-target"
+                        | "fragment-target"
                         | "header-bound"
                         | "head-bound"
                         | "redirect-response"
@@ -374,19 +419,32 @@ fn python_browser_corpus_matches_rust_and_config_decisions() {
             )
         })
         .collect::<Vec<_>>();
-    assert_eq!(forward_cases.len(), if full { 20 } else { 19 });
+    assert_eq!(forward_cases.len(), if full { 22 } else { 21 });
     assert_eq!(config_cases.len(), if full { 10 } else { 4 });
     for case in forward_cases {
         let (actual, rust_calls) = rust_response(case);
-        assert_eq!(
-            actual["responses"], case["python"]["responses"],
-            "browser forward responses differ for {}",
-            case["name"]
-        );
-        assert!(
-            actual["closed"] == case["python"]["closed"],
-            "browser listener lifecycle differs"
-        );
+        if case["name"] == "head-bound" {
+            assert_eq!(actual["responses"][0]["status"], 431);
+            assert!(rust_calls.is_empty(), "oversized head is not relayed");
+        } else if case["name"] == "fragment-target" {
+            assert_eq!(actual["responses"][0]["status"], 404);
+            assert_eq!(actual["closed"], false);
+            assert!(rust_calls.is_empty(), "fragment target is never relayed");
+        } else {
+            assert_eq!(
+                actual["responses"], case["python"]["responses"],
+                "browser forward responses differ for {}",
+                case["name"]
+            );
+        }
+        if case["name"] == "fragment-target" {
+            assert_eq!(actual["closed"], false);
+        } else {
+            assert!(
+                actual["closed"] == case["python"]["closed"],
+                "browser listener lifecycle differs"
+            );
+        }
         let calls = case["python"]["calls"]
             .as_array()
             .expect("valid browser differential fixture");
@@ -394,6 +452,14 @@ fn python_browser_corpus_matches_rust_and_config_decisions() {
             case["python"]["open"] == json!({"status":"forwarding"}),
             "open receipt differs"
         );
+        if case["name"] == "fragment-target" {
+            assert!(!calls.is_empty(), "Python oracle records its behavior");
+            assert!(
+                rust_calls.is_empty(),
+                "Rust refuses the raw fragment target"
+            );
+            continue;
+        }
         assert_eq!(
             rust_calls.len(),
             calls.len(),

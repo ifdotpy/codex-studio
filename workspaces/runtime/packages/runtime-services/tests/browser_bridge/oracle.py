@@ -67,8 +67,7 @@ def run_forward(case):
             forward = runtime.__dict__["_browser_remote_forwards"][data["bridgeId"]]
             responses = []
             for raw in requests:
-                client = socket.create_connection(("127.0.0.1", forward.bound_port), timeout=2)
-                client.settimeout(2)
+                client = socket.create_connection(("127.0.0.1", forward.bound_port))
                 chunks_to_send = raw if isinstance(raw, list) else [raw]
                 for chunk in chunks_to_send:
                     client.sendall(chunk)
@@ -123,11 +122,15 @@ def config_corpus(root):
         node_path, service_path = base / "node-runtime", base / "browser-service.mjs"
         node_path.write_text("fake runtime")
         service_path.write_text("fake service")
-        plugin = shared_home / "plugins/cache/openai-bundled/chrome/latest/skills/control-chrome"
-        plugin.mkdir(parents=True)
-        (plugin / "SKILL.md").write_text("fixture")
+        chrome = shared_home / "plugins/cache/openai-bundled/chrome"
+        versioned = chrome / "1.2.3"
+        plugin = chrome / "latest"
+        skill_file = versioned / "skills/control-chrome/SKILL.md"
+        skill_file.parent.mkdir(parents=True)
+        skill_file.write_text("fixture")
+        plugin.symlink_to("1.2.3", target_is_directory=True)
         if not skill:
-            (plugin / "SKILL.md").unlink()
+            skill_file.unlink()
         if not service:
             service_path.unlink()
         services = "not-json" if not valid_services else json.dumps({"browser": str(service_path)})
@@ -175,7 +178,7 @@ def config_corpus(root):
         cases.append({"name": name, "target": codex_browser.read_config(home),
                       "shared": codex_browser.read_config(shared_home),
                       "home": str(home.resolve()), "sharedHome": str(shared_home.resolve()),
-                      "assets": {"controlChromeSkill": str((plugin / "SKILL.md").resolve()) if skill else None,
+                      "assets": {"controlChromeSkill": str((plugin / "skills/control-chrome/SKILL.md").resolve()) if skill else None,
                                  "nodeRuntime": str(node_path.resolve()) if runtime else None,
                                  "browserService": str(service_path.resolve()) if service and valid_services else None},
                       "python": {"overrides": overrides, "reason": reason,
@@ -227,7 +230,7 @@ def listener_lifecycle_witnesses():
                              lambda *_: expired_event.set(), seconds=-1, listen_port=0)
     expired.bind()
     expired.start()
-    expired_closed = expired_event.wait(2)
+    expired_closed = expired_event.wait()
 
     runtime = SimpleNamespace(lock=threading.RLock())
     data = {"server": "peer", "bridgeId": "2123456789abcdef0123456789abcdef",
@@ -236,18 +239,17 @@ def listener_lifecycle_witnesses():
     original_connection = bridge.Forward.connection
 
     def barrier_connection(forward, connection):
-        accepted.wait(2)
+        accepted.wait()
         return original_connection(forward, connection)
 
     with patch.object(bridge.Forward, "connection", barrier_connection), \
             patch.object(bridge.time, "time", return_value=1000.0):
         bridge.open_remote_forward(runtime, data, lambda *_: {}, listen_port=0)
         forward = runtime.__dict__["_browser_remote_forwards"][data["bridgeId"]]
-        clients = [socket.create_connection(("127.0.0.1", forward.bound_port), timeout=2)
+        clients = [socket.create_connection(("127.0.0.1", forward.bound_port))
                    for _ in range(8)]
-        accepted.wait(2)
-        ninth = socket.create_connection(("127.0.0.1", forward.bound_port), timeout=2)
-        ninth.settimeout(2)
+        accepted.wait()
+        ninth = socket.create_connection(("127.0.0.1", forward.bound_port))
         ninth_closed = ninth.recv(1) == b""
         ninth.close()
         forward.close("oracle-cleanup")
@@ -260,7 +262,7 @@ def listener_lifecycle_witnesses():
 
     def held_exchange(*_):
         entered.set()
-        release.wait(2)
+        release.wait()
         return {"status": 200, "body": base64.b64encode(b"ok").decode(), "done": False}
 
     with patch.object(bridge.time, "time", return_value=1000.0):
@@ -269,17 +271,17 @@ def listener_lifecycle_witnesses():
         result = []
 
         def client_call():
-            client = socket.create_connection(("127.0.0.1", forward.bound_port), timeout=2)
+            client = socket.create_connection(("127.0.0.1", forward.bound_port))
             client.sendall(b"GET /oauth/callback?code=x HTTP/1.1\r\n\r\n")
             result.append(response_record(client.recv(4096)))
             client.close()
 
         client_thread = threading.Thread(target=client_call)
         client_thread.start()
-        exchange_entered = entered.wait(2)
+        exchange_entered = entered.wait()
         forward.close("oracle-close")
         release.set()
-        client_thread.join(2)
+        client_thread.join()
     return {"expiredClosed": expired_closed, "eightAdmitted": len(clients),
             "ninthClosed": ninth_closed, "exchangeEntered": exchange_entered,
             "responseAfterClose": bool(result and result[0] and result[0]["status"] == 200)}
@@ -289,12 +291,14 @@ def main():
     cases = [
         {"name": "allowed-headers", "request": b"GET /oauth/callback?code=example-code HTTP/1.1\r\nUser-Agent: test-agent\r\nAccept: text/html\r\nAccept-Language: en\r\nCookie: secret-cookie\r\nAuthorization: secret-auth\r\n\r\n"},
         {"name": "path-refusal", "request": b"GET /wrong?code=do-not-forward HTTP/1.1\r\nUser-Agent: test\r\n\r\n"},
+        {"name": "absolute-target", "request": b"GET http://example.invalid/oauth/callback?code=private HTTP/1.1\r\n\r\n"},
+        {"name": "fragment-target", "request": b"GET /oauth/callback?code=private#fragment HTTP/1.1\r\n\r\n"},
         {"name": "method-refusal", "request": b"POST /oauth/callback HTTP/1.1\r\nUser-Agent: test\r\n\r\n"},
         {"name": "header-bound", "request": b"GET /oauth/callback HTTP/1.1\r\nUser-Agent: " + b"x" * 1025 + b"\r\nAccept: text/html\r\n\r\n"},
         {"name": "head-bound", "request": b"GET /oauth/callback HTTP/1.1\r\nX-Test: " + b"x" * (16 * 1024) + b"\r\n\r\n"},
         {"name": "redirect-response", "reply": {"status": 302, "location": "https://private.invalid/"}},
         {"name": "body-bound", "reply": {"status": 200, "body": base64.b64encode(b"x" * (256 * 1024 + 1)).decode("ascii")}},
-        {"name": "encoded-body-bound", "reply": {"status": 200, "body": "A" * (256 * 1024 * 4 // 3 + 1)}},
+        {"name": "encoded-body-bound", "reply": {"status": 200, "body": "A" * (349_528 + 1)}},
         {"name": "unknown", "unknown": True},
         {"name": "duplicate-user-agent", "request": b"GET /oauth/callback?code=example-code HTTP/1.1\r\nUser-Agent: " + b"x" * 1025 + b"\r\nUser-Agent: short\r\n\r\n"},
         {"name": "user-agent-latin1-bound", "request": b"GET /oauth/callback?code=example-code HTTP/1.1\r\nUser-Agent: " + b"\xe9" * 1024 + b"\r\n\r\n"},

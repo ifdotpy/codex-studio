@@ -31,6 +31,7 @@ const MAX_CONNECTIONS: usize = 8;
 const CONNECTION_SECONDS: u64 = 10;
 const RESPONSE_RESERVE: Duration = Duration::from_secs(1);
 const HEAD_LIMIT: usize = 16 * 1024;
+const MAX_HEADER_COUNT: usize = HEAD_LIMIT / 4;
 const BODY_LIMIT: usize = 256 * 1024;
 const BODY_BASE64_LIMIT: usize = BODY_LIMIT.div_ceil(3) * 4;
 const HEADER_LIMIT: usize = 1024;
@@ -122,6 +123,7 @@ struct ActiveForward {
     input: ForwardInput,
     port: u16,
     stop: watch::Sender<bool>,
+    closed: watch::Receiver<bool>,
     task: JoinHandle<()>,
 }
 
@@ -200,10 +202,12 @@ impl BrowserForwarder {
             );
         }
         let (stop, stop_rx) = watch::channel(false);
+        let (closed_tx, closed) = watch::channel(false);
         let exchange = Arc::clone(&self.exchange);
         let task_input = input.clone();
         let task = tokio::spawn(async move {
-            run_forward(async_listeners, task_input, exchange, stop_rx, deadline).await
+            run_forward(async_listeners, task_input, exchange, stop_rx, deadline).await;
+            closed_tx.send_replace(true);
         });
         forwards.insert(
             input.bridge_id.clone(),
@@ -211,6 +215,7 @@ impl BrowserForwarder {
                 input,
                 port,
                 stop,
+                closed,
                 task,
             },
         );
@@ -231,6 +236,27 @@ impl BrowserForwarder {
             return Ok(true);
         }
         Ok(false)
+    }
+
+    /// Waits for the forward listener and its connection tasks to finish.
+    pub async fn wait_closed(&self, bridge_id: &str) -> Result<bool, BrowserError> {
+        let mut closed = self
+            .forwards
+            .lock()
+            .map_err(|_| BrowserError::Exchange)?
+            .get(bridge_id)
+            .map(|forward| forward.closed.clone());
+        let Some(mut closed) = closed.take() else {
+            return Ok(false);
+        };
+        loop {
+            if *closed.borrow() {
+                return Ok(true);
+            }
+            if closed.changed().await.is_err() {
+                return Ok(*closed.borrow());
+            }
+        }
     }
 }
 
@@ -317,39 +343,46 @@ async fn run_forward(
             _ = tokio::time::sleep_until(deadline) => break,
             changed = stop.changed() => if changed.is_err() || *stop.borrow() { break; },
             result = tasks.join_next(), if !tasks.is_empty() => {
-                if matches!(result, Some(Ok(true))) { break; }
-                if relays.load(Ordering::Acquire) >= MAX_RELAYS {
-                    accepting = false;
+                match result {
+                    Some(Ok((true, _))) => break,
+                    Some(Ok((false, true))) => accepting = false,
+                    _ => {}
                 }
                 if !accepting && tasks.is_empty() { break; }
             }
             accepted = accept_any(&listeners), if accepting => {
                 let Ok((stream, _)) = accepted else { break; };
-                if relays.load(Ordering::Acquire) >= MAX_RELAYS { drop(stream); continue; }
-                let Ok(permit) = Arc::clone(&permits).try_acquire_owned() else { drop(stream); continue; };
+                let Some(permit) = acquire_connection_slot(&permits) else { drop(stream); continue; };
                 let connection_deadline = std::cmp::min(deadline, Instant::now() + Duration::from_secs(CONNECTION_SECONDS));
                 let input = input.clone();
                 let exchange = Arc::clone(&exchange);
                 let relays = Arc::clone(&relays);
-                let close_requested = Arc::new(std::sync::atomic::AtomicBool::new(false));
-                let task_close_requested = Arc::clone(&close_requested);
-                let exchange_pending = Arc::new(std::sync::atomic::AtomicBool::new(false));
-                let task_exchange_pending = Arc::clone(&exchange_pending);
+                let signals = ConnectionSignals::default();
+                let task_signals = signals.clone();
                 tasks.spawn(async move {
                     let _permit = permit;
-                    let result = tokio::time::timeout_at(
-                        connection_deadline,
-                        serve_connection(stream, input, exchange, relays, connection_deadline, task_close_requested, task_exchange_pending),
-                    ).await;
-                    matches!(result, Ok(Ok(true)))
-                        || close_requested.load(Ordering::Acquire)
-                        || exchange_pending.load(Ordering::Acquire)
+                    let result = tokio::select! {
+                        biased;
+                        _ = tokio::time::sleep_until(connection_deadline) => None,
+                        result = serve_connection(stream, input, exchange, relays, connection_deadline, task_signals) => Some(result),
+                    };
+                    let timely = result.is_some() && Instant::now() < connection_deadline;
+                    (
+                        (timely && matches!(result, Some(Ok(true))))
+                            || signals.close_requested.load(Ordering::Acquire)
+                            || signals.exchange_pending.load(Ordering::Acquire),
+                        signals.relay_limit_completed.load(Ordering::Acquire),
+                    )
                 });
             }
         }
     }
     tasks.abort_all();
     while tasks.join_next().await.is_some() {}
+}
+
+fn acquire_connection_slot(permits: &Arc<Semaphore>) -> Option<tokio::sync::OwnedSemaphorePermit> {
+    Arc::clone(permits).try_acquire_owned().ok()
 }
 
 async fn accept_any(
@@ -365,37 +398,85 @@ async fn accept_any(
     }
 }
 
-/// Bounds the raw HTTP head without parsing it; Hyper remains the HTTP parser.
-struct BoundedHeadIo {
-    stream: tokio::net::TcpStream,
-    head_bytes: usize,
-    suffix: [u8; 3],
-    suffix_len: usize,
-    head_complete: bool,
+#[derive(Clone, Default)]
+struct ConnectionSignals {
+    close_requested: Arc<std::sync::atomic::AtomicBool>,
+    exchange_pending: Arc<std::sync::atomic::AtomicBool>,
+    relay_limit_completed: Arc<std::sync::atomic::AtomicBool>,
 }
 
-impl BoundedHeadIo {
-    fn new(stream: tokio::net::TcpStream) -> Self {
+/// Captures the raw target before Hyper normalizes input.
+struct RawTargetGuardIo {
+    stream: tokio::net::TcpStream,
+    raw_line: Vec<u8>,
+    checked_line: bool,
+    has_fragment: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl RawTargetGuardIo {
+    fn new(
+        stream: tokio::net::TcpStream,
+        has_fragment: Arc<std::sync::atomic::AtomicBool>,
+    ) -> Self {
         Self {
             stream,
-            head_bytes: 0,
-            suffix: [0; 3],
-            suffix_len: 0,
-            head_complete: false,
+            raw_line: Vec::new(),
+            checked_line: false,
+            has_fragment,
+        }
+    }
+
+    fn inspect_input(&mut self, bytes: &mut [u8]) {
+        if !self.checked_line {
+            let prior_len = self.raw_line.len();
+            let mut candidate = self.raw_line.clone();
+            candidate.extend_from_slice(bytes);
+            if let Some(end) = candidate.windows(2).position(|window| window == b"\r\n") {
+                candidate.truncate(end);
+            }
+            if let Some(method_end) = candidate.iter().position(|byte| *byte == b' ') {
+                let target_start = method_end + 1;
+                let target_end = candidate[target_start..]
+                    .iter()
+                    .position(|byte| *byte == b' ')
+                    .map_or(candidate.len(), |offset| target_start + offset);
+                for (offset, byte) in candidate[target_start..target_end].iter().enumerate() {
+                    if *byte == b'#' {
+                        self.has_fragment.store(true, Ordering::Release);
+                        let candidate_index = target_start + offset;
+                        if candidate_index >= prior_len && candidate_index - prior_len < bytes.len()
+                        {
+                            bytes[candidate_index - prior_len] = b'x';
+                        }
+                    }
+                }
+            }
+            let remaining = HEAD_LIMIT.saturating_sub(self.raw_line.len());
+            self.raw_line
+                .extend_from_slice(&bytes[..bytes.len().min(remaining)]);
+            if let Some(end) = self
+                .raw_line
+                .windows(2)
+                .position(|window| window == b"\r\n")
+            {
+                let _request_line = &self.raw_line[..end];
+                self.checked_line = true;
+                self.raw_line.clear();
+            } else if self.raw_line.len() == HEAD_LIMIT {
+                self.checked_line = true;
+                self.raw_line.clear();
+            }
         }
     }
 }
 
-impl AsyncRead for BoundedHeadIo {
+impl AsyncRead for RawTargetGuardIo {
     fn poll_read(
         mut self: Pin<&mut Self>,
         context: &mut Context<'_>,
         destination: &mut ReadBuf<'_>,
     ) -> Poll<std::io::Result<()>> {
-        if self.head_complete {
-            return Pin::new(&mut self.stream).poll_read(context, destination);
-        }
-        let read_size = destination.remaining().min(4096);
+        let read_size = destination.remaining().min(8192);
         if read_size == 0 {
             return Poll::Ready(Ok(()));
         }
@@ -403,35 +484,9 @@ impl AsyncRead for BoundedHeadIo {
         let mut read_buffer = ReadBuf::new(&mut bytes);
         match Pin::new(&mut self.stream).poll_read(context, &mut read_buffer) {
             Poll::Ready(Ok(())) => {
-                let filled = read_buffer.filled();
-                if filled.is_empty() {
-                    return Poll::Ready(Ok(()));
-                }
-                let mut combined = Vec::with_capacity(self.suffix_len + filled.len());
-                combined.extend_from_slice(&self.suffix[..self.suffix_len]);
-                combined.extend_from_slice(filled);
-                if let Some(end) = combined.windows(4).position(|window| window == b"\r\n\r\n") {
-                    let current_head_bytes = (end + 4).saturating_sub(self.suffix_len);
-                    if self.head_bytes + current_head_bytes > HEAD_LIMIT {
-                        return Poll::Ready(Err(std::io::Error::new(
-                            std::io::ErrorKind::InvalidData,
-                            "request head exceeds limit",
-                        )));
-                    }
-                    self.head_complete = true;
-                } else {
-                    if self.head_bytes + filled.len() > HEAD_LIMIT {
-                        return Poll::Ready(Err(std::io::Error::new(
-                            std::io::ErrorKind::InvalidData,
-                            "request head exceeds limit",
-                        )));
-                    }
-                    self.head_bytes += filled.len();
-                    let keep = combined.len().min(self.suffix.len());
-                    self.suffix[..keep].copy_from_slice(&combined[combined.len() - keep..]);
-                    self.suffix_len = keep;
-                }
-                destination.put_slice(filled);
+                let mut filled = read_buffer.filled().to_vec();
+                self.inspect_input(&mut filled);
+                destination.put_slice(&filled);
                 Poll::Ready(Ok(()))
             }
             Poll::Ready(Err(error)) => Poll::Ready(Err(error)),
@@ -440,7 +495,7 @@ impl AsyncRead for BoundedHeadIo {
     }
 }
 
-impl AsyncWrite for BoundedHeadIo {
+impl AsyncWrite for RawTargetGuardIo {
     fn poll_write(
         mut self: Pin<&mut Self>,
         context: &mut Context<'_>,
@@ -470,16 +525,17 @@ async fn serve_connection(
     exchange: Arc<dyn PairedExchange>,
     relays: Arc<AtomicUsize>,
     deadline: Instant,
-    close_after: Arc<std::sync::atomic::AtomicBool>,
-    exchange_pending: Arc<std::sync::atomic::AtomicBool>,
+    signals: ConnectionSignals,
 ) -> Result<bool, BrowserError> {
-    let handler_close = Arc::clone(&close_after);
+    let raw_fragment = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let handler_raw_fragment = Arc::clone(&raw_fragment);
+    let handler_signals = signals.clone();
     let service = service_fn(move |request: Request<Incoming>| {
         let exchange = Arc::clone(&exchange);
         let input = input.clone();
         let relays = Arc::clone(&relays);
-        let close = Arc::clone(&handler_close);
-        let exchange_pending = Arc::clone(&exchange_pending);
+        let signals = handler_signals.clone();
+        let raw_fragment = Arc::clone(&handler_raw_fragment);
         async move {
             let (response, should_close) = handle_request(
                 request,
@@ -487,22 +543,31 @@ async fn serve_connection(
                 exchange,
                 relays,
                 deadline,
-                Arc::clone(&close),
-                exchange_pending,
+                signals.clone(),
+                raw_fragment,
             )
             .await;
-            close.store(should_close, Ordering::Release);
+            signals
+                .close_requested
+                .store(should_close, Ordering::Release);
             Ok::<_, std::convert::Infallible>(response)
         }
     });
-    hyper::server::conn::http1::Builder::new()
+    let mut builder = hyper::server::conn::http1::Builder::new();
+    builder
         .max_buf_size(HEAD_LIMIT * 2)
+        .max_header_size(HEAD_LIMIT)
+        .max_headers(MAX_HEADER_COUNT)
+        .half_close(true)
         .keep_alive(false)
         .auto_date_header(false)
-        .serve_connection(TokioIo::new(BoundedHeadIo::new(stream)), service)
+        .serve_connection(
+            TokioIo::new(RawTargetGuardIo::new(stream, raw_fragment)),
+            service,
+        )
         .await
         .map_err(|_| BrowserError::Exchange)?;
-    Ok(close_after.load(Ordering::Acquire))
+    Ok(signals.close_requested.load(Ordering::Acquire))
 }
 
 async fn handle_request(
@@ -511,8 +576,8 @@ async fn handle_request(
     exchange: Arc<dyn PairedExchange>,
     relays: Arc<AtomicUsize>,
     deadline: Instant,
-    close_requested: Arc<std::sync::atomic::AtomicBool>,
-    exchange_pending: Arc<std::sync::atomic::AtomicBool>,
+    signals: ConnectionSignals,
+    raw_fragment: Arc<std::sync::atomic::AtomicBool>,
 ) -> (Response<Full<Bytes>>, bool) {
     if *request.method() != Method::GET {
         return (
@@ -530,7 +595,12 @@ async fn handle_request(
         .map(|v| v.as_str())
         .unwrap_or_default();
     let path = target.split('?').next().unwrap_or_default();
-    if !target.starts_with('/') || path != input.path {
+    if raw_fragment.load(Ordering::Acquire)
+        || request.uri().scheme().is_some()
+        || request.uri().authority().is_some()
+        || !target.starts_with('/')
+        || path != input.path
+    {
         return (
             response(
                 404,
@@ -586,40 +656,51 @@ async fn handle_request(
         .duration_since(UNIX_EPOCH)
         .map(|v| v.as_secs() as i64)
         .unwrap_or_default();
-    exchange_pending.store(true, Ordering::Release);
-    let outcome = tokio::time::timeout_at(
-        exchange_deadline,
-        exchange.exchange(
+    signals.exchange_pending.store(true, Ordering::Release);
+    let outcome = tokio::select! {
+        biased;
+        _ = tokio::time::sleep_until(exchange_deadline) => None,
+        result = exchange.exchange(
             &input.server,
             REMOTE_ACTION,
             &payload,
             &request_id,
             now,
             exchange_deadline,
-        ),
-    )
-    .await;
-    exchange_pending.store(false, Ordering::Release);
+        ) => Some(result),
+    };
+    signals.exchange_pending.store(false, Ordering::Release);
+    if Instant::now() >= exchange_deadline {
+        signals.close_requested.store(true, Ordering::Release);
+        return (failure_response(), true);
+    }
     let result = match outcome {
-        Ok(Ok(ExchangeOutcome::Applied(result))) => result,
-        Ok(Ok(ExchangeOutcome::NotApplied(_)))
-        | Ok(Ok(ExchangeOutcome::Unknown))
-        | Ok(Err(_))
-        | Err(_) => {
-            close_requested.store(true, Ordering::Release);
+        Some(Ok(ExchangeOutcome::Applied(result))) => result,
+        Some(Ok(ExchangeOutcome::NotApplied(_)))
+        | Some(Ok(ExchangeOutcome::Unknown))
+        | Some(Err(_))
+        | None => {
+            signals.close_requested.store(true, Ordering::Release);
             return (failure_response(), true);
         }
     };
     let (status, content_type, body, done) = match cleaned_result(&result) {
         Ok(v) => v,
         Err(_) => {
-            close_requested.store(true, Ordering::Release);
+            signals.close_requested.store(true, Ordering::Release);
             return (failure_response(), true);
         }
     };
+    if Instant::now() >= exchange_deadline {
+        signals.close_requested.store(true, Ordering::Release);
+        return (failure_response(), true);
+    }
+    if relays.load(Ordering::Acquire) >= MAX_RELAYS {
+        signals.relay_limit_completed.store(true, Ordering::Release);
+    }
     let should_close = done;
     if done {
-        close_requested.store(true, Ordering::Release);
+        signals.close_requested.store(true, Ordering::Release);
     }
     (response(status, body, &content_type), should_close)
 }
@@ -762,6 +843,13 @@ fn plugin_version(plugin: &std::path::Path) -> Option<String> {
         .map(str::to_owned)
 }
 
+fn canonical_paths_match(left: &std::path::Path, right: &std::path::Path) -> bool {
+    std::fs::canonicalize(left)
+        .ok()
+        .zip(std::fs::canonicalize(right).ok())
+        .is_some_and(|(left, right)| left == right)
+}
+
 #[derive(Clone, Default, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BrowserConfigAssets {
@@ -846,7 +934,7 @@ impl BrowserConfigSnapshot {
             let path = std::path::Path::new(path);
             let installed = std::path::Path::new(shared_home)
                 .join("plugins/cache/openai-bundled/chrome/latest/skills/control-chrome/SKILL.md");
-            if path == installed && path.is_file() {
+            if path.is_file() && canonical_paths_match(path, &installed) {
                 return true;
             }
             let market = shared.pointer("/marketplaces/openai-bundled");
@@ -862,11 +950,13 @@ impl BrowserConfigSnapshot {
                 .join("plugins/cache/openai-bundled/chrome/latest");
             let expected = plugin.join("skills/control-chrome/SKILL.md");
             let client = plugin.join("scripts/browser-client.mjs");
-            path == expected
-                && path.is_file()
+            let market_version = plugin_version(&plugin);
+            let installed_version = plugin_version(&installed_plugin);
+            path.is_file()
+                && canonical_paths_match(path, &expected)
                 && client.is_file()
-                && plugin_version(&plugin).is_some()
-                && plugin_version(&plugin) == plugin_version(&installed_plugin)
+                && market_version.is_some()
+                && market_version == installed_version
         });
         let node_runtime_available = assets
             .node_runtime
@@ -961,13 +1051,9 @@ pub fn prepare_browser_config(snapshot: BrowserConfigSnapshot) -> BrowserConfigD
             value.insert("env".into(), Value::Object(filtered));
             Value::Object(value)
         });
-        let Some(object) = node.as_object_mut() else {
-            return BrowserConfigDecision {
-                overrides: json!({}),
-                unavailable_reason: Some("node_repl configuration is invalid"),
-                developer_instructions: None,
-            };
-        };
+        let object = node
+            .as_object_mut()
+            .expect("checked BrowserConfigSnapshot guarantees an object node_repl");
         let env = object.entry("env").or_insert_with(|| json!({}));
         let Some(env) = env.as_object_mut() else {
             return BrowserConfigDecision {
@@ -1035,6 +1121,21 @@ mod tests {
 
     type ExchangeCall = (String, String, Value, String, i64);
     type IdentityChange = (&'static str, fn(&mut ForwardInput));
+
+    #[test]
+    fn eight_connection_slots_refuse_ninth_and_recover() {
+        let permits = Arc::new(Semaphore::new(MAX_CONNECTIONS));
+        let mut admitted = (0..MAX_CONNECTIONS)
+            .map(|_| acquire_connection_slot(&permits))
+            .collect::<Vec<_>>();
+        assert!(admitted.iter().all(Option::is_some));
+        assert!(acquire_connection_slot(&permits).is_none());
+
+        drop(admitted.pop());
+        let recovered = acquire_connection_slot(&permits);
+        assert!(recovered.is_some());
+        assert!(acquire_connection_slot(&permits).is_none());
+    }
 
     #[derive(Default)]
     struct FakeExchange {
@@ -1105,6 +1206,22 @@ mod tests {
         request(port, b"GET /oauth/callback?code=secret HTTP/1.1\r\nUser-Agent: test-agent\r\nAccept: text/html\r\nCookie: private\r\nAuthorization: private\r\n\r\n")
     }
 
+    fn half_closed_request(port: u16) -> String {
+        let mut stream =
+            std::net::TcpStream::connect((Ipv4Addr::LOCALHOST, port)).expect("loopback");
+        stream
+            .write_all(b"GET /oauth/callback?code=secret HTTP/1.1\r\n\r\n")
+            .expect("complete request");
+        stream
+            .shutdown(std::net::Shutdown::Write)
+            .expect("half-close request side");
+        let mut response = String::new();
+        stream
+            .read_to_string(&mut response)
+            .expect("response after half-close");
+        response
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn listener_relays_only_checked_path_and_allowlisted_headers() {
         let exchange = Arc::new(FakeExchange::default());
@@ -1139,6 +1256,57 @@ mod tests {
             );
             assert!(calls[0].3.starts_with("browser-callback:"));
         }
+        assert!(forwarder.close(&input().bridge_id).await.expect("close"));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn complete_request_half_close_still_gets_held_exchange_response() {
+        struct HeldExchange {
+            entered: Arc<Notify>,
+            release: Arc<Semaphore>,
+        }
+        impl PairedExchange for HeldExchange {
+            fn exchange<'a>(
+                &'a self,
+                _: &'a str,
+                _: &'a str,
+                _: &'a Value,
+                _: &'a str,
+                _: i64,
+                _: Instant,
+            ) -> Pin<Box<dyn Future<Output = Result<ExchangeOutcome, BrowserError>> + Send + 'a>>
+            {
+                Box::pin(async move {
+                    self.entered.notify_one();
+                    self.release.acquire().await.expect("release").forget();
+                    Ok(ExchangeOutcome::Applied(json!({
+                        "status": 200,
+                        "body": BASE64.encode(b"accepted"),
+                        "done": false
+                    })))
+                })
+            }
+        }
+
+        let entered = Arc::new(Notify::new());
+        let release = Arc::new(Semaphore::new(0));
+        let forwarder = BrowserForwarder::new(Arc::new(HeldExchange {
+            entered: entered.clone(),
+            release: release.clone(),
+        }));
+        let receipt = forwarder
+            .open(input(), 1000.0, Some(0))
+            .await
+            .expect("open");
+        let request = tokio::task::spawn_blocking(move || half_closed_request(receipt.port));
+        entered.notified().await;
+        release.add_permits(1);
+        assert!(
+            request
+                .await
+                .expect("half-closed client response")
+                .starts_with("HTTP/1.1 200 OK\r\n")
+        );
         assert!(forwarder.close(&input().bridge_id).await.expect("close"));
     }
 
@@ -1260,6 +1428,17 @@ mod tests {
             entered.notified().await;
         }
 
+        let sixth = tokio::task::spawn_blocking({
+            let port = receipt.port;
+            move || normal_request(port)
+        });
+        assert!(
+            sixth
+                .await
+                .expect("sixth refused client")
+                .starts_with("HTTP/1.1 410 Gone\r\n")
+        );
+
         fifth_gate.add_permits(1);
         assert!(
             fifth
@@ -1327,18 +1506,97 @@ mod tests {
         let port = receipt.port;
         let request = tokio::task::spawn_blocking(move || normal_request(port));
         entered.notified().await;
-        tokio::time::advance(Duration::from_secs(CONNECTION_SECONDS)).await;
-        tokio::task::yield_now().await;
+        tokio::time::advance(Duration::from_secs(CONNECTION_SECONDS) - RESPONSE_RESERVE).await;
+        let response = request.await.expect("client receives timeout response");
         assert!(dropped.load(Ordering::Acquire));
+        assert!(
+            forwarder
+                .wait_closed(&input().bridge_id)
+                .await
+                .expect("deadline closure")
+        );
         assert!(
             forwarder
                 .close(&input().bridge_id)
                 .await
                 .expect("close joins")
         );
-        let response = request.await.expect("client receives timeout response");
         assert!(response.starts_with("HTTP/1.1 502 Bad Gateway\r\n"));
         assert!(!response.contains("secret"));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn exchange_ready_after_deadline_is_refused_and_closes_forward() {
+        struct ReadyAfterDeadline {
+            entered: Arc<Notify>,
+            release: Arc<Semaphore>,
+            dropped: Arc<AtomicBool>,
+        }
+        impl PairedExchange for ReadyAfterDeadline {
+            fn exchange<'a>(
+                &'a self,
+                _: &'a str,
+                _: &'a str,
+                _: &'a Value,
+                _: &'a str,
+                _: i64,
+                _: Instant,
+            ) -> Pin<Box<dyn Future<Output = Result<ExchangeOutcome, BrowserError>> + Send + 'a>>
+            {
+                Box::pin(async move {
+                    struct DropSignal(Arc<AtomicBool>);
+                    impl Drop for DropSignal {
+                        fn drop(&mut self) {
+                            self.0.store(true, Ordering::Release);
+                        }
+                    }
+                    let _drop_signal = DropSignal(self.dropped.clone());
+                    self.entered.notify_one();
+                    self.release.acquire().await.expect("release").forget();
+                    Ok(ExchangeOutcome::Applied(json!({
+                        "status": 200,
+                        "body": BASE64.encode(b"late"),
+                        "done": false
+                    })))
+                })
+            }
+        }
+
+        let entered = Arc::new(Notify::new());
+        let release = Arc::new(Semaphore::new(0));
+        let dropped = Arc::new(AtomicBool::new(false));
+        let forwarder = BrowserForwarder::new(Arc::new(ReadyAfterDeadline {
+            entered: entered.clone(),
+            release: release.clone(),
+            dropped: dropped.clone(),
+        }));
+        let receipt = forwarder
+            .open(input(), 1000.0, Some(0))
+            .await
+            .expect("open");
+        let request = tokio::task::spawn_blocking(move || normal_request(receipt.port));
+        entered.notified().await;
+        tokio::time::advance(
+            Duration::from_secs(CONNECTION_SECONDS) - RESPONSE_RESERVE + Duration::from_millis(1),
+        )
+        .await;
+        release.add_permits(1);
+
+        let response = request.await.expect("late result response");
+        assert!(response.starts_with("HTTP/1.1 502 Bad Gateway\r\n"));
+        assert!(dropped.load(Ordering::Acquire));
+        assert!(
+            forwarder
+                .wait_closed(&input().bridge_id)
+                .await
+                .expect("late result closes")
+        );
+        assert!(
+            forwarder
+                .close(&input().bridge_id)
+                .await
+                .expect("join closed forward")
+        );
     }
 
     #[tokio::test(start_paused = true)]
@@ -1404,14 +1662,12 @@ mod tests {
             .await
             .expect("open");
         tokio::time::advance(Duration::from_secs(FORWARD_SECONDS)).await;
-        tokio::task::yield_now().await;
-        let finished = forwarder
-            .forwards
-            .lock()
-            .expect("forward map")
-            .get(&input().bridge_id)
-            .is_some_and(|active| active.task.is_finished());
-        assert!(finished, "the outer forward deadline stops its listener");
+        assert!(
+            forwarder
+                .wait_closed(&input().bridge_id)
+                .await
+                .expect("expiry closure")
+        );
         assert!(
             forwarder
                 .close(&input().bridge_id)
@@ -1526,10 +1782,13 @@ mod tests {
     fn arbitrary_file_is_not_a_control_chrome_skill() {
         let root = tempfile::tempdir().expect("fixture");
         let shared = root.path();
-        let plugin = shared.join("plugins/cache/openai-bundled/chrome/latest");
-        let skill = plugin.join("skills/control-chrome/SKILL.md");
+        let chrome = shared.join("plugins/cache/openai-bundled/chrome");
+        let plugin = chrome.join("latest");
+        let versioned = chrome.join("1.2.3");
+        let skill = versioned.join("skills/control-chrome/SKILL.md");
         std::fs::create_dir_all(skill.parent().expect("parent")).expect("skill dirs");
         std::fs::write(&skill, "skill").expect("skill");
+        std::os::unix::fs::symlink("1.2.3", &plugin).expect("latest points to installed version");
         let other = shared.join("node");
         std::fs::write(&other, "node").expect("node");
         let records = json!({"mcp_servers":{"node_repl":{"command":other}}});
@@ -1542,7 +1801,10 @@ mod tests {
             &records,
             "/acct",
             &shared.to_string_lossy(),
-            mk(skill.to_string_lossy().into_owned()),
+            mk(std::fs::canonicalize(&skill)
+                .expect("canonical skill")
+                .to_string_lossy()
+                .into_owned()),
         )
         .expect("snapshot");
         assert!(good.skill_available);
