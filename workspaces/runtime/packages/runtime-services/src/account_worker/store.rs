@@ -147,6 +147,25 @@ pub(super) fn recover(
                     None,
                 )?;
             }
+            if matches!(
+                context.method()?,
+                Method::ThreadStart | Method::ThreadResume
+            ) {
+                let current =
+                    AgentRepository::get(tx, &AgentId::from(context.intent.agent_id.as_str()))?;
+                if current.as_ref().is_some_and(|a| {
+                    a.epoch == context.intent.epoch
+                        && account_key(a) == account
+                        && a.extra.get("autoWake") == Some(&json!(true))
+                        && a.extra.get("startAttempt").is_none_or(Value::is_null)
+                }) {
+                    hold_before_claim(
+                        tx,
+                        &context.intent.agent_id,
+                        "thread-preparation/receipt-pending",
+                    )?;
+                }
+            }
             recovered.push((context, request));
             if recovered.len() > MAX_PENDING_RESPONSES {
                 return Err(WorkerError::Capacity);
@@ -169,9 +188,35 @@ pub(super) fn claim(
         if record.as_ref().is_none_or(|a| account_key(a) != account) {
             return Ok(None);
         }
-        match scheduler::claim_intent_in_transaction(tx, agent, epoch, &attempt, now()) {
+        if record.as_ref().is_some_and(|a| {
+            ["claudePreInputRetry", "claudeAuthWait"]
+                .iter()
+                .any(|key| a.extra.get(*key).is_some_and(|v| !v.is_null()))
+        }) {
+            hold_before_claim(
+                tx,
+                agent,
+                "preparation/claude-frozen-input-recovery-required",
+            )?;
+            return Ok(None);
+        }
+        let preparing=tx.query_row("SELECT EXISTS(SELECT 1 FROM runtime_operation_receipts r WHERE r.id LIKE 'account-worker:account:%:submitted' AND json_extract(r.result,'$.context.intent.agent_id')=?1 AND json_extract(r.result,'$.context.method') IN ('thread/start','thread/resume') AND NOT EXISTS(SELECT 1 FROM runtime_operation_receipts done WHERE done.id=substr(r.id,1,length(r.id)-10)||':resolved'))",[agent],|r|r.get::<_,bool>(0))?;
+        if preparing {
+            return Ok(None);
+        }
+        let pending = record
+            .as_ref()
+            .and_then(|a| a.extra.get("startAttempt"))
+            .filter(|a| {
+                a["submitted"] == false && a["prepareError"] == "workspace-readiness/pending"
+            });
+        let attempt = pending.and_then(|a| a["id"].as_str()).unwrap_or(&attempt);
+        match scheduler::claim_preparation_in_transaction(tx, agent, epoch, attempt, now()) {
             Ok(intent) => Ok(intent),
-            Err(scheduler::SchedulerError::PolicyRefused(_)) => Ok(None),
+            Err(scheduler::SchedulerError::PolicyRefused(reason)) => {
+                hold_before_claim(tx, agent, &reason)?;
+                Ok(None)
+            }
             Err(error) => Err(error.into()),
         }
     })
@@ -184,40 +229,6 @@ fn account_key(agent: &studio_runtime_store::AgentRecord) -> &str {
         .unwrap_or("default")
 }
 
-pub(super) fn params(
-    store: &RuntimeStore,
-    intent: &TurnIntent,
-    method: Method,
-    turn: Option<&str>,
-) -> Result<Option<(Value, Option<PreparedSubmission>)>, WorkerError> {
-    if method == Method::TurnInterrupt {
-        return Ok(Some((
-            json!({"threadId":intent.thread_id,"turnId":turn}),
-            None,
-        )));
-    }
-    let agent = AgentRepository::get(&store.read()?, &AgentId::from(intent.agent_id.as_str()))?
-        .ok_or_else(|| invalid(&intent.agent_id))?;
-    match preparation::prepare_turn(preparation::PreparationInput {
-        intent,
-        agent: &agent,
-        state_root: store.root(),
-        submitted_at: now(),
-    }) {
-        Ok(prepared) => Ok(Some(if method == Method::ThreadResume {
-            (
-                json!({"threadId":intent.thread_id,"excludeTurns":true,"cwd":intent.cwd,"model":intent.model}),
-                None,
-            )
-        } else {
-            (prepared.params, Some(prepared.submission))
-        })),
-        Err(reason) => {
-            scheduler::settle_start_outcome(store, intent, TurnStart::Blocked { reason })?;
-            Ok(None)
-        }
-    }
-}
 pub(super) fn submitted(
     store: &RuntimeStore,
     context: &Pending,
@@ -225,8 +236,9 @@ pub(super) fn submitted(
     request: &RecoveredRequest,
     turn: Option<&str>,
     submission: Option<&PreparedSubmission>,
+    guard: Option<&preparation::CommitGuard>,
 ) -> Result<bool, WorkerError> {
-    scheduler::lifecycle_transaction_with(store, |tx| {
+    let result = scheduler::lifecycle_transaction_with(store, |tx| {
         if receipt(tx, &context.operation, "submitted")?.is_some() {
             return Ok(false);
         }
@@ -236,6 +248,22 @@ pub(super) fn submitted(
         };
         if account_key(&agent) != account || i.account_key != account {
             return Ok(false);
+        }
+        // Retirement is a committed outcome, whereas a stale preparation must
+        // roll back its freeze. Reconcile before making any preparation writes.
+        if context.method()? == Method::TurnStart
+            && guard.is_some()
+            && !SchedulerRepository::reconcile_obsolete_before_submit(
+                tx,
+                &i.agent_id,
+                i.epoch,
+                &i.attempt_id,
+            )?
+        {
+            return Ok(false);
+        }
+        if let Some(guard) = guard {
+            preparation::commit(tx, context, guard)?;
         }
         let authorized = match context.method()? {
             Method::TurnStart => commit_prepared_turn(
@@ -262,7 +290,15 @@ pub(super) fn submitted(
             }
         };
         if !authorized {
+            if guard.is_some() {
+                return Err(WorkerError::PreparationRefused(
+                    "preparation/submission-identity-changed".into(),
+                ));
+            }
             return Ok(false);
+        }
+        if let Some(compiled) = &context.compiled {
+            preparation::persist_compilation(tx, compiled)?;
         }
         save(
             tx,
@@ -271,11 +307,19 @@ pub(super) fn submitted(
             json!({"context":context,"request":record(request)}),
         )?;
         Ok(true)
-    })
+    });
+    match result {
+        Err(WorkerError::PreparationRefused(reason)) => {
+            scheduler::settle_start_outcome(store, &context.intent, TurnStart::Blocked { reason })?;
+            Ok(false)
+        }
+        result => result,
+    }
 }
 pub(super) fn outcome(
     store: &RuntimeStore,
     account: &str,
+    resources: &preparation::PreparationResources,
     pending: Option<&Pending>,
     outcome: SessionOutcome,
 ) -> Result<(bool, Option<Effect>), WorkerError> {
@@ -322,11 +366,18 @@ pub(super) fn outcome(
                 outcome: RequestOutcome::Reply { body, .. },
             } => {
                 match context.method()? {
-                    Method::ThreadResume => {
+                    Method::ThreadResume | Method::ThreadStart => {
                         if let ResponseBody::Result(ref value) = body
-                            && value["thread"]["id"].as_str() == i.thread_id.as_deref()
+                            && let Some(next) = preparation::accept_thread(
+                                tx,
+                                store.root(),
+                                resources,
+                                context,
+                                &ticket,
+                                value,
+                            )?
                         {
-                            effect = Some(Effect::Submit(i.clone()));
+                            effect = Some(next);
                         } else {
                             SchedulerRepository::settle_start_outcome(
                                 tx,
@@ -359,6 +410,7 @@ pub(super) fn outcome(
                                         turn: turn.into(),
                                     });
                                 }
+                                preparation::accept_turn(tx, context, &ticket, turn)?;
                             } else {
                                 SchedulerRepository::settle_start_outcome(
                                     tx,
@@ -678,7 +730,7 @@ pub(super) fn interrupt_intent(
             )
         }))
 }
-fn id_string(id: &RequestId) -> String {
+pub(super) fn id_string(id: &RequestId) -> String {
     match id {
         RequestId::String(id) => id.clone(),
         RequestId::Number(id) => id.to_string(),
@@ -979,4 +1031,59 @@ pub(super) fn flush_streams(
         persist_streams(tx, account, &streams)?;
         Ok(streams)
     })
+}
+
+pub(super) fn preparation_step<T>(
+    store: &RuntimeStore,
+    intent: &TurnIntent,
+    action: impl FnOnce() -> Result<T, WorkerError>,
+) -> Result<Option<T>, WorkerError> {
+    match action() {
+        Ok(value) => Ok(Some(value)),
+        Err(WorkerError::PreparationPending(reason)) => {
+            scheduler::lifecycle_transaction_with(store, |tx| {
+                let mut row = AgentRepository::get(tx, &AgentId::from(intent.agent_id.as_str()))?
+                    .ok_or_else(|| invalid(&intent.agent_id))?;
+                if row.epoch == intent.epoch
+                    && row
+                        .extra
+                        .get("startAttempt")
+                        .is_some_and(|a| a["id"] == intent.attempt_id && a["submitted"] == false)
+                    && let Some(attempt) = row
+                        .extra
+                        .get_mut("startAttempt")
+                        .and_then(Value::as_object_mut)
+                {
+                    attempt.insert("prepareError".into(), json!(reason));
+                    AgentRepository::put(tx, &row)?;
+                }
+                Ok::<_, WorkerError>(())
+            })?;
+            Ok(None)
+        }
+        Err(WorkerError::PreparationRefused(reason)) => {
+            scheduler::settle_start_outcome(store, intent, TurnStart::Blocked { reason })?;
+            Ok(None)
+        }
+        Err(error) => Err(error),
+    }
+}
+
+fn hold_before_claim(
+    tx: &studio_runtime_store::Transaction<'_>,
+    id: &str,
+    reason: &str,
+) -> Result<(), WorkerError> {
+    let mut agent = AgentRepository::get(tx, &AgentId::from(id))?.ok_or_else(|| invalid(id))?;
+    agent.status = studio_runtime_store::AgentStatus::Waiting;
+    agent.extra.insert("nativeFailureHold".into(), json!(true));
+    agent.extra.insert("autoWake".into(), json!(false));
+    agent.extra.insert("inFlight".into(), json!(false));
+    agent.extra.insert("error".into(), json!(reason));
+    agent.extra.insert(
+        "startOutcomeHold".into(),
+        json!({"stage":"held","reason":reason}),
+    );
+    AgentRepository::put(tx, &agent)?;
+    Ok(())
 }

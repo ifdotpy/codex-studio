@@ -91,17 +91,5 @@
   "bounded-open-streams": {
     "reason": "Python has no cap; Rust refuses a new stream at8192 with distinct StreamCapacity and no stored or buffer change, instead of silently dropping text.",
     "fields": ["/entryResult"]
-  },
-  "context_preparation_unported": {
-    "approvedClass": "a",
-    "reason": "Dynamic start-time context is independently captured from Python. Only its appended text and verified derived search postings are projected out of the Python comparison; identity, base input, transcript links, terminal fields and search metadata remain exact. The Rust snapshot is never projected.",
-    "entrypoints": ["prepare_turn"],
-    "fields": [
-      "/runtime_event_meta/*/record/contextManifest",
-      "/runtime_event_meta/*/record/modelEventProjection",
-      "/runtime_items/*/record/text",
-      "/runtime_search/*/body",
-      "/runtime_search_next_postings/*"
-    ]
   }
 }

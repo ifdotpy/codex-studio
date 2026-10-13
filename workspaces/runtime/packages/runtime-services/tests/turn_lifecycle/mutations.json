@@ -456,7 +456,7 @@
   },
   {
     "id": "W7",
-    "description": "context exception cannot hide wrong transcript title",
+    "description": "compiled context preserves transcript title",
     "file": "workspaces/runtime/packages/runtime-services/src/notification_dispatch/submission.rs",
     "edits": [
       {
@@ -470,12 +470,12 @@
   },
   {
     "id": "W8",
-    "description": "context exception cannot hide changed base text",
+    "description": "compiled context preserves base text",
     "file": "workspaces/runtime/packages/runtime-services/src/account_worker/preparation.rs",
     "edits": [
       {
-        "before": "Ok(PreparedTurn { params, submission })",
-        "after": "let mut submission = submission; submission.text.push_str(\" changed base\"); Ok(PreparedTurn { params, submission })"
+        "before": "    Ok(PreparedTurn {\n        params: json!(params),\n        submission,\n        compiled,\n    })",
+        "after": "    let mut submission=submission; submission.text.push_str(\" changed base\");\n    Ok(PreparedTurn { params:json!(params),submission,compiled })"
       }
     ],
     "witnesses": ["submit_python_claim"],

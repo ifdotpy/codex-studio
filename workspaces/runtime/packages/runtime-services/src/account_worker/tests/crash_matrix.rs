@@ -30,6 +30,10 @@ async fn scenario(index: usize) {
         13 => scenario_callback_unknown_write_is_not_resent_on_replay().await,
         14 => scenario_a_new_stop_can_retry_a_definitely_rejected_interrupt().await,
         15 => scenario_stream_base_survives_replaced_visible_item().await,
+        16 => scenario_new_thread_freezes_settings_and_accepts_context().await,
+        17 => scenario_child_result_materializes_before_submission().await,
+        18 => scenario_workspace_refusal_retains_queue().await,
+        19 => scenario_workspace_pending_reuses_reserved_attempt().await,
         _ => unreachable!(),
     }
 }
@@ -99,7 +103,7 @@ async fn restart(context: &Context, label: &str) {
                 }
                 wire.receipt.send(CommandReceipt::Written { remote_id: None, duplicate: false }).ok().unwrap();
                 let result = match wire.value["method"].as_str() {
-                    Some("thread/resume") => json!({"thread":{"id":"fake-thread-0"}}),
+                    Some("thread/resume" | "thread/start") => json!({"thread":{"id":"fake-thread-0"}}),
                     Some("turn/start") => json!({"turn":{"id":"new-turn"}}),
                     _ => json!({}),
                 };
@@ -218,7 +222,7 @@ async fn every_scenario_recovers_at_every_bridge_boundary() {
     // Each scenario owns a paused clock; a deadline advance cannot affect peers.
     let slots = Arc::new(tokio::sync::Semaphore::new(4));
     let mut tasks = tokio::task::JoinSet::new();
-    for index in 0..16 {
+    for index in 0..20 {
         if std::env::var("MATRIX_SCENARIO")
             .ok()
             .is_some_and(|value| value != index.to_string())

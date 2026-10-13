@@ -71,13 +71,15 @@ fn apply(store: &RuntimeStore, case: &Value) -> Result<Value, String> {
             .map(|value| value.map(|v| json!({"agent_id":v.agent_id,"epoch":v.epoch,"attempt_id":v.attempt_id,"account_key":v.account_key,"provider":v.provider,"thread_id":v.thread_id,"cwd":v.cwd,"model":v.model,"events":v.events.iter().map(|e|json!({"id":e.id,"kind":e.kind,"text":e.text,"created":e.created,"epoch":e.epoch,"error":e.error,"metadata":e.metadata})).collect::<Vec<_>>()})).unwrap_or(Value::Null))
             .map_err(|e| e.to_string()),
         "submission" | "reconcile_submission" => lifecycle_transaction(store, |tx| {
-            use studio_runtime_services::{account_worker::{commit_prepared_turn,preparation::{prepare_turn,PreparationInput}},scheduler::{TurnIntent,TurnEvent}};
+            use studio_runtime_services::{account_worker::{commit_prepared_turn,preparation::{prepare_turn,PreparationInput,PreparationResources,persist_prepared_compilation}},scheduler::{TurnIntent,TurnEvent}};
             use studio_runtime_store::{AgentRepository,AgentId,QueueEventRepository,QueueEventId};
             let agent = AgentRepository::get(tx,&AgentId::from("agent"))?.expect("seed agent");
             let event = QueueEventRepository::get(tx,&QueueEventId::from("event"))?.expect("seed input");
             let intent = TurnIntent {agent_id:"agent".into(),epoch:0,attempt_id:"attempt".into(),account_key:"default".into(),provider:"codex".into(),thread_id:Some("thread".into()),cwd:Some("/fixture".into()),model:Some("fixture-model".into()),events:vec![TurnEvent {id:event.id.0,kind:event.kind,text:event.text,created:event.created,epoch:event.epoch,error:event.error,metadata:json!({})}]};
-            let prepared=prepare_turn(PreparationInput {intent:&intent,agent:&agent,state_root:store.root(),submitted_at:10.0}).map_err(studio_runtime_store::StoreError::SchemaMismatch)?;
-            commit_prepared_turn(tx,&intent,case["ticket"].as_str().unwrap_or("ticket"),1,&prepared.submission).map(|v|json!(v)).map_err(|e|match e {studio_runtime_services::account_worker::WorkerError::Store(e)=>e,_=>studio_runtime_store::StoreError::SchemaMismatch(e.to_string())})
+            let resources=PreparationResources::bundled(String::new()).map_err(|e|studio_runtime_store::StoreError::SchemaMismatch(e.to_string()))?;
+            let state_root=case["preparationRoot"].as_str().map(Path::new).unwrap_or(store.root());
+            let prepared=prepare_turn(PreparationInput {intent:&intent,agent:&agent,transaction:tx,resources:&resources,state_root,submitted_at:10.0}).map_err(studio_runtime_store::StoreError::SchemaMismatch)?;
+            commit_prepared_turn(tx,&intent,case["ticket"].as_str().unwrap_or("ticket"),1,&prepared.submission).and_then(|v|{if v {persist_prepared_compilation(tx,&prepared.compiled)?;} Ok(json!(v))}).map_err(|e|match e {studio_runtime_services::account_worker::WorkerError::Store(e)=>e,_=>studio_runtime_store::StoreError::SchemaMismatch(e.to_string())})
         }).map_err(|e|e.to_string()),
         "accepted" => lifecycle_transaction(store, |tx| {
             SchedulerRepository::settle_started(
@@ -266,8 +268,8 @@ fn fast_witnesses_cover_transitions_states_and_review_findings() {
     let registry = registry.as_object().expect("class declarations");
     assert_eq!(
         registry.len(),
-        8,
-        "the approved three lifecycle and five notification classes are closed"
+        7,
+        "the remaining two lifecycle and five notification classes are closed"
     );
     let owners: std::collections::BTreeSet<_> = cases
         .iter()
@@ -467,6 +469,9 @@ fn python_written_turn_lifecycle_corpus() {
             })
             .expect("nested hold restoration");
         }
+        let mut prepared_case = case.clone();
+        prepared_case["preparationRoot"] = expected["pythonRoot"].clone();
+        let case = &prepared_case;
         let first = apply(&store, case);
         let mut error = first.as_ref().err().cloned();
         if let Ok(value) = &first {

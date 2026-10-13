@@ -5,22 +5,36 @@ use std::{path::PathBuf, process::Command};
 use studio_runtime_process::{EventCursor, ProviderLaunchSpec, provider_seam::*};
 use tokio::sync::oneshot;
 const CREATE_AGENTS: &str = r#"
-import json, pathlib, sys
+import json, pathlib, sqlite3, sys
 sys.path.insert(0, sys.argv[4])
 from oracle_guard import install_guard
 _GUARD = install_guard()  # Runtime initialization owns a local Node crypto helper.
 sys.path.insert(0, sys.argv[2])
 from codex_runtime import Runtime
+import codex_runtime
+from unittest.mock import patch
 class QuietRuntime(Runtime):
     def schedule(self):
         return
 root = pathlib.Path(sys.argv[1])
-runtime = QuietRuntime(root, lambda *_args, **_kwargs: None)
+# Enable the runtime WAL mode before its first schema transaction.
+with sqlite3.connect(root / "canvas.sqlite3") as db:
+    db.execute("PRAGMA journal_mode=WAL")
+# Only disposable schema construction skips syncs. All tested Rust transactions
+# reopen this database with their normal durability settings.
+_connect = codex_runtime.sqlite_connect
+def fixture_connect(*args, **kwargs):
+    db = _connect(*args, **kwargs)
+    db.execute("PRAGMA synchronous=OFF")
+    return db
+with patch.object(codex_runtime, "sqlite_connect", fixture_connect):
+    runtime = QuietRuntime(root, lambda *_args, **_kwargs: None)
 agents = []
 for index in range(int(sys.argv[3])):
     agent = runtime.create({"name":"Rust turn fixture", "cwd":str(root), "prompt":"temporary"}, defer=True)
     agent.update(autoWake=True, status="queued", accountKey="default",
-                 threadId="fake-thread-" + str(index), model="fake-model")
+                 threadId="fake-thread-" + str(index), model="fake-model",
+                 worktree=False, workspaceMode="shared", nativeEffort=None)
     with runtime.lock, runtime.db() as db:
         runtime.put(db, "agents", agent)
     agents.append({"id":agent["id"], "epoch":agent["epoch"]})
@@ -102,7 +116,8 @@ fn copy_template(source: &std::path::Path, target: &std::path::Path) {
     }
 }
 fn template() -> (PathBuf, Value) {
-    let parent = PathBuf::from("/var/tmp/cs-rust-account-worker");
+    let parent = std::env::temp_dir().join("cs-rust-account-worker");
+    std::fs::create_dir_all(&parent).unwrap();
     let digest = studio_runtime_store::sha256_hex(CREATE_AGENTS.as_bytes());
     let root = parent.join(format!("template-{}", &digest[..16]));
     let lock = std::fs::File::create(parent.join("template.lock")).unwrap();
@@ -111,7 +126,7 @@ fn template() -> (PathBuf, Value) {
     if !manifest.exists() {
         std::fs::create_dir_all(&root).unwrap();
         let output = Command::new("timeout")
-            .arg("30")
+            .arg("120")
             .arg(std::env::var_os("CODEX_AGENTS_PYTHON").unwrap())
             .arg("-c")
             .arg(CREATE_AGENTS)
@@ -359,19 +374,21 @@ struct State {
 impl State {
     async fn new() -> Self {
         let (store, agent, epoch, root) = tokio::task::spawn_blocking(|| {
-            let root = PathBuf::from("/var/tmp/cs-rust-account-worker").join(format!(
-                "worker-{}",
-                uuid::Uuid::new_v5(
-                    &uuid::Uuid::NAMESPACE_OID,
-                    format!(
-                        "{}-{:?}-{:?}",
-                        std::process::id(),
-                        SystemTime::now(),
-                        std::thread::current().id()
+            let root = std::env::temp_dir()
+                .join("cs-rust-account-worker")
+                .join(format!(
+                    "worker-{}",
+                    uuid::Uuid::new_v5(
+                        &uuid::Uuid::NAMESPACE_OID,
+                        format!(
+                            "{}-{:?}-{:?}",
+                            std::process::id(),
+                            SystemTime::now(),
+                            std::thread::current().id()
+                        )
+                        .as_bytes()
                     )
-                    .as_bytes()
-                )
-            ));
+                ));
             let (source, agents) = template();
             copy_template(&source, &root);
             (
@@ -704,18 +721,27 @@ async fn scenario_restart_after_submitted_before_written_recovers_unknown_withou
                 unknown: false,
                 remote_id: None,
             };
-            let (_, submission) = store::params(store, &intent, Method::TurnStart, None)?.unwrap();
+            let prepared = preparation::prepare(
+                store,
+                &preparation::PreparationResources::bundled(String::new())?,
+                &intent,
+                Method::TurnStart,
+                1,
+            )?;
             assert!(store::submitted(
                 store,
                 &Pending {
-                    intent,
+                    thread: prepared.thread,
+                    compiled: prepared.compiled,
+                    intent: prepared.intent,
                     method: "turn/start".into(),
                     operation
                 },
                 "default",
                 &request,
                 None,
-                submission.as_ref()
+                prepared.submission.as_ref(),
+                Some(&prepared.guard)
             )?);
             Ok(request.ticket.id)
         })
@@ -1518,4 +1544,253 @@ async fn transfer_before_claim_transaction_leaves_input_pending() {
 #[tokio::test(start_paused = true)]
 async fn transfer_after_stop_before_interrupt_submission_is_refused() {
     transfer_at_admission(1, true).await;
+}
+
+async fn scenario_new_thread_freezes_settings_and_accepts_context() {
+    let state = State::new().await;
+    let agent = state.agent.clone();
+    state
+        .bridge
+        .run(move |store| {
+            store.transaction(|tx| {
+                let mut record = AgentRepository::get(tx, &AgentId::from(agent.as_str()))?.unwrap();
+                record.extra.remove("threadId");
+                record.extra.remove("nativeToolCatalog");
+                record.extra.insert(
+                    "pendingSettings".into(),
+                    json!({"model":"pending-model","effort":"high","nativeEffort":"high","fastMode":true}),
+                );
+                AgentRepository::put(tx, &record)
+            })?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    let mut peer = Peer::new();
+    let mut worker = peer.worker(state.bridge.clone()).await;
+    state.wake(&worker).await;
+    let start = peer.write("thread/start").await;
+    assert_eq!(start["params"]["model"], "pending-model");
+    assert_eq!(start["params"]["serviceTier"], "priority");
+    let record = state.record().await;
+    assert!(record.get("pendingSettings").is_none());
+    assert!(record["prepareAttempt"].is_string());
+    assert_eq!(record["startAttempt"]["settingsFixed"], true);
+    peer.reply(
+        &start,
+        json!({"thread":{"id":"fake-thread-0"},"model":"pending-model"}),
+    )
+    .await;
+    let turn = peer.write("turn/start").await;
+    assert_eq!(turn["params"]["model"], "pending-model");
+    assert_eq!(turn["params"]["effort"], "high");
+    let before = state
+        .bridge
+        .run(|store| {
+            Ok(store.read()?.query_row(
+                "SELECT count(*) FROM runtime_context_manifests",
+                [],
+                |r| r.get::<_, i64>(0),
+            )?)
+        })
+        .await
+        .unwrap();
+    assert_eq!(before, 0, "compilation is not delivery");
+    peer.accepted(&turn).await;
+    let after = state
+        .bridge
+        .run(|store| {
+            Ok(store.read()?.query_row(
+                "SELECT count(*) FROM runtime_context_manifests",
+                [],
+                |r| r.get::<_, i64>(0),
+            )?)
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        after, 1,
+        "only an authenticated acceptance promotes context"
+    );
+    assert_eq!(state.event_status("input").await, "delivered");
+    worker.shutdown().await.unwrap();
+}
+#[tokio::test(start_paused = true)]
+async fn new_thread_freezes_settings_and_accepts_context() {
+    scenario_new_thread_freezes_settings_and_accepts_context().await;
+}
+
+async fn scenario_child_result_materializes_before_submission() {
+    let state = State::new().await;
+    state.bridge.run(|store|{store.transaction(|tx|{
+        tx.execute("UPDATE runtime_events SET kind='child_result',text=?1 WHERE id='annotation:input'",[json!({"agent_id":"child","result":"artifact-body".repeat(2400)}).to_string()])?;Ok(())
+    })?;Ok(())}).await.unwrap();
+    let mut peer = Peer::new();
+    let mut worker = peer.worker(state.bridge.clone()).await;
+    let turn = state.start(&mut peer, &worker).await;
+    let text = turn["params"]["input"][0]["text"].as_str().unwrap();
+    assert!(text.contains("resultFile"));
+    assert!(!text.contains(&"artifact-body".repeat(2400)));
+    peer.accepted(&turn).await;
+    assert_eq!(state.event_status("input").await, "delivered");
+    worker.shutdown().await.unwrap();
+}
+#[tokio::test(start_paused = true)]
+async fn child_result_materializes_before_submission() {
+    scenario_child_result_materializes_before_submission().await;
+}
+
+async fn scenario_workspace_refusal_retains_queue() {
+    let state = State::new().await;
+    let agent = state.agent.clone();
+    state
+        .bridge
+        .run(move |store| {
+            store.transaction(|tx| {
+                let mut record = AgentRepository::get(tx, &AgentId::from(agent.as_str()))?.unwrap();
+                record.extra.insert("executionMode".into(), json!("vm"));
+                AgentRepository::put(tx, &record)
+            })?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    let mut peer = Peer::new();
+    let mut worker = peer.worker(state.bridge.clone()).await;
+    state.wake(&worker).await;
+    worker_barrier(&worker).await;
+    let record = state.record().await;
+    assert_eq!(record["status"], "failed");
+    assert_eq!(record["error"], "VmWorkspaceUnsupported");
+    assert_eq!(state.event_status("input").await, "pending");
+    assert!(peer.writes.try_recv().is_err());
+    worker.shutdown().await.unwrap();
+}
+#[tokio::test(start_paused = true)]
+async fn workspace_refusal_retains_queue() {
+    scenario_workspace_refusal_retains_queue().await;
+}
+
+async fn scenario_workspace_pending_reuses_reserved_attempt() {
+    let state = State::new().await;
+    let agent = state.agent.clone();
+    state
+        .bridge
+        .run(move |store| {
+            store.transaction(|tx| {
+                let mut row = AgentRepository::get(tx, &AgentId::from(agent.as_str()))?.unwrap();
+                row.id = AgentId::from("workspace-owner");
+                row.status = studio_runtime_store::AgentStatus::Waiting;
+                row.extra.insert("autoWake".into(), json!(false));
+                row.extra
+                    .insert("workspaceOperation".into(), json!("capture"));
+                AgentRepository::put(tx, &row)
+            })?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    let mut peer = Peer::new();
+    let mut worker = peer.worker(state.bridge.clone()).await;
+    state.wake(&worker).await;
+    worker_barrier(&worker).await;
+    let pending = state.record().await;
+    assert_eq!(pending["status"], "starting");
+    assert_eq!(
+        pending["startAttempt"]["prepareError"],
+        "workspace-readiness/pending"
+    );
+    assert_eq!(state.event_status("input").await, "reserved");
+    assert!(peer.writes.try_recv().is_err());
+    let agent = "workspace-owner".to_owned();
+    state
+        .bridge
+        .run(move |store| {
+            store.transaction(|tx| {
+                let mut row = AgentRepository::get(tx, &AgentId::from(agent.as_str()))?.unwrap();
+                row.extra.remove("workspaceOperation");
+                AgentRepository::put(tx, &row)
+            })?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    let turn = state.start(&mut peer, &worker).await;
+    let ready = state.record().await;
+    assert_eq!(ready["startAttempt"]["id"], pending["startAttempt"]["id"]);
+    assert!(ready["startAttempt"].get("prepareError").is_none());
+    peer.accepted(&turn).await;
+    assert_eq!(state.event_status("input").await, "delivered");
+    worker.shutdown().await.unwrap();
+}
+#[tokio::test(start_paused = true)]
+async fn workspace_pending_reuses_reserved_attempt() {
+    scenario_workspace_pending_reuses_reserved_attempt().await;
+}
+
+#[tokio::test]
+async fn preparation_commit_rechecks_workspace_settings_and_input() {
+    for mutation in ["workspace", "settings", "input", "retired"] {
+        let state = State::new().await;
+        let agent = state.agent.clone();
+        let epoch = state.epoch;
+        state.bridge.run(move |store| {
+            if mutation == "retired" {
+                store.transaction(|tx| {
+                    tx.execute("UPDATE runtime_events SET kind='complaint',text=?1 WHERE id='annotation:input'", [json!({"complaints":[{"complaint_id":"resolved"}]}).to_string()])?;
+                    tx.execute("INSERT INTO runtime_complaints(id,record) VALUES('resolved',?1)", [json!({"id":"resolved","leadId":agent,"recipient":"lead","status":"open","responses":[],"author":agent,"text":"A response is needed","created":1.0,"version":1}).to_string()])?;
+                    Ok(())
+                })?;
+            }
+            let intent = store::claim(store, "default", &agent, epoch)?.unwrap();
+            let prepared = preparation::prepare(store,
+                &preparation::PreparationResources::bundled(String::new())?,
+                &intent, Method::TurnStart, 1)?;
+            store.transaction(|tx| {
+                if mutation == "input" {
+                    tx.execute("UPDATE runtime_events SET text='changed after preparation' WHERE id='annotation:input'", [])?;
+                } else if mutation == "retired" {
+                    tx.execute("UPDATE runtime_complaints SET record=json_set(record,'$.status','resolved') WHERE id='resolved'", [])?;
+                } else {
+                    let mut row = AgentRepository::get(tx, &AgentId::from(agent.as_str()))?.unwrap();
+                    if mutation == "workspace" {
+                        row.extra.insert("workspaceMode".into(), json!("image"));
+                    } else {
+                        row.extra.insert("pendingSettings".into(), json!({"model":"changed-model"}));
+                    }
+                    AgentRepository::put(tx, &row)?;
+                }
+                Ok(())
+            })?;
+            let operation = format!("account:default:{}:turn/start", intent.attempt_id);
+            let request = RecoveredRequest {
+                ticket: studio_runtime_providers::RequestTicket {
+                    id: RequestId::String(operation.clone()), generation: 1, method: Method::TurnStart,
+                },
+                operation_id: OperationId(operation.clone()), thread_id: intent.thread_id.clone(),
+                lightweight: false, deadline_ms: 60_000, unknown: false, remote_id: None,
+            };
+            let context = Pending { thread: prepared.thread, compiled: prepared.compiled,
+                intent: prepared.intent, method: "turn/start".into(), operation: operation.clone() };
+            assert!(!store::submitted(store, &context, "default", &request, None,
+                prepared.submission.as_ref(), Some(&prepared.guard))?, "{mutation}");
+            scheduler::lifecycle_transaction_with(store, |tx| {
+                assert!(store::receipt(tx, &operation, "submitted")?.is_none());
+                let row = AgentRepository::get(tx, &AgentId::from(agent.as_str()))?.unwrap().value();
+                assert_ne!(row["startAttempt"]["settingsFixed"], true, "freeze must roll back: {mutation}");
+                let meta = studio_runtime_store::NotificationDispatchRepository::event_metadata(tx, "annotation:input")?;
+                assert!(meta.as_ref().and_then(|v| v.get("contextManifest")).is_none());
+                Ok::<_, WorkerError>(())
+            })
+        }).await.unwrap_or_else(|error| panic!("{mutation}: {error}"));
+        assert_eq!(
+            state.event_status("input").await,
+            if mutation == "retired" {
+                "stored_only"
+            } else {
+                "pending"
+            },
+            "{mutation}"
+        );
+    }
 }

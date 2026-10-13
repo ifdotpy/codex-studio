@@ -1,6 +1,12 @@
 use super::*;
 
 impl SchedulerRepository {
+    /// The same metadata identity used by claim replay and submit authorization.
+    /// Diagnostic timing fields may change while preparation is running.
+    pub fn input_metadata_identity(metadata: &Value) -> Value {
+        business_metadata(Some(metadata))
+    }
+
     /// Return queued local agents with pending events in the current epoch.
     pub fn pending_agents(connection: &Connection) -> StoreResult<Vec<(String, i64)>> {
         let mut statement = connection.prepare(
@@ -29,6 +35,47 @@ impl SchedulerRepository {
         attempt_id: &str,
         attempt_created: f64,
         limit: usize,
+    ) -> StoreResult<Option<ClaimedEvents>> {
+        Self::claim_selected(
+            transaction,
+            agent_id,
+            epoch,
+            attempt_id,
+            attempt_created,
+            limit,
+            false,
+        )
+    }
+
+    /// Claim a batch whose admission is owned by the checked preparation adapter.
+    pub fn claim_for_preparation(
+        transaction: &Transaction<'_>,
+        agent_id: &str,
+        epoch: i64,
+        attempt_id: &str,
+        attempt_created: f64,
+        limit: usize,
+    ) -> StoreResult<Option<ClaimedEvents>> {
+        Self::claim_selected(
+            transaction,
+            agent_id,
+            epoch,
+            attempt_id,
+            attempt_created,
+            limit,
+            true,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn claim_selected(
+        transaction: &Transaction<'_>,
+        agent_id: &str,
+        epoch: i64,
+        attempt_id: &str,
+        attempt_created: f64,
+        limit: usize,
+        preparation: bool,
     ) -> StoreResult<Option<ClaimedEvents>> {
         let Some(mut agent) = load_agent(transaction, agent_id)? else {
             return Ok(None);
@@ -174,20 +221,32 @@ impl SchedulerRepository {
         let obsolete_work = obsolete_work_review_ids(transaction, &agent, &events)?;
         let prepared =
             prepare_pending_batch(&agent, events, metadata, &complaints, &obsolete_work)?;
-        if let Some((kind, dependency)) = prepared.events.iter().find_map(|event| {
-            let dependency = event_policy_dependency(&event.kind).or(match event.kind.as_str() {
-                "complaint" => Some("complaint-policy"),
-                "work_review" => Some("work-policy"),
-                _ => None,
-            });
-            dependency.map(|dependency| (event.kind.as_str(), dependency))
-        }) {
+        if !preparation
+            && let Some((kind, dependency)) = prepared.events.iter().find_map(|event| {
+                let dependency =
+                    event_policy_dependency(&event.kind).or(match event.kind.as_str() {
+                        "complaint" => Some("complaint-policy"),
+                        "work_review" => Some("work-policy"),
+                        _ => None,
+                    });
+                dependency.map(|dependency| (event.kind.as_str(), dependency))
+            })
+        {
             return Ok(Some(refused(
                 &agent,
                 format!("scheduler cannot claim {kind}: requires {dependency}"),
             )));
         }
-        let mut events = select_turn_batch(&prepared.events, &prepared.metadata, prefix);
+        let mut events = if preparation
+            && prepared
+                .events
+                .first()
+                .is_some_and(|e| !matches!(e.kind.as_str(), "user" | "complaint"))
+        {
+            prepared.events.iter().take(1).cloned().collect()
+        } else {
+            select_turn_batch(&prepared.events, &prepared.metadata, prefix)
+        };
 
         let unsupported = if agent.extra.get("pendingSettings").is_some_and(truthy) {
             Some("pendingSettings are not supported by the Rust turn driver; apply settings first.")
@@ -205,7 +264,7 @@ impl SchedulerRepository {
                 .find(|event| !matches!(event.kind.as_str(), "user" | "complaint"))
                 .map(|_| "event kind is not supported by the Rust turn driver.")
         };
-        if let Some(reason) = unsupported {
+        if !preparation && let Some(reason) = unsupported {
             agent.status = AgentStatus::Waiting;
             agent
                 .extra
@@ -452,7 +511,28 @@ pub(super) fn replay_claim(
     };
     let original: AgentRecord = serde_json::from_value(saved["claimResult"]["agent"].clone())
         .map_err(|_| receipt_error())?;
-    if original.id != agent.id || original.epoch != epoch || !same_native_scope(&original, &agent) {
+    let preparation = &saved["receipts"]["threadPrepared"];
+    let prepared_scope = preparation["result"] == true
+        && preparation["input"]["agent"] == agent.id.0
+        && preparation["input"]["epoch"] == epoch
+        && preparation["input"]["account"]
+            == agent
+                .extra
+                .get("accountKey")
+                .cloned()
+                .unwrap_or(json!("default"))
+        && preparation["input"]["previousThread"]
+            == original
+                .extra
+                .get("threadId")
+                .cloned()
+                .unwrap_or(Value::Null)
+        && preparation["input"]["thread"]
+            == agent.extra.get("threadId").cloned().unwrap_or(Value::Null);
+    if original.id != agent.id
+        || original.epoch != epoch
+        || !(same_native_scope(&original, &agent) || prepared_scope)
+    {
         return Err(invalid_agent(&agent.id.0));
     }
     let identity = saved["inputIdentity"]

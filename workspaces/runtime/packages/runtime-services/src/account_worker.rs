@@ -54,6 +54,10 @@ pub enum WorkerError {
     Session(#[from] SessionTaskError),
     #[error(transparent)]
     Notification(#[from] crate::notification_dispatch::NotificationDispatchError),
+    #[error("{0}")]
+    PreparationRefused(String),
+    #[error("{0}")]
+    PreparationPending(String),
     #[error("account already has a worker")]
     AlreadyRunning,
     #[error("account worker is closed")]
@@ -207,7 +211,27 @@ pub async fn start_account_worker(
     account: String,
     factory: Arc<dyn ProviderTaskFactory>,
     options: OpenOptions,
+    config: SessionTaskConfig,
+) -> Result<AccountHandle, WorkerError> {
+    let resources = preparation::PreparationResources::bundled(
+        options
+            .launch
+            .environment
+            .get("CODEX_HOME")
+            .cloned()
+            .unwrap_or_default(),
+    )?;
+    start_account_worker_with_preparation(bridge, account, factory, options, config, resources)
+        .await
+}
+
+pub async fn start_account_worker_with_preparation(
+    bridge: StoreBridge,
+    account: String,
+    factory: Arc<dyn ProviderTaskFactory>,
+    options: OpenOptions,
     mut config: SessionTaskConfig,
+    resources: preparation::PreparationResources,
 ) -> Result<AccountHandle, WorkerError> {
     let lease = AccountLease::acquire(&bridge, &account)?;
     let recovery_account = account.clone();
@@ -237,6 +261,7 @@ pub async fn start_account_worker(
     let (commands, inbox) = mpsc::channel(COMMAND_CAPACITY);
     let stop = Shutdown::default();
     let worker = Worker {
+        resources,
         bridge: bridge.clone(),
         account: account.clone(),
         generation,
@@ -285,6 +310,10 @@ struct Pending {
     intent: TurnIntent,
     method: String,
     operation: String,
+    #[serde(default)]
+    thread: Option<crate::thread_prepare::PreparedAttempt>,
+    #[serde(default)]
+    compiled: Option<crate::turn_prepare::PreparedSubmission>,
 }
 impl Pending {
     fn method(&self) -> Result<Method, WorkerError> {
@@ -310,6 +339,7 @@ enum Effect {
     Wake(String, i64),
 }
 struct Worker {
+    resources: preparation::PreparationResources,
     bridge: StoreBridge,
     account: String,
     generation: Generation,
@@ -444,20 +474,75 @@ impl Worker {
         if self.closing {
             return Ok(());
         }
-        let for_params = intent.clone();
+        // A recovered durable effect may outlive its submitted request. Check
+        // that receipt before preparation, which requires an unsubmitted owner.
+        if method == Method::TurnStart {
+            let operation = format!(
+                "account:{}:{}:{}",
+                self.account,
+                intent.attempt_id,
+                method.as_str()
+            );
+            if self
+                .db(move |store| store::was_submitted(store, &operation))
+                .await?
+            {
+                return Ok(());
+            }
+        }
         let turn = interrupt_turn.clone();
-        let params = self
-            .db(move |store| {
-                store::params(
-                    store,
-                    &for_params,
-                    method,
-                    turn.as_ref().map(|(turn, _)| turn.as_str()),
-                )
-            })
-            .await?;
-        let Some((params, submission)) = params else {
-            return Ok(());
+        let generation = self.generation.0;
+        let prepared = if method == Method::TurnInterrupt {
+            None
+        } else {
+            let i = intent.clone();
+            let resources = self.resources.clone();
+            let Some(selection) = self
+                .db(move |s| {
+                    store::preparation_step(s, &i, || preparation::admit(s, &resources, &i))
+                })
+                .await?
+            else {
+                return Ok(());
+            };
+            let i = intent.clone();
+            let Some(token) = self
+                .db(move |s| store::preparation_step(s, &i, || preparation::workspace(s, &i)))
+                .await?
+            else {
+                return Ok(());
+            };
+            let i = intent.clone();
+            let resources = self.resources.clone();
+            let Some(prepared) = self
+                .db(move |s| {
+                    store::preparation_step(s, &i, || {
+                        preparation::prepare_ready(
+                            s, &resources, &i, method, generation, selection, token,
+                        )
+                    })
+                })
+                .await?
+            else {
+                return Ok(());
+            };
+            Some(prepared)
+        };
+        let (intent, method, params, submission, guard, thread, compiled) = if let Some(prepared) =
+            prepared
+        {
+            (
+                prepared.intent,
+                prepared.method,
+                prepared.params,
+                prepared.submission,
+                Some(prepared.guard),
+                prepared.thread,
+                prepared.compiled,
+            )
+        } else {
+            let params = json!({"threadId":intent.thread_id,"turnId":turn.as_ref().map(|(t,_)|t)});
+            (intent, method, params, None, None, None, None)
         };
         let mut operation = format!(
             "account:{}:{}:{}",
@@ -477,6 +562,8 @@ impl Worker {
         }
         let id = RequestId::String(operation.clone());
         let context = Pending {
+            thread,
+            compiled,
             intent,
             method: method.as_str().into(),
             operation: operation.clone(),
@@ -508,6 +595,7 @@ impl Worker {
                     &recovery,
                     interrupt_turn.as_ref().map(|(turn, _)| turn.as_str()),
                     submission.as_ref(),
+                    guard.as_ref(),
                 )
             })
             .await?;
@@ -611,8 +699,11 @@ impl Worker {
             let pending = ticket.and_then(|t| self.pending.get(&t.id)).cloned();
             let id = ticket.map(|t| t.id.clone());
             let account = self.account.clone();
+            let resources = self.resources.clone();
             let (retire, effect) = self
-                .db(move |store| store::outcome(store, &account, pending.as_ref(), outcome))
+                .db(move |store| {
+                    store::outcome(store, &account, &resources, pending.as_ref(), outcome)
+                })
                 .await?;
             if retire && let Some(id) = id {
                 self.pending.remove(&id);

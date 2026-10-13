@@ -1569,15 +1569,6 @@
         "deviation": "rust_receipts"
       },
       {
-        "path": "/runtime_event_meta/0/record/contextManifest",
-        "pythonPresent": true,
-        "rust": null,
-        "rustPresent": false,
-        "deviation": "context_preparation_unported",
-        "entrypoint": "prepare_turn",
-        "expectedAbsent": true
-      },
-      {
         "path": "/runtime_execution_attempts/0/record/connectionGeneration",
         "python": null,
         "pythonPresent": false,
@@ -1630,8 +1621,7 @@
     ],
     "tier": "fast",
     "return": true,
-    "replay": true,
-    "contextProjection": "context_preparation_unported"
+    "replay": true
   },
   {
     "id": "started_notice",
@@ -4836,15 +4826,6 @@
         "deviation": "rust_receipts"
       },
       {
-        "path": "/runtime_event_meta/0/record/contextManifest",
-        "pythonPresent": true,
-        "rust": null,
-        "rustPresent": false,
-        "deviation": "context_preparation_unported",
-        "entrypoint": "prepare_turn",
-        "expectedAbsent": true
-      },
-      {
         "path": "/runtime_execution_attempts/0/record/connectionGeneration",
         "python": null,
         "pythonPresent": false,
@@ -4897,8 +4878,7 @@
     ],
     "replay": true,
     "tier": "fast",
-    "return": true,
-    "contextProjection": "context_preparation_unported"
+    "return": true
   },
   {
     "id": "interrupt_accepted",
@@ -5197,15 +5177,6 @@
         "deviation": "rust_receipts"
       },
       {
-        "path": "/runtime_event_meta/0/record/contextManifest",
-        "pythonPresent": true,
-        "rust": null,
-        "rustPresent": false,
-        "deviation": "context_preparation_unported",
-        "entrypoint": "prepare_turn",
-        "expectedAbsent": true
-      },
-      {
         "path": "/runtime_execution_attempts/0/record/connectionGeneration",
         "python": null,
         "pythonPresent": false,
@@ -5261,8 +5232,7 @@
     },
     "tier": "full",
     "return": true,
-    "probeRefusal": "invalid stored sync object runtime_execution_attempts/attempt",
-    "contextProjection": "context_preparation_unported"
+    "probeRefusal": "invalid stored sync object runtime_execution_attempts/attempt"
   },
   {
     "id": "claim_queued_conflict",

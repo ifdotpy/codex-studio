@@ -660,7 +660,7 @@ fn normalize_path(path: &Path) -> PathBuf {
     result
 }
 
-fn resolve_nonstrict(path: &Path) -> Result<PathBuf, ProjectsError> {
+pub(crate) fn resolve_nonstrict(path: &Path) -> Result<PathBuf, ProjectsError> {
     let mut ancestor = path.to_path_buf();
     let mut suffix = Vec::new();
     loop {

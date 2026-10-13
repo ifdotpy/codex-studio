@@ -46,6 +46,20 @@ sys.path.insert(0, str(SERVER / "src"))
 from codex_runtime import Runtime
 import codex_runtime
 import codex_accounts
+import codex_efficiency
+
+# Match the accepted turn compiler's canonical context-version encoding while
+# validating the original Python payload hashes before normalizing snapshots.
+_CONTEXT_TOKENS = {}
+_original_context_digest = codex_efficiency.digest
+
+def _context_digest(value):
+    token = _original_context_digest(value)
+    canonical = json.dumps(value, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+    _CONTEXT_TOKENS[token] = hashlib.sha256(canonical.encode()).hexdigest()[:24]
+    return token
+
+codex_efficiency.digest = _context_digest
 
 TABLES = (
     "runtime_agents", "runtime_events", "runtime_execution_runs", "runtime_execution_attempts",
@@ -93,6 +107,8 @@ def valid_time(value):
 
 
 def normalize(value, key=""):
+    if key == "versions" and isinstance(value, dict):
+        return {k: _CONTEXT_TOKENS.get(v, v) for k, v in sorted(value.items())}
     if key in TIMES and value is not None:
         # Malformed seed fields must remain visible for refusal/no-write cases.
         # Never replace an invalid stored value with an opaque clock token.
@@ -410,38 +426,6 @@ def transition(runtime, case):
     return runtime
 
 
-def without_unported_context(snapshot, preparation):
-    """Project only independently captured start-time context and its text indexes.
-
-    IDs, roles, links, times, input excerpts, statuses and search metadata remain
-    exact. A wrong base input still differs; the Rust snapshot is never projected.
-    """
-    result = copy.deepcopy(snapshot)
-    item_id, base, full = (preparation[key] for key in ("itemId", "baseText", "fullText"))
-    assert full.startswith(base) and (full == base or full[len(base):].startswith("\n\n"))
-    item = next(row for row in result["runtime_items"] if row["id"] == item_id)
-    assert item["record"]["text"] == full[:20000]
-    assert len(full) <= 20000, "add an explicit fulltext projection witness before expanding this contract"
-    item["record"]["text"] = base
-    for row in result["runtime_search"]:
-        if row["id"] == item_id:
-            assert row["body"] == full
-            row["body"] = base
-    meta = next((row for row in result["runtime_search_next_meta"] if row["id"] == item_id), None)
-    if meta:
-        rowid = meta["search_rowid"]
-        with sqlite3.connect(":memory:") as db:
-            db.execute("CREATE VIRTUAL TABLE projection USING fts5(body,tokenize='unicode61')")
-            db.execute("CREATE VIRTUAL TABLE words USING fts5vocab(projection,'instance')")
-            db.execute("INSERT INTO projection(rowid,body) VALUES (?,?)", (rowid, full))
-            full_postings = [list(row) for row in db.execute("SELECT term,doc,col,offset FROM words ORDER BY 1,2,3,4")]
-            assert [row for row in result["runtime_search_next_postings"] if row[1] == rowid] == full_postings
-            db.execute("UPDATE projection SET body=? WHERE rowid=?", (base,rowid))
-            base_postings = [list(row) for row in db.execute("SELECT term,doc,col,offset FROM words ORDER BY 1,2,3,4")]
-        result["runtime_search_next_postings"] = sorted([row for row in result["runtime_search_next_postings"] if row[1] != rowid] + base_postings)
-    return result
-
-
 class LifecycleCases:
     """Reuse only initialized runtime services and Python-written seed backups."""
     def __init__(self, template):
@@ -493,8 +477,6 @@ class LifecycleCases:
             with self.runtime.db() as db:
                 db.execute("UPDATE runtime_events SET text=? WHERE id='event'",(case["afterEventText"],))
         after = snapshot(self.runtime.root)
-        if case.get("contextProjection") == "context_preparation_unported":
-            after = without_unported_context(after, self.runtime.corpus_preparation)
         return {"before":before, "after":after, "pythonRoot":str(self.runtime.root),"pythonError":python_error,"entryResult":normalize(getattr(self.runtime,"corpus_result",None))}
 
     def close(self):
@@ -514,7 +496,19 @@ def main():
          patch.object(threading.Thread, "join", lambda self, *a, **k: None), \
          patch.object(codex_runtime, "_RuntimeWalKeeper", lambda *a: None):
         template = pathlib.Path(tempfile.mkdtemp(prefix="lifecycle-schema-"))
-        initialized = QuietRuntime(template, lambda *_a, **_kw: None)
+        # Runtime selects WAL after its first schema setup; choose it upfront
+        # for disposable fixture initialization to avoid per-table rollback journals.
+        with sqlite3.connect(template / "canvas.sqlite3") as db:
+            db.execute("PRAGMA journal_mode=WAL")
+        connect = codex_runtime.sqlite_connect
+        def fixture_connect(*args, **kwargs):
+            db = connect(*args, **kwargs)
+            db.execute("PRAGMA synchronous=OFF")
+            return db
+        # Schema fixture construction is not a crash witness; all compared
+        # transitions reopen the copied databases with production durability.
+        with patch.object(codex_runtime, "sqlite_connect", fixture_connect):
+            initialized = QuietRuntime(template, lambda *_a, **_kw: None)
         with initialized.db() as db:
             # Match the notification corpus: materialize the next-index schema on both sides.
             db.execute("CREATE VIRTUAL TABLE IF NOT EXISTS runtime_search_next USING fts5(body,content='',contentless_delete=1,tokenize='unicode61')")

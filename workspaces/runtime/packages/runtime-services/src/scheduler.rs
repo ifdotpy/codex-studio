@@ -331,7 +331,47 @@ pub(crate) fn claim_intent_in_transaction(
     attempt_id: &str,
     attempt_created: f64,
 ) -> Result<Option<TurnIntent>, SchedulerError> {
-    let claimed = SchedulerRepository::claim(
+    claim_intent_selected(
+        transaction,
+        agent_id,
+        epoch,
+        attempt_id,
+        attempt_created,
+        false,
+    )
+}
+
+pub(crate) fn claim_preparation_in_transaction(
+    transaction: &rusqlite::Transaction<'_>,
+    agent_id: &str,
+    epoch: i64,
+    attempt_id: &str,
+    attempt_created: f64,
+) -> Result<Option<TurnIntent>, SchedulerError> {
+    claim_intent_selected(
+        transaction,
+        agent_id,
+        epoch,
+        attempt_id,
+        attempt_created,
+        true,
+    )
+}
+
+fn claim_intent_selected(
+    transaction: &rusqlite::Transaction<'_>,
+    agent_id: &str,
+    epoch: i64,
+    attempt_id: &str,
+    attempt_created: f64,
+    preparation: bool,
+) -> Result<Option<TurnIntent>, SchedulerError> {
+    let claim = if preparation {
+        SchedulerRepository::claim_for_preparation
+    } else {
+        SchedulerRepository::claim
+    };
+    let claimed = claim(
         transaction,
         agent_id,
         epoch,
