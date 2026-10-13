@@ -44,6 +44,15 @@ pub(crate) struct Request<'a> {
 
 /// Run a child with bounded output retention and one deadline for execution and pipe draining.
 pub(crate) fn run(request: Request<'_>) -> Result<Output, ChildError> {
+    run_with_environment(request, false)
+}
+
+/// Explicit environment only; used for journaled Git effects.
+pub(crate) fn run_isolated(request: Request<'_>) -> Result<Output, ChildError> {
+    run_with_environment(request, true)
+}
+
+fn run_with_environment(request: Request<'_>, clear: bool) -> Result<Output, ChildError> {
     let Request {
         program,
         cwd,
@@ -56,6 +65,9 @@ pub(crate) fn run(request: Request<'_>) -> Result<Output, ChildError> {
     } = request;
     let deadline = Instant::now() + timeout;
     let mut command = Command::new(program);
+    if clear {
+        command.env_clear();
+    }
     command
         .arg("-C")
         .arg(cwd)
