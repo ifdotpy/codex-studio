@@ -23,6 +23,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::PtyHost;
+use crate::child_priority::ChildPriority;
 use crate::supervisor_identity::{signal_verified_group_member, start_time};
 
 #[cfg(test)]
@@ -309,6 +310,7 @@ impl PtyHost for LocalPtyHost {
             .env_clear()
             .envs(env.iter().map(|(key, value)| (key, value)))
             .spawn(slave)?;
+        ChildPriority::from_environment().apply_after_spawn(&child);
         let raw_pid = match i32::try_from(child.id()) {
             Ok(value) => value,
             Err(_) => {
@@ -705,7 +707,10 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn live_close_kills_handoff_group_after_try_wait_reaps_leader() {
-        let root = PathBuf::from("/dev/shm/cs-rust-terminals-tests/process-host");
+        let root = std::env::var_os("CS_TERMINAL_TEST_STATE_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| std::env::temp_dir().join("cs-terminals-test-state"))
+            .join("process-host");
         std::fs::create_dir_all(&root).expect("tmpfs cwd");
         let cwd = root.join(format!("leader-{}", std::process::id()));
         std::fs::create_dir_all(&cwd).expect("isolated cwd");
@@ -742,7 +747,10 @@ mod tests {
         *session.0.before_kill.lock().expect("termination hook") = Some(hook);
         let repeated_close = session.clone();
         let close_thread = thread::spawn(move || host.close(session));
-        assert!(observed_receiver.recv().expect("pre-KILL reaping witness"));
+        assert!(
+            observed_receiver.recv().expect("pre-KILL reaping witness"),
+            "Child::try_wait must reap the TERM-responsive leader before KILL"
+        );
         let mut replacement = None;
         let mut read_session = repeated_close.clone();
         while replacement.is_none() {
@@ -809,7 +817,10 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn failed_kill_signal_returns_error_and_retains_the_recovery_identity() {
-        let root = PathBuf::from("/dev/shm/cs-rust-terminals-tests/process-host");
+        let root = std::env::var_os("CS_TERMINAL_TEST_STATE_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| std::env::temp_dir().join("cs-terminals-test-state"))
+            .join("process-host");
         std::fs::create_dir_all(&root).expect("tmpfs cwd");
         let cwd = root.join(format!("signal-failure-{}", std::process::id()));
         std::fs::create_dir_all(&cwd).expect("isolated cwd");

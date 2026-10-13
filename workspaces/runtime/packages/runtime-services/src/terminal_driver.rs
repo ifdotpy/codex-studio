@@ -848,8 +848,6 @@ mod tests {
         TerminalsRepository,
     };
 
-    use crate::agents_create;
-
     #[derive(Default)]
     struct FakeSession {
         requests: Mutex<Vec<(String, String, Value)>>,
@@ -930,11 +928,13 @@ mod tests {
     }
 
     fn test_state() -> TestState {
-        let tmpfs = Path::new("/dev/shm/cs-rust-terminals-tests");
-        std::fs::create_dir_all(tmpfs).expect("tmpfs test state directory");
+        let tmpfs = std::env::var_os("CS_TERMINAL_TEST_STATE_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| std::env::temp_dir().join("cs-terminals-test-state"));
+        std::fs::create_dir_all(&tmpfs).expect("tmpfs test state directory");
         let directory = tempfile::Builder::new()
             .prefix("terminal-driver-test-")
-            .tempdir_in(tmpfs)
+            .tempdir_in(&tmpfs)
             .expect("test state root");
         let root = directory.path().to_path_buf();
         let snapshot: Value = serde_json::from_str(include_str!(
@@ -2410,9 +2410,13 @@ mod tests {
         }
 
         let state = test_state();
+        let test_state_root = std::env::var_os("CS_TERMINAL_TEST_STATE_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| std::env::temp_dir().join("cs-terminals-test-state"));
+        std::fs::create_dir_all(&test_state_root).expect("tmpfs test state directory");
         let rust_directory = tempfile::Builder::new()
             .prefix("terminal-action-rust-")
-            .tempdir_in("/dev/shm/cs-rust-terminals-tests")
+            .tempdir_in(&test_state_root)
             .expect("Rust action corpus root");
         let source = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src");
         let python = agents_create::prepared_python(&source);
@@ -2426,7 +2430,7 @@ mod tests {
             .env_clear()
             .env("HOME", rust_directory.path().join("home"))
             .env("PATH", "/usr/bin:/bin")
-            .env("TMPDIR", "/dev/shm/cs-rust-terminals-tests")
+            .env("TMPDIR", &test_state_root)
             .env("PYTHONDONTWRITEBYTECODE", "1")
             .output()
             .expect("run real Python terminal actions");
