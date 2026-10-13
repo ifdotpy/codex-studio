@@ -466,6 +466,19 @@ fn foreign_exit_cannot_poison_the_first_result_journal() {
         runtime.deliver(&foreign, 2000.0),
         Err(studio_runtime_services::monitor_policy::MonitorError::InvalidDeliveryIdentity(_))
     ));
+    let mut foreign_input = delivery(
+        &case,
+        "input:foreign",
+        MonitorEvent::Input {
+            ticket: "foreign-ticket".into(),
+            outcome: studio_runtime_services::monitor_policy::InputOutcome::Acknowledged,
+        },
+    );
+    foreign_input.operation.connection_id = "foreign".into();
+    assert!(matches!(
+        runtime.deliver(&foreign_input, 2000.0),
+        Err(studio_runtime_services::monitor_policy::MonitorError::InvalidDeliveryIdentity(_))
+    ));
     assert!(!store.root().join("monitor-results").exists());
     runtime.deliver(&exit, 2000.0).expect("exact result");
     assert_eq!(fixtures::events(&store), case["events"]);

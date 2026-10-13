@@ -294,7 +294,16 @@ impl MonitorRuntime {
                 ticket,
                 outcome.clone(),
                 now,
-            )?,
+            )
+            .map_err(|error| match error {
+                MonitorError::Refused("Monitor operation identity changed") => {
+                    MonitorError::InvalidDeliveryIdentity("input operation changed")
+                }
+                MonitorError::Refused("Monitor input receipt identity changed") => {
+                    MonitorError::InvalidDeliveryIdentity("input receipt changed")
+                }
+                error => error,
+            })?,
             MonitorEvent::Probe { generation, result } => {
                 self.store.transaction_with(|tx| {
                     let (snapshot, actor) = monitor_runtime::snapshot(tx, &delivery.id)?;
