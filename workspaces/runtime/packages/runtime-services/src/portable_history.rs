@@ -1262,8 +1262,9 @@ mod tests {
         assert_eq!(tail_chars("aé🙂", 2), "é🙂");
         let mut recent = Recent::new(5);
         recent.add("abcdef");
+        assert_eq!(recent.text(), "bcdef");
         recent.add("gh");
-        assert_eq!(recent.text(), "cdef\n\ngh");
+        assert_eq!(recent.text(), "gh");
     }
 
     #[test]
