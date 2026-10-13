@@ -16,6 +16,8 @@ pub enum ControlError {
     Conflict,
     #[error("Claude control outcome is unknown; workspace recovery is required")]
     Unknown,
+    #[error("Claude control request was not sent")]
+    NotSent,
     #[error("Claude control service is unavailable")]
     Unavailable,
     #[error("Invalid Claude settings or action")]

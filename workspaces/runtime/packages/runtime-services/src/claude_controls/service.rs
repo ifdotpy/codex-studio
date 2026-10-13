@@ -201,7 +201,13 @@ impl Controls {
                         json!({"threadId":thread,"turnId":request.turn,"requestId":request.request_id}),
                     )
                 };
-                self.bound_call(binding, &scope, method, params, 25).await?
+                match self.bound_call(binding, &scope, method, params, 25).await {
+                    Err(error @ (ControlError::NotSent | ControlError::Request)) => {
+                        *uncertain = false;
+                        return Err(error);
+                    }
+                    result => result?,
+                }
             } else {
                 json!({"settings":request.settings})
             };

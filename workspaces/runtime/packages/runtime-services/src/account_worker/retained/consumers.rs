@@ -89,6 +89,7 @@ impl ClaudeSessionPort for ClaudePort {
                 .map_err(|e| match e {
                     PortError::Identity => ControlError::Changed,
                     PortError::Invalid => ControlError::Request,
+                    PortError::NotSent | PortError::Capacity => ControlError::NotSent,
                     _ => ControlError::Unknown,
                 })?;
             if self.binding() != call.identity.binding {
@@ -100,6 +101,7 @@ impl ClaudeSessionPort for ClaudePort {
                     result,
                 }),
                 RequestResult::Rejected(_) => Err(ControlError::Request),
+                RequestResult::NotSent => Err(ControlError::NotSent),
                 _ => Err(ControlError::Unknown),
             }
         })
@@ -152,14 +154,14 @@ impl crate::recovery_runtime::RetainedHistory for HistoryPort {
         if scope != self.port.scope() {
             return Err(HistoryError::Identity);
         }
-        let mut nonce = [0u8; 16];
-        getrandom::fill(&mut nonce).map_err(|_| HistoryError::Unavailable)?;
+        let operation =
+            crate::event_write::request_signature(&json!([scope, method.as_str(), &params]));
         let receipt = self
             .runtime
             .block_on(self.port.request(SessionRequest {
                 scope: scope.clone(),
                 actor: self.actor.clone(),
-                operation: format!("history:{}", studio_runtime_store::sha256_hex(&nonce)),
+                operation: format!("recovery-history:{operation}"),
                 method: Method::from_wire(method.as_str()).ok_or(HistoryError::Unsupported)?,
                 params,
                 deadline,

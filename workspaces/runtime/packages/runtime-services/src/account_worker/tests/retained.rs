@@ -311,3 +311,46 @@ async fn claude_adapter_uses_retained_scoped_control_and_invalidates_on_stop() {
             .is_err()
     );
 }
+
+#[tokio::test(start_paused = true)]
+async fn claude_adapter_distinguishes_not_sent_from_unknown() {
+    use crate::claude_controls::service::ControlSession;
+    use crate::claude_controls::{ControlError, service::ControlScope};
+    use crate::claude_runtime::RetainedClaudeSession;
+
+    for (request_id, receipt, expected) in [
+        ("not-sent", CommandReceipt::NotSent, "not-sent"),
+        ("unknown", CommandReceipt::Unknown, "unknown"),
+    ] {
+        let state = State::new().await;
+        let mut peer = Peer::new();
+        peer.claude = true;
+        let mut worker = peer.worker(state.bridge.clone()).await;
+        let session = RetainedClaudeSession::new(std::sync::Arc::new(
+            crate::account_worker::retained::consumers::ClaudePort::new(worker.retained_session())
+                .unwrap(),
+        ));
+        let scope = ControlScope {
+            agent: state.agent.clone(),
+            epoch: state.epoch.try_into().unwrap(),
+            request_id: Some(request_id.into()),
+        };
+        let task = tokio::spawn(async move {
+            session
+                .call_scoped(
+                    scope,
+                    "claude/stopTask",
+                    json!({"threadId":"fake-thread-0","taskId":"task"}),
+                )
+                .await
+        });
+        let wire = peer.next_write().await;
+        assert_eq!(wire.value["method"], "claude/stopTask");
+        let _ignored = wire.receipt.send(receipt);
+        match expected {
+            "not-sent" => assert!(matches!(task.await.unwrap(), Err(ControlError::NotSent))),
+            _ => assert!(matches!(task.await.unwrap(), Err(ControlError::Unknown))),
+        }
+        worker.shutdown().await.unwrap();
+    }
+}

@@ -181,7 +181,7 @@ impl ControlStorage for StoredControls {
   let Some((mut agent,Some(mut operation)))=Repository::load(tx,&expected.agent.id,&op.id)?else{return Err(ControlError::Changed)};
   if operation["phase"]=="completed"{return Ok(())}
   if agent.get("epoch").and_then(Value::as_u64)!=Some(expected.epoch()) || CheckpointsRepository::workspace_source(&agent)!=expected.source() || agent.get("workspaceReservationId")!=operation.get("id")||operation.get("source")!=Some(&expected.source()){return Err(ControlError::Changed)}
-  let unknown=uncertain||truthy(operation.get("submitted"))||truthy(operation.get("provider"));
+  let unknown=uncertain||truthy(operation.get("provider"));
   operation["phase"]=json!(if unknown{"recovery_required"}else{"failed"});operation["error"]=json!(if unknown{"Claude control outcome is unknown; inspect workspace recovery"}else{"Claude action was not submitted"});operation["updated"]=json!(now());
   agent["workspaceOperation"]=if unknown{json!("branch_recovery")}else{Value::Null};
   if unknown{agent["status"]=json!("paused");agent["error"]=json!({"message":"Claude control outcome is unknown; inspect workspace recovery"});}else{agent.as_object_mut().ok_or(ControlError::Changed)?.remove("workspaceReservationId");}
