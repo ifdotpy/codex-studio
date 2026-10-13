@@ -7,21 +7,47 @@ use crate::remote_transport::{self as transport, RemoteIdentity};
 use rusqlite::{OptionalExtension, params};
 use serde_json::{Value, json};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use studio_runtime_store::federation_messaging::{
     FederationMessagingRepository as Repo, FederationTable as Table,
 };
 use studio_runtime_store::{AgentId, AgentRepository, RuntimeStore, StoreError};
-const REQUEST_TIMEOUT: Duration = Duration::from_secs(8);
+const PASS_TIMEOUT: Duration = Duration::from_secs(8);
 
-/// Transport receives only signed requests with an eight-second global deadline.
+/// A single absolute deadline and cancellation signal shared by every exchange.
+pub struct PassBudget<'a> {
+    deadline: Instant,
+    cancelled: &'a AtomicBool,
+}
+impl<'a> PassBudget<'a> {
+    pub fn new(deadline: Instant, cancelled: &'a AtomicBool) -> Self {
+        Self {
+            deadline,
+            cancelled,
+        }
+    }
+    pub fn deadline(&self) -> Instant {
+        self.deadline
+    }
+    pub fn remaining(&self) -> transport::RemoteTransportResult<Duration> {
+        if self.cancelled.load(Ordering::Acquire) {
+            return Err(transport::RemoteTransportError::ExchangeUnknown);
+        }
+        self.deadline
+            .checked_duration_since(Instant::now())
+            .filter(|remaining| !remaining.is_zero())
+            .ok_or(transport::RemoteTransportError::ExchangeUnknown)
+    }
+}
+
+/// Implementations must honor this pass budget, including its cancellation signal.
 pub trait FederationTransport {
     fn exchange(
         &mut self,
         url: &str,
         headers: &[(String, String)],
         body: &[u8],
-        deadline: Duration,
+        budget: &PassBudget<'_>,
     ) -> transport::RemoteTransportResult<Vec<u8>>;
 }
 pub struct HttpsFederationTransport;
@@ -31,20 +57,23 @@ impl FederationTransport for HttpsFederationTransport {
         url: &str,
         headers: &[(String, String)],
         body: &[u8],
-        deadline: Duration,
+        budget: &PassBudget<'_>,
     ) -> transport::RemoteTransportResult<Vec<u8>> {
         let headers = headers
             .iter()
             .map(|(k, v)| (k.as_str(), v.as_str()))
             .collect::<Vec<_>>();
+        // Blocking HTTPS observes cancellation before/after I/O; its in-flight
+        // cancellation latency is bounded by the remaining absolute pass budget.
         let response = transport::SignedHttpClient::exchange(
             "POST",
             url,
             &headers,
             body,
-            deadline,
+            budget.remaining()?,
             transport::MAX_REQUEST_BYTES,
         )?;
+        budget.remaining()?;
         if response.status != 200 {
             return Err(transport::RemoteTransportError::InvalidResponse);
         }
@@ -58,6 +87,7 @@ fn request(
     path: &str,
     body: Value,
     now: i64,
+    budget: &PassBudget<'_>,
 ) -> Result<Value> {
     let body = transport::canonical_json(&body)?.into_bytes();
     let url = format!("{}{path}", peer.origin);
@@ -70,7 +100,9 @@ fn request(
         &body,
         now,
     )?;
-    let response = transport.exchange(&url, &headers, &body, REQUEST_TIMEOUT)?;
+    budget.remaining()?;
+    let response = transport.exchange(&url, &headers, &body, budget)?;
+    budget.remaining()?;
     if response.len() > transport::MAX_REQUEST_BYTES {
         return Err(Error::Invalid("response.size"));
     }
@@ -91,7 +123,23 @@ pub fn pump_peer(
     transport: &mut impl FederationTransport,
     cancelled: &AtomicBool,
 ) -> Result<usize> {
-    if cancelled.load(Ordering::Acquire) {
+    pump_peer_until(
+        store,
+        peer_id,
+        now,
+        transport,
+        PassBudget::new(Instant::now() + PASS_TIMEOUT, cancelled),
+    )
+}
+
+pub(crate) fn pump_peer_until(
+    store: &RuntimeStore,
+    peer_id: &str,
+    now: f64,
+    transport: &mut impl FederationTransport,
+    budget: PassBudget<'_>,
+) -> Result<usize> {
+    if budget.remaining().is_err() {
         return Ok(0);
     }
     let identity = transport::load_federation_identity(store)?;
@@ -103,7 +151,7 @@ pub fn pump_peer(
     })?;
     let mut delivered = 0;
     for (id, item) in queued {
-        if cancelled.load(Ordering::Acquire) {
+        if budget.remaining().is_err() {
             return Ok(delivered);
         }
         // Re-check revocation and record identity immediately before each send. A later
@@ -134,7 +182,19 @@ pub fn pump_peer(
             "/api/federation/v1/message",
             json!({"protocol":PROTOCOL,"envelope":envelope}),
             now as i64,
-        );
+            &budget,
+        )
+        .and_then(|value| {
+            core::validate(
+                "studio_api__federation__models__MessageReceipt",
+                &value,
+                "receipt",
+            )?;
+            if value["messageId"] != id || value["room"] != item["room"] {
+                return Err(Error::Conflict("receipt identity mismatch"));
+            }
+            Ok(value)
+        });
         let result = match result {
             Ok(value) => value,
             Err(error) => {
@@ -158,14 +218,6 @@ pub fn pump_peer(
                 return Err(error);
             }
         };
-        core::validate(
-            "studio_api__federation__models__MessageReceipt",
-            &result,
-            "receipt",
-        )?;
-        if result["messageId"] != id || result["room"] != item["room"] {
-            return Err(Error::Conflict("receipt identity mismatch"));
-        }
         store.transaction_with(|tx| {
             let state = snapshot(tx, peer_id, "", "", now)?;
             state.authorize(false)?;
@@ -182,7 +234,7 @@ pub fn pump_peer(
         })?;
         delivered += 1;
     }
-    if cancelled.load(Ordering::Acquire) {
+    if budget.remaining().is_err() {
         return Ok(delivered);
     }
     let acks = store.transaction_with(|tx| {
@@ -205,6 +257,7 @@ pub fn pump_peer(
         "/api/federation/v1/pull",
         json!({"protocol":PROTOCOL,"acks":acks}),
         now as i64,
+        &budget,
     )?;
     effects::reconcile(store, peer_id, &peer.public_key, &response, now)?;
     Ok(delivered)

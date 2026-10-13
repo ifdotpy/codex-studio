@@ -48,5 +48,15 @@
         "after": "\"untrusted_remote\":false"
       }
     ]
+  },
+  {
+    "id": "sender-name-approval",
+    "file": "workspaces/runtime/packages/runtime-services/src/federation_messaging.rs",
+    "edits": [
+      {
+        "before": "if message.payload.get(\"senderName\").unwrap_or(&Value::Null)",
+        "after": "if false && message.payload.get(\"senderName\").unwrap_or(&Value::Null)"
+      }
+    ]
   }
 ]

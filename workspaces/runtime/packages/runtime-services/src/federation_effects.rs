@@ -14,10 +14,29 @@ use studio_runtime_store::{
     SyncDocumentsRepository,
 };
 
-/// Supplied by the trusted proxy/Tailscale adapter, never copied from an arbitrary header.
-pub enum OriginObservation {
-    Unavailable,
-    Observed(Option<String>),
+/// Opaque observation from the server-side trusted adapter. Until that adapter
+/// exists, production callers can only report its absence.
+///
+/// ```compile_fail
+/// use studio_runtime_services::federation_effects::OriginObservation;
+/// let spoofed = OriginObservation { observed: Some(Some("header-user".into())) };
+/// ```
+pub struct OriginObservation {
+    observed: Option<Option<String>>,
+}
+impl OriginObservation {
+    pub fn unavailable() -> Self {
+        Self { observed: None }
+    }
+
+    // Only this module's fixture adapter can create an observation today. The
+    // production trusted adapter must live inside this boundary when implemented.
+    #[cfg(test)]
+    fn observed(user: Option<String>) -> Self {
+        Self {
+            observed: Some(user),
+        }
+    }
 }
 
 pub struct SignedRequest<'a> {
@@ -86,7 +105,7 @@ pub fn handle(
     origin: OriginObservation,
     now: f64,
 ) -> Result<Value> {
-    let OriginObservation::Observed(observed) = origin else {
+    let Some(observed) = origin.observed else {
         return Err(Error::Unavailable("federation/trusted-origin-observation"));
     };
     if !now.is_finite() || now < 0.0 || request.raw.len() > transport::MAX_REQUEST_BYTES {
@@ -383,3 +402,7 @@ pub(crate) fn reconcile(
         Ok(())
     })
 }
+
+#[cfg(test)]
+#[path = "../tests/federation/corpus.rs"]
+mod federation_corpus;
