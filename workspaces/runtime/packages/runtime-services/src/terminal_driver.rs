@@ -379,7 +379,7 @@ impl<S: TerminalSession> TerminalDriver<S> {
                     }
                     let row = TerminalsRepository::get(transaction, &id)?
                         .ok_or_else(|| StoreError::SchemaMismatch("unknown terminal".into()))?;
-                    let mut record = row.record;
+                    let mut record = row.record.clone();
                     let pending =
                         TerminalsRepository::decoder_pending(transaction, &id)?.unwrap_or_default();
                     let (text, _) = decode_utf8(&pending, true);
@@ -736,7 +736,7 @@ mod tests {
         history_output, now_seconds, output, receipt_signature, size, terminal_title,
     };
     use serde_json::Value;
-    use studio_runtime_store::{RuntimeStore, TerminalsRepository};
+    use studio_runtime_store::{RuntimeStore, TerminalRecord, TerminalsRepository};
 
     #[derive(Default)]
     struct FakeSession {
