@@ -127,3 +127,31 @@ pub(crate) fn reject(record: &mut Value) -> Result<(), ToolRequestError> {
     lifecycle::apply(record, &decision.next_state)?;
     Ok(())
 }
+
+/// Restart never dispatches queued work or retries a started operation.
+pub(crate) fn restart(record: &mut Value) -> Result<bool, ToolRequestError> {
+    let state = lifecycle::state(record)?;
+    let operation = state
+        .operation
+        .as_ref()
+        .ok_or(ToolRequestError::InvalidRequest(
+            "Invalid request lifecycle",
+        ))?;
+    let decision = transition(
+        &state,
+        &Event {
+            id: "restart".into(),
+            expected_revision: state.revision,
+            identity: operation.identity.clone(),
+            attempt: operation.attempt.clone(),
+            kind: EventKind::ServerRestarted,
+        },
+    );
+    match decision.kind {
+        DecisionKind::Rejected(_) => Err(ToolRequestError::InvalidRequest(
+            "Conflicting request lifecycle evidence",
+        )),
+        DecisionKind::Transitioned => lifecycle::apply(record, &decision.next_state),
+        _ => Ok(false),
+    }
+}
