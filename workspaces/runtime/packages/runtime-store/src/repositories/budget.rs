@@ -146,7 +146,7 @@ const TABLES: &[TableRequirement] = &[
         columns: &["id", "agent", "kind", "tokens", "at"],
     },
 ];
-const REQUIREMENTS: SchemaRequirements = SchemaRequirements {
+pub(crate) const REQUIREMENTS: SchemaRequirements = SchemaRequirements {
     tables: &[],
     conditional_tables: &[ConditionalTableRequirement {
         table_exists: "runtime_budget",
