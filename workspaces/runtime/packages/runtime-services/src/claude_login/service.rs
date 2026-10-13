@@ -101,7 +101,7 @@ impl LoginService {
                 let mut record = restored.record().clone();
                 record["metadata"]["outcomeUnknown"] = json!(true);
                 record["receipt"]["error"] = json!(
-                    "Sign-in outcome is unknown after restart. Waiting for its child to exit."
+                    "Sign-in outcome is unknown after restart. Waiting for its config lease. Cancel this request to clear only its hold without retrying."
                 );
                 LoginSnapshot::from_record(record)?
             } else {
@@ -205,23 +205,7 @@ impl LoginService {
             if profile.get("accountId") != Some(&json!(format!("claude:{saved_email}"))) {
                 return Err(LoginError::Unavailable);
             }
-            let config = profile
-                .pointer("/claudeOptions/configDir")
-                .and_then(Value::as_str)
-                .map(PathBuf::from)
-                .or_else(|| {
-                    self.config
-                        .environment
-                        .get(&OsString::from("CLAUDE_CONFIG_DIR"))
-                        .map(PathBuf::from)
-                })
-                .or_else(|| {
-                    self.config
-                        .environment
-                        .get(&OsString::from("HOME"))
-                        .map(|v| PathBuf::from(v).join(".claude"))
-                })
-                .ok_or(LoginError::Unavailable)?;
+            let config = self.profile_config(profile)?;
             (
                 config,
                 resolved.clone(),
@@ -253,41 +237,7 @@ impl LoginService {
             new_config.0 = Some(config.clone());
             (config.clone(),resolved.clone(),json!({"flow":"add","requestHash":signature,"emailHint":email,"label":label,"configDir":config,"binaryPath":resolved,"codeSubmitted":false,"cleanupDone":false}).as_object().cloned().ok_or(LoginError::Unavailable)?,email.clone())
         };
-        // Resolve aliases before acquiring the shared configuration lease.
-        let supplied = config.clone();
-        let home = self
-            .config
-            .environment
-            .get(std::ffi::OsStr::new("HOME"))
-            .map(PathBuf::from);
-        let cwd = self.config.cwd.clone();
-        let canonical = blocking(move || {
-            let expanded = match supplied.to_str() {
-                Some("~") => home.clone().ok_or(LoginError::Unavailable)?,
-                Some(v) if v.starts_with("~/") => {
-                    home.ok_or(LoginError::Unavailable)?.join(&v[2..])
-                }
-                _ => supplied,
-            };
-            let absolute = if expanded.is_absolute() {
-                expanded
-            } else {
-                cwd.join(expanded)
-            };
-            // The native login may initialize a new configuration directory.
-            if !absolute.exists() {
-                std::fs::create_dir_all(&absolute).map_err(|_| LoginError::Unavailable)?;
-                #[cfg(unix)]
-                {
-                    use std::os::unix::fs::PermissionsExt;
-                    std::fs::set_permissions(&absolute, std::fs::Permissions::from_mode(0o700))
-                        .map_err(|_| LoginError::Unavailable)?;
-                }
-            }
-            absolute.canonicalize().map_err(|_| LoginError::Unavailable)
-        })
-        .await?;
-        let config = canonical;
+        let config = self.canonical_config(config, true).await?;
         let lease_path = self.config.directory.join(format!(
             "{}.lock",
             studio_runtime_store::sha256_hex(config.to_string_lossy().as_bytes())
@@ -383,11 +333,28 @@ impl LoginService {
         }
         self.status(id).await
     }
+    /// Cancel an active child, or explicitly clear exactly one recovered unknown
+    /// receipt. Clearing retains its config and leaves lease admission enforced.
     pub async fn cancel(&self, id: &str) -> Result<Value, LoginError> {
         self.available()?;
         request_id(id)?;
         let mut jobs = self.jobs.lock().await;
         let job = jobs.get_mut(id).ok_or(LoginError::Unknown)?;
+        if unknown(&job.snapshot) && job.commands.is_none() {
+            // Explicit cancellation acknowledges only this receipt. It does not prove
+            // the old child exited, delete its config, or resend any input.
+            let mut record = job.snapshot.record().clone();
+            record["metadata"]["outcomeUnknown"] = json!(false);
+            record["metadata"]["operatorCleared"] = json!(true);
+            record["receipt"]["status"] = json!("cancelled");
+            record["receipt"]["error"] = json!(
+                "Unknown sign-in hold cleared by cancellation. Its configuration was retained; no input was retried."
+            );
+            let next = LoginSnapshot::from_record(record)?;
+            self.save(&next).await?;
+            job.snapshot = next;
+            (self.on_change)();
+        }
         if job.snapshot.active() {
             let next = job.snapshot.finish(LoginStatus::Cancelled, None)?;
             self.save(&next).await?;
@@ -542,9 +509,10 @@ impl LoginService {
         child.close().await?;
         self.record_child(id, None).await?;
         let Some(success) = outcome else {
+            self.finish(id, LoginStatus::Error, Some(FAILED)).await?;
             return Ok(());
         };
-        let metadata = self.probe(id, launch).await?;
+        let metadata = self.probe(id, launch, commands).await?;
         let mut jobs = self.jobs.lock().await;
         let job = jobs.get_mut(id).ok_or(LoginError::Unknown)?;
         if !job.snapshot.active() {
@@ -637,7 +605,12 @@ impl LoginService {
         job.snapshot = next;
         Ok(())
     }
-    async fn probe(&self, id: &str, launch: &Launch) -> Result<AuthMetadata, LoginError> {
+    async fn probe(
+        &self,
+        id: &str,
+        launch: &Launch,
+        commands: &mut mpsc::Receiver<Command>,
+    ) -> Result<AuthMetadata, LoginError> {
         let mut child = self
             .launcher
             .spawn(
@@ -658,6 +631,10 @@ impl LoginService {
         let success = loop {
             tokio::select! {
                 _=&mut deadline=>break false,
+                command=commands.recv()=>match command {
+                    Some(Command::Code(_, reply))=>{drop(reply.send(Err(LoginError::Unavailable)));},
+                    Some(Command::Cancel)|None=>break false,
+                },
                 event=child.next_event()=>match event?{Some(LoginEvent::Output(bytes))=>append_tail(&mut output,&bytes),Some(LoginEvent::Diagnostic(_))=>{},Some(LoginEvent::Exited(success))=>break success,None=>break false}
             }
         };
@@ -692,16 +669,42 @@ impl LoginService {
                 if !self.launcher.gone(identity).await.unwrap_or(false) {
                     continue;
                 }
-            } else if metadata.get("inheritedLease") != Some(&json!(true)) {
-                // Legacy receipts lack a child identity or inherited-lease proof.
-                continue;
             }
-            let Some(config) = metadata.get("configDir").and_then(Value::as_str) else {
+            let config = if let Some(config) = metadata.get("configDir").and_then(Value::as_str) {
+                PathBuf::from(config)
+            } else if !job.snapshot.adding() {
+                // Python reauthentication receipts omit configDir, but Python children
+                // inherit this same canonical-config lease. Resolve only a matching
+                // saved account identity; never probe credentials during recovery.
+                let accounts = self.accounts.clone();
+                let key = job.snapshot.account_key().to_owned();
+                let Ok(profile) = blocking(move || accounts.profile(&key)).await else {
+                    continue;
+                };
+                let Some(email) = job
+                    .snapshot
+                    .record()
+                    .pointer("/receipt/email")
+                    .and_then(Value::as_str)
+                else {
+                    continue;
+                };
+                if profile.get("accountId") != Some(&json!(format!("claude:{email}"))) {
+                    continue;
+                }
+                let Ok(config) = self.profile_config(&profile) else {
+                    continue;
+                };
+                config
+            } else {
+                continue;
+            };
+            let Ok(config) = self.canonical_config(config, false).await else {
                 continue;
             };
             let path = self.config.directory.join(format!(
                 "{}.lock",
-                studio_runtime_store::sha256_hex(config.as_bytes())
+                studio_runtime_store::sha256_hex(config.to_string_lossy().as_bytes())
             ));
             let lease = blocking(move || {
                 let file = OpenOptions::new()
@@ -721,17 +724,74 @@ impl LoginService {
             let mut record = job.snapshot.record().clone();
             record["metadata"]["outcomeUnknown"] = json!(false);
             record["receipt"]["error"] =
-                json!("The previous sign-in child has exited. Start a new sign-in request.");
+                json!("The previous sign-in config lease is free. Start a new sign-in request.");
             let next = LoginSnapshot::from_record(record)?;
             self.save(&next).await?;
             job.snapshot = self.cleanup(&next).await?;
         }
         Ok(())
     }
+    fn profile_config(&self, profile: &Value) -> Result<PathBuf, LoginError> {
+        profile
+            .pointer("/claudeOptions/configDir")
+            .and_then(Value::as_str)
+            .map(PathBuf::from)
+            .or_else(|| {
+                self.config
+                    .environment
+                    .get(std::ffi::OsStr::new("CLAUDE_CONFIG_DIR"))
+                    .map(PathBuf::from)
+            })
+            .or_else(|| {
+                self.config
+                    .environment
+                    .get(std::ffi::OsStr::new("HOME"))
+                    .map(|v| PathBuf::from(v).join(".claude"))
+            })
+            .ok_or(LoginError::Unavailable)
+    }
+    async fn canonical_config(
+        &self,
+        supplied: PathBuf,
+        create: bool,
+    ) -> Result<PathBuf, LoginError> {
+        let home = self
+            .config
+            .environment
+            .get(std::ffi::OsStr::new("HOME"))
+            .map(PathBuf::from);
+        let cwd = self.config.cwd.clone();
+        blocking(move || {
+            let expanded = match supplied.to_str() {
+                Some("~") => home.clone().ok_or(LoginError::Unavailable)?,
+                Some(v) if v.starts_with("~/") => {
+                    home.ok_or(LoginError::Unavailable)?.join(&v[2..])
+                }
+                _ => supplied,
+            };
+            let absolute = if expanded.is_absolute() {
+                expanded
+            } else {
+                cwd.join(expanded)
+            };
+            if create && !absolute.exists() {
+                std::fs::create_dir_all(&absolute).map_err(|_| LoginError::Unavailable)?;
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    std::fs::set_permissions(&absolute, std::fs::Permissions::from_mode(0o700))
+                        .map_err(|_| LoginError::Unavailable)?;
+                }
+            }
+            absolute.canonicalize().map_err(|_| LoginError::Unavailable)
+        })
+        .await
+    }
     async fn cleanup(&self, snapshot: &LoginSnapshot) -> Result<LoginSnapshot, LoginError> {
         if !snapshot.adding()
             || snapshot.active()
             || unknown(snapshot)
+            || snapshot.record().pointer("/metadata/operatorCleared") == Some(&json!(true))
             || snapshot.record().pointer("/receipt/status") == Some(&json!("ready"))
             || snapshot.record().pointer("/metadata/cleanupDone") == Some(&json!(true))
         {
@@ -748,6 +808,15 @@ impl LoginService {
             != expected.to_str()
         {
             return Ok(snapshot.clone());
+        }
+        // Account publication can commit before the final receipt. Preserve and
+        // adopt that publication before removing an abandoned add configuration.
+        let accounts = self.accounts.clone();
+        let config = expected.to_string_lossy().into_owned();
+        if let Some(account) = blocking(move || accounts.find_config(&config)).await? {
+            let next = snapshot.restore(Some(&account))?;
+            self.save(&next).await?;
+            return Ok(next);
         }
         blocking(move || match std::fs::symlink_metadata(&expected) {
             Ok(meta) if !meta.file_type().is_symlink() => {

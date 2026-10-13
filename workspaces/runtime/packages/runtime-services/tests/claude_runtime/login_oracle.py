@@ -12,8 +12,35 @@ import threading
 from types import SimpleNamespace
 sys.path.insert(0,str(Path(__file__).resolve().parents[6]/"workspaces/runtime/apps/server/src"))
 from codex_claude_login import LoginManager, verification_url
+from unittest.mock import patch
 
 rid="e0166868-592a-4dca-8994-04d34a730af5"
+if len(sys.argv) > 1 and sys.argv[1] == "legacy":
+    manager = LoginManager(SimpleNamespace(root=sys.argv[2]))
+    for request in (rid, "987edcdc-0e86-4fdf-a1c6-1513517d3ad0"):
+        manager._save(dict(receipt=dict(requestId=request, accountKey=sys.argv[3], status="pending", email="fixture@example.test")))
+    sys.exit(0)
+
+class Admitted(Exception):
+    pass
+
+def admission_boundary():
+    raise Admitted()
+
+admissions = []
+for label, email in [(None, None), ("", None), (" ", None), ("a", None), ("x"*32, None), ("x"*33, None), ("é"*32, None), ("é"*33, None), ("  Team  ", "  fixture@example.test  "), *[(None, email) for email in ("", " ", "x", "a@b", "a@@b.test", "a b@c.test", "a@b.c", "é@example.test", "a@b.test\nextra", "a@b.test")]]:
+    with tempfile.TemporaryDirectory() as root:
+        manager = LoginManager(SimpleNamespace(root=root))
+        with patch("codex_claude.installed", admission_boundary):
+            try:
+                manager.start_add(email, label, rid)
+            except Admitted:
+                admitted = True
+            except ValueError:
+                admitted = False
+            else:
+                raise AssertionError("admission must stop before native execution")
+        admissions.append(dict(label=label, email=email, admitted=admitted))
 rows=[]
 for state in ("starting","pending","ready","error","cancelled"):
     for submitted in (False,True):
@@ -46,4 +73,4 @@ for change in ({},{"provider":"codex"},{"accountKey":"foreign"},{"deletedAt":12}
         manager=LoginManager(runtime)
         manager._refresh_chats(dict(receipt=dict(requestId=rid,accountKey="account",status="ready",email="fixture@example.test")))
         chats.append(dict(input=before,expected=copy.deepcopy(agent)));db.close()
-print(json.dumps(dict(rows=rows,chats=chats,urls=[dict(value=u,expected=verification_url(u)) for u in urls],codes=[dict(value=c,expected=bool(1<=len(c)<=4096 and c.isprintable())) for c in codes])))
+print(json.dumps(dict(admissions=admissions,rows=rows,chats=chats,urls=[dict(value=u,expected=verification_url(u)) for u in urls],codes=[dict(value=c,expected=bool(1<=len(c)<=4096 and c.isprintable())) for c in codes])))

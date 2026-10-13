@@ -68,6 +68,7 @@ class ClaudeLoginMetadata(OpenRecord):
     child: ClaudeChildIdentity | None = None
     inheritedLease: StrictBool | None = None
     outcomeUnknown: StrictBool | None = None
+    operatorCleared: StrictBool | None = None
     flow: Literal["add"] | None = None
     requestHash: Digest | None = None
     emailHint: StrictStr | None = None
