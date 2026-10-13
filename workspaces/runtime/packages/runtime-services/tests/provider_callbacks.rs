@@ -1,5 +1,7 @@
 //! Scripted provider consumer: real SQLite and Python-written actors, no provider.
 #![allow(clippy::unwrap_used)]
+#[path = "support/prepared_python.rs"]
+mod prepared_python;
 use serde_json::{Value, json};
 use std::{path::PathBuf, process::Command, sync::OnceLock};
 use studio_runtime_providers::{Frame, Method, RequestFrame, RequestId, ResponseBody};
@@ -16,12 +18,13 @@ fn template() -> &'static Template {
         let scratch = tempfile::tempdir().unwrap();
         let script =
             PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/provider_callbacks/oracle.py");
-        let output =
-            Command::new(std::env::var_os("CODEX_AGENTS_PYTHON").unwrap_or("python3".into()))
-                .arg(script)
-                .arg(scratch.path())
-                .output()
-                .unwrap();
+        let output = Command::new(prepared_python::prepared_python(
+            &PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src"),
+        ))
+        .arg(script)
+        .arg(scratch.path())
+        .output()
+        .unwrap();
         assert!(
             output.status.success(),
             "oracle: {}",
