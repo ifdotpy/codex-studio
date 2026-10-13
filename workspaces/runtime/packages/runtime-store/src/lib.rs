@@ -60,6 +60,7 @@ pub use repositories::usage::{UsageRepositoryError, cancel_capacity_retry, disab
 pub use repositories::voice::{VoiceDelivery, VoiceRecord, VoiceRepository};
 pub use repositories::work_items::{StoredQueueEvent, StoredRecord, WorkItemsRepository};
 pub use repositories::workspace_files::{StoredWorkspaceAsset, WorkspaceFilesRepository};
+pub use repositories::workspace_ready;
 pub use repositories::workspace_views::{WorkspaceTaskRow, WorkspaceViewsRepository};
 
 const DATABASE_BUSY_TIMEOUT_MS: u32 = 15_000;

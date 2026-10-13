@@ -573,6 +573,29 @@ fn rename(
     Ok(result)
 }
 
+/// Share the mode-boundary oracle's interpreter resolution with other unit-test oracles.
+#[cfg(test)]
+pub(crate) fn prepared_python(source: &std::path::Path) -> std::path::PathBuf {
+    std::env::var_os("CODEX_AGENTS_PYTHON")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| {
+            let output = std::process::Command::new("python3")
+                .arg(source.join("codex_python.py"))
+                .output()
+                .expect("resolve prepared Python interpreter");
+            assert!(
+                output.status.success(),
+                "prepared Python interpreter resolves: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            std::path::PathBuf::from(
+                String::from_utf8(output.stdout)
+                    .expect("Python interpreter path is UTF-8")
+                    .trim(),
+            )
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use super::create_agent;
@@ -610,24 +633,7 @@ mod tests {
             super::mode_fields(record);
         }
         let source = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src");
-        let python = std::env::var_os("CODEX_AGENTS_PYTHON")
-            .map(std::path::PathBuf::from)
-            .unwrap_or_else(|| {
-                let output = std::process::Command::new("python3")
-                    .arg(source.join("codex_python.py"))
-                    .output()
-                    .expect("resolve prepared Python interpreter");
-                assert!(
-                    output.status.success(),
-                    "prepared Python interpreter resolves: {}",
-                    String::from_utf8_lossy(&output.stderr)
-                );
-                std::path::PathBuf::from(
-                    String::from_utf8(output.stdout)
-                        .expect("Python interpreter path is UTF-8")
-                        .trim(),
-                )
-            });
+        let python = super::prepared_python(&source);
         let mut child = Command::new(python).args(["-c", "import json,sys; from codex_agent_modes import mode_fields; print(json.dumps([mode_fields(row) for row in json.load(sys.stdin)]))"])
             .env("PYTHONPATH", source).env("PYTHONDONTWRITEBYTECODE", "1")
             .stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().expect("Python oracle starts");
