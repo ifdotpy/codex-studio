@@ -715,6 +715,7 @@ class Contract(unittest.IsolatedAsyncioTestCase):
                     {"path": name, "entry": {"kind": "file", "bytes": 15, "mode": 0o600, "sha256": "0" * 64}}]}, "mode:" + name)
             self.assertEqual(caught.exception.code, "sync_conflict")
 
+    @unittest.skipUnless(sys.platform == "darwin", "clonefile(2) exists only on macOS")
     async def test_a_large_file_is_cloned_from_the_project_folder_instead_of_sent(self):
         same, other = os.urandom(700 * 1024), os.urandom(400 * 1024)
         self.mac_project({"assets/big.bin": same, "assets/other.bin": os.urandom(400 * 1024)})
