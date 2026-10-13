@@ -11,6 +11,10 @@ pub use repositories::analytics::{
     self, AnalyticsError, AnalyticsOptions, AnalyticsRepository, AnalyticsStoreError,
     SessionCostError,
 };
+pub use repositories::analytics::{
+    self, AnalyticsError, AnalyticsOptions, AnalyticsRepository, AnalyticsStoreError,
+    SessionCostError,
+};
 pub use repositories::checkpoints::{
     CheckpointsRepository, StoredCheckpointObject, WorkspaceSnapshot,
 };

@@ -7,6 +7,7 @@ mod desktop;
 pub(crate) mod extractors;
 mod federation;
 mod insights;
+mod insights;
 pub(crate) mod manifest;
 mod messages;
 mod models;
