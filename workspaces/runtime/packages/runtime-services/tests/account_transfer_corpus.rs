@@ -138,7 +138,7 @@ fn transfer_snapshot_accepts_configured_team_ceiling_and_rejects_one_more_record
                 } else {
                     format!("worker-{index}")
                 };
-                if index > 0 {
+                if index > 0 && index < 2050 {
                     op["members"][&id] = json!({
                         "phase":"waiting",
                         "sourceAccountKey":"source",
