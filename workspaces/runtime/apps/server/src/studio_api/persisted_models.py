@@ -117,6 +117,13 @@ class PersistedToolResult(ContractModel):
     serverOutputExpiresAt: float | None = None
 
 
+class PersistedOperationResult(ContractModel):
+    """Opaque operation answer; only its presence is consumed by receipt reads."""
+
+    model_config = ConfigDict(extra="allow", strict=True)
+    __pydantic_extra__: dict[str, JsonValue] = Field(init=False)
+
+
 class PersistedExecutionRecord(_OpenPersistedRecord):
     runId: StrictStr | None = None
     latestAttemptId: StrictStr | None = None
@@ -445,6 +452,7 @@ STATE_SCHEMA_MODELS = {
     "persisted-federation-room-record.schema.json": PersistedFederationRoomRecord,
     "persisted-project-record.schema.json": PersistedProjectRecord,
     "persisted-room-record.schema.json": PersistedRoomRecord,
+    "persisted-operation-result.schema.json": PersistedOperationResult,
     "persisted-execution-record.schema.json": PersistedExecutionRecord,
     "persisted-tool-result.schema.json": PersistedToolResult,
     "persisted-tool-request-record.schema.json": PersistedToolRequestRecord,

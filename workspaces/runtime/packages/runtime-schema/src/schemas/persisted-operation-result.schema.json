@@ -1,0 +1,12 @@
+{
+  "$defs": {
+    "JsonValue": {}
+  },
+  "additionalProperties": {
+    "$ref": "#/$defs/JsonValue"
+  },
+  "description": "Opaque operation answer; only its presence is consumed by receipt reads.",
+  "properties": {},
+  "title": "PersistedOperationResult",
+  "type": "object"
+}
