@@ -23,6 +23,7 @@ pub mod scheduler;
 pub mod sync_policy;
 pub mod terminal_driver;
 pub mod transcript;
+pub mod usage;
 pub mod work_policy;
 pub mod work_write;
 pub mod workspace_files;
