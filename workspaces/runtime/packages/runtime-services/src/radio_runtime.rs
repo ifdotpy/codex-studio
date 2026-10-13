@@ -17,8 +17,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use std::collections::BTreeMap;
 use studio_runtime_store::{
-    ProjectsRepository, QueueEvent, QueueEventId, QueueEventRepository, RuntimeStore,
-    SyncDocumentsRepository, system_reads as records,
+    AgentId, AgentRecord, AgentRepository, ProjectsRepository, QueueEvent, QueueEventId,
+    QueueEventRepository, RuntimeStore, SyncDocumentsRepository, system_reads as records,
 };
 use uuid::Uuid;
 
@@ -32,8 +32,8 @@ use state::*;
 #[path = "projects/radio_lifecycle.rs"]
 mod lifecycle;
 pub use lifecycle::{
-    ObservedItem, bind_reserved, guard_message, holds_floor, observe_item, route_question_answer,
-    select_pending, tick,
+    NativeAcceptanceReceipt, ObservedItem, bind_reserved, claim_interrupt, guard_message,
+    holds_floor, observe_item, route_question_answer, select_pending, tick,
 };
 
 pub(crate) fn publish_room(
@@ -75,6 +75,7 @@ fn manage_command(store: &RuntimeStore, body: &Value, live: bool) -> Result<Valu
         .map_err(|_| ProjectsError::Invalid("peer team ID is invalid"))?
         .to_string();
     let prepared = PreparedHost::load(store)?;
+    prepared.recheck_paths()?;
     store.transaction_with(|db| {
         if let Some(prior) = replay(db,&key,&signature,"radio")? { return Ok(prior); }
         prepared.recheck(db)?;
@@ -159,10 +160,14 @@ pub trait RadioCreation {
     fn prepare(
         &mut self,
         body: &Value,
-        path: &str,
-        ids: &[String; 2],
-    ) -> Result<[Value; 2], ProjectsError>;
-    fn recheck(&mut self, db: &Transaction<'_>, drafts: &[Value; 2]) -> Result<(), ProjectsError>;
+        path: &std::path::Path,
+        ids: [AgentId; 2],
+    ) -> Result<[AgentRecord; 2], ProjectsError>;
+    fn recheck(
+        &mut self,
+        db: &Transaction<'_>,
+        drafts: &[AgentRecord; 2],
+    ) -> Result<(), ProjectsError>;
 }
 
 pub fn create_with(
@@ -187,34 +192,40 @@ pub fn create_with(
         Uuid::new_v5(&namespace, b"0").to_string(),
         Uuid::new_v5(&namespace, b"1").to_string(),
     ];
-    let mut drafts = creation.prepare(body, &path, &ids)?;
+    let ids = ids.map(AgentId::from);
+    let project_path = std::path::Path::new(&path);
+    let mut drafts = creation.prepare(body, project_path, ids.clone())?;
     for (draft, id) in drafts.iter_mut().zip(&ids) {
-        if draft["id"] != *id
-            || draft["rootId"] != *id
-            || draft["cwd"] != path
-            || draft["isLead"] != true
+        if draft.id != *id
+            || draft.root_id != *id
+            || draft.extra.get("cwd").and_then(Value::as_str) != Some(path.as_str())
+            || draft.extra.get("isLead").and_then(Value::as_bool) != Some(true)
         {
             return Err(ProjectsError::Invalid(
                 "prepared shared participant identity changed",
             ));
         }
-        draft["sharedRoomId"] = json!(room_id);
-        draft["needsTitle"] = json!(false);
-        records::validate("runtime_agents", id, draft.clone())?;
+        draft
+            .extra
+            .insert("sharedRoomId".to_owned(), json!(room_id));
+        draft.extra.insert("needsTitle".to_owned(), json!(false));
+        records::validate("runtime_agents", id.as_ref(), draft.value())?;
     }
     let prepared = PreparedHost::load(store)?;
+    prepared.recheck_paths()?;
     store.transaction_with(|db| {
         if let Some(result)=replay(db,&key,&signature,"radio")? {return Ok(result);}
         prepared.recheck(db)?;
         creation.recheck(db,&drafts)?;
-        if records::get(db,"runtime_rooms",&room_id)?.is_some() || ids.iter().map(|id|prepared_agent_exists(db,id)).collect::<Result<Vec<_>,_>>()?.into_iter().any(|exists|exists) {return Err(ProjectsError::Invalid("shared identity already exists without its receipt"));}
+        if records::get(db,"runtime_rooms",&room_id)?.is_some() || ids.iter().map(|id|prepared_agent_exists(db,id.as_ref())).collect::<Result<Vec<_>,_>>()?.into_iter().any(|exists|exists) {return Err(ProjectsError::Invalid("shared identity already exists without its receipt"));}
         // Project creation is delegated to P02's commit recheck when necessary.
         if ProjectsRepository::get(db,&path)?.is_none() {return Err(ProjectsError::Requires("host-project/radio-create-project"));}
         for draft in &drafts {
-            let id=draft["id"].as_str().ok_or(ProjectsError::Invalid("draft ID missing"))?;
-            db.execute("INSERT INTO runtime_agents(id,record) VALUES(?1,?2)",params![id,draft.to_string()])?;
-            let context=crate::sync_entity_context::agent_view_context(db,draft,prepared.server().ok())?;
-            let view=crate::sync_views::agent_entity_view(draft,&context).ok_or(ProjectsError::Invalid("draft projection unavailable"))?;
+            let id = draft.id.as_ref();
+            let value = draft.value();
+            AgentRepository::put(db, draft)?;
+            let context=crate::sync_entity_context::agent_view_context(db,&value,prepared.server().ok())?;
+            let view=crate::sync_views::agent_entity_view(&value,&context).ok_or(ProjectsError::Invalid("draft projection unavailable"))?;
             SyncDocumentsRepository::put_entity(db,"agent",id,view,false)?;
         }
         let now=crate::projects::now_seconds();

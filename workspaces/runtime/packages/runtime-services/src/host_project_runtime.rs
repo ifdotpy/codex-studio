@@ -60,6 +60,26 @@ impl PreparedHost {
         Ok(())
     }
 
+    /// Re-resolve every prepared path immediately before opening a writer.
+    /// This is intentionally filesystem work outside the transaction; `recheck`
+    /// then fences the database rows inside the transaction that applies them.
+    pub fn recheck_paths(&self) -> Result<(), ProjectsError> {
+        for (_, row) in self.projects.iter().chain(&self.agents) {
+            for field in ["path", "cwd"] {
+                let Some(path) = row.get(field).and_then(Value::as_str) else {
+                    continue;
+                };
+                let current = project_key(Some(&json!(path)), false)?;
+                if self.paths.get(path) != Some(&current) {
+                    return Err(ProjectsError::Conflict(
+                        "Project path changed during preparation. Retry",
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
     pub(crate) fn resolve(&self, path: &str) -> Result<&str, ProjectsError> {
         self.paths
             .get(path)

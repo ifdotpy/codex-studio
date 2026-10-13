@@ -6,9 +6,12 @@ use std::{fs, path::Path, process::Command};
 use studio_runtime_services::{
     host_project_runtime::PreparedHost,
     projects::ProjectsError,
-    radio_runtime::{self, RadioIngress},
+    radio_runtime::{self, NativeAcceptanceReceipt, RadioIngress},
+    turn_prepare::{Epoch, NativeReceipt, ReceiptOutcome},
 };
-use studio_runtime_store::{AgentId, QueueEvent, QueueEventId, QueueEventRepository, RuntimeStore};
+use studio_runtime_store::{
+    AgentId, AgentRecord, QueueEvent, QueueEventId, QueueEventRepository, RuntimeStore,
+};
 
 struct Ingress;
 impl RadioIngress for Ingress {
@@ -78,7 +81,12 @@ fn seed(store: &RuntimeStore, snapshot: &Value) {
     store
         .transaction(|db| {
             for (table, rows) in snapshot.as_object().expect("snapshot") {
-                db.execute(&format!("DELETE FROM runtime_{table}"), [])?;
+                let table_name = match table.as_str() {
+                    "sync_entities" => "sync_entities".to_owned(),
+                    "sidebar_order" => "runtime_sidebar_order".to_owned(),
+                    _ => format!("runtime_{table}"),
+                };
+                db.execute(&format!("DELETE FROM {table_name}"), [])?;
                 for row in rows.as_array().expect("rows") {
                     let fields = row.as_object().expect("row");
                     let names = fields.keys().cloned().collect::<Vec<_>>().join(",");
@@ -96,7 +104,7 @@ fn seed(store: &RuntimeStore, snapshot: &Value) {
                         })
                         .collect::<Vec<_>>();
                     db.execute(
-                        &format!("INSERT INTO runtime_{table}({names}) VALUES({placeholders})"),
+                        &format!("INSERT INTO {table_name}({names}) VALUES({placeholders})"),
                         rusqlite::params_from_iter(values),
                     )?;
                 }
@@ -111,11 +119,18 @@ fn state(store: &RuntimeStore, tables: &Value) -> Value {
     for table in tables.as_object().expect("tables").keys() {
         let order = if table == "chat_messages" {
             "seq"
+        } else if table == "sync_entities" {
+            "collection,id"
         } else {
             "id"
         };
+        let table_name = match table.as_str() {
+            "sync_entities" => "sync_entities".to_owned(),
+            "sidebar_order" => "runtime_sidebar_order".to_owned(),
+            _ => format!("runtime_{table}"),
+        };
         let mut query = db
-            .prepare(&format!("SELECT * FROM runtime_{table} ORDER BY {order}"))
+            .prepare(&format!("SELECT * FROM {table_name} ORDER BY {order}"))
             .expect("table");
         let columns = query
             .column_names()
@@ -151,7 +166,20 @@ fn normalize(value: &mut Value) {
     match value {
         Value::Object(map) => {
             for (key, value) in map.iter_mut() {
-                if ["record", "result"].contains(&key.as_str())
+                if key == "sync_entities"
+                    && let Some(rows) = value.as_array_mut()
+                {
+                    // The reduced Python fixture only maintains the peerTeam
+                    // sync projection. Store also writes project, agent, room,
+                    // and event projections, so retain and compare the full
+                    // P19-owned peerTeam rows, including payload/hash/deleted.
+                    rows.retain(|row| row["collection"] == "peerTeam");
+                    rows.sort_by_key(|row| row["seq"].as_i64().unwrap_or_default());
+                    for (index, row) in rows.iter_mut().enumerate() {
+                        row["seq"] = json!(index + 1);
+                    }
+                }
+                if ["record", "result", "payload"].contains(&key.as_str())
                     && let Some(raw) = value.as_str()
                     && let Ok(parsed) = serde_json::from_str(raw)
                 {
@@ -177,6 +205,11 @@ fn normalize(value: &mut Value) {
                 }
                 normalize(value);
             }
+            if map.remove("interruptState").is_some() {
+                // Python stores the handoff intent as interruptRequested; Rust
+                // retains the durable pending/unknown delivery state separately.
+                map.insert("interruptRequested".to_owned(), json!(true));
+            }
         }
         Value::Array(values) => {
             for value in values {
@@ -190,10 +223,23 @@ fn run(store: &RuntimeStore, case: &Value) -> Result<Value, ProjectsError> {
     let prepared = PreparedHost::load(store)?;
     match case["mode"].as_str().expect("mode") {
         "convert" => studio_runtime_services::peer_conversion::convert(store, &case["body"]),
+        "project" => studio_runtime_services::projects::write(
+            store,
+            &case["body"],
+            "default",
+            &[json!({"id":"default","status":"ready","canAttemptNativeProof":true})],
+        ),
+        "peer" => studio_runtime_services::projects::peer_team_write(
+            store,
+            &case["body"],
+            "default",
+            &[json!({"id":"default","status":"ready","canAttemptNativeProof":true})],
+        ),
         "create" => {
             let path = case["body"]["path"].as_str().expect("project path");
             fs::create_dir_all(path).expect("project directory");
-            let drafts: [Value; 2] = serde_json::from_value(case["drafts"].clone()).expect("Python drafts");
+            let values: [Value; 2] = serde_json::from_value(case["drafts"].clone()).expect("Python drafts");
+            let drafts = values.map(|value| AgentRecord::from_value(value).expect("checked Python agent draft"));
             let result = radio_runtime::create_with(store, &case["body"], &mut Creation(drafts));
             fs::remove_dir(path).expect("remove fixture project directory");
             result
@@ -215,7 +261,7 @@ fn run(store: &RuntimeStore, case: &Value) -> Result<Value, ProjectsError> {
                 &prepared,
                 &case["body"]["question"],
                 case["body"]["text"].as_str().unwrap_or("answer"),
-                false,
+                None,
                 1000.0,
             )
             .map(|v| json!(v))
@@ -278,6 +324,21 @@ fn python_written_radio_corpus_and_restart_replay() {
             let mut changed = case.clone();
             if changed["mode"] == "convert" {
                 changed["body"]["target"] = json!("b");
+            } else if changed["mode"] == "project" {
+                match changed["body"]["action"].as_str().expect("project action") {
+                    "set_accounts" => changed["body"]["account_keys"] = json!(["other"]),
+                    "set_worker_base" => changed["body"]["base_ref"] = json!("other"),
+                    "add_folder" => changed["body"]["name"] = json!("Other"),
+                    "reorder" => changed["body"]["groups"] = json!({"projects": []}),
+                    _ => unreachable!("covered project operation"),
+                }
+            } else if changed["mode"] == "peer" {
+                match changed["body"]["action"].as_str().expect("peer action") {
+                    "save" => changed["body"]["name"] = json!("Other"),
+                    "delete" => changed["body"]["team_id"] = json!("different-team"),
+                    "move" => changed["body"]["member"] = json!("d"),
+                    _ => unreachable!("covered peer operation"),
+                }
             } else {
                 changed["body"]["text"] = json!("different answer or message");
             }
@@ -447,7 +508,7 @@ fn answered_question_releases_one_continuation_and_malformed_rows_write_nothing(
     assert!(radio_runtime::holds_floor(&store.read().expect("read"), "a").expect("floor"));
     let prepared = PreparedHost::load(&store).expect("prepare");
     store.transaction_with(|db|->Result<(),ProjectsError> {
-        assert!(radio_runtime::route_question_answer(db,&prepared,&case["body"]["question"],"answer",false,1000.0)?);
+        assert!(radio_runtime::route_question_answer(db,&prepared,&case["body"]["question"],"answer",None,1000.0)?);
         db.execute("UPDATE runtime_requests SET record=json_set(record,'$.status','answered') WHERE id='q'",[])?;
         Ok(())
     }).expect("P04 caller commits both writes");
@@ -489,20 +550,119 @@ fn answered_question_releases_one_continuation_and_malformed_rows_write_nothing(
     );
 }
 
-struct Creation([Value; 2]);
+#[test]
+fn pending_interrupt_recovers_before_claim_and_unknown_is_never_resent() {
+    let template = tempfile::tempdir().expect("template");
+    let cases = corpus(template.path());
+    let case = cases
+        .iter()
+        .find(|case| case["name"] == "interrupt")
+        .expect("interrupt");
+    let root = tempfile::tempdir().expect("state");
+    for db in ["canvas.sqlite3", "analytics.sqlite3"] {
+        fs::copy(template.path().join(db), root.path().join(db)).expect("copy");
+    }
+    let store = RuntimeStore::open(Some(root.path())).expect("open");
+    seed(&store, &case["before"]);
+    let prepared = PreparedHost::load(&store).expect("prepare");
+    let first = store
+        .transaction_with(|db| radio_runtime::tick(db, &prepared, &mut Ingress, 1000.0))
+        .expect("persist pending intent");
+    assert_eq!(first.len(), 1);
+    let event = first[0]
+        .request_id
+        .strip_prefix("radio-interrupt:")
+        .expect("event ID")
+        .to_owned();
+    drop(store);
+
+    let store = RuntimeStore::open(Some(root.path())).expect("restart with pending");
+    let prepared = PreparedHost::load(&store).expect("prepare");
+    let recovered = store
+        .transaction_with(|db| radio_runtime::tick(db, &prepared, &mut Ingress, 1001.0))
+        .expect("recover intent");
+    assert_eq!(recovered.len(), 1);
+    assert_eq!(recovered[0].request_id, format!("radio-interrupt:{event}"));
+    assert!(
+        store
+            .transaction_with(|db| radio_runtime::claim_interrupt(db, &prepared, &event, 1002.0))
+            .expect("durably claim")
+    );
+    drop(store);
+
+    let store = RuntimeStore::open(Some(root.path())).expect("restart after claim");
+    let prepared = PreparedHost::load(&store).expect("prepare");
+    let held = store
+        .transaction_with(|db| radio_runtime::tick(db, &prepared, &mut Ingress, 1003.0))
+        .expect("hold unknown handoff");
+    assert!(held.is_empty(), "claimed Unknown interrupt is never resent");
+}
+
+#[test]
+fn native_answer_receipt_cannot_be_minted_from_unknown_or_rejected() {
+    let base = NativeReceipt {
+        operation_id: "operation".to_owned(),
+        actor_id: "agent".to_owned(),
+        epoch: Epoch(None, 7),
+        event_ids: vec!["event".to_owned()],
+        outcome: ReceiptOutcome::Unknown,
+    };
+    assert!(NativeAcceptanceReceipt::from_native(&base).is_none());
+    let mut rejected = base.clone();
+    rejected.outcome = ReceiptOutcome::Rejected;
+    assert!(NativeAcceptanceReceipt::from_native(&rejected).is_none());
+    let mut accepted = base;
+    accepted.outcome = ReceiptOutcome::Accepted {
+        turn_id: "turn".to_owned(),
+    };
+    assert!(NativeAcceptanceReceipt::from_native(&accepted).is_some());
+    accepted.event_ids.push("unexpected-event".to_owned());
+    assert!(NativeAcceptanceReceipt::from_native(&accepted).is_none());
+}
+
+#[test]
+fn prepared_host_fences_source_rows_changed_before_the_writer() {
+    let template = tempfile::tempdir().expect("template");
+    let case = corpus(template.path())
+        .into_iter()
+        .find(|case| case["name"] == "open")
+        .expect("open fixture");
+    let root = tempfile::tempdir().expect("state");
+    for db in ["canvas.sqlite3", "analytics.sqlite3"] {
+        fs::copy(template.path().join(db), root.path().join(db)).expect("copy");
+    }
+    let store = RuntimeStore::open(Some(root.path())).expect("open");
+    seed(&store, &case["before"]);
+    let prepared = PreparedHost::load(&store).expect("prepare");
+    store
+        .transaction(|db| {
+            db.execute(
+                "UPDATE runtime_agents SET record=json_set(record,'$.cwd','/changed-after-prepare') WHERE id='a'",
+                [],
+            )?;
+            Ok(())
+        })
+        .expect("intervening row update");
+    assert!(matches!(
+        store.transaction_with(|db| prepared.recheck(db)),
+        Err(ProjectsError::Conflict(_))
+    ));
+}
+
+struct Creation([AgentRecord; 2]);
 impl radio_runtime::RadioCreation for Creation {
     fn prepare(
         &mut self,
         _body: &Value,
-        _path: &str,
-        _ids: &[String; 2],
-    ) -> Result<[Value; 2], ProjectsError> {
+        _path: &Path,
+        _ids: [AgentId; 2],
+    ) -> Result<[AgentRecord; 2], ProjectsError> {
         Ok(self.0.clone())
     }
     fn recheck(
         &mut self,
         _db: &rusqlite::Transaction<'_>,
-        _drafts: &[Value; 2],
+        _drafts: &[AgentRecord; 2],
     ) -> Result<(), ProjectsError> {
         Ok(())
     }

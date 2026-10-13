@@ -83,6 +83,7 @@ pub fn peer_team_write(
         sha256_hex(python_json(&json!({"operation":"peer-team","body":body})).as_bytes());
     let key = format!("peer-team:{request_id}");
     let prepared = PreparedHost::load(store)?;
+    prepared.recheck_paths()?;
     store.transaction_with(|tx| {
         prepared.recheck(tx)?;
         if let Some(result) = replay(tx, &key, &signature, "peer team")? { return Ok(result); }

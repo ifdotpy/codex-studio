@@ -5,6 +5,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "turn_lifecycle"))
 from oracle_guard import install_guard
 install_guard(block_processes=True)
 import importlib.util
+import hashlib
 import json
 import sqlite3
 import uuid
@@ -20,11 +21,27 @@ import codex_radio as radio
 import codex_peer_conversion as conversion
 from types import SimpleNamespace
 
-TABLES = ("agents", "projects", "rooms", "events", "chat_messages", "requests", "completed_turns", "items", "operation_receipts")
+TABLES = ("agents", "projects", "rooms", "events", "chat_messages", "requests", "completed_turns", "items", "operation_receipts", "sync_entities", "sidebar_order", "work", "plans", "annotations", "complaints", "event_meta", "rules")
 
 def snapshot(r):
     with r.db() as db:
-        return {table: [dict(row) for row in db.execute("SELECT * FROM runtime_" + table + " ORDER BY " + ("seq" if table == "chat_messages" else "id"))] for table in TABLES}
+        return {table: [dict(row) for row in db.execute("SELECT * FROM " + {"sync_entities":"sync_entities", "sidebar_order":"runtime_sidebar_order"}.get(table, "runtime_" + table) + " ORDER BY " + ("seq" if table == "chat_messages" else "collection,id" if table == "sync_entities" else "id"))] for table in TABLES}
+
+def project_changed_events(before, after):
+    """Mirror the live SQLite event projection missing from this reduced fixture schema."""
+    old = {row["id"]: row for row in before["events"]}
+    changed = [row for row in after["events"] if old.get(row["id"]) != row]
+    sequence = max((row["seq"] for row in after["sync_entities"]), default=0)
+    for event in changed:
+        value = {key: event.get(key) for key in ("id", "agent", "kind", "status", "created", "error")}
+        payload_obj = {"collection": "event", "id": event["id"], "value": value}
+        payload = json.dumps(payload_obj, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+        sequence += 1
+        after["sync_entities"].append({
+            "collection": "event", "id": event["id"], "seq": sequence,
+            "hash": hashlib.sha256(payload.encode()).hexdigest(), "payload": payload, "deleted": 0,
+        })
+    after["sync_entities"].sort(key=lambda row: (row["collection"], row["id"]))
 
 def template(root):
     schema = json.loads((ROOT / "workspaces/runtime/packages/runtime-store/tests/fixtures/live-state-schema.json").read_text())
@@ -48,10 +65,28 @@ def case(name, mode, configure=None, extra=None):
                 f.mutate_agent(id, name=id, status="idle", epoch=1, created=10.0, updated=10.0, provider="codex", model="gpt-6-astra", role="lead", depth=0, prompt="", worktree=False)
             with f.runtime.db() as db:
                 db.execute("CREATE INDEX runtime_task_agent_created_id ON runtime_tasks(json_extract(record,'$.agent'),json_extract(record,'$.created'),id)")
+                for table in ("work", "plans", "annotations", "complaints", "event_meta", "rules"):
+                    db.execute(f"CREATE TABLE IF NOT EXISTS runtime_{table}(id TEXT PRIMARY KEY, record TEXT NOT NULL)")
+                db.execute("CREATE TABLE IF NOT EXISTS runtime_sidebar_order(id TEXT PRIMARY KEY, record TEXT NOT NULL)")
             if configure:
                 configure(f)
-            body = dict(action="radio", radio_action=mode, path=f.path, team_id=f.team_id, request_id="p19-"+name, expected_revision=f.room()["radio"]["revision"])
-            body.update(extra or {})
+            if mode == "convert":
+                with f.runtime.db() as db:
+                    for table, record in (
+                        ("work", dict(id="w", owner="a", rootId="a", version=1, status="review", title="Work", results=[], decisions=[])),
+                        ("plans", dict(id="a", rootId="a", text="Plan", version=1, updated=10.0, steps=[])),
+                        ("annotations", dict(id="an", rootId="a", agent="a", text="Note")),
+                        ("complaints", dict(id="co", leadId="a", author="a", text="Issue", status="open")),
+                        ("event_meta", dict(id="em", rootId="a", leadId="a")),
+                        ("rules", dict(id="ru", rootId="a", agent="a", inFlight=False)),
+                    ):
+                        f.runtime.put(db, table, record)
+            if mode in ("project", "peer"):
+                body = dict(extra or {})
+                body.setdefault("path", f.path)
+            else:
+                body = dict(action="radio", radio_action=mode, path=f.path, team_id=f.team_id, request_id="p19-"+name, expected_revision=f.room()["radio"]["revision"])
+                body.update(extra or {})
             drafts = []
             if mode == "create":
                 Path(f.path).mkdir(parents=True)
@@ -106,11 +141,18 @@ def case(name, mode, configure=None, extra=None):
                     with f.runtime.db() as db:
                         result = radio.validate_event(f.runtime, db, a, e)
                         error = result is not None
+                elif mode == "project":
+                    result = f.runtime.projects(body)
+                elif mode == "peer":
+                    from codex_peer_teams import manage
+                    result = manage(f.runtime, body)
                 else:
                     result = radio.manage(f.runtime, body)
             except ValueError:
                 error = True
-            return dict(name=name, mode=mode, body=body, before=before, after=snapshot(f.runtime), result=result, error=error, drafts=drafts)
+            after = snapshot(f.runtime)
+            project_changed_events(before, after)
+            return dict(name=name, mode=mode, body=body, before=before, after=after, result=result, error=error, drafts=drafts)
         finally:
             f.doCleanups()
 
@@ -152,7 +194,24 @@ def stopped(f):
 
 root = Path(sys.argv[1])
 template(root)
-cases = [case("open", "open"), case("send", "send", extra=dict(text="hello", rounds=2)), case("pass", "pass", extra=dict(target="b")), case("pass-both", "pass"), case("bad-rounds", "send", extra=dict(text="x", rounds=3)), case("stop-idle", "stop"), case("stop-pending", "stop", active), case("stop-delivered", "stop", delivered), case("floor", "tick", queued), case("unknown", "tick", uncertain), case("interrupt", "tick", stopped), case("question-floor", "tick", question), case("answer", "answer", question), case("binding", "bind", binding), case("convert", "convert"), case("create", "create"), case("project-binding", "project-binding")]
+
+def peer_move_fixture(f):
+    with f.runtime.db() as db:
+        project = json.loads(db.execute("SELECT record FROM runtime_projects WHERE id=?", (f.path,)).fetchone()[0])
+        project["peerTeams"] = [dict(id=f.team_id, name="Peers", members=["a", "b"]), dict(id="33333333-3333-4333-8333-333333333333", name="Second", members=["c", "d"])]
+        project["peerTeamsRevision"] = 1
+        f.runtime.put(db, "projects", project)
+
+cases = [
+    case("open", "open"), case("send", "send", extra=dict(text="hello", rounds=2)), case("pass", "pass", extra=dict(target="b")), case("pass-both", "pass"), case("bad-rounds", "send", extra=dict(text="x", rounds=3)), case("stop-idle", "stop"), case("stop-pending", "stop", active), case("stop-delivered", "stop", delivered), case("floor", "tick", queued), case("unknown", "tick", uncertain), case("interrupt", "tick", stopped), case("question-floor", "tick", question), case("answer", "answer", question), case("binding", "bind", binding), case("convert", "convert"), case("create", "create"), case("project-binding", "project-binding"),
+    case("project-accounts", "project", extra=dict(action="set_accounts", account_keys=["default"], account_key="default", expected_revision=1)),
+    case("project-base", "project", extra=dict(action="set_worker_base", base_ref="main", expected_revision=0)),
+    case("project-folder", "project", extra=dict(action="add_folder", folder_id="22222222-2222-4222-8222-222222222222", name="Docs", expected_revision=0)),
+    case("project-sidebar", "project", extra=dict(action="reorder", request_id="p19-sidebar", groups={"projects":["/project"]}, expected_revision=0)),
+    case("peer-save", "peer", extra=dict(action="save", request_id="p19-save", expected_revision=0, team_id="33333333-3333-4333-8333-333333333333", name="Second", members=["c","d"])),
+    case("peer-delete", "peer", extra=dict(action="delete", request_id="p19-delete", expected_revision=0, team_id="11111111-1111-4111-8111-111111111111")),
+    case("peer-move", "peer", peer_move_fixture, extra=dict(action="move", request_id="p19-move", expected_revision=1, team_id="33333333-3333-4333-8333-333333333333", member="b")),
+]
 if "--full" in sys.argv:
     for target in ("a", "b", "both", "missing"):
         for rounds in (1, 2):

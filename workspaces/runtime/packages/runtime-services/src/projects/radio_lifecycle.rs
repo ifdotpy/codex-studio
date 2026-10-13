@@ -121,18 +121,27 @@ pub fn tick(
                         }
                     }
                 } else if room.radio.status == Status::Stopping {
-                    if let Some(turn_id) = turn_id
-                        && !truthy(active.extra.get("interruptRequested"))
-                    {
-                        active
+                    if let Some(turn_id) = turn_id {
+                        let state = active
                             .extra
-                            .insert("interruptRequested".to_owned(), json!(true));
-                        room.radio.active = Some(active.clone());
-                        effects.push(Interrupt {
-                            request_id: format!("radio-interrupt:{}", active.event_id),
-                            agent: agent.clone(),
-                            turn_id,
-                        });
+                            .get("interruptState")
+                            .and_then(Value::as_str)
+                            .map(str::to_owned);
+                        if state.is_none() {
+                            active
+                                .extra
+                                .insert("interruptState".to_owned(), json!("pending"));
+                            room.radio.active = Some(active.clone());
+                        }
+                        // Pending is a durable intent. If the process died before
+                        // claiming it, the next scheduler tick reconstructs the effect.
+                        if state.is_none() || state.as_deref() == Some("pending") {
+                            effects.push(Interrupt {
+                                request_id: format!("radio-interrupt:{}", active.event_id),
+                                agent: agent.clone(),
+                                turn_id,
+                            });
+                        }
                     }
                 } else if matches!(event.status.as_str(), "uncertain" | "failed" | "cancelled") {
                     room.blocked(
@@ -312,7 +321,7 @@ pub fn route_question_answer(
     prepared: &PreparedHost,
     question: &Value,
     text: &str,
-    accepted: bool,
+    receipt: Option<&NativeAcceptanceReceipt>,
     now: f64,
 ) -> Result<bool, ProjectsError> {
     if question["method"] != "agent/asyncQuestion"
@@ -352,7 +361,14 @@ pub fn route_question_answer(
             "{}:answer",
             question["id"].as_str().ok_or_else(|| invalid(room.id()))?
         );
-        if accepted {
+        if let Some(receipt) = receipt {
+            if receipt.agent_id != active.agent_id
+                || receipt.epoch != active.epoch
+                || Some(receipt.turn_id.as_str()) != question["turnId"].as_str()
+                || receipt.event_id != active.event_id
+            {
+                return Ok(false);
+            }
             message(db, &room, &key, "user", text, now)?;
             save(db, &mut room, prepared, now)?;
             return Ok(false);
@@ -404,6 +420,64 @@ pub fn route_question_answer(
             return Ok(true);
         }
         return Ok(false);
+    }
+    Ok(false)
+}
+
+/// Proof that the native worker accepted the exact radio turn. Fields stay
+/// private so callers cannot substitute a boolean for the worker receipt.
+pub struct NativeAcceptanceReceipt {
+    agent_id: String,
+    epoch: u64,
+    turn_id: String,
+    event_id: String,
+}
+impl NativeAcceptanceReceipt {
+    pub fn from_native(receipt: &crate::turn_prepare::NativeReceipt) -> Option<Self> {
+        let crate::turn_prepare::ReceiptOutcome::Accepted { turn_id } = &receipt.outcome else {
+            return None;
+        };
+        let event_id = receipt.event_ids.first()?.clone();
+        if receipt.event_ids.len() != 1 || turn_id.is_empty() {
+            return None;
+        }
+        Some(Self {
+            agent_id: receipt.actor_id.clone(),
+            epoch: receipt.epoch.1,
+            turn_id: turn_id.clone(),
+            event_id,
+        })
+    }
+}
+
+/// Claim a persisted interrupt immediately before handing it to the native
+/// transport. Once claimed, its outcome is Unknown and restart never resends it.
+pub fn claim_interrupt(
+    db: &Transaction<'_>,
+    prepared: &PreparedHost,
+    event_id: &str,
+    now: f64,
+) -> Result<bool, ProjectsError> {
+    prepared.recheck(db)?;
+    for mut room in rooms(db)? {
+        let Some(active) = room
+            .radio
+            .active
+            .as_mut()
+            .filter(|active| active.event_id == event_id)
+        else {
+            continue;
+        };
+        if room.radio.status != Status::Stopping
+            || active.extra.get("interruptState").and_then(Value::as_str) != Some("pending")
+        {
+            return Ok(false);
+        }
+        active
+            .extra
+            .insert("interruptState".to_owned(), json!("unknown"));
+        save(db, &mut room, prepared, now)?;
+        return Ok(true);
     }
     Ok(false)
 }

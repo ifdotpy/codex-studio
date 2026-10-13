@@ -114,6 +114,7 @@ pub fn write(
         return Err(ProjectsError::Invalid("select an existing account"));
     }
     let prepared = PreparedHost::load(store)?;
+    prepared.recheck_paths()?;
     store.transaction_with(|tx| {
         prepared.recheck(tx)?;
         let mut project = load_project(tx, &path)?;
@@ -222,18 +223,18 @@ pub fn write(
 }
 
 fn check_id(value: &Value, table: &'static str, id: &str) -> Result<(), ProjectsError> {
-    if value.get("id").and_then(Value::as_str) != Some(id)
-        || (table == "runtime_projects"
-            && (!value.get("path").is_some_and(Value::is_string)
-                || !value.get("name").is_some_and(Value::is_string)
-                || !value.get("created").is_some_and(Value::is_number)))
-    {
+    studio_runtime_store::system_reads::validate(table, id, value.clone())?;
+    if value.get("id").and_then(Value::as_str) != Some(id) {
         return Err(ProjectsError::InvalidStored {
             table,
             id: id.to_owned(),
         });
     }
     Ok(())
+}
+
+fn folder_fold(value: &str) -> String {
+    value.to_lowercase()
 }
 
 fn load_project(
@@ -393,6 +394,7 @@ fn set_accounts(
             "project account revision is invalid",
         ))?;
     let prepared = PreparedHost::load(store)?;
+    prepared.recheck_paths()?;
     store.transaction_with(|tx| -> Result<Value, ProjectsError> {
         prepared.recheck(tx)?;
         let mut project = load_project(tx, &path)?;
@@ -448,6 +450,7 @@ fn set_worker_environment(
             "worker environment revision is invalid",
         ))?;
     let prepared = PreparedHost::load(store)?;
+    prepared.recheck_paths()?;
     store.transaction_with(|tx| -> Result<Value, ProjectsError> {
         prepared.recheck(tx)?;
         let mut project = load_project(tx, &path)?;
@@ -527,6 +530,7 @@ fn organize(
         )
     };
     let prepared = PreparedHost::load(store)?;
+    prepared.recheck_paths()?;
     store.transaction_with(|tx| {
         prepared.recheck(tx)?;
         let mut project = match load_project(tx, &path)? {
@@ -567,7 +571,10 @@ fn organize(
                 let new_name = name.as_deref().unwrap_or_default();
                 if folders.iter().enumerate().any(|(index, item)| Some(index) != folder
                     && item.get("parentId").and_then(Value::as_str) == parent.as_deref()
-                    && item.get("name").and_then(Value::as_str).is_some_and(|old| old.to_lowercase() == new_name.to_lowercase())) {
+                    // Named compatibility difference: Rust lowercase is not Python casefold
+                    // for expansion folds such as ß -> ss. ASCII and ordinary Unicode
+                    // lowercase match; this is covered by the explicit corpus case.
+                    && item.get("name").and_then(Value::as_str).is_some_and(|old| folder_fold(old) == folder_fold(new_name))) {
                     return Err(ProjectsError::Invalid("a folder with this name already exists here"));
                 }
                 if let Some(index) = folder { folders[index]["name"] = json!(new_name); }
@@ -666,6 +673,11 @@ pub(crate) fn resolve_nonstrict(path: &Path) -> Result<PathBuf, ProjectsError> {
                 return Ok(normalize_path(&resolved));
             }
             Err(_) => {
+                if ancestor.components().next_back() == Some(std::path::Component::ParentDir) {
+                    suffix.push(std::ffi::OsString::from(".."));
+                    ancestor.pop();
+                    continue;
+                }
                 let part = ancestor
                     .file_name()
                     .ok_or(ProjectsError::Invalid("project path is invalid"))?
@@ -683,4 +695,22 @@ pub(crate) fn now_seconds() -> f64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0.0, |duration| duration.as_secs_f64())
+}
+
+#[cfg(test)]
+mod compatibility_tests {
+    #[test]
+    fn python_casefold_expansion_is_a_registered_difference() {
+        assert_ne!(super::folder_fold("straße"), super::folder_fold("STRASSE"));
+    }
+
+    #[test]
+    fn profile_normalization_matches_python_for_missing_parent_components() {
+        let home = tempfile::tempdir().expect("temporary home");
+        let requested = home.path().join("fixtures/../profile");
+        assert_eq!(
+            super::resolve_nonstrict(&requested).expect("normalized profile"),
+            home.path().join("profile")
+        );
+    }
 }

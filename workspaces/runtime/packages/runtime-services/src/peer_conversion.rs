@@ -63,6 +63,7 @@ pub fn convert(store: &RuntimeStore, body: &Value) -> Result<Value, ProjectsErro
         .checked_add(1)
         .ok_or(ProjectsError::Invalid("peer team revision exhausted"))?;
     let prepared = PreparedHost::load(store)?;
+    prepared.recheck_paths()?;
     store.transaction_with(|db| {
         if let Some(result)=replay(db,&key,&signature,"peer conversion")? { return Ok(result); }
         prepared.recheck(db)?;
