@@ -29,8 +29,6 @@ mod store;
 mod stream;
 #[allow(unsafe_code)]
 mod sys;
-#[cfg(test)]
-mod testenv;
 mod trace;
 mod tree;
 

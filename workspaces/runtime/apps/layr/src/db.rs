@@ -742,14 +742,14 @@ mod tests {
             r.data = serde_json::json!({"state": st, "caches": {path: snap}, "uuids": {snap: uuid}, "shared": true});
             r
         };
-        // Two saves of caches on the same state (two seeded folders, one after the other).
-        db.derive(&caches(2, "chromium", "01a12290-0000-7000-8000-000000000001"), &|_| true, machine).unwrap();
-        db.derive(&caches(3, ".attar-cache", "01a12290-0000-7000-8000-000000000002"), &|_| true, machine).unwrap();
+        // Two saves of caches on the same state, one for each folder.
+        db.derive(&caches(2, "target", "01a12290-0000-7000-8000-000000000001"), &|_| true, machine).unwrap();
+        db.derive(&caches(3, ".cache", "01a12290-0000-7000-8000-000000000002"), &|_| true, machine).unwrap();
         let s = db.state(st).unwrap().unwrap();
-        assert_eq!(s.caches.keys().map(|k| k.as_str()).collect::<Vec<_>>(), [".attar-cache", "chromium"]);
+        assert_eq!(s.caches.keys().map(|k| k.as_str()).collect::<Vec<_>>(), [".cache", "target"]);
         assert!(s.cache_shared);
         for (path, uuid) in
-            [("chromium", "01a12290-0000-7000-8000-000000000001"), (".attar-cache", "01a12290-0000-7000-8000-000000000002")]
+            [("target", "01a12290-0000-7000-8000-000000000001"), (".cache", "01a12290-0000-7000-8000-000000000002")]
         {
             assert_eq!(db.cache_uuid(st, &format!("{st}@{path}")).unwrap().as_deref(), Some(uuid));
         }

@@ -178,7 +178,7 @@ pub fn run_as(argv: Vec<String>, caller: Caller, cwd: PathBuf, env: HashMap<Stri
     }
 }
 
-/// Periodic work: automatic states of busy lines, retention, backups.
+/// Periodic work: automatic states of busy lines, access to the git store, retention, backups.
 fn periodic(root: &Path, hourly: bool) {
     let now = crate::ids::now_ms();
     let store = match Store::open(root) {

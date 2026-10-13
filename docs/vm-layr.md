@@ -250,8 +250,9 @@ npm run typecheck:runtime
 ```
 
 The layr tests run on Linux as root, with btrfs-progs and git (for example in an OrbStack
-machine): `cargo test --locked` in `workspaces/runtime/apps/layr`. The tests that use
-`src/testenv.rs` make a btrfs file system on a loop file; without root they return without a check.
+machine): `cargo test --locked` in `workspaces/runtime/apps/layr`. The btrfs regression tests
+(warm caches, regenerable folders, the git store) are in the upstream layr repository
+(`tests/run.sh`); run them there as root before vendoring a new revision.
 
 Live checks require the existing Studio VM on this Mac.
 Back up its disks before guest changes.
