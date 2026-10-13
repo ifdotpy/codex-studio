@@ -31,7 +31,6 @@ serde_json = { workspace = true }
 studio-runtime-providers = { path = "../runtime-providers" }
 tempfile = { workspace = true }
 rusqlite = { workspace = true }
-tempfile = { workspace = true }
 tower = { workspace = true }
 
 [lints]

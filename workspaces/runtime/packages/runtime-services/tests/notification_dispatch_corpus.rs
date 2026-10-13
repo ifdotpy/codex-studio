@@ -724,13 +724,7 @@ fn flush(
     assert!(rollback.is_err());
     let result = store
         .transaction_with(|tx| {
-            flush_notification_streams(
-                tx,
-                agent_id,
-                &publication,
-                streams,
-                1234.5,
-            )
+            flush_notification_streams(tx, agent_id, &publication, streams, 1234.5)
         })
         .map_err(|e| e.to_string())?;
     assert_eq!(

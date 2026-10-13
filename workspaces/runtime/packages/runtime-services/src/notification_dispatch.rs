@@ -1116,7 +1116,15 @@ pub(crate) fn prune_inactive_streams(
                     serde_json::from_str(&raw).map_err(|_| stored("runtime_agents", &id))?;
                 projection["turnId"] = json!(key.turn);
                 projection["deletedAt"] = Value::Null;
-                flush_one_stream(transaction, &id, &mut projection, streams, &key, observed_at, false)?;
+                flush_one_stream(
+                    transaction,
+                    &id,
+                    &mut projection,
+                    streams,
+                    &key,
+                    observed_at,
+                    false,
+                )?;
             }
             continue;
         }
@@ -1126,7 +1134,15 @@ pub(crate) fn prune_inactive_streams(
                     serde_json::from_str(&raw).map_err(|_| stored("runtime_agents", &id))?;
                 projection["turnId"] = json!(key.turn);
                 projection["deletedAt"] = Value::Null;
-                flush_one_stream(transaction, &id, &mut projection, streams, &key, observed_at, true)?;
+                flush_one_stream(
+                    transaction,
+                    &id,
+                    &mut projection,
+                    streams,
+                    &key,
+                    observed_at,
+                    true,
+                )?;
                 continue;
             }
             NotificationDispatchRepository::put_stream_base(
@@ -1151,11 +1167,13 @@ fn stream_owner(
             |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
         ).optional()
     } else {
-        transaction.query_row(
-            "SELECT id,record FROM runtime_agents WHERE id=?1",
-            [&key.agent_id],
-            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
-        ).optional()
+        transaction
+            .query_row(
+                "SELECT id,record FROM runtime_agents WHERE id=?1",
+                [&key.agent_id],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+            )
+            .optional()
     };
     owner.map_err(|error| StoreError::from(error).into())
 }
@@ -1170,16 +1188,28 @@ fn flush_one_stream(
     close: bool,
 ) -> Result<(), NotificationDispatchError> {
     if key.method == "item/commandExecution/outputDelta" {
-        kinds::flush_command(transaction, agent_id, agent, streams, key, close, observed_at)?;
-    } else {
-        flush_text_stream(transaction, agent_id, agent, streams, key, observed_at, None)?;
-    }
-    if close {
-        NotificationDispatchRepository::put_stream_base(
+        kinds::flush_command(
             transaction,
-            &stream_base_id(key),
+            agent_id,
+            agent,
+            streams,
+            key,
+            close,
+            observed_at,
+        )?;
+    } else {
+        flush_text_stream(
+            transaction,
+            agent_id,
+            agent,
+            streams,
+            key,
+            observed_at,
             None,
         )?;
+    }
+    if close {
+        NotificationDispatchRepository::put_stream_base(transaction, &stream_base_id(key), None)?;
         streams.close(key);
     }
     Ok(())

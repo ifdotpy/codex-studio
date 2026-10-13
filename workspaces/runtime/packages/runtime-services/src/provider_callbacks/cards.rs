@@ -334,17 +334,7 @@ pub fn resolve(
         let identity = ReplyIdentity::new(context, rpc_id);
         let resolution_key = format!("{}:resolved", identity.key());
         let mut card_signature = None;
-        for card in records::all(tx, "runtime_requests")? {
-            if card["agent"] == context.agent
-                && card["accountKey"] == context.account
-                && card["connectionId"] == context.connection
-                && card["epoch"].as_u64() == Some(context.epoch)
-                && card
-                    .pointer("/supervisor/generation")
-                    .and_then(Value::as_u64)
-                    == Some(context.generation)
-                && card["rpcId"] == serde_json::to_value(rpc_id)?
-            {
+        for card in matching_rpc_cards(tx, context, rpc_id)? {
                 let card_id = card["id"]
                     .as_str()
                     .ok_or_else(|| CallbackError::Stored("runtime_requests/id".into()))?;
@@ -370,7 +360,6 @@ pub fn resolve(
                     return Err(CallbackError::Conflict);
                 }
                 card_signature = Some(signature);
-            }
         }
         let receipt_signature = storage::read(tx, &identity.key())?
             .or(storage::read(tx, &format!("{}:card", identity.key()))?)
@@ -439,6 +428,40 @@ pub fn resolve(
         }
         Ok(count)
     })
+}
+
+fn matching_rpc_cards(
+    tx: &Transaction<'_>,
+    context: &CallbackContext,
+    rpc_id: &RequestId,
+) -> Result<Vec<Value>, CallbackError> {
+    let rpc_id = serde_json::to_string(rpc_id)?;
+    let mut statement = tx.prepare(
+        "SELECT record FROM runtime_requests \
+         WHERE json_extract(record,'$.agent')=?1 \
+           AND json_extract(record,'$.accountKey')=?2 \
+           AND json_extract(record,'$.connectionId')=?3 \
+           AND json_extract(record,'$.epoch')=?4 \
+           AND json_extract(record,'$.supervisor.generation')=?5 \
+           AND json_extract(record,'$.rpcId')=json_extract(?6,'$')",
+    )?;
+    let rows = statement.query_map(
+        rusqlite::params![
+            context.agent,
+            context.account,
+            context.connection,
+            i64::try_from(context.epoch).map_err(|_| CallbackError::Stale)?,
+            i64::try_from(context.generation).map_err(|_| CallbackError::Stale)?,
+            rpc_id,
+        ],
+        |row| row.get::<_, String>(0),
+    )?;
+    rows.map(|row| {
+        let raw = row?;
+        serde_json::from_str(&raw)
+            .map_err(|_| CallbackError::Stored("runtime_requests/matching-rpc".into()))
+    })
+    .collect()
 }
 
 fn answer_signature(data: &Value) -> String {
