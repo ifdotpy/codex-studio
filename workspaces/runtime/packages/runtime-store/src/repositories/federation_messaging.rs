@@ -162,7 +162,7 @@ impl FederationMessagingRepository {
     }
 }
 
-const REQUIREMENTS: SchemaRequirements = SchemaRequirements {
+pub(crate) const REQUIREMENTS: SchemaRequirements = SchemaRequirements {
     tables: &[],
     conditional_tables: &[],
     triggers: &[],

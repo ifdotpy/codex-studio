@@ -9,6 +9,7 @@ pub(crate) mod cost_usage;
 pub(crate) mod event_write;
 pub(crate) mod events;
 pub(crate) mod federation;
+pub mod federation_messaging;
 pub(crate) mod messages;
 pub mod monitor_runtime;
 pub(crate) mod monitors;

@@ -12,6 +12,7 @@ from studio_api.workspace_operation_models import (
     PersistedWorkspaceOperationRecord, WorkspaceCheckpointAgentRecord, WorkspaceCheckpointHistoryRecord,
 )
 from studio_api.relocation_models import RelocationFormats
+from studio_api.persisted_federation import FEDERATION_SCHEMA_MODELS
 
 
 def _unicode_scalar(value: str) -> str:
@@ -567,6 +568,7 @@ class UsageLimitsWorkspaceEnvelope(ContractModel):
     __pydantic_extra__: dict[str, JsonValue] = Field(init=False)
 
 STATE_SCHEMA_MODELS = {
+    **FEDERATION_SCHEMA_MODELS,
     "account-registry.schema.json": AccountRegistryRecord,
     "persisted-access-record.schema.json": PersistedAccessRecord,
     "persisted-agent-record.schema.json": PersistedAgentRecord,

@@ -68,6 +68,7 @@ pub fn check_state_readonly(state_dir: &Path) -> StoreResult<StateCheckReport> {
     ];
     tables.extend(check_system_tables(&connection)?);
     tables.push(crate::repositories::project_locations::check_outbox(&connection)?);
+    tables.extend(crate::repositories::federation_messaging::check_state(&connection)?);
     Ok(StateCheckReport { tables })
 }
 
@@ -178,7 +179,6 @@ fn check_system_tables(connection: &Connection) -> StoreResult<Vec<StateCheckTab
         ("runtime_events", "status"),
         ("runtime_execution_effects", "record"),
         ("runtime_execution_runs", "record"),
-        ("runtime_federation_rooms", "record"),
         ("runtime_operation_receipts", "result"),
         ("runtime_rooms", "record"),
         ("runtime_tool_request_aliases", "request"),
