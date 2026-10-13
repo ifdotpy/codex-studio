@@ -195,6 +195,7 @@ AUTOMATED_SUITES = {
     f"{TESTS_REL}/native-error-contract.py": "automated",
     f"{TESTS_REL}/native-release-contract.py": "automated",
     f"{TESTS_REL}/native-safety-contract.py": "automated",
+    f"{TESTS_REL}/portable-history-import-http-contract.py": "automated",
     f"{TESTS_REL}/swarm-retry-contract.mjs": "automated",
 }
 HEAVY_SUITES = {

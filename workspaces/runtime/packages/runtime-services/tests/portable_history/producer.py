@@ -100,26 +100,60 @@ cases = [
         "restored-item",
         {"id": "item-3", "role": "assistant", "text": "must not enter excerpt", "afterRestore": True},
     ),
+    case(
+        "restored-empty-list",
+        {"id": "item-4", "role": "assistant", "text": "empty list stays in excerpt", "afterRestore": []},
+    ),
+    case(
+        "restored-empty-object",
+        {"id": "item-5", "role": "assistant", "text": "empty object stays in excerpt", "afterRestore": {}},
+    ),
 ]
 
 
 class Native:
+    def __init__(self, *, item_page=False, unmaterialized=False):
+        self.item_page = item_page
+        self.unmaterialized = unmaterialized
+
     def call(self, method, params, timeout=30):
         if method == "thread/read":
             return {"thread": {"id": params["threadId"], "turns": []}}
         if method == "thread/turns/list":
+            if self.unmaterialized:
+                from codex_native_errors import NativeRpcError
+
+                thread_id = params["threadId"]
+                raise NativeRpcError({
+                    "code": -32600,
+                    "message": f"thread {thread_id} is not materialized yet; thread/turns/list is unavailable before first user message",
+                })
             return {
                 "data": [{
                     "id": "turn-1",
                     "threadId": params["threadId"],
-                    "itemsView": "full",
-                    "items": [{
+                    "itemsView": "summary" if self.item_page else "full",
+                    "items": [] if self.item_page else [{
                         "id": "native-item-1",
                         "type": "agentMessage",
                         "threadId": params["threadId"],
                         "turnId": "turn-1",
                         "text": "Python-written native assistant text",
                     }],
+                }],
+                "nextCursor": None,
+            }
+        if method == "thread/turns/items/list" and self.item_page:
+            return {
+                "data": [{
+                    "turnId": "turn-1",
+                    "item": {
+                        "id": "native-item-page-1",
+                        "type": "agentMessage",
+                        "threadId": params["threadId"],
+                        "turnId": "turn-1",
+                        "text": "Python-written native item-page text",
+                    },
                 }],
                 "nextCursor": None,
             }
@@ -147,4 +181,55 @@ cases.append(
         "context": history_context(native_runtime, native_descriptor),
     }
 )
+
+item_page_runtime = Runtime(ROOT / "native-item-page")
+item_page_agent = {
+    **native_agent,
+    "id": "agent-item-page",
+    "accountKey": "account-item-page",
+    "threadId": "thread-item-page",
+}
+item_page_descriptor = export_history(
+    item_page_runtime, item_page_agent, "transfer-item-page", Native(item_page=True)
+)
+cases.append({
+    "name": "native-item-page",
+    "root": str(item_page_runtime.root),
+    "descriptor": item_page_descriptor,
+    "context": history_context(item_page_runtime, item_page_descriptor),
+})
+
+unmaterialized_runtime = Runtime(ROOT / "native-unmaterialized")
+unmaterialized_agent = {
+    **native_agent,
+    "id": "agent-unmaterialized",
+    "accountKey": "account-unmaterialized",
+    "threadId": "thread-unmaterialized",
+}
+unmaterialized_descriptor = export_history(
+    unmaterialized_runtime,
+    unmaterialized_agent,
+    "transfer-unmaterialized",
+    Native(unmaterialized=True),
+)
+cases.append({
+    "name": "native-unmaterialized",
+    "root": str(unmaterialized_runtime.root),
+    "descriptor": unmaterialized_descriptor,
+    "context": history_context(unmaterialized_runtime, unmaterialized_descriptor),
+})
+
+ancestor_runtime = Runtime(ROOT / "ancestor-chain")
+ancestor_agent = {"id": "agent-chain", "epoch": 9, "accountKey": "account-chain", "threadId": None}
+ancestor_base = export_history(ancestor_runtime, ancestor_agent, "transfer-base", None)
+ancestor_agent["portableHistory"] = ancestor_base
+ancestor_child = export_history(ancestor_runtime, ancestor_agent, "transfer-child", None)
+ancestor_agent["portableHistory"] = ancestor_child
+ancestor_grandchild = export_history(ancestor_runtime, ancestor_agent, "transfer-grandchild", None)
+cases.append({
+    "name": "ancestor-chain",
+    "root": str(ancestor_runtime.root),
+    "descriptor": ancestor_grandchild,
+    "context": history_context(ancestor_runtime, ancestor_grandchild),
+})
 print(json.dumps(cases, ensure_ascii=False, separators=(",", ":")))
