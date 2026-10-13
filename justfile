@@ -77,3 +77,11 @@ test-browser-smoke:
 [doc("Run heavy server suites followed by the full browser project; no load suites.")]
 test-heavy:
     @node {{quote(facade)}} test-heavy
+
+# Full relocation corpus; deliberately outside the default fast witness set.
+test-rust-runtime-corpora:
+    STUDIO_RUNTIME_CORPUS_FULL=1 cargo nextest run -p studio-runtime-services -E 'binary(relocation_corpus)'
+
+# Seeded mutation checks use the shared runner and a disposable source copy.
+test-rust-relocation-mutations target:
+    python3 workspaces/runtime/packages/runtime-services/tests/turn_lifecycle/mutation_check.py --target {{quote(target)}} --manifest workspaces/runtime/packages/runtime-services/tests/relocation/mutations.json --filter 'binary(relocation_corpus)'

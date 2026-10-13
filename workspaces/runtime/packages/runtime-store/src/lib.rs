@@ -37,12 +37,14 @@ pub use records::{
     TranscriptAssetId, TranscriptAssetRecord, TranscriptItemId, TranscriptItemRecord,
     UsageResumeRecord, WorkItemRecord, WorkStatus,
 };
+pub use repositories::agent_move::{AgentMoveRepository, MoveRecord};
 pub use repositories::coordination::{CanvasMessage, ChatGroup, CoordinationRepository};
 pub use repositories::event_write::{EventWriteReceipt, EventWriteRepository};
 pub use repositories::federation::FederationRepository;
 pub use repositories::monitors::{MonitorsRepository, StoredMonitor};
 pub use repositories::multi_server::MultiServerRepository;
 pub use repositories::profiles::{ProfileRecord, ProfileRepository, ProfileRole, ReasoningEffort};
+pub use repositories::project_locations::{ProjectLocationRecord, ProjectLocationsRepository};
 pub use repositories::projects::ProjectsRepository;
 pub use repositories::questions_reads::QuestionsReadsRepository;
 pub use repositories::questions_write::QuestionsWriteRepository;

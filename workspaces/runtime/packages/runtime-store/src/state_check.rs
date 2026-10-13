@@ -53,6 +53,7 @@ pub fn check_state_readonly(state_dir: &Path) -> StoreResult<StateCheckReport> {
             check_table::<ComplaintRecord>(&connection)?,
             check_table::<CheckpointRecord>(&connection)?,
             check_table::<MonitorRecord>(&connection)?,
+            check_table::<crate::MoveRecord>(&connection)?,
             check_table::<TerminalRecord>(&connection)?,
             check_table::<UsageResumeRecord>(&connection)?,
             check_table::<WorkItemRecord>(&connection)?,
@@ -62,6 +63,8 @@ pub fn check_state_readonly(state_dir: &Path) -> StoreResult<StateCheckReport> {
             check_table::<EventMetadataRecord>(&connection)?,
             check_table::<GraphAgentRecord>(&connection)?,
             check_table::<ProfileRecord>(&connection)?,
+            check_table::<crate::ProjectLocationRecord>(&connection)?,
+            crate::repositories::project_locations::check_outbox(&connection)?,
         ],
     })
 }

@@ -8,6 +8,7 @@ from pydantic_core import PydanticCustomError
 
 from studio_api.accounts.models import UsageLimitsResponse
 from studio_api.models import MAX_SAFE_INTEGER, ContractModel, JsonValue, SafeInt
+from studio_api.relocation_models import RelocationFormats
 
 
 def _unicode_scalar(value: str) -> str:
@@ -276,6 +277,7 @@ STATE_SCHEMA_MODELS = {
     "persisted-task-record.schema.json": PersistedTaskRecord,
     "persisted-plan-record.schema.json": PersistedPlanRecord,
     "persisted-annotation-record.schema.json": PersistedAnnotationRecord,
+    "persisted-relocation.schema.json": RelocationFormats,
     "persisted-request-record.schema.json": PersistedRequestRecord,
     "persisted-complaint-record.schema.json": PersistedComplaintRecord,
     "persisted-checkpoint-record.schema.json": PersistedCheckpointRecord,

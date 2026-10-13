@@ -62,6 +62,9 @@ const GRAPH_AGENT_RECORD: &[u8] =
     include_bytes!("schemas/persisted-graph-agent-record.schema.json");
 const PROFILE_RECORD: &[u8] = include_bytes!("schemas/persisted-profile-record.schema.json");
 
+const RELOCATION_URI: &str = "https://codex-studio.invalid/persisted-relocation.schema.json";
+const RELOCATION: &[u8] = include_bytes!("schemas/persisted-relocation.schema.json");
+
 const PERSISTED_SCHEMAS: &[(&str, &[u8])] = &[
     (ACCOUNT_REGISTRY_URI, ACCOUNT_REGISTRY),
     (USAGE_LIMITS_URI, USAGE_LIMITS),
@@ -72,6 +75,7 @@ const PERSISTED_SCHEMAS: &[(&str, &[u8])] = &[
     (TASK_RECORD_URI, TASK_RECORD),
     (PLAN_RECORD_URI, PLAN_RECORD),
     (ANNOTATION_RECORD_URI, ANNOTATION_RECORD),
+    (RELOCATION_URI, RELOCATION),
     (REQUEST_RECORD_URI, REQUEST_RECORD),
     (COMPLAINT_RECORD_URI, COMPLAINT_RECORD),
     (CHECKPOINT_RECORD_URI, CHECKPOINT_RECORD),
@@ -128,9 +132,11 @@ pub fn validate(schema: &str, value: &Value) -> SchemaResult<bool> {
 /// Return the authoritative persisted schema for a typed runtime table.
 pub fn table_schema(table: &str) -> Option<&'static str> {
     Some(match table {
+        "runtime_agent_moves" => "relocation/MoveRecord",
         "runtime_agents" => "PersistedAgentRecord",
         "runtime_tasks" => "PersistedTaskRecord",
         "runtime_plans" => "PersistedPlanRecord",
+        "runtime_projects" => "relocation/RelocationProject",
         "runtime_annotations" => "PersistedAnnotationRecord",
         "runtime_requests" => "PersistedRequestRecord",
         "runtime_complaints" => "PersistedComplaintRecord",
@@ -248,6 +254,14 @@ fn compile_schemas() -> SchemaResult<CompiledSchemas> {
         USAGE_LIMITS_URI,
         "workspace-usage-limits",
         &usage_limits,
+        &mut validators,
+    )?;
+    let relocation: Value = serde_json::from_slice(RELOCATION).map_err(|e| e.to_string())?;
+    compile_definitions(
+        &registry,
+        RELOCATION_URI,
+        "relocation",
+        &relocation,
         &mut validators,
     )?;
     Ok(CompiledSchemas { validators })

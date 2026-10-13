@@ -48,7 +48,19 @@ db.close()
     let output = String::from_utf8(result.stdout).expect("state-check output is UTF-8");
     let report: serde_json::Value = serde_json::from_str(&output).expect("state-check prints JSON");
     let tables = report["tables"].as_array().expect("table reports exist");
-    assert_eq!(tables.len(), 17);
+    assert_eq!(tables.len(), 20);
+    for name in [
+        "runtime_agent_moves",
+        "runtime_projects",
+        "runtime_server_outbox",
+    ] {
+        let table = tables
+            .iter()
+            .find(|table| table["table"] == name)
+            .expect("relocation table is checked");
+        assert_eq!(table["row_count"], 0);
+        assert_eq!(table["rejected_count"], 0);
+    }
     let agents = tables
         .iter()
         .find(|table| table["table"] == "runtime_agents")

@@ -9,6 +9,7 @@
 
 pub mod account_driver;
 pub mod account_policy;
+pub mod agent_move;
 pub mod agents_create;
 pub mod analytics;
 pub mod bounded_child;
@@ -23,11 +24,13 @@ pub mod panels;
 pub mod payload_store;
 pub mod progress_panel;
 pub mod progress_watch;
+pub mod project_locations;
 pub mod projects;
 pub mod provider_session;
 pub mod questions_reads;
 pub mod questions_write;
 pub mod queue_write;
+pub mod relocation;
 pub mod remote_transport;
 pub mod rules;
 pub mod scheduler;
