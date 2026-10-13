@@ -346,28 +346,33 @@ pub fn plan_probes(
     now: f64,
 ) -> Result<ProbePlan> {
     now_checked(now)?;
-    let mut due: Vec<&Snapshot> = snapshots
-        .iter()
-        .filter(|s| {
-            s.record.as_ref().is_some_and(|r| {
-                text(r, "status") == "auth_probe_wait"
-                    && r["dueAt"].as_f64().is_some_and(|at| at <= now)
-            })
-        })
-        .collect();
-    due.sort_by(|a, b| {
-        a.record
-            .as_ref()
-            .and_then(|r| r["dueAt"].as_f64())
-            .partial_cmp(&b.record.as_ref().and_then(|r| r["dueAt"].as_f64()))
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
+    // Retain the earliest sixteen rows, preserving input order for equal deadlines.
+    // Pop before insertion so even the temporary allocation stays within the bound.
+    let mut due: Vec<(f64, &Snapshot)> = Vec::with_capacity(MAX_DUE_ROWS);
+    for snapshot in snapshots {
+        let Some(record) = &snapshot.record else {
+            continue;
+        };
+        let Some(at) = record["dueAt"].as_f64() else {
+            continue;
+        };
+        if text(record, "status") != "auth_probe_wait" || at > now {
+            continue;
+        }
+        let position = due.partition_point(|(existing, _)| *existing <= at);
+        if position < MAX_DUE_ROWS {
+            if due.len() == MAX_DUE_ROWS {
+                due.pop();
+            }
+            due.insert(position, (at, snapshot));
+        }
+    }
     let mut active = active_accounts.clone();
     let mut plan = ProbePlan {
         writes: Vec::new(),
         jobs: Vec::new(),
     };
-    for s in due.into_iter().take(MAX_DUE_ROWS) {
+    for (_, s) in due {
         let key = account(&s.agent);
         if active.contains(key) || active.len() >= MAX_PROFILES {
             continue;

@@ -75,5 +75,27 @@
       }
     ],
     "witness": "every_store_boundary_rolls_back_or_replays_the_one_committed_followup"
+  },
+  {
+    "id": "claude-due-order-bound",
+    "file": "workspaces/runtime/packages/runtime-services/src/claude_auth_wait.rs",
+    "edits": [
+      {
+        "before": "let position = due.partition_point(|(existing, _)| *existing <= at);",
+        "after": "let position = due.len();"
+      }
+    ],
+    "witness": "probe_plan_selects_only_the_earliest_sixteen_due_rows"
+  },
+  {
+    "id": "capacity-admission-omitted",
+    "file": "workspaces/runtime/packages/runtime-services/src/continuation_driver.rs",
+    "edits": [
+      {
+        "before": "hooks.capacity_admission.check(tx, snapshot, attempt)?;",
+        "after": "let _ = (tx, snapshot, attempt);"
+      }
+    ],
+    "witness": "capacity_claim_commits_record_and_agent_together_and_recovery_never_resends"
   }
 ]
