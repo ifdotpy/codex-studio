@@ -1,7 +1,7 @@
 {
   "revision": "7e5ddb6e3c5678877ffb82676a3986452230a321",
   "tree": "a2c5351d701cddeaf63abd42e327170912d2c545",
-  "sourceSha256": "7b0ddfaae75fe9c684beb80200b579bbf1c193ff87e9283a6903b52e3c588395",
+  "sourceSha256": "9cda22a7535b192916f5badca0b5bd0f37d2f070a150802ca5bf49f5af2591b4",
   "files": {
     "Cargo.lock": "89f40bdf206993990d8e78ab7c7608d2218d16e37a2bcc8446a6c111a28efc1b",
     "Cargo.toml": "5e8b179a5369a3d54c61f1c40194dde3f7250d928827b6e88c8fe70ec188e295",
@@ -10,7 +10,7 @@
     "src/args.rs": "659a89f9c087e734e37ec87e72064ad47162ab14eebf67841202120631544ed8",
     "src/btrfs.rs": "5bc0a5a8e750f8d7a38a0941b84563bf439bb84ccd0789bddeeb44b9712f8652",
     "src/changes.rs": "b3c288221618c00e048579b41630e1f7487b252b844f8205dfc6b68675e84748",
-    "src/cmd/admin.rs": "7a3661fa8f32c555c23e3f128df541375111a5fa923506952849c2b455e0a027",
+    "src/cmd/admin.rs": "537a3a92bf43ecea8a53339ee285db757f5cefc39e9ca94d70ece41e5da52913",
     "src/cmd/branch.rs": "de40ce29b1c17806dba86540c8ee581e40425be164b81aeecdecc1ccd7cde935",
     "src/cmd/history.rs": "bc9b60e8fb08d7af3f249c25a40614a1e32eaa3ebf7ed36a417d6458bfbb51f5",
     "src/cmd/mergecmd.rs": "9967fdc02c5e2a69a37858735b0bd8cd69997fcd642455e9b71ec17a133dc3ab",
@@ -21,13 +21,13 @@
     "src/cmd/transfer.rs": "064285f6a9906d145f70752042a81280dd2c1c6881f9b5208bedd6b4f7c9b814",
     "src/cmd/work.rs": "a812234c89a94e3c01969a0a3447071e425e20f6a8916613310ee35b8df5a698",
     "src/ctx.rs": "64375d260d79c2e02f4b0f120db4dc89013b90ef809f659f95929ef8549d33a9",
-    "src/db.rs": "9b20b15906dcf3340acedfcb0cadee4df7b13bc26532c2122db50592ea349823",
+    "src/db.rs": "203acc68d9c2e5df1f9915ca1dc036c801c99131caa0be271004d976e142ed25",
     "src/diff.rs": "89b2fae13cb950e19109183d6fe705332e599958ee81518cfc5398c95fcc04c7",
     "src/fsutil.rs": "4fc15a740d5996752e26cb2f813596db005d079c2272d5066b2c908d1b845490",
     "src/gitbridge.rs": "f6c931fcee649f3fcdfb69b757d554664629420ff4c356738b2c20fd44d746d4",
     "src/ids.rs": "4af057143ae29924bf92f96cd6cf6db00ec74e24e95ceb27b466dceffdd76dd4",
     "src/ignore_rules.rs": "090fab00f0c4cc07fc734164555cace895f36cf48ace2403fbc752b3f4133e7a",
-    "src/main.rs": "e2e74808e92a71eb1810a3605ef930ad9307a0587072237dc1f3d3ff360bedc1",
+    "src/main.rs": "cabfe0e0d9ae1cd90f7d426038d7be2857382c54a13033b4736d2d42489fb2d7",
     "src/merge.rs": "46b333e19a982db9cc0538e81b40c143c1b68ef8f65db19fb3b3b7635efcd0c0",
     "src/model.rs": "2913201fe3d1348eba4d9ba0bb348607b14ba5a541b455e7f2cded4da5a36a78",
     "src/oplog.rs": "615a51ddd9a8cd3eb50b3fcecc9229c5809add043972071286bf721727187eb9",
@@ -40,6 +40,7 @@
     "src/store.rs": "4ebbf845f688127530fee9b99e0c5beb11cfc778f2db444f40ef1e86f736df73",
     "src/stream.rs": "04c1ea24bea8bc56ae37f0380417472cfcd232aca35c421930874eb66d72ca88",
     "src/sys.rs": "f2a95d05f43bba182e2a312bf58f032c8b5be8998e2b638c9eeea20365619587",
+    "src/testenv.rs": "ab5d9f77809a14a3acc43e6432d0c3c965565bfe972e73f72c4c0d501af8fa89",
     "src/trace.rs": "5fa4efc4c3b5f07ab93475b1af4e69be3066bbdc5e319c6c53723f8553d1b73f",
     "src/tree.rs": "018d8ac1e002d24b8eeae2f83b64d2fed2c32ae24b83d6f70208147db2c7fb4a"
   }
