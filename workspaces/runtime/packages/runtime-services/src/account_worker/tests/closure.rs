@@ -24,6 +24,19 @@ pub(super) async fn pending_text_recovery(stopped: bool) {
         peer.reply(&interrupt, json!({})).await;
     }
     assert!(worker.shutdown().await.is_err());
+    if crash_matrix::MATRIX
+        .try_with(|context| {
+            context
+                .faults
+                .fired
+                .load(std::sync::atomic::Ordering::SeqCst)
+        })
+        .unwrap_or(false)
+    {
+        // Leave the database exactly at the named bridge boundary. The matrix
+        // owns trigger removal and the first subsequent startup recovery.
+        return;
+    }
     state
         .bridge
         .run(|store| {
@@ -294,7 +307,12 @@ async fn written_callback_replay_compacts_its_journal_without_resending() {
     let state = State::new().await;
     let mut peer = Peer::new();
     let mut worker = peer.worker(state.bridge.clone()).await;
-    *state.bridge.faults.named_target.lock().unwrap() = Some(("callback_written".into(), 0, true));
+    *state.bridge.faults.named_target.lock().unwrap() = Some((
+        "callback_written".into(),
+        0,
+        Some("callback:default:1:1".into()),
+        true,
+    ));
     let frame = json!({"id":"written-callback","method":"item/tool/call","params":{}});
     peer.frame(frame.clone()).await;
     let wire = peer.next_write().await;

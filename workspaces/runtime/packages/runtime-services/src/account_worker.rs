@@ -116,8 +116,18 @@ impl StoreBridge {
         _name: &'static str,
         operation: impl FnOnce(&RuntimeStore) -> Result<T, WorkerError> + Send + 'static,
     ) -> Result<T, WorkerError> {
+        self.worker_run_identified(_name, None, operation).await
+    }
+    async fn worker_run_identified<T: Send + 'static>(
+        &self,
+        _name: &'static str,
+        identity: Option<String>,
+        operation: impl FnOnce(&RuntimeStore) -> Result<T, WorkerError> + Send + 'static,
+    ) -> Result<T, WorkerError> {
         #[cfg(test)]
-        let index = self.faults.before(_name)?;
+        let index = self.faults.before(_name, identity)?;
+        #[cfg(not(test))]
+        let _ = identity;
         #[cfg(test)]
         self.faults.pause(index).await;
         let result = self.run(operation).await;
@@ -358,6 +368,27 @@ impl Worker {
                 && let Some(effect) = self.effects.pop_front()
             {
                 let durable = store::effect_key(&self.account, &effect);
+                let boundary_identity = match &effect {
+                    Effect::Callback(cursor, _) => format!(
+                        "account={};generation={};cursor={}",
+                        self.account, self.generation.0, cursor.0
+                    ),
+                    Effect::Submit(intent) => format!(
+                        "account={};agent={};epoch={};generation={};method=turn/start",
+                        self.account, intent.agent_id, intent.epoch, self.generation.0
+                    ),
+                    Effect::Interrupt {
+                        agent,
+                        thread,
+                        turn,
+                    } => format!(
+                        "account={};agent={agent};thread={thread};turn={turn};generation={}",
+                        self.account, self.generation.0
+                    ),
+                    Effect::Wake(agent, epoch) => {
+                        format!("account={};agent={agent};epoch={epoch}", self.account)
+                    }
+                };
                 match effect {
                     Effect::Callback(cursor, frame) => self.answer_callback(cursor, frame).await?,
                     Effect::Submit(intent) => self.submit(intent, Method::TurnStart, None).await?,
@@ -371,7 +402,7 @@ impl Worker {
                 if !self.closing
                     && let Some(key) = durable
                 {
-                    self.db("complete_effect", move |store| {
+                    self.db_identified("complete_effect", boundary_identity, move |store| {
                         store::complete_effect(store, &key)
                     })
                     .await?;
@@ -400,13 +431,20 @@ impl Worker {
             }
         }
     }
-    async fn db<T: Send + 'static>(
+    async fn db_identified<T: Send + 'static>(
         &mut self,
         name: &'static str,
+        identity: String,
         operation: impl FnOnce(&RuntimeStore) -> Result<T, WorkerError> + Send + 'static,
     ) -> Result<T, WorkerError> {
         let bridge = self.bridge.clone();
-        let job = bridge.worker_run(name, operation);
+        let job = bridge.worker_run_identified(name, Some(identity), operation);
+        self.await_db(job).await
+    }
+    async fn await_db<T: Send + 'static>(
+        &mut self,
+        job: impl Future<Output = Result<T, WorkerError>>,
+    ) -> Result<T, WorkerError> {
         tokio::pin!(job);
         tokio::select! { biased;
             _ = Shutdown::cancelled(&mut self.stop), if !self.closing => { self.closing = true; self.control.cancel(); job.await },
@@ -434,8 +472,9 @@ impl Worker {
             return Ok(());
         }
         let account = self.account.clone();
+        let identity = format!("account={account};agent={agent};epoch={epoch}");
         let candidate = self
-            .db("claim", move |store| {
+            .db_identified("claim", identity, move |store| {
                 store::claim(store, &account, &agent, epoch)
             })
             .await?;
@@ -462,9 +501,17 @@ impl Worker {
         if let Some((_, stop_epoch)) = &interrupt_turn {
             operation.push_str(&format!(":stop:{stop_epoch}"));
         }
+        let request_identity = format!(
+            "account={};agent={};epoch={};generation={};method={}",
+            self.account,
+            intent.agent_id,
+            intent.epoch,
+            self.generation.0,
+            method.as_str()
+        );
         let prior = operation.clone();
         if self
-            .db("was_submitted", move |store| {
+            .db_identified("was_submitted", request_identity.clone(), move |store| {
                 store::was_submitted(store, &prior)
             })
             .await?
@@ -474,7 +521,7 @@ impl Worker {
         let for_params = intent.clone();
         let turn = interrupt_turn.clone();
         let params = self
-            .db("params", move |store| {
+            .db_identified("params", request_identity.clone(), move |store| {
                 store::params(
                     store,
                     &for_params,
@@ -511,7 +558,7 @@ impl Worker {
         let save_context = context.clone();
         let account = self.account.clone();
         let authorized = self
-            .db("submitted", move |store| {
+            .db_identified("submitted", request_identity, move |store| {
                 store::submitted(
                     store,
                     &save_context,
@@ -573,8 +620,11 @@ impl Worker {
     }
     async fn stop_agent(&mut self, agent: String) -> Result<(), WorkerError> {
         let account = self.account.clone();
+        let identity = format!("account={account};agent={agent}");
         let effect = self
-            .db("stop", move |store| store::stop(store, &account, &agent))
+            .db_identified("stop", identity, move |store| {
+                store::stop(store, &account, &agent)
+            })
             .await?;
         if let Some(effect) = effect {
             self.push(effect)?;
@@ -587,8 +637,9 @@ impl Worker {
         thread: String,
         turn: String,
     ) -> Result<(), WorkerError> {
+        let identity = format!("agent={agent};thread={thread};turn={turn}");
         let intent = self
-            .db("interrupt_intent", move |store| {
+            .db_identified("interrupt_intent", identity, move |store| {
                 store::interrupt_intent(store, &agent, &thread)
             })
             .await?;
@@ -619,7 +670,7 @@ impl Worker {
                 let operation = operation_id.0.clone();
                 let written = *outcome == WriteOutcome::Written;
                 let write_outcome = *outcome;
-                self.db("callback_written", move |store| {
+                self.db_identified("callback_written", operation.clone(), move |store| {
                     store::callback_written(store, &operation, write_outcome)
                 })
                 .await?;
@@ -628,7 +679,11 @@ impl Worker {
                 }
                 let account = self.account.clone();
                 let generation = self.generation.0;
-                self.db("callback_settled", move |store| {
+                let identity = format!(
+                    "account={account};generation={generation};cursor={}",
+                    cursor.0
+                );
+                self.db_identified("callback_settled", identity, move |store| {
                     store::callback_settled(store, &account, generation, cursor.0)
                 })
                 .await?;
@@ -644,9 +699,33 @@ impl Worker {
             };
             let pending = ticket.and_then(|t| self.pending.get(&t.id)).cloned();
             let id = ticket.map(|t| t.id.clone());
+            // Pending bookkeeping and transport request IDs are unsuitable
+            // matrix identities: the former can be retired by a competing
+            // journal lane, while the latter are regenerated for a fresh
+            // fixture snapshot. Generation plus method is stable; the bridge
+            // tracks repeated outcomes by their per-identity occurrence.
+            let identity = match &outcome {
+                SessionOutcome::Write {
+                    ticket: Some(ticket),
+                    ..
+                }
+                | SessionOutcome::Resolved { ticket, .. } => {
+                    format!(
+                        "generation={};request-method={}",
+                        ticket.generation,
+                        ticket.method.as_str(),
+                    )
+                }
+                SessionOutcome::Write { ticket: None, .. } => {
+                    format!("generation={};request-method=unknown", self.generation.0)
+                }
+                SessionOutcome::GenerationClosed { generation } => {
+                    format!("generation-closed={generation}")
+                }
+            };
             let account = self.account.clone();
             let (retire, effect) = self
-                .db("outcome", move |store| {
+                .db_identified("outcome", identity, move |store| {
                     store::outcome(store, &account, pending.as_ref(), outcome)
                 })
                 .await?;
@@ -671,10 +750,11 @@ impl Worker {
     }
     async fn journal(&mut self, entry: JournalEntry) -> Result<(), WorkerError> {
         let cursor = entry.cursor;
+        let identity = format!("generation={};cursor={}", entry.generation.0, cursor.0);
         let account = self.account.clone();
         let streams = std::mem::take(&mut self.streams);
         let (entry, previous, committed) = self
-            .db("journal", move |store| {
+            .db_identified("journal", identity, move |store| {
                 let result = store::journal(store, &account, &streams, &entry);
                 Ok((entry, streams, result))
             })
@@ -732,8 +812,12 @@ impl Worker {
         let key = operation.clone();
         let account = self.account.clone();
         let generation = self.generation.0;
+        let identity = format!(
+            "account={account};generation={generation};cursor={}",
+            cursor.0
+        );
         let admission = self
-            .db("callback_admission", move |store| {
+            .db_identified("callback_admission", identity, move |store| {
                 store::callback_admission(store, &key, &account, generation, cursor.0)
             })
             .await?;
@@ -749,7 +833,7 @@ impl Worker {
         if let Err(error) = self.drive(control.submit_frame(prepared)).await {
             if definite_rejection(&error) {
                 self.callbacks.remove(&operation);
-                self.db("callback_written", move |store| {
+                self.db_identified("callback_written", operation.clone(), move |store| {
                     store::callback_written(store, &operation, WriteOutcome::NotSent)
                 })
                 .await?;
@@ -768,8 +852,9 @@ impl Worker {
     async fn flush(&mut self) -> Result<(), WorkerError> {
         let account = self.account.clone();
         let streams = std::mem::take(&mut self.streams);
+        let identity = format!("account={account};streams={}", streams.boundary_identity());
         self.streams = self
-            .db("flush_streams", move |store| {
+            .db_identified("flush_streams", identity, move |store| {
                 store::flush_streams(store, &account, streams)
             })
             .await?;
@@ -793,8 +878,9 @@ impl Worker {
         self.flush().await?;
         let account = self.account.clone();
         let generation = self.generation.0;
+        let identity = format!("account={account};generation={generation}");
         let recovery = exit.adapter.and_then(|a| a.recovery_needed);
-        self.db("finish", move |store| {
+        self.db_identified("finish", identity, move |store| {
             if let Some(recovery) = recovery {
                 store::save_recovery(store, &account, &recovery)?;
             }

@@ -45,12 +45,15 @@ pub(super) struct Faults {
     release: tokio::sync::Notify,
     fired: std::sync::atomic::AtomicBool,
     target: std::sync::Mutex<Option<(usize, bool)>>,
-    named_target: std::sync::Mutex<Option<(String, usize, bool)>>,
-    operations: std::sync::Mutex<Vec<(String, usize)>>,
-    committed: std::sync::Mutex<Vec<(String, usize)>>,
+    named_target: std::sync::Mutex<Option<NamedBoundary>>,
+    operations: std::sync::Mutex<Vec<Boundary>>,
+    committed: std::sync::Mutex<Vec<Boundary>>,
     entered: tokio::sync::Notify,
+    fired_notify: tokio::sync::Notify,
     pub(super) shutdown_wait: tokio::sync::Notify,
 }
+type Boundary = (String, usize, Option<String>);
+type NamedBoundary = (String, usize, Option<String>, bool);
 impl Faults {
     pub(super) async fn pause(&self, index: usize) {
         let pause = *self.pause_at.lock().unwrap() == Some(index)
@@ -59,7 +62,7 @@ impl Faults {
                 .lock()
                 .unwrap()
                 .get(index)
-                .is_some_and(|(name, _)| {
+                .is_some_and(|(name, _, _)| {
                     self.pause_operation.lock().unwrap().as_ref() == Some(name)
                 });
         if pause {
@@ -91,14 +94,21 @@ impl Faults {
         self.operations.lock().unwrap().clear();
         self.committed.lock().unwrap().clear();
     }
-    pub(super) fn before(&self, name: &str) -> Result<usize, WorkerError> {
+    pub(super) fn before(
+        &self,
+        name: &str,
+        identity: Option<String>,
+    ) -> Result<usize, WorkerError> {
         assert!(
             !self.fired.load(std::sync::atomic::Ordering::SeqCst),
             "bridge remains crashed"
         );
         let mut operations = self.operations.lock().unwrap();
-        let occurrence = operations.iter().filter(|(n, _)| n == name).count();
-        operations.push((name.into(), occurrence));
+        let occurrence = operations
+            .iter()
+            .filter(|(n, _, old_identity)| n == name && old_identity == &identity)
+            .count();
+        operations.push((name.into(), occurrence, identity));
         drop(operations);
         let index = self.count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         self.entered.notify_one();
@@ -118,17 +128,72 @@ impl Faults {
         let named = self.named_target.lock().unwrap().clone();
         let operation = self.operations.lock().unwrap().get(index).cloned();
         if *self.target.lock().unwrap() == Some((index, after))
-            || named.is_some_and(|(name, occurrence, side)| {
-                side == after && operation == Some((name, occurrence))
+            || named.is_some_and(|(name, occurrence, identity, side)| {
+                side == after && operation == Some((name, occurrence, identity))
             })
         {
             self.fired.store(true, std::sync::atomic::Ordering::SeqCst);
+            self.fired_notify.notify_one();
             // Unwind the worker future immediately: no error handler or finish runs.
             panic!("injected crash at bridge boundary {operation:?} after={after}")
         } else {
             Ok(())
         }
     }
+}
+
+#[test]
+fn outcome_boundary_identity_is_stable_across_replay_interleaving() {
+    fn selected_boundary(methods: &[&str]) -> Boundary {
+        let faults = Faults::default();
+        *faults.named_target.lock().unwrap() = Some((
+            "outcome".into(),
+            5,
+            Some("generation=1;request-method=turn/start".into()),
+            false,
+        ));
+        for method in methods {
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                faults.before(
+                    "outcome",
+                    Some(format!("generation=1;request-method={method}")),
+                )
+            }));
+            if result.is_err() {
+                return faults.operations.lock().unwrap().last().unwrap().clone();
+            }
+        }
+        panic!("named outcome boundary was not reached");
+    }
+
+    // Matrix scenario 18 maps to integration scenario 25. The retained-submit
+    // replay can interleave interrupt outcomes while start outcomes are draining.
+    // The sixth start has absolute outcome ordinal 5 in baseline and 7 in replay.
+    let baseline = selected_boundary(&[
+        "turn/start",
+        "turn/start",
+        "turn/start",
+        "turn/start",
+        "turn/start",
+        "turn/start",
+    ]);
+    let replay = selected_boundary(&[
+        "turn/start",
+        "turn/interrupt",
+        "turn/start",
+        "turn/interrupt",
+        "turn/start",
+        "turn/start",
+        "turn/start",
+        "turn/start",
+    ]);
+    let expected = (
+        "outcome".to_owned(),
+        5,
+        Some("generation=1;request-method=turn/start".to_owned()),
+    );
+    assert_eq!(baseline, expected);
+    assert_eq!(replay, expected);
 }
 
 fn copy_template(source: &std::path::Path, target: &std::path::Path) {
@@ -719,6 +784,17 @@ async fn scenario_provider_exit_mid_turn_retains_unknown_without_retry() {
     let _start = state.start(&mut peer, &worker).await;
     peer.stop.cancel();
     let _result = worker.completion().await;
+    if MATRIX
+        .try_with(|context| {
+            context
+                .faults
+                .fired
+                .load(std::sync::atomic::Ordering::SeqCst)
+        })
+        .unwrap_or(false)
+    {
+        return;
+    }
     assert_eq!(state.event_status("input").await, "uncertain");
     assert!(peer.writes.try_recv().is_err());
 }
@@ -729,31 +805,13 @@ async fn scenario_duplicate_stale_and_completion_before_reply_preserve_order() {
     let start = state.start(&mut peer, &worker).await;
     let completed = json!({"method":"turn/completed","params":{"threadId":"fake-thread-0","turn":{"id":"turn","status":"completed"}}});
     let cursor = peer.frame(completed.clone()).await;
-    if state
-        .bridge
-        .faults
-        .fired
-        .load(std::sync::atomic::Ordering::SeqCst)
-    {
-        // The scripted test continues provider-side evidence after an injected
-        // worker crash so restart can replay the same completion-before-reply.
-        peer.frame(json!({"id":start["id"],"result":{"turn":{"id":"turn"}}}))
-            .await;
-        return;
-    }
     assert!(peer.acks.try_recv().is_err());
     let reply = peer
         .frame(json!({"id":start["id"],"result":{"turn":{"id":"turn"}}}))
         .await;
-    if state
-        .bridge
-        .faults
-        .fired
-        .load(std::sync::atomic::Ordering::SeqCst)
-    {
+    if wait_for_cursor_or_injection(&mut peer, reply).await {
         return;
     }
-    peer.acknowledged(reply).await;
     assert!(reply > cursor);
     assert_eq!(state.record().await["status"], "completed");
     let duplicate = peer.frame(completed).await;
@@ -797,6 +855,17 @@ async fn scenario_generation_closed_holds_the_old_submission() {
         .await
         .unwrap();
     let _result = worker.completion().await;
+    if MATRIX
+        .try_with(|context| {
+            context
+                .faults
+                .fired
+                .load(std::sync::atomic::Ordering::SeqCst)
+        })
+        .unwrap_or(false)
+    {
+        return;
+    }
     assert_eq!(state.event_status("input").await, "uncertain");
     assert!(peer.writes.try_recv().is_err());
 }
@@ -944,22 +1013,45 @@ async fn scenario_callback_unknown_write_is_not_resent_on_replay() {
     peer.frame(frame.clone()).await;
     let wire = peer.next_write().await;
     wire.receipt.send(CommandReceipt::Unknown).ok().unwrap();
-    assert!(matches!(
-        tokio::time::timeout(std::time::Duration::from_secs(120), worker.completion())
-            .await
-            .expect("callback completion deadline"),
-        Err(WorkerError::CallbackUnknown)
-    ));
+    let completion = tokio::time::timeout(std::time::Duration::from_secs(120), worker.completion())
+        .await
+        .expect("callback completion deadline");
+    if MATRIX
+        .try_with(|context| {
+            context
+                .faults
+                .fired
+                .load(std::sync::atomic::Ordering::SeqCst)
+        })
+        .unwrap_or(false)
+    {
+        return;
+    }
+    assert!(matches!(completion, Err(WorkerError::CallbackUnknown)));
     assert!(peer.acks.try_recv().is_err());
+    if MATRIX.try_with(|_| ()).is_ok() {
+        // Crash-matrix recovery owns the replay phases and records their exact
+        // request frame/cursor; do not run an uninstrumented fixture recovery.
+        return;
+    }
     let mut peer = Peer::new();
     let mut worker = peer.worker(state.bridge.clone()).await;
     peer.frame(frame).await;
-    assert!(matches!(
-        tokio::time::timeout(std::time::Duration::from_secs(120), worker.completion())
-            .await
-            .expect("callback completion deadline"),
-        Err(WorkerError::CallbackUnknown)
-    ));
+    let completion = tokio::time::timeout(std::time::Duration::from_secs(120), worker.completion())
+        .await
+        .expect("callback completion deadline");
+    if MATRIX
+        .try_with(|context| {
+            context
+                .faults
+                .fired
+                .load(std::sync::atomic::Ordering::SeqCst)
+        })
+        .unwrap_or(false)
+    {
+        return;
+    }
+    assert!(matches!(completion, Err(WorkerError::CallbackUnknown)));
     assert!(peer.writes.try_recv().is_err());
     assert!(peer.acks.try_recv().is_err());
 }
@@ -1080,6 +1172,29 @@ async fn a_new_stop_can_retry_a_definitely_rejected_interrupt() {
 mod closure;
 mod crash_matrix;
 use crash_matrix::MATRIX;
+
+async fn wait_for_cursor_or_injection(peer: &mut Peer, cursor: u64) -> bool {
+    let Ok(context) = MATRIX.try_with(Arc::clone) else {
+        peer.acknowledged(cursor).await;
+        return false;
+    };
+    let notified = context.faults.fired_notify.notified();
+    if context
+        .faults
+        .fired
+        .load(std::sync::atomic::Ordering::SeqCst)
+    {
+        return true;
+    }
+    tokio::select! {
+        _ = notified => true,
+        acknowledgement = peer.acks.recv() => {
+            let acknowledgement = acknowledgement.expect("session acknowledges completion after its start reply");
+            assert_eq!(acknowledgement.0, cursor, "completion is held until its start reply");
+            false
+        }
+    }
+}
 
 async fn worker_barrier(worker: &AccountHandle) {
     let (reply, done) = oneshot::channel();
