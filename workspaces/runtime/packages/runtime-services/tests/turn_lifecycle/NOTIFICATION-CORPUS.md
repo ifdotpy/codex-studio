@@ -95,20 +95,32 @@ Notification-owned agent/context usage, transcript, tasks, plans, requests,
 complaints, events, sync, search and receipt rows remain in this comparison.
 
 Missing account, login, rate-limit, provider-generation, realtime, monitor and
-thread-recovery services return `RequiresService` with a typed dependency.
-The oracle still executes Python. Where these services have no stored effects,
-notification rows remain an exact comparison. Rate-limit updates and native-limit
-refreshes have separately labelled `named-service-refusal` witnesses: the report
-retains Python's complete expected stored state, while the actual default Rust
-entry point must return the exact dependency and leave every raw row and receipt
-unchanged even when its caller catches the error and commits. Each witness also
-asserts that Python changed its named service table, independently of transport
-receipts. These are refusal proofs, not parity claims for unimplemented services.
-The default production dispatcher turns these outcomes into an error and rolls
-back its savepoint, preventing the worker from acknowledging an absent service.
-The injected dispatcher may only be acknowledged after its caller handles the
-named dependency in the owning transaction. Token usage defaults to a named
-budget-capture refusal until the worker supplies the budget adapter.
+thread-recovery services produce a typed dependency inside the decision core.
+Both public dispatchers reject it with an error before saving a receipt and roll
+back the savepoint. Saved legacy service-required receipts also refuse replay.
+The injected caller cannot commit a successful result for an absent service.
+Token usage defaults to a named budget-capture refusal until the worker supplies
+the budget adapter.
+
+Each missing-service fixture calls real Python and records its complete expected
+stored result separately from the Rust refusal contract. The injected Rust entry
+point must return the exact dependency and leave every raw row and receipt
+unchanged even when its caller catches the error and commits. The account-level
+warning witness has no threadId and proves Python writes runtime_native_notices;
+rate-limit and native-limit refresh witnesses also assert real service-table
+changes. A pending-command unload witness compares Rust to Python's stored state
+immediately before the refused frame. These are explicitly labelled refusal
+proofs, not parity claims for services still absent.
+
+Agent-message pending text stays below 64 KiB per stream. A delta reaching that
+byte threshold flushes existing pending text plus the borrowed new delta through
+the same transcript writer used by timer flushes. Oversized individual frames
+never enter retained pending text, and params does not keep a second delta copy.
+UTF-8 boundary and oversized-frame cases compare the complete Python-written
+transcript, full text, search, event counters and sync state after a real timer
+flush; Rust additionally asserts pending bytes before its timer runs. Full mode
+injects write failures at this boundary. The existing 20,000-character transcript
+preview and full-text storage preserve all model text.
 
 Turn-start and terminal-turn notices belong to the scheduler and account worker.
 Their real Python comparison remains in `turn_lifecycle_corpus.rs` (`started_notice`
@@ -175,8 +187,8 @@ notification call must invoke `dispatch_notification_with_effects` with its
 transaction, agent ID, state path, stream buffer, identity, frame, receipt clock
 and `&WorkerNotificationEffects`. Keep existing scheduler routing for
 `turn/started`, `turn/completed`, and native user-message delivery acknowledgements.
-A `RequiresService` result must be handled or converted into a transaction error
-before acknowledging the provider cursor.
+A missing service returns `NotificationDispatchError::Dependency` from both entry
+points. It cannot produce an acknowledged receipt through the injected API.
 
 The agreed effect implementation is:
 

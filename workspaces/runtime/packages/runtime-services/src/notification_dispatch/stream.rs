@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 const MAX_STREAMS: usize = 8_192;
+const MAX_PENDING_TEXT_BYTES: usize = 64 * 1024;
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub(super) struct StreamKey {
@@ -36,6 +37,7 @@ pub(super) enum EnqueueResult {
     Buffered,
     Closed,
     Full,
+    FlushRequired,
 }
 
 impl NotificationStreamBuffer {
@@ -102,10 +104,22 @@ impl NotificationStreamBuffer {
         let entry = &mut self.entries[index];
         if entry.count == 0 {
             entry.params = params.clone();
+            // Delta text belongs only to pending, never to a second retained copy.
+            if let Some(params) = entry.params.as_object_mut() {
+                params.remove("delta");
+            }
         }
+        entry.count += 1;
         entry.characters = entry
             .characters
             .saturating_add(delta.chars().count() as u64);
+        if entry.key.method == "item/agentMessage/delta"
+            && entry.pending.len().saturating_add(delta.len()) >= MAX_PENDING_TEXT_BYTES
+        {
+            // The adapter writes pending plus this borrowed delta in one flush.
+            // Even one oversized frame never enters the retained stream buffer.
+            return EnqueueResult::FlushRequired;
+        }
         entry.pending.push_str(delta);
         if entry.key.method == "item/commandExecution/outputDelta" {
             entry.pending = entry
@@ -118,7 +132,6 @@ impl NotificationStreamBuffer {
                 .rev()
                 .collect();
         }
-        entry.count += 1;
         EnqueueResult::Buffered
     }
 
@@ -145,6 +158,15 @@ impl NotificationStreamBuffer {
         key: &StreamKey,
         current_text: &str,
     ) -> Option<(String, u64, Value)> {
+        self.flush_with_delta(key, current_text, None)
+    }
+
+    pub(super) fn flush_with_delta(
+        &mut self,
+        key: &StreamKey,
+        current_text: &str,
+        delta: Option<&str>,
+    ) -> Option<(String, u64, Value)> {
         let entry = self.entries.iter_mut().find(|entry| &entry.key == key)?;
         if entry.count == 0 {
             return None;
@@ -153,6 +175,9 @@ impl NotificationStreamBuffer {
         entry.base = None;
         let mut text = current_text.to_owned();
         text.push_str(&std::mem::take(&mut entry.pending));
+        if let Some(delta) = delta {
+            text.push_str(delta);
+        }
         if key.method == "item/commandExecution/outputDelta" {
             text = text
                 .chars()

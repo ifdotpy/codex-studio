@@ -204,22 +204,16 @@ pub fn dispatch_notification(
     notification: &Frame,
     observed_at: f64,
 ) -> Result<NotificationDispatchResult, NotificationDispatchError> {
-    in_savepoint(transaction, || {
-        let result = dispatch_notification_with_effects(
-            transaction,
-            agent_id,
-            state_dir,
-            streams,
-            identity,
-            notification,
-            observed_at,
-            &UnavailableNotificationEffects,
-        )?;
-        if let DispatchOutcome::RequiresService { service } = result.outcome {
-            return Err(NotificationDispatchError::Dependency(service.name()));
-        }
-        Ok(result)
-    })
+    dispatch_notification_with_effects(
+        transaction,
+        agent_id,
+        state_dir,
+        streams,
+        identity,
+        notification,
+        observed_at,
+        &UnavailableNotificationEffects,
+    )
 }
 
 /// Dispatch with transactional budget and move-cache owners supplied by the worker.
@@ -314,6 +308,9 @@ pub fn dispatch_notification_with_effects(
                     reason: "closed-stream".into(),
                 },
                 EnqueueResult::Full => return Err(NotificationDispatchError::StreamCapacity),
+                EnqueueResult::FlushRequired => {
+                    unreachable!("command output retains a bounded tail")
+                }
             };
             return save_outcome(transaction, &receipt_id, &content_signature, outcome);
         }
@@ -355,6 +352,7 @@ pub fn dispatch_notification_with_effects(
             && turn_id
                 .is_some_and(|turn| agent.get("turnId").and_then(Value::as_str) != Some(turn));
 
+        let before = agent.clone();
         let outcome = match kind.as_str() {
             "item/agentMessage/delta" => {
                 if stale_item {
@@ -458,6 +456,9 @@ pub fn dispatch_notification_with_effects(
         };
 
         if kind == "item/agentMessage/delta" || matches!(outcome, DispatchOutcome::Ignored { .. }) {
+            if agent != before {
+                persist_agent(transaction, agent_id, &agent, state_dir)?;
+            }
             return save_outcome(transaction, &receipt_id, &content_signature, outcome);
         }
         if !stale_item
@@ -689,8 +690,20 @@ fn write_text_notification(
     };
     let old = NotificationDispatchRepository::transcript_item(transaction, agent_id, &id)?;
     if let TextUpdate::Delta(delta) = update {
-        return match streams.enqueue_delta(key, delta, params) {
+        return match streams.enqueue_delta(key.clone(), delta, params) {
             EnqueueResult::Buffered => Ok(true),
+            EnqueueResult::FlushRequired => {
+                flush_text_stream(
+                    transaction,
+                    agent_id,
+                    agent,
+                    streams,
+                    &key,
+                    observed_at,
+                    Some(delta),
+                )?;
+                Ok(true)
+            }
             EnqueueResult::Closed => Ok(false),
             EnqueueResult::Full => Err(NotificationDispatchError::StreamCapacity),
         };
@@ -926,49 +939,15 @@ fn flush_keys(
             )?;
             continue;
         }
-        let id = format!("{agent_id}:{}", key.item);
-        let old = NotificationDispatchRepository::transcript_item(transaction, agent_id, &id)?;
-        let previous = old
-            .as_ref()
-            .map(|(record, _)| saved_text(transaction, &id, record))
-            .transpose()?
-            .unwrap_or_default();
-        let previous = durable_stream_base(transaction, streams, &key)?.unwrap_or(previous);
-        if let Some((text, count, params)) = streams.flush(&key, &previous) {
-            NotificationDispatchRepository::put_stream_base(
-                transaction,
-                &stream_base_id(&key),
-                None,
-            )?;
-            let phase = old
-                .as_ref()
-                .and_then(|(record, _)| record.get("phase"))
-                .cloned()
-                .unwrap_or(Value::Null);
-            let turn = key
-                .turn
-                .as_deref()
-                .or_else(|| agent.get("turnId").and_then(Value::as_str));
-            let record = assistant_item_record(&id, &text, observed_at, true, turn, phase);
-            NotificationDispatchRepository::put_transcript_item(
-                transaction,
-                &id,
-                agent_id,
-                &record,
-                observed_at,
-                &text,
-                text.chars().count() > ITEM_PREVIEW_CHARS,
-            )?;
-            update_common_agent_fields(agent, "item/agentMessage/delta", &params, observed_at)?;
-            agent["events"] = Value::from(
-                agent["events"]
-                    .as_u64()
-                    .unwrap_or_default()
-                    .saturating_add(count - 1),
-            );
-            agent["activity"] = json!({"phase":"writing", "at":observed_at});
-            agent["tail"] = Value::String(suffix(&text, 300));
-        }
+        flush_text_stream(
+            transaction,
+            agent_id,
+            agent,
+            streams,
+            &key,
+            observed_at,
+            None,
+        )?;
         if close {
             NotificationDispatchRepository::put_stream_base(
                 transaction,
@@ -977,6 +956,58 @@ fn flush_keys(
             )?;
             streams.close(&key);
         }
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn flush_text_stream(
+    transaction: &Transaction<'_>,
+    agent_id: &str,
+    agent: &mut Value,
+    streams: &mut NotificationStreamBuffer,
+    key: &StreamKey,
+    observed_at: f64,
+    delta: Option<&str>,
+) -> Result<(), NotificationDispatchError> {
+    let id = format!("{agent_id}:{}", key.item);
+    let old = NotificationDispatchRepository::transcript_item(transaction, agent_id, &id)?;
+    let previous = old
+        .as_ref()
+        .map(|(record, _)| saved_text(transaction, &id, record))
+        .transpose()?
+        .unwrap_or_default();
+    let previous = durable_stream_base(transaction, streams, key)?.unwrap_or(previous);
+    if let Some((text, count, params)) = streams.flush_with_delta(key, &previous, delta) {
+        NotificationDispatchRepository::put_stream_base(transaction, &stream_base_id(key), None)?;
+        let phase = old
+            .as_ref()
+            .and_then(|(record, _)| record.get("phase"))
+            .cloned()
+            .unwrap_or(Value::Null);
+        let turn = key
+            .turn
+            .as_deref()
+            .or_else(|| agent.get("turnId").and_then(Value::as_str));
+        let record = assistant_item_record(&id, &text, observed_at, true, turn, phase);
+        NotificationDispatchRepository::put_transcript_item(
+            transaction,
+            &id,
+            agent_id,
+            &record,
+            observed_at,
+            &text,
+            text.chars().count() > ITEM_PREVIEW_CHARS,
+        )?;
+        update_common_agent_fields(agent, "item/agentMessage/delta", &params, observed_at)?;
+        agent["events"] = Value::from(
+            agent["events"]
+                .as_u64()
+                .unwrap_or_default()
+                .saturating_add(count - 1),
+        );
+        agent["activity"] = json!({"phase":"writing", "at":observed_at});
+        agent["tail"] = Value::String(suffix(&text, 300));
     }
     Ok(())
 }
@@ -1143,7 +1174,18 @@ fn decode_outcome(
     raw: &str,
     receipt_id: &str,
 ) -> Result<DispatchOutcome, NotificationDispatchError> {
-    serde_json::from_str(raw).map_err(|_| stored("runtime_operation_receipts", receipt_id))
+    checked_outcome(
+        serde_json::from_str(raw).map_err(|_| stored("runtime_operation_receipts", receipt_id))?,
+    )
+}
+
+fn checked_outcome(outcome: DispatchOutcome) -> Result<DispatchOutcome, NotificationDispatchError> {
+    match outcome {
+        DispatchOutcome::RequiresService { service } => {
+            Err(NotificationDispatchError::Dependency(service.name()))
+        }
+        outcome => Ok(outcome),
+    }
 }
 
 fn save_outcome(
@@ -1152,6 +1194,7 @@ fn save_outcome(
     signature: &str,
     outcome: DispatchOutcome,
 ) -> Result<DispatchOutcome, NotificationDispatchError> {
+    let outcome = checked_outcome(outcome)?;
     NotificationDispatchRepository::put_notification_receipt(
         transaction,
         receipt_id,
@@ -1330,11 +1373,12 @@ mod tests {
     }
 
     #[test]
-    fn unload_closes_text_before_returning_recovery_dependency() {
+    fn injected_unload_refusal_keeps_pending_text_and_has_no_receipt() {
         let mut connection = database();
         let tx = connection.transaction().expect("transaction");
         let initial = super::dispatch_notification(&tx,"agent",".",&NotificationStreamBuffer::default(),&identity(1),&frame(&json!({"method":"item/agentMessage/delta","params":{"threadId":"thread","turnId":"turn","itemId":"answer","delta":"pending"}})),1234.5).expect("buffer delta");
         let streams = initial.stream_update.expect("staged stream");
+        let before = streams.clone();
         let result = super::dispatch_notification_with_effects(
             &tx,
             "agent",
@@ -1344,27 +1388,29 @@ mod tests {
             &frame(&json!({"method":"thread/closed","params":{"threadId":"thread"}})),
             1234.5,
             &super::UnavailableNotificationEffects,
-        )
-        .expect("typed recovery dependency");
-        assert_eq!(
-            result.outcome,
-            DispatchOutcome::RequiresService {
-                service: super::NotificationDependency::ThreadUnloaded
-            }
         );
-        let streams = result.stream_update.expect("closed stream");
-        let record = NotificationDispatchRepository::transcript_item(&tx, "agent", "agent:answer")
-            .expect("saved item")
-            .expect("item")
-            .0;
-        assert_eq!(record["text"], "pending");
-        let late = super::dispatch_notification(&tx,"agent",".",&streams,&identity(3),&frame(&json!({"method":"item/agentMessage/delta","params":{"threadId":"thread","turnId":"turn","itemId":"answer","delta":"late"}})),1234.5).expect("late delta");
-        assert_eq!(
-            late.outcome,
-            DispatchOutcome::Ignored {
-                reason: "closed-stream".into()
-            }
+        assert!(matches!(
+            result,
+            Err(super::NotificationDispatchError::Dependency(
+                "turn-recovery/thread-unloaded"
+            ))
+        ));
+        assert_eq!(streams, before);
+        assert!(
+            NotificationDispatchRepository::transcript_item(&tx, "agent", "agent:answer")
+                .expect("read")
+                .is_none()
         );
+        assert_eq!(
+            tx.query_row(
+                "SELECT count(*) FROM runtime_operation_receipts",
+                [],
+                |row| row.get::<_, i64>(0)
+            )
+            .expect("receipt count"),
+            1
+        );
+        tx.commit().expect("caller catches error and commits");
     }
 
     #[test]
