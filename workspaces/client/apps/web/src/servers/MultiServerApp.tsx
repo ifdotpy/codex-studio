@@ -52,6 +52,7 @@ import { serverCredentialAdapter } from "./transport";
 import {
   localServer,
   readServers,
+  shareServers,
   writeServers,
   SERVER_REGISTRY_EVENT,
   SERVER_REGISTRY_KEY,
@@ -93,9 +94,17 @@ export default function MultiServerApp() {
     }
   };
   const [paired, setPaired] = useState<StudioServer[]>(load);
+  // Discovery and preference updates reread the saved list often. Unchanged servers keep
+  // their objects, so an open dialog or a server connection is not reset by a reread.
+  const [registryRevision, setRegistryRevision] = useState(0);
+  const sharedServers = useRef<StudioServer[]>([]);
   const servers = useMemo(
-    () => orderPreferenceServers(uiOnly ? paired : [localServer(), ...paired]),
-    [paired],
+    () =>
+      (sharedServers.current = shareServers(
+        sharedServers.current,
+        orderPreferenceServers(uiOnly ? paired : [localServer(), ...paired]),
+      )),
+    [paired, registryRevision],
   );
   const [selected, setSelected] = useState(
     () =>
@@ -534,11 +543,14 @@ export default function MultiServerApp() {
     };
   }, [manager, managerTab, servers]);
   useEffect(() => {
-    const stored = (event: StorageEvent) => {
-      if (event.key === SERVER_REGISTRY_KEY || event.key === null)
-        setPaired(load());
+    const reread = () => {
+      setPaired((old) => shareServers(old, load()));
+      setRegistryRevision((value) => value + 1);
     };
-    const changed = () => setPaired(load());
+    const stored = (event: StorageEvent) => {
+      if (event.key === SERVER_REGISTRY_KEY || event.key === null) reread();
+    };
+    const changed = reread;
     window.addEventListener("storage", stored);
     window.addEventListener(SERVER_REGISTRY_EVENT, changed);
     return () => {
