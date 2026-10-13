@@ -20,6 +20,7 @@ pub use repositories::budget;
 pub use repositories::checkpoints::{
     CaptureKind, CheckpointsRepository, StoredCheckpointObject, WorkspaceSnapshot,
 };
+pub use repositories::claude_controls::ClaudeControlRepository;
 pub use repositories::remote_transport::{OutboundReservation, RemoteTransportRepository};
 
 use std::fs::{File, OpenOptions};
@@ -41,6 +42,7 @@ pub use records::{
     TranscriptAssetId, TranscriptAssetRecord, TranscriptItemId, TranscriptItemRecord,
     UsageResumeRecord, WorkItemRecord, WorkStatus,
 };
+pub use repositories::claude_retry::{ClaudeRetryRecords, ClaudeRetryRepository};
 pub use repositories::coordination::{CanvasMessage, ChatGroup, CoordinationRepository};
 pub use repositories::event_write::{EventWriteReceipt, EventWriteRepository};
 pub use repositories::execution_history::ExecutionHistoryRepository;

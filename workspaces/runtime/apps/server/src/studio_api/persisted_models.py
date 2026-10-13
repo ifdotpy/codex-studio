@@ -8,6 +8,9 @@ from pydantic_core import PydanticCustomError
 
 from studio_api.accounts.models import UsageLimitsResponse
 from studio_api.budget_models import BUDGET_SCHEMA_MODELS
+from studio_api.claude_persisted_models import (
+    PersistedClaudeAttemptRecord, PersistedClaudeControlRecord, PersistedClaudeLoginRecord,
+)
 from studio_api.models import MAX_SAFE_INTEGER, ContractModel, JsonValue, SafeInt
 
 
@@ -273,6 +276,9 @@ class UsageLimitsWorkspaceEnvelope(ContractModel):
 
 
 STATE_SCHEMA_MODELS = {
+    "persisted-claude-attempt.schema.json": PersistedClaudeAttemptRecord,
+    "persisted-claude-control.schema.json": PersistedClaudeControlRecord,
+    "persisted-claude-login.schema.json": PersistedClaudeLoginRecord,
     "account-registry.schema.json": AccountRegistryRecord,
     **BUDGET_SCHEMA_MODELS,
     "persisted-agent-record.schema.json": PersistedAgentRecord,

@@ -2,6 +2,8 @@ mod account_login;
 mod agents_create;
 mod catalog;
 mod checkpoints;
+mod claude_controls;
+mod claude_login;
 pub(crate) mod compose;
 mod desktop;
 pub(crate) mod extractors;

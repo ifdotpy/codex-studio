@@ -13,6 +13,7 @@ futures-util.workspace = true
 getrandom = { workspace = true }
 notify = { workspace = true }
 process-wrap = { workspace = true }
+regex = "=1.13.1"
 ring = { workspace = true }
 rustls = { workspace = true }
 rustls-pki-types = { workspace = true }
@@ -22,6 +23,7 @@ serde_json = { workspace = true, features = ["raw_value"] }
 mime_guess = { workspace = true }
 rusqlite = { workspace = true }
 sha2 = { workspace = true }
+shlex = "=2.0.1"
 spki = { workspace = true }
 studio-runtime-process = { path = "../runtime-process" }
 studio-runtime-providers = { path = "../runtime-providers" }

@@ -18,6 +18,7 @@ use crate::validation::Registry;
 
 #[derive(Clone)]
 pub struct HttpState {
+    pub claude_login: Option<Arc<studio_runtime_services::claude_login::service::LoginService>>,
     pub account_driver:
         Option<std::sync::Arc<studio_runtime_services::account_driver::AccountDriver>>,
     pub(crate) token: String,
@@ -61,6 +62,7 @@ impl HttpState {
         }
         Self {
             account_driver: None,
+            claude_login: None,
             token,
             workspace_id,
             native_path,
@@ -87,7 +89,11 @@ impl HttpState {
     }
 
     pub async fn shutdown_services(&self) -> std::io::Result<()> {
-        self.model_catalog.shutdown().await
+        let model = self.model_catalog.shutdown().await;
+        if let Some(login) = &self.claude_login {
+            login.shutdown().await.map_err(std::io::Error::other)?;
+        }
+        model
     }
 
     /// Shared post-commit signal for durable event writers and the scheduler.
