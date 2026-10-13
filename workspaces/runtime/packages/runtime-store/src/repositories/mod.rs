@@ -19,6 +19,7 @@ pub(crate) mod messages;
 pub mod monitor_runtime;
 pub(crate) mod monitors;
 pub(crate) mod multi_server;
+pub(crate) mod multi_server_delivery;
 pub(crate) mod profiles;
 pub(crate) mod project_locations;
 pub(crate) mod projects;
