@@ -92,10 +92,7 @@ impl HttpState {
                 )),
             ),
             sync_changes: Arc::clone(&sync_changes),
-            token_rates: Arc::new(TokenRateHub::with_change_callback({
-                let changes = Arc::clone(&sync_changes);
-                Arc::new(move || changes.notify_one())
-            })),
+            token_rates: Arc::new(TokenRateHub::with_change_hub(Arc::clone(&sync_changes))),
             event_wake: Arc::new(Notify::new()),
             etag_operations: BTreeSet::new(),
         }
