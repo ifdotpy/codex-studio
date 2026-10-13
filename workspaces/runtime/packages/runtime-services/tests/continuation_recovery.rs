@@ -387,7 +387,8 @@ fn capacity_claim_commits_record_and_agent_together_and_recovery_never_resends()
                 |s| capacity_retry::transition(
                     s,
                     Action::Claim {
-                        settings: &json!({})
+                        settings: &json!({}),
+                        automatic: true,
                     },
                     1000.0
                 )
@@ -408,6 +409,7 @@ fn capacity_claim_commits_record_and_agent_together_and_recovery_never_resends()
                     s,
                     Action::Claim {
                         settings: &json!({}),
+                        automatic: true,
                     },
                     1000.0,
                 )
@@ -434,6 +436,7 @@ fn capacity_claim_commits_record_and_agent_together_and_recovery_never_resends()
                     s,
                     Action::Claim {
                         settings: &json!({}),
+                        automatic: true,
                     },
                     1000.0,
                 )
@@ -464,6 +467,7 @@ fn capacity_claim_commits_record_and_agent_together_and_recovery_never_resends()
                     s,
                     Action::Claim {
                         settings: &json!({}),
+                        automatic: true,
                     },
                     1000.0,
                 )

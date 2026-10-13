@@ -130,6 +130,13 @@ pub struct ClaudeAuthObservation {
     pub settings: PreparationSettings,
 }
 
+/// Identity captured by the auth timeout owner before opening its settlement transaction.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ClaudeAttemptIdentity {
+    pub attempt_id: String,
+    pub epoch: i64,
+}
+
 impl ClaudeAuthObservation {
     pub fn checked(account_pin: ClaudeAccountPin, settings: PreparationSettings) -> Self {
         Self {
@@ -152,6 +159,7 @@ pub enum Completion<'a> {
         agent_id: &'a str,
         now: f64,
         observation: Option<&'a ClaudeAuthObservation>,
+        attempt: Option<&'a ClaudeAttemptIdentity>,
     },
 }
 
@@ -186,6 +194,7 @@ pub struct Staged {
     changed: bool,
     event_wake: bool,
     effects: Vec<Effect>,
+    account_wakes: Vec<(String, i64)>,
 }
 
 impl Staged {
@@ -229,7 +238,8 @@ pub fn stage(tx: &Transaction<'_>, completion: Completion<'_>) -> Result<Staged>
             agent_id,
             now,
             observation,
-        } => stage_auth_timeout(tx, agent_id, now, observation),
+            attempt,
+        } => stage_auth_timeout(tx, agent_id, now, observation, attempt),
     }
 }
 
@@ -256,15 +266,21 @@ fn stage_terminal(
             .get("error")
             .filter(|value| !value.is_null())
             .unwrap_or(&Value::Null);
-        let agent = &load(tx, agent_id, ContinuationTable::Usage, None)?.agent;
-        if let Some(cause) = usage_failure(error, text(agent, "provider")) {
-            if limits.is_none() {
+        let snapshot = load(tx, agent_id, ContinuationTable::Usage, None)?;
+        if usage_resume::failure_eligible(&snapshot)
+            && classify_usage_failure(error, text(&snapshot.agent, "provider")).is_some()
+        {
+            let limits = limits.ok_or(ContinuationError::Unavailable(
+                "usage-policy/limits-snapshot",
+            ))?;
+            if limits.account_key() != account(&snapshot.agent) {
                 return Err(ContinuationError::Unavailable(
-                    "usage-policy/limits-snapshot",
+                    "usage-policy/limits-account-mismatch",
                 ));
             }
-            if cause == UsageCause::Auth
-                && text(agent, "provider") == "claude"
+            if classify_usage_failure(error, text(&snapshot.agent, "provider"))
+                == Some(UsageCause::Auth)
+                && text(&snapshot.agent, "provider") == "claude"
                 && claude_auth.is_none()
             {
                 return Err(ContinuationError::Unavailable("claude-auth/account-pin"));
@@ -274,14 +290,12 @@ fn stage_terminal(
     if status == "completed" {
         let current = load(tx, agent_id, ContinuationTable::Usage, None)?;
         let account_key = account(&current.agent);
-        for (resume_id, resume_agent) in auth_wait_ids(tx, account_key)? {
-            let snapshot = load(
-                tx,
-                &resume_agent,
-                ContinuationTable::Usage,
-                Some(&resume_id),
-            )?;
-            let decision = usage_resume::completed_proof(&snapshot, account(&snapshot.agent), now)?;
+        let proof_at = now;
+        let pending = auth_wait_ids(tx, account_key, 33)?;
+        for (resume_id, resume_agent) in pending.iter().take(32) {
+            let snapshot = load(tx, resume_agent, ContinuationTable::Usage, Some(resume_id))?;
+            let decision =
+                usage_resume::completed_proof(&snapshot, account(&snapshot.agent), proof_at)?;
             collect_apply(
                 tx,
                 &mut staged,
@@ -290,6 +304,19 @@ fn stage_terminal(
                 decision,
                 now,
             )?;
+        }
+        if pending.len() > 32 {
+            // A durable cursor lets bounded timer ticks finish the account-wide proof fanout.
+            let mut agent = load(tx, agent_id, ContinuationTable::Usage, None)?.agent;
+            agent["authResumeProofPending"] = json!({
+                "accountKey": account_key,
+                "proofAt": proof_at,
+                "afterId": pending[31].0,
+            });
+            ContinuationRepository::put_agent(tx, &agent)?;
+            staged.changed = true;
+            let wake_epoch = staged.epoch;
+            add_account_wake(&mut staged, agent_id, wake_epoch);
         }
         if let Some(resume_id) = child_id(tx, agent_id, "usageResume")? {
             let snapshot = load(tx, agent_id, ContinuationTable::Usage, Some(&resume_id))?;
@@ -356,11 +383,18 @@ fn stage_terminal(
         )?;
     }
     let usage_snapshot = load(tx, agent_id, ContinuationTable::Usage, None)?;
-    if let Some(cause) = usage_failure(error, text(&usage_snapshot.agent, "provider")) {
+    if usage_resume::failure_eligible(&usage_snapshot)
+        && let Some(cause) = classify_usage_failure(error, text(&usage_snapshot.agent, "provider"))
+    {
         let snapshot = usage_snapshot;
         let limits = limits.ok_or(ContinuationError::Unavailable(
             "usage-policy/limits-snapshot",
         ))?;
+        if limits.account_key() != account(&snapshot.agent) {
+            return Err(ContinuationError::Unavailable(
+                "usage-policy/limits-account-mismatch",
+            ));
+        }
         if cause == UsageCause::Auth
             && text(&snapshot.agent, "provider") == "claude"
             && claude_auth.is_none()
@@ -396,18 +430,24 @@ fn stage_terminal(
     Ok(staged)
 }
 
-fn auth_wait_ids(tx: &Transaction<'_>, account_key: &str) -> Result<Vec<(String, String)>> {
+fn auth_wait_ids(
+    tx: &Transaction<'_>,
+    account_key: &str,
+    limit: usize,
+) -> Result<Vec<(String, String)>> {
     let mut statement = tx
         .prepare(
             "SELECT id,agent FROM runtime_usage_resumes \
              WHERE json_extract(record,'$.status')='scheduled' \
                AND json_extract(record,'$.cause')='auth' \
                AND json_extract(record,'$.accountKey')=?1 \
-               AND json_extract(record,'$.proofAt') IS NULL ORDER BY rowid",
+               AND json_extract(record,'$.proofAt') IS NULL ORDER BY id LIMIT ?2",
         )
         .map_err(|error| ContinuationError::Store(studio_runtime_store::StoreError::from(error)))?;
     statement
-        .query_map([account_key], |row| Ok((row.get(0)?, row.get(1)?)))
+        .query_map((account_key, limit as i64), |row| {
+            Ok((row.get(0)?, row.get(1)?))
+        })
         .map_err(|error| ContinuationError::Store(studio_runtime_store::StoreError::from(error)))?
         .collect::<std::result::Result<Vec<_>, _>>()
         .map_err(|error| ContinuationError::Store(studio_runtime_store::StoreError::from(error)))
@@ -422,6 +462,50 @@ pub fn stage_tick(
     limits: Option<&LimitsObservation>,
 ) -> Result<Staged> {
     let mut staged = empty_stage(tx, agent_id)?;
+    let owner = load(tx, agent_id, ContinuationTable::Usage, None)?;
+    if let Some(pending) = owner
+        .agent
+        .get("authResumeProofPending")
+        .filter(|v| v.is_object())
+    {
+        let key = pending["accountKey"].as_str().ok_or_else(|| {
+            ContinuationError::Invalid("/agent/authResumeProofPending/accountKey".into())
+        })?;
+        let proof_at = pending["proofAt"].as_f64().ok_or_else(|| {
+            ContinuationError::Invalid("/agent/authResumeProofPending/proofAt".into())
+        })?;
+        let after = pending["afterId"].as_str().ok_or_else(|| {
+            ContinuationError::Invalid("/agent/authResumeProofPending/afterId".into())
+        })?;
+        for (id, resume_agent) in auth_wait_ids_after(tx, key, after, 32)? {
+            let snapshot = load(tx, &resume_agent, ContinuationTable::Usage, Some(&id))?;
+            let decision = usage_resume::completed_proof(&snapshot, key, proof_at)?;
+            collect_apply(
+                tx,
+                &mut staged,
+                ContinuationTable::Usage,
+                &snapshot,
+                decision,
+                now,
+            )?;
+        }
+        let remaining = auth_wait_ids_after(tx, key, after, 33)?;
+        let mut agent = load(tx, agent_id, ContinuationTable::Usage, None)?.agent;
+        if remaining.len() > 32 {
+            agent["authResumeProofPending"]["afterId"] = json!(remaining[31].0);
+        } else {
+            agent
+                .as_object_mut()
+                .ok_or_else(|| ContinuationError::Invalid("/agent".into()))?
+                .remove("authResumeProofPending");
+        }
+        if agent != owner.agent {
+            ContinuationRepository::put_agent(tx, &agent)?;
+            staged.changed = true;
+            let wake_epoch = staged.epoch;
+            add_account_wake(&mut staged, agent_id, wake_epoch);
+        }
+    }
     // Capacity claims and admission remain owned by the account worker. A due
     // durable row is enough to re-signal its existing scheduler lane.
     if let Some(id) = child_id(tx, agent_id, "capacityRetry")? {
@@ -449,10 +533,10 @@ pub fn stage_tick(
     }) {
         return Ok(staged);
     }
-    let limits = limits.ok_or(ContinuationError::Unavailable(
-        "usage-policy/limits-snapshot",
-    ))?;
-    let decision = usage_resume::tick(&snapshot, limits, now)?;
+    let decision = match limits {
+        Some(limits) => usage_resume::tick(&snapshot, limits, now)?,
+        None => usage_resume::tick_without_observation(&snapshot, now)?,
+    };
     collect_apply(
         tx,
         &mut staged,
@@ -464,15 +548,41 @@ pub fn stage_tick(
     Ok(staged)
 }
 
+fn auth_wait_ids_after(
+    tx: &Transaction<'_>,
+    account_key: &str,
+    after_id: &str,
+    limit: usize,
+) -> Result<Vec<(String, String)>> {
+    let mut statement = tx.prepare("SELECT id,agent FROM runtime_usage_resumes WHERE json_extract(record,'$.status')='scheduled' AND json_extract(record,'$.cause')='auth' AND json_extract(record,'$.accountKey')=?1 AND json_extract(record,'$.proofAt') IS NULL AND id>?2 ORDER BY id LIMIT ?3")
+        .map_err(|error| ContinuationError::Store(studio_runtime_store::StoreError::from(error)))?;
+    statement
+        .query_map((account_key, after_id, limit as i64), |row| {
+            Ok((row.get(0)?, row.get(1)?))
+        })
+        .map_err(|error| ContinuationError::Store(studio_runtime_store::StoreError::from(error)))?
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(|error| ContinuationError::Store(studio_runtime_store::StoreError::from(error)))
+}
+
 fn stage_auth_timeout(
     tx: &Transaction<'_>,
     agent_id: &str,
     now: f64,
     observation: Option<&ClaudeAuthObservation>,
+    attempt: Option<&ClaudeAttemptIdentity>,
 ) -> Result<Staged> {
+    let attempt = attempt.ok_or(ContinuationError::Unavailable(
+        "claude-auth/attempt-identity",
+    ))?;
+    let snapshot = load(tx, agent_id, ContinuationTable::Usage, None)?;
+    if snapshot.agent["epoch"].as_i64() != Some(attempt.epoch)
+        || snapshot.agent["startAttempt"]["id"].as_str() != Some(&attempt.attempt_id)
+    {
+        return empty_stage(tx, agent_id);
+    }
     let observation =
         observation.ok_or(ContinuationError::Unavailable("claude-auth/account-pin"))?;
-    let snapshot = load(tx, agent_id, ContinuationTable::Usage, None)?;
     let settings = observation.settings.value();
     let pin = observation.account_pin.value();
     let Some(capture) = claude_auth_wait::capture(&snapshot, &settings, pin) else {
@@ -502,6 +612,7 @@ fn empty_stage(tx: &Transaction<'_>, agent_id: &str) -> Result<Staged> {
         changed: false,
         event_wake: false,
         effects: Vec::new(),
+        account_wakes: Vec::new(),
     })
 }
 
@@ -565,6 +676,11 @@ fn collect_apply(
     }
     continuation_driver::apply_in_transaction(tx, snapshot, table, &decision, now)?;
     staged.changed = true;
+    add_account_wake(
+        staged,
+        snapshot.agent_id(),
+        snapshot.agent["epoch"].as_i64().unwrap_or(-1),
+    );
     staged.event_wake |= decision
         .effects
         .iter()
@@ -573,10 +689,23 @@ fn collect_apply(
     Ok(())
 }
 
+fn add_account_wake(staged: &mut Staged, agent_id: &str, epoch: i64) {
+    let wake = (agent_id.to_owned(), epoch);
+    if !staged.account_wakes.contains(&wake) {
+        staged.account_wakes.push(wake);
+    }
+}
+
 /// The only post-commit action: signal the existing scheduler owner.
 pub fn committed(staged: &Staged, port: &dyn WakePort) -> Result<()> {
     if staged.changed {
-        port.wake_account(&staged.agent_id, staged.epoch)?;
+        if staged.account_wakes.is_empty() {
+            port.wake_account(&staged.agent_id, staged.epoch)?;
+        } else {
+            for (agent_id, epoch) in &staged.account_wakes {
+                port.wake_account(agent_id, *epoch)?;
+            }
+        }
         if staged.event_wake {
             port.wake_events(&staged.agent_id, staged.epoch)?;
         }
@@ -596,46 +725,32 @@ fn capacity_failure(error: &Value) -> Option<CapacityFailure> {
     }
 }
 
-fn usage_failure(error: &Value, provider: &str) -> Option<UsageCause> {
+pub fn classify_usage_failure(error: &Value, provider: &str) -> Option<UsageCause> {
     match error_kind(error) {
         "usageLimitExceeded" => Some(UsageCause::UsageLimit),
         "rateLimitExceeded" => Some(UsageCause::RateLimit),
         kind if kind.to_ascii_lowercase().contains("auth") => Some(UsageCause::Auth),
         _ => {
-            let message = error
-                .get("message")
-                .and_then(Value::as_str)
-                .unwrap_or("")
-                .to_ascii_lowercase();
-            let auth_evidence = [
-                "invalid token",
-                "expired token",
-                "revoked token",
-                "token invalid",
-                "token expired",
-                "token revoked",
-                "invalid key",
-                "expired key",
-                "revoked key",
-                "key invalid",
-                "key expired",
-                "key revoked",
-                "sign in",
-                "sign-in",
-                "signin",
-                "authentication required",
-                "unauthorized",
-            ]
-            .iter()
-            .any(|needle| message.contains(needle));
-            (message.contains("401")
-                || (message.contains("403") && auth_evidence)
-                || (provider == "claude"
-                    && (message.contains("oauth session expired")
-                        || message.contains("failed to authenticate"))))
+            let message = error.get("message").and_then(Value::as_str).unwrap_or("");
+            let patterns = classifier_patterns();
+            let auth_evidence = patterns.0.is_match(message);
+            (patterns.1.is_match(message)
+                || (patterns.2.is_match(message) && auth_evidence)
+                || (provider == "claude" && patterns.3.is_match(message)))
             .then_some(UsageCause::Auth)
         }
     }
+}
+
+fn classifier_patterns() -> &'static (regex::Regex, regex::Regex, regex::Regex, regex::Regex) {
+    static PATTERNS: std::sync::OnceLock<(regex::Regex, regex::Regex, regex::Regex, regex::Regex)> =
+        std::sync::OnceLock::new();
+    PATTERNS.get_or_init(|| (
+        regex::Regex::new(r"(?i)\b(?:invalid|expired|revoked).{0,32}\b(?:token|key)\b|\b(?:token|key)\b.{0,32}\b(?:invalid|expired|revoked)\b|\bsign[ -]?in\b|\bauthentication required\b|\bunauthorized\b").expect("static auth evidence pattern"),
+        regex::Regex::new(r"(?i)\b401\b").expect("static 401 pattern"),
+        regex::Regex::new(r"(?i)\b403\b").expect("static 403 pattern"),
+        regex::Regex::new(r"(?i)oauth session expired|failed to authenticate").expect("static Claude auth pattern"),
+    ))
 }
 
 fn error_kind(error: &Value) -> &str {
