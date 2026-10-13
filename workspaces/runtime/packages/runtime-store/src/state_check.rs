@@ -45,6 +45,7 @@ pub fn check_state_readonly(state_dir: &Path) -> StoreResult<StateCheckReport> {
     connection.pragma_update(None, "query_only", "ON")?;
 
     let mut tables = vec![
+        check_table::<crate::AccountTransferRecord>(&connection)?,
         check_table::<AgentRecord>(&connection)?,
         check_table::<TaskRecord>(&connection)?,
         check_table::<PlanRecord>(&connection)?,

@@ -49,9 +49,11 @@ test-fast-rest:
 test-server-shard index count:
     @node {{quote(facade)}} test-server-shard {{quote(index)}} {{quote(count)}}
 
-[doc("Run the full workspace readiness Python corpus and writer witness (manual heavy tier).")]
+[doc("Run the complete deterministic Rust subsystem corpora and state witnesses.")]
 test-rust-runtime-corpora:
     @cargo nextest run --workspace --run-ignored only -E 'test(workspace_gate_full_python_corpus) | test(workspace_reads_real_python_written_state)'
+    @STUDIO_RUNTIME_CORPUS_FULL=1 cargo nextest run -p studio-runtime-services -E 'binary(/_corpus$/) | binary(monitor_recovery)'
+    @STUDIO_RUNTIME_CORPUS_FULL=1 cargo nextest run -p studio-runtime-services -E 'binary(/^account_transfer/)'
 
 [doc("Run all three manually classified heavy server suites.")]
 test-server-heavy:
@@ -81,10 +83,6 @@ test-browser-smoke:
 [doc("Run heavy server suites followed by the full browser project; no load suites.")]
 test-heavy:
     @node {{quote(facade)}} test-heavy
-
-[doc("Run the complete deterministic Rust subsystem corpus matrices by hand.")]
-test-rust-runtime-corpora:
-    @STUDIO_RUNTIME_CORPUS_FULL=1 cargo nextest run -p studio-runtime-services -E 'binary(/_corpus$/) | binary(monitor_recovery)'
 
 [doc("Run seeded monitor mutations in an external isolated target directory.")]
 test-rust-monitors-mutations target:

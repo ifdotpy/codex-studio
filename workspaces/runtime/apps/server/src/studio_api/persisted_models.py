@@ -13,6 +13,7 @@ from studio_api.workspace_operation_models import (
 )
 from studio_api.relocation_models import RelocationFormats
 from studio_api.persisted_federation import FEDERATION_SCHEMA_MODELS
+from studio_api.persisted_account_transfer import PersistedAccountTransferRecord, PersistedTransferAgentRecord
 
 
 def _unicode_scalar(value: str) -> str:
@@ -571,6 +572,7 @@ STATE_SCHEMA_MODELS = {
     **FEDERATION_SCHEMA_MODELS,
     "account-registry.schema.json": AccountRegistryRecord,
     "persisted-access-record.schema.json": PersistedAccessRecord,
+    "persisted-account-transfer-record.schema.json": PersistedAccountTransferRecord,
     "persisted-agent-record.schema.json": PersistedAgentRecord,
     "persisted-annotation-record.schema.json": PersistedAnnotationRecord,
     "persisted-chat-message.schema.json": PersistedChatMessage,
@@ -600,6 +602,7 @@ STATE_SCHEMA_MODELS = {
     "persisted-transcript-record.schema.json": PersistedTranscriptRecord,
     "persisted-usage-resume-record.schema.json": PersistedUsageResumeRecord,
     "persisted-work-item-record.schema.json": PersistedWorkItemRecord,
+    "persisted-transfer-agent-record.schema.json": PersistedTransferAgentRecord,
     "runtime-event-metadata.schema.json": RuntimeEventMetadataRecord,
     "runtime-transcript-asset.schema.json": PersistedTranscriptAsset,
     "persisted-workspace-operation-record.schema.json": PersistedWorkspaceOperationRecord,

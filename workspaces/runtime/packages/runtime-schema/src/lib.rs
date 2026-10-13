@@ -8,11 +8,15 @@ use serde_json::{Value, json};
 
 pub const OPENAPI_URI: &str = "https://codex-studio.invalid/openapi.json";
 const ACCOUNT_REGISTRY_URI: &str = "https://codex-studio.invalid/account-registry.schema.json";
+const ACCOUNT_TRANSFER_URI: &str =
+    "https://codex-studio.invalid/persisted-account-transfer-record.schema.json";
 const USAGE_LIMITS_URI: &str = "https://codex-studio.invalid/workspace-usage-limits.schema.json";
 const TRANSCRIPT_ASSET_URI: &str =
     "https://codex-studio.invalid/runtime-transcript-asset.schema.json";
 const TRANSCRIPT_RECORD_URI: &str =
     "https://codex-studio.invalid/persisted-transcript-record.schema.json";
+const TRANSFER_AGENT_URI: &str =
+    "https://codex-studio.invalid/persisted-transfer-agent-record.schema.json";
 const EVENT_METADATA_URI: &str = "https://codex-studio.invalid/runtime-event-metadata.schema.json";
 const AGENT_RECORD_URI: &str = "https://codex-studio.invalid/persisted-agent-record.schema.json";
 const TASK_RECORD_URI: &str = "https://codex-studio.invalid/persisted-task-record.schema.json";
@@ -162,6 +166,18 @@ const PERSISTED_SCHEMAS: &[(&str, &[u8])] = &[
     (FEDERATION_CHAT_PAYLOAD_URI, FEDERATION_CHAT_PAYLOAD),
     (FEDERATION_ROOM_PAYLOAD_URI, FEDERATION_ROOM_PAYLOAD),
     (ACCOUNT_REGISTRY_URI, ACCOUNT_REGISTRY),
+    (
+        ACCOUNT_TRANSFER_URI,
+        include_bytes!("schemas/persisted-account-transfer-record.schema.json"),
+    ),
+    (USAGE_LIMITS_URI, USAGE_LIMITS),
+    (TRANSCRIPT_ASSET_URI, TRANSCRIPT_ASSET),
+    (TRANSCRIPT_RECORD_URI, TRANSCRIPT_RECORD),
+    (
+        TRANSFER_AGENT_URI,
+        include_bytes!("schemas/persisted-transfer-agent-record.schema.json"),
+    ),
+    (EVENT_METADATA_URI, EVENT_METADATA),
     (AGENT_RECORD_URI, AGENT_RECORD),
     (ANNOTATION_RECORD_URI, ANNOTATION_RECORD),
     (CHAT_MESSAGE_URI, CHAT_MESSAGE),
@@ -250,6 +266,7 @@ pub fn table_schema(table: &str) -> Option<&'static str> {
         "graph_agents" => "PersistedGraphAgentRecord",
         "runtime_access_clients" => "PersistedAccessRecord",
         "runtime_access_discovered" => "PersistedAccessRecord",
+        "runtime_account_transfers" => "PersistedAccountTransferRecord",
         "runtime_agent_moves" => "relocation/MoveRecord",
         "runtime_federation_settings" => "PersistedFederationSettings",
         "runtime_federation_peers" => "PersistedFederationPeer",
@@ -355,6 +372,8 @@ fn compile_schemas() -> SchemaResult<CompiledSchemas> {
         validators.insert(name.to_owned(), validator);
     }
     for (name, uri) in [
+        ("PersistedAccountTransferRecord", ACCOUNT_TRANSFER_URI),
+        ("PersistedTransferAgentRecord", TRANSFER_AGENT_URI),
         ("PersistedAccessRecord", ACCESS_RECORD_URI),
         ("PersistedFederationSettings", FEDERATION_SETTINGS_URI),
         ("PersistedFederationPeer", FEDERATION_PEER_URI),
@@ -365,7 +384,9 @@ fn compile_schemas() -> SchemaResult<CompiledSchemas> {
         ("FederationRoomPayload", FEDERATION_ROOM_PAYLOAD_URI),
         ("PersistedTranscriptAsset", TRANSCRIPT_ASSET_URI),
         ("PersistedTranscriptRecord", TRANSCRIPT_RECORD_URI),
+        ("PersistedTransferAgentRecord", TRANSFER_AGENT_URI),
         ("RuntimeEventMetadataRecord", EVENT_METADATA_URI),
+        ("PersistedAccountTransferRecord", ACCOUNT_TRANSFER_URI),
         ("PersistedAgentRecord", AGENT_RECORD_URI),
         ("PersistedAnnotationRecord", ANNOTATION_RECORD_URI),
         ("PersistedChatMessage", CHAT_MESSAGE_URI),
