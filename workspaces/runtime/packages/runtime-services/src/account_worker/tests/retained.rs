@@ -119,6 +119,147 @@ async fn retained_barrier_waits_for_committed_journal_without_owning_bridge() {
     peer.acknowledged(cursor).await;
     worker.shutdown().await.unwrap();
 }
+
+#[tokio::test(start_paused = true)]
+async fn recovery_reconcile_wait_does_not_hold_store_bridge_permit() {
+    use crate::{
+        recovery::{RecoveryError, RecoveryOutcome},
+        recovery_absence::RecoveryObservation,
+        recovery_history::ConnectionScope,
+        recovery_policy::RecoverySnapshot,
+        recovery_runtime::{RecoveryJob, RecoveryRuntime, RetainedRecoveryReader},
+        recovery_store::CompletionWriter,
+        task_recovery_store::TaskCompletionWriter,
+    };
+
+    struct Completion;
+    impl CompletionWriter for Completion {
+        fn start_held(
+            &mut self,
+            _: &studio_runtime_store::Transaction<'_>,
+            _: &Value,
+            _: &str,
+            _: &str,
+        ) -> Result<(), RecoveryError> {
+            Ok(())
+        }
+        fn complete(
+            &mut self,
+            _: &studio_runtime_store::Transaction<'_>,
+            _: &RecoverySnapshot,
+            _: &ConnectionScope,
+            _: &crate::recovery::RecoveryAction,
+        ) -> Result<RecoveryOutcome, RecoveryError> {
+            Ok(RecoveryOutcome::Unconfirmed)
+        }
+    }
+    struct TaskCompletion;
+    impl TaskCompletionWriter for TaskCompletion {
+        fn resolve_receipt(&mut self, receipt: &Value) -> Result<Value, RecoveryError> {
+            Ok(receipt.clone())
+        }
+        fn complete(
+            &mut self,
+            _: &crate::task_recovery::TaskRecoverySnapshot,
+            _: &ConnectionScope,
+            _: Value,
+        ) -> Result<bool, RecoveryError> {
+            Ok(false)
+        }
+    }
+
+    let state = State::new().await;
+    let mut peer = Peer::new();
+    let mut worker = peer.worker(state.bridge.clone()).await;
+    let start = state.start(&mut peer, &worker).await;
+    peer.accepted(&start).await;
+    let mut record = state.record().await;
+    record["inFlight"] = json!(true);
+    record["status"] = json!("running");
+    if let Some(agent) = record.as_object_mut() {
+        agent.remove("startAttempt");
+        agent.remove("turnId");
+    }
+    let snapshot = RecoverySnapshot::from_record(record).unwrap();
+    let session = worker.retained_session();
+    let scope = session.scope().clone();
+    let observation = RecoveryObservation {
+        scope: scope.clone(),
+        at: 100.0,
+        supervisor: None,
+        quiet: false,
+        journal_drained: false,
+        account_reserved: true,
+        tools_refreshing: false,
+        preparation_pending: false,
+        completed_turn: None,
+    };
+    let observation_scope = scope.clone();
+    let observation_for_reader = observation.clone();
+    let actor = RequestActor {
+        agent: state.agent.clone(),
+        epoch: state.epoch,
+    };
+    let store = state.bridge.store.clone();
+    let history_port = crate::account_worker::retained::consumers::HistoryPort::new(
+        session,
+        actor,
+        tokio::runtime::Handle::current(),
+    );
+    let reconcile = tokio::task::spawn_blocking(move || {
+        let observation = move |current: &ConnectionScope| {
+            (current == &observation_scope).then(|| observation_for_reader.clone())
+        };
+        let source: &crate::recovery_runtime::ObservationSource<'_> = &observation;
+        let mut completion = Completion;
+        let mut task_completion = TaskCompletion;
+        let mut history = history_port;
+        let mut reader = RetainedRecoveryReader::new(
+            scope.clone(),
+            "fake-thread-0".into(),
+            &mut history,
+            source,
+        )
+        .unwrap();
+        let mut runtime = RecoveryRuntime {
+            store: &store,
+            observation: source,
+            completion: &mut completion,
+            task_completion: &mut task_completion,
+        };
+        runtime.reconcile(&RecoveryJob::Turn(snapshot), scope, &mut reader)
+    });
+    let request = peer.next_write().await;
+    assert_eq!(request.value["method"], "thread/read");
+    assert!(
+        request
+            .receipt
+            .send(CommandReceipt::Written {
+                remote_id: None,
+                duplicate: false,
+            })
+            .is_ok()
+    );
+    state
+        .bridge
+        .run(|store| {
+            let _: i64 = store.read()?.query_row("SELECT 1", [], |row| row.get(0))?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    assert!(!reconcile.is_finished());
+    peer.reply(
+        &request.value,
+        json!({"thread":{"id":"fake-thread-0","status":{"type":"active"}}}),
+    )
+    .await;
+    assert!(matches!(
+        reconcile.await.unwrap().unwrap(),
+        RecoveryOutcome::Unconfirmed
+    ));
+    worker.shutdown().await.unwrap();
+}
 #[tokio::test(start_paused = true)]
 async fn retained_reply_failure_cannot_publish_a_positive_receipt() {
     let state = State::new().await;
