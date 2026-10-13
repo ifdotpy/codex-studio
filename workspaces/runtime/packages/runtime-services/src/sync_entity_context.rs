@@ -12,13 +12,15 @@ use crate::event_write::truthy;
 use crate::sync_policy::{stored_records, table_exists};
 use crate::sync_views::{AgentViewContext, RoomViewContext};
 
-#[derive(Deserialize)]
-struct LocalIdentity {
-    #[serde(rename = "serverId")]
-    server_id: String,
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct LocalIdentity {
+    pub(crate) server_id: String,
+    pub(crate) label: String,
+    pub(crate) public_key: String,
 }
 
-pub(crate) fn local_server_id(state_dir: &str) -> StoreResult<Option<String>> {
+pub(crate) fn local_identity(state_dir: &str) -> StoreResult<Option<LocalIdentity>> {
     let directory = Path::new(state_dir).join("multi-server");
     let directory_metadata = match fs::symlink_metadata(&directory) {
         Ok(metadata) => metadata,
@@ -61,7 +63,15 @@ pub(crate) fn local_server_id(state_dir: &str) -> StoreResult<Option<String>> {
     }
     let identity: LocalIdentity =
         serde_json::from_reader(BufReader::new(file)).map_err(|_| invalid_identity())?;
-    Ok((!identity.server_id.is_empty()).then_some(identity.server_id))
+    if identity.server_id.is_empty() || identity.label.is_empty() || identity.public_key.is_empty()
+    {
+        return Err(invalid_identity());
+    }
+    Ok(Some(identity))
+}
+
+pub(crate) fn local_server_id(state_dir: &str) -> StoreResult<Option<String>> {
+    Ok(local_identity(state_dir)?.map(|identity| identity.server_id))
 }
 
 fn invalid_identity() -> studio_runtime_store::StoreError {
