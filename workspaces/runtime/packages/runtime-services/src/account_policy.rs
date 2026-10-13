@@ -383,7 +383,9 @@ pub enum AccountPolicyError {
     },
 }
 
-fn project_registry(bytes: Option<&[u8]>) -> Result<AccountsSnapshot, AccountPolicyError> {
+pub(crate) fn project_registry(
+    bytes: Option<&[u8]>,
+) -> Result<AccountsSnapshot, AccountPolicyError> {
     let Some(bytes) = bytes else {
         return Err(registry_error("/", "registry is absent"));
     };
