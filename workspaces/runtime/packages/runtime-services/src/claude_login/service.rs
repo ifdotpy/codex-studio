@@ -327,7 +327,9 @@ impl LoginService {
         ) {
             self.finish(id, LoginStatus::Error, Some(CODE_UNKNOWN))
                 .await?;
-            if sender.try_send(Command::Cancel).is_err() {
+            // A failed write can finish the actor before this redundant cancel.
+            // A closed receiver must not poison the durable unknown receipt.
+            if let Err(mpsc::error::TrySendError::Full(_)) = sender.try_send(Command::Cancel) {
                 self.failed.store(true, Ordering::Release);
             }
         }

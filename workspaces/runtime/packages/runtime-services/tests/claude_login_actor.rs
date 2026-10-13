@@ -65,22 +65,42 @@ async fn code_write_unknown_is_latched_and_never_repeated() {
     let child = f.launcher.next().await;
     link(&f, &s, &child).await;
     child.write_unknown.store(true, Ordering::SeqCst);
-    s.code(ID, "fixture-code".into())
+    let submission = s.code(ID, "fixture-code".into());
+    tokio::pin!(submission);
+    // Stop polling the caller as soon as the actor writes. Joining the actor
+    // closes its command receiver before the caller sends its redundant Cancel.
+    tokio::select! {
+        biased;
+        _ = child.write_started.notified() => {},
+        result = &mut submission => panic!("submission returned before the gate: {result:?}"),
+    }
+    s.shutdown().await.expect("actor joined");
+    let unknown = submission
         .await
-        .expect("valid fixture");
+        .expect("unknown result survives actor exit");
+    assert_eq!(unknown["codeSubmitted"], true);
+    assert_eq!(unknown["status"], "error");
     assert_eq!(
-        s.status(ID).await.expect("valid fixture")["status"],
-        "error"
+        unknown["error"],
+        studio_runtime_services::claude_login::CODE_UNKNOWN
     );
-    s.code(ID, "fixture-code".into())
-        .await
-        .expect("valid fixture");
+    assert!(child.closed.load(Ordering::SeqCst));
+    assert_eq!(s.status(ID).await.expect("valid fixture"), unknown);
+    assert_eq!(
+        s.code(ID, "fixture-code".into())
+            .await
+            .expect("valid fixture"),
+        unknown
+    );
     assert_eq!(child.writes.lock().expect("valid fixture").len(), 1);
-    s.shutdown().await.expect("valid fixture");
     let restart = f.open().await;
-    s.code(ID, "fixture-code".into())
-        .await
-        .expect("valid fixture");
+    assert_eq!(
+        restart
+            .code(ID, "fixture-code".into())
+            .await
+            .expect("durable unknown result"),
+        unknown
+    );
     assert_eq!(child.writes.lock().expect("valid fixture").len(), 1);
     restart.shutdown().await.expect("valid fixture");
 }

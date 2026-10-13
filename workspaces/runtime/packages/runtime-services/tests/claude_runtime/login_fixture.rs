@@ -66,6 +66,7 @@ pub struct Script {
     pub writes: Arc<Mutex<Vec<Vec<u8>>>>,
     pub closed: Arc<AtomicBool>,
     pub write_unknown: Arc<AtomicBool>,
+    pub write_started: Arc<Notify>,
 }
 struct Child {
     lease: Option<std::fs::File>,
@@ -73,6 +74,7 @@ struct Child {
     writes: Arc<Mutex<Vec<Vec<u8>>>>,
     closed: Arc<AtomicBool>,
     write_unknown: Arc<AtomicBool>,
+    write_started: Arc<Notify>,
 }
 impl Launches {
     pub fn new() -> Arc<Self> {
@@ -100,6 +102,7 @@ impl LoginLauncher for Launches {
             let writes = Arc::new(Mutex::new(vec![]));
             let closed = Arc::new(AtomicBool::new(false));
             let write_unknown = Arc::new(AtomicBool::new(false));
+            let write_started = Arc::new(Notify::new());
             self.sender
                 .send(Script {
                     command,
@@ -107,6 +110,7 @@ impl LoginLauncher for Launches {
                     writes: writes.clone(),
                     closed: closed.clone(),
                     write_unknown: write_unknown.clone(),
+                    write_started: write_started.clone(),
                 })
                 .await
                 .map_err(|_| LoginError::Unavailable)?;
@@ -116,6 +120,7 @@ impl LoginLauncher for Launches {
                 writes,
                 closed,
                 write_unknown,
+                write_started,
             }) as Box<dyn LoginChild>)
         })
     }
@@ -127,6 +132,7 @@ impl LoginChild for Child {
     fn write(&self, bytes: Vec<u8>) -> FutureResult<'_, ()> {
         Box::pin(async move {
             self.writes.lock().expect("valid fixture").push(bytes);
+            self.write_started.notify_one();
             if self.write_unknown.load(Ordering::SeqCst) {
                 Err(LoginError::Unavailable)
             } else {
