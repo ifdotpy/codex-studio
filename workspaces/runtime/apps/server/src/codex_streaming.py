@@ -14,6 +14,7 @@ class StreamBuffer:
         self.runtime = runtime
         self.lock = threading.RLock()
         self.entries = {}
+        self._flushable_keys = set()
         self.closed = {}
         self.timer = None
         self.error = None
@@ -38,27 +39,33 @@ class StreamBuffer:
         with self.lock:
             if key in self.closed or self.runtime.closed:
                 return True
-            entry = self.entries.setdefault(key, {'base': None, 'batches': []})
+            entry = self.entries.setdefault(key, {
+                'base': None, 'batches': [], '_sequenced_batch_count': 0})
             batches = entry['batches']
             if command and batches and int(batches[-1][3] // 3600) == int(now // 3600):
                 previous = batches[-1]
+                entry['_sequenced_batch_count'] -= previous[8] is not None
+                entry['_sequenced_batch_count'] += message.get('_studioSupervisorSequence') is not None
                 batches[-1] = ((previous[0] + retained)[-12000:], previous[1] + len(samples),
                                previous[2] + size, previous[3], previous[4],
                                previous[5] + metrics[0], previous[6] + metrics[1],
                                previous[7] + metrics[2], message.get('_studioSupervisorSequence'))
             else:
+                entry['_sequenced_batch_count'] += message.get('_studioSupervisorSequence') is not None
                 batches.append((retained, len(samples), size, now, stored_params, *metrics,
                                 message.get('_studioSupervisorSequence')))
+            self._update_flushable_locked(key, entry)
             self._schedule_locked()
         return True
 
+    def _update_flushable_locked(self, key, entry):
+        if entry['batches'] and entry['_sequenced_batch_count'] == 0:
+            self._flushable_keys.add(key)
+        else:
+            self._flushable_keys.discard(key)
+
     def _schedule_locked(self):
-        if self.timer is not None:
-            return
-        flushable = any(entry['batches'] and not any(
-            len(batch) > 8 and batch[8] is not None for batch in entry['batches'])
-            for entry in self.entries.values())
-        if not flushable:
+        if self.timer is not None or not self._flushable_keys:
             return
         timer = threading.Timer(FLUSH_SECONDS, self._tick)
         timer.daemon = True
@@ -231,7 +238,10 @@ class StreamBuffer:
             with self.lock:
                 for key, entry, length, target in applied:
                     if self.entries.get(key) is entry:
+                        removed = entry['batches'][:length]
+                        entry['_sequenced_batch_count'] -= sum(batch[8] is not None for batch in removed)
                         del entry['batches'][:length]
+                        self._update_flushable_locked(key, entry)
                         if target is None and not entry['batches']:
                             self.entries.pop(key, None)
                         elif target is not None:
@@ -241,6 +251,7 @@ class StreamBuffer:
                 for key, entry, _ in selected:
                     if (close_commands or key[5] == 'item/agentMessage/delta') \
                             and self.entries.get(key) is entry and not entry['batches']:
+                        self._flushable_keys.discard(key)
                         self.entries.pop(key, None)
         with self.lock:
             self._schedule_locked()

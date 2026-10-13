@@ -419,6 +419,32 @@ class NotificationAnalyticsWriterContract(unittest.TestCase):
         self.assertIs(stream.timer, timer)
         self.assertEqual(len(scheduled), 1)
 
+    def test_sequenced_enqueue_skips_entry_scan_and_command_merge_updates_flushability(self):
+        class NoScan(dict):
+            def values(self):
+                raise AssertionError('sequenced-only enqueue should not scan entries')
+
+        stream = StreamBuffer(self.runtime)
+        stream.entries = NoScan()
+        params = {'threadId': self.agent['threadId'], 'turnId': self.agent['turnId'],
+                  'itemId': 'sequenced-command', 'delta': 'one'}
+        stream.enqueue({'method': 'item/commandExecution/outputDelta', 'params': params,
+                        '_studioSupervisorSequence': 8}, 'default', None)
+        key = next(iter(stream.entries))
+        self.assertEqual(stream.entries[key]['_sequenced_batch_count'], 1)
+        self.assertNotIn(key, stream._flushable_keys)
+        self.assertIsNone(stream.timer)
+
+        # Command output coalescing replaces the prior batch sequence with the
+        # newest message's sequence; a non-sequenced replacement becomes due.
+        timer = type('Timer', (), {'start': lambda _self: None, 'cancel': lambda _self: None})
+        with patch('codex_streaming.threading.Timer', return_value=timer()):
+            stream.enqueue({'method': 'item/commandExecution/outputDelta',
+                            'params': {**params, 'delta': 'two'}}, 'default', None)
+        self.assertEqual(stream.entries[key]['_sequenced_batch_count'], 0)
+        self.assertIn(key, stream._flushable_keys)
+        self.assertIsNotNone(stream.timer)
+
     def test_failed_stream_commit_keeps_the_batch_and_queues_no_analytics(self):
         stream = self.stream()
         with self.assertRaisesRegex(sqlite3.OperationalError, 'fixture commit failure'):
@@ -681,6 +707,8 @@ class NotificationAnalyticsWriterContract(unittest.TestCase):
                 'itemId': 'ordered-item', 'delta': 'three'}, '_studioSupervisorSequence': 2}
             self.runtime.notification(notice)
             self.runtime.commit_supervisor_event('fixture-handle', notice, 2, 'default', None)
+            stream = self.runtime._stream_buffer
+            self.assertFalse(stream._flushable_keys)
             self.assertEqual(self.count(self.runtime.analytics_db_path, 'analytics_items'), 0)
             with closing(sqlite3.connect(self.runtime.analytics_db_path)) as db:
                 self.assertEqual(db.execute("SELECT coalesce(sum(count),0) FROM analytics_notifications WHERE method='item/agentMessage/delta'").fetchone()[0], 0)
