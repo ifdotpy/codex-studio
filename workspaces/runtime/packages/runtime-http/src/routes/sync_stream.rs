@@ -15,6 +15,9 @@ use futures_util::stream;
 use serde_json::{Value, json};
 use studio_runtime_services::change_notifications::{ChangeSnapshot, MAX_SAFE_REVISION};
 use studio_runtime_services::progress_watch::{ProgressFileWatch, watch_progress_files};
+use studio_runtime_services::resource_notify::{
+    ResourceNotifications, ResourceNotifyError, TokenRates,
+};
 use studio_runtime_store::{AgentId, AgentRepository, RuntimeStore, SyncDocumentsRepository};
 use tokio::time::{Instant, Interval, interval_at};
 
@@ -23,6 +26,30 @@ use super::manifest::{Dependency, OperationStatus, RouteGroup, get};
 use crate::error::ApiError;
 use crate::router::HttpState;
 use crate::schema::{API_SCHEMA_HASH_HEADER, api_schema_hash};
+
+/// P18's catalog route calls this after the shared boundary authenticates and validates.
+pub(crate) async fn notify_resources(
+    state: HttpState,
+    body: Value,
+) -> Result<Json<Value>, ApiError> {
+    let notifications = state.resource_notifications;
+    let request_id = body["requestId"].clone();
+    tokio::task::spawn_blocking(move || notifications.publish_once(&body))
+        .await
+        .map_err(|_| ApiError::internal())?
+        .map_err(|error| match error {
+            ResourceNotifyError::Conflict => ApiError::new(StatusCode::CONFLICT, error.to_string()),
+            ResourceNotifyError::Invalid => ApiError::validation(vec![json!("body")]),
+            ResourceNotifyError::Unavailable => {
+                ApiError::new(StatusCode::SERVICE_UNAVAILABLE, error.to_string())
+            }
+        })?;
+    Ok(Json(super::generated_json::<
+        crate::generated::ResourceNotifyAck,
+    >(
+        json!({"requestId": request_id, "accepted": true})
+    )?))
+}
 
 const MAX_RESOURCE_QUERY_BYTES: usize = 65_536;
 const MAX_RESOURCE_COUNT: usize = 256;
@@ -131,6 +158,10 @@ async fn sync_stream(
         reason,
         &resources,
         initial_entity_sequence,
+        match state.resource_notifications.entity_reset_after(0) {
+            Ok(reset) => reset,
+            Err(_) => return ApiError::internal().into_response(),
+        },
     );
     let mut initial = VecDeque::new();
     if renderer_hash.is_some() {
@@ -140,6 +171,15 @@ async fn sync_stream(
         "resources",
         Some(subscription_snapshot.revision),
         initial_event,
+    ));
+    let rates = match state.resource_notifications.token_rates() {
+        Ok(rates) => rates,
+        Err(_) => return ApiError::internal().into_response(),
+    };
+    initial.push_back(token_rate_event(
+        &state.workspace_id,
+        &subscription_snapshot,
+        &rates,
     ));
 
     let stream_state = ResourceStream {
@@ -151,6 +191,8 @@ async fn sync_stream(
         entity_sequence: initial_entity_sequence,
         store: Some(store),
         changes,
+        notifications: state.resource_notifications,
+        rates,
         _progress_watch: progress_watch,
         heartbeat: interval_at(
             Instant::now() + Duration::from_secs(RESOURCE_HEARTBEAT_SECONDS),
@@ -224,7 +266,12 @@ fn parse_resources(query: &QueryParams, state: &HttpState) -> Result<Vec<Value>,
     {
         return Err(invalid());
     }
-    Ok(values.clone())
+    let mut seen = BTreeSet::new();
+    Ok(values
+        .iter()
+        .filter(|value| seen.insert(value.to_string()))
+        .cloned()
+        .collect())
 }
 
 async fn read_entity_sequence(
@@ -260,6 +307,8 @@ struct ResourceStream {
     entity_sequence: i64,
     store: Option<Arc<RuntimeStore>>,
     changes: tokio::sync::watch::Receiver<ChangeSnapshot>,
+    notifications: Arc<ResourceNotifications>,
+    rates: TokenRates,
     _progress_watch: Option<ProgressFileWatch>,
     heartbeat: Interval,
 }
@@ -298,8 +347,22 @@ async fn next_frame(
             } else {
                 "change"
             };
+            let entity_reset = match state.notifications.entity_reset_after(state.last_revision) {
+                Ok(reset) => reset,
+                Err(_) => return None,
+            };
             state.last_revision = snapshot.revision;
             state.entity_sequence = entity_sequence;
+            let rates = match state.notifications.token_rates() {
+                Ok(rates) => rates,
+                Err(_) => return None,
+            };
+            if rates.value() != state.rates.value() {
+                state
+                    .initial
+                    .push_back(token_rate_event(&state.workspace_id, &snapshot, &rates));
+                state.rates = rates;
+            }
             let event = resource_event(
                 &state.workspace_id,
                 &state.epoch,
@@ -307,6 +370,7 @@ async fn next_frame(
                 reason,
                 &state.resources,
                 state.entity_sequence,
+                entity_reset,
             );
             return Some((
                 Ok(sse_event("resources", Some(snapshot.revision), event)),
@@ -328,6 +392,18 @@ async fn next_frame(
     }
 }
 
+fn token_rate_event(workspace_id: &str, snapshot: &ChangeSnapshot, rates: &TokenRates) -> Event {
+    sse_event(
+        "token-rates",
+        Some(snapshot.revision),
+        json!({
+            "protocol": 3, "workspaceId": workspace_id,
+            "epoch": snapshot.epoch, "revision": snapshot.revision,
+            "rates": rates.value()["rates"], "teams": rates.value()["teams"],
+        }),
+    )
+}
+
 fn resource_event(
     workspace_id: &str,
     epoch: &str,
@@ -335,6 +411,7 @@ fn resource_event(
     reason: &str,
     resources: &[Value],
     entity_sequence: i64,
+    entity_reset: bool,
 ) -> Value {
     let resource_versions = resources
         .iter()
@@ -344,7 +421,11 @@ fn resource_event(
             } else {
                 revision
             };
-            json!({"revision": version})
+            let mut value = json!({"revision": version});
+            if resource.get("kind").and_then(Value::as_str) == Some("state") {
+                value["entitySequenceReset"] = json!(entity_reset);
+            }
+            value
         })
         .collect::<Vec<_>>();
     json!({
@@ -386,6 +467,94 @@ mod tests {
     use super::*;
     use studio_runtime_services::change_notifications::ChangeNotificationHub;
 
+    mod python {
+        include!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../runtime-services/tests/support/prepared_python.rs"
+        ));
+    }
+
+    #[tokio::test]
+    async fn stream_documents_match_python_resource_hub() {
+        use std::io::Write;
+        use std::path::Path;
+        use std::process::{Command, Stdio};
+        let rate = json!({"turnId":"turn", "active":false,"estimated":true,"rate":1.25,"outputTokens":400});
+        let cases = json!([
+            {"resources":[{"kind":"accounts"},{"kind":"session-cost","agentId":"agent"}],"sequence":0,"reconnect":false,"rates":{"rates":{},"teams":{}}},
+            {"resources":[{"kind":"state"}],"sequence":42,"reconnect":true,"rates":{"rates":{"agent":rate},"teams":{"lead":{"agent":rate}}}}
+        ]);
+        let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src");
+        let mut child = Command::new(python::prepared_python(&source))
+            .arg(
+                Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("../runtime-services/tests/wave7_p14_oracle.py"),
+            )
+            .arg("documents")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("oracle starts");
+        child
+            .stdin
+            .take()
+            .expect("stdin")
+            .write_all(cases.to_string().as_bytes())
+            .expect("cases written");
+        let output = child.wait_with_output().expect("oracle finishes");
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let expected: Vec<Value> = serde_json::from_slice(&output.stdout).expect("oracle JSON");
+        assert_eq!(expected.len(), cases.as_array().expect("cases").len());
+        for (case, expected) in cases.as_array().expect("cases").iter().zip(expected) {
+            let reason = if case["reconnect"] == true {
+                "reconnect"
+            } else {
+                "initial"
+            };
+            let resources = resource_event(
+                "workspace",
+                "epoch",
+                0,
+                reason,
+                case["resources"].as_array().expect("resources"),
+                case["sequence"].as_i64().expect("sequence"),
+                false,
+            );
+            assert_eq!(resources, expected["resources"]);
+            let event = token_rate_event(
+                "workspace",
+                &ChangeSnapshot {
+                    epoch: "epoch".into(),
+                    revision: 0,
+                    closed: false,
+                },
+                &TokenRates::checked(case["rates"].clone()).expect("rates"),
+            );
+            let body = axum::body::to_bytes(
+                Sse::new(stream::iter([Ok::<_, Infallible>(event)]))
+                    .into_response()
+                    .into_body(),
+                4096,
+            )
+            .await
+            .expect("frame");
+            let frame = String::from_utf8(body.to_vec()).expect("UTF8");
+            let data = frame
+                .lines()
+                .find_map(|line| line.strip_prefix("data: "))
+                .expect("data");
+            assert_eq!(
+                serde_json::from_str::<Value>(data).expect("JSON"),
+                expected["rates"]
+            );
+        }
+    }
+
     #[tokio::test]
     async fn overflow_is_recovered_by_next_frame_with_the_latest_full_resource_event() {
         let hub = ChangeNotificationHub::new();
@@ -400,6 +569,8 @@ mod tests {
             entity_sequence: 0,
             store: None,
             changes,
+            notifications: Arc::new(ResourceNotifications::new(Arc::new(hub.clone()))),
+            rates: TokenRates::checked(json!({"rates": {}, "teams": {}})).expect("empty rates"),
             _progress_watch: None,
             heartbeat: interval_at(
                 Instant::now() + Duration::from_secs(RESOURCE_HEARTBEAT_SECONDS),
@@ -423,6 +594,76 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn token_rate_burst_keeps_only_latest_snapshot_and_monotone_cursor() {
+        let hub = Arc::new(ChangeNotificationHub::new());
+        let notifications = Arc::new(ResourceNotifications::new(hub.clone()));
+        let changes = hub.subscribe();
+        let baseline = changes.borrow().clone();
+        let state = ResourceStream {
+            initial: VecDeque::new(),
+            workspace_id: "workspace".to_owned(),
+            epoch: baseline.epoch,
+            last_revision: baseline.revision,
+            resources: vec![json!({"kind":"accounts"})],
+            entity_sequence: 0,
+            store: None,
+            changes,
+            notifications: notifications.clone(),
+            rates: notifications.token_rates().expect("snapshot"),
+            _progress_watch: None,
+            heartbeat: interval_at(
+                Instant::now() + Duration::from_secs(RESOURCE_HEARTBEAT_SECONDS),
+                Duration::from_secs(RESOURCE_HEARTBEAT_SECONDS),
+            ),
+        };
+        for index in 0..=MAX_RESOURCE_COUNT {
+            notifications.publish_token_rates(TokenRates::checked(json!({
+                "rates": {"agent": {"turnId":"turn", "active":true, "estimated":false, "rate":index, "outputTokens":index}}, "teams": {}
+            })).expect("checked")).expect("publish");
+        }
+        let (_, state) = next_frame(state).await.expect("resource frame");
+        assert_eq!(state.initial.len(), 1);
+        assert_eq!(state.last_revision, MAX_RESOURCE_COUNT as i64 + 1);
+        let (event, state) = next_frame(state).await.expect("token frame");
+        assert!(state.initial.is_empty());
+        let body = axum::body::to_bytes(
+            Sse::new(stream::iter([event])).into_response().into_body(),
+            4096,
+        )
+        .await
+        .expect("frame");
+        let frame = String::from_utf8(body.to_vec()).expect("UTF8");
+        assert!(frame.contains("event: token-rates"), "{frame}");
+        assert!(frame.contains("id: 257"), "{frame}");
+        assert!(frame.contains("\"rate\":256"), "{frame}");
+        drop(state); // Disconnect drops the only receiver; later publications remain bounded.
+        assert!(
+            notifications
+                .publish_token_rates(
+                    TokenRates::checked(json!({"rates":{},"teams":{}})).expect("empty")
+                )
+                .expect("publish disconnected")
+        );
+    }
+
+    #[test]
+    fn state_reset_frame_preserves_position_and_sequence() {
+        let event = resource_event(
+            "workspace",
+            "epoch",
+            4,
+            "change",
+            &[json!({"kind":"accounts"}), json!({"kind":"state"})],
+            2,
+            true,
+        );
+        assert_eq!(
+            event["resourceVersions"],
+            json!([{"revision":4}, {"revision":2,"entitySequenceReset":true}])
+        );
+    }
+
+    #[tokio::test]
     async fn shutdown_closes_a_watch_receiver() {
         let hub = ChangeNotificationHub::new();
         let changes = hub.subscribe();
@@ -436,6 +677,8 @@ mod tests {
             entity_sequence: 0,
             store: None,
             changes,
+            notifications: Arc::new(ResourceNotifications::new(Arc::new(hub.clone()))),
+            rates: TokenRates::checked(json!({"rates": {}, "teams": {}})).expect("empty rates"),
             _progress_watch: None,
             heartbeat: interval_at(
                 Instant::now() + Duration::from_secs(RESOURCE_HEARTBEAT_SECONDS),
