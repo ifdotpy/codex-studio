@@ -882,3 +882,28 @@ async fn initialized_identity_is_scoped_to_real_child_generation() {
         assert!(second.shutdown().await.recovery_needed.is_none());
     }).await.expect("review probe exceeded watchdog");
 }
+
+#[tokio::test]
+async fn terminal_eof_serves_already_queued_final_ack_before_completion() {
+    let state = DisposableState::new();
+    let (mut attachment, mut peer) = open_peer(&state).await;
+    peer.next_event(0, 1, "exit", json!({"returnCode":0})).await;
+    let terminal_next = peer.request("next").await;
+    let entry = attachment.journal.recv().await.unwrap();
+    let (ack, receipt) = AdapterCommand::ack(entry.cursor);
+    attachment
+        .commands
+        .send(ack)
+        .await
+        .unwrap_or_else(|_| panic!("closed"));
+    peer.result(&terminal_next, json!({"event":null,"returnCode":0,"backpressure":false,"stdoutReaderAlive":false,"stderrReaderAlive":false})).await;
+    let request = peer.request("ack").await;
+    assert_eq!(request["sequence"], 1);
+    peer.result(&request, json!({"acknowledged":1})).await;
+    assert!(matches!(
+        receipt.receive().await,
+        CommandReceipt::Acknowledged(EventCursor(1))
+    ));
+    assert!(attachment.completion().await.result.is_ok());
+    assert!(peer.read().await.is_none());
+}

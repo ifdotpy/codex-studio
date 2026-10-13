@@ -390,7 +390,16 @@ impl AdapterTask {
         mut cursor: EventCursor,
     ) -> Result<(), AdapterError> {
         let mut poll_at = Instant::now();
+        let mut terminal = false;
         loop {
+            if terminal
+                && self
+                    .info
+                    .as_ref()
+                    .is_some_and(|info| info.acknowledged >= cursor)
+            {
+                return Ok(());
+            }
             if *self.stop.borrow() {
                 return Err(AdapterError::Cancelled);
             }
@@ -399,12 +408,13 @@ impl AdapterTask {
                 _ = self.events.closed() => return Err(AdapterError::ConsumerClosed),
                 command = self.commands.recv() => {
                     let Some(command) = command else { return Ok(()); };
-                    self.command(rpc, command, cursor).await?;
+                    if terminal && matches!(command, AdapterCommand::Write { .. }) { command.reject(); }
+                    else { self.command(rpc, command, cursor).await?; }
                 }
                 slot = async {
                     tokio::time::sleep_until(poll_at).await;
                     self.events.clone().reserve_owned().await
-                } => {
+                }, if !terminal => {
                     let slot = slot.map_err(|_| AdapterError::ConsumerClosed)?;
                     let result: NextResult = rpc.call(SupervisorAction::Next, CursorRequest {
                         handle: self.open.handle.clone(), cursor, extra: Default::default(),
@@ -419,7 +429,7 @@ impl AdapterTask {
                         slot.send(self.journal_entry(event, received_at_ms)?);
                         poll_at = Instant::now();
                     } else if result.return_code.is_some() && !result.stdout_reader_alive && !result.stderr_reader_alive {
-                        return Ok(());
+                        terminal = true;
                     } else {
                         poll_at = Instant::now() + NEXT_QUERY_PAUSE;
                     }
