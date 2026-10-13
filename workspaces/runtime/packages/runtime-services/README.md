@@ -67,6 +67,21 @@ compatibility decision. The service pins it in
 The plan that assigns services to slices is
 [`docs/plans/rust-runtime-work-breakdown.md`](../../../../docs/plans/rust-runtime-work-breakdown.md).
 
+## Remote transport
+
+The outbound multi-server and federation clients keep their Python wire formats
+separate. `multi-server/identity.json` stores `privateKey` as PKCS#8 PEM
+(`BEGIN PRIVATE KEY`) and `publicKey` as Ed25519 SubjectPublicKeyInfo PEM
+(`BEGIN PUBLIC KEY`), with `serverId` and `label`. The
+`runtime_federation_identity` row with `id='local'` stores the same PEM formats
+in `privateKey` and `publicKey`, with `stateId` and `label`. Federation response
+wrappers are verified with the paired Ed25519 key; multi-server responses retain
+Python's optional `serverId` and `publicKey` identity checks. TLS uses platform
+trust roots, while the signed protocol identity provides peer authentication.
+The transport explicitly selects rustls' `ring` crypto provider through ureq's
+`unversioned_rustls_crypto_provider` API. That API is unstable; the workspace
+pins ureq to `=3.4.2` to keep this call aligned with the supported configuration.
+
 ## Account registry and limits read contract
 
 This slice loads the persisted account registry and workspace limits once at
