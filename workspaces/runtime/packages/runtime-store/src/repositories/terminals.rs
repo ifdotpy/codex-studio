@@ -1,7 +1,8 @@
 //! Durable user terminal records and output history.
 
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, OptionalExtension, params, types::Value as SqlValue};
 
+use crate::records::{Table, TerminalRecord};
 use crate::schema::{SchemaRequirements, TableRequirement};
 use crate::{StoreError, StoreResult};
 
@@ -29,12 +30,12 @@ const TABLES: &[TableRequirement] = &[
 ];
 
 pub(crate) const REQUIREMENTS: SchemaRequirements = SchemaRequirements {
-    tables: &[],
+    tables: TABLES,
     conditional_tables: &[],
     triggers: &[],
     conditional_triggers: &[],
     connection_functions: &[],
-    bootstrap_tables: TABLES,
+    bootstrap_tables: &[],
     bootstrap_triggers: &[],
     bootstrap_connection_functions: &[],
 };
@@ -42,7 +43,7 @@ pub(crate) const REQUIREMENTS: SchemaRequirements = SchemaRequirements {
 #[derive(Clone, Debug, PartialEq)]
 pub struct TerminalRow {
     pub id: String,
-    pub record: String,
+    pub record: TerminalRecord,
     pub output: String,
     pub offset: i64,
 }
@@ -77,25 +78,25 @@ impl TerminalsRepository {
         ))
     }
 
-    pub fn list(connection: &Connection) -> StoreResult<Vec<(String, String)>> {
-        let mut statement =
-            connection.prepare("SELECT id,record FROM user_terminals ORDER BY rowid")?;
-        let rows = statement.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?;
-        rows.collect::<Result<Vec<_>, _>>()
-            .map_err(StoreError::from)
+    pub fn list(connection: &Connection) -> StoreResult<Vec<TerminalRecord>> {
+        Table::<TerminalRecord>::new(connection).list()
     }
 
     pub fn get(connection: &Connection, id: &str) -> StoreResult<Option<TerminalRow>> {
+        let table = Table::<TerminalRecord>::new(connection);
+        let Some(record) = table.get(&id.to_owned())? else {
+            return Ok(None);
+        };
         connection
             .query_row(
-                "SELECT id,record,output,offset FROM user_terminals WHERE id=?1",
+                "SELECT output,offset FROM user_terminals WHERE id=?1",
                 [id],
                 |row| {
                     Ok(TerminalRow {
-                        id: row.get(0)?,
-                        record: row.get(1)?,
-                        output: row.get(2)?,
-                        offset: row.get(3)?,
+                        id: record.id().as_str().to_owned(),
+                        record,
+                        output: row.get(0)?,
+                        offset: row.get(1)?,
                     })
                 },
             )
@@ -106,14 +107,23 @@ impl TerminalsRepository {
     pub fn put(
         transaction: &rusqlite::Transaction<'_>,
         id: &str,
-        record: &str,
+        typed: &TerminalRecord,
         output: &str,
         offset: i64,
     ) -> StoreResult<()> {
-        transaction.execute(
-            "INSERT INTO user_terminals(id,record,output,offset) VALUES (?1,?2,?3,?4) \
-             ON CONFLICT(id) DO UPDATE SET record=excluded.record,output=excluded.output,offset=excluded.offset",
-            params![id, record, output, offset],
+        let table = Table::<TerminalRecord>::new(transaction);
+        table.get(typed.id())?;
+        if typed.id().as_str() != id {
+            return Err(StoreError::SchemaMismatch(
+                "terminal record identity does not match its key".to_owned(),
+            ));
+        }
+        table.put_with_columns(
+            typed,
+            &[
+                ("output", SqlValue::Text(output.to_owned())),
+                ("offset", SqlValue::Integer(offset)),
+            ],
         )?;
         Ok(())
     }
@@ -121,12 +131,17 @@ impl TerminalsRepository {
     pub fn update_record(
         transaction: &rusqlite::Transaction<'_>,
         id: &str,
-        record: &str,
+        record: &TerminalRecord,
     ) -> StoreResult<()> {
-        transaction.execute(
-            "UPDATE user_terminals SET record=?1 WHERE id=?2",
-            params![record, id],
-        )?;
+        if record.id().as_str() != id {
+            return Err(StoreError::SchemaMismatch(
+                "terminal record identity does not match its key".to_owned(),
+            ));
+        }
+        let table = Table::<TerminalRecord>::new(transaction);
+        if table.get(&id.to_owned())?.is_some() {
+            table.update(record)?;
+        }
         Ok(())
     }
 
