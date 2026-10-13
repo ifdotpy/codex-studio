@@ -23,7 +23,7 @@ pub mod claude_bridge;
 pub mod claude_controls;
 pub mod claude_input_recovery;
 pub mod claude_login;
-/// Retained controls; worker submission uses claude_input_recovery::runtime.
+/// Receipt-scoped retained controls; worker submission uses claude_input_recovery::runtime.
 pub mod claude_runtime;
 pub mod coordination;
 pub mod coordination_reads;
