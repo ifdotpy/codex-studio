@@ -1,0 +1,153 @@
+{
+  "$defs": {
+    "JsonValue": {}
+  },
+  "additionalProperties": {
+    "$ref": "#/$defs/JsonValue"
+  },
+  "properties": {
+    "autoPairingHash": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Autopairinghash"
+    },
+    "autoPairingReceipt": {
+      "anyOf": [
+        {
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Autopairingreceipt"
+    },
+    "autoPairingRequestId": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Autopairingrequestid"
+    },
+    "clientId": {
+      "maxLength": 128,
+      "minLength": 1,
+      "title": "Clientid",
+      "type": "string"
+    },
+    "created": {
+      "minimum": 0,
+      "title": "Created",
+      "type": "number"
+    },
+    "id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "title": "Id",
+      "type": "string"
+    },
+    "kind": {
+      "enum": ["ui", "server"],
+      "title": "Kind",
+      "type": "string"
+    },
+    "label": {
+      "maxLength": 80,
+      "minLength": 1,
+      "title": "Label",
+      "type": "string"
+    },
+    "origin": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Origin"
+    },
+    "pairingHash": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Pairinghash"
+    },
+    "pairingReceipt": {
+      "anyOf": [
+        {
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Pairingreceipt"
+    },
+    "pairingRequestId": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Pairingrequestid"
+    },
+    "publicKey": {
+      "maxLength": 4096,
+      "title": "Publickey",
+      "type": "string"
+    },
+    "status": {
+      "enum": ["paired", "revoked", "discovered", "unreachable"],
+      "title": "Status",
+      "type": "string"
+    },
+    "tailscaleUser": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Tailscaleuser"
+    }
+  },
+  "required": [
+    "id",
+    "clientId",
+    "kind",
+    "label",
+    "created",
+    "publicKey",
+    "status"
+  ],
+  "title": "PersistedAccessClient",
+  "type": "object"
+}
