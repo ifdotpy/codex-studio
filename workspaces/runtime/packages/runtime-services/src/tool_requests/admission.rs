@@ -89,3 +89,31 @@ pub(crate) fn claim(record: &mut Value, now: f64) -> Result<bool, ToolRequestErr
     record["started"] = json!(now);
     Ok(true)
 }
+
+/// A rolled-back transaction proves no service effect survived this refusal.
+pub(crate) fn reject(record: &mut Value) -> Result<(), ToolRequestError> {
+    let state = lifecycle::state(record)?;
+    let op = state
+        .operation
+        .as_ref()
+        .ok_or(ToolRequestError::InvalidRequest(
+            "Invalid request lifecycle",
+        ))?;
+    let decision = transition(
+        &state,
+        &Event {
+            id: "refused".into(),
+            expected_revision: state.revision,
+            identity: op.identity.clone(),
+            attempt: op.attempt.clone(),
+            kind: EventKind::DefinitiveRejection(NonExecutionProof::ExactPreWriteRejection),
+        },
+    );
+    if matches!(decision.kind, DecisionKind::Rejected(_)) {
+        return Err(ToolRequestError::InvalidRequest(
+            "Conflicting request lifecycle evidence",
+        ));
+    }
+    lifecycle::apply(record, &decision.next_state)?;
+    Ok(())
+}
