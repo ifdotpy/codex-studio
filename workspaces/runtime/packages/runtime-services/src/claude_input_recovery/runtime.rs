@@ -1,12 +1,21 @@
 //! Submission helpers for the account worker's existing transaction. Preparation
-//! calls `start_input`; the Submitted transaction calls `freeze_start` again with
-//! the exact prepared wire params. No provider call or journal ACK belongs here.
+//! calls `start_input`; the Submitted transaction calls `submission::commit_start`
+//! with the exact prepared wire params and request generation. No provider call or journal ACK belongs here.
 use super::{TransportSnapshot, capture_input, store};
 use serde_json::{Value, json};
 use studio_runtime_store::{
     AgentRecord, AgentRepository, ClaudeRetryRecords, ClaudeRetryRepository, StoreError,
     StoreResult, Transaction,
 };
+
+pub mod submission;
+
+/// Identity of the retained session that prepared the native request. The
+/// generation must come from that request, not a newly resolved account session.
+pub struct SubmittedBinding {
+    pub transport: TransportSnapshot,
+    pub generation: u64,
+}
 
 pub struct StartInput {
     pub params: Value,
@@ -179,8 +188,9 @@ pub fn bind_submitted(
     tx: &Transaction<'_>,
     agent: &str,
     attempt: &str,
-    transport: TransportSnapshot,
+    binding: SubmittedBinding,
 ) -> StoreResult<()> {
+    let transport = binding.transport;
     let mut rows =
         ClaudeRetryRepository::load(tx, agent, attempt)?.ok_or_else(|| invalid(agent))?;
     let current = rows
@@ -198,6 +208,12 @@ pub fn bind_submitted(
         || current.get("id").and_then(Value::as_str) != Some(attempt)
         || current.get("epoch") != rows.agent.get("epoch")
         || current.get("submitted") != Some(&json!(true))
+        || current.get("connectionGeneration").and_then(Value::as_u64) != Some(binding.generation)
+        || rows
+            .attempt
+            .get("connectionGeneration")
+            .and_then(Value::as_u64)
+            != Some(binding.generation)
         || current.get("accountKey").and_then(Value::as_str) != Some(transport.account_key.as_str())
         || current.get("threadId") != rows.agent.get("threadId")
         || current.get("claudeInputRequest").is_none_or(Value::is_null)
