@@ -15,6 +15,7 @@ import json
 import os
 from pathlib import Path
 import signal
+import stat
 import sys
 from typing import Any
 
@@ -27,8 +28,11 @@ READ_METHODS = {"host.slot.manifest", "host.slot.read"}
 
 def traversable(path: Path) -> None:
     """A folder the line owner passes through to its own slot. The services run with
-    UMask=0077, which would make mkdir's 0711 a 0700."""
+    UMask=0077, which would make mkdir's 0711 a 0700. The chmod must never follow a link."""
     path.mkdir(exist_ok=True, mode=0o711)
+    info = path.lstat()
+    require(stat.S_ISDIR(info.st_mode) and info.st_uid == os.geteuid(),
+            "The slot parent must be a broker-owned directory", "forbidden")
     path.chmod(0o711)
 
 

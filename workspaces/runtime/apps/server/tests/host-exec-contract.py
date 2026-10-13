@@ -627,6 +627,44 @@ class Contract(unittest.IsolatedAsyncioTestCase):
         actual, output = runner.frames(streamed, "host.exec", {}, "proof")
         self.assertEqual(output, "once")
 
+    async def test_slot_parents_under_private_umask(self):
+        # The guest units run with UMask=0077; every slot parent must stay 0711.
+        private = self.root / "private-broker"
+        private.mkdir()
+        previous = os.umask(0o077)
+        try:
+            slots = Slots(self.state, private / "layr", self.slots.agents)
+            # The fixture settings of the shared Slots (bad_names and the others).
+            for name, value in vars(self.slots).items():
+                vars(slots).setdefault(name, value)
+            params = {"agentId": "agent", "operationId": "private-umask", "slotId": "0", "generation": "f" * 32}
+            prepared = await slots.dispatch("private-umask", "host.slot.prepare", params)
+            # The export fixture copies the line folder, so only the owner of the source is checked.
+            source = Path(prepared["path"])
+            self.assertEqual(source.stat().st_uid, os.getuid())
+            parent = source.parent
+            while True:
+                self.assertEqual(parent.stat().st_mode & 0o777, 0o711, str(parent))
+                if parent == slots.root:
+                    break
+                parent = parent.parent
+            slots.root.chmod(0o700)
+            Slots(self.state, private / "layr", self.slots.agents)
+            self.assertEqual(slots.root.stat().st_mode & 0o777, 0o711)
+        finally:
+            os.umask(previous)
+
+    def test_slot_parent_rejects_symlink(self):
+        private = self.root / "symlink-broker"
+        private.mkdir()
+        target = self.root / "private-target"
+        target.mkdir(mode=0o700)
+        (private / "host-slots").symlink_to(target, target_is_directory=True)
+        with self.assertRaises(HostExecError) as caught:
+            Slots(self.state, private / "layr", self.slots.agents)
+        self.assertEqual(caught.exception.code, "forbidden")
+        self.assertEqual(target.stat().st_mode & 0o777, 0o700)
+
     def test_vm_gate(self):
         runtime = SimpleNamespace(agent=lambda actor: {"executionMode": "native"})
         with self.assertRaises(PermissionError):
