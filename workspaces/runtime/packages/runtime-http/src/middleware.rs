@@ -9,6 +9,7 @@ use axum::http::{HeaderMap, HeaderValue, Method, Request, StatusCode, header};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use futures_util::FutureExt;
+use studio_runtime_services::federation_limits::{FEDERATION_BODY_LIMIT, FEDERATION_PATHS};
 use subtle::ConstantTimeEq;
 
 use crate::error::{ApiError, error_response, with_api_headers};
@@ -19,7 +20,6 @@ use crate::validation::RawRequest;
 const DEFAULT_BODY_LIMIT: usize = 262_144;
 const ASSET_BODY_LIMIT: usize = 28 * 1024 * 1024;
 const VOICE_BODY_LIMIT: usize = 6 * 1024 * 1024;
-const FEDERATION_BODY_LIMIT: usize = 256 * 1024;
 const REQUEST_READ_TIMEOUT: Duration = Duration::from_secs(10);
 
 pub(crate) async fn boundary(
@@ -602,13 +602,7 @@ fn is_tailnet_ip(address: IpAddr) -> bool {
 }
 
 fn is_federation_path(path: &str) -> bool {
-    matches!(
-        path,
-        "/api/federation/v1/pair"
-            | "/api/federation/v1/status"
-            | "/api/federation/v1/message"
-            | "/api/federation/v1/pull"
-    )
+    FEDERATION_PATHS.contains(&path)
 }
 
 fn is_frame_account_path(path: &str) -> bool {
@@ -664,13 +658,12 @@ fn frame_account_origin(headers: &HeaderMap, host: &str, port: u16) -> bool {
 }
 
 pub(crate) fn request_limit(path: &str) -> usize {
+    if is_federation_path(path) {
+        return FEDERATION_BODY_LIMIT;
+    }
     match path {
         "/api/assets" => ASSET_BODY_LIMIT,
         "/api/voice/audio" | "/api/projects" => VOICE_BODY_LIMIT,
-        "/api/federation/v1/pair"
-        | "/api/federation/v1/status"
-        | "/api/federation/v1/message"
-        | "/api/federation/v1/pull" => FEDERATION_BODY_LIMIT,
         _ => DEFAULT_BODY_LIMIT,
     }
 }

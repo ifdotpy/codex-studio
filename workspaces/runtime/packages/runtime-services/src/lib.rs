@@ -40,6 +40,7 @@ pub mod federation;
 pub mod federation_credentials;
 pub mod federation_delivery;
 pub mod federation_effects;
+pub mod federation_limits;
 pub mod federation_messaging;
 pub mod historical_input_receipts;
 pub mod model_catalog;

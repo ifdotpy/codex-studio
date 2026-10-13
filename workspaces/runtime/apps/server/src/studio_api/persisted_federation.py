@@ -2,6 +2,8 @@
 from typing import Annotated, Literal
 
 from pydantic import ConfigDict, Field, StrictBool, StrictInt, StrictStr
+
+from codex_federation_limits import MAX_MESSAGE_CODEPOINTS, MAX_ROOM_MEMBERS
 from studio_api.models import ContractModel, JsonValue, MAX_SAFE_INTEGER
 
 Counter = Annotated[StrictInt, Field(ge=0, le=MAX_SAFE_INTEGER)]
@@ -42,9 +44,9 @@ class PersistedFederationRoom(FederationStorageRecord):
     peerLabel: StrictStr
     name: StrictStr
     status: Literal["pending", "approved", "revoked"]
-    localMembers: list[Identifier] = Field(max_length=50)
-    remoteMembers: list[PersistedFederationParticipant] = Field(max_length=50)
-    localParticipants: list[PersistedFederationParticipant] = Field(default_factory=list, max_length=50)
+    localMembers: list[Identifier] = Field(max_length=MAX_ROOM_MEMBERS)
+    remoteMembers: list[PersistedFederationParticipant] = Field(max_length=MAX_ROOM_MEMBERS)
+    localParticipants: list[PersistedFederationParticipant] = Field(default_factory=list, max_length=MAX_ROOM_MEMBERS)
     localApproved: StrictBool
     remoteApproved: StrictBool
     shareNames: StrictBool
@@ -90,14 +92,14 @@ FEDERATION_SCHEMA_MODELS = {
 class FederationChatPayload(FederationStorageRecord):
     sender: Identifier
     senderName: StrictStr | None = None
-    text: StrictStr = Field(min_length=1, max_length=12_000)
+    text: StrictStr = Field(min_length=1, max_length=MAX_MESSAGE_CODEPOINTS)
     created: float = Field(gt=0)
     sequence: StrictInt = Field(ge=1, le=MAX_SAFE_INTEGER)
 
 
 class FederationRoomPayload(ContractModel):
     room: Identifier
-    participants: list[PersistedFederationParticipant] = Field(min_length=1, max_length=50)
+    participants: list[PersistedFederationParticipant] = Field(min_length=1, max_length=MAX_ROOM_MEMBERS)
     shareNames: StrictBool
     shareStatus: StrictBool
 

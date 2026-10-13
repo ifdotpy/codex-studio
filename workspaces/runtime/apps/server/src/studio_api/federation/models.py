@@ -6,10 +6,11 @@ from typing import Annotated, Literal, TypeAlias
 
 from pydantic import BeforeValidator, Field
 
+from codex_federation_limits import MAX_BATCH_ITEMS, MAX_ROOM_MEMBERS
 from studio_api.models import ContractModel, ContractStrEnum, JsonValue, ResponseModel, SafeInt, require_strict_integer
 
 PROTOCOL_VERSION = 1
-MAX_BATCH = 50
+MAX_BATCH = MAX_BATCH_ITEMS
 
 
 class FederationAction(ContractStrEnum):
@@ -181,7 +182,7 @@ class RevokePeerRequest(ContractModel):
 class CreateRoomRequest(ContractModel):
     action: Literal[FederationAction.CREATE_ROOM]
     peer_id: str
-    local_members: list[str] = Field(min_length=1, max_length=50)
+    local_members: list[str] = Field(min_length=1, max_length=MAX_ROOM_MEMBERS)
     share_names: bool = False
     share_status: bool = False
 
@@ -189,7 +190,7 @@ class CreateRoomRequest(ContractModel):
 class ApproveRoomRequest(ContractModel):
     action: Literal[FederationAction.APPROVE_ROOM]
     room_id: str
-    local_members: list[str] = Field(min_length=1, max_length=50)
+    local_members: list[str] = Field(min_length=1, max_length=MAX_ROOM_MEMBERS)
     share_names: bool = False
     share_status: bool = False
 

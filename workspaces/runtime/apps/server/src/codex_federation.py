@@ -21,6 +21,13 @@ import uuid
 
 from codex_remote import RemoteAccess
 from codex_executables import tailscale as resolve_tailscale, command as executable_command
+from codex_federation_limits import (
+    FEDERATION_BODY_LIMIT,
+    MAX_BATCH_BYTES,
+    MAX_BATCH_ITEMS,
+    MAX_MESSAGE_CODEPOINTS,
+    MAX_ROOM_MEMBERS,
+)
 from codex_records import (
     FederationIdentityRecord, FederationInviteRecord, FederationOutboxRecord,
     AgentRecord, FederationPeerRecord, JsonObject, JsonValue, RecordStore, RoomRecord,
@@ -30,10 +37,10 @@ from studio_api.federation.models import MessageRequest, PairRequest, PullReques
 
 PROTOCOL = 1
 MAX_CLOCK_SKEW = 300
-MAX_BODY = 256 * 1024
-MAX_MESSAGE = 12_000
-MAX_BATCH = 50
-MAX_BATCH_BYTES = 200 * 1024
+MAX_BODY = FEDERATION_BODY_LIMIT
+# Compatibility aliases used by service code and test fixtures.
+MAX_MESSAGE = MAX_MESSAGE_CODEPOINTS
+MAX_BATCH = MAX_BATCH_ITEMS
 CRYPTO_HELPER = Path(__file__).with_name("codex_federation_crypto.mjs")
 SIGNED_REQUEST_MODELS: dict[str, type[BaseModel]] = {
     "pair": PairRequest,
@@ -638,7 +645,7 @@ class FederationService:
         share_status = body.get("share_status", False)
         if type(share_names) is not bool or type(share_status) is not bool:
             raise ValueError("Room disclosure options must be booleans")
-        if not isinstance(local_members, list) or not local_members or len(local_members) > 50:
+        if not isinstance(local_members, list) or not local_members or len(local_members) > MAX_ROOM_MEMBERS:
             raise ValueError("Select one or more local room members")
         with self.runtime.lock, self.runtime.db() as db:
             db.execute("BEGIN IMMEDIATE")
@@ -694,7 +701,7 @@ class FederationService:
     def approve_room(self, body: JsonObject) -> JsonObject:
         room_id = body.get("room_id")
         local_members = body.get("local_members")
-        if not isinstance(local_members, list) or not local_members or len(local_members) > 50:
+        if not isinstance(local_members, list) or not local_members or len(local_members) > MAX_ROOM_MEMBERS:
             raise ValueError("Select local members for the room")
         with self.runtime.lock, self.runtime.db() as db:
             db.execute("BEGIN IMMEDIATE")
@@ -789,7 +796,7 @@ class FederationService:
 
     def send_message(self, sender_id: str, room_id: str, text: str, key: str) -> JsonObject:
         if not isinstance(text, str) or not 1 <= len(text.strip()) <= MAX_MESSAGE:
-            raise ValueError("Message must have 1 to 12000 characters")
+            raise ValueError(f"Message must have 1 to {MAX_MESSAGE} characters")
         text = text.strip()
         with self.runtime.lock, self.runtime.db() as db:
             db.execute("BEGIN IMMEDIATE")
@@ -988,7 +995,7 @@ class FederationService:
 
     @staticmethod
     def valid_participants(participants: list[JsonObject], *, share_names: bool=False, share_status: bool=False) -> list[JsonObject]:
-        if not isinstance(participants, list) or not 1 <= len(participants) <= 50:
+        if not isinstance(participants, list) or not 1 <= len(participants) <= MAX_ROOM_MEMBERS:
             return False
         seen = set()
         for person in participants:

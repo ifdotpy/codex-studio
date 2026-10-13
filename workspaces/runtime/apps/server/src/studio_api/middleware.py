@@ -21,12 +21,9 @@ from studio_api.schema import (
     API_SCHEMA_HASH_PARAM,
     API_SCHEMA_MISMATCH_HEADER,
 )
+from codex_federation_limits import FEDERATION_BODY_LIMIT, FEDERATION_PATHS
 
 ASGIHandler: TypeAlias = Callable[[Scope, Receive, Send], Awaitable[None]]
-FEDERATION_PATHS = frozenset({
-    "/api/federation/v1/pair", "/api/federation/v1/status",
-    "/api/federation/v1/message", "/api/federation/v1/pull",
-})
 FRAME_ACCOUNT_MUTATION_PATHS = frozenset({
     "/api/accounts/login",
     "/api/accounts/login/cancel",
@@ -38,7 +35,6 @@ FRAME_ACCOUNT_MUTATION_PATHS = frozenset({
 DEFAULT_BODY_LIMIT = 262_144
 ASSET_BODY_LIMIT = 28 * 1024 * 1024
 VOICE_AUDIO_BODY_LIMIT = 6 * 1024 * 1024
-FEDERATION_BODY_LIMIT = 256 * 1024
 REQUEST_READ_TIMEOUT_SECONDS = 10.0
 API_SCHEMA_HASH_WAIT_TIMEOUT_SECONDS = 10.0
 OPTIONAL_JSON_BODY_PATHS = frozenset({"/api/accounts/discover"})

@@ -1,4 +1,8 @@
 //! Pure federation decisions. Inputs are checked stored records; no I/O or clock.
+pub use crate::federation_limits::{
+    MAX_BATCH_BYTES, MAX_BATCH_ITEMS as MAX_BATCH, MAX_MESSAGE_CODEPOINTS as MAX_MESSAGE,
+    MAX_ROOM_MEMBERS,
+};
 use crate::remote_transport::{RemoteTransportError, canonical_json};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -6,9 +10,6 @@ use studio_runtime_store::federation_messaging::FederationTable;
 use thiserror::Error;
 
 pub const PROTOCOL: u64 = 1;
-pub const MAX_BATCH: usize = 50;
-pub const MAX_BATCH_BYTES: usize = 200 * 1024;
-pub const MAX_MESSAGE: usize = 12_000;
 const MAX_QUEUE_ROWS: u64 = 10_000;
 const MAX_QUEUE_BYTES: u64 = 32 * 1024 * 1024;
 const MAX_ROOM_RATE: u64 = 30;
@@ -236,7 +237,7 @@ fn participants(payload: &Value) -> Result<Vec<Value>> {
         .ok_or(FederationMessageError::Invalid("payload.shareStatus"))?;
     let people = payload["participants"]
         .as_array()
-        .filter(|v| !v.is_empty() && v.len() <= MAX_BATCH)
+        .filter(|v| !v.is_empty() && v.len() <= MAX_ROOM_MEMBERS)
         .ok_or(FederationMessageError::Invalid("payload.participants"))?;
     let mut seen = std::collections::BTreeSet::new();
     for p in people {
