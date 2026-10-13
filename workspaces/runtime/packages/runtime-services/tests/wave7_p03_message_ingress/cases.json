@@ -1,0 +1,124 @@
+[
+  {
+    "name": "send-replay",
+    "steps": [{}, {}]
+  },
+  {
+    "name": "changed-text",
+    "steps": [
+      {},
+      {
+        "text": "changed"
+      }
+    ]
+  },
+  {
+    "name": "delivery-change-is-replay",
+    "steps": [
+      {
+        "delivery": "after_turn"
+      },
+      {
+        "delivery": "steer"
+      }
+    ]
+  },
+  {
+    "name": "delivered-receipt",
+    "steps": [
+      {},
+      {
+        "status": "delivered"
+      },
+      {}
+    ]
+  },
+  {
+    "name": "uncertain-receipt",
+    "steps": [
+      {},
+      {
+        "status": "uncertain",
+        "error": "Outcome unknown"
+      },
+      {}
+    ]
+  },
+  {
+    "name": "failed-receipt",
+    "steps": [
+      {},
+      {
+        "status": "failed",
+        "error": "Input failed"
+      },
+      {}
+    ]
+  },
+  {
+    "name": "unknown-attachment-accepted",
+    "steps": [
+      {
+        "text": "",
+        "assets": ["missing-upload"]
+      },
+      {
+        "text": "",
+        "assets": ["missing-upload"]
+      }
+    ]
+  },
+  {
+    "name": "attachment-change",
+    "steps": [
+      {
+        "assets": ["one"]
+      },
+      {
+        "assets": ["two"]
+      }
+    ]
+  },
+  {
+    "name": "attachment-count-deferred",
+    "steps": [
+      {
+        "assets": ["a", "b", "c", "d", "e", "f", "g", "h", "i"]
+      }
+    ]
+  },
+  {
+    "name": "null-text-attachment-empty",
+    "steps": [
+      {
+        "text": "  "
+      }
+    ]
+  },
+  {
+    "name": "excluded-account",
+    "agent": {
+      "excludedAccountKeys": ["default"]
+    },
+    "steps": [{}],
+    "rustResults": [
+      {
+        "error": "This account is disabled for this chat"
+      }
+    ]
+  },
+  {
+    "name": "capture-waiting",
+    "agent": {
+      "workspaceOperation": "capture"
+    },
+    "steps": [{}]
+  },
+  {
+    "name": "checkpoint-waiting",
+    "agent": {
+      "workspaceOperation": "checkpoint"
+    },
+    "steps": [{}]
+  }
+]

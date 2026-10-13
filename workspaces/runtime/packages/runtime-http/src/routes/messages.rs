@@ -141,9 +141,15 @@ async fn post_message(
         .unwrap_or("queue")
         .to_owned();
     let result = tokio::task::spawn_blocking(move || {
+        let prepared = studio_runtime_services::message_admission::PreparedAdmission::load(
+            &store.read().map_err(|_| ApiError::internal())?,
+            &body.room,
+        )
+        .map_err(coordination_error)?;
+        let admission = state.message_admission.as_deref().unwrap_or(&prepared);
         let posted = store
             .transaction_with_error(|transaction| {
-                coordination::post_message_with_delivery(
+                coordination::post_message_with_admission(
                     transaction,
                     coordination::PostManagedMessage {
                         room: &body.room,
@@ -152,6 +158,7 @@ async fn post_message(
                         delivery: &delivery,
                         assets: &assets,
                     },
+                    admission,
                 )
             })
             .map_err(coordination_error)?;
