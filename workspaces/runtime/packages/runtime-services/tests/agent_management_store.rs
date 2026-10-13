@@ -53,7 +53,7 @@ fn template(root: &Path) {
 }
 fn cases() -> Vec<Value> {
     let output = Command::new(prepared_python_support::prepared_python(
-        &PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src"),
+        &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src"),
     ))
     .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/agent_management/oracle.py"))
     .output()

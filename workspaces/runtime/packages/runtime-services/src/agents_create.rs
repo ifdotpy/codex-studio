@@ -577,6 +577,15 @@ fn rename(
 }
 
 #[cfg(test)]
+#[path = "../tests/support/prepared_python.rs"]
+mod prepared_python_test_support;
+
+#[cfg(test)]
+pub(crate) fn prepared_python(source: &std::path::Path) -> std::path::PathBuf {
+    prepared_python_test_support::prepared_python(source)
+}
+
+#[cfg(test)]
 mod tests {
     use super::create_agent;
     use rusqlite::Connection;
@@ -588,14 +597,6 @@ mod tests {
     fn prepared_python(source: &std::path::Path) -> std::path::PathBuf {
         prepared_python_support::prepared_python(source)
     }
-
-    #[path = "../../tests/support/prepared_python.rs"]
-    mod prepared_python_support;
-
-    fn prepared_python(source: &std::path::Path) -> std::path::PathBuf {
-        prepared_python_support::prepared_python(source)
-    }
-
     fn database() -> Connection {
         let connection = Connection::open_in_memory().expect("memory database opens");
         connection
@@ -627,7 +628,7 @@ mod tests {
             super::mode_fields(record);
         }
         let source = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src");
-        let python = prepared_python(&source);
+        let python = super::prepared_python(&source);
         let mut child = Command::new(python).args(["-c", "import json,sys; from codex_agent_modes import mode_fields; print(json.dumps([mode_fields(row) for row in json.load(sys.stdin)]))"])
             .env("PYTHONPATH", source).env("PYTHONDONTWRITEBYTECODE", "1")
             .stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().expect("Python oracle starts");

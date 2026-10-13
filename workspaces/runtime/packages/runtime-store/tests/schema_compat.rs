@@ -428,7 +428,9 @@ store._ensure_versions()
 }
 
 fn python_executable() -> PathBuf {
-    prepared_python_support::prepared_python(&server_source())
+    prepared_python_support::prepared_python(
+        &PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src"),
+    )
 }
 
 fn derived_catalog(path: &Path) -> Vec<(String, String, String)> {
