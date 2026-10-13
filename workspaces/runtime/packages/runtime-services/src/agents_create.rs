@@ -266,7 +266,10 @@ fn save_agent(
     Ok(publish_agent(transaction, record)?)
 }
 
-fn ensure_project(transaction: &Transaction<'_>, agent: &Value) -> Result<(), MutationError> {
+pub(crate) fn ensure_project(
+    transaction: &Transaction<'_>,
+    agent: &Value,
+) -> Result<(), MutationError> {
     let path = agent
         .get("cwd")
         .and_then(Value::as_str)

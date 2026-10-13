@@ -501,7 +501,7 @@ fn project_directory_default() -> Result<String, OperationError> {
         .map_err(|_| OperationError::Internal)?;
     project_directory(&path.to_string_lossy())
 }
-fn project_directory(value: &str) -> Result<String, OperationError> {
+pub(crate) fn project_directory(value: &str) -> Result<String, OperationError> {
     let expand_home = |value: &str| {
         if value == "~" || value.starts_with("~/") {
             std::env::var_os("HOME")
