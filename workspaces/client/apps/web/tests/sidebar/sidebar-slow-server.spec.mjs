@@ -353,3 +353,48 @@ for (const delay of delays) {
     }
   });
 }
+
+test("a lost chat creation answer still keeps its request for a retry", async ({
+  page,
+  context,
+}) => {
+  const fixture = await setup(context, page);
+  try {
+    const sidebar = await fixture.open(page);
+    const chats = fixture.local.snapshot.threads.length;
+    // The server creates the chat, but the answer does not reach the window.
+    let lost = 0;
+    await page.route("**/api/leads", async (route) => {
+      const response = await route.fetch();
+      expect(response.ok()).toBe(true);
+      lost++;
+      await route.abort("failed");
+    });
+    await sidebar
+      .getByRole("button", { name: /^Local Empty/ })
+      .first()
+      .hover();
+    await button(sidebar, "New chat in folder Local Empty").click();
+    const dialog = page.getByRole("dialog", { name: "New chat", exact: true });
+    await expect(button(dialog, "Start chat")).toBeEnabled();
+    await button(dialog, "Start chat").click();
+    const local = page.frameLocator('iframe[title="Studio on Local"]');
+    const retry = local.getByRole("button", {
+      name: "Retry chat request",
+      exact: true,
+    });
+    await expect(retry).toBeVisible();
+    expect(lost).toBe(1);
+    await page.unroute("**/api/leads");
+    await retry.click();
+    await expect(retry).toHaveCount(0);
+    expect(fixture.local.snapshot.threads.length).toBe(chats + 1);
+    const requests = fixture.calls.local.filter(
+      (call) => call.path === "/api/leads",
+    );
+    expect(requests).toHaveLength(2);
+    expect(requests[1].body).toEqual(requests[0].body);
+  } finally {
+    await fixture.close();
+  }
+});
