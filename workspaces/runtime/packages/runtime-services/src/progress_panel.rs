@@ -6,13 +6,13 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::{Map, Value, json};
-use studio_runtime_schema::shared_values::{MAX_PROGRESS_FILE_BYTES, PROGRESS_FILE_LIMIT_LABEL};
+use studio_runtime_schema::shared_values::{
+    MAX_PROGRESS_FILE_BYTES, PROGRESS_FILE_LIMIT_LABEL, PROGRESS_LAYOUT_FRESH_SECONDS,
+    PROGRESS_LAYOUT_MAX_BYTES, PROGRESS_LAYOUT_MAX_CLIENTS,
+};
 use thiserror::Error;
 
 const MAX_PROGRESS_BYTES: usize = MAX_PROGRESS_FILE_BYTES;
-const MAX_LAYOUT_BYTES: usize = 64 * 1024;
-const MAX_CLIENTS: usize = 32;
-const FRESH_SECONDS: f64 = 90.0;
 const SAFE_INTEGER: u64 = 9_007_199_254_740_991;
 const RENDERER_V1: &str = "progress-markdown-v1";
 const RENDERER_V2: &str = "progress-markdown-v2";
@@ -327,12 +327,15 @@ pub fn record_layout(state_dir: &Path, body: &Value) -> Result<Value, ProgressPa
         .drain(..)
         .filter(|item| item.get("client").and_then(Value::as_str) != Some(client))
         .collect::<Vec<_>>();
-    if others.len() >= MAX_CLIENTS {
+    if others.len() >= PROGRESS_LAYOUT_MAX_CLIENTS {
         return Err(ProgressPanelError::TooManyClients);
     }
     let mut saved_report = report;
     saved_report.insert("measuredAt".to_owned(), json!(now));
-    saved_report.insert("expiresAt".to_owned(), json!(now + FRESH_SECONDS));
+    saved_report.insert(
+        "expiresAt".to_owned(),
+        json!(now + PROGRESS_LAYOUT_FRESH_SECONDS),
+    );
     let mut updated_reports = others;
     updated_reports.push(Value::Object(saved_report));
     let result = json!({
@@ -347,7 +350,7 @@ pub fn record_layout(state_dir: &Path, body: &Value) -> Result<Value, ProgressPa
     let mut bytes =
         serde_json::to_vec_pretty(&result).map_err(|_| ProgressPanelError::InvalidStoredLayout)?;
     bytes.push(b'\n');
-    if bytes.len() > MAX_LAYOUT_BYTES {
+    if bytes.len() > PROGRESS_LAYOUT_MAX_BYTES {
         return Err(ProgressPanelError::InvalidLayout("layout size"));
     }
     atomic_replace(directory, &layout_path, &progress, &revision, &bytes)?;
@@ -521,7 +524,9 @@ fn fresh_reports(value: &Value, now: f64) -> Vec<Value> {
         .filter(|row| {
             let measured = row.get("measuredAt").and_then(Value::as_f64);
             measured.is_some_and(|measured| {
-                measured.is_finite() && now - measured >= 0.0 && now - measured < FRESH_SECONDS
+                measured.is_finite()
+                    && now - measured >= 0.0
+                    && now - measured < PROGRESS_LAYOUT_FRESH_SECONDS
             })
         })
         .filter(|row| {
@@ -570,14 +575,14 @@ fn read_layout(path: &Path) -> Result<Value, ProgressPanelError> {
         Err(error) => return Err(error),
     };
     let metadata = file.metadata()?;
-    if metadata.len() > MAX_LAYOUT_BYTES as u64 {
+    if metadata.len() > PROGRESS_LAYOUT_MAX_BYTES as u64 {
         return Err(ProgressPanelError::InvalidStoredLayout);
     }
     let mut bytes = Vec::new();
     Read::by_ref(&mut file)
-        .take((MAX_LAYOUT_BYTES + 1) as u64)
+        .take((PROGRESS_LAYOUT_MAX_BYTES + 1) as u64)
         .read_to_end(&mut bytes)?;
-    if bytes.len() > MAX_LAYOUT_BYTES {
+    if bytes.len() > PROGRESS_LAYOUT_MAX_BYTES {
         return Err(ProgressPanelError::InvalidStoredLayout);
     }
     let value: Value =
@@ -637,7 +642,7 @@ fn validate_stored_layout(value: &Value) -> Result<(), ProgressPanelError> {
     let reports = object
         .get("reports")
         .and_then(Value::as_array)
-        .filter(|reports| reports.len() <= MAX_CLIENTS)
+        .filter(|reports| reports.len() <= PROGRESS_LAYOUT_MAX_CLIENTS)
         .ok_or(ProgressPanelError::InvalidStoredLayout)?;
     let mut clients = std::collections::HashSet::new();
     for row in reports {
@@ -742,8 +747,8 @@ fn atomic_replace(
 #[cfg(test)]
 mod tests {
     use super::{
-        MAX_PROGRESS_BYTES, PROGRESS_FILE_LIMIT_LABEL, ProgressPanelError, atomic_replace,
-        read_progress, record_layout,
+        MAX_PROGRESS_BYTES, PROGRESS_FILE_LIMIT_LABEL, PROGRESS_LAYOUT_FRESH_SECONDS,
+        ProgressPanelError, atomic_replace, read_progress, record_layout,
     };
     use serde_json::{Value, json};
     use std::fs;
@@ -947,7 +952,8 @@ mod tests {
             "status":"fits", "updatedAt":now,
             "reports":[{"client":"phone", "sequence":1, "renderer":"progress-markdown-v1",
                 "width":320, "height":150, "contentWidth":100, "contentHeight":40,
-                "fits":true, "reason":null, "measuredAt":now, "expiresAt":now+90.0}],
+                "fits":true, "reason":null, "measuredAt":now,
+                "expiresAt":now+PROGRESS_LAYOUT_FRESH_SECONDS}],
         });
         fs::write(
             path.with_file_name("PROGRESS.layout.json"),

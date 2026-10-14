@@ -23,6 +23,9 @@ from codex_shared_values import (
     MAX_SYNC_RESOURCE_QUERY_BYTES,
     MAX_SUPERVISOR_FRAME_BYTES,
     PROCESS_SUPERVISOR_PROTOCOL_VERSION,
+    PROGRESS_LAYOUT_FRESH_SECONDS,
+    PROGRESS_LAYOUT_MAX_BYTES,
+    PROGRESS_LAYOUT_MAX_CLIENTS,
     SYNC_BATCH_LIMIT,
     SYNC_ENTITY_PAGE_LIMIT,
     SYNC_RESOURCE_HEARTBEAT_SECONDS,
@@ -181,6 +184,24 @@ class SharedValuesContract(unittest.TestCase):
             self.assertIn(name, python_reader)
         self.assertIn("MODEL_CATALOG_CACHE_TTL_SECONDS", python_cache)
         self.assertIn("MODEL_CATALOG_ITEMS_PER_PAGE", python_cache)
+
+    def test_progress_layout_contract_uses_generated_limits(self):
+        source_root = Path(__file__).resolve().parents[1] / "src"
+        python_source = (source_root / "codex_progress_layout.py").read_text(encoding="utf-8")
+        rust_source = (
+            REPOSITORY_ROOT / "workspaces/runtime/packages/runtime-services/src/progress_panel.rs"
+        ).read_text(encoding="utf-8")
+        self.assertEqual(
+            (PROGRESS_LAYOUT_FRESH_SECONDS, PROGRESS_LAYOUT_MAX_CLIENTS, PROGRESS_LAYOUT_MAX_BYTES),
+            (90, 32, 65_536),
+        )
+        for name in (
+            "PROGRESS_LAYOUT_FRESH_SECONDS",
+            "PROGRESS_LAYOUT_MAX_CLIENTS",
+            "PROGRESS_LAYOUT_MAX_BYTES",
+        ):
+            self.assertIn(name, python_source)
+            self.assertIn(name, rust_source)
 
 if __name__ == "__main__":
     unittest.main()

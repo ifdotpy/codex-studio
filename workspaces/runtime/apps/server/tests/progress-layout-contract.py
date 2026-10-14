@@ -113,7 +113,7 @@ class ProgressLayoutContract(unittest.TestCase):
             repeated = self.record()
         self.assertEqual(repeated["reports"], original["reports"])
         self.assertEqual(self.feedback.read_bytes(), before)
-        with patch.object(layout.time, "time", return_value=now + layout.FRESH_SECONDS):
+        with patch.object(layout.time, "time", return_value=now + layout.PROGRESS_LAYOUT_FRESH_SECONDS):
             self.assertEqual(layout.layout_status(self.root, "first")["status"], "unmeasured")
 
     def test_wide_success_preserves_narrow_failure_and_client_can_recover(self):
@@ -163,7 +163,7 @@ class ProgressLayoutContract(unittest.TestCase):
         now = time.time()
         with patch.object(layout.time, "time", return_value=now):
             value = self.record()
-        for timestamp in (now + layout.FRESH_SECONDS, now - 1):
+        for timestamp in (now + layout.PROGRESS_LAYOUT_FRESH_SECONDS, now - 1):
             with patch.object(layout.time, "time", return_value=timestamp):
                 self.assertEqual(layout.layout_status(self.root, "first")["status"], "unmeasured")
                 self.assertEqual(layout.layout_status(self.root, "first")["reason"], "expired")
@@ -282,13 +282,16 @@ class ProgressLayoutContract(unittest.TestCase):
         self.assertEqual(outside.read_bytes(), b"retained")
 
     def test_client_limit_refuses_without_dropping_existing_measurement(self):
-        for index in range(layout.MAX_CLIENTS):
+        for index in range(layout.PROGRESS_LAYOUT_MAX_CLIENTS):
             self.record(client=f"client_{index}")
         before = self.feedback.read_bytes()
         with self.assertRaises(layout.LayoutConflict):
             self.record(client="another")
         self.assertEqual(self.feedback.read_bytes(), before)
-        self.assertEqual(len(self.record(client="client_0", sequence=2)["reports"]), layout.MAX_CLIENTS)
+        self.assertEqual(
+            len(self.record(client="client_0", sequence=2)["reports"]),
+            layout.PROGRESS_LAYOUT_MAX_CLIENTS,
+        )
 
     def test_cli_codes_include_empty_unknown_and_invalid_file(self):
         def run(path=self.path):

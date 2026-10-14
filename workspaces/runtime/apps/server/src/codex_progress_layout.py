@@ -14,15 +14,17 @@ import uuid
 
 from codex_progress import _directory, progress_path, read_progress
 from codex_private_paths import protect_temp_file, verify_handle_within_directory
+from codex_shared_values import (
+    PROGRESS_LAYOUT_FRESH_SECONDS,
+    PROGRESS_LAYOUT_MAX_BYTES,
+    PROGRESS_LAYOUT_MAX_CLIENTS,
+)
 
 RENDERER = "progress-markdown-v2"
 LEGACY_RENDERER = "progress-markdown-v1"
 VISIBILITY_FIELDS = {"overflowX", "overflowY", "totalLines", "visibleLines",
                      "lastVisibleLine", "lastVisibleHeading"}
-FRESH_SECONDS = 90
-MAX_CLIENTS = 32
 LAYOUT_FILE = "PROGRESS.layout.json"
-MAX_LAYOUT_BYTES = 65536
 
 
 class LayoutConflict(ValueError):
@@ -68,8 +70,8 @@ def _read_layout(directory: int | Path):
     with os.fdopen(descriptor, "rb") as stream:
         if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
             raise ValueError("Progress layout feedback must be a regular file")
-        data = stream.read(MAX_LAYOUT_BYTES + 1)
-    if len(data) > MAX_LAYOUT_BYTES:
+        data = stream.read(PROGRESS_LAYOUT_MAX_BYTES + 1)
+    if len(data) > PROGRESS_LAYOUT_MAX_BYTES:
         raise ValueError("Progress layout feedback exceeds its size limit")
     try:
         value = json.loads(data)
@@ -86,7 +88,7 @@ def _fresh_reports(value, now):
     for row in reports:
         if (not isinstance(row, dict) or type(row.get("measuredAt")) not in (int, float)
                 or not math.isfinite(row["measuredAt"])
-                or not 0 <= now - row["measuredAt"] < FRESH_SECONDS):
+                or not 0 <= now - row["measuredAt"] < PROGRESS_LAYOUT_FRESH_SECONDS):
             continue
         try:
             _report({"agent": "feedback", "revision": "feedback", **{
@@ -189,16 +191,16 @@ def record_layout(runtime, body):
                         return {**previous, "status": _status(reports), "reports": reports}
                     raise LayoutConflict("A newer layout measurement already exists")
             others = [row for row in reports if row.get("client") != report["client"]]
-            if len(others) >= MAX_CLIENTS:
+            if len(others) >= PROGRESS_LAYOUT_MAX_CLIENTS:
                 raise LayoutConflict("Too many active progress clients. Retry after old reports expire")
             report["measuredAt"] = now
-            report["expiresAt"] = now + FRESH_SECONDS
+            report["expiresAt"] = now + PROGRESS_LAYOUT_FRESH_SECONDS
             reports = others + [report]
             result = {"version": 1, "agent": agent_id, "revision": current["revision"],
                       "sha256": digest,
                       "status": _status(reports), "updatedAt": now, "reports": reports}
             data = (json.dumps(result, ensure_ascii=True, indent=2) + "\n").encode()
-            if len(data) > MAX_LAYOUT_BYTES:
+            if len(data) > PROGRESS_LAYOUT_MAX_BYTES:
                 raise ValueError("Progress layout feedback exceeds its size limit")
             temporary = ".layout-" + uuid.uuid4().hex + ".tmp"
             descriptor = _open_layout_file(directory, temporary,
