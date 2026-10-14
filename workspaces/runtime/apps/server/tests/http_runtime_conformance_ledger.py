@@ -131,7 +131,7 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
         "primary": {"query": {"agent": "$analyticsAgent"}, "query_omit": ["view", "detail", "item", "turn", "thread", "turns", "tool", "timing", "export"], "expected": "2xx"},
     },
     ("GET", "/api/capabilities"): {
-        "primary": {"query": {"agent": "$agent"}},
+        "primary": {"query": {"agent": "$agent"}, "expected": "2xx"},
     },
     ("GET", "/api/changes"): {
         "primary": {
@@ -588,9 +588,7 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
     ("POST", "/api/sync/notify"): {
         "primary": {
             "body": {"requestId": "ledger-sync-notify", "resources": [{"kind": "state"}]},
-            "expected": "501",
-            "expected_error": "Not implemented: requires sync-policy/resource-notify",
-            "assert_no_write": True,
+            "expected": "2xx",
         },
     },
     ("POST", "/api/usage-resume"): {

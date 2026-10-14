@@ -312,16 +312,6 @@ class RustCatalogHttpContract(unittest.TestCase):
 
     def test_capabilities_reads_scripted_skills_and_mcp_and_caches_per_agent(self) -> None:
         path = "/api/capabilities?agent=catalog-http-agent"
-        if self.rust_backend:
-            frames_before = self.backend.received_provider_frames()
-            for _ in range(2):
-                response = self.backend.request("GET", path)
-                assert_status(response, 501)
-                self.assertEqual(response.json(), {
-                    "error": "Not implemented: requires thread-preparation/tool-catalog",
-                })
-            self.assertEqual(self.backend.received_provider_frames(), frames_before)
-            return
         first = self.backend.request("GET", path)
         assert_status(first, 200)
         body = first.json()
@@ -400,11 +390,12 @@ class RustCatalogHttpContract(unittest.TestCase):
         self.assertEqual(task["status"], "running")
         self.assertEqual(task["processId"], "44")
 
-    def test_native_command_cancel_uses_the_exact_scripted_session(self) -> None:
+    def test_native_command_cancel_refuses_without_input_driver(self) -> None:
         if not self.rust_backend:
             self.skipTest(
                 "Python startup recovery marks the seeded command lost before the request"
             )
+        before = self.backend.received_provider_frames()
         response = self.backend.request(
             "POST", "/api/native-command",
             body={"id": "catalog-http-active-command", "action": "cancel"},
@@ -413,13 +404,22 @@ class RustCatalogHttpContract(unittest.TestCase):
                 "X-Canvas-Token": self.backend.session["token"],
             },
         )
-        assert_status(response, 200)
-        self.assertEqual(response.json(), {"terminated": True})
-        methods = [
-            frame.get("method") for frame in self.backend.received_provider_frames()
-        ]
-        self.assertIn("thread/backgroundTerminals/list", methods)
-        self.assertIn("thread/backgroundTerminals/terminate", methods)
+        assert_status(response, 501)
+        self.assertEqual(response.json(), {
+            "error": "Not implemented: requires turn-path/native-command-input",
+        })
+        self.assertEqual(self.backend.received_provider_frames(), before)
+        with sqlite3.connect(
+            f"file:{self.backend.state / 'canvas.sqlite3'}?mode=ro", uri=True,
+        ) as connection:
+            row = connection.execute(
+                "SELECT record FROM runtime_tasks WHERE id=?",
+                ("catalog-http-active-command",),
+            ).fetchone()
+        self.assertIsNotNone(row)
+        task = json.loads(row[0])
+        self.assertEqual(task["status"], "running")
+        self.assertEqual(task["processId"], "44")
 
     def test_sync_notify_contract(self) -> None:
         notify = self.backend.request(
@@ -430,16 +430,10 @@ class RustCatalogHttpContract(unittest.TestCase):
                 "X-Canvas-Token": self.backend.session["token"],
             },
         )
-        if self.rust_backend:
-            assert_status(notify, 501)
-            self.assertEqual(notify.json(), {
-                "error": "Not implemented: requires sync-policy/resource-notify",
-            })
-        else:
-            assert_status(notify, 200)
-            self.assertEqual(notify.json(), {
-                "requestId": "catalog-http-notify", "accepted": True,
-            })
+        assert_status(notify, 200)
+        self.assertEqual(notify.json(), {
+            "requestId": "catalog-http-notify", "accepted": True,
+        })
 
     def test_limits_repeated_scalar_query_returns_located_400(self) -> None:
         result = self.backend.request(
