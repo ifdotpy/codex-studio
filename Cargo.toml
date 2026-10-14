@@ -2,6 +2,7 @@
 resolver = "3"
 members = [
     "workspaces/runtime/apps/diagnostics",
+    "workspaces/runtime/apps/peer-link",
     "workspaces/runtime/apps/process-supervisor",
     "workspaces/runtime/apps/runtime-server",
     "workspaces/runtime/packages/operations",
