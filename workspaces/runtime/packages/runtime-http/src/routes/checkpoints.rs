@@ -20,11 +20,6 @@ const THREAD_FORK_DEPENDENCIES: [Dependency; 1] = [Dependency::new(THREAD_FORK_D
 pub(crate) fn routes() -> RouteGroup {
     RouteGroup::new(vec![
         post(
-            "/api/branch",
-            OperationStatus::partial(&THREAD_FORK_DEPENDENCIES),
-            branch,
-        ),
-        post(
             "/api/checkpoint",
             OperationStatus::partial(&IMAGE_DEPENDENCIES),
             capture,
@@ -82,15 +77,6 @@ pub(crate) async fn restore(
 ) -> Result<Json<Value>, ApiError> {
     Err(
         dependency_unavailable("POST", "/api/checkpoint/restore", &THREAD_FORK_DEPENDENCIES)
-            .unwrap_or_else(|_| ApiError::internal()),
-    )
-}
-
-pub(crate) async fn branch(
-    ApiJson(_body): ApiJson<crate::generated::BranchRequest>,
-) -> Result<Json<Value>, ApiError> {
-    Err(
-        dependency_unavailable("POST", "/api/branch", &THREAD_FORK_DEPENDENCIES)
             .unwrap_or_else(|_| ApiError::internal()),
     )
 }
