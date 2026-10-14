@@ -1231,6 +1231,7 @@ mod tests {
     use std::cell::RefCell;
 
     use rusqlite::Connection;
+    use rusqlite::trace::{TraceEvent, TraceEventCodes};
     use serde_json::json;
 
     use super::{
@@ -1241,8 +1242,10 @@ mod tests {
         static TRACED_SQL: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
     }
 
-    fn trace_sql(sql: &str) {
-        TRACED_SQL.with_borrow_mut(|statements| statements.push(sql.to_owned()));
+    fn trace_sql(event: TraceEvent<'_>) {
+        if let TraceEvent::Stmt(_, sql) = event {
+            TRACED_SQL.with_borrow_mut(|statements| statements.push(sql.to_owned()));
+        }
     }
 
     #[test]
@@ -1266,15 +1269,15 @@ mod tests {
                 "CREATE TABLE runtime_events(id TEXT,agent TEXT,kind TEXT,status TEXT,error TEXT);
                  CREATE TABLE runtime_event_meta(id TEXT,record TEXT);
                  INSERT INTO runtime_events VALUES
-                    ('agent:e1','agent','user','sent',NULL),
-                    ('agent:e2','agent','user','pending','retry'),
-                    ('agent:e3','agent','user','sent',NULL);
+                    ('e1','agent','user','sent',NULL),
+                    ('e2','agent','user','pending','retry'),
+                    ('e3','agent','user','sent',NULL);
                  INSERT INTO runtime_event_meta VALUES
-                    ('agent:e1','{\"requestedDelivery\":\"notify\"}');",
+                    ('e1','{\"requestedDelivery\":\"notify\"}');",
             )
             .expect("event fixtures insert");
         TRACED_SQL.with_borrow_mut(Vec::clear);
-        connection.trace(Some(trace_sql));
+        connection.trace_v2(TraceEventCodes::SQLITE_TRACE_STMT, Some(trace_sql));
         let mut items = vec![
             json!({"role":"user","id":"agent:e1"}),
             json!({"role":"user","id":"agent:e2"}),
@@ -1319,7 +1322,7 @@ mod tests {
             )
             .expect("completion fixtures insert");
         TRACED_SQL.with_borrow_mut(Vec::clear);
-        connection.trace(Some(trace_sql));
+        connection.trace_v2(TraceEventCodes::SQLITE_TRACE_STMT, Some(trace_sql));
         let mut items = vec![
             json!({"turnId":"t1"}),
             json!({"turnId":"t2","turnStatus":"running"}),
@@ -1371,7 +1374,7 @@ mod tests {
             )
             .expect("legacy search fixtures create");
         TRACED_SQL.with_borrow_mut(Vec::clear);
-        connection.trace(Some(trace_sql));
+        connection.trace_v2(TraceEventCodes::SQLITE_TRACE_STMT, Some(trace_sql));
 
         let transaction = connection.transaction().expect("transaction starts");
         index_search_item(&transaction, "item-1", "agent", "assistant", "body")
