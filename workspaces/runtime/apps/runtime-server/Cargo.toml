@@ -15,10 +15,11 @@ studio-runtime-http = { path = "../../packages/runtime-http" }
 studio-runtime-services = { path = "../../packages/runtime-services" }
 studio-runtime-store = { path = "../../packages/runtime-store" }
 serde_json = { workspace = true }
+sha2 = { workspace = true }
+studio-runtime-providers = { path = "../../packages/runtime-providers" }
 tokio = { workspace = true }
 
 [dev-dependencies]
-studio-runtime-providers = { path = "../../packages/runtime-providers" }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }
 tower = { workspace = true }

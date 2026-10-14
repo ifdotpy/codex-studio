@@ -40,6 +40,7 @@ pub struct HttpState {
         Option<std::sync::Arc<studio_runtime_services::account_driver::AccountDriver>>,
     pub provider_versions:
         Option<Arc<studio_runtime_services::provider_versions::ProviderVersionMonitor>>,
+    pub(crate) native_runtime: Option<Arc<studio_runtime_services::native_runtime::NativeRuntime>>,
     pub(crate) title_request:
         Option<Arc<dyn studio_runtime_services::title_generation::TitleRequestPort>>,
     pub(crate) voice_request_port:
@@ -109,6 +110,7 @@ impl HttpState {
             account_session: None,
             account_driver: None,
             provider_versions: None,
+            native_runtime: None,
             title_request: None,
             claude_login: None,
             voice_request_port: None,
@@ -198,6 +200,15 @@ impl HttpState {
         self
     }
 
+    /// Attach the native executable runtime used for lease and desktop status.
+    pub fn with_native_runtime(
+        mut self,
+        runtime: Arc<studio_runtime_services::native_runtime::NativeRuntime>,
+    ) -> Self {
+        self.native_runtime = Some(runtime);
+        self
+    }
+
     pub fn with_credentials(
         mut self,
         credentials: Arc<studio_runtime_services::federation_credentials::Credentials>,
@@ -221,6 +232,12 @@ impl HttpState {
     ) -> Self {
         self.voice_request_port = Some(provider);
         self
+    }
+
+    pub fn voice_request_port_handle(
+        &self,
+    ) -> Option<Arc<dyn studio_runtime_services::voice::runtime::VoiceRequestPort>> {
+        self.voice_request_port.clone()
     }
 
     /// Attach the full selected native tool catalog for capabilities reads.
