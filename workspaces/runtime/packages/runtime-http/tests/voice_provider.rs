@@ -1,3 +1,4 @@
+use axum::Extension;
 use axum::body::{Body, to_bytes};
 use axum::extract::ConnectInfo;
 use axum::http::{Request, StatusCode};
@@ -13,6 +14,16 @@ use studio_runtime_services::voice::runtime::{
 };
 use studio_runtime_store::RuntimeStore;
 use tower::ServiceExt;
+
+#[path = "../../runtime-services/tests/wave7_p15_support/fixtures.rs"]
+#[allow(dead_code, unused_imports)]
+mod monitor_fixtures;
+#[path = "../../runtime-services/tests/wave7_p15_support/mod.rs"]
+#[allow(dead_code)]
+mod monitor_support;
+#[path = "../../runtime-services/tests/support/prepared_python.rs"]
+#[allow(dead_code)]
+mod prepared_python_support;
 
 #[path = "../../runtime-services/tests/multi_server/common.rs"]
 #[allow(dead_code)]
@@ -285,6 +296,107 @@ async fn installed_provider_lifts_start_speech_approve_and_end_over_http() {
         studio_runtime_services::voice::runtime::VoiceRpcId::String("provider-rpc-http".into())
     );
     assert_eq!(replies[0].1.result, json!({"decision":"accept"}));
+}
+
+#[tokio::test]
+async fn voice_monitor_approval_uses_monitor_transaction_and_dispatch_wake() {
+    use studio_runtime_store::{RequestRecord, Table};
+
+    let root = monitor_fixtures::tempdir();
+    let mut case = monitor_fixtures::corpus(root.path())
+        .into_iter()
+        .find(|case| case["name"] == "finish-0-None-False")
+        .expect("running monitor case");
+    case["before"]["status"] = json!("approval");
+    case["actor"]["isLead"] = json!(true);
+    case["before"]
+        .as_object_mut()
+        .expect("monitor record")
+        .remove("operation");
+    let store = Arc::new(monitor_fixtures::store(root.path(), "voice-monitor"));
+    monitor_fixtures::seed(&store, &case);
+    let agent = case["actor"]["id"].as_str().expect("agent id").to_owned();
+    let monitor_id = case["before"]["id"].as_str().expect("monitor id");
+    let request_id = format!("monitor-approval:{monitor_id}");
+    store
+        .transaction(|tx| {
+            let request = json!({
+                "id":request_id,
+                "method":"monitor/approve",
+                "agent":agent,
+                "epoch":case["before"]["epoch"],
+                "params":{"monitorId":monitor_id,"command":case["before"]["command"],"cwd":case["before"]["cwd"]},
+                "status":"pending",
+                "createdAt":1000.0
+            });
+            let fingerprint = studio_runtime_store::sha256_hex(
+                studio_runtime_store::python_json(&request).as_bytes(),
+            );
+            tx.execute(
+                "INSERT INTO runtime_requests(id,record) VALUES(?1,?2)",
+                rusqlite::params![request_id, request.to_string()],
+            )?;
+            tx.execute(
+                "INSERT INTO voice_sessions(id,agent,created,state) VALUES('voice-monitor-session',?1,1,'ready')",
+                [&agent],
+            )?;
+            tx.execute(
+                "INSERT INTO voice_records(id,agent,session,kind,text,item_id,previous_item_id,payload,created) VALUES('voice-monitor-speech',?1,'','orchestrator','approval','','',?2,1)",
+                rusqlite::params![agent, json!({"request_id":request_id,"fingerprint":fingerprint}).to_string()],
+            )?;
+            tx.execute(
+                "INSERT INTO voice_records(id,agent,session,kind,text,item_id,previous_item_id,payload,created) VALUES('voice-monitor-playback',?1,'voice-monitor-session','playback','played','','',?2,2)",
+                rusqlite::params![agent, json!({"record_id":"voice-monitor-speech"}).to_string()],
+            )?;
+            tx.execute(
+                "INSERT INTO voice_records(id,agent,session,kind,text,item_id,previous_item_id,payload,created) VALUES('voice-monitor-transcript',?1,'voice-monitor-session','user','разрешаю','','','{}',3)",
+                [&agent],
+            )?;
+            Ok(())
+        })
+        .expect("seed voice monitor approval");
+
+    let state = HttpState::new(
+        "token".into(),
+        "workspace".into(),
+        None,
+        root.path().to_string_lossy().into_owned(),
+        4620,
+        None,
+        Some(store.clone()),
+        None,
+    );
+    let port = Arc::new(monitor_support::Port::default());
+    let runtime = Arc::new(
+        studio_runtime_services::monitor_runtime_wiring::MonitorRuntime::new(
+            store.clone(),
+            port.clone(),
+            state.event_wake_handle(),
+        ),
+    );
+    let app = router(state)
+        .expect("router")
+        .layer(Extension(runtime.clone()));
+    let (status, response) = post(
+        &app,
+        "/api/voice/approve",
+        json!({
+            "agent":agent,"session_id":"voice-monitor-session",
+            "speech_id":"voice-monitor-speech","transcript_id":"voice-monitor-transcript"
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{response}");
+    assert_eq!(response["status"], "answered");
+    let request = Table::<RequestRecord>::new(&store.read().expect("read request"))
+        .get(&request_id)
+        .expect("get monitor approval")
+        .expect("monitor approval");
+    assert_eq!(request.value()["answerDecision"], "accept");
+    runtime
+        .tick(1001.0)
+        .expect("dispatch accepted monitor start");
+    assert_eq!(port.starts.lock().expect("monitor starts").len(), 1);
 }
 
 #[tokio::test]

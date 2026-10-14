@@ -247,13 +247,47 @@ async fn speech(
 
 async fn approve(
     State(state): State<HttpState>,
+    monitor: Option<
+        axum::Extension<
+            std::sync::Arc<studio_runtime_services::monitor_runtime_wiring::MonitorRuntime>,
+        >,
+    >,
     ApiJson(body): ApiJson<crate::generated::VoiceApproveRequest>,
 ) -> Result<Json<Value>, ApiError> {
+    let store = state.store.ok_or_else(ApiError::internal)?;
+    let (agent_id, speech_id) = (body.agent.clone(), body.speech_id.clone());
+    let store_for_lookup = store.clone();
+    let monitor_approval = tokio::task::spawn_blocking(move || {
+        voice::provider::is_monitor_approval(&store_for_lookup, &agent_id, &speech_id)
+    })
+    .await
+    .map_err(|_| ApiError::internal())?
+    .map_err(provider_error)?;
+    if monitor_approval {
+        let Some(monitor) = monitor else {
+            return Err(ApiError::dependency("monitor-driver/start-dispatch"));
+        };
+        let result = voice::provider::approve_monitor(
+            store,
+            body.agent,
+            body.session_id,
+            body.speech_id,
+            body.transcript_id,
+            now_seconds()?,
+            true,
+        )
+        .await
+        .map_err(provider_error)?;
+        monitor.0.dispatch_wake_handle().notify_one();
+        state.event_wake.notify_one();
+        return Ok(Json(super::generated_json::<
+            crate::generated::VoiceApprovalResponse,
+        >(result)?));
+    }
     let provider = state
         .voice_request_port
         .clone()
         .ok_or_else(voice_provider_unavailable)?;
-    let store = state.store.ok_or_else(ApiError::internal)?;
     let result = voice::provider::approve(
         store,
         provider,
@@ -343,6 +377,43 @@ fn provider_error(error: voice::provider::VoiceProviderError) -> ApiError {
         ),
         E::ContextChanged => ApiError::new(StatusCode::CONFLICT, "voice provider context changed"),
         E::AdmissionDenied(message) => ApiError::new(StatusCode::CONFLICT, message),
+        E::Policy(error) => match error {
+            studio_runtime_services::voice::policy::VoiceError::InvalidSessionIdentity
+            | studio_runtime_services::voice::policy::VoiceError::InvalidOffer
+            | studio_runtime_services::voice::policy::VoiceError::SessionIdentityConflict
+            | studio_runtime_services::voice::policy::VoiceError::ActiveSessionExists
+            | studio_runtime_services::voice::policy::VoiceError::UnknownSession
+            | studio_runtime_services::voice::policy::VoiceError::UnsupportedAudioFormat
+            | studio_runtime_services::voice::policy::VoiceError::InvalidAudioEncoding
+            | studio_runtime_services::voice::policy::VoiceError::AudioTooLarge
+            | studio_runtime_services::voice::policy::VoiceError::AudioIdentityConflict => {
+                ApiError::new(StatusCode::BAD_REQUEST, error.to_string())
+            }
+            studio_runtime_services::voice::policy::VoiceError::InvalidStoredSession
+            | studio_runtime_services::voice::policy::VoiceError::InvalidClock => {
+                ApiError::internal()
+            }
+        },
+        E::Voice(error) => voice_error(error),
+        E::Monitor(error) => match error {
+            studio_runtime_services::monitor_policy::MonitorError::Refused(message) => {
+                ApiError::new(StatusCode::BAD_REQUEST, message)
+            }
+            studio_runtime_services::monitor_policy::MonitorError::Unavailable(name) => {
+                ApiError::dependency(name)
+            }
+            studio_runtime_services::monitor_policy::MonitorError::InvalidStored {
+                id,
+                location,
+            } => ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Invalid stored object monitors/{id} at {location}"),
+            ),
+            studio_runtime_services::monitor_policy::MonitorError::Event(
+                studio_runtime_services::event_write::EventWriteError::RemoteEventsUnavailable,
+            ) => ApiError::dependency("cross-server/remote-events"),
+            _ => ApiError::internal(),
+        },
         E::NotSent => ApiError::new(
             StatusCode::SERVICE_UNAVAILABLE,
             "voice request was not sent",
