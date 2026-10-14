@@ -1,7 +1,9 @@
 //! Bounded, latest-value token-rate publication for resource streams.
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
+use crate::change_notifications::ChangeNotificationHub;
 use serde::{Deserialize, Serialize};
 use studio_runtime_schema::{
     TOKEN_RATE_IDENTIFIER_MAX_CODEPOINTS, TOKEN_RATE_MAX_ENTRIES, TOKEN_RATE_MAX_TOTAL_ENTRIES,
@@ -64,6 +66,7 @@ pub enum TokenRateError {
 #[derive(Clone)]
 pub struct TokenRateHub {
     sender: watch::Sender<TokenRateSnapshot>,
+    changes: Option<Arc<ChangeNotificationHub>>,
 }
 
 impl TokenRateSnapshot {
@@ -113,6 +116,16 @@ impl TokenRateHub {
     pub fn new() -> Self {
         Self {
             sender: watch::channel(TokenRateSnapshot::empty()).0,
+            changes: None,
+        }
+    }
+
+    /// Bind token-only publications to the shared cursor without invalidating resources.
+    #[must_use]
+    pub fn with_change_hub(changes: Arc<ChangeNotificationHub>) -> Self {
+        Self {
+            changes: Some(changes),
+            ..Self::new()
         }
     }
 
@@ -132,6 +145,8 @@ impl TokenRateHub {
         Ok(self.sender.send_if_modified(|current| {
             if *current == snapshot {
                 false
+            } else if let Some(changes) = &self.changes {
+                changes.try_publish(1, false, |_| *current = snapshot)
             } else {
                 *current = snapshot;
                 true
