@@ -264,9 +264,6 @@ async fn approve(
     .map_err(|_| ApiError::internal())?
     .map_err(provider_error)?;
     if monitor_approval {
-        let Some(monitor) = monitor else {
-            return Err(ApiError::dependency("monitor-driver/start-dispatch"));
-        };
         let result = voice::provider::approve_monitor(
             store,
             body.agent,
@@ -274,11 +271,13 @@ async fn approve(
             body.speech_id,
             body.transcript_id,
             now_seconds()?,
-            true,
+            monitor.is_some(),
         )
         .await
         .map_err(provider_error)?;
-        monitor.0.dispatch_wake_handle().notify_one();
+        if let Some(monitor) = monitor {
+            monitor.0.dispatch_wake_handle().notify_one();
+        }
         state.event_wake.notify_one();
         return Ok(Json(super::generated_json::<
             crate::generated::VoiceApprovalResponse,

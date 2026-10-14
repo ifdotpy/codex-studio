@@ -1281,6 +1281,12 @@ pub async fn approve_monitor(
     if let Some(value) = replay {
         return Ok(value);
     }
+    if !start_dispatch_available {
+        release_monitor_approval(&store, &request_id).await?;
+        return Err(VoiceProviderError::RequiresDependency(
+            "monitor-driver/start-dispatch",
+        ));
+    }
     let request_for_answer = request_id.clone();
     let data = serde_json::json!({"decision":"accept"});
     let answer_store = std::sync::Arc::clone(&store);

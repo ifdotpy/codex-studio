@@ -393,6 +393,62 @@ async fn voice_monitor_approval_uses_monitor_transaction_and_dispatch_wake() {
         .expect("get monitor approval")
         .expect("monitor approval");
     assert_eq!(request.value()["answerDecision"], "accept");
+
+    // A saved accepted voice receipt must replay without the optional runtime.
+    let app_without_runtime = router(HttpState::new(
+        "token".into(),
+        "workspace".into(),
+        None,
+        root.path().to_string_lossy().into_owned(),
+        4620,
+        None,
+        Some(store.clone()),
+        None,
+    ))
+    .expect("router without monitor runtime");
+    let approval_body = json!({
+        "agent":agent,"session_id":"voice-monitor-session",
+        "speech_id":"voice-monitor-speech","transcript_id":"voice-monitor-transcript"
+    });
+    let (status, replayed) = post(
+        &app_without_runtime,
+        "/api/voice/approve",
+        approval_body.clone(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{replayed}");
+    assert_eq!(replayed["status"], response["status"]);
+    assert_ne!(replayed["replayed"], true);
+
+    // Simulate a crash after the monitor transaction committed but before the
+    // accepted response was copied into the voice receipt.
+    store
+        .transaction(|tx| {
+            tx.execute(
+                "UPDATE voice_approvals SET status='uncertain',result=NULL WHERE id=?1",
+                [&request_id],
+            )?;
+            Ok(())
+        })
+        .expect("simulate crash window");
+    let (status, recovered) = post(&app_without_runtime, "/api/voice/approve", approval_body).await;
+    assert_eq!(status, StatusCode::OK, "{recovered}");
+    assert_eq!(recovered["status"], "answered");
+    assert_eq!(recovered["replayed"], true);
+    let receipt: (String, Option<String>) = store
+        .read()
+        .expect("read recovered receipt")
+        .query_row(
+            "SELECT status,result FROM voice_approvals WHERE id=?1",
+            [&request_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .expect("read recovered voice approval receipt");
+    assert_eq!(receipt.0, "accepted");
+    let saved: Value = serde_json::from_str(receipt.1.as_deref().expect("saved voice receipt"))
+        .expect("valid saved voice receipt");
+    assert_eq!(saved, json!({"status":"answered","replayed":true}));
+
     runtime
         .tick(1001.0)
         .expect("dispatch accepted monitor start");
