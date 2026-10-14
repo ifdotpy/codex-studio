@@ -18,6 +18,7 @@ from codex_process_supervisor import MAX_FRAME_BYTES, PROTOCOL
 from codex_layout import REPOSITORY_ROOT
 from codex_http_body_limits import REQUEST_BODY_READ_TIMEOUT_SECONDS
 from codex_shared_values import (
+    MAX_PROJECT_SECRET_VALUE_BYTES,
     MAX_SYNC_RESOURCE_COUNT,
     MAX_SYNC_RESOURCE_QUERY_BYTES,
     MAX_SUPERVISOR_FRAME_BYTES,
@@ -29,6 +30,7 @@ from codex_shared_values import (
     TRANSCRIPT_MAX_TOMBSTONES,
 )
 from codex_sync import TRANSCRIPT_MAX_TOMBSTONES as SYNC_TRANSCRIPT_MAX_TOMBSTONES
+from studio_api.agents.models import ProjectSecretSetRequest
 
 
 class SharedValuesContract(unittest.TestCase):
@@ -115,6 +117,13 @@ class SharedValuesContract(unittest.TestCase):
         self.assertIn("MAX_FRAME_BYTES = MAX_SUPERVISOR_FRAME_BYTES", python_source)
         self.assertIn("reader.readline(MAX_SUPERVISOR_FRAME_BYTES + 1", windows_source)
         self.assertIn("MAX_SUPERVISOR_FRAME_BYTES", rust_source)
+
+    def test_project_secret_schema_bound_uses_the_byte_limit_owner(self):
+        schema = ProjectSecretSetRequest.model_json_schema()
+        self.assertEqual(
+            schema["properties"]["value"]["maxLength"],
+            MAX_PROJECT_SECRET_VALUE_BYTES,
+        )
 
 
 if __name__ == "__main__":
