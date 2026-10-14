@@ -69,6 +69,7 @@ pub(crate) fn managed_tool_ports(
     store: &RuntimeStore,
     context: &CallbackContext,
     frame: &Frame,
+    wake: std::sync::Arc<tokio::sync::Notify>,
 ) -> Result<impl crate::managed_host_tools::Ports, CallbackError> {
     let Some(request) = model::Input::from_frame(frame)? else {
         return Err(CallbackError::Invalid("Expected a managed tool callback"));
@@ -76,7 +77,7 @@ pub(crate) fn managed_tool_ports(
     if request.method != "item/tool/call" {
         return Err(CallbackError::Invalid("Expected a managed tool callback"));
     }
-    tools::production_ports(store, context, &request)
+    tools::production_ports(store, context, &request, wake)
 }
 
 /// Account workers with a retained host runtime pass its explicit staged-effect

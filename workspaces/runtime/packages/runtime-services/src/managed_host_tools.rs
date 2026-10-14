@@ -12,6 +12,25 @@
 //! replay and cancellation. This leaf owns authority checks and the typed
 //! operation boundary; adapters own writes and post-commit wakeups.
 //!
+//! Send follows `Runtime.dynamic`'s two branches (codex_runtime.py:9050–9082):
+//! descendant instructions call `Runtime.send` with the authenticated actor id
+//! and epoch and enqueue a `followup`; other targets call `Runtime.chat_message`
+//! with the same actor identity and default `message` importance. `parent` and
+//! `lead` resolve through the actor's stored edges; a private room contains the
+//! sorted sender/recipient ids after `peer_pair_allowed` or checked-team
+//! authorization; `broadcast` contains the sender's root id and team members.
+//! The descendant input uses `coordination::send_followup`, which writes its
+//! durable queue event through `event_write::enqueue_event`.
+//!
+//! Named dependency refusals in the production adapter: Spawn creation and
+//! Review child creation require `agent-create/worker-driver` (P02); Interrupt
+//! requires `account-worker/agent-interrupt` (P10); Status requires
+//! `model-directory/status-and-dispatch-capacity`; Watch requires
+//! `rules/runtime-driver`; Monitor create requires
+//! `workspace-state/monitor-admission`; Monitor input requires
+//! `monitor-input-request-identity`; unsupported Context topics require
+//! `model-context/requested-topic`. Refused operations write nothing.
+//!
 //! Registered difference: all `remoteOrigin` host-tool calls and spawn requests
 //! targeting another server are rejected before a host operation. Rust has no
 //! local cross-server worker-call adapter here, so it cannot silently route a

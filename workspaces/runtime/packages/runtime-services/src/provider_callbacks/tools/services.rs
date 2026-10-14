@@ -17,6 +17,7 @@ pub(crate) struct ProductionPorts {
     context: CallbackContext,
     room_directory: Option<crate::sync_entity_context::RoomDirectory>,
     admission: crate::message_admission::PreparedAdmission,
+    event_wake: std::sync::Arc<tokio::sync::Notify>,
 }
 
 impl ProductionPorts {
@@ -24,11 +25,13 @@ impl ProductionPorts {
         context: CallbackContext,
         room_directory: Option<crate::sync_entity_context::RoomDirectory>,
         admission: crate::message_admission::PreparedAdmission,
+        event_wake: std::sync::Arc<tokio::sync::Notify>,
     ) -> Self {
         Self {
             context,
             room_directory,
             admission,
+            event_wake,
         }
     }
 }
@@ -475,12 +478,12 @@ impl crate::managed_host_tools::PostCommitPort for ProductionPorts {
         &self,
         signals: &[crate::managed_host_tools::WakeSignal],
     ) -> Result<(), crate::managed_host_tools::Error> {
-        drop(
-            signals
-                .iter()
-                .map(crate::managed_host_tools::WakeSignal::owner)
-                .collect::<Vec<_>>(),
-        );
+        if !signals.is_empty() {
+            // The account registry re-reads committed rows and wakes the owning
+            // worker. Lost notifications are harmless: startup and timer passes
+            // reconcile the same durable event intents.
+            self.event_wake.notify_one();
+        }
         Ok(())
     }
 }
@@ -583,6 +586,32 @@ pub(super) fn execute(
         resolved_args[field] = json!(messages::resolve_agent(tx, snapshot, text(args, field)?)?);
     }
     let args = &resolved_args;
+    if matches!(kind, ToolKind::CancelMonitor) {
+        let monitor_id = text(args, "monitor_id")?;
+        let (value, operation) = crate::monitor_driver::reserve_cancel(
+            tx,
+            monitor_id,
+            Some(&snapshot.context().agent),
+            now,
+        )
+        .map_err(|error| match error {
+            crate::monitor_policy::MonitorError::Store(error) => CallbackError::Store(error),
+            crate::monitor_policy::MonitorError::Unavailable(name) => {
+                CallbackError::Dependency(name)
+            }
+            _ => CallbackError::Invalid("Monitor cancellation was refused"),
+        })?;
+        return Ok(crate::managed_host_tools::Staged {
+            value,
+            signals: operation
+                .into_iter()
+                .map(|_| crate::managed_host_tools::WakeSignal::new("monitor-driver"))
+                .collect(),
+        });
+    }
+    if matches!(kind, ToolKind::MonitorInput) {
+        return Err(CallbackError::Dependency("monitor-input-request-identity"));
+    }
     match kind {
         ToolKind::Spawn
         | ToolKind::Send
@@ -636,9 +665,10 @@ pub(super) fn execute(
         | ToolKind::Complaint => Err(CallbackError::Invalid(
             "Managed tool dispatcher missed a tool",
         )),
-        ToolKind::MonitorInput | ToolKind::CancelMonitor => {
-            Err(CallbackError::Dependency("monitors/runtime-driver"))
-        }
+        ToolKind::MonitorInput => Err(CallbackError::Dependency("monitor-input-request-identity")),
+        ToolKind::CancelMonitor => Err(CallbackError::Invalid(
+            "Monitor cancellation dispatch was not handled",
+        )),
         ToolKind::Move | ToolKind::Teleport => Err(CallbackError::Dependency(
             "agent-move/exact-native-history-and-paired-driver",
         )),

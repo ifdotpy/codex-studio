@@ -1,5 +1,5 @@
 use super::*;
-use crate::managed_host_tools::SendPort;
+use crate::managed_host_tools::{PostCommitPort, SendPort};
 use std::{path::PathBuf, process::Command, sync::OnceLock};
 use studio_runtime_store::RuntimeStore;
 
@@ -54,7 +54,12 @@ fn send(sender_index: usize, target: &str, id: &str) -> (tempfile::TempDir, Runt
     let admission =
         crate::message_admission::PreparedAdmission::load(&reader, &context.agent).unwrap();
     drop(reader);
-    let ports = ProductionPorts::new(context.clone(), None, admission);
+    let ports = ProductionPorts::new(
+        context.clone(),
+        None,
+        admission,
+        std::sync::Arc::new(tokio::sync::Notify::new()),
+    );
     let raw: String = store
         .read()
         .unwrap()
@@ -75,6 +80,69 @@ fn send(sender_index: usize, target: &str, id: &str) -> (tempfile::TempDir, Runt
         .transaction_with(|tx| ports.send(tx, &actor, &args, id, 20.0))
         .unwrap();
     (directory, store, result.value)
+}
+
+#[tokio::test]
+async fn production_release_notifies_the_registry_after_a_committed_send() {
+    let oracle = template();
+    let directory = tempfile::tempdir().unwrap();
+    for name in ["canvas.sqlite3", "analytics.sqlite3"] {
+        std::fs::copy(
+            PathBuf::from(oracle["template"].as_str().unwrap()).join(name),
+            directory.path().join(name),
+        )
+        .unwrap();
+    }
+    let store = RuntimeStore::open(Some(directory.path())).unwrap();
+    let actor = oracle["agents"][0].clone();
+    let context = CallbackContext {
+        agent: actor["id"].as_str().unwrap().into(),
+        account: "default".into(),
+        connection: "connection".into(),
+        generation: 7,
+        epoch: actor["epoch"].as_u64().unwrap(),
+        thread: actor["threadId"].as_str().unwrap().into(),
+        turn: actor["turnId"].as_str().unwrap().into(),
+    };
+    let reader = store.read().unwrap();
+    let admission =
+        crate::message_admission::PreparedAdmission::load(&reader, &context.agent).unwrap();
+    drop(reader);
+    let wake = std::sync::Arc::new(tokio::sync::Notify::new());
+    let ports = ProductionPorts::new(context, None, admission, wake.clone());
+    let mut notified = Box::pin(wake.notified());
+    assert!(futures_util::FutureExt::now_or_never(notified.as_mut()).is_none());
+    let actor = crate::managed_host_tools::Actor::from_record(
+        &actor,
+        oracle["agents"][0]["id"].as_str().unwrap(),
+        3,
+    )
+    .unwrap();
+    let child_id = oracle["agents"][1]["id"].as_str().unwrap();
+    let staged = store
+        .transaction_with(|tx| {
+            ports.send(
+                tx,
+                &actor,
+                &json!({"agent_id":child_id,"text":"wake after commit"}),
+                "wake-after-commit",
+                20.0,
+            )
+        })
+        .unwrap();
+    let event_count: i64 = store
+        .read()
+        .unwrap()
+        .query_row(
+            "SELECT count(*) FROM runtime_events WHERE id='wake-after-commit'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(event_count, 1, "durable input commits before release");
+    ports.release(&staged.signals).unwrap();
+    futures_util::FutureExt::now_or_never(notified.as_mut())
+        .expect("released wake signal is delivered");
 }
 
 #[test]
