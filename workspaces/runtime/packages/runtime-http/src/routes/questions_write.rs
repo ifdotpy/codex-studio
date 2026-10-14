@@ -1,7 +1,7 @@
 //! HTTP adapters for question delivery and durable complaint writes.
 
 use super::extractors::ApiJson;
-use super::manifest::{Dependency, OperationStatus, RouteGroup, post};
+use super::manifest::{Dependency, OperationStatus, RouteGroup, dependency_unavailable, post};
 use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
@@ -51,7 +51,10 @@ async fn answer(
     let runtime = state
         .callback_runtime
         .clone()
-        .ok_or_else(|| ApiError::dependency("provider-session/question-answer"))?;
+        .ok_or_else(|| {
+            dependency_unavailable("POST", "/api/answer", &ANSWER_DEPENDENCIES)
+                .unwrap_or_else(|_| ApiError::internal())
+        })?;
     let id = body.id.clone();
     let data = serde_json::to_value(body).map_err(|_| ApiError::internal())?;
     let value = tokio::task::spawn_blocking(move || runtime.answer(&id, &data, callback_clock()?))

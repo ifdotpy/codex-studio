@@ -564,7 +564,7 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
         "primary": {"body": {"home": "$projectPath"}, "expected": "400", "assert_no_write": True},
     },
     ("POST", "/api/accounts/discover"): {"primary": {"body": {}, "expected": "2xx"}},
-    ("POST", "/api/answer"): {"primary": {"body": {"id": "$question", "decision": "cancel"}, "expected": "501", "assert_no_write": True}},
+    ("POST", "/api/answer"): {"primary": {"body": {"id": "$question", "decision": "cancel"}, "expected": "501", "expected_error": "Not implemented: requires provider-session/question-answer, question-answer/async-question, question-answer/browser-open, question-answer/monitor-approval", "assert_no_write": True}},
     ("POST", "/api/branch"): {"primary": {"body": {"agent": "$agent", "id": "ledger-branch", "message_id": "ledger-message"}, "expected": "501", "assert_no_write": True}},
     ("POST", "/api/capacity-retry"): {
         "primary": {"body": {"id": "$agent", "retry_id": "ledger-capacity-cancel", "action": "cancel"}, "expected": "2xx"},
@@ -914,6 +914,7 @@ try:
     agent = {{
         "id": {agent_id!r}, "rootId": {agent_id!r}, "epoch": 0,
         "status": "idle", "name": "HTTP ledger probe owner", "role": "orchestrator",
+        "model": "fixture-model",
         "cwd": os.environ["CODEX_CANVAS_CWD"], "isLead": True,
         "autoWake": True, "approvalPolicy": "never", "worktreeReady": True,
         "accountKey": "default", "threadId": "ledger-probe-thread",
