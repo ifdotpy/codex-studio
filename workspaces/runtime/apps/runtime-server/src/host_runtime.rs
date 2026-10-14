@@ -454,13 +454,6 @@ impl AccountLauncher for HostLauncher {
                 );
                 (launch, executable, None, lease)
             };
-            // Existing catalog refresh owns its bounded one-off child; both
-            // HTTP reads and preparation observe this same retained service.
-            let _catalog_status = self
-                .resources
-                .model_catalog
-                .read(&account, &resources.account_home, &provider, false)
-                .await;
             let clock = SessionClock::default();
             let handle = ProviderHandle::for_account(&account);
             let open = OpenOptions {

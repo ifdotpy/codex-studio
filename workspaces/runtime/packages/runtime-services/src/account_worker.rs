@@ -1431,17 +1431,29 @@ impl Worker {
             let store = Arc::clone(&self.bridge.store);
             let managed_tool_runtime = self.bridge.managed_tool_runtime();
             self.managed_callback_cursors.insert(cursor.0);
-            self.managed_callbacks.spawn_blocking(move || {
-                let response = callback::managed_response(
+            self.managed_callbacks.spawn(async move {
+                if let Err(dependency) = callback::wait_for_managed_catalog(
                     &store,
                     &account,
                     generation,
                     &frame,
-                    now,
-                    wake,
-                    monitor_dispatch_wake,
-                    managed_tool_runtime,
-                );
+                    managed_tool_runtime.as_deref(),
+                ).await {
+                    let Frame::Request(request) = &frame else { return (cursor, None); };
+                    return (cursor, Some(callback::tool_call_failure(request, dependency)));
+                }
+                let response = tokio::task::spawn_blocking(move || {
+                    callback::managed_response(
+                        &store,
+                        &account,
+                        generation,
+                        &frame,
+                        now,
+                        wake,
+                        monitor_dispatch_wake,
+                        managed_tool_runtime,
+                    )
+                }).await.ok().flatten();
                 (cursor, response)
             });
         } else if let JournalPayload::Frame(frame) = &entry.payload

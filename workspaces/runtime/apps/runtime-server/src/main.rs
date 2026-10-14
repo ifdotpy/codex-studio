@@ -304,7 +304,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
     let creation_environment = studio_runtime_http::routes::managed_creation_environment(
         Arc::clone(&account_driver),
-        state.model_catalog_handle(),
+        {
+            let catalog = state.model_catalog_handle();
+            catalog.set_account_session(Some(Arc::clone(&account_session)));
+            catalog
+        },
     );
     let managed_tool_runtime =
         studio_runtime_services::provider_callbacks::ManagedToolRuntime::with_creation(

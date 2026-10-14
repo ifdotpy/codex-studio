@@ -25,11 +25,13 @@ use studio_runtime_schema::shared_values::{
     MODEL_CATALOG_CACHE_TTL_SECONDS, MODEL_CATALOG_ITEMS_PER_PAGE, MODEL_CATALOG_MAX_FRAME_BYTES,
     MODEL_CATALOG_MAX_PAGES, MODEL_CATALOG_MAX_RESPONSE_BYTES,
     MODEL_CATALOG_OPERATION_TIMEOUT_SECONDS,
+    MODEL_CATALOG_ADMISSION_WAIT_SECONDS,
 };
 use tokio::time::Instant;
 
 const CATALOG_TTL: Duration = Duration::from_secs(MODEL_CATALOG_CACHE_TTL_SECONDS);
 const CATALOG_TIMEOUT: Duration = Duration::from_secs(MODEL_CATALOG_OPERATION_TIMEOUT_SECONDS);
+const CATALOG_ADMISSION_WAIT: Duration = Duration::from_secs(MODEL_CATALOG_ADMISSION_WAIT_SECONDS);
 const MAX_CATALOG_PAGE_BYTES: usize = MODEL_CATALOG_MAX_FRAME_BYTES;
 const MAX_CATALOG_RESPONSE_BYTES: usize = MODEL_CATALOG_MAX_RESPONSE_BYTES;
 const MAX_CATALOG_PAGES: usize = MODEL_CATALOG_MAX_PAGES;
@@ -83,7 +85,7 @@ async fn read_account_session_catalog(
     provider: String,
     stop: Shutdown,
 ) -> Result<Value, ()> {
-    if provider != "claude" {
+    if !matches!(provider.as_str(), "codex" | "claude") {
         return Err(());
     }
     let mut shutdown = stop.subscribe();
@@ -236,6 +238,7 @@ struct CatalogInner {
     account_session: Mutex<Option<Arc<dyn crate::account_session_runtime::AccountSessionPort>>>,
     next_generation: Mutex<u64>,
     on_change: ChangeCallback,
+    refresh_notify: tokio::sync::Notify,
     tasks: tokio::sync::Mutex<Vec<tokio::task::JoinHandle<()>>>,
     cleanup_error: Arc<Mutex<Option<String>>>,
     stop: Shutdown,
@@ -286,6 +289,35 @@ impl ModelCatalogService {
         }
     }
 
+    /// Start/coalesce the async refresh and wait for its published result at a
+    /// point of need, outside the worker startup and synchronous store section.
+    pub async fn wait_for_admission_catalog(
+        &self,
+        account_key: &str,
+        home: &str,
+        provider: &str,
+    ) -> AdmissionCatalogRead {
+        let deadline = Instant::now() + CATALOG_ADMISSION_WAIT;
+        if tokio::time::timeout_at(deadline, self.read(account_key, home, provider, false))
+            .await
+            .is_err()
+        {
+            return AdmissionCatalogRead::Pending;
+        }
+        loop {
+            let notified = self.0.refresh_notify.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            let result = self.read_for_admission(account_key, home, provider);
+            if !matches!(result, AdmissionCatalogRead::Pending) {
+                return result;
+            }
+            if tokio::time::timeout_at(deadline, notified).await.is_err() {
+                return AdmissionCatalogRead::Pending;
+            }
+        }
+    }
+
     #[must_use]
     pub fn new(executable: Option<String>) -> Self {
         Self::with_change_callback(executable, Arc::new(|| {}))
@@ -314,6 +346,7 @@ impl ModelCatalogService {
             account_session: Mutex::new(None),
             next_generation: Mutex::new(0),
             on_change,
+            refresh_notify: tokio::sync::Notify::new(),
             tasks: tokio::sync::Mutex::new(Vec::new()),
             cleanup_error: Arc::default(),
             stop: Shutdown::default(),
@@ -463,12 +496,10 @@ impl ModelCatalogService {
                 }
                 return;
             }
-            let result = if provider == "claude" {
-                if let Some(session) = account_session {
-                    read_account_session_catalog(session, account.clone(), provider, stop).await
-                } else {
-                    Err(())
-                }
+            let result = if let Some(session) = account_session {
+                read_account_session_catalog(session, account.clone(), provider, stop).await
+            } else if provider == "claude" {
+                Err(())
             } else {
                 read_provider_catalog(
                     permit,
@@ -523,8 +554,8 @@ impl ModelCatalogService {
     pub fn account_profile(&self, account: &str) -> Option<(String, String)> {
         self.0.accounts.lock().ok()?.get(account).cloned()
     }
-    /// Attach the account registry's retained provider session. The catalog
-    /// never launches a second provider for Claude model reads.
+    /// Attach the account registry's retained provider session. Model reads
+    /// share the live account connection instead of launching a second provider.
     pub fn set_account_session(
         &self,
         session: Option<Arc<dyn crate::account_session_runtime::AccountSessionPort>>,
@@ -621,6 +652,7 @@ fn store_result(
     };
     if stored {
         (inner.on_change)();
+        inner.refresh_notify.notify_waiters();
     }
     stored
 }
