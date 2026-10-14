@@ -237,7 +237,7 @@ fn splice_envelope(bytes: &[u8], entities: &[Value], after: Option<i64>) -> Opti
     let has_members = close > open + 1 && bytes[open + 1..close].iter().any(|byte| !byte.is_ascii_whitespace());
     let mut additions = Vec::new();
     if has_members {
-        additions.push(b','.');
+        additions.push(b',');
     }
     additions.extend_from_slice(b"\"_syncEntities\":");
     additions.extend_from_slice(&serde_json::to_vec(entities).ok()?);
