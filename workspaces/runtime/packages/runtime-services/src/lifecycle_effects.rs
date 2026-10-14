@@ -82,10 +82,8 @@ impl ProductionLifecyclePorts {
             interrupt_broker,
             prepared: Mutex::new(Vec::new()),
         };
-        // A tombstone and unsettled fields are the durable reconciliation
-        // intent. Scan on construction so process restart cannot lose it.
-        // Constructors stay infallible; execute retries and surfaces storage errors.
-        ports.reconcile_deleted_tombstones().unwrap_or(());
+        // Startup callers invoke committed() to reconcile durable tombstones;
+        // execute() also retries reconciliation before accepting a new action.
         ports
     }
 

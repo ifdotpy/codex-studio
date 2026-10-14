@@ -135,6 +135,14 @@ fn execute_decision(
     for agent in &decision.cancel_pending {
         repository::cancel_pending(transaction, agent)?;
     }
+    if matches!(action, Action::Delete { .. }) {
+        let deleted = decision.result["deleted"]
+            .as_array()
+            .ok_or(ManagementError::Invalid("Invalid deletion decision"))?;
+        for agent in deleted.iter().filter_map(Value::as_str) {
+            studio_runtime_store::VoiceRepository::delete_agent(transaction, agent)?;
+        }
+    }
     if let Some(ports) = ports {
         for effect in &decision.effects {
             ports.stage(transaction, effect)?;

@@ -411,16 +411,6 @@ impl ManagementSnapshot {
         }
         Ok(())
     }
-    fn has_voice_data(&self, agent: &Agent) -> bool {
-        [
-            "voice_sessions",
-            "voice_records",
-            "voice_deliveries",
-            "voice_approvals",
-        ]
-        .iter()
-        .any(|table| !self.owned(table, "agent", agent.id()).is_empty())
-    }
     fn blockers(&self, agent: &Agent, unassign: bool) -> Vec<Value> {
         let mut blocks = Vec::new();
         let mut add = |kind: &str, ids: Vec<Value>| {
@@ -652,10 +642,6 @@ fn stop(
     for agent in &agents {
         let mut effects = Vec::new();
         snapshot.stop_effects(agent, &mut effects, live)?;
-        // Deletion also removes saved voice data; stop only ends open sessions.
-        if delete && snapshot.has_voice_data(agent) {
-            return Err(ManagementError::Unavailable("voice-driver/agent-stop"));
-        }
         if delete {
             workspace_dependency(agent)?;
             // Python only schedules image cleanup for non-removed workspaces

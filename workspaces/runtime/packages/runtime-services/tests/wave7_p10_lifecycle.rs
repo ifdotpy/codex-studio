@@ -89,6 +89,11 @@ fn seed(store: &RuntimeStore, records: Records) {
             for row in records {
                 if table == "runtime_events" {
                     tx.execute("INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch) VALUES(?1,?2,'user','input',?3,1,?4)", params![row["id"].as_str(),row["agent"].as_str(),row["status"].as_str(),row["epoch"].as_i64()])?;
+                } else if table == "voice_sessions" {
+                    tx.execute(
+                        "INSERT INTO voice_sessions(id,agent,created,ended,state) VALUES(?1,?2,1,?3,?4)",
+                        params![row["id"].as_str(), row["agent"].as_str(), row["ended"].as_f64(), row["state"].as_str()],
+                    )?;
                 } else { agent_management::write(tx, &table, &row)?; }
             }
         }
@@ -333,7 +338,7 @@ fn assert_records(store: &RuntimeStore, case: &Value) {
 #[test]
 fn python_stop_corpus_complete_records_and_exact_descendants() {
     let cases = cases();
-    assert_eq!(cases.len(), 20);
+    assert_eq!(cases.len(), 21);
     let base = tempfile::tempdir().expect("template");
     template(base.path());
     for case in cases {
@@ -712,12 +717,13 @@ fn production_restart_scan_settles_durable_deleted_agent_state() {
 
     // Constructing the production bundle represents process restart. The
     // tombstone and stale activity are the durable cleanup intent.
-    let _ports = ProductionLifecyclePorts::new(
+    let ports = ProductionLifecyclePorts::new(
         store.clone(),
         Arc::new(Notify::new()),
         Arc::new(Notify::new()),
         Arc::new(NoBroker),
     );
+    ports.committed().expect("restart reconciliation");
     let settled_state = state(&store);
     let settled = settled_state["tables"]["runtime_agents"]
         .as_array()
