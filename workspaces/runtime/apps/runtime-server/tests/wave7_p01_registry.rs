@@ -5,7 +5,9 @@ mod account_registry;
 #[path = "../../../packages/runtime-services/tests/support/prepared_python.rs"]
 mod prepared_python;
 
-use account_registry::{AccountLaunch, AccountLauncher, AccountRegistry, LaunchFuture};
+use account_registry::{
+    AccountLaunch, AccountLauncher, AccountRegistry, AccountSessionBroker, LaunchFuture,
+};
 use serde_json::{Value, json};
 use std::{
     collections::BTreeMap,
@@ -21,6 +23,7 @@ use studio_runtime_process::{
 };
 use studio_runtime_providers::{Frame, RequestId, ResponseBody};
 use studio_runtime_services::{
+    account_session_runtime::RetainedAccountSession,
     account_worker::{WorkerError, preparation::PreparationResources},
     event_write::{AnnotationWrite, annotate},
     model_catalog::ModelCatalogService,
@@ -595,6 +598,41 @@ fn seed_radio_interrupt(fixture: &Fixture, snapshot: &Value) {
             Ok(())
         })
         .unwrap();
+}
+
+#[tokio::test]
+async fn concurrent_ensure_session_starts_one_cold_account_worker() {
+    let fixture = tokio::task::spawn_blocking(Fixture::new).await.unwrap();
+    let (launcher, _writes) = scripted();
+    let broker = AccountSessionBroker::new();
+    let registry = AccountRegistry::new_with_broker(
+        fixture.store.clone(),
+        launcher.clone(),
+        Arc::new(Notify::new()),
+        broker.clone(),
+    )
+    .await
+    .unwrap();
+    let stop = Shutdown::default();
+    let task = tokio::spawn(registry.run(Arc::new(Notify::new()), stop.clone()));
+
+    let (first, second) = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        tokio::join!(
+            broker.ensure_session("default".into()),
+            broker.ensure_session("default".into())
+        )
+    })
+    .await
+    .expect("ensure session hang guard");
+    let first = first.unwrap();
+    let second = second.unwrap();
+    assert_eq!(first, second);
+    assert_eq!(first.account, "default");
+    assert_eq!(launcher.opened.lock().unwrap().len(), 1);
+
+    stop.cancel();
+    task.await.unwrap().unwrap();
+    assert_eq!(launcher.active.load(Ordering::SeqCst), 0);
 }
 
 #[tokio::test]

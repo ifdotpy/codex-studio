@@ -18,12 +18,15 @@ const WORKER_PENDING_MESSAGE: &str =
 const UNAVAILABLE_MESSAGE: &str =
     "Model catalog unavailable; no workers were created: provider request failed";
 const ACCOUNT_UNAVAILABLE_MESSAGE: &str = "Account is unavailable";
-const CLAUDE_CATALOG_DEPENDENCY: &[Dependency] = &[Dependency::new("provider-session/model-list")];
+const MODEL_CATALOG_DEPENDENCIES: &[Dependency] = &[
+    Dependency::new("provider-session/account-session"),
+    Dependency::new("provider-session/model-list"),
+];
 
 pub(crate) fn routes() -> RouteGroup {
     RouteGroup::new(vec![get(
         "/api/models",
-        OperationStatus::partial(CLAUDE_CATALOG_DEPENDENCY),
+        OperationStatus::partial(MODEL_CATALOG_DEPENDENCIES),
         models,
     )])
 }
@@ -52,10 +55,11 @@ async fn models(
     .await
     .map_err(|_| ApiError::internal())??;
     catalog.retain_accounts(&snapshot.accounts);
+    let session = state.account_session.clone();
     let result = if workers {
-        worker_catalog(&catalog, &snapshot, &account_key, retry).await
+        worker_catalog(&catalog, &snapshot, &account_key, retry, session).await
     } else {
-        account_catalog(&catalog, &snapshot, &account_key, retry).await
+        account_catalog(&catalog, &snapshot, &account_key, retry, session).await
     };
     let (status, value) = match result {
         Ok(value) => (StatusCode::OK, value),
@@ -70,8 +74,19 @@ async fn account_catalog(
     snapshot: &AccountsSnapshot,
     account_key: &str,
     retry: bool,
+    session: Option<
+        std::sync::Arc<dyn studio_runtime_services::account_session_runtime::AccountSessionPort>,
+    >,
 ) -> Result<Value, (StatusCode, Value)> {
     let account = account_context(snapshot, account_key)?;
+    ensure_session(session, &account.key)
+        .await
+        .map_err(|error| {
+            (
+                StatusCode::NOT_IMPLEMENTED,
+                json!({"error":error.to_string()}),
+            )
+        })?;
     match catalog
         .read(&account.key, &account.home, &account.provider, retry)
         .await
@@ -90,6 +105,26 @@ async fn account_catalog(
             json!({"error": if account.provider == "claude" { "Not implemented: requires provider-session/model-list" } else { UNAVAILABLE_MESSAGE }}),
         )),
     }
+}
+
+async fn ensure_session(
+    session: Option<
+        std::sync::Arc<dyn studio_runtime_services::account_session_runtime::AccountSessionPort>,
+    >,
+    account: &str,
+) -> Result<(), studio_runtime_services::account_session_runtime::AccountSessionError> {
+    let session = session.ok_or(
+        studio_runtime_services::account_session_runtime::AccountSessionError::Requires(
+            "provider-session/account-session",
+        ),
+    )?;
+    let account = account.to_owned();
+    tokio::task::spawn_blocking(move || session.ensure_session(&account))
+        .await
+        .map_err(|_| {
+            studio_runtime_services::account_session_runtime::AccountSessionError::Unknown
+        })??;
+    Ok(())
 }
 
 struct AccountContext {
@@ -141,6 +176,9 @@ async fn worker_catalog(
     snapshot: &AccountsSnapshot,
     parent_account: &str,
     retry: bool,
+    session: Option<
+        std::sync::Arc<dyn studio_runtime_services::account_session_runtime::AccountSessionPort>,
+    >,
 ) -> Result<Value, (StatusCode, Value)> {
     let default_account = snapshot.default_account_key.as_str().unwrap_or("default");
     let mut order = Vec::new();
@@ -185,6 +223,10 @@ async fn worker_catalog(
                 continue;
             }
         };
+        if let Err(error) = ensure_session(session.clone(), &account.key).await {
+            unavailable.push(json!({"accountKey":key,"error":error.to_string()}));
+            continue;
+        }
         match catalog
             .read(&account.key, &account.home, &account.provider, retry)
             .await
@@ -251,12 +293,32 @@ async fn worker_catalog(
 
 #[cfg(test)]
 mod tests {
-    use super::{account_catalog, account_context};
+    use super::{PENDING_MESSAGE, account_catalog, account_context};
     use axum::http::StatusCode;
     use serde_json::{Value, json};
     use std::collections::HashSet;
     use studio_runtime_services::account_policy::AccountsSnapshot;
     use studio_runtime_services::model_catalog::ModelCatalogService;
+
+    struct EnsuredSession(std::sync::Arc<std::sync::atomic::AtomicUsize>);
+    impl studio_runtime_services::account_session_runtime::AccountSessionPort for EnsuredSession {
+        fn ensure_session(
+            &self,
+            account: &str,
+        ) -> Result<
+            studio_runtime_services::account_session_runtime::ConnectionScope,
+            studio_runtime_services::account_session_runtime::AccountSessionError,
+        > {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(
+                studio_runtime_services::account_session_runtime::ConnectionScope {
+                    account: account.to_owned(),
+                    connection: "fixture-connection".into(),
+                    generation: 1,
+                },
+            )
+        }
+    }
 
     fn snapshot(account: Value) -> AccountsSnapshot {
         AccountsSnapshot {
@@ -272,10 +334,15 @@ mod tests {
     async fn changed_and_error_accounts_are_refused_before_catalog_read() {
         for status in ["changed", "error"] {
             let snapshot = snapshot(json!({"id":"default", "home":"/missing", "status":status}));
-            let error =
-                account_catalog(&ModelCatalogService::new(None), &snapshot, "default", true)
-                    .await
-                    .expect_err("changed account must be refused");
+            let error = account_catalog(
+                &ModelCatalogService::new(None),
+                &snapshot,
+                "default",
+                true,
+                None,
+            )
+            .await
+            .expect_err("changed account must be refused");
             assert_eq!(error.0, StatusCode::BAD_REQUEST);
             assert_eq!(error.1, json!({"error":"Account is unavailable"}));
         }
@@ -290,13 +357,40 @@ mod tests {
             &snapshot,
             "claude-account",
             false,
+            None,
         )
         .await
         .expect_err("Claude requires its provider service");
         assert_eq!(error.0, StatusCode::NOT_IMPLEMENTED);
         assert_eq!(
             error.1,
-            json!({"error":"Not implemented: requires provider-session/model-list"})
+            json!({"error":"Not implemented: requires provider-session/account-session"})
+        );
+    }
+
+    #[tokio::test]
+    async fn catalog_ensures_account_session_before_model_catalog_read() {
+        let snapshot = snapshot(
+            json!({"id":"default", "home":"/fixture", "provider":"codex", "status":"ready"}),
+        );
+        let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let session: std::sync::Arc<
+            dyn studio_runtime_services::account_session_runtime::AccountSessionPort,
+        > = std::sync::Arc::new(EnsuredSession(calls.clone()));
+        let error = account_catalog(
+            &ModelCatalogService::new(None),
+            &snapshot,
+            "default",
+            false,
+            Some(session),
+        )
+        .await
+        .expect_err("model catalog provider service is absent in this fixture");
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(error.0, StatusCode::BAD_REQUEST);
+        assert_eq!(
+            error.1,
+            json!({"error":PENDING_MESSAGE,"catalogPending":true})
         );
     }
 
@@ -324,7 +418,7 @@ mod tests {
                 "method":"GET",
                 "path":"/api/models",
                 "status":"partial",
-                "dependencies":["provider-session/model-list"]
+                "dependencies":["provider-session/account-session","provider-session/model-list"]
             })
         );
     }
@@ -334,6 +428,6 @@ inventory::submit! {
     crate::routes::manifest::RouteModuleRegistration {
         name: "models",
         routes: Some(routes),
-        dependencies: &["provider-session/model-list"],
+        dependencies: &["provider-session/account-session", "provider-session/model-list"],
     }
 }

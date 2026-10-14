@@ -166,7 +166,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             base_home,
             home,
         )
-        .with_limits(account_policy.clone()),
+        .with_limits(account_policy.clone())
+        .with_store(Arc::clone(&store)),
     );
     let session_binaries = Arc::new(Mutex::new(BTreeMap::<
         String,
