@@ -946,21 +946,21 @@ fn restore_local(
     if current_tree != expected_tree && current_tree != tree {
         return Err(CheckpointsError::RecoveryRequired);
     }
-    store.transaction_with(|tx| {
-        CheckpointsRepository::set_restore_phase(
-            tx,
-            operation_id,
-            "local_mutation",
-            now_seconds(),
-            &[],
-        )
-    })?;
-    if current_tree == expected_tree {
-        let already_captured = operation
+    let needs_before_checkpoint = current_tree == expected_tree
+        && !operation
             .get("beforeCheckpoint")
             .is_some_and(|value| !value.is_null());
-        if !already_captured {
-            write_before_restore_checkpoint(store, agent_id, operation_id, &cwd)?;
+    let backup_id = begin_restore_local_mutation(
+        store,
+        agent_id,
+        operation_id,
+        signature,
+        provider,
+        needs_before_checkpoint,
+    )?;
+    if current_tree == expected_tree {
+        if let Some(backup_id) = backup_id {
+            write_before_restore_checkpoint(store, agent_id, operation_id, &cwd, &backup_id)?;
         }
         git(&cwd, &["read-tree", expected_tree], &[], None, 0)?;
         git(&cwd, &["read-tree", "--reset", "-u", &tree], &[], None, 0)?;
@@ -978,30 +978,105 @@ fn restore_local(
     )
 }
 
+fn begin_restore_local_mutation(
+    store: &RuntimeStore,
+    agent_id: &str,
+    operation_id: &str,
+    signature: &str,
+    provider: &Value,
+    needs_before_checkpoint: bool,
+) -> Result<Option<String>, CheckpointsError> {
+    let candidate = needs_before_checkpoint.then(new_uuid).transpose()?;
+    store.transaction_with(|tx| {
+        let agent =
+            CheckpointsRepository::agent(tx, agent_id)?.ok_or(CheckpointsError::UnknownAgent)?;
+        let mut operation = WorkspaceOperationsRepository::operation(tx, operation_id)?
+            .ok_or_else(|| {
+                StoreError::SchemaMismatch(format!(
+                    "Invalid stored object runtime_workspace_operations/{operation_id}"
+                ))
+            })?;
+        if operation.get("signature").and_then(Value::as_str) != Some(signature)
+            || operation.get("source")
+                != Some(&CheckpointsRepository::workspace_source(&agent.record))
+            || operation.get("provider") != Some(provider)
+        {
+            return Err(CheckpointsError::ActivityChanged);
+        }
+        let backup_id = if needs_before_checkpoint
+            && operation.get("beforeCheckpoint").is_none_or(Value::is_null)
+        {
+            Some(
+                operation
+                    .get("beforeCheckpointId")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned)
+                    .or(candidate)
+                    .ok_or_else(|| {
+                        StoreError::SchemaMismatch("Restore backup identity is missing".into())
+                    })?,
+            )
+        } else {
+            None
+        };
+        operation["phase"] = json!("local_mutation");
+        operation["updated"] = json!(now_seconds());
+        if let Some(id) = backup_id.as_ref() {
+            operation["beforeCheckpointId"] = json!(id);
+        }
+        WorkspaceOperationsRepository::put_operation(tx, &operation)?;
+        Ok(backup_id)
+    })
+}
+
 fn write_before_restore_checkpoint(
     store: &RuntimeStore,
     agent_id: &str,
     operation_id: &str,
     cwd: &str,
+    checkpoint_id: &str,
 ) -> Result<(), CheckpointsError> {
     let snapshot = capture_context(store, agent_id)?;
     let tree = snapshot_tree(store, cwd)?;
-    let commit_bytes = git(
+    let reference = format!("refs/codex-agents/checkpoints/{agent_id}/{checkpoint_id}");
+    let existing_commit = git(
         cwd,
-        &["commit-tree", &tree, "-p", "HEAD"],
-        &[
-            ("GIT_AUTHOR_NAME", "Codex Agents"),
-            ("GIT_AUTHOR_EMAIL", "local@codex-agents.invalid"),
-            ("GIT_COMMITTER_NAME", "Codex Agents"),
-            ("GIT_COMMITTER_EMAIL", "local@codex-agents.invalid"),
-        ],
-        Some(b"Codex Agents workspace checkpoint\n"),
+        &["for-each-ref", "--format=%(objectname)", "--", &reference],
+        &[],
+        None,
         128,
     )?;
-    let commit = String::from_utf8_lossy(&commit_bytes).trim().to_owned();
-    let id = new_uuid()?;
-    let reference = format!("refs/codex-agents/checkpoints/{agent_id}/{id}");
-    git(cwd, &["update-ref", &reference, &commit], &[], None, 0)?;
+    let existing_commit = String::from_utf8_lossy(&existing_commit)
+        .lines()
+        .next()
+        .filter(|commit| is_full_object_id(commit))
+        .map(str::to_owned);
+    let existing_matches_tree = if existing_commit.is_some() {
+        let treeish = format!("{reference}^{{tree}}");
+        let existing_tree = git(cwd, &["rev-parse", "--verify", &treeish], &[], None, 128)?;
+        String::from_utf8_lossy(&existing_tree).trim() == tree
+    } else {
+        false
+    };
+    let commit = if existing_matches_tree {
+        existing_commit.ok_or(CheckpointsError::GitFailed)?
+    } else {
+        let commit_bytes = git(
+            cwd,
+            &["commit-tree", &tree, "-p", "HEAD"],
+            &[
+                ("GIT_AUTHOR_NAME", "Codex Agents"),
+                ("GIT_AUTHOR_EMAIL", "local@codex-agents.invalid"),
+                ("GIT_COMMITTER_NAME", "Codex Agents"),
+                ("GIT_COMMITTER_EMAIL", "local@codex-agents.invalid"),
+            ],
+            Some(b"Codex Agents workspace checkpoint\n"),
+            128,
+        )?;
+        let commit = String::from_utf8_lossy(&commit_bytes).trim().to_owned();
+        git(cwd, &["update-ref", &reference, &commit], &[], None, 0)?;
+        commit
+    };
     store.transaction_with(|tx| {
         let current = CheckpointsRepository::agent(tx, agent_id)?
             .ok_or_else(|| StoreError::SchemaMismatch(format!("Invalid stored object agents/{agent_id}")))?;
@@ -1016,18 +1091,18 @@ fn write_before_restore_checkpoint(
             .and_then(Value::as_i64);
         let (history_delta, history_boundary) = CheckpointsRepository::history_delta(tx, agent_id, parent_boundary)?;
         let record = json!({
-            "id":id,"agent":agent_id,"rootId":current.record.get("rootId"),
+            "id":checkpoint_id,"agent":agent_id,"rootId":current.record.get("rootId"),
             "label":"Before restore","tree":tree,"commit":commit,"ref":reference,
             "historyParent":parent_id,"historyDelta":history_delta,"historyBoundary":history_boundary,
             "threadId":current.record.get("threadId"),"turnId":current.record.get("lastCompletedTurn"),
             "created":now_seconds(),"cwd":cwd,
         });
-        tx.execute("INSERT INTO runtime_checkpoints(id,record) VALUES(?1,?2)", rusqlite::params![id, record.to_string()])?;
+        tx.execute("INSERT INTO runtime_checkpoints(id,record) VALUES(?1,?2)", rusqlite::params![checkpoint_id, record.to_string()])?;
         let mut current_record = current.record;
-        current_record["checkpointHistoryHead"] = json!(id);
+        current_record["checkpointHistoryHead"] = json!(checkpoint_id);
         AgentRepository::put(tx, &AgentRecord::from_value(current_record)?)?;
         let mut operation = operation;
-        operation["beforeCheckpoint"] = json!(id);
+        operation["beforeCheckpoint"] = json!(checkpoint_id);
         WorkspaceOperationsRepository::put_operation(tx, &operation)?;
         Ok::<_, StoreError>(())
     })?;
