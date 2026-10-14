@@ -602,6 +602,12 @@ class SchemaContractTests(unittest.TestCase):
                 ("None", "True", "Supervisor health handles may emit a null job identity."),
             ("/components/schemas/SupervisorHealth/properties/handles/items/properties/jobIdentity", "@nullableBranch"):
                 ("None", "['{}']", "Adds the nullable branch for the existing supervisor health job identity."),
+            ("/components/schemas/LinuxVMSettingsResponse/properties/error", "property"):
+                ("absent from closed object", "accepted property", "Shows why the Linux VM failed in its settings."),
+            ("/components/schemas/LinuxVMSettingsResponse/properties/error", "@nullable"):
+                ("None", "True", "A VM that did not fail has no error."),
+            ("/components/schemas/LinuxVMSettingsResponse/properties/error", "@nullableBranch"):
+                ("None", "['{}']", "Adds the nullable branch for the VM failure reason."),
         }
         def accepted_fragment(pointer: str, value: str) -> str:
             if pointer in {
