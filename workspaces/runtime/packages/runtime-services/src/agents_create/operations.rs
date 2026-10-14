@@ -54,6 +54,8 @@ pub struct Creation {
     pub worker_catalog: bool,
     pub project_binding: bool,
     pub intent: Value,
+    /// Source native thread attached atomically for provider-history imports.
+    pub imported_from: Option<String>,
 }
 
 pub struct Configuration {
@@ -115,6 +117,16 @@ fn create(
         });
     let requested_cwd = request.cwd.as_deref().map(project_directory).transpose()?;
     if !draft {
+        // Import source is part of the durable creation identity. Keep it in
+        // the intent compared by replay_agent, including the transaction's
+        // concurrent recheck, rather than relying on an earlier route read.
+        if let Some(imported_from) = &request.imported_from {
+            request
+                .intent
+                .as_object_mut()
+                .ok_or(OperationError::Internal)?
+                .insert("imported_from".to_owned(), json!(imported_from));
+        }
         request
             .intent
             .as_object_mut()
@@ -379,6 +391,10 @@ fn create(
     );
     if !draft && role == "orchestrator" {
         record["maxAgentsExplicit"] = json!(request.max_agents.is_some());
+    }
+    if let Some(imported_from) = &request.imported_from {
+        record["importedFrom"] = json!(imported_from);
+        record["autoWake"] = json!(true);
     }
     if role == "orchestrator" {
         record["workerDefaults"] = worker_defaults.unwrap_or_else(|| {

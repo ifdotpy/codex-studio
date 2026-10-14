@@ -569,7 +569,7 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
     },
     ("POST", "/api/accounts/discover"): {"primary": {"body": {}, "expected": "2xx"}},
     ("POST", "/api/answer"): {"primary": {"body": {"id": "$question", "decision": "cancel"}, "expected": "501", "expected_error": answer_refusal_error(), "assert_no_write": True}},
-    ("POST", "/api/branch"): {"primary": {"body": {"agent": "$agent", "id": "ledger-branch", "message_id": "ledger-message"}, "expected": "501", "assert_no_write": True}},
+    ("POST", "/api/branch"): {"primary": {"body": {"agent": "$agent", "id": "ledger-branch", "message_id": "ledger-message"}, "expected": "400", "assert_no_write": True}},
     ("POST", "/api/capacity-retry"): {
         "primary": {"body": {"id": "$agent", "retry_id": "ledger-capacity-cancel", "action": "cancel"}, "expected": "2xx"},
         "additional": [{"name": "provider turn retry", "body": {"id": "$agent", "retry_id": "ledger-capacity-retry", "action": "retry"}, "expected": "501", "expected_error": "Not implemented: requires event-driver/queue-mutations, store-bootstrap/capacity-retry-schema, turn-driver/capacity-retry", "assert_no_write": True}],

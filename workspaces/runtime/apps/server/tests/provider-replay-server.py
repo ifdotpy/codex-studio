@@ -46,12 +46,19 @@ def recorded_reply(method, request, thread_id=None, turn_id=None):
     recorded = reply_frames.get(method)
     if not recorded or recorded.get("direction") != "in" or recorded.get("responseFor") != method:
         raise AssertionError(f"Missing recorded provider reply for {method}")
+    if method == "thread/turns/list" and recorded.get("pages"):
+        cursor = (request.get("params") or {}).get("cursor")
+        page = recorded["pages"].get(cursor or "")
+        if page is None:
+            raise AssertionError(f"Missing recorded turns page for cursor {cursor!r}")
+        recorded = {"message": page}
     value = json.dumps(recorded["message"])
     requested_thread = (request.get("params") or {}).get("threadId")
     if method in {"thread/read", "thread/resume"} and isinstance(requested_thread, str):
         thread_id = requested_thread
     value = value.replace("$threadId", thread_id or "replay-thread-1")
     value = value.replace("$turnId", turn_id or "replay-turn-1")
+    value = value.replace("$cwd", os.environ.get("CODEX_CANVAS_CWD", "."))
     value = value.replace("$model", request.get("params", {}).get("model", "fixture-model"))
     message = json.loads(value)
     return {"id": request["id"], **message}
