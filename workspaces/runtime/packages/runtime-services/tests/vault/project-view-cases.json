@@ -1,0 +1,79 @@
+[
+  {
+    "project": {
+      "id": "/workspace/Project One",
+      "path": "/workspace/Project One",
+      "projectAliases": [{ "projectId": "/workspace/Project One" }]
+    },
+    "projectId": "9b9022bbf51f2fff927e10824d61dd8dba302836fd71783e25b30fc0eafe2ad7",
+    "records": {
+      "vault.json": {
+        "configured": true,
+        "prefix": "project-one",
+        "lastPush": 1791720000,
+        "lastError": "fixture S3 failure",
+        "accessKeyId": "fixture-only-do-not-return"
+      },
+      "vault-site.json": {
+        "site": "https://desk.example.test/"
+      },
+      "vault-mac.json": {
+        "unlocked": false,
+        "disk": "/fixture/Desk/project-one"
+      }
+    },
+    "expected": {
+      "projectId": "9b9022bbf51f2fff927e10824d61dd8dba302836fd71783e25b30fc0eafe2ad7",
+      "state": "error",
+      "prefix": "project-one",
+      "lastPush": 1791720000,
+      "reason": "fixture S3 failure",
+      "site": "https://desk.example.test/",
+      "unlocked": false,
+      "disk": "/fixture/Desk/project-one"
+    }
+  },
+  {
+    "name": "malformed-vault-json",
+    "project": {
+      "id": "/workspace/Corrupt Project",
+      "path": "/workspace/Corrupt Project",
+      "projectAliases": [{ "projectId": "/workspace/Corrupt Project" }]
+    },
+    "projectId": "039b9385678576a06690db1813fc2db3f0d09811b9eaf7782ae1893dc8df1854",
+    "records": {},
+    "rawRecords": { "vault.json": "{broken" },
+    "expected": {
+      "projectId": "039b9385678576a06690db1813fc2db3f0d09811b9eaf7782ae1893dc8df1854",
+      "state": "error",
+      "reason": "The vault records are unreadable"
+    }
+  },
+  {
+    "name": "configured-vault-missing-prefix",
+    "project": {
+      "id": "/workspace/Invalid Project",
+      "path": "/workspace/Invalid Project",
+      "projectAliases": [{ "projectId": "/workspace/Invalid Project" }]
+    },
+    "projectId": "d44676669a486fc56729062f4aa57ca40fdc37176e8ef987388d825ce04183ad",
+    "records": { "vault.json": { "configured": true } },
+    "expectedError": "invalid stored vault record"
+  },
+  {
+    "name": "malformed-vault-site-json",
+    "project": {
+      "id": "/workspace/Bad Site",
+      "path": "/workspace/Bad Site",
+      "projectAliases": [{ "projectId": "/workspace/Bad Site" }]
+    },
+    "projectId": "084bd73379fa8945ebdb23fbc073c8697c7ffce1ccc168f9f535ee4002544742",
+    "records": { "vault.json": { "configured": true, "prefix": "site" } },
+    "rawRecords": { "vault-site.json": "{broken" },
+    "expected": {
+      "projectId": "084bd73379fa8945ebdb23fbc073c8697c7ffce1ccc168f9f535ee4002544742",
+      "state": "error",
+      "reason": "The vault records are unreadable"
+    }
+  }
+]

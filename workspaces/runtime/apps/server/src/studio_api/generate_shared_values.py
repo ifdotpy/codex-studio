@@ -10,6 +10,7 @@ from studio_api.models import MAX_SAFE_INTEGER
 from codex_shared_values import (
     MAX_PROJECT_SECRET_VALUE_BYTES,
     MAX_PROGRESS_FILE_BYTES,
+    PROJECT_SECRETS_GUEST_TIMEOUT_SECONDS,
     MODEL_CATALOG_CACHE_TTL_SECONDS,
     MODEL_CATALOG_ITEMS_PER_PAGE,
     MODEL_CATALOG_MAX_FRAME_BYTES,
@@ -47,6 +48,12 @@ OUTPUTS = {
         f"{MAX_USER_ATTACHMENT_BYTES};\n"
         "pub const USER_ATTACHMENT_LIMIT_LABEL: &str = "
         f'"{user_attachment_limit_label()}";\n'
+        "pub const MAX_PROJECT_SECRET_VALUE_BYTES: usize = "
+        f"{MAX_PROJECT_SECRET_VALUE_BYTES};\n"
+        "pub const PROJECT_SECRET_VALUE_LIMIT_LABEL: &str = "
+        f'"{project_secret_value_limit_label()}";\n'
+        "pub const PROJECT_SECRETS_GUEST_TIMEOUT_SECONDS: u64 = "
+        f"{PROJECT_SECRETS_GUEST_TIMEOUT_SECONDS};\n"
         "pub const MAX_PROGRESS_FILE_BYTES: usize = "
         f"{MAX_PROGRESS_FILE_BYTES};\n"
         "pub const PROGRESS_FILE_LIMIT_LABEL: &str = "

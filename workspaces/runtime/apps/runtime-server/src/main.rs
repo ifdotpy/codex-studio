@@ -225,6 +225,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if let Some(boundary) = multi_server_boundary {
         state = state.with_multi_server_boundary(Arc::new(boundary));
     }
+    #[cfg(unix)]
+    {
+        let guest = studio_runtime_services::linux_vm_guest::UnixGuestRpc::for_runtime_state(
+            &PathBuf::from(&state_dir),
+        );
+        state = state.with_project_secrets_guest_rpc(Arc::new(guest));
+    }
     account_driver.recover_codex_logins()?;
     state = state.with_native_runtime(Arc::clone(&native_runtime));
     state.account_session = Some(Arc::clone(&account_session));

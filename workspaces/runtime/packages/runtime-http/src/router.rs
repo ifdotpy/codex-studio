@@ -33,6 +33,9 @@ pub struct HttpState {
     pub(crate) browser_forwarder: Option<Arc<studio_runtime_services::browser::BrowserForwarder>>,
     pub(crate) orchestration_driver:
         Option<Arc<studio_runtime_services::multi_server_orchestration::OrchestrationDriver>>,
+    pub(crate) project_secrets_guest:
+        Option<Arc<dyn studio_runtime_services::project_secrets::GuestRpc>>,
+    pub(crate) vault_host_command: Option<studio_runtime_services::vault::VaultHostCommand>,
     pub account_session:
         Option<Arc<dyn studio_runtime_services::account_session_runtime::AccountSessionPort>>,
     pub claude_login: Option<Arc<studio_runtime_services::claude_login::service::LoginService>>,
@@ -137,6 +140,8 @@ impl HttpState {
             callback_runtime: None,
             browser_forwarder,
             orchestration_driver,
+            project_secrets_guest: None,
+            vault_host_command: None,
             account_session: None,
             account_driver: None,
             provider_versions: None,
@@ -182,6 +187,28 @@ impl HttpState {
         boundary: Arc<studio_runtime_services::multi_server_pairing::MultiServerBoundary>,
     ) -> Self {
         self.multi_server_boundary = Some(boundary);
+        self
+    }
+
+    /// Attach the Linux VM guest client used by project-secrets routes.
+    pub fn with_project_secrets_guest_rpc(
+        mut self,
+        guest: Arc<dyn studio_runtime_services::project_secrets::GuestRpc>,
+    ) -> Self {
+        self.project_secrets_guest = Some(guest);
+        self
+    }
+
+    /// Attach HostRuntime's resolved Python writer and server source for vault setup.
+    pub fn with_vault_host_command(
+        mut self,
+        python: std::path::PathBuf,
+        server_source: std::path::PathBuf,
+    ) -> Self {
+        self.vault_host_command = Some(studio_runtime_services::vault::VaultHostCommand::new(
+            python,
+            server_source,
+        ));
         self
     }
 

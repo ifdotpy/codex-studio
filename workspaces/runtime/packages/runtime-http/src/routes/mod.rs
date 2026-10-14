@@ -13,6 +13,7 @@ mod context_repair;
 mod desktop;
 pub(crate) mod extractors;
 mod federation;
+mod host_secrets;
 mod imports;
 pub(crate) mod incoming_multi_server;
 mod insights;
