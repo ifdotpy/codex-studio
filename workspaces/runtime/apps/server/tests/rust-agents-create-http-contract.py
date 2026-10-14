@@ -285,6 +285,7 @@ class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         self.assertEqual(events, 0)
         self.assertIsNotNone(projection)
         self.assertEqual(normalized_agent(json.loads(projection[0])["value"]), normalized_agent(reference["projection"]))
+
         replay = self.backend.request(
             "POST", "/api/leads", body=request, headers=self.headers()
         )
@@ -325,6 +326,21 @@ class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             )
         finally:
             after.close()
+
+    def test_creation_with_needs_title_succeeds_without_title_port(self):
+        request = {
+            "id": str(uuid.uuid4()),
+            "cwd": str(self.backend.cwd),
+            "workspaceMode": "worktree",
+        }
+        response = self.backend.request(
+            "POST", "/api/leads", body=request, headers=self.headers()
+        )
+        self.assertEqual(response.status, 200, response.body[:1000])
+        self.assertEqual(response.json()["id"], request["id"])
+        record = self.stored(request["id"])
+        self.assertTrue(record["needsTitle"])
+        self.assertEqual(record["name"], "New chat")
 
     def test_persisted_configure_and_exclusions_update_python_written_agent(self):
         configure = self.backend.request(
