@@ -158,10 +158,11 @@ impl TranscriptRepository {
                 .as_ref()
                 .ok_or_else(|| invalid_record("runtime_agents", agent))?;
             let records = Self::items_for_agent(transaction, agent)?;
+            let truncated = records.len() > TRANSCRIPT_PAGE_SIZE;
             let mut items: Vec<Value> = records
-                .iter()
+                .into_iter()
                 .take(TRANSCRIPT_PAGE_SIZE)
-                .map(|item| item.record.clone())
+                .map(|item| item.record)
                 .collect();
             items.reverse();
             enrich_persisted_items(transaction, agent, actor, &mut items)?;
@@ -190,7 +191,7 @@ impl TranscriptRepository {
                 .unwrap_or_else(|| "None".to_owned());
             json!({
                 "items": items,
-                "truncated": records.len() > TRANSCRIPT_PAGE_SIZE,
+                "truncated": truncated,
                 "nextCursor": null,
                 "nextAfterCursor": null,
                 "historyVersion": format!("{thread}:{restored}"),
