@@ -8,14 +8,15 @@
 //! while Python `str.strip()` does. Names and prompts ending or beginning with
 //! those characters keep them in Rust.
 
-use crate::agents_create::{
-    CreateError, DEFAULT_CONCURRENCY, DEFAULT_MAX_AGENTS, build_agent_record,
-};
+use crate::agents_create::{CreateError, build_agent_record};
 use serde_json::{Value, json};
 use std::ffi::OsStr;
 use std::path::Path;
 use std::time::Duration;
 use studio_runtime_schema;
+use studio_runtime_schema::agent_limits_generated::{
+    DEFAULT_MAX_TEAM_AGENTS, DEFAULT_SUBAGENT_CONCURRENCY,
+};
 use studio_runtime_store::{AgentId, AgentRecord, AgentStatus, ProjectsRepository, Transaction};
 
 const MAX_ACCOUNT_KEY_CHARS: usize = 255;
@@ -137,8 +138,8 @@ pub fn prepare(
             true,
             "idle",
             "worktree",
-            Some(DEFAULT_CONCURRENCY),
-            DEFAULT_MAX_AGENTS,
+            Some(DEFAULT_SUBAGENT_CONCURRENCY),
+            DEFAULT_MAX_TEAM_AGENTS,
             Value::Null,
             true,
             created,
@@ -218,7 +219,7 @@ pub fn prepare_work_item(
         "queued",
         "worktree",
         None,
-        DEFAULT_MAX_AGENTS,
+        DEFAULT_MAX_TEAM_AGENTS,
         Value::Null,
         false,
         created,
@@ -396,7 +397,7 @@ fn recheck_parent_epoch(
     }
     let max_agents = field(&root, "maxAgents")
         .and_then(Value::as_i64)
-        .unwrap_or(DEFAULT_MAX_AGENTS);
+        .unwrap_or(DEFAULT_MAX_TEAM_AGENTS);
     let mut statement = transaction
         .prepare("SELECT id,record FROM runtime_agents")
         .map_err(studio_runtime_store::StoreError::from)?;
@@ -654,15 +655,15 @@ mod tests {
             true,
             "idle",
             "worktree",
-            Some(DEFAULT_CONCURRENCY),
-            DEFAULT_MAX_AGENTS,
+            Some(DEFAULT_SUBAGENT_CONCURRENCY),
+            DEFAULT_MAX_TEAM_AGENTS,
             Value::Null,
             true,
             1.0,
             None,
         );
         parent["autoWake"] = json!(true);
-        parent["maxAgents"] = json!(DEFAULT_MAX_AGENTS);
+        parent["maxAgents"] = json!(DEFAULT_MAX_TEAM_AGENTS);
         database
             .execute(
                 "INSERT INTO runtime_agents(id,record) VALUES(?1,?2)",
