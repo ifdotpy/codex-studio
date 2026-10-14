@@ -43,6 +43,14 @@ pub struct Operation {
 pub enum MonitorError {
     #[error("Invalid stored object monitors/{id} at {location}")]
     InvalidStored { id: String, location: String },
+    #[error("Invalid persisted monitor result receipt: {0}")]
+    InvalidResultReceipt(&'static str),
+    #[error("Invalid monitor delivery identity: {0}")]
+    InvalidDeliveryIdentity(&'static str),
+    #[error("Invalid monitor output receipt: {0}")]
+    InvalidOutputReceipt(&'static str),
+    #[error("Monitor runtime tick task failed")]
+    TaskFailed,
     #[error("{0}")]
     Refused(&'static str),
     #[error("Not implemented: requires {0}")]
@@ -51,8 +59,77 @@ pub enum MonitorError {
     Store(#[from] studio_runtime_store::StoreError),
     #[error(transparent)]
     Event(#[from] crate::event_write::EventWriteError),
+    #[error(transparent)]
+    Rules(#[from] crate::rules_tick::RulesTickError),
     #[error("monitor file operation failed")]
     Io(#[from] std::io::Error),
+}
+
+impl MonitorError {
+    /// Only a failed durable store boundary may stop the retained runtime task.
+    pub fn store_failure_for_task(&self) -> bool {
+        matches!(
+            self,
+            Self::Store(_)
+                | Self::Event(crate::event_write::EventWriteError::Store(_))
+                | Self::Rules(crate::rules_tick::RulesTickError::Store(_))
+                | Self::Rules(crate::rules_tick::RulesTickError::Event(
+                    crate::event_write::EventWriteError::Store(_)
+                ))
+        )
+    }
+
+    pub fn is_bad_delivery(&self) -> bool {
+        matches!(
+            self,
+            Self::InvalidDeliveryIdentity(_) | Self::InvalidOutputReceipt(_)
+        )
+    }
+
+    /// Invalid persisted state and incompatible contracts cannot be repaired by
+    /// replaying a timer batch. Other failures retain their durable identities.
+    pub fn fatal_for_tick(&self) -> bool {
+        match self {
+            Self::InvalidStored { .. } => true,
+            Self::InvalidResultReceipt(_) => true,
+            Self::InvalidDeliveryIdentity(_) => true,
+            Self::InvalidOutputReceipt(_) => true,
+            Self::TaskFailed => true,
+            Self::Store(error) => fatal_store_error(error),
+            Self::Event(crate::event_write::EventWriteError::InvalidStoredObject { .. }) => true,
+            Self::Event(crate::event_write::EventWriteError::Store(error)) => {
+                fatal_store_error(error)
+            }
+            Self::Rules(crate::rules_tick::RulesTickError::Rule(
+                crate::rules_engine::RuleError::Invalid { .. }
+                | crate::rules_engine::RuleError::Schema,
+            )) => true,
+            Self::Rules(crate::rules_tick::RulesTickError::Store(error)) => {
+                fatal_store_error(error)
+            }
+            Self::Rules(crate::rules_tick::RulesTickError::Event(
+                crate::event_write::EventWriteError::InvalidStoredObject { .. },
+            )) => true,
+            Self::Rules(crate::rules_tick::RulesTickError::Event(
+                crate::event_write::EventWriteError::Store(error),
+            )) => fatal_store_error(error),
+            _ => false,
+        }
+    }
+}
+
+fn fatal_store_error(error: &studio_runtime_store::StoreError) -> bool {
+    matches!(
+        error,
+        studio_runtime_store::StoreError::SchemaMismatch(_)
+            | studio_runtime_store::StoreError::InvalidSyncObject { .. }
+            | studio_runtime_store::StoreError::InvalidStoredRecord { .. }
+            | studio_runtime_store::StoreError::SchemaObjectMismatch { .. }
+            | studio_runtime_store::StoreError::InvalidStoredObject { .. }
+            | studio_runtime_store::StoreError::SchemaValidation(_)
+            | studio_runtime_store::StoreError::RecordContract(_)
+            | studio_runtime_store::StoreError::Json(_)
+    )
 }
 
 #[derive(Clone, Deserialize)]
@@ -358,6 +435,9 @@ pub fn finish(
         decision.record["error"] = json!(error);
         decision.record["finished"] = json!(now);
         decision.record["configurationPending"] = json!(false);
+        if snapshot.fields.cancel_requested && snapshot.record().get("cancelDispatch").is_some() {
+            decision.record["cancelDispatch"] = json!({"status":"done","updatedAt":now});
+        }
     }
     decision.effects.push(
         if snapshot
@@ -495,6 +575,16 @@ pub fn begin_input(
     if f.input_attempt.is_some() {
         return Err(MonitorError::Refused(
             "The previous monitor input outcome is unknown; do not repeat it",
+        ));
+    }
+    if snapshot
+        .record
+        .pointer("/lastInputAttempt/id")
+        .and_then(Value::as_str)
+        == Some(attempt_id)
+    {
+        return Err(MonitorError::Refused(
+            "Monitor input ticket already settled",
         ));
     }
     let resize = input.rows.is_some() || input.cols.is_some();
