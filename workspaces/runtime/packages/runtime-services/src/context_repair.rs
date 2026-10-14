@@ -799,28 +799,44 @@ fn require_schema(tx: &Transaction<'_>, tables: &[&str]) -> Result<(), RepairErr
 
 /// Partial explicit repair operation: real no-op paths return their saved receipt.
 pub fn repair_idle(store: &RuntimeStore, id: &str) -> Result<Value, RepairError> {
-    let mut connection = store.read()?;
-    let db = connection.transaction().map_err(StoreError::from)?;
-    let agent = ContextRepairRepository::agent(&db, id)?.ok_or(RepairError::MissingAgent)?;
-    assert_available(&agent)?;
-    if agent["provider"] == "claude" || agent["threadId"].is_null() || agent["threadId"] == "" {
-        return Ok(
-            json!({"id": id, "repair": agent.get("contextRepair").cloned().unwrap_or(Value::Null)}),
-        );
-    }
-    require_schema(&db, &["runtime_event_meta"])?;
-    if !ContextRepairRepository::has_candidates(
-        &db,
-        id,
-        agent["epoch"]
-            .as_i64()
-            .ok_or(RepairError::Invalid("agent.epoch"))?,
-    )? {
-        return Ok(
-            json!({"id": id, "repair": agent.get("contextRepair").cloned().unwrap_or(Value::Null)}),
-        );
-    }
-    Err(RepairError::RewriteUnavailable)
+    store.transaction_with(|db| {
+        let mut agent = ContextRepairRepository::agent(db, id)?.ok_or(RepairError::MissingAgent)?;
+        assert_available(&agent)?;
+        if agent["environment"] == "linux"
+            && studio_runtime_store::truthy(agent.get("imageWorkspaceReady"))
+        {
+            const NOTE: &str = "Automatic context repair is skipped for Linux workers. The rollout stays in the guest. The next turn can proceed.";
+            if agent.get("contextRepairNote").and_then(Value::as_str) != Some(NOTE) {
+                agent["contextRepairNote"] = json!(NOTE);
+                ContextRepairRepository::put_agent(db, &agent)?;
+            }
+            return Ok(json!({
+                "id": id,
+                "repair": agent.get("contextRepair").cloned().unwrap_or(Value::Null)
+            }));
+        }
+        if agent["provider"] == "claude"
+            || agent["threadId"].is_null()
+            || agent["threadId"] == ""
+        {
+            return Ok(
+                json!({"id": id, "repair": agent.get("contextRepair").cloned().unwrap_or(Value::Null)}),
+            );
+        }
+        require_schema(db, &["runtime_event_meta"])?;
+        if !ContextRepairRepository::has_candidates(
+            db,
+            id,
+            agent["epoch"]
+                .as_i64()
+                .ok_or(RepairError::Invalid("agent.epoch"))?,
+        )? {
+            return Ok(
+                json!({"id": id, "repair": agent.get("contextRepair").cloned().unwrap_or(Value::Null)}),
+            );
+        }
+        Err(RepairError::RewriteUnavailable)
+    })
 }
 
 /// The existing efficiency compiler supplies summaries. No user text is passed
