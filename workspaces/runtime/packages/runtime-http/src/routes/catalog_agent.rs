@@ -446,7 +446,7 @@ inventory::submit! {
         dependencies: &[
             "provider-service/claude-discovery",
             "thread-preparation/tool-catalog",
-            "native-command/request-identity",
+            "turn-path/native-command-input",
             "vm-agents/finder-view",
         ],
     }
