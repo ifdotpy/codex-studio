@@ -306,6 +306,7 @@ fn request_interrupt(
             agent: request.agent.clone(),
             epoch: request.epoch,
         }),
+        deleted_actor_session: None,
         expected_scope: Some(expected.clone()),
         method: studio_runtime_providers::Method::TurnInterrupt,
         params: json!({"threadId":request.thread,"turnId":request.turn}),
