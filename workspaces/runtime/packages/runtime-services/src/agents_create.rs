@@ -294,7 +294,6 @@ fn save_agent(
 pub(crate) fn ensure_project(
     transaction: &Transaction<'_>,
     agent: &Value,
-    server_id: Option<&str>,
 ) -> Result<(), MutationError> {
     let path = agent
         .get("cwd")
@@ -307,7 +306,9 @@ pub(crate) fn ensure_project(
         .get("accountKey")
         .and_then(Value::as_str)
         .unwrap_or("default");
-    let server = server_id
+    let local_server_id = RuntimeStore::transaction_local_server_id(transaction)?;
+    let server = local_server_id
+        .as_deref()
         .or_else(|| agent.get("serverId").and_then(Value::as_str))
         .filter(|server| !server.is_empty())
         .ok_or_else(|| StoreError::SchemaMismatch("new lead has no server identity".to_owned()))?;
@@ -420,7 +421,7 @@ fn create_agent_with_identity(
         });
     }
     if record.get("isLead").and_then(Value::as_bool) == Some(true) {
-        ensure_project(transaction, &record, server_id)?;
+        ensure_project(transaction, &record)?;
     }
     AgentRepository::put(transaction, &agent)?;
     let id = record
@@ -870,7 +871,7 @@ mod tests {
             "serverId":"persisted-server"
         });
 
-        ensure_project(&transaction, &agent, None)
+        ensure_project(&transaction, &agent)
             .expect("persisted agent identity supplies project location");
 
         let payload: String = transaction

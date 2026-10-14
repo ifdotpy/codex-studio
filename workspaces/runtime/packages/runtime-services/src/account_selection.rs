@@ -156,11 +156,6 @@ pub fn select(
     // Filesystem work precedes the writer lock; the transaction rechecks that it
     // still acts on this exact directory before using the result.
     let directory_exists = std::path::Path::new(&checked_directory).is_dir();
-    let state_dir = store.root().to_str().ok_or(TransferError::Refused(
-        "Cannot register the selected project",
-    ))?;
-    let server_id = crate::sync_entity_context::local_server_id(state_dir)
-        .map_err(|_| TransferError::Refused("Cannot register the selected project"))?;
     store.transaction_with_error(|tx| {
         // This port reads the in-memory registry only; no auth refresh or provider I/O.
         let accounts = accounts()?;
@@ -191,7 +186,7 @@ pub fn select(
                     "Select an existing project directory",
                 ));
             }
-            crate::agents_create::ensure_project(tx, &value, server_id.as_deref())
+            crate::agents_create::ensure_project(tx, &value)
                 .map_err(|_| TransferError::Refused("Cannot register the selected project"))?;
             AgentRepository::put(
                 tx,
