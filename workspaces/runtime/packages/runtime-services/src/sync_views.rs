@@ -1,8 +1,8 @@
 //! Canonical renderer entity views built from records and explicit context.
 
 use serde_json::{Map, Value, json};
-use std::collections::BTreeMap;
-use std::sync::OnceLock;
+use std::collections::{BTreeMap, HashMap};
+use std::sync::{Arc, OnceLock};
 
 use crate::event_write::truthy;
 
@@ -39,10 +39,10 @@ fn schema_definition<'a>(schema: &'a Value, document: &'a Value) -> &'a Value {
         .unwrap_or(schema)
 }
 
-fn collect_schema_properties(
-    schema: &Value,
-    document: &Value,
-    properties: &mut BTreeMap<String, Value>,
+fn collect_schema_properties<'a>(
+    schema: &'a Value,
+    document: &'a Value,
+    properties: &mut BTreeMap<&'a str, &'a Value>,
     depth: usize,
 ) {
     if depth > 32 {
@@ -50,11 +50,7 @@ fn collect_schema_properties(
     }
     let schema = schema_definition(schema, document);
     if let Some(fields) = schema.get("properties").and_then(Value::as_object) {
-        properties.extend(
-            fields
-                .iter()
-                .map(|(name, value)| (name.clone(), value.clone())),
-        );
+        properties.extend(fields.iter().map(|(name, value)| (name.as_str(), value)));
     }
     for keyword in ["allOf", "anyOf", "oneOf"] {
         if let Some(variants) = schema.get(keyword).and_then(Value::as_array) {
@@ -63,6 +59,46 @@ fn collect_schema_properties(
             }
         }
     }
+}
+
+type SchemaProjectionProperties = HashMap<usize, BTreeMap<&'static str, &'static Value>>;
+
+fn schema_projection_properties() -> &'static SchemaProjectionProperties {
+    static PROPERTIES: OnceLock<SchemaProjectionProperties> = OnceLock::new();
+    PROPERTIES.get_or_init(|| {
+        fn visit(
+            schema: &'static Value,
+            document: &'static Value,
+            properties: &mut SchemaProjectionProperties,
+        ) {
+            if schema.is_object() {
+                let is_schema = ["$ref", "properties", "allOf", "anyOf", "oneOf", "items"]
+                    .iter()
+                    .any(|key| schema.get(*key).is_some());
+                if is_schema {
+                    let mut fields = BTreeMap::new();
+                    collect_schema_properties(schema, document, &mut fields, 0);
+                    properties.insert(schema as *const Value as usize, fields);
+                }
+                if let Some(object) = schema.as_object() {
+                    for child in object.values() {
+                        visit(child, document, properties);
+                    }
+                }
+            } else if let Some(items) = schema.as_array() {
+                for child in items {
+                    visit(child, document, properties);
+                }
+            }
+        }
+
+        let document = openapi_document();
+        let mut properties = HashMap::new();
+        if let Some(schemas) = document.pointer("/components/schemas") {
+            visit(schemas, document, &mut properties);
+        }
+        properties
+    })
 }
 
 fn bound_sync_value(value: &Value, field: &str, agent_short_strings: bool) -> Value {
@@ -99,9 +135,8 @@ fn project_schema_value(
     let schema = schema_definition(schema, document);
     match value {
         Value::Object(source) => {
-            let mut properties = BTreeMap::new();
-            collect_schema_properties(schema, document, &mut properties, 0);
-            if properties.is_empty() {
+            let properties = schema_projection_properties().get(&(schema as *const Value as usize));
+            if properties.is_none_or(BTreeMap::is_empty) {
                 if schema.get("additionalProperties") == Some(&Value::Bool(false)) {
                     return Value::Object(Map::new());
                 }
@@ -129,23 +164,25 @@ fn project_schema_value(
                 source
                     .iter()
                     .filter_map(|(name, child)| {
-                        properties.get(name).map(|field_schema| {
-                            (name.clone(), {
-                                let short_strings = agent_short_strings
-                                    || (agent_record
-                                        && depth == 0
-                                        && AGENT_SHORT_STRING_OBJECTS.contains(&name.as_str()));
-                                project_schema_value(
-                                    child,
-                                    field_schema,
-                                    name,
-                                    document,
-                                    depth + 1,
-                                    agent_record,
-                                    short_strings,
-                                )
+                        properties
+                            .and_then(|properties| properties.get(name.as_str()))
+                            .map(|field_schema| {
+                                (name.clone(), {
+                                    let short_strings = agent_short_strings
+                                        || (agent_record
+                                            && depth == 0
+                                            && AGENT_SHORT_STRING_OBJECTS.contains(&name.as_str()));
+                                    project_schema_value(
+                                        child,
+                                        field_schema,
+                                        name,
+                                        document,
+                                        depth + 1,
+                                        agent_record,
+                                        short_strings,
+                                    )
+                                })
                             })
-                        })
                     })
                     .collect(),
             )
@@ -316,22 +353,46 @@ pub fn native_thread_block(record: &Value) -> Option<Value> {
 
 #[derive(Clone, Debug, Default)]
 pub struct RoomViewContext {
-    pub agents: Vec<Value>,
-    pub peer_teams: Vec<Value>,
+    pub agents: Arc<Vec<Value>>,
+    pub peer_teams: Arc<Vec<Value>>,
+    pub active_agent_indices: Arc<HashMap<String, usize>>,
     pub last_message: Option<Value>,
     pub federation: Option<Value>,
+}
+
+impl RoomViewContext {
+    pub(crate) fn new(agents: Vec<Value>, peer_teams: Vec<Value>) -> Self {
+        let active_agent_indices = agents
+            .iter()
+            .enumerate()
+            .filter(|(_, agent)| !truthy(agent.get("deletedAt")))
+            .filter_map(|(index, agent)| {
+                agent
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .map(|id| (id.to_owned(), index))
+            })
+            .collect();
+        Self {
+            agents: Arc::new(agents),
+            peer_teams: Arc::new(peer_teams),
+            active_agent_indices: Arc::new(active_agent_indices),
+            last_message: None,
+            federation: None,
+        }
+    }
+}
+
+fn active_agent<'a>(context: &'a RoomViewContext, id: &str) -> Option<&'a Value> {
+    context
+        .active_agent_indices
+        .get(id)
+        .and_then(|index| context.agents.get(*index))
 }
 
 /// Build the viewer-independent renderer view for one persisted room.
 pub fn room_entity_view(record: &Value, context: &RoomViewContext) -> Option<Value> {
     let kind = record.get("kind").and_then(Value::as_str)?;
-    let active = context
-        .agents
-        .iter()
-        .filter(|agent| !truthy(agent.get("deletedAt")));
-    let agents = active
-        .filter_map(|agent| Some((agent.get("id")?.as_str()?.to_owned(), agent)))
-        .collect::<BTreeMap<_, _>>();
     let mut view = record.as_object()?.clone();
     let members: Vec<String>;
     if kind == "federated" {
@@ -346,7 +407,11 @@ pub fn room_entity_view(record: &Value, context: &RoomViewContext) -> Option<Val
         let mut selected = local.iter().filter_map(Value::as_str).collect::<Vec<_>>();
         selected.sort_unstable();
         selected.dedup();
-        if selected.is_empty() || selected.iter().any(|id| !agents.contains_key(*id)) {
+        if selected.is_empty()
+            || selected
+                .iter()
+                .any(|id| active_agent(context, id).is_none())
+        {
             return None;
         }
         members = selected.into_iter().map(str::to_owned).collect();
@@ -375,13 +440,16 @@ pub fn room_entity_view(record: &Value, context: &RoomViewContext) -> Option<Val
             })
             .filter_map(|agent| agent.get("id").and_then(Value::as_str).map(str::to_owned))
             .collect();
-        if root != "all" && !agents.contains_key(root) {
+        if root != "all" && active_agent(context, root).is_none() {
             return None;
         }
         let name = if root == "all" {
             "All agents".to_owned()
         } else {
-            format!("{} · Broadcast", agents.get(root)?.get("name")?.as_str()?)
+            format!(
+                "{} · Broadcast",
+                active_agent(context, root)?.get("name")?.as_str()?
+            )
         };
         view.insert(
             "name".to_owned(),
@@ -400,12 +468,12 @@ pub fn room_entity_view(record: &Value, context: &RoomViewContext) -> Option<Val
             .into_iter()
             .map(str::to_owned)
             .collect();
-        if members.is_empty() || members.iter().any(|id| !agents.contains_key(id)) {
+        if members.is_empty() || members.iter().any(|id| active_agent(context, id).is_none()) {
             return None;
         }
         let name = members
             .iter()
-            .filter_map(|id| agents.get(id))
+            .filter_map(|id| active_agent(context, id))
             .filter_map(|agent| agent.get("name").and_then(Value::as_str))
             .collect::<Vec<_>>()
             .join(" ↔ ");
@@ -554,4 +622,30 @@ pub fn project_entity_view(
         }
     }
     project_persisted_record("project", &Value::Object(view))
+}
+
+#[cfg(test)]
+mod projection_plan_tests {
+    use super::{openapi_document, schema_projection_properties};
+
+    #[test]
+    fn schema_projection_plan_reuses_openapi_property_nodes() {
+        let document = openapi_document();
+        let schema = document
+            .pointer("/components/schemas/AgentEntityDto")
+            .expect("agent entity schema");
+        let property = schema
+            .pointer("/properties/id")
+            .expect("agent id property schema");
+        let plan = schema_projection_properties();
+        let properties = plan
+            .get(&(schema as *const _ as usize))
+            .expect("prepared agent property projection");
+
+        assert!(std::ptr::eq(
+            *properties.get("id").expect("id field"),
+            property
+        ));
+        assert!(std::ptr::eq(plan, schema_projection_properties()));
+    }
 }

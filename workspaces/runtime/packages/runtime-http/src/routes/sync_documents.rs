@@ -14,7 +14,7 @@ use studio_runtime_services::sync_documents::{self, DraftWrite};
 use studio_runtime_services::sync_policy::{self, PreferenceScope, SyncPolicyError};
 use studio_runtime_services::transcript;
 use studio_runtime_store::Transaction;
-use studio_runtime_store::{StoreError, SyncDocumentsRepository};
+use studio_runtime_store::{RuntimeStore, StoreError, SyncDocumentsRepository};
 
 use crate::error::ApiError;
 use crate::router::HttpState;
@@ -147,23 +147,37 @@ pub(crate) async fn pull(
             }
             return Ok(response);
         }
-        let project_server_id = store.local_server_id().map_err(map_sync_store_error)?;
-        let reader = store.read().map_err(map_sync_store_error)?;
-        let rooms = studio_runtime_services::sync_entity_context::RoomDirectory::prepare(&reader)
-            .map_err(map_sync_store_error)?;
-        let projects = studio_runtime_store::ProjectsRepository::list(&reader)
-            .map_err(map_sync_store_error)?;
-        let vault_snapshot = sync_policy::ProjectVaultSnapshot::capture(
-            std::path::Path::new(&state_dir),
-            &projects,
-        );
-        match store.read_transaction(|transaction| {
+        let generation_before_vault_read = store.committed_change_generation();
+        let (_, vault_snapshot) = capture_project_vault_snapshot(&store, &state_dir)?;
+        let vault_signature = vault_snapshot.signature();
+        drop(vault_snapshot);
+        let observed_generation = store.committed_change_generation();
+        if generation_before_vault_read != observed_generation
+            || store
+                .entity_projections_need_maintenance(&vault_signature)
+                .map_err(map_sync_store_error)?
+        {
+            return pull_with_maintenance(
+                &store,
+                &state_dir,
+                &validators,
+                after,
+                limit,
+                fresh,
+                initial_high,
+                reset_support,
+                priority_id.as_deref(),
+                generation,
+            );
+        }
+        let read_result = store.read_transaction(|transaction| {
             pull_entities(
                 transaction,
                 &state_dir,
-                project_server_id.as_deref(),
-                &vault_snapshot,
-                &rooms,
+                false,
+                None,
+                None,
+                None,
                 after,
                 limit,
                 fresh,
@@ -173,19 +187,41 @@ pub(crate) async fn pull(
                 generation,
                 &validators,
             )
-        }) {
+        });
+        match read_result {
+            Ok(response) if store.committed_change_generation() == observed_generation => {
+                Ok(response)
+            }
+            Ok(_) => pull_with_maintenance(
+                &store,
+                &state_dir,
+                &validators,
+                after,
+                limit,
+                fresh,
+                initial_high,
+                reset_support,
+                priority_id.as_deref(),
+                generation,
+            ),
             Err(StoreError::Sqlite(
                 studio_runtime_store::SqliteError::SqliteFailure(error, _),
             )) if error.code == studio_runtime_store::ErrorCode::ReadOnly =>
             {
-                store
-                    .transaction(|transaction| {
+                let (response, _) = store
+                    .transaction_with_commit_generation(|transaction| {
+                        if store.committed_change_generation() != observed_generation
+                            || store.entity_projections_need_maintenance(&vault_signature)?
+                        {
+                            return Ok(None);
+                        }
                         pull_entities(
                             transaction,
                             &state_dir,
-                            project_server_id.as_deref(),
-                            &vault_snapshot,
-                            &rooms,
+                            false,
+                            None,
+                            None,
+                            None,
                             after,
                             limit,
                             fresh,
@@ -195,10 +231,26 @@ pub(crate) async fn pull(
                             generation,
                             &validators,
                         )
+                        .map(Some)
                     })
-                    .map_err(map_sync_store_error)
+                    .map_err(map_sync_store_error)?;
+                match response {
+                    Some(response) => Ok(response),
+                    None => pull_with_maintenance(
+                        &store,
+                        &state_dir,
+                        &validators,
+                        after,
+                        limit,
+                        fresh,
+                        initial_high,
+                        reset_support,
+                        priority_id.as_deref(),
+                        generation,
+                    ),
+                }
             }
-            result => result.map_err(map_sync_store_error),
+            Err(error) => Err(map_sync_store_error(error)),
         }
     })
     .await
@@ -209,6 +261,117 @@ pub(crate) async fn pull(
         super::generated_json::<crate::generated::SyncPullResponse>(result)?
     };
     Ok(Json(response))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn pull_with_maintenance(
+    store: &RuntimeStore,
+    state_dir: &str,
+    validators: &crate::validation::Registry,
+    after: i64,
+    limit: i64,
+    fresh: bool,
+    initial_high: i64,
+    reset_support: bool,
+    priority_id: Option<&str>,
+    generation: i64,
+) -> Result<Value, ApiError> {
+    let maintenance_lock = store
+        .lock_entity_projection_maintenance()
+        .map_err(map_sync_store_error)?;
+    let generation_before_vault_read = store.committed_change_generation();
+    let (reader, vault_snapshot) = capture_project_vault_snapshot(store, state_dir)?;
+    let vault_signature = vault_snapshot.signature();
+    let observed_generation = store.committed_change_generation();
+    if generation_before_vault_read == observed_generation
+        && !store
+            .entity_projections_need_maintenance(&vault_signature)
+            .map_err(map_sync_store_error)?
+    {
+        let response = store
+            .read_transaction(|transaction| {
+                pull_entities(
+                    transaction,
+                    state_dir,
+                    false,
+                    None,
+                    None,
+                    None,
+                    after,
+                    limit,
+                    fresh,
+                    initial_high,
+                    reset_support,
+                    priority_id,
+                    generation,
+                    validators,
+                )
+            })
+            .map_err(map_sync_store_error)?;
+        drop(maintenance_lock);
+        if store.committed_change_generation() == observed_generation {
+            return Ok(response);
+        }
+        return pull_with_maintenance(
+            store,
+            state_dir,
+            validators,
+            after,
+            limit,
+            fresh,
+            initial_high,
+            reset_support,
+            priority_id,
+            generation,
+        );
+    }
+
+    let project_server_id = store.local_server_id().map_err(map_sync_store_error)?;
+    let rooms = studio_runtime_services::sync_entity_context::RoomDirectory::prepare(&reader)
+        .map_err(map_sync_store_error)?;
+    let (response, committed_generation) = store
+        .transaction_with_commit_generation(|transaction| {
+            pull_entities(
+                transaction,
+                state_dir,
+                true,
+                project_server_id.as_deref(),
+                Some(&vault_snapshot),
+                Some(&rooms),
+                after,
+                limit,
+                fresh,
+                initial_high,
+                reset_support,
+                priority_id,
+                generation,
+                validators,
+            )
+        })
+        .map_err(map_sync_store_error)?;
+    store
+        .mark_entity_projections_maintained(committed_generation, vault_signature)
+        .map_err(map_sync_store_error)?;
+    drop(maintenance_lock);
+    Ok(response)
+}
+
+fn capture_project_vault_snapshot(
+    store: &RuntimeStore,
+    state_dir: &str,
+) -> Result<
+    (
+        studio_runtime_store::Connection,
+        sync_policy::ProjectVaultSnapshot,
+    ),
+    ApiError,
+> {
+    let reader = store.read().map_err(map_sync_store_error)?;
+    let projects =
+        studio_runtime_store::ProjectsRepository::list(&reader).map_err(map_sync_store_error)?;
+    let snapshot =
+        sync_policy::ProjectVaultSnapshot::capture(std::path::Path::new(state_dir), &projects);
+    Ok((reader, snapshot))
 }
 
 #[derive(Debug, Deserialize)]
@@ -329,9 +492,10 @@ pub(crate) async fn push_preferences(
 fn pull_entities(
     transaction: &Transaction<'_>,
     state_dir: &str,
+    maintain_projections: bool,
     project_server_id: Option<&str>,
-    vault_snapshot: &sync_policy::ProjectVaultSnapshot,
-    rooms: &studio_runtime_services::sync_entity_context::RoomDirectory,
+    vault_snapshot: Option<&sync_policy::ProjectVaultSnapshot>,
+    rooms: Option<&studio_runtime_services::sync_entity_context::RoomDirectory>,
     after: i64,
     limit: i64,
     fresh: bool,
@@ -341,40 +505,48 @@ fn pull_entities(
     generation: i64,
     validators: &crate::validation::Registry,
 ) -> Result<Value, StoreError> {
-    if !rooms.matches(transaction)? {
-        return Err(StoreError::RecordContract(
-            "entity projection inputs changed after filesystem preparation",
-        ));
+    if maintain_projections {
+        let vault_snapshot = vault_snapshot.ok_or(StoreError::RecordContract(
+            "entity projection maintenance is missing its vault snapshot",
+        ))?;
+        let rooms = rooms.ok_or(StoreError::RecordContract(
+            "entity projection maintenance is missing its room directory",
+        ))?;
+        if !rooms.matches(transaction)? {
+            return Err(StoreError::RecordContract(
+                "entity projection inputs changed after filesystem preparation",
+            ));
+        }
+        sync_policy::seed_workspace_projection(
+            transaction,
+            state_dir,
+            |collection, id, value, deleted| {
+                validate_entity_envelope(
+                    &json!({"collection":collection,"id":id,"value":value}),
+                    collection,
+                    id,
+                    deleted,
+                    validators,
+                )
+            },
+        )?;
+        sync_policy::maintain_entity_projections_with_server_id(
+            transaction,
+            state_dir,
+            project_server_id,
+            vault_snapshot,
+            rooms,
+            |collection, id, value, deleted| {
+                validate_entity_envelope(
+                    &json!({"collection":collection,"id":id,"value":value}),
+                    collection,
+                    id,
+                    deleted,
+                    validators,
+                )
+            },
+        )?;
     }
-    sync_policy::seed_workspace_projection(
-        transaction,
-        state_dir,
-        |collection, id, value, deleted| {
-            validate_entity_envelope(
-                &json!({"collection":collection,"id":id,"value":value}),
-                collection,
-                id,
-                deleted,
-                validators,
-            )
-        },
-    )?;
-    sync_policy::maintain_entity_projections_with_server_id(
-        transaction,
-        state_dir,
-        project_server_id,
-        vault_snapshot,
-        rooms,
-        |collection, id, value, deleted| {
-            validate_entity_envelope(
-                &json!({"collection":collection,"id":id,"value":value}),
-                collection,
-                id,
-                deleted,
-                validators,
-            )
-        },
-    )?;
     let page = SyncDocumentsRepository::pull_entities(
         transaction,
         after,
@@ -527,6 +699,131 @@ fn query_integer(query: &QueryParams, name: &str, default: i64) -> Result<i64, A
         }),
     }
 }
+
+#[cfg(test)]
+mod vault_maintenance_tests {
+    use super::pull_with_maintenance;
+    use serde_json::{Value, json};
+    use studio_runtime_store::{ProjectsRepository, RuntimeStore, SyncDocumentsRepository};
+
+    #[test]
+    fn entity_pull_reprojects_when_cached_vault_changes_without_a_store_write() {
+        let directory = tempfile::tempdir().expect("isolated state directory");
+        let store = RuntimeStore::open(Some(directory.path())).expect("runtime store opens");
+        let source = "/workspace/Project One";
+        let project_id = studio_runtime_store::sha256_hex(source.as_bytes());
+        let project = json!({
+            "id": source,
+            "path": source,
+            "projectAliases": [{
+                "serverId": "fixture-server",
+                "projectId": source,
+                "name": "Project One",
+            }],
+        });
+        let project_folder = store
+            .root()
+            .join("linux-vm/layr-projects")
+            .join(&project_id);
+        std::fs::create_dir_all(&project_folder).expect("vault folder is created");
+        std::fs::write(
+            project_folder.join("vault.json"),
+            br#"{"configured":true,"prefix":"project"}"#,
+        )
+        .expect("vault record is written");
+        std::fs::write(
+            project_folder.join("vault-site.json"),
+            br#"{"site":"https://before.example/"}"#,
+        )
+        .expect("site record is written");
+
+        store
+            .transaction(|transaction| {
+                ProjectsRepository::put_project(transaction, &project)?;
+                let mut ready_project = project.clone();
+                ready_project["layrReadiness"] = json!({"state":"ready","projectId":project_id});
+                ready_project["layrSync"] = json!({
+                    "projectId":project_id,
+                    "state":"synced",
+                    "enabled":true,
+                    "conflicts":[],
+                    "choices":[],
+                    "withAgent":[],
+                    "deletes":0,
+                });
+                SyncDocumentsRepository::put_entity(
+                    transaction,
+                    "project",
+                    source,
+                    ready_project,
+                    false,
+                )?;
+                Ok(())
+            })
+            .expect("project source and ready entity are stored");
+        let validators = crate::validation::Registry::compile(&[(
+            "GET".to_owned(),
+            "/api/sync/pull".to_owned(),
+        )])
+        .expect("sync pull validators compile");
+        let state_dir = store.root().to_string_lossy().into_owned();
+        let pull = || {
+            pull_with_maintenance(
+                &store,
+                &state_dir,
+                &validators,
+                0,
+                100,
+                false,
+                0,
+                false,
+                None,
+                0,
+            )
+            .expect("entity pull succeeds")
+        };
+        let first_pull = pull();
+        assert!(first_pull["documents"].is_array());
+        let first_payload: String = store
+            .read()
+            .expect("read store")
+            .query_row(
+                "SELECT payload FROM sync_entities WHERE collection='project' AND id=?1 AND deleted=0",
+                [source],
+                |row| row.get(0),
+            )
+            .expect("project projection exists");
+        let first_payload: Value = serde_json::from_str(&first_payload).expect("JSON payload");
+        assert_eq!(
+            first_payload["value"]["vault"]["site"],
+            "https://before.example/"
+        );
+
+        std::fs::write(
+            project_folder.join("vault-site.json"),
+            br#"{"site":"https://after.example/"}"#,
+        )
+        .expect("cached vault changes without a SQLite write");
+        let second_pull = pull();
+        assert!(second_pull["documents"].is_array());
+        let second_payload: String = store
+            .read()
+            .expect("read store")
+            .query_row(
+                "SELECT payload FROM sync_entities WHERE collection='project' AND id=?1 AND deleted=0",
+                [source],
+                |row| row.get(0),
+            )
+            .expect("updated project projection exists");
+        let second_payload: Value = serde_json::from_str(&second_payload).expect("JSON payload");
+        assert_eq!(
+            second_payload["value"]["vault"]["site"],
+            "https://after.example/"
+        );
+        assert_ne!(first_payload, second_payload);
+    }
+}
+
 inventory::submit! {
     crate::routes::manifest::RouteModuleRegistration {
         name: "sync_documents",
