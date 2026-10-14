@@ -186,12 +186,16 @@ impl RuntimeStore {
             Some(path) => path::resolve_explicit_state_dir(path)?,
             None => resolve_state_dir()?,
         };
+        fresh_state::validate(&root)?;
+        let canvas_path = root.join("canvas.sqlite3");
+        let analytics_path = root.join("analytics.sqlite3");
+        if canvas_path.is_file() && analytics_path.is_file() {
+            schema::verify_core(&canvas_path, &analytics_path)?;
+        }
         let runtime_lock = RuntimeLock::acquire(&root)?;
         fresh_state::prepare(&root)?;
         let local_server_id = local_server_id(&root)?;
 
-        let canvas_path = root.join("canvas.sqlite3");
-        let analytics_path = root.join("analytics.sqlite3");
         for database in [&canvas_path, &analytics_path] {
             if !database.is_file() {
                 return Err(StoreError::MissingDatabase(database.clone()));
