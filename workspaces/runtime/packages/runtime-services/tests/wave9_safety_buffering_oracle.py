@@ -170,7 +170,13 @@ class RuntimePort:
         return agent["epoch"] == operation["epoch"] and agent["accountKey"] == operation["accountKey"]
 
     def new_thread_params(self, _agent):
-        return CodexRuntime.new_thread_params(self, _agent)
+        params = CodexRuntime.new_thread_params(self, _agent)
+        assert isinstance(params, dict)
+        assert "config" in params, "production Runtime.new_thread_params must supply config"
+        assert "developerInstructions" in params, (
+            "production Runtime.new_thread_params must supply developer instructions"
+        )
+        return params
 
     def turn_permissions(self, _agent):
         return CodexRuntime.turn_permissions(self, _agent)

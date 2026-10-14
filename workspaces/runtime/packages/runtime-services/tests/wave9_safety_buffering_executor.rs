@@ -416,6 +416,18 @@ fn action_runs_python_corpus_stage_path_and_commits_each_intent_before_dispatch(
         .enumerate()
     {
         assert_eq!(actual["method"], expected["method"], "stage {index}");
+        if actual["method"] == "thread/fork" {
+            for key in ["config", "developerInstructions"] {
+                assert!(
+                    expected["params"].get(key).is_some(),
+                    "Python fork params include {key}"
+                );
+                assert!(
+                    actual["params"].get(key).is_some(),
+                    "Rust fork params include {key}"
+                );
+            }
+        }
         if matches!(
             actual["method"].as_str(),
             Some("thread/fork" | "turn/start")
