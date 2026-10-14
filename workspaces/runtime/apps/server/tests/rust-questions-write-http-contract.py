@@ -72,8 +72,12 @@ try:
                 "id":"questions-write-" + key, "agent":agent_id, "method":method,
                 "status":status, "createdAt":now,
                 "epoch":0,
-                "params":({{"mode":"form", "requestedSchema":{{"properties":{{}}}}}}
-                          if key == "elicitation" else {{"questions":[{{"id":"value", "question":"Value?"}}]}}),
+                "accountKey":"default", "connectionId":"questions-write-connection",
+                "supervisor":{{"generation":1}},
+                "params":({{"mode":"form", "requestedSchema":{{"properties":{{}}}},
+                           "threadId":"questions-write-thread", "turnId":"questions-write-turn"}}
+                          if key == "elicitation" else {{"questions":[{{"id":"value", "question":"Value?"}}],
+                                                         "threadId":"questions-write-thread", "turnId":"questions-write-turn"}}),
             }}, sync_rooms=False)
         runtime.put(db, "complaints", {{
             "id":"questions-write-malformed-complaint", "leadId":lead["id"],
@@ -167,6 +171,20 @@ class QuestionsWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         self.assertEqual(no_write_snapshot(self.backend.state), before)
         return response
 
+    def _set_request_status(self, request_id: str, status: str) -> None:
+        with closing(sqlite3.connect(self.backend.state / "canvas.sqlite3")) as database:
+            row = database.execute(
+                "SELECT record FROM runtime_requests WHERE id=?", (request_id,)
+            ).fetchone()
+            self.assertIsNotNone(row, request_id)
+            record = json.loads(row[0])
+            record["status"] = status
+            database.execute(
+                "UPDATE runtime_requests SET record=? WHERE id=?",
+                (json.dumps(record, separators=(",", ":"), sort_keys=True), request_id),
+            )
+            database.commit()
+
     def test_defer_and_state_only_delete_commit_and_replay(self) -> None:
         before_noop = no_write_snapshot(self.backend.state)
         no_change = self._post(
@@ -204,6 +222,11 @@ class QuestionsWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         )
         if not os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"):
             self.skipTest("provider answer delivery is implemented by the Python backend")
+        # Startup recovery expires pending native requests before HTTP readiness
+        # (codex_runtime.py:1834-1849). Re-pend them now so this contract exercises
+        # the live-session preflight for a genuinely pending native question.
+        self._set_request_status("questions-write-native", "pending")
+        self._set_request_status("questions-write-elicitation", "pending")
         self._unchanged_error(
             "/api/answer", {"id": "questions-write-native", "decision": "cancel"},
             501, answer_refusal_error(),

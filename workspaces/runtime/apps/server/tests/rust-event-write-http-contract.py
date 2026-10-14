@@ -207,6 +207,11 @@ class EventWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
                     pass
 
             runtime = make_runtime(QuietRuntime, state, _fixture.FakeServer)
+            # The reference Runtime refreshes workspace/current with its own
+            # temporary stateDir on agent writes (codex_runtime.py:3589,
+            # 3901-3952). Normalize that
+            # fixture-only change before measuring the plan/annotation deltas.
+            runtime.refresh_workspace_volatile()
             revisions_before = self._sync_revisions(state / "canvas.sqlite3")
         try:
             runtime.plan_action(self.agent_id, {"id": plan_body["id"], "version": plan_body["version"], "text": plan_body["text"]})

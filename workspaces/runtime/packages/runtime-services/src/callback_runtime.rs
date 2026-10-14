@@ -36,6 +36,9 @@ pub struct ReplyReceipt {
 /// returns Written only from its transport receipt. Timeout is Unknown, never
 /// NotSent. Implementations must not wait on the worker's own event-loop thread.
 pub trait CallbackReplyPort: Send + Sync {
+    /// Read-only preflight used before preparing a native-question delete.
+    /// Implementations must verify the exact account connection generation.
+    fn has_live_session(&self, context: &CallbackContext) -> bool;
     fn deliver(&self, reply: &Reply, deadline: Duration) -> Result<ReplyReceipt, CallbackError>;
 }
 
@@ -151,6 +154,13 @@ impl CallbackRuntime {
     }
 
     pub fn answer(&self, id: &str, data: &Value, now: f64) -> Result<Value, CallbackError> {
+        if let Some(context) = callbacks::pending_native_delete_context(&self.store, id)?
+            && !self.port.has_live_session(&context)
+        {
+            return Err(CallbackError::Dependency(
+                "provider-session/question-answer",
+            ));
+        }
         match callbacks::prepare_user_answer(&self.store, id, data, now, false)? {
             Some(reply) => {
                 self.deliver(&reply)?;
@@ -161,6 +171,13 @@ impl CallbackRuntime {
     }
 
     pub fn delete_question(&self, id: &str, now: f64) -> Result<Value, CallbackError> {
+        if let Some(context) = callbacks::pending_native_delete_context(&self.store, id)?
+            && !self.port.has_live_session(&context)
+        {
+            return Err(CallbackError::Dependency(
+                "provider-session/question-answer",
+            ));
+        }
         if let Some(reply) =
             self.with_lifecycle(|| callbacks::prepare_delete(&self.store, id, now))?
         {
@@ -208,6 +225,10 @@ impl CallbackMailbox {
     }
 }
 impl CallbackReplyPort for CallbackMailbox {
+    fn has_live_session(&self, _: &CallbackContext) -> bool {
+        false
+    }
+
     fn deliver(&self, reply: &Reply, deadline: Duration) -> Result<ReplyReceipt, CallbackError> {
         let (receipt, receiver) = std::sync::mpsc::sync_channel(1);
         if self

@@ -2551,3 +2551,39 @@ async fn preparation_commit_rechecks_workspace_settings_and_input() {
 }
 
 mod preparation_review;
+
+#[tokio::test]
+async fn move_import_pending_keeps_input_queued_without_worker_writes() {
+    let state = State::new().await;
+    let agent_id = state.agent.clone();
+    state
+        .bridge
+        .run(move |store| {
+            store.transaction(|tx| {
+                let mut agent = AgentRepository::get(tx, &AgentId::from(agent_id.as_str()))?
+                    .expect("fixture agent exists");
+                agent.extra.insert("moveImportPending".into(), json!(true));
+                AgentRepository::put(tx, &agent)
+            })?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+
+    let before = state.record().await;
+    let agent_id = state.agent.clone();
+    let epoch = state.epoch;
+    let claim = state
+        .bridge
+        .run(move |store| store::claim(store, "default", &agent_id, epoch))
+        .await
+        .unwrap();
+
+    assert!(claim.is_none(), "migration-pending input is not admitted");
+    assert_eq!(
+        state.record().await,
+        before,
+        "claim leaves the actor untouched"
+    );
+    assert_eq!(state.event_status("input").await, "pending");
+}

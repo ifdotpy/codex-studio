@@ -223,6 +223,10 @@ fn late_written_settles_card_without_reviving_completed_failed_or_replaced_turn(
 fn every_foreign_receipt_dimension_is_held_unknown() {
     struct Foreign(usize);
     impl CallbackReplyPort for Foreign {
+        fn has_live_session(&self, _: &CallbackContext) -> bool {
+            true
+        }
+
         fn deliver(
             &self,
             reply: &Reply,

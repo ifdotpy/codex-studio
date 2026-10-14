@@ -170,6 +170,19 @@ struct BrokerCallbackReplyPort {
 }
 
 impl studio_runtime_services::callback_runtime::CallbackReplyPort for BrokerCallbackReplyPort {
+    fn has_live_session(
+        &self,
+        context: &studio_runtime_services::provider_callbacks::CallbackContext,
+    ) -> bool {
+        self.broker
+            .live_scope(&context.account)
+            .is_some_and(|scope| {
+                scope.account == context.account
+                    && scope.connection == context.connection
+                    && scope.generation == context.generation
+            })
+    }
+
     fn deliver(
         &self,
         reply: &studio_runtime_services::provider_callbacks::Reply,
