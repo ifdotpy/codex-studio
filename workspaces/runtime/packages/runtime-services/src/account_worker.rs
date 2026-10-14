@@ -1001,6 +1001,24 @@ impl Worker {
             self.push(effect)?;
         }
         if let JournalPayload::Frame(frame) = &entry.payload
+            && let Frame::Request(request) = frame
+            && request.method.as_str() == "item/tool/call"
+        {
+            let account = self.account.clone();
+            let generation = self.generation.0;
+            let now = entry.received_at_ms as f64 / 1000.0;
+            let frame = frame.clone();
+            if let Some(response) = self
+                .db("managed_tool_callback", move |store| {
+                    Ok(callback::managed_response(
+                        store, &account, generation, &frame, now,
+                    ))
+                })
+                .await?
+            {
+                self.push(Effect::Callback(cursor, response))?;
+            }
+        } else if let JournalPayload::Frame(frame) = &entry.payload
             && let Some(response) = callback::response(frame)
         {
             self.push(Effect::Callback(cursor, response))?;
