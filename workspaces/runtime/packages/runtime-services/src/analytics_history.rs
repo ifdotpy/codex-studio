@@ -682,8 +682,9 @@ pub struct HistoryClock {
     pub monotonic: f64,
 }
 
-/// Timer/notification-loop consumer. The account worker supplies each current
-/// roster and the selected account's profile; the scheduler owns no OS thread.
+/// Timer/notification-loop consumer. Each step commits at most one rollout
+/// batch and returns; its caller schedules the next step after yielding to
+/// other work. The scheduler owns no OS thread.
 #[derive(Default)]
 pub struct HistoryCollector {
     pub schedule: crate::analytics_history_schedule::HistorySchedule,

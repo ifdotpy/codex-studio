@@ -205,6 +205,41 @@ runtime.close()
 print(json.dumps({"agent_id":agent_id,"search_phase":phase}))
 "#;
 
+const CREATE_ANALYTICS_INDEX_STATE: &str = r#"
+import pathlib, sqlite3, sys
+sys.path.insert(0, sys.argv[2])
+from codex_analytics import AnalyticsMixin
+class Writer(AnalyticsMixin):
+    def records(self, *_args): return []
+root = pathlib.Path(sys.argv[1])
+db = sqlite3.connect(root / 'analytics.sqlite3')
+Writer().analytics_init(db)
+db.commit()
+db.close()
+"#;
+
+const POPULATE_ANALYTICS_PLAN_STATE: &str = r#"
+import json, pathlib, sqlite3, sys
+db = sqlite3.connect(pathlib.Path(sys.argv[1]) / 'analytics.sqlite3')
+items, turns, limits = [], [], []
+for seq in range(24000):
+    agent, turn = f'agent-{seq % 1200}', f'turn-{seq}'
+    item_id = f'item-{seq}'
+    items.append((item_id, agent, agent, 'thread', turn, seq, 'agentMessage', None, 0,
+                  json.dumps({'id':item_id,'itemId':item_id,'agentId':agent,'rootId':agent,
+                              'threadId':'thread','turnId':turn,'at':seq,'type':'agentMessage',
+                              'isTool':False})))
+    turns.append((turn, agent, agent, seq,
+                  json.dumps({'id':turn,'agentId':agent,'rootId':agent,'threadId':'thread',
+                              'turnId':turn,'at':seq,'status':'completed'})))
+    limits.append((agent, seq, json.dumps({'account':agent,'at':seq})))
+db.executemany('INSERT INTO analytics_items VALUES (?,?,?,?,?,?,?,?,?,?)', items)
+db.executemany('INSERT INTO analytics_turns VALUES (?,?,?,?,?)', turns)
+db.executemany('INSERT INTO analytics_limits(account,at,record) VALUES (?,?,?)', limits)
+db.commit()
+db.close()
+"#;
+
 const COPY_AND_REMOVE_BOOTSTRAP_TABLES: &str = r#"
 import pathlib, sqlite3, sys
 source = pathlib.Path(sys.argv[1])
@@ -538,6 +573,133 @@ fn python_fixture_records_are_readable_and_writable_in_rust() {
     drop(read_back);
     drop(reopened);
     root.cleanup().expect("temporary Python state is removed");
+}
+
+#[test]
+fn analytics_limit_queries_use_python_initialized_index_and_state_check_allows_either_catalog() {
+    let root = temporary_state("analytics-index");
+    python(&root, CREATE_ANALYTICS_INDEX_STATE, &[]);
+    let path = root.join("analytics.sqlite3");
+    let db = rusqlite::Connection::open(&path).expect("Python analytics fixture opens");
+    assert!(studio_runtime_store::analytics_capture::check_state_readonly(&root).is_ok());
+    db.execute("DROP INDEX analytics_limits_account_at", [])
+        .expect("fixture index drops");
+    assert!(studio_runtime_store::analytics_capture::check_state_readonly(&root).is_ok());
+    db.execute(
+        "CREATE INDEX IF NOT EXISTS analytics_limits_account_at ON analytics_limits(account, at)",
+        [],
+    )
+    .expect("fixture index restores");
+    drop(db);
+
+    python(&root, POPULATE_ANALYTICS_PLAN_STATE, &[]);
+    let db = rusqlite::Connection::open(&path).expect("populated analytics fixture opens");
+    db.execute("DROP INDEX analytics_limits_account_at", [])
+        .expect("fixture index drops for baseline plan");
+    let without_index = limit_query_plans(&db);
+    for (name, plan) in ["count", "page", "last-limit"]
+        .into_iter()
+        .zip(&without_index)
+    {
+        println!(
+            "analytics_limits {name} plan before index: {}",
+            plan.join(" | ")
+        );
+        assert!(
+            plan.iter()
+                .any(|line| line.contains("SCAN analytics_limits")),
+            "{name} plan did not scan without the index: {plan:?}"
+        );
+    }
+    db.execute(
+        "CREATE INDEX IF NOT EXISTS analytics_limits_account_at ON analytics_limits(account, at)",
+        [],
+    )
+    .expect("fixture index recreates after baseline plan");
+    let with_index = limit_query_plans(&db);
+    for (name, plan) in ["count", "page", "last-limit"].into_iter().zip(&with_index) {
+        println!(
+            "analytics_limits {name} plan after index: {}",
+            plan.join(" | ")
+        );
+        assert!(
+            plan.iter()
+                .any(|line| line.contains("analytics_limits_account_at")),
+            "{name} plan does not use analytics_limits_account_at: {plan:?}"
+        );
+    }
+    for (name, sql, params) in [
+        (
+            "item lookup",
+            "SELECT record FROM analytics_items WHERE agent=?1 AND json_extract(record,'$.itemId')=?2 AND (?3 IS NULL OR thread=?3) LIMIT 2",
+            vec!["agent-0", "item-0", ""],
+        ),
+        (
+            "turn lookup",
+            "SELECT record FROM analytics_turns WHERE agent=?1 AND json_extract(record,'$.turnId')=?2 AND (?3 IS NULL OR json_extract(record,'$.threadId')=?3) LIMIT 2",
+            vec!["agent-0", "turn-0", ""],
+        ),
+        (
+            "repair turnId count",
+            "SELECT COUNT(*) FROM analytics_turns WHERE agent=? AND json_extract(record,'$.turnId')=?",
+            vec!["agent-0", "turn-0"],
+        ),
+    ] {
+        let values: Vec<&dyn rusqlite::ToSql> = params
+            .iter()
+            .map(|value| value as &dyn rusqlite::ToSql)
+            .collect();
+        let plan = explain_plan(&db, sql, &values);
+        println!(
+            "analytics {name} plan (24,000-row Python fixture): {}",
+            plan.join(" | ")
+        );
+        assert!(
+            !plan.iter().any(|line| {
+                (line.starts_with("SCAN analytics_items")
+                    || line.starts_with("SCAN analytics_turns"))
+                    && !line.contains("USING INDEX")
+                    && !line.contains("USING COVERING INDEX")
+            }),
+            "{name} performs a full table scan: {plan:?}"
+        );
+    }
+    root.cleanup().expect("analytics fixture is removed");
+}
+
+fn limit_query_plans(db: &rusqlite::Connection) -> [Vec<String>; 3] {
+    [
+        explain_plan(
+            db,
+            "SELECT COUNT(*) FROM analytics_limits WHERE account IN (?) AND at>=? AND at<=?",
+            &[&"agent-0", &0.0_f64, &24000.0_f64],
+        ),
+        explain_plan(
+            db,
+            "SELECT account,at,record FROM analytics_limits WHERE account IN (?) AND at>=? AND at<=? ORDER BY at DESC,id DESC LIMIT ? OFFSET ?",
+            &[&"agent-0", &0.0_f64, &24000.0_f64, &100_i64, &0_i64],
+        ),
+        explain_plan(
+            db,
+            "SELECT record FROM analytics_limits WHERE account=? ORDER BY at DESC LIMIT 1",
+            &[&"agent-0"],
+        ),
+    ]
+}
+
+fn explain_plan(
+    db: &rusqlite::Connection,
+    sql: &str,
+    params: &[&dyn rusqlite::ToSql],
+) -> Vec<String> {
+    db.prepare(&format!("EXPLAIN QUERY PLAN {sql}"))
+        .expect("query plan prepares")
+        .query_map(rusqlite::params_from_iter(params.iter().copied()), |row| {
+            row.get::<_, String>(3)
+        })
+        .expect("query plan runs")
+        .collect::<Result<Vec<_>, _>>()
+        .expect("query plan rows read")
 }
 
 #[test]

@@ -4,7 +4,9 @@ use serde_json::{Value, json};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::mpsc;
 use std::sync::{OnceLock, atomic::AtomicBool};
+use std::thread;
 use studio_runtime_services::analytics_history::{
     self as history, BatchLimits, HistoryBudgetSink, HistoryError, HistorySnapshot, RolloutPath,
 };
@@ -133,6 +135,70 @@ fn restart_after_ack_loss_retains_exact_effects_and_cursor() {
         .expect("row");
     assert_eq!(turn["status"], "completed");
     assert_eq!(turn["durationMs"], 1000.);
+}
+
+#[test]
+fn main_store_write_runs_between_separately_scheduled_history_batches() {
+    let (root, agent) = fixture();
+    let path = file(root.path(), &records(), b"");
+    let cancel = AtomicBool::new(false);
+    let store = RuntimeStore::open(Some(root.path())).expect("store");
+    let first = history::prepare(
+        HistorySnapshot::from_records(agent.clone(), checkpoint(&store)).expect("snapshot"),
+        root.path(),
+        RolloutPath::Found(path.clone()),
+        BatchLimits::new(1024 * 1024, 1).expect("batch limits"),
+        10.0,
+        &cancel,
+    )
+    .expect("first batch prepares");
+
+    let (schedule_write, write_scheduled) = mpsc::channel();
+    let (write_committed, committed) = mpsc::channel();
+    thread::scope(|scope| {
+        let agent_id = agent["id"].as_str().expect("agent id").to_owned();
+        let store_ref = &store;
+        let task = scope.spawn(move || {
+            write_scheduled.recv().expect("queued write is scheduled");
+            store_ref
+                .transaction(|tx| {
+                    tx.execute(
+                        "UPDATE runtime_agents SET record=record WHERE id=?",
+                        [&agent_id],
+                    )?;
+                    Ok(())
+                })
+                .expect("queued main-store write commits");
+            write_committed
+                .send(())
+                .expect("commit receipt is received");
+        });
+
+        first
+            .commit(&store, &Budget, 10.0)
+            .expect("first batch commits");
+        schedule_write.send(()).expect("main write is queued");
+        committed
+            .recv()
+            .expect("main write commits before next batch");
+
+        let second = history::prepare(
+            HistorySnapshot::from_records(agent, checkpoint(&store)).expect("next snapshot"),
+            root.path(),
+            RolloutPath::Found(path),
+            BatchLimits::new(1024 * 1024, 1).expect("batch limits"),
+            11.0,
+            &cancel,
+        )
+        .expect("second batch prepares");
+        second
+            .commit(&store, &Budget, 11.0)
+            .expect("second batch commits");
+        task.join().expect("queued writer exits");
+    });
+
+    let stored = checkpoint(&store).expect("history checkpoint persists");
+    assert_eq!(stored["status"], "catchingUp");
 }
 #[test]
 fn partial_tail_and_changed_anchor_never_acknowledge_unread_bytes() {
