@@ -65,7 +65,6 @@ pub struct ProductionLifecyclePorts {
     lifecycle_wake: Arc<Notify>,
     interrupt_broker: Arc<dyn AccountSessionPort>,
     prepared: Mutex<Vec<InterruptRequest>>,
-    finalize_deleted: Mutex<Vec<String>>,
 }
 
 impl ProductionLifecyclePorts {
@@ -75,15 +74,18 @@ impl ProductionLifecyclePorts {
         lifecycle_wake: Arc<Notify>,
         interrupt_broker: Arc<dyn AccountSessionPort>,
     ) -> Self {
-        Self {
+        let ports = Self {
             store,
             monitors: MonitorLifecyclePorts::new(monitor_wake.clone()),
             monitor_wake,
             lifecycle_wake,
             interrupt_broker,
             prepared: Mutex::new(Vec::new()),
-            finalize_deleted: Mutex::new(Vec::new()),
-        }
+        };
+        // A tombstone and unsettled fields are the durable reconciliation
+        // intent. Scan on construction so process restart cannot lose it.
+        let _ = ports.reconcile_deleted_tombstones();
+        ports
     }
 
     /// Run the production stop/delete adapter. Effect intents and lifecycle
@@ -123,7 +125,7 @@ impl ProductionLifecyclePorts {
         let current_turn = before
             .get("turnId")
             .and_then(Value::as_str)
-            .filter(|turn| !turn.is_empty());
+            .filter(|turn| !turn.is_empty() && truthy(before.get("inFlight")));
         let Some(turn) = current_turn.or_else(|| is_review.then_some("")) else {
             // Python only interrupts an active native turn (or its special
             // submitted review). Preparation and idle stops need no provider IO.
@@ -258,23 +260,24 @@ impl ProductionLifecyclePorts {
                     state,
                     error,
                 )?;
-                if state != "unknown" {
-                    finalize_deleted(tx, &request.agent)?;
-                }
                 Ok::<_, ManagementError>(())
             })?;
         }
         Ok(())
     }
 
-    fn finalize_committed_deletions(&self) -> Result<(), ManagementError> {
-        let pending = {
-            let mut queue = self
-                .finalize_deleted
-                .lock()
-                .map_err(|_| ManagementError::Invalid("Lifecycle deletion queue unavailable"))?;
-            std::mem::take(&mut *queue)
-        };
+    fn reconcile_deleted_tombstones(&self) -> Result<(), ManagementError> {
+        let pending = self.store.read_transaction(|tx| {
+            let mut pending = Vec::new();
+            for (id, raw) in sync_policy::stored_records(tx, "runtime_agents")? {
+                let record: Value =
+                    serde_json::from_str(&raw).map_err(studio_runtime_store::StoreError::from)?;
+                if needs_deleted_settlement(&record) {
+                    pending.push(id);
+                }
+            }
+            Ok::<_, studio_runtime_store::StoreError>(pending)
+        })?;
         if pending.is_empty() {
             return Ok(());
         }
@@ -341,10 +344,9 @@ impl LifecyclePorts for ProductionLifecyclePorts {
             LifecycleEffectKind::NotifyParent => notify_parent(tx, effect),
             LifecycleEffectKind::ReleaseWork => release_work(tx, effect),
             LifecycleEffectKind::FinalizeDeleted => {
-                self.finalize_deleted
-                    .lock()
-                    .map_err(|_| ManagementError::Invalid("Lifecycle deletion queue unavailable"))?
-                    .push(required_str(effect.before(), "id", "Invalid deleted agent")?.to_owned());
+                // The decision writes the tombstone and still-active fields
+                // in this transaction; post-commit/restart scans consume it.
+                required_str(effect.before(), "id", "Invalid deleted agent")?;
                 Ok(())
             }
         }
@@ -353,8 +355,9 @@ impl LifecyclePorts for ProductionLifecyclePorts {
     fn committed(&self) -> Result<(), ManagementError> {
         self.monitor_wake.notify_one();
         self.lifecycle_wake.notify_one();
+        self.reconcile_deleted_tombstones()?;
         self.dispatch_prepared()?;
-        self.finalize_committed_deletions()
+        self.reconcile_deleted_tombstones()
     }
 }
 
@@ -654,18 +657,12 @@ fn finalize_deleted(tx: &Transaction<'_>, id: &str) -> Result<(), ManagementErro
     if !truthy(agent.extra.get("deletedAt")) {
         return Ok(());
     }
-    let attempt = agent.extra.get("startAttempt").unwrap_or(&Value::Null);
-    let needs_settlement = truthy(agent.extra.get("inFlight"))
-        || truthy(agent.extra.get("turnId"))
-        || truthy(attempt.get("activeAtReservation"))
-        || agent
-            .extra
-            .get("status")
-            .and_then(Value::as_str)
-            .is_some_and(|status| ["running", "starting", "approval"].contains(&status));
-    if !needs_settlement {
+    let agent_value =
+        serde_json::to_value(&agent).map_err(studio_runtime_store::StoreError::from)?;
+    if !needs_deleted_settlement(&agent_value) {
         return Ok(());
     }
+    agent.status = studio_runtime_store::AgentStatus::Paused;
     agent.extra.insert("inFlight".to_owned(), json!(false));
     agent.extra.insert("turnId".to_owned(), Value::Null);
     agent.extra.insert("activity".to_owned(), Value::Null);
@@ -677,6 +674,17 @@ fn finalize_deleted(tx: &Transaction<'_>, id: &str) -> Result<(), ManagementErro
     }
     AgentRepository::put(tx, &agent)?;
     Ok(())
+}
+
+fn needs_deleted_settlement(agent: &Value) -> bool {
+    truthy(agent.get("deletedAt"))
+        && (truthy(agent.get("inFlight"))
+            || truthy(agent.get("turnId"))
+            || truthy(agent.pointer("/startAttempt/activeAtReservation"))
+            || agent
+                .get("status")
+                .and_then(Value::as_str)
+                .is_some_and(|status| ["running", "starting", "approval"].contains(&status)))
 }
 
 fn required_str<'a>(
