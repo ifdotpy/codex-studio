@@ -8,7 +8,7 @@ use tempfile::TempDir;
 use super::{
     Clock, CompatibilityProbe, DurableStep, FailPoints, NativeRuntime, NativeRuntimeError,
 };
-use crate::provider_binaries::{BinaryCandidate, DiscoveryInputs, NativePlatform};
+use crate::provider_binaries::{BinaryCandidate, CandidateStatus, DiscoveryInputs, NativePlatform};
 
 const COMPANION: &str = "codex-code-mode-host";
 
@@ -103,14 +103,68 @@ fn runtime(root: &Path) -> NativeRuntime {
 
 fn candidate(runtime: &NativeRuntime, binary: &Path) -> BinaryCandidate {
     runtime
-        .discover(DiscoveryInputs {
-            pinned_path: Some(binary.to_owned()),
-            ..DiscoveryInputs::default()
-        })
+        .discover(
+            DiscoveryInputs {
+                pinned_path: Some(binary.to_owned()),
+                ..DiscoveryInputs::default()
+            },
+            NativePlatform::LinuxX64,
+        )
         .expect("candidate discovery")
         .into_iter()
         .next()
         .expect("candidate row")
+}
+
+#[test]
+fn discovery_resolves_npm_package_launcher_to_native_binary() {
+    let (_temp, root, _binary) = fixture();
+    let runtime = runtime(&root);
+    let package = root.join("node_modules/@openai/codex");
+    let launcher = package.join("bin/codex.js");
+    let native = package
+        .join("vendor")
+        .join(NativePlatform::LinuxX64.target_triple())
+        .join("bin/codex");
+    fs::create_dir_all(launcher.parent().expect("launcher directory"))
+        .expect("create npm launcher directory");
+    fs::create_dir_all(native.parent().expect("native binary directory"))
+        .expect("create native binary directory");
+    fs::write(package.join("package.json"), r#"{"name":"@openai/codex"}"#)
+        .expect("write npm package metadata");
+    fs::write(&launcher, "fixture launcher; never executed\n").expect("write launcher fixture");
+    fs::write(&native, "version=1.2.3\n").expect("write native fixture");
+    fs::write(
+        native.with_file_name("codex-code-mode-host"),
+        "fixture companion\n",
+    )
+    .expect("write native companion");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&native, fs::Permissions::from_mode(0o700))
+            .expect("native fixture executable mode");
+        fs::set_permissions(
+            native.with_file_name("codex-code-mode-host"),
+            fs::Permissions::from_mode(0o700),
+        )
+        .expect("native companion executable mode");
+    }
+    let found = runtime
+        .discover(
+            DiscoveryInputs {
+                pinned_path: Some(launcher),
+                ..DiscoveryInputs::default()
+            },
+            NativePlatform::LinuxX64,
+        )
+        .expect("discover npm native binary");
+    assert_eq!(found.len(), 1);
+    assert_eq!(found[0].status, CandidateStatus::Discovered);
+    assert_eq!(
+        found[0].path,
+        native.canonicalize().expect("canonical binary")
+    );
 }
 
 fn approve(runtime: &NativeRuntime, binary: &Path) -> Value {

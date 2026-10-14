@@ -540,7 +540,7 @@ impl NativePlatform {
         }
     }
 
-    const fn target_triple(self) -> &'static str {
+    pub const fn target_triple(self) -> &'static str {
         match self {
             Self::LinuxX64 => "x86_64-unknown-linux-musl",
             Self::LinuxArm64 => "aarch64-unknown-linux-musl",

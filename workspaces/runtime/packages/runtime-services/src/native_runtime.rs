@@ -23,6 +23,7 @@ use thiserror::Error;
 use crate::provider_binaries::{
     BinaryCandidate, CandidateStatus, DiscoveryInputs, NativePlatform, binary_file_identity,
     bundle_digest, companion_identities, discovery_paths, order_candidates, parse_native_version,
+    resolve_npm_launcher,
 };
 
 mod state;
@@ -174,10 +175,18 @@ impl NativeRuntime {
     pub fn discover(
         &self,
         inputs: DiscoveryInputs,
+        platform: NativePlatform,
     ) -> Result<Vec<BinaryCandidate>, NativeRuntimeError> {
         let mut candidates = Vec::new();
         for path in discovery_paths(inputs) {
-            let candidate = match binary_file_identity(&path) {
+            let resolved = match resolve_discovery_path(&path, platform) {
+                Ok(path) => path,
+                Err(error) => {
+                    candidates.push(rejected(path, error));
+                    continue;
+                }
+            };
+            let candidate = match binary_file_identity(&resolved) {
                 Ok(identity) => match self.inner.probe.version(&identity.path) {
                     Ok(version) if parse_native_version(&version).is_some() => BinaryCandidate {
                         path: identity.path,
@@ -185,10 +194,10 @@ impl NativeRuntime {
                         version: Some(version),
                         error: None,
                     },
-                    Ok(_) => rejected(path, "invalid native version"),
-                    Err(_) => rejected(path, "native version probe failed"),
+                    Ok(_) => rejected(resolved, "invalid native version"),
+                    Err(_) => rejected(resolved, "native version probe failed"),
                 },
-                Err(_) => rejected(path, "candidate is not an executable file"),
+                Err(_) => rejected(resolved, "candidate is not an executable file"),
             };
             candidates.push(candidate);
         }
@@ -320,7 +329,7 @@ impl NativeRuntime {
             .filter(|record| validate_approved_record(record, &self.inner.root, platform).is_ok())
             .cloned();
         let existing = selected.as_ref().and_then(binary_candidate);
-        let discovered = self.discover(inputs)?;
+        let discovered = self.discover(inputs, platform)?;
         let mut candidate_rows = Vec::new();
         for candidate in discovered {
             let source_identity = binary_file_identity(&candidate.path).ok();
@@ -686,6 +695,42 @@ fn rejected(path: PathBuf, reason: &'static str) -> BinaryCandidate {
         version: None,
         error: Some(reason.to_owned()),
     }
+}
+
+fn resolve_discovery_path(path: &Path, platform: NativePlatform) -> Result<PathBuf, &'static str> {
+    let name = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("");
+    let in_bin = path
+        .parent()
+        .and_then(Path::file_name)
+        .and_then(|value| value.to_str())
+        .is_some_and(|value| value.eq_ignore_ascii_case("bin"));
+    if !in_bin || !(name.eq_ignore_ascii_case("codex.js") || name.eq_ignore_ascii_case("codex.cmd"))
+    {
+        return Ok(path.to_owned());
+    }
+    let package = path
+        .parent()
+        .and_then(Path::parent)
+        .ok_or("npm launcher has no package root")?;
+    let metadata_path = package.join("package.json");
+    if fs::metadata(&metadata_path)
+        .map_err(|_| "npm launcher package metadata is unavailable")?
+        .len()
+        > 1_048_576
+    {
+        return Err("npm launcher package metadata is too large");
+    }
+    let metadata =
+        fs::read(metadata_path).map_err(|_| "npm launcher package metadata is unavailable")?;
+    let roots = package
+        .ancestors()
+        .map(Path::to_path_buf)
+        .collect::<Vec<_>>();
+    resolve_npm_launcher(path, &metadata, &roots, platform)
+        .map_err(|_| "npm launcher resolution failed")
 }
 
 fn binary_candidate(record: &Value) -> Option<BinaryCandidate> {
