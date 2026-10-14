@@ -133,3 +133,43 @@ pub async fn execute(
         .await
         .map_err(|_| NativeError::Unknown)?
 }
+
+/// Dispatch a fork whose durable intent is owned by another workflow (for
+/// example context repair). The caller must persist the exact NativeRequest
+/// before invoking this function; this function never claims or retries it.
+/// A custom portable-history path is accepted only with turns excluded and goal
+/// continuation deferred, and its source thread may differ from the managed
+/// agent's current thread.
+pub async fn dispatch_reserved(
+    request: &NativeRequest,
+    session: &impl RetainedSession,
+    deadline: tokio::time::Instant,
+) -> Result<TransportReceipt> {
+    bounded(&request.params, "fork.params")?;
+    if request.method != "thread/fork"
+        || request
+            .params
+            .get("threadId")
+            .and_then(Value::as_str)
+            .is_none_or(str::is_empty)
+        || request.params.get("dynamicTools").is_some()
+    {
+        return Err(NativeError::Invalid("fork.params"));
+    }
+    if let Some(path) = request.params.get("path") {
+        let Some(path) = path.as_str() else {
+            return Err(NativeError::Invalid("fork.params.path"));
+        };
+        if !std::path::Path::new(path).is_absolute()
+            || request.params.get("excludeTurns") != Some(&json!(true))
+            || request.params.get("deferGoalContinuation") != Some(&json!(true))
+        {
+            return Err(NativeError::Invalid("fork.params.portableHistory"));
+        }
+    } else if request.params.get("threadId").and_then(Value::as_str)
+        != request.ticket.thread.as_deref()
+    {
+        return Err(NativeError::Invalid("fork.params.threadId"));
+    }
+    send(session, request, deadline).await
+}
