@@ -3,6 +3,8 @@ mod account_registry;
 #[cfg(unix)]
 mod claude_login;
 #[cfg(unix)]
+mod history_runtime;
+#[cfg(unix)]
 mod host_runtime;
 #[cfg(unix)]
 mod io_runtime;
@@ -316,7 +318,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let runtime = match host_runtime::HostRuntime::start_with_monitor_wake_and_native_runtime(
         &mut state,
         Arc::clone(&store),
-        account_driver,
+        Arc::clone(&account_driver),
         native_path,
         monitor_runtime.dispatch_wake_handle(),
         account_session_broker.clone(),
@@ -398,6 +400,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         studio_runtime_services::diagnostics::StartupMemoryMark::HttpReady,
     );
     let (monitor_shutdown, _) = watch::channel(false);
+    #[cfg(unix)]
+    let history_task =
+        history_runtime::HistoryRuntime::new(Arc::clone(&store), Arc::clone(&account_driver))
+            .spawn(monitor_shutdown.subscribe());
     let monitor_task = studio_runtime_services::monitor_runtime_wiring::start(
         monitor_runtime,
         monitor_shutdown.subscribe(),
@@ -479,6 +485,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     monitor_shutdown.send_replace(true);
     federation_cancelled.store(true, std::sync::atomic::Ordering::Release);
     let vault_jobs_cleanup = vault_job_owner.shutdown().await;
+    #[cfg(unix)]
+    let history_cleanup = history_task.await;
     federation_task.await?;
     if let Some(task) = orchestration_task {
         task.await?;
@@ -494,6 +502,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     #[cfg(not(unix))]
     state.shutdown_services().await?;
+    #[cfg(unix)]
+    history_cleanup.map_err(std::io::Error::other)??;
     result?;
     Ok(())
 }

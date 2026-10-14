@@ -526,6 +526,104 @@ fn store_history_budget_sink_commits_page_once_and_replays_exactly() {
 }
 
 #[test]
+fn collector_tick_imports_rollout_usage_and_replay_is_exactly_once() {
+    use studio_runtime_services::analytics_history::{
+        HistoryClock, HistoryCollector, StoreHistoryBudgetSink,
+    };
+    let (root, agent) = fixture();
+    let sessions = root.path().join("sessions");
+    fs::create_dir_all(&sessions).expect("fixture sessions");
+    let path = sessions.join("rollout-fixture-thread.jsonl");
+    let mut lines = records();
+    lines.push(json!({"type":"token_usage_record","timestamp":4,"payload":{
+        "thread_id":"thread","response_id":"history-response",
+        "usage":{"total_tokens":23},"thread_token_usage":{"total_tokens":23}
+    }}));
+    let mut bytes = Vec::new();
+    for line in &lines {
+        bytes.extend(serde_json::to_vec(line).expect("rollout line"));
+        bytes.push(b'\n');
+    }
+    fs::write(&path, bytes).expect("fixture rollout");
+    let store = RuntimeStore::open(Some(root.path())).expect("store");
+    let cancel = AtomicBool::new(false);
+    let mut collector = HistoryCollector::default();
+    let budget = StoreHistoryBudgetSink::new(&store);
+    let roster = [agent];
+    let profile = |_: &str| Ok(root.path().to_path_buf());
+
+    assert!(
+        collector
+            .step(
+                &store,
+                &roster,
+                profile,
+                HistoryClock {
+                    observed_at: 200.0,
+                    monotonic: 10.0
+                },
+                &cancel,
+                &budget,
+            )
+            .expect("first import tick")
+    );
+    let read_budget = || {
+        store
+            .read_transaction(|tx| {
+                Ok((
+                    tx.query_row("SELECT count(*) FROM runtime_budget_usage", [], |row| {
+                        row.get::<_, i64>(0)
+                    })?,
+                    tx.query_row(
+                        "SELECT COALESCE(sum(tokens),0) FROM runtime_budget_usage",
+                        [],
+                        |row| row.get::<_, i64>(0),
+                    )?,
+                ))
+            })
+            .expect("budget receipts")
+    };
+    assert_eq!(read_budget(), (1, 23));
+    let analytics = rusqlite::Connection::open(root.path().join("analytics.sqlite3"))
+        .expect("analytics database");
+    let read_analytics = || {
+        analytics
+            .query_row(
+                "SELECT count(*) FROM analytics_usage WHERE json_extract(record,'$.responseId')='history-response'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .expect("analytics usage")
+    };
+    assert_eq!(read_analytics(), 1);
+    assert_eq!(
+        checkpoint(&store).expect("history checkpoint")["importedRecords"],
+        4
+    );
+
+    let _replay_advanced = collector
+        .step(
+            &store,
+            &roster,
+            profile,
+            HistoryClock {
+                observed_at: 205.0,
+                monotonic: 15.0,
+            },
+            &cancel,
+            &budget,
+        )
+        .expect("replay tick");
+
+    assert_eq!(read_budget(), (1, 23));
+    assert_eq!(read_analytics(), 1);
+    assert_eq!(
+        checkpoint(&store).expect("history checkpoint")["importedRecords"],
+        4
+    );
+}
+
+#[test]
 fn active_import_quota_notification_and_timer_budget() {
     use studio_runtime_services::analytics_history_schedule::HistorySchedule;
     let (_, mut active) = fixture();
