@@ -11,6 +11,10 @@ use std::process::Command;
 use std::sync::Arc;
 use std::time::Duration;
 use studio_runtime_services::{
+    agent_lifecycle_runtime,
+    agent_management::Action,
+    monitor_driver,
+    monitor_lifecycle::MonitorLifecyclePorts,
     monitor_policy::Input,
     monitor_receipts::{self, ResultReceipt},
     monitor_runtime_wiring::{Delivery, MonitorEvent, MonitorRuntime},
@@ -234,6 +238,52 @@ fn durable_results_win_over_stalls_across_every_write_failure_and_restart() {
             assert!(port.submitted.lock().expect("submissions").is_empty());
         }
     }
+}
+
+#[test]
+fn lifecycle_cancel_intent_survives_crash_before_committed_and_dispatches_after_restart() {
+    let root = fixtures::tempdir();
+    let cases = fixtures::corpus(root.path());
+    let case = running(&cases);
+    let id = case["before"]["id"]
+        .as_str()
+        .expect("monitor id")
+        .to_owned();
+    let store = fixtures::store(root.path(), "lifecycle-cancel");
+    fixtures::seed(&store, &case);
+    let wake = Arc::new(Notify::new());
+    let lifecycle = MonitorLifecyclePorts::new(wake);
+    store
+        .transaction_with_error(|tx| {
+            agent_lifecycle_runtime::execute_in_transaction(
+                tx,
+                &Action::Stop {
+                    target: "agent".to_owned(),
+                    descendants: false,
+                },
+                2000.0,
+                &lifecycle,
+            )
+        })
+        .expect("stop commits monitor cancellation without invoking committed hook");
+    assert_eq!(record(&store, &id)["cancelRequested"], true);
+
+    let path = store.root().to_owned();
+    drop(store);
+    let store = Arc::new(RuntimeStore::open(Some(&path)).expect("restart store"));
+    assert_eq!(
+        monitor_driver::pending_cancel_ids(&store, 2000.0).expect("pending IDs"),
+        [id]
+    );
+
+    let port = Arc::new(Port::default());
+    runtime(&store, &port)
+        .tick(2000.0)
+        .expect("restart tick dispatches committed cancellation");
+    assert_eq!(
+        *port.submitted.lock().expect("submissions"),
+        [studio_runtime_services::monitor_policy::Effect::Terminate]
+    );
 }
 
 #[test]

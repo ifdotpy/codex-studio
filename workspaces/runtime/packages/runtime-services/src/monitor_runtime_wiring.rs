@@ -148,6 +148,7 @@ impl MonitorRuntime {
                     drained = true;
                     break;
                 }
+                Err(error @ MonitorError::Unavailable(_)) => return Err(error),
                 Err(error) => {
                     failure = Some(error);
                     break;
@@ -468,6 +469,15 @@ pub fn start(
             tokio::select! {
                 changed = shutdown.changed() => {
                     if changed.is_err() || *shutdown.borrow() { return Ok(()); }
+                }
+                _ = runtime.wake.notified() => {
+                    let tick_runtime = runtime.clone();
+                    match tokio::task::spawn_blocking(move || tick_runtime.tick(event_write::unix_time()?)).await {
+                        Ok(Err(error)) if error.store_failure_for_task() => return Err(error),
+                        Ok(Err(_)) => {},
+                        Ok(Ok(())) => {},
+                        Err(_) => runtime.record_runtime_error(&MonitorError::TaskFailed),
+                    }
                 }
                 _ = timer.tick() => {
                     let tick_runtime = runtime.clone();

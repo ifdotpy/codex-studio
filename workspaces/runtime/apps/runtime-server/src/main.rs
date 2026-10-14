@@ -6,6 +6,7 @@ mod claude_login;
 mod host_runtime;
 #[cfg(unix)]
 mod io_runtime;
+mod monitor_port;
 #[cfg(unix)]
 mod runtime_shutdown;
 use std::env;
@@ -15,11 +16,13 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use axum::Extension;
 use studio_runtime_http::{HttpState, router};
 use studio_runtime_services::account_driver::AccountDriver;
 use studio_runtime_services::account_policy::AccountPolicyState;
 use studio_runtime_store::{RuntimeStore, account_state};
 use tokio::net::TcpListener;
+use tokio::sync::watch;
 
 const DEFAULT_PORT: u16 = 4620;
 
@@ -147,7 +150,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(unix)]
     let runtime = match host_runtime::HostRuntime::start(
         &mut state,
-        store,
+        Arc::clone(&store),
         account_driver,
         native_path,
     )
@@ -162,9 +165,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             return Err(error.into());
         }
     };
+    let monitor_wake = state.event_wake_handle();
+    let monitor_runtime = Arc::new(
+        studio_runtime_services::monitor_runtime_wiring::MonitorRuntime::new(
+            Arc::clone(&store),
+            Arc::new(monitor_port::UnavailableMonitorPort),
+            Arc::clone(&monitor_wake),
+        ),
+    );
+    let lifecycle_ports: Arc<dyn studio_runtime_services::agent_lifecycle_runtime::LifecyclePorts> =
+        Arc::new(
+            studio_runtime_services::monitor_lifecycle::MonitorLifecyclePorts::new(monitor_wake),
+        );
     let sync_changes = state.sync_changes_handle();
     let app = match router(state.clone()) {
-        Ok(app) => app,
+        Ok(app) => app
+            .layer(Extension(Arc::clone(&monitor_runtime)))
+            .layer(Extension(lifecycle_ports)),
         Err(error) => {
             #[cfg(unix)]
             {
@@ -178,20 +195,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             return Err(error);
         }
     };
+    let (monitor_shutdown, _) = watch::channel(false);
+    let monitor_task = studio_runtime_services::monitor_runtime_wiring::start(
+        monitor_runtime,
+        monitor_shutdown.subscribe(),
+    );
     println!("Codex Canvas: http://{}:{}", address.ip(), address.port());
     #[cfg(unix)]
     let stop_runtime = runtime.shutdown_handle();
+    let shutdown_monitor_task = monitor_shutdown.clone();
     let result = axum::serve(
         listener,
         app.into_make_service_with_connect_info::<SocketAddr>(),
     )
     .with_graceful_shutdown(async move {
         shutdown_signal().await;
+        shutdown_monitor_task.send_replace(true);
         #[cfg(unix)]
         stop_runtime.cancel();
         sync_changes.close();
     })
     .await;
+    monitor_shutdown.send_replace(true);
+    monitor_task.await??;
     #[cfg(unix)]
     {
         let terminal_cleanup = shutdown_io_runtime(Arc::clone(&io_runtime)).await;

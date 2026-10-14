@@ -63,6 +63,7 @@ pub mod host_project_runtime;
 pub mod message_admission;
 pub mod model_catalog;
 pub mod monitor_driver;
+pub mod monitor_lifecycle;
 pub mod monitor_output;
 pub mod monitor_policy;
 pub mod monitor_receipts;
