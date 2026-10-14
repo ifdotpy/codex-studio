@@ -44,7 +44,7 @@ thiserror = { workspace = true }
 tokio = { workspace = true, features = ["sync", "net", "time", "test-util"] }
 ureq = { workspace = true }
 url = "=2.5.8"
-uuid = { workspace = true, features = ["v5"] }
+uuid = { workspace = true, features = ["v4", "v5"] }
 jsonschema = { version = "=0.49.9", default-features = false }
 
 [target.'cfg(unix)'.dependencies]
