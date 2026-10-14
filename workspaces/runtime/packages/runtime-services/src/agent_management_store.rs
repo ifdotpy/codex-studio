@@ -4,7 +4,9 @@ use crate::agent_management::{
 };
 use rusqlite::OptionalExtension;
 use serde_json::Value;
-use studio_runtime_store::{RuntimeStore, Transaction, agent_management as repository};
+use studio_runtime_store::{
+    ProjectsRepository, RuntimeStore, Transaction, agent_management as repository,
+};
 
 /// HTTP stop/delete and the tool dispatcher's archive/restore share this entry.
 /// Preconditions, decision, writes and renderer changes commit together. No
@@ -12,8 +14,10 @@ use studio_runtime_store::{RuntimeStore, Transaction, agent_management as reposi
 pub fn execute(store: &RuntimeStore, action: &Action, now: f64) -> Result<Value, ManagementError> {
     let reader = store.read()?;
     let rooms = crate::sync_entity_context::RoomDirectory::prepare(&reader)?;
+    let projects = ProjectsRepository::list(&reader)?;
+    let vault_snapshot = crate::sync_policy::ProjectVaultSnapshot::capture(store.root(), &projects);
     store.transaction_with_error(|transaction| {
-        execute_in_transaction(transaction, action, now, &rooms)
+        execute_in_transaction(transaction, action, now, &rooms, &vault_snapshot)
     })
 }
 
@@ -45,8 +49,9 @@ pub fn execute_in_transaction(
     action: &Action,
     now: f64,
     rooms: &crate::sync_entity_context::RoomDirectory,
+    vault_snapshot: &crate::sync_policy::ProjectVaultSnapshot,
 ) -> Result<Value, ManagementError> {
-    execute_decision(transaction, action, now, rooms, None)
+    execute_decision(transaction, action, now, rooms, vault_snapshot, None)
 }
 
 pub(crate) fn execute_with_ports(
@@ -54,9 +59,10 @@ pub(crate) fn execute_with_ports(
     action: &Action,
     now: f64,
     rooms: &crate::sync_entity_context::RoomDirectory,
+    vault_snapshot: &crate::sync_policy::ProjectVaultSnapshot,
     ports: &dyn crate::agent_lifecycle_runtime::LifecyclePorts,
 ) -> Result<Value, ManagementError> {
-    execute_decision(transaction, action, now, rooms, Some(ports))
+    execute_decision(transaction, action, now, rooms, vault_snapshot, Some(ports))
 }
 
 fn execute_decision(
@@ -64,6 +70,7 @@ fn execute_decision(
     action: &Action,
     now: f64,
     rooms: &crate::sync_entity_context::RoomDirectory,
+    vault_snapshot: &crate::sync_policy::ProjectVaultSnapshot,
     ports: Option<&dyn crate::agent_lifecycle_runtime::LifecyclePorts>,
 ) -> Result<Value, ManagementError> {
     if !rooms.matches(transaction)? {
@@ -218,6 +225,7 @@ fn execute_decision(
     crate::sync_policy::maintain_entity_projections(
         transaction,
         state_dir,
+        vault_snapshot,
         rooms,
         |_, _, _, _| true,
     )?;
