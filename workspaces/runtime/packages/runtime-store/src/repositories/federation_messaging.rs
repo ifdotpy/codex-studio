@@ -169,11 +169,15 @@ impl FederationMessagingRepository {
 }
 
 pub(crate) fn queued_outbox_size(db: &Connection, peer: &str) -> StoreResult<(u64, u64)> {
-    Ok(db.query_row(
+    let (count, bytes): (i64, i64) = db.query_row(
         "SELECT count(*),COALESCE(sum(length(CAST(record AS BLOB))),0) FROM runtime_federation_outbox WHERE peer_id=?1 AND json_extract(record,'$.status')='queued'",
         [peer],
-        |row| Ok((row.get::<_, u64>(0)?, row.get::<_, u64>(1)?)),
-    )?)
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    Ok((
+        u64::try_from(count).map_err(|_| StoreError::RecordContract("federation queue size"))?,
+        u64::try_from(bytes).map_err(|_| StoreError::RecordContract("federation queue size"))?,
+    ))
 }
 
 #[cfg(test)]
