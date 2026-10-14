@@ -1033,8 +1033,18 @@ async fn unsupported_callback(method: &str) {
         .await;
     let wire = peer.next_write().await;
     assert_eq!(wire.value["id"], "callback");
-    assert_eq!(wire.value["error"]["code"], -32601);
-    assert_eq!(wire.value["error"]["data"]["kind"], "unsupported_callback");
+    if method == "item/tool/call" {
+        assert_eq!(
+            wire.value["result"],
+            json!({
+                "success":false,
+                "contentItems":[{"type":"inputText","text":"Unknown managed agent"}]
+            })
+        );
+    } else {
+        assert_eq!(wire.value["error"]["code"], -32601);
+        assert_eq!(wire.value["error"]["data"]["kind"], "unsupported_callback");
+    }
     state
         .bridge
         .run(move |store| {

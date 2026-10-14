@@ -36,10 +36,7 @@ pub(super) fn managed_response(
         .and_then(|params| params.get("threadId"))
         .and_then(Value::as_str)
     else {
-        return Some(error_response(
-            request,
-            "Managed tool callback has no thread identity",
-        ));
+        return Some(unknown_managed_agent_response(request));
     };
     let Some(turn) = request
         .params
@@ -47,10 +44,7 @@ pub(super) fn managed_response(
         .and_then(|params| params.get("turnId"))
         .and_then(Value::as_str)
     else {
-        return Some(error_response(
-            request,
-            "Managed tool callback has no turn identity",
-        ));
+        return Some(unknown_managed_agent_response(request));
     };
     let body = match callback_context(store, account, generation, thread, turn) {
         Ok(Some(context)) => match crate::provider_callbacks::managed_tool_ports_with_monitor_wake(
@@ -73,10 +67,7 @@ pub(super) fn managed_response(
             Ok(crate::provider_callbacks::CallbackDecision::Unsupported) => unsupported(),
             Err(error) => ResponseBody::Error(json!({"code":-32603,"message":error.to_string()})),
         },
-        Ok(None) => ResponseBody::Error(json!({
-            "code":-32603,
-            "message":"Managed tool callback has no unique active turn for this account generation"
-        })),
+        Ok(None) => return Some(unknown_managed_agent_response(request)),
         Err(_) => ResponseBody::Error(
             json!({"code":-32603,"message":"Managed tool callback context is unavailable"}),
         ),
@@ -145,10 +136,16 @@ fn callback_context(
     }))
 }
 
-fn error_response(request: &studio_runtime_providers::RequestFrame, message: &str) -> Frame {
+fn unknown_managed_agent_response(request: &studio_runtime_providers::RequestFrame) -> Frame {
     Frame::Response {
         id: request.id.clone(),
-        body: ResponseBody::Error(json!({"code":-32603,"message":message})),
+        // Match Python's dynamic tool callback when its managed-agent lookup
+        // fails: codex_runtime.py:8521-8529 returns a tool result rather than
+        // a JSON-RPC protocol error.
+        body: ResponseBody::Result(json!({
+            "success":false,
+            "contentItems":[{"type":"inputText","text":"Unknown managed agent"}]
+        })),
         fields: Default::default(),
     }
 }
