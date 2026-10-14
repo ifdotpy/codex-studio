@@ -538,7 +538,16 @@ fn post_commit_value(
             ("association", observation, None)
         }
     };
-    let mut value = json!({"kind":kind, "agent":observation.agent, "method":observation.method, "params":observation.params,
+    // Python's stream callback intentionally resolves an agent through its
+    // account/connection/thread index and carries no agent payload. Rust keeps
+    // the frozen agent on its internal effect for snapshot projection; omit
+    // that implementation context from the cross-language corpus shape.
+    let agent = if kind == "stream" {
+        Value::Null
+    } else {
+        observation.agent.clone().unwrap_or(Value::Null)
+    };
+    let mut value = json!({"kind":kind, "agent":agent, "method":observation.method, "params":observation.params,
         "account":observation.delivery.provider_handle.strip_prefix("account:"),
         "connection":format!("connection-{}", observation.delivery.generation),
         "at":if kind=="analytics" { observation.observed_at } else { observation.provider_at },

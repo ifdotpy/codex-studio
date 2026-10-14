@@ -1108,12 +1108,21 @@ pub(super) fn persist_publication_batch(
         params![prefix, format!("{prefix}~")],
         |row| row.get(0),
     )?;
-    let additions = batch.effects.len() + usize::from(batch.analytics_overflow > 0);
     let pending = usize::try_from(pending).map_err(|_| WorkerError::Capacity)?;
-    if pending.saturating_add(additions) > MAX_PENDING_PUBLICATION_RECEIPTS {
-        return Err(WorkerError::Capacity);
-    }
+    let available = MAX_PENDING_PUBLICATION_RECEIPTS.saturating_sub(pending);
+    let mut retained = 0;
+    let mut overflow = batch.analytics_overflow;
+    let mut publication_overflow = 0_u64;
+    let mut last_saved = None;
     for (index, effect) in batch.effects.iter().enumerate() {
+        if retained == available {
+            if is_analytics_effect(effect) {
+                overflow = overflow.saturating_add(1);
+            } else {
+                publication_overflow = publication_overflow.saturating_add(1);
+            }
+            continue;
+        }
         let operation = format!(
             "notification-publication:{account}:{}:{index}",
             batch.sequence
@@ -1124,21 +1133,63 @@ pub(super) fn persist_publication_batch(
             "pending",
             json!({"account":account,"sequence":batch.sequence,"index":index,"effect":effect}),
         )?;
+        retained += 1;
+        last_saved = Some(operation);
     }
-    if batch.analytics_overflow > 0 {
-        let operation = format!(
-            "notification-publication:{account}:{}:{}",
-            batch.sequence,
-            batch.effects.len()
-        );
-        save(
-            tx,
-            &operation,
-            "pending",
-            json!({"account":account,"sequence":batch.sequence,"index":batch.effects.len(),"analyticsOverflow":batch.analytics_overflow}),
-        )?;
+    if overflow > 0 || publication_overflow > 0 {
+        if last_saved.is_none() && available > 0 {
+            let operation = format!(
+                "notification-publication:{account}:{}:{}",
+                batch.sequence,
+                batch.effects.len()
+            );
+            save(
+                tx,
+                &operation,
+                "pending",
+                json!({
+                    "account":account,
+                    "sequence":batch.sequence,
+                    "index":batch.effects.len(),
+                    "analyticsOverflow":overflow,
+                    "publicationOverflow":publication_overflow,
+                }),
+            )?;
+            last_saved = Some(operation);
+        }
+        let target = if let Some(operation) = last_saved {
+            Some(format!("account-worker:{operation}"))
+        } else {
+            tx.query_row(
+                "SELECT id FROM runtime_operation_receipts WHERE id>=?1 AND id<?2 ORDER BY json_extract(result,'$.sequence') DESC,json_extract(result,'$.index') DESC,rowid DESC LIMIT 1",
+                params![prefix, format!("{prefix}~")],
+                |row| row.get::<_, String>(0),
+            ).optional()?
+        };
+        if let Some(id) = target {
+            tx.execute(
+                "UPDATE runtime_operation_receipts SET result=json_set(json_set(result,'$.analyticsOverflow',COALESCE(json_extract(result,'$.analyticsOverflow'),0)+?2),'$.publicationOverflow',COALESCE(json_extract(result,'$.publicationOverflow'),0)+?3) WHERE id=?1",
+                params![
+                    id,
+                    overflow.min(i64::MAX as u64) as i64,
+                    publication_overflow.min(i64::MAX as u64) as i64
+                ],
+            )?;
+        } else {
+            // The only reachable case is a legacy database already beyond the
+            // named cap with no publication rows to annotate. Preserve the
+            // provider commit; the cap remains in force for all new receipts.
+        }
     }
     Ok(())
+}
+
+fn is_analytics_effect(effect: &crate::notification_dispatch::NotificationPostCommit) -> bool {
+    matches!(
+        effect,
+        crate::notification_dispatch::NotificationPostCommit::Analytics { .. }
+            | crate::notification_dispatch::NotificationPostCommit::AnalyticsStream { .. }
+    )
 }
 
 /// Drain in sequence/index order. Publication is outside SQLite; deleting each
@@ -1181,10 +1232,23 @@ pub(super) fn drain_publications_with_hook(
             sink.publish(&effect)?;
         } else if value.get("analyticsOverflow").is_none() {
             return Err(invalid(&id));
+        } else {
+            crate::analytics_capture::record_publication_overflow(
+                store,
+                value
+                    .get("analyticsOverflow")
+                    .and_then(Value::as_u64)
+                    .unwrap_or_default(),
+                value
+                    .get("publicationOverflow")
+                    .and_then(Value::as_u64)
+                    .unwrap_or_default(),
+            )
+            .map_err(|_| WorkerError::Capacity)?;
         }
         before_delete()?;
-        // Analytics overflow currently has no Rust consumer. Treating it as a
-        // successful no-op prevents a permanently unconsumable receipt.
+        // Overflow diagnostics are persisted to analytics_meta before receipt
+        // deletion, matching Python's lossy analytics queue accounting.
         store.transaction_with(|tx| {
             let current: Option<String> = tx
                 .query_row(

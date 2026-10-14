@@ -6,6 +6,8 @@ use crate::notification_dispatch::{
     NotificationPostCommit, ProviderDeliveryIdentity,
 };
 use serde_json::Value;
+use std::sync::Arc;
+use studio_runtime_store::RuntimeStore;
 use studio_runtime_store::Transaction;
 
 pub struct RuntimeNotificationEffects;
@@ -74,7 +76,9 @@ impl NotificationEffects for RuntimeNotificationEffects {
             method,
             "item/agentMessage/delta" | "item/reasoning/textDelta" | "provider/generationStarted"
         ) {
-            result.push(NotificationPostCommit::TokenRateStream(observation(None)));
+            result.push(NotificationPostCommit::TokenRateStream(observation(
+                before.or(after),
+            )));
         }
         let Some(before) = before else {
             return result;
@@ -146,34 +150,35 @@ impl NotificationPostCommitSink for UnavailablePostCommitSink {
     }
 }
 
-/// Publishes committed notification effects to the process-local sync hubs.
-/// Analytics persistence has no Rust consumer yet, so those variants are an
-/// explicit successful no-op; the receipt is nevertheless drained.
+/// Publishes committed notification effects to analytics and HTTP sync hubs.
 pub struct RuntimeNotificationPostCommitSink {
     pub token_rates: std::sync::Arc<crate::token_rate::TokenRateHub>,
     pub resources: std::sync::Arc<crate::resource_notify::ResourceNotifications>,
+    pub analytics_store: Arc<RuntimeStore>,
+    pub process_id: String,
 }
 
 impl NotificationPostCommitSink for RuntimeNotificationPostCommitSink {
     fn publish(&self, effect: &NotificationPostCommit) -> Result<(), NotificationDispatchError> {
         match effect {
-            NotificationPostCommit::TokenRateStream(_) => {
-                self.token_rates
-                    .publish_observation(effect.clone())
-                    .map_err(|_| {
-                        NotificationDispatchError::Dependency("sync/token-rates/publication")
-                    })?;
+            NotificationPostCommit::TokenRateStream(_)
+            | NotificationPostCommit::TokenRateAssociation(_) => {
+                self.project_token_rate(effect)?;
             }
-            NotificationPostCommit::TokenRateAssociation(_) => {
-                // Python associates rollout response usage with a live rate
-                // sample; Rust has no response-rate association cache yet.
+            NotificationPostCommit::Analytics {
+                observation,
+                budget_capture_value: _,
+            } => {
+                self.capture_analytics(effect, observation, None)?;
+                self.project_token_rate(effect)?;
             }
-            NotificationPostCommit::Analytics { .. }
-            | NotificationPostCommit::AnalyticsStream { .. } => {
-                // Python schedules analytics capture after commit. Rust has no
-                // analytics stream writer; keep this a named no-op until it lands.
+            NotificationPostCommit::AnalyticsStream {
+                observation,
+                metrics,
+            } => {
+                self.capture_analytics(effect, observation, Some(metrics))?;
             }
-        }
+        };
         let observation = match effect {
             NotificationPostCommit::Analytics { observation, .. }
             | NotificationPostCommit::AnalyticsStream { observation, .. }
@@ -181,14 +186,108 @@ impl NotificationPostCommitSink for RuntimeNotificationPostCommitSink {
             | NotificationPostCommit::TokenRateAssociation(observation) => observation,
         };
         let delivery = &observation.delivery;
+        let kind = match effect {
+            NotificationPostCommit::Analytics { .. } => "analytics",
+            NotificationPostCommit::AnalyticsStream { .. } => "analyticsStream",
+            NotificationPostCommit::TokenRateStream(_) => "tokenRateStream",
+            NotificationPostCommit::TokenRateAssociation(_) => "tokenRateAssociation",
+        };
         let request = serde_json::json!({
-            "requestId": format!("provider-publication:{}:{}:{}", delivery.provider_handle, delivery.generation, delivery.cursor),
+            "requestId": format!("provider-publication:{}:{}:{}:{kind}", delivery.provider_handle, delivery.generation, delivery.cursor),
             "resources": [{"kind":"state"}],
         });
+        // A repeated full-state invalidation is a set operation: it asks clients
+        // to re-read current state and cannot duplicate or mutate stored rows.
         self.resources
             .publish_once(&request)
             .map_err(|_| NotificationDispatchError::Dependency("sync/resources/publication"))?;
         Ok(())
+    }
+}
+
+impl RuntimeNotificationPostCommitSink {
+    fn project_token_rate(
+        &self,
+        effect: &NotificationPostCommit,
+    ) -> Result<(), NotificationDispatchError> {
+        let observation = match effect {
+            NotificationPostCommit::Analytics { observation, .. }
+            | NotificationPostCommit::TokenRateStream(observation)
+            | NotificationPostCommit::TokenRateAssociation(observation) => observation,
+            NotificationPostCommit::AnalyticsStream { .. } => {
+                return Err(NotificationDispatchError::InvalidNotification);
+            }
+        };
+        let kind = match effect {
+            NotificationPostCommit::Analytics { .. } => "analytics",
+            NotificationPostCommit::TokenRateStream(_) => "tokenRateStream",
+            NotificationPostCommit::TokenRateAssociation(_) => "tokenRateAssociation",
+            NotificationPostCommit::AnalyticsStream { .. } => {
+                return Err(NotificationDispatchError::InvalidNotification);
+            }
+        };
+        let identity = &observation.delivery;
+        let pending = crate::analytics_capture::token_rate_delivery_pending(
+            &self.analytics_store,
+            &self.process_id,
+            &identity.provider_handle,
+            identity.generation,
+            identity.cursor,
+            kind,
+        )
+        .map_err(|_| NotificationDispatchError::Dependency("analytics/token-rate-receipt"))?;
+        if !pending {
+            return Ok(());
+        }
+        self.token_rates
+            .publish_observation(effect.clone())
+            .map_err(|_| NotificationDispatchError::Dependency("sync/token-rates/publication"))?;
+        crate::analytics_capture::mark_token_rate_delivered(
+            &self.analytics_store,
+            &self.process_id,
+            &identity.provider_handle,
+            identity.generation,
+            identity.cursor,
+            kind,
+        )
+        .map_err(|_| NotificationDispatchError::Dependency("analytics/token-rate-receipt"))?;
+        Ok(())
+    }
+
+    fn capture_analytics(
+        &self,
+        effect: &NotificationPostCommit,
+        observation: &NotificationObservation,
+        stream: Option<&crate::notification_dispatch::NotificationStreamMetrics>,
+    ) -> Result<bool, NotificationDispatchError> {
+        let agent = observation
+            .agent
+            .as_ref()
+            .ok_or(NotificationDispatchError::InvalidNotification)?;
+        let prepared = crate::analytics_capture::PreparedCapture::event(
+            agent,
+            &observation.method,
+            &observation.params,
+            observation.observed_at,
+            observation.observed_at,
+            crate::analytics_capture::CaptureSource::Live,
+        )
+        .map_err(|_| NotificationDispatchError::Dependency("analytics/capture"))?;
+        let kind = match effect {
+            NotificationPostCommit::Analytics { .. } => "analytics",
+            NotificationPostCommit::AnalyticsStream { .. } => "analyticsStream",
+            _ => return Err(NotificationDispatchError::InvalidNotification),
+        };
+        crate::analytics_capture::capture_notification_effect(
+            &self.analytics_store,
+            &observation.delivery.provider_handle,
+            observation.delivery.generation,
+            observation.delivery.cursor,
+            kind,
+            &prepared,
+            stream,
+        )
+        .map_err(|_| NotificationDispatchError::Dependency("analytics/capture"))
     }
 }
 

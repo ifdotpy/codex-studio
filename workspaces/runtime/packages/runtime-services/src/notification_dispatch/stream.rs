@@ -183,6 +183,10 @@ impl NotificationStreamBuffer {
                 } else {
                     text
                 });
+            // Bind the aggregated capture to its last included provider cursor.
+            // This keeps the durable analytics idempotency watermark monotone
+            // with the account receipt order while `observed_at` stays first-event time.
+            saved.delivery = observation.delivery.clone();
             metrics.bytes = metrics.bytes.saturating_add(delta.len() as u64);
             metrics.characters = metrics
                 .characters

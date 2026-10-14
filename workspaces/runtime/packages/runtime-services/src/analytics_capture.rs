@@ -3,6 +3,7 @@
 //! Prepared payload measurements happen before the writer is held. A checked
 //! snapshot selects only the affected rows; no unbounded history is loaded.
 use crate::analytics_measurements::{item_sizes, payload_size};
+use crate::notification_dispatch::NotificationStreamMetrics;
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde_json::{Value, json};
 use studio_runtime_schema::shared_values::MAX_SAFE_INTEGER;
@@ -372,7 +373,7 @@ impl CaptureDecision {
             Repo::write(tx, *table, row)?;
         }
         for n in &self.notifications {
-            tx.execute("INSERT INTO analytics_notifications VALUES (?,?,?,?,?,1,?) ON CONFLICT(id) DO UPDATE SET count=count+1,bytes=bytes+excluded.bytes",params![n["id"].as_str(),n["agent"].as_str(),n["root"].as_str(),n["method"].as_str(),n["hour"].as_i64(),n["bytes"].as_i64()])?;
+            tx.execute("INSERT INTO analytics_notifications VALUES (?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET count=count+excluded.count,bytes=bytes+excluded.bytes",params![n["id"].as_str(),n["agent"].as_str(),n["root"].as_str(),n["method"].as_str(),n["hour"].as_i64(),n["count"].as_i64().unwrap_or(1),n["bytes"].as_i64()])?;
         }
         if let Some(n) = &self.limit {
             tx.execute(
@@ -401,6 +402,255 @@ pub fn capture(
         Ok(decision)
     })
 }
+
+/// Apply an analytics publication exactly once, even if the account worker
+/// crashes after this transaction commits but before deleting its receipt.
+/// The receipt marker and all analytics rows commit together in analytics.sqlite3.
+pub fn capture_notification_effect(
+    store: &RuntimeStore,
+    provider_handle: &str,
+    generation: u64,
+    cursor: u64,
+    capture_kind: &str,
+    prepared: &PreparedCapture,
+    stream: Option<&NotificationStreamMetrics>,
+) -> Result<bool, CaptureError> {
+    if provider_handle.is_empty()
+        || provider_handle.len() > 256
+        || !matches!(capture_kind, "analytics" | "analyticsStream")
+    {
+        return Err(CaptureError::Invalid("/captureIdentity"));
+    }
+    let generation = i64::try_from(generation).map_err(|_| CaptureError::Invalid("/generation"))?;
+    let cursor = i64::try_from(cursor).map_err(|_| CaptureError::Invalid("/cursor"))?;
+    let effect_bit = if capture_kind == "analytics" {
+        1_i64
+    } else {
+        2_i64
+    };
+    store.analytics_transaction(|tx, canvas| {
+        tx.execute(
+            "CREATE TABLE IF NOT EXISTS analytics_capture_receipts (provider TEXT PRIMARY KEY,generation INTEGER NOT NULL,cursor INTEGER NOT NULL,effects INTEGER NOT NULL)",
+            [],
+        )?;
+        let prior: Option<(i64, i64, i64)> = tx
+            .query_row(
+                "SELECT generation,cursor,effects FROM analytics_capture_receipts WHERE provider=?1",
+                [provider_handle],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .optional()?;
+        if prior.is_some_and(|(saved_generation, saved_cursor, effects)| {
+            generation < saved_generation
+                || generation == saved_generation
+                    && (cursor < saved_cursor
+                        || cursor == saved_cursor && effects & effect_bit != 0)
+        }) {
+            return Ok(false);
+        }
+        if prior.is_some_and(|(saved_generation, saved_cursor, _)| {
+            generation > saved_generation || cursor > saved_cursor
+        }) {
+            tx.execute(
+                "UPDATE analytics_capture_receipts SET generation=?2,cursor=?3,effects=?4 WHERE provider=?1",
+                params![provider_handle, generation, cursor, effect_bit],
+            )?;
+        } else {
+            tx.execute(
+                "INSERT INTO analytics_capture_receipts(provider,generation,cursor,effects) VALUES (?1,?2,?3,?4) ON CONFLICT(provider) DO UPDATE SET effects=analytics_capture_receipts.effects | excluded.effects",
+                params![provider_handle, generation, cursor, effect_bit],
+            )?;
+        }
+        check_identity(canvas, prepared.agent())?;
+        let mut decision = decide(CaptureSnapshot::load(tx, prepared.clone())?)?;
+        if let Some(metrics) = stream {
+            apply_stream_metrics(&mut decision, prepared, metrics);
+        }
+        decision.apply(tx)?;
+        Ok(true)
+    })
+}
+
+/// Start a fresh volatile token-rate projection epoch. Token-rate snapshots are
+/// process-local; removing the prior epoch's watermarks lets restart replay
+/// rebuild them from pending durable publications.
+pub fn start_token_rate_process(
+    store: &RuntimeStore,
+    process_id: &str,
+) -> Result<(), CaptureError> {
+    if process_id.is_empty() || process_id.len() > 128 {
+        return Err(CaptureError::Invalid("/processId"));
+    }
+    store.analytics_transaction(|tx, _| {
+        tx.execute_batch(
+            "CREATE TABLE IF NOT EXISTS token_rate_receipt_process (id INTEGER PRIMARY KEY CHECK(id=1),process_id TEXT NOT NULL);\
+             CREATE TABLE IF NOT EXISTS token_rate_publication_receipts (process_id TEXT NOT NULL,provider TEXT NOT NULL,generation INTEGER NOT NULL,cursor INTEGER NOT NULL,effects INTEGER NOT NULL,PRIMARY KEY(process_id,provider));",
+        )?;
+        let current: Option<String> = tx
+            .query_row(
+                "SELECT process_id FROM token_rate_receipt_process WHERE id=1",
+                [],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if current.as_deref() != Some(process_id) {
+            tx.execute("DELETE FROM token_rate_publication_receipts", [])?;
+            tx.execute(
+                "INSERT INTO token_rate_receipt_process(id,process_id) VALUES (1,?1) ON CONFLICT(id) DO UPDATE SET process_id=excluded.process_id",
+                [process_id],
+            )?;
+        }
+        Ok(())
+    })
+}
+
+/// Preserve the lossy queue's overflow count in analytics coverage metadata.
+/// Python's Runtime.schedule_analytics_captures records queueOverflow instead
+/// of failing the already committed provider notification.
+pub fn record_publication_overflow(
+    store: &RuntimeStore,
+    analytics_overflow: u64,
+    publication_overflow: u64,
+) -> Result<(), CaptureError> {
+    let dropped = analytics_overflow.saturating_add(publication_overflow);
+    if dropped == 0 {
+        return Ok(());
+    }
+    store.analytics_transaction(|tx, _| {
+        tx.execute(
+            "CREATE TABLE IF NOT EXISTS analytics_meta (key TEXT PRIMARY KEY,value TEXT NOT NULL)",
+            [],
+        )?;
+        tx.execute(
+            "INSERT INTO analytics_meta(key,value) VALUES ('captureErrors',json_object('count',?1,'last',json_object('at',strftime('%s','now'),'operation','analytics_capture_queue','code','queueOverflow','error','Publication queue limit reached'))) ON CONFLICT(key) DO UPDATE SET value=json_set(analytics_meta.value,'$.count',COALESCE(json_extract(analytics_meta.value,'$.count'),0)+?1,'$.last',json_object('at',strftime('%s','now'),'operation','analytics_capture_queue','code','queueOverflow','error','Publication queue limit reached'))",
+            [dropped.min(i64::MAX as u64) as i64],
+        )?;
+        Ok(())
+    })
+}
+
+pub fn token_rate_delivery_pending(
+    store: &RuntimeStore,
+    process_id: &str,
+    provider_handle: &str,
+    generation: u64,
+    cursor: u64,
+    effect_kind: &str,
+) -> Result<bool, CaptureError> {
+    let generation = i64::try_from(generation).map_err(|_| CaptureError::Invalid("/generation"))?;
+    let cursor = i64::try_from(cursor).map_err(|_| CaptureError::Invalid("/cursor"))?;
+    let effect_bit = token_rate_effect_bit(effect_kind)?;
+    store.analytics_transaction(|tx, _| {
+        let prior: Option<(i64, i64, i64)> = tx
+            .query_row(
+                "SELECT generation,cursor,effects FROM token_rate_publication_receipts WHERE process_id=?1 AND provider=?2",
+                params![process_id, provider_handle],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .optional()?;
+        Ok(!prior.is_some_and(|(saved_generation, saved_cursor, effects)| {
+            generation < saved_generation
+                || generation == saved_generation
+                    && (cursor < saved_cursor
+                        || cursor == saved_cursor && effects & effect_bit != 0)
+        }))
+    })
+}
+
+pub fn mark_token_rate_delivered(
+    store: &RuntimeStore,
+    process_id: &str,
+    provider_handle: &str,
+    generation: u64,
+    cursor: u64,
+    effect_kind: &str,
+) -> Result<(), CaptureError> {
+    let generation = i64::try_from(generation).map_err(|_| CaptureError::Invalid("/generation"))?;
+    let cursor = i64::try_from(cursor).map_err(|_| CaptureError::Invalid("/cursor"))?;
+    let effect_bit = token_rate_effect_bit(effect_kind)?;
+    store.analytics_transaction(|tx, _| {
+        let prior: Option<(i64, i64)> = tx
+            .query_row(
+                "SELECT generation,cursor FROM token_rate_publication_receipts WHERE process_id=?1 AND provider=?2",
+                params![process_id, provider_handle],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
+        if prior.is_some_and(|(saved_generation, saved_cursor)| {
+            generation < saved_generation
+                || generation == saved_generation && cursor < saved_cursor
+        }) {
+            return Ok(());
+        }
+        tx.execute(
+            "INSERT INTO token_rate_publication_receipts(process_id,provider,generation,cursor,effects) VALUES (?1,?2,?3,?4,?5) ON CONFLICT(process_id,provider) DO UPDATE SET generation=excluded.generation,cursor=excluded.cursor,effects=CASE WHEN excluded.generation>token_rate_publication_receipts.generation OR excluded.cursor>token_rate_publication_receipts.cursor THEN excluded.effects ELSE token_rate_publication_receipts.effects | excluded.effects END",
+            params![process_id, provider_handle, generation, cursor, effect_bit],
+        )?;
+        Ok(())
+    })
+}
+
+fn token_rate_effect_bit(effect_kind: &str) -> Result<i64, CaptureError> {
+    match effect_kind {
+        "analytics" => Ok(1),
+        "tokenRateStream" => Ok(2),
+        "tokenRateAssociation" => Ok(4),
+        _ => Err(CaptureError::Invalid("/effectKind")),
+    }
+}
+
+fn apply_stream_metrics(
+    decision: &mut CaptureDecision,
+    prepared: &PreparedCapture,
+    metrics: &NotificationStreamMetrics,
+) {
+    let meta = prepared.meta();
+    decision.notifications = metrics
+        .hours
+        .iter()
+        .map(|hour| {
+            json!({
+                "id": python_json_compact(&json!([meta["agentId"], prepared.method, hour.hour])),
+                "agent": meta["agentId"],
+                "root": meta["rootId"],
+                "method": prepared.method,
+                "hour": hour.hour,
+                "count": hour.count,
+                "bytes": hour.encoded_bytes,
+            })
+        })
+        .collect();
+
+    let synthetic_delta = prepared.params["delta"].as_str().unwrap_or_default();
+    let total_deltas = metrics.hours.iter().map(|hour| hour.count).sum::<u64>();
+    let extra = [
+        total_deltas.saturating_sub(1),
+        metrics.bytes.saturating_sub(synthetic_delta.len() as u64),
+        metrics
+            .characters
+            .saturating_sub(synthetic_delta.chars().count() as u64),
+        metrics.lines.saturating_sub(
+            synthetic_delta
+                .bytes()
+                .filter(|byte| *byte == b'\n')
+                .count() as u64,
+        ),
+    ];
+    for (table, row) in &mut decision.rows {
+        if *table != CaptureTable::Items || !row["stream"].is_object() {
+            continue;
+        }
+        for (field, addition) in ["deltas", "bytes", "chars", "lines"].into_iter().zip(extra) {
+            row["stream"][field] = json!(
+                row["stream"][field]
+                    .as_u64()
+                    .unwrap_or_default()
+                    .saturating_add(addition)
+            );
+        }
+    }
+}
+
 pub(crate) fn check_identity(canvas: &Connection, agent: &Value) -> Result<(), CaptureError> {
     let raw: Option<String> = canvas
         .query_row(
@@ -458,7 +708,7 @@ pub fn decide(snapshot: CaptureSnapshot) -> Result<CaptureDecision, CaptureError
     if q.source == CaptureSource::Live && !q.model {
         let hour = (at / 3600.).floor() as i64 * 3600;
         result.notifications.push(
-            json!({"id":python_json_compact(&json!([q.agent["id"],method,hour])),"agent":q.agent["id"],"root":meta["rootId"],"method":method,"hour":hour,"bytes":python_json_compact(p).len()}),
+            json!({"id":python_json_compact(&json!([q.agent["id"],method,hour])),"agent":q.agent["id"],"root":meta["rootId"],"method":method,"hour":hour,"count":1,"bytes":python_json_compact(p).len()}),
         );
     }
     if method == "thread/tokenUsage/updated" {
