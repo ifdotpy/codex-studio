@@ -12,19 +12,26 @@ pub mod provider_stdio;
 #[cfg(unix)]
 pub mod provider_task;
 #[cfg(unix)]
+mod pty_host;
+#[cfg(unix)]
 pub mod stream_child;
 #[cfg(unix)]
 mod supervisor_child;
 #[cfg(unix)]
 pub mod supervisor_daemon;
 #[cfg(unix)]
-mod supervisor_identity;
+pub(crate) mod supervisor_identity;
 mod transport;
 
 pub use client::SupervisorClient;
 pub use ports::{ProgressWatch, PtyHost};
 pub use protocol::*;
 pub use provider_launch::{ProviderHandle, ProviderLaunchSpec};
+#[cfg(unix)]
+pub use pty_host::{
+    LocalPtyHost, PtyHostError, PtyIdentity, PtySession, cleanup_orphan, terminal_environment,
+    terminal_environment_from,
+};
 pub use transport::SupervisorTransport;
 
 #[cfg(test)]

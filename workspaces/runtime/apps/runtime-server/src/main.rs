@@ -5,6 +5,8 @@ mod claude_login;
 #[cfg(unix)]
 mod host_runtime;
 #[cfg(unix)]
+mod io_runtime;
+#[cfg(unix)]
 mod runtime_shutdown;
 use std::env;
 use std::fs::File;
@@ -108,6 +110,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     )
     .with_account_driver(account_driver.clone());
     #[cfg(unix)]
+    let io_runtime = Arc::new(io_runtime::IoRuntime::start(store.clone())?);
+    #[cfg(unix)]
+    {
+        let runtime = Arc::clone(&io_runtime);
+        state = state
+            .with_terminal_driver(io_runtime.terminal_driver())
+            .with_terminal_write_gate(Arc::new(move || runtime.reconcile_before_write()));
+    }
+    #[cfg(unix)]
     claude_login::attach(
         &mut state,
         PathBuf::from(&state_dir),
@@ -126,7 +137,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     {
         Ok(runtime) => runtime,
         Err(error) => {
-            state.shutdown_services().await?;
+            let terminal_cleanup = shutdown_io_runtime(Arc::clone(&io_runtime)).await;
+            let services_cleanup = state.shutdown_services().await;
+            terminal_cleanup?;
+            services_cleanup?;
             return Err(error.into());
         }
     };
@@ -135,7 +149,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Ok(app) => app,
         Err(error) => {
             #[cfg(unix)]
-            runtime_shutdown::close(runtime, &state).await?;
+            {
+                let terminal_cleanup = shutdown_io_runtime(Arc::clone(&io_runtime)).await;
+                let runtime_cleanup = runtime_shutdown::close(runtime, &state).await;
+                terminal_cleanup?;
+                runtime_cleanup?;
+            }
             #[cfg(not(unix))]
             state.shutdown_services().await?;
             return Err(error);
@@ -156,9 +175,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     })
     .await;
     #[cfg(unix)]
-    runtime_shutdown::close(runtime, &state).await?;
+    {
+        let terminal_cleanup = shutdown_io_runtime(Arc::clone(&io_runtime)).await;
+        let runtime_cleanup = runtime_shutdown::close(runtime, &state).await;
+        terminal_cleanup?;
+        runtime_cleanup?;
+    }
     #[cfg(not(unix))]
     state.shutdown_services().await?;
+    result?;
+    Ok(())
+}
+
+#[cfg(unix)]
+async fn shutdown_io_runtime(
+    runtime: Arc<io_runtime::IoRuntime>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let result = tokio::task::spawn_blocking(move || runtime.shutdown()).await?;
     result?;
     Ok(())
 }

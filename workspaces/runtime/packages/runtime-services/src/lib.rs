@@ -113,6 +113,8 @@ pub mod task_recovery;
 pub mod task_recovery_store;
 pub mod terminal_driver;
 pub mod thread_fork_runtime;
+#[cfg(unix)]
+pub mod terminal_pty;
 pub mod thread_prepare;
 pub mod token_rate;
 pub mod tool_requests;

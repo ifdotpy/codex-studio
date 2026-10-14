@@ -11,6 +11,11 @@ use studio_runtime_services::token_rate::TokenRateHub;
 use studio_runtime_store::RuntimeStore;
 use tokio::sync::Notify;
 
+#[cfg(unix)]
+use studio_runtime_services::terminal_driver::TerminalDriver;
+#[cfg(unix)]
+use studio_runtime_services::terminal_pty::PtyTerminalSession;
+
 use crate::error::error_response;
 use crate::middleware;
 use crate::routes::{self, compose};
@@ -40,6 +45,10 @@ pub struct HttpState {
     pub(crate) public_origin: Option<String>,
     pub(crate) validators: Registry,
     pub(crate) store: Option<Arc<RuntimeStore>>,
+    #[cfg(unix)]
+    terminal_driver: Option<Arc<TerminalDriver<PtyTerminalSession>>>,
+    #[cfg(unix)]
+    terminal_write_gate: Option<Arc<dyn Fn() -> bool + Send + Sync>>,
     pub(crate) account_policy:
         Option<Arc<studio_runtime_services::account_policy::AccountPolicyState>>,
     pub(crate) tool_catalog: Option<Arc<studio_runtime_services::thread_prepare::CatalogSnapshot>>,
@@ -92,6 +101,10 @@ impl HttpState {
             public_origin,
             validators: Registry::default(),
             store,
+            #[cfg(unix)]
+            terminal_driver: None,
+            #[cfg(unix)]
+            terminal_write_gate: None,
             account_policy,
             tool_catalog: None,
             model_catalog,
@@ -181,9 +194,31 @@ impl HttpState {
         Arc::clone(&self.sync_changes)
     }
 
+    #[cfg(unix)]
+    pub fn with_terminal_driver(mut self, driver: Arc<TerminalDriver<PtyTerminalSession>>) -> Self {
+        self.terminal_driver = Some(driver);
+        self
+    }
+
+    #[cfg(unix)]
+    pub fn with_terminal_write_gate(mut self, gate: Arc<dyn Fn() -> bool + Send + Sync>) -> Self {
+        self.terminal_write_gate = Some(gate);
+        self
+    }
+
     /// Shared publisher used by the provider account worker to publish token rates.
     pub fn token_rate_handle(&self) -> Arc<TokenRateHub> {
         Arc::clone(&self.token_rates)
+    }
+
+    #[cfg(unix)]
+    pub(crate) fn terminal_driver_handle(&self) -> Option<Arc<TerminalDriver<PtyTerminalSession>>> {
+        self.terminal_driver.clone()
+    }
+
+    #[cfg(unix)]
+    pub(crate) fn terminal_write_gate_handle(&self) -> Option<Arc<dyn Fn() -> bool + Send + Sync>> {
+        self.terminal_write_gate.clone()
     }
 }
 

@@ -434,6 +434,17 @@ class SubmissionUnknown(ResponseTimeout):
         self.submitted = submitted
 
 
+def app_server_launch_environment(*, home=None, isolated=False):
+    """Build the exact ambient environment used to launch a Codex AppServer."""
+    env = os.environ.copy()
+    if home is not None:
+        env["CODEX_HOME"] = str(home)
+    if isolated:
+        env.pop("OPENAI_API_KEY", None)
+        env.pop("CODEX_API_KEY", None)
+    return env
+
+
 class AppServer:
     WRITE_TIMEOUT = 5
     CALLBACK_QUEUE_LIMIT = 65536
@@ -488,12 +499,8 @@ class AppServer:
         from codex_log_rotation import RotatingLog
         self.log = RotatingLog(root / "app-server.log", max_bytes=50 * 1024 * 1024, backups=4)
         command = [executable or os.environ.get("CODEX_BIN", "codex"), "app-server", "--listen", "stdio://"]
-        env = os.environ.copy()
-        if home is not None:
-            env["CODEX_HOME"] = str(home)
+        env = app_server_launch_environment(home=home, isolated=isolated)
         if isolated:
-            env.pop("OPENAI_API_KEY", None)
-            env.pop("CODEX_API_KEY", None)
             command.extend(["-c", 'cli_auth_credentials_store="file"'])
         self.provider_options = (provider_options or {}).get("claudeOptions", {})
         if provider == "claude" and process_factory is None:
