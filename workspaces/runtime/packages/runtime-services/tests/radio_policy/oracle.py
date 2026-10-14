@@ -5,18 +5,12 @@ from pathlib import Path
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "turn_lifecycle"))
-from oracle_guard import install_guard, IsolationViolation
+from oracle_guard import assert_isolated_path, install_guard
 
 GUARD = install_guard(block_processes=True)
-for key in ("HOME", "CODEX_HOME", "CLAUDE_CONFIG_DIR"):
-    if not os.environ.get(key, "").startswith("/var/tmp/"):
-        raise IsolationViolation("disposable /var/tmp homes required")
 radio_tmp = os.environ.get("STUDIO_RADIO_TMPDIR")
 if radio_tmp:
-    radio_tmp_path = Path(radio_tmp).resolve()
-    radio_tmp_root = Path("/dev/shm/cs-rust-radio").resolve()
-    if radio_tmp_path != radio_tmp_root and radio_tmp_root not in radio_tmp_path.parents:
-        raise IsolationViolation("radio fixture state must stay under its /dev/shm root")
+    radio_tmp_path = assert_isolated_path(radio_tmp, "STUDIO_RADIO_TMPDIR")
     os.environ["TMPDIR"] = str(radio_tmp_path)
 
 SERVER_TESTS = Path(__file__).resolve().parents[6] / "workspaces/runtime/apps/server/tests"

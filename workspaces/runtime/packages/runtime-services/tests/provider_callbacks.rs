@@ -3,7 +3,11 @@
 #[path = "support/prepared_python.rs"]
 mod prepared_python;
 use serde_json::{Value, json};
-use std::{path::PathBuf, process::Command, sync::OnceLock};
+use std::{
+    path::PathBuf,
+    process::{Command, Stdio},
+    sync::OnceLock,
+};
 use studio_runtime_providers::{Frame, Method, RequestFrame, RequestId, ResponseBody};
 use studio_runtime_services::provider_callbacks::*;
 use studio_runtime_store::RuntimeStore;
@@ -18,13 +22,20 @@ fn template() -> &'static Template {
         let scratch = tempfile::tempdir().unwrap();
         let script =
             PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/provider_callbacks/oracle.py");
-        let output = Command::new(prepared_python::prepared_python(
-            &PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src"),
-        ))
-        .arg(script)
-        .arg(scratch.path())
-        .output()
-        .unwrap();
+        let source = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src");
+        let environment = prepared_python::IsolatedTestEnvironment::new();
+        let mut command = Command::new(prepared_python::prepared_python(&source));
+        environment.apply(&mut command);
+        command
+            .arg(&script)
+            .arg(scratch.path())
+            .stdin(Stdio::null());
+        let output = prepared_python::output_with_timeout(
+            &mut command,
+            &script,
+            prepared_python::PYTHON_ORACLE_TIMEOUT,
+        )
+        .unwrap_or_else(|error| panic!("provider callbacks Python oracle: {error}"));
         assert!(
             output.status.success(),
             "oracle: {}",
