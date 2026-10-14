@@ -106,13 +106,22 @@ impl CallbackRuntime {
     /// Commit Submitted before entering the port. False means a Written or
     /// retired receipt already proves completion; the caller only owes its ACK.
     pub fn deliver(&self, reply: &Reply) -> Result<bool, CallbackError> {
-        if !callbacks::delivery(&self.store, &reply.identity, DeliveryOutcome::Submitted)? {
+        let Some(receipt) = self.submit_committed(reply, || {
+            if !callbacks::delivery(&self.store, &reply.identity, DeliveryOutcome::Submitted)? {
+                return Ok(None);
+            }
+            self.port.deliver(reply, REPLY_DEADLINE).map(Some)
+        })?
+        else {
             return Ok(false);
-        }
-        let receipt = self.port.deliver(reply, REPLY_DEADLINE);
-        let outcome = match receipt {
-            Ok(receipt) if receipt.identity == reply.identity => receipt.outcome,
-            _ => ReplyOutcome::Unknown,
+        };
+        let Some(receipt) = receipt else {
+            return Ok(false);
+        };
+        let outcome = if receipt.identity == reply.identity {
+            receipt.outcome
+        } else {
+            ReplyOutcome::Unknown
         };
         callbacks::delivery(
             &self.store,

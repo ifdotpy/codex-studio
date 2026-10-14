@@ -844,6 +844,7 @@ mod tests {
                 operation: "read-1".into(),
                 actor: None,
                 expected_scope: None,
+                deleted_actor_session: None,
                 method: studio_runtime_providers::Method::from_wire("thread/list").unwrap(),
                 params: serde_json::json!({"limit":1}),
                 deadline: std::time::Instant::now() + Duration::from_secs(1),

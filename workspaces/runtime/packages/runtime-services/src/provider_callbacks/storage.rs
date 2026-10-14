@@ -126,6 +126,8 @@ fn response_body(saved: &Value, key: &str) -> Result<ResponseBody, CallbackError
 
 /// The retained worker calls this under CallbackRuntime's lifecycle gate, just
 /// before transport admission. No I/O occurs in this read.
+/// Recheck a prepared/submitted reply's durable identity and actor/card eligibility
+/// immediately before the lifecycle-gated Submitted transition and provider handoff.
 pub fn submission_ready(store: &RuntimeStore, reply: &Reply) -> Result<bool, CallbackError> {
     store.transaction_with(|tx| {
         let identity = &reply.identity;
@@ -141,7 +143,7 @@ pub fn submission_ready(store: &RuntimeStore, reply: &Reply) -> Result<bool, Cal
         {
             return Ok(false);
         }
-        if saved["delivery"] != "submitted" {
+        if !matches!(saved["delivery"].as_str(), Some("prepared" | "submitted")) {
             return Err(CallbackError::Unknown);
         }
         if response_body(&saved, &identity.key())? != reply.body {

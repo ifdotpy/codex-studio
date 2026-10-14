@@ -142,7 +142,9 @@ fn validate(request: &SessionRequest) -> Result<(), PortError> {
     let turn_view = request.params.get("itemsView").and_then(Value::as_str);
     let turn_limit = request.params.get("limit").and_then(Value::as_u64);
     let valid_turn_view = turn_view == Some("full")
-        || (turn_view == Some("notLoaded") && request.actor.is_some() && turn_limit == Some(1));
+        || (turn_view == Some("notLoaded")
+            && request.actor.is_some()
+            && matches!(turn_limit, Some(1 | 10)));
     if request
         .expected_scope
         .as_ref()
@@ -198,6 +200,7 @@ fn validate(request: &SessionRequest) -> Result<(), PortError> {
                 | Method::ThreadFork
                 | Method::ThreadCompactStart
                 | Method::ReviewStart
+                | Method::ThreadSettingsUpdate
                 | Method::ClaudeState
                 | Method::ClaudeCommands
                 | Method::ClaudeSettings
@@ -253,8 +256,11 @@ fn validate(request: &SessionRequest) -> Result<(), PortError> {
                 > 20
                 || request.params.get("sortDirection").and_then(Value::as_str) != Some("desc")
                 // full is used by codex_runtime.py import_thread;
-                // notLoaded is bounded in codex_safety_buffering.py.
+                // notLoaded limits 1 and 10 are used by codex_safety_buffering.py,
+                // codex_context_repair.py, codex_connection_recovery.py, and
+                // codex_turn_recovery.py respectively.
                 || !valid_turn_view))
+        || (request.method == Method::ThreadSettingsUpdate && !valid_settings_update(request))
         || (request.method == Method::OperationStatus
             && !request
                 .params
@@ -283,6 +289,65 @@ fn validate(request: &SessionRequest) -> Result<(), PortError> {
         return Err(PortError::Invalid);
     }
     Ok(())
+}
+
+fn valid_settings_update(request: &SessionRequest) -> bool {
+    let Some(params) = request.params.as_object() else {
+        return false;
+    };
+    if !request.operation.ends_with(":settings")
+        || request.operation.len() <= ":settings".len()
+        || params.keys().any(|key| {
+            !matches!(
+                key.as_str(),
+                "threadId"
+                    | "model"
+                    | "serviceTier"
+                    | "approvalPolicy"
+                    | "sandboxPolicy"
+                    | "effort"
+            )
+        })
+        || !["threadId", "model"].into_iter().all(|key| {
+            params
+                .get(key)
+                .and_then(Value::as_str)
+                .is_some_and(|value| !value.is_empty())
+        })
+        || !matches!(
+            params.get("serviceTier").and_then(Value::as_str),
+            Some("default" | "priority")
+        )
+        || params
+            .get("approvalPolicy")
+            .is_some_and(|value| !matches!(value.as_str(), Some("never" | "on-request")))
+        || params
+            .get("effort")
+            .is_some_and(|value| !value.as_str().is_some_and(|effort| !effort.is_empty()))
+    {
+        return false;
+    }
+    params.get("sandboxPolicy").is_none_or(|sandbox| {
+        let Some(policy) = sandbox.as_object() else {
+            return false;
+        };
+        match policy.get("type").and_then(Value::as_str) {
+            Some("readOnly" | "dangerFullAccess") => policy.len() == 1,
+            Some("workspaceWrite") => {
+                policy.len() == 3
+                    && policy
+                        .get("writableRoots")
+                        .and_then(Value::as_array)
+                        .is_some_and(|roots| {
+                            roots
+                                .iter()
+                                .all(|root| root.as_str().is_some_and(|path| !path.is_empty()))
+                        })
+                    && policy.get("networkAccess").is_some_and(Value::is_boolean)
+            }
+            _ => false,
+        }
+    })
 }
 #[derive(Clone, serde::Serialize, serde::Deserialize, PartialEq)]
 pub(super) struct Call {
@@ -361,10 +426,15 @@ mod validation_tests {
     }
 
     #[test]
-    fn only_safety_buffering_gets_bounded_not_loaded_turns() {
+    fn only_documented_actor_reads_get_bounded_not_loaded_turns() {
         assert!(validate(&turns_request("notLoaded", 1, true)).is_ok());
+        assert!(validate(&turns_request("notLoaded", 10, true)).is_ok());
         assert_eq!(
             validate(&turns_request("notLoaded", 2, true)),
+            Err(PortError::Invalid)
+        );
+        assert_eq!(
+            validate(&turns_request("notLoaded", 11, true)),
             Err(PortError::Invalid)
         );
         assert_eq!(
@@ -376,6 +446,28 @@ mod validation_tests {
             validate(&turns_request("full", 21, false)),
             Err(PortError::Invalid)
         );
+    }
+
+    #[test]
+    fn thread_settings_update_requires_exact_native_action_shape() {
+        let mut request = turns_request("full", 1, true);
+        request.method = Method::ThreadSettingsUpdate;
+        request.operation = "native-action:settings".into();
+        request.params = json!({
+            "threadId":"fixture-thread",
+            "model":"fixture-model",
+            "serviceTier":"default",
+            "approvalPolicy":"never",
+            "sandboxPolicy":{"type":"workspaceWrite","writableRoots":["/fixture"],"networkAccess":false},
+            "effort":"medium"
+        });
+        assert!(validate(&request).is_ok());
+
+        request.params["unexpected"] = json!(true);
+        assert_eq!(validate(&request), Err(PortError::Invalid));
+        request.params.as_object_mut().unwrap().remove("unexpected");
+        request.operation = "native-action".into();
+        assert_eq!(validate(&request), Err(PortError::Invalid));
     }
 
     #[test]
