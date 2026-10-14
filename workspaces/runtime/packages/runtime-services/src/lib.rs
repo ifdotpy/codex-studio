@@ -61,6 +61,7 @@ pub mod federation_messaging;
 pub mod historical_input_receipts;
 pub mod host_project_runtime;
 pub mod message_admission;
+pub mod maintenance;
 pub mod model_catalog;
 pub mod monitor_driver;
 pub mod monitor_lifecycle;
