@@ -50,6 +50,8 @@ facts = {
     "claude-connected": {
         "runningVersion": None,
         "installedVersion": "2.1.279",
+        "configuredVersion": "2.1.279",
+        "availableVersion": "2.1.279",
         "runningNote": "The exact version already running in Claude sessions is unknown.",
     },
 }
