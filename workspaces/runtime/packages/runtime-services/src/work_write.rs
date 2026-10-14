@@ -260,6 +260,35 @@ pub fn accepted_archive_tick(store: &RuntimeStore, now: f64) -> Result<usize, Wo
             if receipt_status != "unknown" {
                 current["archive"] = archive.clone();
             }
+            if retryable {
+                let mut row_intent = current.get("archiveIntent").cloned().unwrap_or_else(|| {
+                    json!({
+                        "id":intent_id,"status":"pending","owner":owner_id,"attempts":0,
+                        "created":intent.get("created").and_then(Value::as_f64).unwrap_or(now),
+                    })
+                });
+                row_intent["status"] = json!("pending");
+                row_intent["attempts"] = json!(next_attempt);
+                row_intent["nextAttemptAt"] = json!(now + delay as f64);
+                row_intent["lastOutcome"] = archive.clone();
+                row_intent["updated"] = json!(now);
+                current["archiveIntent"] = row_intent;
+            } else if receipt_status == "unknown" {
+                if let Some(mut row_intent) = current.get("archiveIntent").cloned() {
+                    row_intent["nextAttemptAt"] =
+                        json!(now + ACCEPTED_ARCHIVE_MAX_DELAY_SECONDS as f64);
+                    current["archiveIntent"] = row_intent;
+                }
+            } else if let Some(mut row_intent) = current.get("archiveIntent").cloned() {
+                row_intent["status"] = json!(if receipt_status == "complete" {
+                    "complete"
+                } else {
+                    "terminal"
+                });
+                row_intent["updated"] = json!(now);
+                row_intent["outcome"] = archive.clone();
+                current["archiveIntent"] = row_intent;
+            }
             WorkItemsRepository::update_work(tx, &task_id, &current)?;
             let mut final_intent = intent.clone();
             final_intent["status"] = json!(if retryable { "pending" } else { receipt_status });
@@ -281,6 +310,15 @@ pub fn accepted_archive_tick(store: &RuntimeStore, now: f64) -> Result<usize, Wo
         handled += 1;
     }
     Ok(handled)
+}
+
+/// Match Python's one-second maintenance cadence without coupling retry
+/// deadlines to the monotonic clock used to throttle the tick itself.
+pub fn accepted_archive_tick_due(
+    last: Option<std::time::Instant>,
+    now: std::time::Instant,
+) -> bool {
+    last.is_none_or(|last| now.saturating_duration_since(last) >= std::time::Duration::from_secs(1))
 }
 
 /// Persist uncertainty before the synchronous accept route attempts an archive
@@ -2572,7 +2610,8 @@ mod actor_tests {
     use super::SubmitWork;
     use super::{
         AcceptWork, ClaimWork, CreateWork, WorkActorWrite, WorkMutation, WorkWrite, WorkWriteError,
-        accepted_archive_due_records, write_action_as_agent, write_as_agent,
+        accepted_archive_due_records, accepted_archive_tick_due, write_action_as_agent,
+        write_as_agent,
     };
     use rusqlite::Connection;
     use serde_json::{Value, json};
@@ -2671,6 +2710,20 @@ mod actor_tests {
             serde_json::from_str::<Value>(&due[0].1).expect("receipt JSON")["intentId"],
             "archive-due:result-1"
         );
+    }
+
+    #[test]
+    fn accepted_archive_tick_matches_one_second_maintenance_cadence() {
+        let start = std::time::Instant::now();
+        assert!(accepted_archive_tick_due(None, start));
+        assert!(!accepted_archive_tick_due(
+            Some(start),
+            start + std::time::Duration::from_millis(999)
+        ));
+        assert!(accepted_archive_tick_due(
+            Some(start),
+            start + std::time::Duration::from_secs(1)
+        ));
     }
 
     #[test]

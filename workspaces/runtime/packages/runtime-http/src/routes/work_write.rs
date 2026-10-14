@@ -583,6 +583,28 @@ async fn finalize_accepted_archive(
     if let Some(object) = work.as_object_mut() {
         object.remove("archivePending");
     }
+    if retryable {
+        let intent_id = format!("{work_id}:{archive_result_id}");
+        work["archiveIntent"] = serde_json::json!({
+            "id": intent_id,
+            "status": "pending",
+            "owner": work["owner"],
+            "attempts": 0,
+            "created": updated,
+        });
+    } else if work.get("archiveIntent").is_some() {
+        let intent_status = if work["archive"]["status"] == "archived" {
+            "complete"
+        } else {
+            "terminal"
+        };
+        let archive_outcome = work["archive"].clone();
+        if let Some(intent) = work.get_mut("archiveIntent") {
+            intent["status"] = serde_json::json!(intent_status);
+            intent["updated"] = serde_json::json!(updated);
+            intent["outcome"] = archive_outcome;
+        }
+    }
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
     let request = request_id.map(str::to_owned);
     let wake = state.event_wake.clone();
