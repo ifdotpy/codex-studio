@@ -161,7 +161,10 @@ class HostExec:
         primed = []
         if caches and "prime" in features:
             # A slot without a cache folder clones it from the project folder on the Mac.
-            primed = (await self.call("prime", {**common, "caches": caches}, "prime", LONG_CALL))["primed"]
+            # The git layer is never cloned from the project folder: its objects stay there.
+            primable = [cache for cache in caches if cache != ".git"]
+            if primable:
+                primed = (await self.call("prime", {**common, "caches": primable}, "prime", LONG_CALL))["primed"]
         held = await self.manifest("manifest", common, "held")
         deleted = [path for path in held if path not in target or held[path]["kind"] != target[path]["kind"]]
         for path in sorted(deleted, key=lambda value: (-value.count("/"), value)):
