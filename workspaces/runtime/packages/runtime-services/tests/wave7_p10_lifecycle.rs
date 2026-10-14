@@ -89,6 +89,11 @@ fn seed(store: &RuntimeStore, records: Records) {
             for row in records {
                 if table == "runtime_events" {
                     tx.execute("INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch) VALUES(?1,?2,'user','input',?3,1,?4)", params![row["id"].as_str(),row["agent"].as_str(),row["status"].as_str(),row["epoch"].as_i64()])?;
+                } else if table == "voice_sessions" {
+                    tx.execute(
+                        "INSERT INTO voice_sessions(id,agent,created,ended,state) VALUES(?1,?2,1,?3,?4)",
+                        params![row["id"].as_str(), row["agent"].as_str(), row["ended"].as_f64(), row["state"].as_str()],
+                    )?;
                 } else { agent_management::write(tx, &table, &row)?; }
             }
         }
@@ -241,24 +246,25 @@ impl LifecyclePorts for InterruptFixture {
                 stopped["epoch"].as_i64().unwrap_or_default()
             );
             let parent_id = before["parentId"].as_str().unwrap_or_default();
-            let parent_epoch: i64 = tx
-                .query_row(
-                    "SELECT json_extract(record,'$.epoch') FROM runtime_agents WHERE id=?1",
-                    [parent_id],
-                    |row| row.get(0),
-                )
-                .map_err(studio_runtime_store::StoreError::from)?;
+            let parent = studio_runtime_store::AgentRepository::get(
+                tx,
+                &studio_runtime_store::AgentId::from(parent_id),
+            )?
+            .expect("parent agent");
             let text = self
                 .notification_payloads
                 .get(&id)
                 .map(String::as_str)
                 .unwrap_or("{}");
-            tx.execute(
-                "INSERT OR IGNORE INTO runtime_events(id,agent,kind,text,status,created,epoch) \
-                 VALUES(?1,?2,'child_result',?3,'pending',?4,?5)",
-                rusqlite::params![id, parent_id, text, effect.at(), parent_epoch],
+            studio_runtime_services::event_write::enqueue_recovery_event(
+                tx,
+                &parent,
+                id,
+                "child_result",
+                text.to_owned(),
+                effect.at(),
             )
-            .map_err(studio_runtime_store::StoreError::from)?;
+            .expect("enqueue child notification through the production event writer");
             return Ok(());
         }
         if effect.kind() != LifecycleEffectKind::Interrupt {
@@ -332,7 +338,7 @@ fn assert_records(store: &RuntimeStore, case: &Value) {
 #[test]
 fn python_stop_corpus_complete_records_and_exact_descendants() {
     let cases = cases();
-    assert_eq!(cases.len(), 19);
+    assert_eq!(cases.len(), 21);
     let base = tempfile::tempdir().expect("template");
     template(base.path());
     for case in cases {
@@ -701,7 +707,7 @@ fn production_restart_scan_settles_durable_deleted_agent_state() {
     deleted["inFlight"] = json!(true);
     deleted["turnId"] = json!("turn-running");
     deleted["activity"] = json!({"at":case["now"]});
-    deleted["activeTools"] = json!(["tool"]);
+    deleted["activeTools"] = json!([{"name":"tool"}]);
     deleted["startAttempt"]["activeAtReservation"] = json!(true);
 
     let root = tempfile::tempdir().expect("root");
@@ -711,13 +717,15 @@ fn production_restart_scan_settles_durable_deleted_agent_state() {
 
     // Constructing the production bundle represents process restart. The
     // tombstone and stale activity are the durable cleanup intent.
-    let _ports = ProductionLifecyclePorts::new(
+    let ports = ProductionLifecyclePorts::new(
         store.clone(),
         Arc::new(Notify::new()),
         Arc::new(Notify::new()),
         Arc::new(NoBroker),
     );
-    let settled = state(&store)["tables"]["runtime_agents"]
+    ports.committed().expect("restart reconciliation");
+    let settled_state = state(&store);
+    let settled = settled_state["tables"]["runtime_agents"]
         .as_array()
         .expect("agent rows")
         .iter()
@@ -766,7 +774,8 @@ fn production_interrupt_requires_in_flight_active_turn() {
     ports
         .execute(&action, case["now"].as_f64().expect("time"))
         .expect("stop");
-    let agent = state(&store)["tables"]["runtime_agents"]
+    let stopped_state = state(&store);
+    let agent = stopped_state["tables"]["runtime_agents"]
         .as_array()
         .expect("agent rows")
         .iter()

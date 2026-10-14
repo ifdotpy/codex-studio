@@ -3,6 +3,7 @@ import copy
 import json
 from pathlib import Path
 import sys
+import threading
 from unittest.mock import patch
 
 HERE = Path(__file__).resolve().parent
@@ -10,23 +11,42 @@ sys.path.insert(0, str(HERE.parent / "turn_lifecycle"))
 import oracle_guard  # The imported lifecycle oracle installs this guard once.
 sys.path.insert(0, str(HERE.parent / "agent_management"))
 from oracle import MemoryRuntime, NOW, Runtime, seed
+from codex_voice import VoiceStore
 from codex_sync_entities import encoded, project
 from codex_capacity_retry import CapacityRetryMixin
 
 
 class LifecycleRuntime(MemoryRuntime):
-    closed = False
     empty_lead = staticmethod(Runtime.empty_lead)
     image_workspace_summary = staticmethod(Runtime.image_workspace_summary)
 
     def __init__(self, records):
         super().__init__(records)
-        for column, kind in (("kind", "TEXT"), ("text", "TEXT"), ("created", "REAL"),
-                             ("turn_id", "TEXT"), ("error", "TEXT")):
-            self.connection.execute(f"ALTER TABLE runtime_events ADD COLUMN {column} {kind}")
-        self.connection.execute(
-            "UPDATE runtime_events SET kind='user',text='input',created=1")
+        self.connection.execute("ALTER TABLE runtime_events RENAME TO runtime_events_seed")
+        self.connection.execute("""
+            CREATE TABLE runtime_events(
+                id TEXT PRIMARY KEY,agent TEXT,kind TEXT,text TEXT,status TEXT,
+                created REAL,epoch INTEGER,turn_id TEXT,error TEXT)
+        """)
+        self.connection.execute("""
+            INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch)
+            SELECT id,agent,'user','input',status,1,epoch FROM runtime_events_seed
+        """)
+        self.connection.execute("DROP TABLE runtime_events_seed")
         self.connection.execute("CREATE TABLE runtime_items(id TEXT PRIMARY KEY,agent TEXT)")
+        self.connection.executescript("""
+            CREATE TABLE IF NOT EXISTS runtime_event_meta(id TEXT PRIMARY KEY,record TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS runtime_rules(id TEXT PRIMARY KEY,record TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS voice_sessions(id TEXT PRIMARY KEY,agent TEXT NOT NULL,state TEXT,ended REAL);
+            CREATE TABLE IF NOT EXISTS voice_records(id TEXT PRIMARY KEY,agent TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS voice_deliveries(id TEXT PRIMARY KEY,agent TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS voice_speech_requests(id TEXT PRIMARY KEY,session TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS voice_approvals(id TEXT PRIMARY KEY,agent TEXT NOT NULL);
+        """)
+        self.changed = threading.Event()
+        # Execute the real enqueue state transitions without starting Python's
+        # background dispatcher in this deterministic corpus process.
+        self.closed = False
 
     def interrupt(self, agent):
         # Only the provider boundary is injected; stop and every stored write
@@ -34,6 +54,14 @@ class LifecycleRuntime(MemoryRuntime):
         self.interrupted.append(copy.deepcopy(agent))
 
     child_stopped_event = Runtime.child_stopped_event
+    enqueue = Runtime.enqueue
+    enqueue_recovery_event = Runtime.enqueue_recovery_event
+    mark_event_timing = Runtime.mark_event_timing
+    mark_event_timings = Runtime.mark_event_timings
+    rule_event = Runtime.rule_event
+    _recovery_event_pending = Runtime._recovery_event_pending
+    touch_ui = Runtime.touch_ui
+    delete_agent = VoiceStore.delete_agent
     capacity_reset = CapacityRetryMixin.capacity_reset
 
     def capacity_save(self, db, agent, retry):
@@ -41,25 +69,14 @@ class LifecycleRuntime(MemoryRuntime):
         if (agent.get("capacityRetry") or {}).get("id") in (None, retry["id"]):
             agent["capacityRetry"] = retry
 
-    def enqueue_recovery_event(self, db, agent, kind, text, key):
-        pending_recovery = Runtime._recovery_event_pending(self, agent) or bool(
-            agent.get("moveImportPending"))
-        inserted = db.execute(
-            "INSERT OR IGNORE INTO runtime_events "
-            "(id,agent,kind,text,status,created,epoch,turn_id,error) "
-            "VALUES(?,?,?,?,?,?,?,NULL,NULL)",
-            (key, agent["id"], kind, text,
-             "pending" if agent["autoWake"] or pending_recovery else "cancelled",
-             NOW, agent["epoch"]),
-        )
-        idle_busy_label = (agent["status"] in {"running", "starting"}
-                           and not agent.get("inFlight") and not agent.get("turnId")
-                           and not agent.get("startAttempt"))
-        if (inserted.rowcount and not pending_recovery and agent["autoWake"]
-                and not agent.get("nativeFailureHold")
-                and (agent["status"] not in {"running", "starting", "approval"} or idle_busy_label)):
-            agent["status"] = "queued"
-            self.put(db, "agents", agent)
+    def _stage_event_resources(self, db, agent_id):
+        # Resource publication is outside this oracle's persisted lifecycle state.
+        return None
+
+    def schedule(self):
+        # Runtime.enqueue treats an overridden scheduler as a durable wake-only
+        # path; the lifecycle corpus must not start a background thread.
+        return None
 
     def latest_work_result_file(self, db, agent_id):
         return None
@@ -185,6 +202,11 @@ def corpus():
                       dict(action="stop", target="lead", descendants=True)))
     worker_stop = dict(action="stop", target="worker", descendants=False)
     cases.append(case("stop-worker-notification-replay", seed(), [worker_stop, worker_stop]))
+    saved_voice = seed()
+    saved_voice["tables"]["voice_sessions"] = [
+        dict(id="ended-voice", agent="lead", state="ended", ended=NOW - 10)
+    ]
+    cases.append(case("delete-saved-voice", saved_voice, dict(action="delete", target="lead")))
     removed_workspace = seed()
     removed_workspace["tables"]["runtime_agents"][1].update(
         imageWorkspace=True, imageWorkspaceReady=True, imageWorkspacePhase="removed")

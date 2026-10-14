@@ -213,6 +213,13 @@ def corpus():
     )
     cases.append(run("stop-capacity-retry-unsubmitted", records,
                      dict(action="stop", target="lead", descendants=False)))
+    records = seed()
+    records["tables"]["runtime_agents"][0].update(
+        status="starting", inFlight=True, capacityRetry={"id":"retry"},
+        startAttempt={"id":"attempt", "capacityRetryId":"retry"},
+    )
+    cases.append(run("stop-capacity-retry-submitted-missing", records,
+                     dict(action="stop", target="lead", descendants=False)))
     cases.append(run("delete-child", seed(), dict(action="delete", target="worker")))
     cases.append(run("delete", seed(), dict(action="delete", target="lead")))
     cases.append(run("delete-retry", cases[-1]["expected"]["records"], dict(action="delete", target="lead")))

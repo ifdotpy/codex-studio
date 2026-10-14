@@ -68,6 +68,7 @@ pub mod historical_input_receipts;
 pub mod host_project_runtime;
 pub mod host_worker_create;
 pub mod image_workspace;
+pub mod lifecycle_effects;
 pub mod linux_vm_guest;
 pub mod linux_vm_settings;
 pub mod mac_sync;

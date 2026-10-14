@@ -407,7 +407,7 @@ fn lifecycle_effect_refusals_preserve_rows_and_projections() {
 }
 
 #[test]
-fn ended_voice_allows_stop_but_delete_preserves_saved_voice_until_cleanup_exists() {
+fn ended_voice_allows_stop_and_delete_clears_saved_voice_in_transaction() {
     let case = cases()
         .into_iter()
         .find(|case| case["name"] == "stop-ended-voice")
@@ -446,10 +446,23 @@ fn ended_voice_allows_stop_but_delete_preserves_saved_voice_until_cleanup_exists
             target: "lead".into(),
         },
         1234568.0,
-    );
-    assert!(matches!(
-        result,
-        Err(ManagementError::Unavailable("voice-driver/agent-stop"))
-    ));
-    assert_eq!(state(&store), saved);
+    )
+    .expect("ended voice history is removed with the conversation");
+    assert_eq!(result["deleted"], json!(["lead", "worker"]));
+    let after_delete = state(&store);
+    for table in [
+        "voice_sessions",
+        "voice_records",
+        "voice_deliveries",
+        "voice_approvals",
+    ] {
+        assert!(
+            after_delete["tables"][table]
+                .as_array()
+                .expect("voice table")
+                .is_empty(),
+            "{table}"
+        );
+    }
+    assert_ne!(after_delete, saved);
 }

@@ -82,20 +82,32 @@ impl ProductionLifecyclePorts {
             interrupt_broker,
             prepared: Mutex::new(Vec::new()),
         };
-        // A tombstone and unsettled fields are the durable reconciliation
-        // intent. Scan on construction so process restart cannot lose it.
-        let _ = ports.reconcile_deleted_tombstones();
+        // Startup callers invoke committed() to reconcile durable tombstones;
+        // execute() also retries reconciliation before accepting a new action.
         ports
     }
 
     /// Run the production stop/delete adapter. Effect intents and lifecycle
     /// rows commit together; broker dispatch begins only after that commit.
     pub fn execute(&self, action: &Action, now: f64) -> Result<Value, ManagementError> {
+        // Retry startup settlement here and surface storage failures before
+        // making a new lifecycle decision.
+        self.reconcile_deleted_tombstones()?;
         let reader = self.store.read()?;
         let rooms = crate::sync_entity_context::RoomDirectory::prepare(&reader)?;
+        let projects = studio_runtime_store::ProjectsRepository::list(&reader)?;
+        let vault_snapshot =
+            crate::sync_policy::ProjectVaultSnapshot::capture(self.store.root(), &projects);
         drop(reader);
         let result = self.store.transaction_with_error(|tx| {
-            crate::agent_management_store::execute_with_ports(tx, action, now, &rooms, self)
+            crate::agent_management_store::execute_with_ports(
+                tx,
+                action,
+                now,
+                &rooms,
+                &vault_snapshot,
+                self,
+            )
         })?;
         self.committed()?;
         Ok(result)
@@ -303,6 +315,7 @@ fn request_interrupt(
             agent: request.agent.clone(),
             epoch: request.epoch,
         }),
+        deleted_actor_session: None,
         expected_scope: Some(expected.clone()),
         method: studio_runtime_providers::Method::TurnInterrupt,
         params: json!({"threadId":request.thread,"turnId":request.turn}),
