@@ -18,7 +18,7 @@ sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE.parents[4] / "workspaces/runtime/packages/runtime-services/tests/turn_lifecycle"))
 from oracle_guard import install_guard
 
-_oracle_guard = install_guard()
+_oracle_guard = install_guard(allow_loopback_connect=True)
 
 from test_isolation import isolate_supervisor_environment
 
