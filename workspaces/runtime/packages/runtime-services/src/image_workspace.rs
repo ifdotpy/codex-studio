@@ -12,6 +12,8 @@ use std::io::Write;
 #[cfg(unix)]
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 pub const PLATFORM_REFUSAL: &str =
@@ -23,6 +25,9 @@ const AGENT_MIN_FREE_ENV: &str = "CODEX_WORKSPACE_AGENT_MIN_FREE_BYTES";
 const DEFAULT_BASE_MIN_FREE: u64 = 20 * 1024 * 1024 * 1024;
 const DEFAULT_AGENT_MIN_FREE: u64 = 5 * 1024 * 1024 * 1024;
 const STATE_SCHEMA: u64 = 2;
+const BASE_BUILD_COOLDOWN: Duration = Duration::from_secs(300);
+const BASE_BUILD_WAIT: Duration = Duration::from_secs(900);
+const BASE_BUILD_POLL: Duration = Duration::from_millis(50);
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -97,6 +102,22 @@ pub trait WorkspaceBackend: Send + Sync {
     fn remove_base_version(&self, path: &Path) -> Result<(), ImageWorkspaceError>;
     fn private_bytes(&self, path: &Path) -> Result<Option<u64>, ImageWorkspaceError>;
     fn exec_prefix(&self) -> Vec<String>;
+    fn base_needs_refresh(
+        &self,
+        _root: &Path,
+        _state: &Value,
+    ) -> Result<bool, ImageWorkspaceError> {
+        Ok(false)
+    }
+    fn open_base_refresh(
+        &self,
+        root: &Path,
+        key: &str,
+        version: &str,
+        _old_state: &Value,
+    ) -> Result<WorkspaceBaseStaging, ImageWorkspaceError> {
+        self.open_base_staging(root, key, version)
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -129,15 +150,15 @@ pub enum ImageWorkspaceError {
 
 pub struct WorkspaceLifecycle<B> {
     store: PathBuf,
-    backend: B,
+    backend: Arc<B>,
 }
 
-impl<B: WorkspaceBackend> WorkspaceLifecycle<B> {
+impl<B: WorkspaceBackend + 'static> WorkspaceLifecycle<B> {
     /// Testable lifecycle constructor; callers provide an isolated store and backend.
     pub fn with_backend(store: impl Into<PathBuf>, backend: B) -> Self {
         Self {
             store: store.into(),
-            backend,
+            backend: Arc::new(backend),
         }
     }
 
@@ -162,12 +183,11 @@ impl<B: WorkspaceBackend> WorkspaceLifecycle<B> {
         }))
     }
 
-    /// Synchronous equivalent of Python's asynchronous `start_base_build`.
     pub fn start_base_build(&self, root: &Path) -> Result<Value, ImageWorkspaceError> {
-        self.start_base_build_with_retry(root, false)
+        self.start_base_build_retry(root, false)
     }
 
-    fn start_base_build_with_retry(
+    pub fn start_base_build_retry(
         &self,
         root: &Path,
         retry_failed: bool,
@@ -175,7 +195,7 @@ impl<B: WorkspaceBackend> WorkspaceLifecycle<B> {
         let root = root_path(root)?;
         self.backend.supported(&root)?;
         let key = repo_key(&root);
-        let _lock = FileLock::exclusive(&self.base_dir(&key).join(".build.lock"))?;
+        let lock = FileLock::exclusive(&self.base_dir(&key).join(".build.lock"))?;
         let state_path = self.base_state(&key);
         let current = read_json(&state_path)?;
         if current.get("state").and_then(Value::as_str) == Some("ready")
@@ -184,6 +204,29 @@ impl<B: WorkspaceBackend> WorkspaceLifecycle<B> {
                 .and_then(Value::as_str)
                 .is_some_and(|p| Path::new(p).exists())
         {
+            if !self.backend.base_needs_refresh(&root, &current)?
+                || current.get("refreshingVersion").is_some()
+            {
+                return Ok(status_view(&current));
+            }
+            let version = format!("v-{}", now_ns());
+            let mut refreshing = current.clone();
+            refreshing["refreshingVersion"] = json!(version);
+            write_json(&state_path, &refreshing)?;
+            drop(lock);
+            if let Err(error) = self.spawn_base_build(root, key, version, Some(current)) {
+                let mut failed = read_json(&state_path)?;
+                failed
+                    .as_object_mut()
+                    .map(|object| object.remove("refreshingVersion"));
+                failed["refreshError"] = json!(error.to_string());
+                failed["refreshFailedAt"] = json!(now_seconds());
+                write_json(&state_path, &failed)?;
+                return Err(error);
+            }
+            return Ok(status_view(&refreshing));
+        }
+        if current.get("state").and_then(Value::as_str) == Some("building") {
             return Ok(status_view(&current));
         }
         if current.get("state").and_then(Value::as_str) == Some("failed") && !retry_failed {
@@ -191,22 +234,104 @@ impl<B: WorkspaceBackend> WorkspaceLifecycle<B> {
                 .get("failedAt")
                 .and_then(Value::as_f64)
                 .unwrap_or_default();
-            if now_seconds() - failed_at < 300.0 {
+            if now_seconds() - failed_at < BASE_BUILD_COOLDOWN.as_secs_f64() {
                 return Ok(status_view(&current));
             }
         }
         let version = format!("v-{}", now_ns());
         self.require_space(DEFAULT_BASE_MIN_FREE, BASE_MIN_FREE_ENV, "image base", None)?;
-        let mut pending = json!({
+        let pending = json!({
             "schema":STATE_SCHEMA,"state":"building","repoRoot":root,
             "repoKey":key,"changeDetector":"git-v1","version":version,
-            "error":null,"startedAt":now_seconds()
+            "error":null,"startedAt":now_seconds(),"builderPid":std::process::id()
         });
         write_json(&state_path, &pending)?;
+        drop(lock);
+        if let Err(error) = self.spawn_base_build(root, key.clone(), version, None) {
+            let mut failed = read_json(&state_path)?;
+            failed["state"] = json!("failed");
+            failed["error"] = json!(error.to_string());
+            failed["failedAt"] = json!(now_seconds());
+            write_json(&state_path, &failed)?;
+            return Err(error);
+        }
+        Ok(status_view(&pending))
+    }
+
+    fn spawn_base_build(
+        &self,
+        root: PathBuf,
+        key: String,
+        version: String,
+        refresh_from: Option<Value>,
+    ) -> Result<(), ImageWorkspaceError> {
+        let lifecycle = Self {
+            store: self.store.clone(),
+            backend: Arc::clone(&self.backend),
+        };
+        thread::Builder::new()
+            .name(format!("image-base-{}", &key[..8]))
+            .spawn(move || lifecycle.build_base(&root, &key, &version, refresh_from.as_ref()))
+            .map(|_| ())
+            .map_err(|error| ImageWorkspaceError::Backend(error.to_string()))
+    }
+
+    fn build_base(&self, root: &Path, key: &str, version: &str, refresh_from: Option<&Value>) {
+        let result = self.build_base_inner(root, key, version, refresh_from);
+        if let Err(error) = result {
+            let state_path = self.base_state(key);
+            if let Ok(mut state) = read_json(&state_path) {
+                if refresh_from.is_some()
+                    && state.get("state").and_then(Value::as_str) == Some("ready")
+                {
+                    state
+                        .as_object_mut()
+                        .map(|object| object.remove("refreshingVersion"));
+                    state["refreshError"] = json!(error.to_string());
+                    state["refreshFailedAt"] = json!(now_seconds());
+                } else {
+                    state["state"] = json!("failed");
+                    state["error"] = json!(error.to_string());
+                    state["failedAt"] = json!(now_seconds());
+                }
+                let _write_result = write_json(&state_path, &state);
+            }
+        }
+    }
+
+    fn build_base_inner(
+        &self,
+        root: &Path,
+        key: &str,
+        version: &str,
+        refresh_from: Option<&Value>,
+    ) -> Result<(), ImageWorkspaceError> {
+        let _lock = FileLock::exclusive(&self.base_dir(key).join(".build.lock"))?;
+        let state_path = self.base_state(key);
+        let mut state = read_json(&state_path)?;
+        let expected = if refresh_from.is_some() {
+            state.get("refreshingVersion").and_then(Value::as_str)
+        } else {
+            state.get("version").and_then(Value::as_str)
+        };
+        if expected != Some(version) {
+            return Ok(());
+        }
+
         let mut staging = None;
-        let result: Result<Value, ImageWorkspaceError> = (|| {
-            let mut stage = self.backend.open_base_staging(&root, &key, &version)?;
-            stage.token = self.backend.current_event_id(&root)?;
+        let result = (|| {
+            let baseline_repositories = git_capture(root).map_err(|error| {
+                ImageWorkspaceError::Backend(format!("Initial Git capture failed: {error}"))
+            })?;
+            let mut stage = match refresh_from {
+                Some(old_state) => self
+                    .backend
+                    .open_base_refresh(root, key, version, old_state)?,
+                None => self.backend.open_base_staging(root, key, version)?,
+            };
+            if stage.token.is_none() {
+                stage.token = self.backend.current_event_id(root)?;
+            }
             staging = Some(stage.clone());
             self.require_space(
                 DEFAULT_BASE_MIN_FREE,
@@ -214,7 +339,8 @@ impl<B: WorkspaceBackend> WorkspaceLifecycle<B> {
                 "image base",
                 Some(&stage),
             )?;
-            let excludes = self.workspace_excludes(&root);
+            let excludes = self.workspace_excludes(root);
+            let delta_excludes = index_excludes(&excludes, &baseline_repositories);
             let check = || {
                 self.require_space(
                     DEFAULT_BASE_MIN_FREE,
@@ -224,38 +350,94 @@ impl<B: WorkspaceBackend> WorkspaceLifecycle<B> {
                 )
             };
             self.backend
-                .copy_base_tree(&root, &stage.root, &excludes, &check)?;
+                .copy_base_tree(root, &stage.root, &excludes, &check)
+                .map_err(|error| {
+                    ImageWorkspaceError::Backend(format!("Base tree copy failed: {error}"))
+                })?;
             check()?;
-            let repositories = git_capture(&root)?;
+            let delta = self
+                .backend
+                .sync_delta(root, &stage.root, stage.token.as_ref(), &delta_excludes)
+                .map_err(|error| {
+                    ImageWorkspaceError::Backend(format!("Base delta sync failed: {error}"))
+                })?;
+            repair_git_indexes(root, &stage.root, &baseline_repositories).map_err(|error| {
+                ImageWorkspaceError::Backend(format!("Git index repair failed: {error}"))
+            })?;
+            let repositories = git_capture(root).map_err(|error| {
+                ImageWorkspaceError::Backend(format!("Git capture failed: {error}"))
+            })?;
+            let repositories = repositories
+                .iter()
+                .map(|repository| {
+                    let mut record = repository.clone();
+                    record["indexFingerprint"] = repository
+                        .get("indexFingerprint")
+                        .cloned()
+                        .unwrap_or(Value::Null);
+                    record
+                })
+                .collect::<Vec<_>>();
             let sealed = self.backend.seal_base(&stage)?;
             let mut ready = json!({
-                "schema":STATE_SCHEMA,"state":"ready","repoRoot":root,"repoKey":key,
-                "changeDetector":"git-v1","version":version,"error":null,
-                "image":sealed.get("image").cloned().unwrap_or(Value::Null),
+                "schema":STATE_SCHEMA,"state":"ready","repoRoot":root,
+                "repoKey":key,"changeDetector":"git-v1","version":version,
+                "error":null,"image":sealed.get("image").cloned().unwrap_or(Value::Null),
                 "versionPath":sealed.get("versionPath").cloned().unwrap_or(json!(stage.version_path)),
-                "token":stage.token,"excludes":excludes,"repositories":repositories,
-                "createdAt":now_seconds()
+                "token":delta.token.or(stage.token.clone()),"excludes":delta_excludes,
+                "repositories":repositories,"createdAt":now_seconds()
             });
-            let version_json = stage.version_path.join("version.json");
-            write_json(&version_json, &ready)?;
+            if refresh_from.is_some() {
+                ready["refreshOf"] = refresh_from
+                    .unwrap_or(&Value::Null)
+                    .get("version")
+                    .cloned()
+                    .unwrap_or(Value::Null);
+            }
+            write_json(&stage.version_path.join("version.json"), &ready)?;
             write_json(&state_path, &ready)?;
-            if let Err(error) = self.prune_base_versions(&key) {
+            if let Err(error) = self.prune_base_versions(key) {
                 ready["pruneError"] = json!(error.to_string());
                 write_json(&state_path, &ready)?;
             }
-            Ok(status_view(&ready))
+            Ok::<(), ImageWorkspaceError>(())
         })();
-        match result {
-            Ok(value) => Ok(value),
-            Err(error) => {
-                if let Some(stage) = staging {
-                    let _cleanup = self.backend.remove_base_version(&stage.version_path);
+        if let Err(error) = result {
+            if let Some(stage) = staging {
+                self.backend.remove_base_version(&stage.version_path)?;
+            }
+            return Err(error);
+        }
+        state = read_json(&state_path)?;
+        if state.get("state").and_then(Value::as_str) == Some("ready") {
+            Ok(())
+        } else {
+            Err(ImageWorkspaceError::InvalidState)
+        }
+    }
+
+    fn wait_for_base_ready(&self, root: &Path) -> Result<Value, ImageWorkspaceError> {
+        let key = repo_key(root);
+        let deadline = std::time::Instant::now() + BASE_BUILD_WAIT;
+        loop {
+            let state = read_json(&self.base_state(&key))?;
+            match state.get("state").and_then(Value::as_str) {
+                Some("ready") => return Ok(state),
+                Some("failed") => {
+                    return Err(ImageWorkspaceError::Backend(
+                        state
+                            .get("error")
+                            .and_then(Value::as_str)
+                            .unwrap_or("base build failed")
+                            .to_owned(),
+                    ));
                 }
-                pending["state"] = json!("failed");
-                pending["error"] = json!(error.to_string());
-                pending["failedAt"] = json!(now_seconds());
-                write_json(&state_path, &pending)?;
-                Err(error)
+                _ if std::time::Instant::now() >= deadline => {
+                    return Err(ImageWorkspaceError::Backend(
+                        "Image workspace base build timed out".into(),
+                    ));
+                }
+                _ => thread::sleep(BASE_BUILD_POLL),
             }
         }
     }
@@ -268,6 +450,10 @@ impl<B: WorkspaceBackend> WorkspaceLifecycle<B> {
         let root = root_path(root)?;
         let agent_id = safe_id(agent_id)?;
         self.backend.supported(&root)?;
+        let base_status = self.start_base_build(&root)?;
+        if base_status.get("state").and_then(Value::as_str) != Some("ready") {
+            self.wait_for_base_ready(&root)?;
+        }
         let key = repo_key(&root);
         let agent_dir = self.store.join("agents").join(agent_id);
         let state_path = agent_dir.join("agent.json");
@@ -364,11 +550,16 @@ impl<B: WorkspaceBackend> WorkspaceLifecycle<B> {
         let delta =
             self.backend
                 .sync_delta(&root, &workspace_root, base.get("token"), &excludes)?;
+        if delta.refresh_base || delta.history_lost {
+            let _refresh_status = self.start_base_build(&root)?;
+        }
+        let repositories = git_capture(&root)?;
+        repair_git_indexes(&root, &workspace_root, &repositories)?;
         state["path"] = json!(workspace_root);
         state["mount"] = json!(mount);
         state["state"] = json!("ready");
         state["mounted"] = json!(true);
-        state["repositories"] = json!(git_capture(&root)?);
+        state["repositories"] = json!(repository_index_metadata(&repositories));
         state["deltaFallbackReason"] = Value::Null;
         write_json(&state_path, &state)?;
         let _ = delta;
@@ -631,7 +822,7 @@ pub fn start_base_build_retry(
     require_platform()?;
     #[cfg(target_os = "macos")]
     {
-        production().start_base_build_with_retry(root, retry_failed)
+        production().start_base_build_retry(root, retry_failed)
     }
     #[cfg(not(target_os = "macos"))]
     {
@@ -843,7 +1034,22 @@ fn git_capture(root: &Path) -> Result<Vec<Value>, ImageWorkspaceError> {
                     };
                     index_fingerprint(&path)
                 });
-            repos.push(json!({"path":directory.strip_prefix(root).unwrap_or(&directory).to_string_lossy(),"head":head.map(|s|s.trim().to_owned()),"dirtyPaths":dirty_paths(&dirty),"indexFingerprint":index}));
+            let relative = directory
+                .strip_prefix(root)
+                .unwrap_or(&directory)
+                .to_string_lossy();
+            let relative = if relative.is_empty() {
+                "."
+            } else {
+                relative.as_ref()
+            };
+            repos.push(json!({
+                "path":relative,
+                "head":head.map(|s|s.trim().to_owned()),
+                "dirtyPaths":dirty_paths(&dirty),
+                "indexFingerprint":index,
+                "gitMetadataFingerprint":git_metadata_fingerprint(&directory)?
+            }));
         }
         for entry in fs::read_dir(&directory)? {
             let entry = entry?;
@@ -857,6 +1063,245 @@ fn git_capture(root: &Path) -> Result<Vec<Value>, ImageWorkspaceError> {
         }
     }
     Ok(repos)
+}
+
+fn index_excludes(excludes: &[String], repositories: &[Value]) -> Vec<String> {
+    let mut values = excludes.iter().cloned().collect::<BTreeSet<_>>();
+    for repository in repositories {
+        if let Some(relative) = repository.get("path").and_then(Value::as_str) {
+            values.insert(if relative == "." {
+                ".git/index".to_owned()
+            } else {
+                format!("{relative}/.git/index")
+            });
+        }
+    }
+    values.into_iter().collect()
+}
+
+fn repository_index_metadata(repositories: &[Value]) -> Vec<Value> {
+    repositories
+        .iter()
+        .filter_map(|repository| {
+            Some(json!({
+                "path": repository.get("path")?,
+                "indexFingerprint": repository.get("indexFingerprint").cloned().unwrap_or(Value::Null),
+            }))
+        })
+        .collect()
+}
+
+fn repair_git_indexes(
+    source_root: &Path,
+    target_root: &Path,
+    repositories: &[Value],
+) -> Result<(), ImageWorkspaceError> {
+    for repository in repositories {
+        let relative = repository
+            .get("path")
+            .and_then(Value::as_str)
+            .ok_or(ImageWorkspaceError::InvalidState)?;
+        let source_repo = if relative == "." {
+            source_root.to_path_buf()
+        } else {
+            source_root.join(relative)
+        };
+        let target_repo = if relative == "." {
+            target_root.to_path_buf()
+        } else {
+            target_root.join(relative)
+        };
+        let source_git = source_repo.join(".git");
+        let target_git = target_repo.join(".git");
+        if source_git.is_file() {
+            let content = fs::read_to_string(&source_git)?;
+            let pointer = content
+                .strip_prefix("gitdir: ")
+                .map(str::trim)
+                .ok_or(ImageWorkspaceError::InvalidState)?;
+            let source_git_dir = Path::new(pointer);
+            let source_git_dir = if source_git_dir.is_absolute() {
+                source_git_dir.to_path_buf()
+            } else {
+                source_repo.join(source_git_dir)
+            };
+            let source_git_dir = source_git_dir.canonicalize()?;
+            let git_relative = source_git_dir
+                .strip_prefix(source_root)
+                .map_err(|_| ImageWorkspaceError::InvalidState)?;
+            let target_git_dir = target_root.join(git_relative);
+            fs::create_dir_all(
+                target_git_dir
+                    .parent()
+                    .ok_or(ImageWorkspaceError::InvalidState)?,
+            )?;
+            let pointer = relative_path(&target_repo, &target_git_dir);
+            fs::write(target_git, format!("gitdir: {}\n", pointer.display()))?;
+        }
+        let source_index_text = git_output(&source_repo, &["rev-parse", "--git-path", "index"])?;
+        let source_index = PathBuf::from(source_index_text.trim());
+        let source_index = if source_index.is_absolute() {
+            source_index
+        } else {
+            source_repo.join(source_index)
+        };
+        let source_index = source_index.canonicalize()?;
+        let index_relative = source_index
+            .strip_prefix(source_root)
+            .map_err(|_| ImageWorkspaceError::InvalidState)?;
+        let target_index = target_root.join(index_relative);
+        fs::create_dir_all(
+            target_index
+                .parent()
+                .ok_or(ImageWorkspaceError::InvalidState)?,
+        )?;
+        fs::copy(source_index, target_index)?;
+    }
+    Ok(())
+}
+
+fn relative_path(from: &Path, to: &Path) -> PathBuf {
+    let from = from.components().collect::<Vec<_>>();
+    let to = to.components().collect::<Vec<_>>();
+    let shared = from
+        .iter()
+        .zip(&to)
+        .take_while(|(left, right)| left == right)
+        .count();
+    let mut result = PathBuf::new();
+    for _ in shared..from.len() {
+        result.push("..");
+    }
+    for component in &to[shared..] {
+        result.push(component.as_os_str());
+    }
+    result
+}
+
+fn git_metadata_fingerprint(repo: &Path) -> Result<String, ImageWorkspaceError> {
+    let refs = git_output_bytes(
+        repo,
+        &["for-each-ref", "--format=%(refname)%00%(objectname)"],
+    )?;
+    let git_dir = PathBuf::from(git_output(repo, &["rev-parse", "--absolute-git-dir"])?.trim())
+        .canonicalize()?;
+    let common_text = git_output(repo, &["rev-parse", "--git-common-dir"])?;
+    let common = PathBuf::from(common_text.trim());
+    let common = if common.is_absolute() {
+        common
+    } else {
+        repo.join(common)
+    }
+    .canonicalize()?;
+    let mut state = Vec::new();
+    for path in BTreeSet::from([git_dir, common]) {
+        metadata_tree_fingerprint(&path, &mut state)?;
+        let alternates = path.join("objects/info/alternates");
+        if alternates.exists() {
+            let metadata = fs::symlink_metadata(&alternates)?;
+            let content = if metadata.file_type().is_symlink() {
+                fs::read_link(&alternates)?
+                    .into_os_string()
+                    .as_encoded_bytes()
+                    .to_vec()
+            } else {
+                fs::read(&alternates)?
+            };
+            state.push(json!([
+                alternates.to_string_lossy(),
+                [
+                    metadata.mode(),
+                    metadata.len(),
+                    metadata.mtime().saturating_mul(1_000_000_000) + metadata.mtime_nsec(),
+                    metadata.ctime().saturating_mul(1_000_000_000) + metadata.ctime_nsec(),
+                    data_encoding::HEXLOWER.encode(&Sha256::digest(content))
+                ]
+            ]));
+        } else {
+            state.push(json!([alternates.to_string_lossy(), null]));
+        }
+    }
+    let metadata = serde_json::to_vec(&state)?;
+    let mut digest = Sha256::new();
+    digest.update(refs);
+    digest.update(metadata);
+    Ok(data_encoding::HEXLOWER.encode(&digest.finalize()))
+}
+
+#[cfg(unix)]
+fn metadata_tree_fingerprint(
+    root: &Path,
+    state: &mut Vec<Value>,
+) -> Result<(), ImageWorkspaceError> {
+    if !root.exists() {
+        state.push(json!([root.to_string_lossy(), null]));
+        return Ok(());
+    }
+    let mut directories = vec![root.to_path_buf()];
+    let mut cursor = 0;
+    while cursor < directories.len() {
+        let directory = directories[cursor].clone();
+        cursor += 1;
+        let metadata = fs::symlink_metadata(&directory)?;
+        let relative = directory
+            .strip_prefix(root)
+            .unwrap_or(&directory)
+            .to_string_lossy();
+        let relative = if relative.is_empty() {
+            "."
+        } else {
+            relative.as_ref()
+        };
+        let label = format!("{}/{relative}", root.display());
+        state.push(json!([label, ["directory", metadata.mode()]]));
+        let mut entries = fs::read_dir(&directory)?.collect::<Result<Vec<_>, _>>()?;
+        entries.sort_by_key(|entry| entry.file_name());
+        let mut child_directories = Vec::new();
+        for entry in entries {
+            let path = entry.path();
+            let name = entry.file_name();
+            if name == "objects" || name == "index" {
+                continue;
+            }
+            let metadata = fs::symlink_metadata(&path)?;
+            if metadata.is_dir() && !metadata.file_type().is_symlink() {
+                child_directories.push(path);
+            } else {
+                let content = if metadata.file_type().is_symlink() {
+                    fs::read_link(&path)?
+                        .into_os_string()
+                        .as_encoded_bytes()
+                        .to_vec()
+                } else if metadata.is_file() {
+                    fs::read(&path)?
+                } else {
+                    Vec::new()
+                };
+                let content_hash = data_encoding::HEXLOWER.encode(&Sha256::digest(content));
+                state.push(json!([
+                    path.to_string_lossy(),
+                    [
+                        metadata.mode(),
+                        metadata.len(),
+                        metadata.mtime().saturating_mul(1_000_000_000) + metadata.mtime_nsec(),
+                        metadata.ctime().saturating_mul(1_000_000_000) + metadata.ctime_nsec(),
+                        content_hash
+                    ]
+                ]));
+            }
+        }
+        directories.extend(child_directories);
+    }
+    state.sort_by(|left, right| left[0].as_str().cmp(&right[0].as_str()));
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn metadata_tree_fingerprint(
+    _root: &Path,
+    _state: &mut Vec<Value>,
+) -> Result<(), ImageWorkspaceError> {
+    Ok(())
 }
 
 fn dirty_paths(raw: &[u8]) -> Vec<String> {
@@ -885,15 +1330,15 @@ fn index_fingerprint(path: &Path) -> Option<String> {
     let metadata = fs::metadata(path).ok()?;
     let mtime_ns = metadata.mtime().saturating_mul(1_000_000_000) + metadata.mtime_nsec();
     let ctime_ns = metadata.ctime().saturating_mul(1_000_000_000) + metadata.ctime_nsec();
-    let identity = serde_json::to_vec(&json!([
+    let identity = format!(
+        "[{}, {}, {}, {}, {}]",
         metadata.dev(),
         metadata.ino(),
         metadata.len(),
         mtime_ns,
         ctime_ns
-    ]))
-    .ok()?;
-    Some(data_encoding::HEXLOWER.encode(&Sha256::digest(identity)))
+    );
+    Some(data_encoding::HEXLOWER.encode(&Sha256::digest(identity.as_bytes())))
 }
 
 #[cfg(not(unix))]
@@ -1100,10 +1545,57 @@ mod tests {
     #[test]
     #[cfg(not(target_os = "macos"))]
     fn non_macos_public_entry_refuses_exactly_before_touching_root() {
-        let absent = std::env::temp_dir().join(format!("image-workspace-absent-{}", now_ns()));
-        let error = create_workspace(&absent, "agent-1").expect_err("ASIF is unsupported");
-        assert_eq!(error.to_string(), PLATFORM_REFUSAL);
-        assert!(!absent.exists());
+        let fixture = tempfile::tempdir().expect("fixture");
+        let root = fixture.path().join("root");
+        let store = fixture.path().join("store");
+        fs::create_dir_all(&root).expect("root");
+        let seeded = store.join("agents/agent-1/agent.json");
+        write_json(&seeded, &json!({"state":"ready"})).expect("seed state");
+        let before = fs::read(&seeded).expect("before state");
+        let calls = [
+            supported(&root).map(|_| ()),
+            base_status(&root).map(|_| ()),
+            start_base_build(&root).map(|_| ()),
+            start_base_build_retry(&root, true).map(|_| ()),
+            create_workspace(&root, "agent-1").map(|_| ()),
+            ensure_mounted("agent-1").map(|_| ()),
+            archive_workspace("agent-1").map(|_| ()),
+            remove_workspace("agent-1", true).map(|_| ()),
+            list_workspaces().map(|_| ()),
+            exec_prefix().map(|_| ()),
+        ];
+        for result in calls {
+            let error = result.expect_err("ASIF is unsupported on Linux");
+            assert_eq!(error.to_string(), PLATFORM_REFUSAL);
+            assert_eq!(fs::read(&seeded).expect("seed remains"), before);
+        }
+        assert_eq!(
+            fs::read_dir(store.join("agents"))
+                .expect("agents remain")
+                .count(),
+            1
+        );
+        let readiness = crate::workspace_ready_git::image_workspace_refusal_decision();
+        let crate::workspace_ready::WorkspaceDecision::Refuse(refusal) = readiness else {
+            panic!("image readiness must refuse on Linux");
+        };
+        assert_eq!(refusal.to_string(), PLATFORM_REFUSAL);
+        assert_eq!(fs::read(&seeded).expect("seed remains"), before);
+    }
+
+    fn wait_for_build(manager: &WorkspaceLifecycle<FakeBackend>, root: &Path) -> Value {
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            let status = manager.base_status(root).expect("base state");
+            if status["state"] != "building" {
+                return status;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "base build completion"
+            );
+            thread::sleep(Duration::from_millis(5));
+        }
     }
 
     #[test]
@@ -1119,23 +1611,38 @@ mod tests {
         };
         let manager = WorkspaceLifecycle::with_backend(&store, backend);
 
-        assert!(
-            matches!(manager.start_base_build(&project), Err(ImageWorkspaceError::Backend(message)) if message == "failpoint:copy")
-        );
         assert_eq!(
-            manager.base_status(&project).expect("failed status")["state"],
-            "failed"
+            manager.start_base_build(&project).expect("build start")["state"],
+            "building"
+        );
+        assert_eq!(wait_for_build(&manager, &project)["state"], "failed");
+        assert_eq!(
+            read_json(&manager.base_state(&repo_key(&project))).expect("failed row")["error"],
+            "Workspace backend failed: Base tree copy failed: Workspace backend failed: failpoint:copy"
         );
         assert_eq!(
             manager.start_base_build(&project).expect("cooldown status")["state"],
             "failed"
         );
+        *manager
+            .backend
+            .fail_once
+            .lock()
+            .expect("seal failpoint lock") = Some("seal");
         assert_eq!(
             manager
-                .start_base_build_with_retry(&project, true)
+                .start_base_build_retry(&project, true)
                 .expect("base retry")["state"],
-            "ready"
+            "building"
         );
+        assert_eq!(wait_for_build(&manager, &project)["state"], "failed");
+        assert_eq!(
+            manager
+                .start_base_build_retry(&project, true)
+                .expect("seal retry")["state"],
+            "building"
+        );
+        assert_eq!(wait_for_build(&manager, &project)["state"], "ready");
         let base = read_json(&manager.base_state(&repo_key(&project))).expect("base row");
         let version = base["version"].as_str().expect("base version");
         let copied_file = store
@@ -1148,6 +1655,23 @@ mod tests {
             fs::read_to_string(copied_file).expect("copied base"),
             "base"
         );
+
+        *manager.backend.fail_once.lock().expect("failpoint lock") = Some("clone");
+        assert!(
+            matches!(manager.create_workspace(&project, "agent-clone-fail"), Err(ImageWorkspaceError::Backend(message)) if message == "failpoint:clone")
+        );
+        assert_eq!(
+            manager
+                .list_workspaces()
+                .expect("clone fail row")
+                .iter()
+                .find(|row| row["agentId"] == "agent-clone-fail")
+                .expect("clone row")["state"],
+            "creating"
+        );
+        manager
+            .create_workspace(&project, "agent-clone-fail")
+            .expect("clone retry");
 
         *manager.backend.fail_once.lock().expect("failpoint lock") = Some("mount");
         assert!(

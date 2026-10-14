@@ -723,7 +723,8 @@ fn create_child(
 }
 
 /// Record image intent so readiness can remount the durable ASIF state. On macOS,
-/// `provision_image_workspace` mirrors `codex_workspace_images.create_workspace`.
+/// `provision_image_workspace` mirrors Python's `codex_runtime.py:5878` call to
+/// `codex_workspace_images.create_workspace`, after its base-build start path.
 fn set_image_workspace_fields(record: &mut Value, root: &str) {
     record["workspaceMode"] = json!("image");
     record["imageWorkspace"] = json!(true);
