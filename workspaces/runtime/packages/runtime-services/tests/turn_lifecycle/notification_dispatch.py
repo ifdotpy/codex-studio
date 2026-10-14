@@ -314,7 +314,12 @@ def consume_stream_capture(db, effect):
         batches.append((params['delta'] if first else '',bucket['count'],bucket['encoded_bytes'],
             effect['at'] if first else bucket['hour'],params,
             metrics['bytes'] if first else 0,metrics['characters'] if first else 0,metrics['lines'] if first else 0,None))
-    stream.entries[key] = {'base':'','batches':batches}
+    # Let StreamBuffer register its flush indexes and bookkeeping fields. The
+    # aggregate buckets below replace only its batch payload; they contain no
+    # supervisor sequence, so enqueue has already set the correct count.
+    stream._schedule_locked = lambda: None
+    stream.enqueue({'method':effect['method'],'params':params},effect['account'],effect['connection'])
+    stream.entries[key]['batches'] = batches
     captures = []
     with sqlite3.connect(':memory:') as scratch:
         scratch.executescript('CREATE TABLE runtime_agents(id TEXT, record TEXT); CREATE TABLE runtime_items(id TEXT, record TEXT); CREATE TABLE runtime_tasks(id TEXT, record TEXT);')
