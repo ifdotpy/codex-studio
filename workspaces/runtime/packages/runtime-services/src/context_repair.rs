@@ -205,6 +205,33 @@ pub(crate) fn source_terminal_attempt(
         attempt_id: attempt_id.to_owned(),
     }))
 }
+
+fn archive_previous_repair(agent: &mut Value) -> Result<(), RepairError> {
+    let previous = agent.get("contextRepair").cloned().unwrap_or(Value::Null);
+    if !previous.is_object() {
+        return Ok(());
+    }
+    if previous["phase"] == "completed" {
+        if agent
+            .get("contextRepairHistory")
+            .is_some_and(|history| !history.is_array())
+        {
+            return Err(RepairError::Invalid("agent.contextRepairHistory"));
+        }
+        let history = agent
+            .as_object_mut()
+            .ok_or(RepairError::Invalid("agent"))?
+            .entry("contextRepairHistory")
+            .or_insert_with(|| json!([]));
+        history
+            .as_array_mut()
+            .ok_or(RepairError::Invalid("agent.contextRepairHistory"))?
+            .push(previous);
+    } else {
+        agent["lastContextRepairCheck"] = previous;
+    }
+    Ok(())
+}
 impl From<crate::context_repair_files::HistoryFileError> for RepairError {
     fn from(error: crate::context_repair_files::HistoryFileError) -> Self {
         Self::HistoryFile(Box::new(error))
@@ -1124,10 +1151,7 @@ fn repair_idle_with_broker_inner(
             .map_err(|_| RepairError::Invalid("clock"))?.as_nanos();
         let operation_id = uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_OID,
             format!("context-repair:{id}:{epoch}:{}:{stamp}", agent["threadId"].as_str().unwrap_or_default()).as_bytes()).to_string();
-        let previous = agent.get("contextRepair").cloned().unwrap_or(Value::Null);
-        if previous.is_object() {
-            agent["lastContextRepairCheck"] = previous;
-        }
+        archive_previous_repair(&mut agent)?;
         let repair = json!({
             "id":operation_id,
             "agent":id,
@@ -1718,6 +1742,29 @@ mod item_read_identity_tests {
         assert_eq!(item_read_suffix("turn-a", 0), item_read_suffix("turn-a", 0));
         assert_ne!(item_read_suffix("turn-a", 0), item_read_suffix("turn-b", 0));
         assert_ne!(item_read_suffix("turn-a", 0), item_read_suffix("turn-a", 1));
+    }
+}
+
+#[cfg(test)]
+mod repair_history_tests {
+    use super::archive_previous_repair;
+    use serde_json::json;
+
+    #[test]
+    fn completed_repair_is_kept_in_the_history_used_by_late_callbacks() {
+        let completed = json!({
+            "id":"repair-1",
+            "agent":"agent",
+            "phase":"completed",
+            "source":{"id":"agent","epoch":2,"accountKey":"default","threadId":"source"},
+            "newThreadId":"destination"
+        });
+        let mut agent = json!({"contextRepair":completed});
+
+        archive_previous_repair(&mut agent).expect("archive prior completed repair");
+
+        assert_eq!(agent["contextRepairHistory"], json!([completed]));
+        assert!(agent.get("lastContextRepairCheck").is_none());
     }
 }
 
