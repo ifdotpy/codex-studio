@@ -88,7 +88,10 @@ impl HttpState {
             Arc::new(studio_runtime_services::multi_server_orchestration::OrchestrationDriver::new(
                 Arc::clone(store),
                 Arc::new(studio_runtime_services::multi_server_orchestration::HttpsPairedTransport::new(Arc::clone(store))),
-                Arc::new(studio_runtime_services::multi_server_orchestration::RuntimeOrchestrationEffects::new(Arc::clone(store))),
+                Arc::new(studio_runtime_services::multi_server_orchestration::RuntimeOrchestrationEffects::with_browser_callback(
+                    Arc::clone(store),
+                    Arc::new(studio_runtime_services::browser::BrowserCallbackReceiver::new(Arc::clone(store))),
+                )),
             ))
         });
         let browser_forwarder = orchestration_driver
