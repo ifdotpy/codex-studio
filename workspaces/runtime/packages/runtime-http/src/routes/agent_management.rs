@@ -370,13 +370,85 @@ impl Admission for NativeAdmission<'_> {
         &self,
         tx: &Transaction<'_>,
         value: &Value,
-        _action: native_actions::Action,
+        action: native_actions::Action,
     ) -> native_actions::Result<()> {
         let actor =
             AgentRecord::from_value(value.clone()).map_err(|_| NativeError::Invalid("agent"))?;
         let root = AgentRepository::get(tx, &actor.root_id)
             .map_err(|_| NativeError::Unavailable("budget-policy/native-action"))?
             .ok_or(NativeError::Changed)?;
+        if action == native_actions::Action::Review {
+            if value.get("provider").and_then(Value::as_str) != Some("codex")
+                || value.get("daybreakEnabled") == Some(&serde_json::json!(true))
+            {
+                return Err(NativeError::Invalid("review/provider"));
+            }
+            let root_value = root.value();
+            let mode_version = root_value
+                .get("subagentConcurrencyVersion")
+                .and_then(Value::as_i64)
+                .unwrap_or(0);
+            let mode = root_value.get("agentMode").and_then(Value::as_str);
+            let team_limit = if mode_version < 2 && mode == Some("single") {
+                0
+            } else {
+                root_value
+                    .get("concurrency")
+                    .and_then(Value::as_i64)
+                    .unwrap_or(if mode == Some("single") { 0 } else { 32 })
+            };
+            if actor.root_id != actor.id && team_limit == 0 {
+                return Err(NativeError::Invalid("review/single-agent-mode"));
+            }
+            let global_limit = std::env::var("CODEX_CANVAS_CONCURRENCY")
+                .ok()
+                .map(|value| value.parse::<i64>())
+                .transpose()
+                .map_err(|_| NativeError::Invalid("review/global-concurrency"))?
+                .unwrap_or(
+                    studio_runtime_schema::agent_limits_generated::DEFAULT_GLOBAL_CONCURRENCY,
+                )
+                .max(studio_runtime_schema::agent_limits_generated::MIN_GLOBAL_CONCURRENCY);
+            let global_limit = usize::try_from(global_limit)
+                .map_err(|_| NativeError::Invalid("review/global-concurrency"))?;
+            let active = tx
+                .prepare(
+                    "SELECT id, json_extract(record,'$.rootId') FROM runtime_agents \
+                     WHERE json_extract(record,'$.inFlight')=1 \
+                        OR json_extract(record,'$.status') IN ('running','starting','approval') \
+                        OR (json_extract(record,'$.startAttempt.activeAtReservation')=1 AND EXISTS (\
+                            SELECT 1 FROM json_each(runtime_agents.record,'$.startAttempt.events') AS input \
+                            JOIN runtime_events AS event ON event.id=input.value \
+                            WHERE event.agent=runtime_agents.id \
+                              AND event.epoch=json_extract(runtime_agents.record,'$.startAttempt.epoch') \
+                              AND event.status IN ('reserved','dispatching','uncertain'))) \
+                     ORDER BY id",
+                )?
+                .query_map([], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
+                })?
+                .collect::<std::result::Result<Vec<_>, _>>()?;
+            let active = active
+                .iter()
+                .filter(|(id, _)| id != &actor.id.0)
+                .collect::<Vec<_>>();
+            if active.len() >= global_limit {
+                return Err(NativeError::Invalid("review/global-capacity"));
+            }
+            if actor.root_id != actor.id
+                && active
+                    .iter()
+                    .filter(|(id, root_id)| {
+                        id != &actor.root_id.0
+                            && root_id.as_deref() == Some(actor.root_id.0.as_str())
+                    })
+                    .count()
+                    >= usize::try_from(team_limit)
+                        .map_err(|_| NativeError::Invalid("review/team-concurrency"))?
+            {
+                return Err(NativeError::Invalid("review/team-capacity"));
+            }
+        }
         let blockers = self.0.workspace(tx, &actor).map_err(admission_error)?;
         if !blockers.is_empty() {
             return Err(NativeError::Invalid("workspace"));
