@@ -77,6 +77,16 @@ struct Supervisor {
 struct ChildSlot {
     operation: Mutex<()>,
     child: Mutex<Option<Arc<OwnedChild>>>,
+    openings: AtomicUsize,
+    opening_generation: AtomicUsize,
+}
+
+struct OpeningGuard(Arc<ChildSlot>);
+
+impl Drop for OpeningGuard {
+    fn drop(&mut self) {
+        self.0.openings.fetch_sub(1, Ordering::AcqRel);
+    }
 }
 
 impl Supervisor {
@@ -101,6 +111,10 @@ impl Supervisor {
     fn child_slot(&self, handle: &str, create: bool) -> Result<Option<Arc<ChildSlot>>> {
         let mut children = lock(&self.children)?;
         if let Some(slot) = children.get(handle) {
+            if create {
+                slot.openings.fetch_add(1, Ordering::AcqRel);
+                slot.opening_generation.fetch_add(1, Ordering::AcqRel);
+            }
             return Ok(Some(slot.clone()));
         }
         if !create {
@@ -109,6 +123,8 @@ impl Supervisor {
         let slot = Arc::new(ChildSlot {
             operation: Mutex::new(()),
             child: Mutex::new(None),
+            openings: AtomicUsize::new(usize::from(create)),
+            opening_generation: AtomicUsize::new(usize::from(create)),
         });
         children.insert(handle.to_owned(), slot.clone());
         Ok(Some(slot))
@@ -123,13 +139,37 @@ impl Supervisor {
         command.validate()?;
         match command {
             Command::Health => {
+                let mut handles = Vec::new();
+                // Open inserts its slot before reserving the durable row. Take
+                // this snapshot first so every row reserved by an overlapping
+                // Open has a slot here, then use `openings` to hide it until
+                // child installation finishes.
+                let rows = self.journal.handles(true)?;
                 let children = lock(&self.children)?.clone();
-                let handles=self.journal.handles(true)?.into_iter().map(|row| {
-                    let child = children.get(&row.id)
+                for row in rows {
+                    let slot = children.get(&row.id);
+                    let opening_generation =
+                        slot.map(|slot| slot.opening_generation.load(Ordering::Acquire));
+                    // Open reserves the durable row before the child is installed.
+                    // Hide that transient row until all overlapping Open calls finish.
+                    if slot.is_some_and(|slot| slot.openings.load(Ordering::Acquire) != 0) {
+                        continue;
+                    }
+                    let child = slot
                         .map(|slot| lock(&slot.child).map(|child| child.clone()))
-                        .transpose()?.flatten();
-                    Ok(json!({"id":row.id,"pid":row.pid,"signature":row.signature,"startTime":row.start_time,"jobIdentity":null,"sequence":row.snapshot.sequence(),"acknowledged":row.snapshot.acknowledged(),"bufferedBytes":row.buffered,"backpressure":child.as_ref().is_some_and(|c|c.paused.load(Ordering::Acquire)),"stdoutReaderAlive":child.as_ref().is_some_and(|c|c.stdout_alive.load(Ordering::Acquire)),"stdoutReaderError":child.as_ref().map(|c|lock(&c.stdout_error).map(|e|e.clone())).transpose()?.flatten(),"persistenceErrors":child.as_ref().map(|c|lock(&c.errors).map(|e|e.clone())).transpose()?.unwrap_or_default()}))
-                }).collect::<Result<Vec<_>>>()?;
+                        .transpose()?
+                        .flatten();
+                    // The generation also catches an Open that starts and
+                    // finishes between the two in-flight checks.
+                    if slot.is_some_and(|slot| {
+                        slot.openings.load(Ordering::Acquire) != 0
+                            || Some(slot.opening_generation.load(Ordering::Acquire))
+                                != opening_generation
+                    }) {
+                        continue;
+                    }
+                    handles.push(json!({"id":row.id,"pid":row.pid,"signature":row.signature,"startTime":row.start_time,"jobIdentity":null,"sequence":row.snapshot.sequence(),"acknowledged":row.snapshot.acknowledged(),"bufferedBytes":row.buffered,"backpressure":child.as_ref().is_some_and(|c|c.paused.load(Ordering::Acquire)),"stdoutReaderAlive":child.as_ref().is_some_and(|c|c.stdout_alive.load(Ordering::Acquire)),"stdoutReaderError":child.as_ref().map(|c|lock(&c.stdout_error).map(|e|e.clone())).transpose()?.flatten(),"persistenceErrors":child.as_ref().map(|c|lock(&c.errors).map(|e|e.clone())).transpose()?.unwrap_or_default()}));
+                }
                 Ok(
                     json!({"protocol":PROTOCOL,"stateDir":self.root,"handles":handles,"journalLimitBytes":HANDLE_LIMIT,"outputLimitBytesPerHandle":HANDLE_LIMIT,"durability":"sqlite-full-sync-per-request","recovery":lock(&self.recovery)?.clone()}),
                 )
@@ -156,6 +196,7 @@ impl Supervisor {
                 let slot = self
                     .child_slot(&handle, true)?
                     .ok_or(Error::Refused("Missing child slot"))?;
+                let _opening = OpeningGuard(slot.clone());
                 let _operation = lock(&slot.operation)?;
                 let mut stopped = false;
                 let existing = lock(&slot.child)?.clone();
