@@ -24,6 +24,23 @@ from http_backend_harness import TimedHTTPContractTest, start_contract_backend, 
 from http_runtime_test_support import answer_refusal_error
 
 
+COMPLAINT_WRITE_TABLES = frozenset({
+    "runtime_complaints",
+    "runtime_events",
+    "runtime_event_meta",
+    "runtime_operation_receipts",
+})
+
+
+def complaint_write_snapshot(
+    state: Path, baseline: tuple[object, ...] | None = None,
+) -> tuple[object, ...]:
+    """Compare complaint-route write tables, excluding asynchronous projections."""
+    return no_write_snapshot(
+        state, include_tables=COMPLAINT_WRITE_TABLES, baseline_snapshot=baseline,
+    )
+
+
 def seed_records(backend) -> None:
     source = Path(__file__).resolve().parents[1] / "src"
     seed = f"""
@@ -423,14 +440,16 @@ class QuestionsWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
                 "SELECT count(*) FROM runtime_events WHERE id=?", ("complaint:" + record["id"],)
             ).fetchone()[0]
         self.assertEqual(count, 1)
-        before_replay = no_write_snapshot(self.backend.state)
+        before_replay = complaint_write_snapshot(self.backend.state)
         replay = self._post("/api/complaints", {
             "id": "questions-write-submit", "lead": "questions-write-lead",
             "text": "  Please fix the issue  ",
         })
         self.assertEqual(replay.status, 200, replay.body[:1000])
         self.assertEqual(replay.json()["id"], record["id"])
-        self.assertEqual(no_write_snapshot(self.backend.state), before_replay)
+        self.assertEqual(
+            complaint_write_snapshot(self.backend.state, before_replay), before_replay,
+        )
         self._unchanged_error("/api/complaints", {
             "id": "questions-write-submit", "lead": "questions-write-lead", "text": "Changed"
         }, 400, "This complaint id has different content")
@@ -449,7 +468,7 @@ class QuestionsWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
                 ("complaint-response:user:questions-write-response",),
             ).fetchone()
         self.assertEqual(event, ("complaint_response", "pending"))
-        before_replay = no_write_snapshot(self.backend.state)
+        before_replay = complaint_write_snapshot(self.backend.state)
         repeated = self._post("/api/complaints", {
             "action": "respond", "id": "questions-write-response",
             "complaint_id": "questions-write-existing", "text": "  Fixed  ",
@@ -458,7 +477,9 @@ class QuestionsWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         self.assertEqual(repeated.status, 200, repeated.body[:1000])
         self.assertEqual(repeated.json()["version"], reply.json()["version"])
         self.assertEqual(repeated.json()["responses"], reply.json()["responses"])
-        self.assertEqual(no_write_snapshot(self.backend.state), before_replay)
+        self.assertEqual(
+            complaint_write_snapshot(self.backend.state, before_replay), before_replay,
+        )
         self._unchanged_error("/api/complaints", {
             "action": "respond", "id": "questions-write-stale",
             "complaint_id": "questions-write-existing", "text": "Stale",
