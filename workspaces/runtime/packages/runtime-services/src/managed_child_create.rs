@@ -7,9 +7,9 @@
 //! signals only after this transaction commits.
 
 use crate::event_write;
-use rusqlite::Transaction;
+use rusqlite::{OptionalExtension, Transaction};
 use serde_json::{Value, json};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use studio_runtime_store::{AgentId, AgentRecord, AgentRepository, RuntimeStore, StoreError};
 use thiserror::Error;
 
@@ -135,6 +135,26 @@ pub(crate) fn spawn_agents(
             )
             .into());
         }
+        let profile = if let Some(profile_id) = spec.get("profile_id").filter(|value| {
+            !value.is_null() && value.as_str().is_none_or(|value| !value.is_empty())
+        }) {
+            let profile_id =
+                profile_id
+                    .as_str()
+                    .ok_or(crate::managed_host_tools::Error::Invalid(
+                        "Unknown worker profile",
+                    ))?;
+            let read = store.read()?;
+            Some(
+                studio_runtime_store::Table::<studio_runtime_store::ProfileRecord>::new(&read)
+                    .get(&profile_id.to_owned())?
+                    .ok_or(crate::managed_host_tools::Error::Invalid(
+                        "Unknown worker profile",
+                    ))?,
+            )
+        } else {
+            None
+        };
         let name = spec
             .get("name")
             .and_then(Value::as_str)
@@ -151,10 +171,15 @@ pub(crate) fn spawn_agents(
             .ok_or(crate::managed_host_tools::Error::Invalid(
                 "Every worker needs a name, task and valid role",
             ))?;
-        let role = spec
-            .get("role")
-            .and_then(Value::as_str)
-            .unwrap_or("implementer");
+        let role = spec.get("role").and_then(Value::as_str).unwrap_or_else(|| {
+            profile
+                .as_ref()
+                .map(|profile| match profile.role {
+                    studio_runtime_store::ProfileRole::Implementer => "implementer",
+                    studio_runtime_store::ProfileRole::Reviewer => "reviewer",
+                })
+                .unwrap_or("implementer")
+        });
         if !matches!(role, "implementer" | "reviewer") {
             return Err(crate::managed_host_tools::Error::Invalid(
                 "Every worker needs a name, task and valid role",
@@ -197,13 +222,13 @@ pub(crate) fn spawn_agents(
             )
             .into());
         }
-        if let Some(base_ref) = requested_base_ref {
-            if base_ref.is_empty() || base_ref.chars().count() > 1024 {
-                return Err(crate::managed_host_tools::Error::Invalid(
-                    "base_ref must be a branch, tag, or commit",
-                )
-                .into());
-            }
+        if let Some(base_ref) = requested_base_ref
+            && (base_ref.is_empty() || base_ref.chars().count() > 1024)
+        {
+            return Err(crate::managed_host_tools::Error::Invalid(
+                "base_ref must be a branch, tag, or commit",
+            )
+            .into());
         }
         if spec
             .get("server")
@@ -219,6 +244,12 @@ pub(crate) fn spawn_agents(
             return Err(Error::Unavailable(
                 "workspace-state/alternate-child-directory",
             ));
+        }
+        if role == "reviewer" && spec.get("workspace").is_some() {
+            return Err(crate::managed_host_tools::Error::Invalid(
+                "workspace applies to implementers; reviewers use the shared folder with read-only access",
+            )
+            .into());
         }
         let workspace = spec
             .get("workspace")
@@ -250,7 +281,7 @@ pub(crate) fn spawn_agents(
         }
         let id = child_id(request_id, index);
         let account_key = spec
-            .get("account")
+            .get("account_key")
             .and_then(Value::as_str)
             .or_else(|| defaults.get("accountKey").and_then(Value::as_str))
             .unwrap_or(parent_account);
@@ -267,9 +298,11 @@ pub(crate) fn spawn_agents(
         let account = environment.account_identity(account_key)?;
         let workspace_admission = environment.prepare_workspace(actor, spec, request_id)?;
         let provider = account.provider.as_deref().unwrap_or("codex");
+        let profile_model = profile.as_ref().map(|profile| profile.model.as_str());
         let model = spec
             .get("model")
             .and_then(Value::as_str)
+            .or(profile_model)
             .or_else(|| defaults.get("model").and_then(Value::as_str))
             .or_else(|| root_value.get("model").and_then(Value::as_str))
             .unwrap_or(if provider == "claude" {
@@ -277,10 +310,20 @@ pub(crate) fn spawn_agents(
             } else {
                 "gpt-6-astra"
             });
-        let effort = spec
-            .get("effort")
-            .and_then(Value::as_str)
-            .or_else(|| defaults.get("effort").and_then(Value::as_str));
+        let effort = if spec.get("effort").is_some() {
+            spec.get("effort").and_then(Value::as_str)
+        } else if let Some(effort) = profile.as_ref().and_then(|profile| profile.effort) {
+            Some(match effort {
+                studio_runtime_store::ReasoningEffort::Low => "low",
+                studio_runtime_store::ReasoningEffort::Medium => "medium",
+                studio_runtime_store::ReasoningEffort::High => "high",
+                studio_runtime_store::ReasoningEffort::Xhigh => "xhigh",
+                studio_runtime_store::ReasoningEffort::Max => "max",
+                studio_runtime_store::ReasoningEffort::Ultra => "ultra",
+            })
+        } else {
+            defaults.get("effort").and_then(Value::as_str)
+        };
         let fast_mode = spec
             .get("fast_mode")
             .and_then(Value::as_bool)
@@ -291,22 +334,33 @@ pub(crate) fn spawn_agents(
             .and_then(Value::as_bool)
             .or_else(|| defaults.get("daybreakEnabled").and_then(Value::as_bool))
             .unwrap_or(false);
+        let project = {
+            let read = store.read()?;
+            let project_id = parent_value
+                .get("projectId")
+                .and_then(Value::as_str)
+                .unwrap_or(parent_cwd);
+            studio_runtime_store::ProjectsRepository::get(&read, project_id)?
+                .or(studio_runtime_store::ProjectsRepository::get(
+                    &read, parent_cwd,
+                )?)
+                .map(|(_, project)| project)
+        };
+        let project_worker_base = if requested_base_ref.is_none() {
+            worker_base_for_directory(store, parent_value.get("projectId"), parent_cwd)?
+        } else {
+            None
+        };
+        let project_worker_base = project_worker_base.as_deref();
+        let base_ref_request = requested_base_ref.or(project_worker_base);
         let (base_ref, base_commit, main_ref, behind_main) = if worktree {
-            crate::host_worker_create::resolve_worker_base(
-                Path::new(parent_cwd),
-                requested_base_ref,
-            )
-            .map_err(map_create_error)?
+            crate::host_worker_create::resolve_worker_base(Path::new(parent_cwd), base_ref_request)
+                .map_err(map_create_error)?
         } else {
             (String::new(), String::new(), None, None)
         };
         let body = json!({"account_key":account_key,"name":name,"model":model,"effort":effort,
             "prompt":prompt,"workspace_explicit":spec.get("workspace").is_some()});
-        let project = {
-            let read = store.read()?;
-            studio_runtime_store::ProjectsRepository::get(&read, parent_cwd)?
-                .map(|(_, project)| project)
-        };
         let draft = crate::host_worker_create::prepare_work_item(
             &body,
             Path::new(parent_cwd),
@@ -336,6 +390,12 @@ pub(crate) fn spawn_agents(
         record["workerBaseMainRef"] = json!(main_ref.clone());
         record["workerBaseBehindMain"] = json!(behind_main);
         record["creationIntent"] = spec.clone();
+        if let Some(profile_id) = spec.get("profile_id") {
+            record["profileId"] = profile_id.clone();
+        }
+        if let Some(profile) = &profile {
+            record["profileInstructions"] = json!(profile.instructions);
+        }
         record["name"] = json!(name.trim());
         record["yoloMode"] = root_value.get("yoloMode").cloned().unwrap_or(json!(true));
         record["maxAgents"] = root_value.get("maxAgents").cloned().unwrap_or(json!(64));
@@ -373,10 +433,10 @@ pub(crate) fn spawn_agents(
             .collect::<Result<Vec<_>, _>>()?;
         let new_count = existing.iter().filter(|item| item.is_none()).count() as i64;
         if new_count != 0 && new_count != drafts.len() as i64 {
-            return Err(crate::managed_host_tools::Error::Invalid("This request id has different content").into());
+            return Err(crate::managed_host_tools::Error::Invalid("This request id has different content"));
         }
         if active_agents(tx, &actor_record.root_id.0)? + new_count > max {
-            return Err(crate::managed_host_tools::Error::Invalid("This batch exceeds the active agent limit; no workers were created").into());
+            return Err(crate::managed_host_tools::Error::Invalid("This batch exceeds the active agent limit; no workers were created"));
         }
         for draft in &drafts {
             draft.workspace_admission.check(tx, actor_record)
@@ -385,21 +445,17 @@ pub(crate) fn spawn_agents(
                 .map_err(map_recheck_error)?;
         }
         if !can_delegate(tx, actor_record, &current_root)? {
-            return Err(crate::managed_host_tools::Error::Invalid("Delegation depth reached").into());
+            return Err(crate::managed_host_tools::Error::Invalid("Delegation depth reached"));
         }
         let mut children = Vec::with_capacity(drafts.len());
         let mut signals = Vec::new();
         for (draft, saved) in drafts.iter().zip(existing) {
             if let Some(saved) = saved {
                 if saved.value().get("creationIntent") != Some(&draft.intent) {
-                    return Err(crate::managed_host_tools::Error::Invalid("This request id has different content").into());
+                    return Err(crate::managed_host_tools::Error::Invalid("This request id has different content"));
                 }
                 children.push(project_child(&saved.value(), draft.task_id.as_deref(), draft.worktree));
                 continue;
-            }
-            if let Some(task_id) = &draft.task_id {
-                crate::work_assignment_runtime::assign_in_transaction(tx, task_id, &draft.id, actor_record, now)
-                    .map_err(|_| crate::managed_host_tools::Error::Invalid("Work item assignment was rejected"))?;
             }
             let mut text = draft.prompt.clone();
             if draft.worktree {
@@ -414,14 +470,19 @@ pub(crate) fn spawn_agents(
             let record = AgentRecord::from_value(draft.record.clone())
                 .map_err(|_| crate::managed_host_tools::Error::Invalid("Invalid child agent record"))?;
             AgentRepository::put(tx, &record)?;
+            record_spawn_effect(tx, actor_record, &draft.record, request_id);
             let mut record_value = draft.record.clone();
             record_value["workerBaseMainRef"] = json!(draft.worker_base_main_ref);
             record_value["workerBaseBehindMain"] = json!(draft.worker_base_behind_main);
             crate::agents_create::publish_agent(tx, &record_value)?;
+            if let Some(task_id) = &draft.task_id {
+                crate::work_assignment_runtime::assign_in_transaction(tx, task_id, &draft.id, actor_record, now)
+                    .map_err(|_| crate::managed_host_tools::Error::Invalid("Work item assignment was rejected"))?;
+            }
             let inserted = event_write::enqueue_event(tx, &record, format!("{}:initial", draft.id), "user", text, now)
                 .map_err(|_| crate::managed_host_tools::Error::Invalid("Initial turn intent was rejected"))?;
             if !inserted {
-                return Err(crate::managed_host_tools::Error::Invalid("This request id has different content").into());
+                return Err(crate::managed_host_tools::Error::Invalid("This request id has different content"));
             }
             children.push(project_child(&draft.record, draft.task_id.as_deref(), draft.worktree));
             signals.push(crate::managed_host_tools::WakeSignal::new("worker-driver"));
@@ -439,6 +500,58 @@ fn child_id(request_id: &str, index: usize) -> String {
         format!("{request_id}:{index}").as_bytes(),
     )
     .to_string()
+}
+
+/// Match Python `Runtime.project_worker_base`: project handles are exact ids;
+/// filesystem directories inherit the setting from their deepest ancestor.
+fn worker_base_for_directory(
+    store: &RuntimeStore,
+    project_id: Option<&Value>,
+    cwd: &str,
+) -> Result<Option<String>, Error> {
+    if let Some(handle) = project_id
+        .and_then(Value::as_str)
+        .filter(|value| value.starts_with("project:"))
+    {
+        let read = store.read()?;
+        let (_, project) = studio_runtime_store::ProjectsRepository::get(&read, handle)?.ok_or(
+            crate::managed_host_tools::Error::Invalid("Select an existing project"),
+        )?;
+        return Ok(project
+            .get("workerBaseRef")
+            .and_then(Value::as_str)
+            .map(str::to_owned));
+    }
+    let directory = canonical_or_expanded(cwd);
+    let read = store.read()?;
+    let projects = studio_runtime_store::ProjectsRepository::list(&read)?;
+    Ok(projects
+        .into_iter()
+        .filter_map(|(_, project)| {
+            let worker_base = project.get("workerBaseRef")?.as_str()?;
+            let path = project.get("path")?.as_str()?;
+            let path = canonical_or_expanded(path);
+            directory
+                .starts_with(&path)
+                .then_some((path.components().count(), worker_base.to_owned()))
+        })
+        .max_by_key(|(depth, _)| *depth)
+        .map(|(_, worker_base)| worker_base))
+}
+
+fn canonical_or_expanded(path: &str) -> PathBuf {
+    let expanded = if path == "~" {
+        std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(path))
+    } else if let Some(suffix) = path.strip_prefix("~/") {
+        std::env::var_os("HOME")
+            .map(|home| PathBuf::from(home).join(suffix))
+            .unwrap_or_else(|| PathBuf::from(path))
+    } else {
+        PathBuf::from(path)
+    };
+    std::fs::canonicalize(&expanded).unwrap_or(expanded)
 }
 
 fn recheck_actor(
@@ -493,6 +606,114 @@ fn active_agents(
         }
     }
     Ok(active)
+}
+
+/// Preserve Python's best-effort execution history for a spawned child. The
+/// child row itself is authoritative; a broken optional history table must not
+/// turn successful child creation into a refusal.
+fn record_spawn_effect(tx: &Transaction<'_>, actor: &AgentRecord, child: &Value, request_id: &str) {
+    let result = (|| -> Result<(), rusqlite::Error> {
+        tx.execute_batch("SAVEPOINT managed_spawn_execution_effect")?;
+        let write = (|| -> Result<(), rusqlite::Error> {
+            let has_runs: bool = tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='runtime_execution_runs')",
+                [],
+                |row| row.get(0),
+            )?;
+            if !has_runs {
+                return Ok(());
+            }
+            let actor_value = actor.value();
+            let account = actor_value
+                .get("accountKey")
+                .and_then(Value::as_str)
+                .unwrap_or("default");
+            let thread = actor_value.get("threadId").and_then(Value::as_str);
+            let turn = actor_value.get("turnId").and_then(Value::as_str);
+            let active_turn = turn.filter(|turn| !turn.is_empty());
+            let run = if let Some(turn) = active_turn {
+                let mut statement = tx.prepare(
+                    "SELECT id,record FROM runtime_execution_runs WHERE agent=?1 AND account=?2 AND thread IS ?3 AND turn=?4 LIMIT 2",
+                )?;
+                let rows = statement
+                    .query_map(
+                        rusqlite::params![actor.id.0, account, thread, turn],
+                        |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+                    )?
+                    .collect::<Result<Vec<_>, _>>()?;
+                (rows.len() == 1).then(|| rows[0].clone())
+            } else {
+                tx.query_row(
+                    "SELECT id,record FROM runtime_execution_runs WHERE agent=?1 AND account=?2 AND epoch=?3 AND turn IS NULL ORDER BY created DESC LIMIT 1",
+                    rusqlite::params![actor.id.0, account, actor.epoch],
+                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+                )
+                .optional()?
+            };
+            let Some((run_id, raw_run)) = run else {
+                return Ok(());
+            };
+            let Ok(run) = serde_json::from_str::<Value>(&raw_run) else {
+                return Ok(());
+            };
+            if active_turn.is_none()
+                && matches!(
+                    run.get("status").and_then(Value::as_str),
+                    Some("completed" | "failed" | "interrupted" | "cancelled")
+                )
+            {
+                return Ok(());
+            }
+            let Some(child_id) = child.get("id").and_then(Value::as_str) else {
+                return Ok(());
+            };
+            let effect_id = format!("spawn:{child_id}");
+            let previous: Option<String> = tx
+                .query_row(
+                    "SELECT record FROM runtime_execution_effects WHERE id=?1",
+                    [&effect_id],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            let previous: Option<Value> = previous.and_then(|raw| serde_json::from_str(&raw).ok());
+            let effect_run = previous
+                .as_ref()
+                .and_then(|value| value.get("runId"))
+                .and_then(Value::as_str)
+                .unwrap_or(&run_id);
+            let attempt_id = previous
+                .as_ref()
+                .and_then(|value| value.get("attemptId"))
+                .cloned()
+                .or_else(|| run.get("latestAttemptId").cloned())
+                .unwrap_or(Value::Null);
+            let effect = json!({"id":effect_id,"runId":effect_run,"kind":"spawn",
+                "referenceId":child_id,"attemptId":attempt_id,"requestId":request_id,
+                "status":child.get("status").cloned().unwrap_or(Value::Null)});
+            tx.execute(
+                "INSERT INTO runtime_execution_effects(id,run,kind,reference,record) VALUES(?1,?2,'spawn',?3,?4) ON CONFLICT(id) DO UPDATE SET run=excluded.run,kind=excluded.kind,reference=excluded.reference,record=excluded.record",
+                rusqlite::params![effect_id, effect_run, child_id, effect.to_string()],
+            )?;
+            let node_id = format!("worker:{child_id}");
+            let node = json!({"id":node_id,"runId":run_id,"kind":"managed_worker",
+                "agentId":child_id,"status":child.get("status").cloned().unwrap_or(Value::Null)});
+            tx.execute(
+                "INSERT INTO runtime_execution_nodes(id,run,record) VALUES(?1,?2,?3) ON CONFLICT(id) DO UPDATE SET run=excluded.run,record=excluded.record",
+                rusqlite::params![node_id, run_id, node.to_string()],
+            )?;
+            Ok(())
+        })();
+        if write.is_err()
+            && let Err(error) = tx.execute_batch("ROLLBACK TO managed_spawn_execution_effect")
+        {
+            eprintln!("managed child execution history rollback failed: {error}");
+        }
+        tx.execute_batch("RELEASE managed_spawn_execution_effect")?;
+        write
+    })();
+    if result.is_err() {
+        eprintln!("managed child execution history could not be recorded");
+    }
 }
 
 fn can_delegate(
@@ -576,6 +797,24 @@ fn project_child(record: &Value, task_id: Option<&str>, worktree: bool) -> Value
                 .cloned()
                 .unwrap_or(Value::Null),
         );
+        if event_write::truthy(record.get("workerBaseBehindMain")) {
+            let behind = &record["workerBaseBehindMain"];
+            let main_ref = record
+                .get("workerBaseMainRef")
+                .cloned()
+                .unwrap_or_else(|| json!("main"));
+            output.insert("baseBehindMain".to_owned(), behind.clone());
+            output.insert("baseMainRef".to_owned(), main_ref.clone());
+            output.insert(
+                "baseWarning".to_owned(),
+                json!(format!(
+                    "Base commit {} is {} commits behind {}",
+                    record["workerBaseCommit"].as_str().unwrap_or(""),
+                    behind,
+                    main_ref.as_str().unwrap_or("main"),
+                )),
+            );
+        }
     }
     Value::Object(output)
 }
@@ -667,15 +906,25 @@ pub(crate) fn request_review(
             .ok_or(crate::managed_host_tools::Error::Stale)?
     };
     let root_value = root.value();
-    let directory = parent_value.get("cwd").and_then(Value::as_str).ok_or(
+    let parent_cwd = parent_value.get("cwd").and_then(Value::as_str).ok_or(
         crate::managed_host_tools::Error::Invalid("Select a project directory"),
     )?;
+    let mut directory_path = args
+        .get("cwd")
+        .and_then(Value::as_str)
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(parent_cwd));
+    if !directory_path.is_absolute() {
+        directory_path = Path::new(parent_cwd).join(directory_path);
+    }
+    let directory = crate::agents_create::canonical_project_directory(&directory_path)
+        .map_err(crate::managed_host_tools::Error::Invalid)?;
     let plan = crate::native_review::ReviewPlan::from_records(
         parent_value.clone(),
         root_value.clone(),
         args.clone(),
         request_id.to_owned(),
-        directory.to_owned(),
+        directory.clone(),
     )
     .map_err(|_| crate::managed_host_tools::Error::Invalid("Invalid native review request"))?;
     let child_id = plan.spec().get("id").and_then(Value::as_str).ok_or(
@@ -698,7 +947,10 @@ pub(crate) fn request_review(
         .and_then(Value::as_str)
         .unwrap_or("default");
     let account = environment.account_identity(account_key)?;
-    let workspace_admission = environment.prepare_workspace(actor, args, request_id)?;
+    // Review is read-only in the parent's managed workspace. Its requested
+    // repository is validated separately and may differ from the actor's cwd.
+    let workspace_admission =
+        environment.prepare_workspace(actor, &json!({"workspace":"shared"}), request_id)?;
     let spec = plan.spec();
     let model = spec.get("model").and_then(Value::as_str).ok_or(
         crate::managed_host_tools::Error::Invalid("Invalid native review model"),
@@ -709,24 +961,32 @@ pub(crate) fn request_review(
         .and_then(Value::as_bool)
         .unwrap_or(false);
     let (base_ref, base_commit, _, _) =
-        crate::host_worker_create::resolve_worker_base(Path::new(directory), None)
+        crate::host_worker_create::resolve_worker_base(Path::new(&directory), None)
             .map_err(map_create_error)?;
     let project = {
         let read = store.read()?;
-        studio_runtime_store::ProjectsRepository::get(&read, directory)?.map(|(_, project)| project)
+        let project_id = parent_value
+            .get("projectId")
+            .and_then(Value::as_str)
+            .unwrap_or(parent_cwd);
+        studio_runtime_store::ProjectsRepository::get(&read, project_id)?
+            .or(studio_runtime_store::ProjectsRepository::get(
+                &read, parent_cwd,
+            )?)
+            .map(|(_, project)| project)
     };
     let body = json!({"account_key":account_key,"name":"Review","model":model,
         "effort":effort,"prompt":spec.get("prompt").and_then(Value::as_str).unwrap_or("")});
     let prepared = crate::host_worker_create::prepare_work_item(
         &body,
-        Path::new(directory),
+        Path::new(&directory),
         AgentId::from(child_id),
         actor_record.root_id.clone(),
         actor_record.id.clone(),
         &base_ref,
         &base_commit,
         actor_record.epoch,
-        directory,
+        parent_cwd,
         account_key,
         parent_value.get("projectId"),
         parent_value.get("projectServerId"),
@@ -764,6 +1024,17 @@ pub(crate) fn request_review(
     let value = store
         .transaction_with_error(|tx| -> Result<Value, crate::managed_host_tools::Error> {
             recheck_actor(tx, actor_record)?;
+            if AgentRepository::get(tx, &AgentId::from(child_id))?.is_none() {
+                let maximum = root_value
+                    .get("maxAgents")
+                    .and_then(Value::as_i64)
+                    .unwrap_or(64);
+                if active_agents(tx, &actor_record.root_id.0)? >= maximum {
+                    return Err(crate::managed_host_tools::Error::Invalid(
+                        "Team active agent limit reached; free a finished agent before creating a review",
+                    ));
+                }
+            }
             let creator = ReviewCreator {
                 actor: actor_record,
                 draft: &review,

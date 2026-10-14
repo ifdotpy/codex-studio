@@ -253,9 +253,6 @@ pub fn prepare_work_item(
         validate_base(Some(base_ref), Some(base_commit))?;
     }
     let path = canonical_directory(path)?;
-    if path != parent_cwd {
-        return Err(CreateError::IdentityChanged);
-    }
     let account_key = required_string_value(body, "account_key")?;
     let name = required_string_value(body, "name")?.trim();
     if name.is_empty() || name.chars().count() > 100 {
@@ -839,6 +836,55 @@ mod tests {
             field(&fixture.draft, "daybreakEnabled").and_then(Value::as_bool),
             Some(false)
         );
+    }
+
+    #[test]
+    fn review_target_directory_can_differ_from_parent_workspace() {
+        let mut fixture = worker_draft_fixture("Review", "Inspect the change");
+        let target = tempfile::tempdir().expect("target repository directory");
+        let project = ProjectsRepository::get(&fixture.database, &fixture.cwd)
+            .expect("parent project lookup")
+            .expect("parent project exists")
+            .1;
+        let body = json!({"account_key":"worker-account","name":"Review",
+            "model":"model-one","prompt":"Inspect the change"});
+        let canonical_target = target
+            .path()
+            .canonicalize()
+            .expect("canonical review target directory");
+        let draft = prepare_work_item(
+            &body,
+            target.path(),
+            AgentId::from("review-child"),
+            fixture.parent_id.clone(),
+            fixture.parent_id.clone(),
+            "",
+            "",
+            0,
+            &fixture.cwd,
+            "parent-account",
+            None,
+            None,
+            Some(&project),
+            &fixture.account,
+            &Catalog,
+            "reviewer",
+            false,
+            false,
+            false,
+        )
+        .expect("review uses its validated target directory");
+        assert_eq!(
+            field(&draft, "cwd").and_then(Value::as_str),
+            canonical_target.to_str()
+        );
+        assert_eq!(
+            field(&draft, "_p02ParentCwd").and_then(Value::as_str),
+            Some(fixture.cwd.as_str())
+        );
+        let tx = fixture.database.transaction().expect("recheck transaction");
+        recheck_worker(&tx, &draft, 0, &fixture.account)
+            .expect("parent identity is rechecked against the stored parent cwd");
     }
 
     #[test]
