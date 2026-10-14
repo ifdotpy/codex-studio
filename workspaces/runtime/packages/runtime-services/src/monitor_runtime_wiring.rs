@@ -478,6 +478,15 @@ impl MonitorRuntime {
     }
 }
 
+fn http_input_ticket() -> Result<String, MonitorError> {
+    let mut bytes = [0_u8; 16];
+    getrandom::fill(&mut bytes)
+        .map_err(|_| MonitorError::Refused("Could not allocate monitor input ticket"))?;
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    Ok(uuid::Uuid::from_bytes(bytes).to_string())
+}
+
 fn record_tick_failure(current: &mut Option<MonitorError>, incoming: MonitorError) {
     if current
         .as_ref()
