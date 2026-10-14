@@ -83,6 +83,9 @@ async fn read_account_session_catalog(
     provider: String,
     stop: Shutdown,
 ) -> Result<Value, ()> {
+    if provider != "claude" {
+        return Err(());
+    }
     let mut shutdown = stop.subscribe();
     let mut rows = Vec::new();
     let mut first_page = None;
@@ -100,14 +103,43 @@ async fn read_account_session_catalog(
         }
         let session_clone = session.clone();
         let account_clone = account.clone();
-        let provider_clone = provider.clone();
+        let current_scope = session.current_scope(&account).ok_or(())?;
+        let operation = format!(
+            "model-list:{account}:{page_index}:{}",
+            cursor.as_deref().unwrap_or("first")
+        );
         let request = tokio::task::spawn_blocking(move || {
-            session_clone.model_list(&account_clone, &provider_clone, params)
+            use crate::account_session_runtime::{
+                ProviderRequest, ProviderResponse, RequestCertainty,
+            };
+            use std::time::Instant;
+            let receipt = session_clone
+                .provider_request(ProviderRequest {
+                    account: account_clone,
+                    operation: operation.clone(),
+                    actor: None,
+                    expected_scope: Some(current_scope.clone()),
+                    method: studio_runtime_providers::Method::ModelList,
+                    params,
+                    deadline: Instant::now() + CATALOG_TIMEOUT,
+                })
+                .map_err(|_| ())?;
+            if receipt.scope != current_scope
+                || receipt.operation != operation
+                || receipt.certainty != RequestCertainty::Written
+                || receipt.ticket.is_none()
+            {
+                return Err(());
+            }
+            match receipt.result {
+                Some(ProviderResponse::Reply(value)) => Ok(value),
+                Some(ProviderResponse::Rejected(_)) | None => Err(()),
+            }
         });
         let response = tokio::select! {
             _ = Shutdown::cancelled(&mut shutdown) => return Err(()),
             result = tokio::time::timeout(CATALOG_TIMEOUT, request) => {
-                result.map_err(|_| ())?.map_err(|_| ())?.map_err(|_| ())?
+                result.map_err(|_| ())?.map_err(|_| ())??
             },
         };
         let bytes = serde_json::to_vec(&response).map_err(|_| ())?.len();
@@ -822,13 +854,28 @@ pub(crate) mod tests {
         params: StdMutex<Vec<Value>>,
     }
     impl crate::account_session_runtime::AccountSessionPort for AccountSessionPages {
-        fn model_list(
+        fn current_scope(
             &self,
-            _account: &str,
-            _provider: &str,
-            params: Value,
-        ) -> Result<Value, crate::account_session_runtime::AccountSessionError> {
-            self.params.lock().expect("params").push(params);
+            account: &str,
+        ) -> Option<crate::account_session_runtime::ConnectionScope> {
+            Some(crate::account_session_runtime::ConnectionScope {
+                account: account.to_owned(),
+                connection: "claude-connection".into(),
+                generation: 4,
+            })
+        }
+
+        fn provider_request(
+            &self,
+            request: crate::account_session_runtime::ProviderRequest,
+        ) -> Result<
+            crate::account_session_runtime::SessionReceipt,
+            crate::account_session_runtime::AccountSessionError,
+        > {
+            use crate::account_session_runtime::{
+                ProviderResponse, RequestCertainty, SessionReceipt,
+            };
+            self.params.lock().expect("params").push(request.params);
             if self.pages.lock().expect("pages").is_empty() {
                 return Err(
                     crate::account_session_runtime::AccountSessionError::InvalidResponse(
@@ -836,7 +883,21 @@ pub(crate) mod tests {
                     ),
                 );
             }
-            Ok(self.pages.lock().expect("pages").remove(0))
+            let scope = self.current_scope(&request.account).expect("test scope");
+            Ok(SessionReceipt {
+                scope,
+                operation: request.operation,
+                ticket: Some(studio_runtime_providers::RequestTicket {
+                    id: studio_runtime_providers::RequestId::String("catalog-test".into()),
+                    generation: 4,
+                    method: studio_runtime_providers::Method::ModelList,
+                }),
+                certainty: RequestCertainty::Written,
+                result: Some(ProviderResponse::Reply(
+                    self.pages.lock().expect("pages").remove(0),
+                )),
+                not_sent_reason: None,
+            })
         }
     }
 
