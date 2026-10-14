@@ -30,40 +30,8 @@ pub(super) fn authorize(tx: &rusqlite::Transaction<'_>, call: &Call) -> Result<b
                     "thread/queue/list" | "thread/backgroundTerminals/list" | "thread/unsubscribe"
                 ));
         }
-        return Ok(match call.method.as_str() {
-            "thread/list" => call.params.get("threadId").is_none(),
-            "thread/loaded/list" | "model/list" | "claude/diagnostics" => true,
-            "thread/read" => {
-                call.params
-                    .get("threadId")
-                    .and_then(Value::as_str)
-                    .is_some_and(|id| !id.is_empty())
-                    && call
-                        .params
-                        .get("includeTurns")
-                        .is_none_or(|value| value == &json!(false))
-            }
-            "thread/turns/list" => {
-                call.params
-                    .get("threadId")
-                    .and_then(Value::as_str)
-                    .is_some_and(|id| !id.is_empty())
-                    && call
-                        .params
-                        .get("limit")
-                        .and_then(Value::as_u64)
-                        .is_some_and(|limit| limit <= 20)
-                    && call.params.get("sortDirection").and_then(Value::as_str) == Some("desc")
-                    && call.params.get("itemsView").and_then(Value::as_str) == Some("full")
-            }
-            "operationStatus" => call
-                .params
-                .get("operationId")
-                .and_then(Value::as_str)
-                .is_some_and(|id| id.starts_with("monitor:") && id.len() > "monitor:".len()),
-            "account/read" => call.params == json!({"refreshToken": false}),
-            _ => false,
-        });
+        return Ok(Method::from_wire(&call.method)
+            .is_some_and(|method| super::valid_actorless_read_shape(method, &call.params)));
     };
     let Some(agent_record) = AgentRepository::get(tx, &AgentId::from(actor.agent.as_str()))? else {
         return Ok(false);

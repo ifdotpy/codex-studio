@@ -154,20 +154,7 @@ fn validate(request: &SessionRequest) -> Result<(), PortError> {
     }
     let actorless_read = request.transfer.is_none()
         && request.actor.is_none()
-        && matches!(
-            request.method,
-            Method::ThreadList
-                | Method::ThreadLoadedList
-                | Method::ModelList
-                | Method::ClaudeDiagnostics
-                | Method::OperationStatus
-                | Method::AccountRead
-                | Method::ThreadRead
-                | Method::ThreadTurnsList
-        )
-        && (request.method != Method::ThreadList || request.params.get("threadId").is_none())
-        && (request.method != Method::AccountRead
-            || request.params == json!({"refreshToken": false}));
+        && valid_actorless_read_shape(request.method, &request.params);
     let deleted_voice_stop = request
         .deleted_actor_session
         .as_ref()
@@ -365,6 +352,87 @@ fn valid_settings_update(request: &SessionRequest) -> bool {
     })
 }
 
+pub(super) fn valid_actorless_read_shape(method: Method, params: &Value) -> bool {
+    let Some(params) = params.as_object() else {
+        return false;
+    };
+    let only = |required: &[&str], optional: &[&str]| {
+        required.iter().all(|key| params.contains_key(*key))
+            && params
+                .keys()
+                .all(|key| required.contains(&key.as_str()) || optional.contains(&key.as_str()))
+    };
+    match method {
+        // Python codex_runtime.py:11661 always passes limit=50 and cursor (possibly null).
+        Method::ThreadList => {
+            only(&["limit", "cursor"], &[])
+                && params.get("limit") == Some(&json!(50))
+                && (params.get("cursor") == Some(&Value::Null)
+                    || params
+                        .get("cursor")
+                        .and_then(Value::as_str)
+                        .is_some_and(|cursor| !cursor.is_empty()))
+        }
+        // Python codex_native_sweep.py:_loaded uses limit=100 and optional cursor.
+        Method::ThreadLoadedList => valid_page_read_shape(params, &["limit"], 100),
+        // Python codex_catalog.py sends {limit,cursor?}; the history reader
+        // codex_model_catalog_reader.py additionally sends includeHidden=true.
+        Method::ModelList => {
+            valid_page_read_shape(params, &["limit"], 100)
+                || (valid_page_read_shape(params, &["limit", "includeHidden"], 100)
+                    && params.get("includeHidden") == Some(&json!(true)))
+        }
+        // Python codex_diagnostics.py sends an empty object.
+        Method::ClaudeDiagnostics => params.is_empty(),
+        // Python codex_runtime.py:3904 requests only this stable monitor identity.
+        Method::OperationStatus => {
+            only(&["operationId"], &[])
+                && params
+                    .get("operationId")
+                    .and_then(Value::as_str)
+                    .is_some_and(|id| id.starts_with("monitor:") && id.len() > "monitor:".len())
+        }
+        // Python codex_runtime.py:11680-11684 imports only visible thread state.
+        Method::ThreadRead => {
+            only(&["threadId", "includeTurns"], &[])
+                && params
+                    .get("threadId")
+                    .and_then(Value::as_str)
+                    .is_some_and(|id| !id.is_empty())
+                && params.get("includeTurns") == Some(&json!(false))
+        }
+        Method::ThreadTurnsList => {
+            only(&["threadId", "limit", "sortDirection", "itemsView"], &[])
+                && params
+                    .get("threadId")
+                    .and_then(Value::as_str)
+                    .is_some_and(|id| !id.is_empty())
+                && params.get("limit") == Some(&json!(20))
+                && params.get("sortDirection") == Some(&json!("desc"))
+                && params.get("itemsView") == Some(&json!("full"))
+        }
+        Method::AccountRead => {
+            only(&["refreshToken"], &[]) && params.get("refreshToken") == Some(&json!(false))
+        }
+        _ => false,
+    }
+}
+
+fn valid_page_read_shape(
+    params: &serde_json::Map<String, Value>,
+    required: &[&str],
+    limit: u64,
+) -> bool {
+    required.iter().all(|key| params.contains_key(*key))
+        && params
+            .keys()
+            .all(|key| required.contains(&key.as_str()) || key == "cursor")
+        && params.get("limit") == Some(&json!(limit))
+        && params
+            .get("cursor")
+            .is_none_or(|cursor| cursor.as_str().is_some_and(|value| !value.is_empty()))
+}
+
 fn valid_voice_start(request: &SessionRequest) -> bool {
     let Some(session_id) = request.operation.strip_prefix("voice:start:") else {
         return false;
@@ -523,6 +591,55 @@ mod validation_tests {
             validate(&turns_request("full", 21, false)),
             Err(PortError::Invalid)
         );
+    }
+
+    #[test]
+    fn actorless_reads_accept_only_documented_exact_parameter_shapes() {
+        let cases = [
+            (Method::ThreadList, json!({"limit":50,"cursor":null})),
+            (Method::ThreadLoadedList, json!({"limit":100})),
+            (
+                Method::ThreadLoadedList,
+                json!({"limit":100,"cursor":"next"}),
+            ),
+            (Method::ModelList, json!({"limit":100})),
+            (Method::ModelList, json!({"limit":100,"cursor":"next"})),
+            (Method::ModelList, json!({"limit":100,"includeHidden":true})),
+            (Method::ClaudeDiagnostics, json!({})),
+            (
+                Method::OperationStatus,
+                json!({"operationId":"monitor:fixture"}),
+            ),
+            (Method::AccountRead, json!({"refreshToken":false})),
+            (
+                Method::ThreadRead,
+                json!({"threadId":"fixture-thread","includeTurns":false}),
+            ),
+            (
+                Method::ThreadTurnsList,
+                json!({"threadId":"fixture-thread","limit":20,"sortDirection":"desc","itemsView":"full"}),
+            ),
+        ];
+        for (method, params) in cases {
+            assert!(
+                valid_actorless_read_shape(method, &params),
+                "{method:?}: {params}"
+            );
+            let mut extended = params;
+            extended["unapproved"] = json!(true);
+            assert!(
+                !valid_actorless_read_shape(method, &extended),
+                "{method:?} accepted extra params: {extended}"
+            );
+        }
+        assert!(!valid_actorless_read_shape(
+            Method::ThreadRead,
+            &json!({"threadId":"fixture-thread"})
+        ));
+        assert!(!valid_actorless_read_shape(
+            Method::ThreadTurnsList,
+            &json!({"threadId":"fixture-thread","limit":10,"sortDirection":"desc","itemsView":"full"})
+        ));
     }
 
     #[test]

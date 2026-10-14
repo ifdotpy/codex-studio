@@ -846,7 +846,7 @@ mod tests {
                 expected_scope: None,
                 deleted_actor_session: None,
                 method: studio_runtime_providers::Method::from_wire("thread/list").unwrap(),
-                params: serde_json::json!({"limit":1}),
+                params: serde_json::json!({"limit":50,"cursor":null}),
                 deadline: std::time::Instant::now() + Duration::from_secs(1),
             })
             .await
