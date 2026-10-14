@@ -8,6 +8,7 @@ import sys
 import time
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
 server_source, root_arg, store_arg = map(Path, sys.argv[1:4])
 sys.path.insert(0, str(server_source))
 import codex_workspace_images as images  # noqa: E402

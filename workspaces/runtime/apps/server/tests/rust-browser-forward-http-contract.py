@@ -3,6 +3,9 @@
 
 from __future__ import annotations
 
+from test_isolation import isolate_supervisor_environment
+isolate_supervisor_environment()
+
 import socket
 import sys
 import unittest

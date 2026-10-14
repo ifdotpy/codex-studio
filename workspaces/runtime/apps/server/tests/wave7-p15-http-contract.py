@@ -2,6 +2,9 @@
 """P15 operation witnesses reuse the shared monitor HTTP contract unchanged."""
 from __future__ import annotations
 
+from test_isolation import isolate_supervisor_environment
+isolate_supervisor_environment()
+
 import importlib.util
 from pathlib import Path
 import unittest
