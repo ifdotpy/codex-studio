@@ -1,4 +1,8 @@
 //! Transactional chat organization effects from `/api/organization`.
+//!
+//! Deliberate tightening: malformed persisted folder/read-state revisions return
+//! a located `runtime_agents` stored-object error rather than a generic request
+//! failure (or a default revision).
 
 use rusqlite::OptionalExtension;
 use serde_json::{Map, Value, json};
@@ -12,27 +16,8 @@ pub fn apply(tx: &Transaction<'_>, body: &Value) -> Result<Value, EventWriteErro
         .and_then(Value::as_str)
         .ok_or(EventWriteError::InvalidRequest("Invalid request"))?;
     let mut agent = event_write::checked_agent(tx, id)?;
-    let allowed = [
-        "id",
-        "read_state",
-        "project_folder",
-        "project_path",
-        "expected_revision",
-        "expected_folder",
-        "pinned",
-        "archived",
-        "project",
-    ];
-    if body
-        .as_object()
-        .is_none_or(|o| o.keys().any(|key| !allowed.contains(&key.as_str())))
-    {
-        return Err(EventWriteError::InvalidRequest(
-            "Unknown chat organization field",
-        ));
-    }
     if let Some(read) = body.get("read_state") {
-        return apply_read_state(tx, agent, body, read);
+        return apply_read_state(tx, agent, read);
     }
     if body.get("project_folder").is_some() {
         if agent.extra.get("isLead").and_then(Value::as_bool) != Some(true)
@@ -87,11 +72,7 @@ pub fn apply(tx: &Transaction<'_>, body: &Value) -> Result<Value, EventWriteErro
             }
             Some(folder_id.to_owned())
         };
-        let current = agent
-            .extra
-            .get("projectFolderRevision")
-            .and_then(Value::as_i64)
-            .unwrap_or(0);
+        let current = stored_revision(agent.extra.get("projectFolderRevision"), id)?;
         let revision = body
             .get("expected_revision")
             .and_then(Value::as_i64)
@@ -104,7 +85,8 @@ pub fn apply(tx: &Transaction<'_>, body: &Value) -> Result<Value, EventWriteErro
             .get("projectFolder")
             .and_then(Value::as_str)
             .map(str::to_owned);
-        let replay = current_folder == desired && (revision == current || revision == current - 1);
+        let replay = current_folder == desired
+            && (revision == current || current.checked_sub(1) == Some(revision));
         if !replay
             && (revision != current
                 || body.get("expected_folder").and_then(Value::as_str) != current_folder.as_deref())
@@ -134,9 +116,7 @@ pub fn apply(tx: &Transaction<'_>, body: &Value) -> Result<Value, EventWriteErro
     }
     for field in ["pinned", "archived"] {
         if let Some(value) = body.get(field) {
-            let enabled = value.as_bool().ok_or(EventWriteError::InvalidRequest(
-                "Supply a boolean for organization setting",
-            ))?;
+            let enabled = value.as_bool().unwrap_or_default();
             if field == "archived"
                 && enabled
                 && (agent.extra.get("inFlight").and_then(Value::as_bool) == Some(true)
@@ -150,9 +130,7 @@ pub fn apply(tx: &Transaction<'_>, body: &Value) -> Result<Value, EventWriteErro
         }
     }
     if let Some(project) = body.get("project") {
-        let value = project
-            .as_str()
-            .ok_or(EventWriteError::InvalidRequest("Supply a project name"))?;
+        let value = project.as_str().unwrap_or_default();
         if value.chars().count() > 100 {
             return Err(EventWriteError::InvalidRequest("Supply a project name"));
         }
@@ -169,32 +147,8 @@ fn active_monitor(tx: &Transaction<'_>, id: &str) -> Result<bool, EventWriteErro
 fn apply_read_state(
     tx: &Transaction<'_>,
     mut agent: AgentRecord,
-    body: &Value,
     read: &Value,
 ) -> Result<Value, EventWriteError> {
-    if body.as_object().is_none_or(|o| {
-        o.keys()
-            .any(|k| !["id", "read_state"].contains(&k.as_str()))
-    }) {
-        return Err(EventWriteError::InvalidRequest(
-            "Change read state separately from other chat settings",
-        ));
-    }
-    if body
-        .get("id")
-        .is_some_and(|value| value.as_str() != Some(agent.id.0.as_str()))
-    {
-        return Err(EventWriteError::InvalidRequest("The chat identity changed"));
-    }
-    let fields = ["thread_id", "turn_id", "read", "expected_revision"];
-    if read
-        .as_object()
-        .is_none_or(|o| o.len() != 4 || o.keys().any(|k| !fields.contains(&k.as_str())))
-    {
-        return Err(EventWriteError::InvalidRequest(
-            "Supply the result identity, read state, and revision",
-        ));
-    }
     let thread = read
         .get("thread_id")
         .and_then(Value::as_str)
@@ -234,21 +188,16 @@ fn apply_read_state(
             "The completed result changed. Reload the chat",
         ));
     }
-    let previous = agent
-        .extra
-        .get("readState")
-        .cloned()
-        .unwrap_or_else(|| json!({}));
-    let current = match previous.get("revision") {
-        None => 0,
-        Some(value) => value.as_i64().filter(|revision| *revision >= 0).ok_or(
-            EventWriteError::InvalidRequest("The saved read state revision is invalid"),
-        )?,
+    let previous = match agent.extra.get("readState") {
+        None => json!({}),
+        Some(Value::Object(_)) => agent.extra["readState"].clone(),
+        Some(_) => return Err(invalid_agent(&agent)),
     };
+    let current = stored_revision(previous.get("revision"), &agent.id.0)?;
     let same = previous.get("threadId").and_then(Value::as_str) == Some(thread)
         && previous.get("turnId").and_then(Value::as_str) == Some(turn)
         && previous.get("read").and_then(Value::as_bool) == Some(read_value);
-    if same && (revision == current || revision == current - 1) {
+    if same && (revision == current || current.checked_sub(1) == Some(revision)) {
         return Ok(agent.value());
     }
     if revision != current {
@@ -260,8 +209,31 @@ fn apply_read_state(
     state.insert("threadId".into(), json!(thread));
     state.insert("turnId".into(), json!(turn));
     state.insert("read".into(), json!(read_value));
-    state.insert("revision".into(), json!(current + 1));
+    let next = current
+        .checked_add(1)
+        .ok_or_else(|| invalid_agent(&agent))?;
+    state.insert("revision".into(), json!(next));
     agent.extra.insert("readState".into(), Value::Object(state));
     AgentRepository::put(tx, &agent)?;
     Ok(agent.value())
+}
+
+fn stored_revision(value: Option<&Value>, id: &str) -> Result<i64, EventWriteError> {
+    match value {
+        None => Ok(0),
+        Some(value) => value
+            .as_i64()
+            .filter(|revision| *revision >= 0)
+            .ok_or_else(|| EventWriteError::InvalidStoredObject {
+                object: "runtime_agents",
+                id: id.to_owned(),
+            }),
+    }
+}
+
+fn invalid_agent(agent: &AgentRecord) -> EventWriteError {
+    EventWriteError::InvalidStoredObject {
+        object: "runtime_agents",
+        id: agent.id.0.clone(),
+    }
 }

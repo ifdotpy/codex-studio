@@ -207,6 +207,39 @@ def reference_action(backend, agent_id: str, body: dict):
         return result, expected
 
 
+def reference_organization(backend, body: dict):
+    """Run Python's organization effect on an independent copy of the input."""
+    with tempfile.TemporaryDirectory(prefix="organization-python-ref-") as directory:
+        state = Path(directory) / "state"
+        state.mkdir()
+        with closing(sqlite3.connect(backend.state / "canvas.sqlite3")) as source, closing(
+            sqlite3.connect(state / "canvas.sqlite3")
+        ) as target:
+            source.backup(target)
+        runtime = quiet_runtime(state)
+        try:
+            if body.get("archived") is True:
+                with closing(sqlite3.connect(backend.state / "canvas.sqlite3")) as source:
+                    monitor = source.execute(
+                        "SELECT id,record FROM runtime_monitors WHERE json_extract(record,'$.agent')=? AND json_extract(record,'$.status') IN ('running','approval','starting') LIMIT 1",
+                        (body["id"],),
+                    ).fetchone()
+                if monitor is None:
+                    raise AssertionError("Python organization oracle fixture lost its active monitor")
+                with runtime.db() as database:
+                    # Runtime startup may classify stale monitors before the
+                    # organization effect reads them; restore this fixture row
+                    # after startup in the isolated Python oracle.
+                    database.execute(
+                        "INSERT OR REPLACE INTO runtime_monitors(id,record) VALUES (?,?)",
+                        monitor,
+                    )
+            result = runtime.chat_organization(body["id"], body)
+        finally:
+            runtime.close()
+        return result, snapshot(state)
+
+
 def reference_actions(backend, agent_id: str, bodies: list[dict]):
     """Apply a complete independent Python action chain to a DB copy."""
     with tempfile.TemporaryDirectory(prefix="work-write-python-chain-") as directory:
@@ -346,6 +379,17 @@ class WorkWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
     def organization(self, body):
         return self.backend.request("POST", "/api/organization", body=body, headers=self.headers())
 
+    def assert_organization_matches_python(self, body):
+        expected_result, expected_state = reference_organization(self.backend, body)
+        response = self.organization(body)
+        self.assertEqual(response.status, 200, response.body[:1000])
+        actual_state = snapshot(self.backend.state)
+        aliases = result_id_aliases(expected_state, actual_state)
+        self.assertEqual(normal_result(response.json(), aliases), normal_result(expected_result, aliases))
+        actual_state, expected_state = compare_snapshots(expected_state, actual_state, aliases)
+        self.assertEqual(actual_state, expected_state)
+        return response.json()
+
     def test_organization_effects_and_refusals(self):
         with closing(fixture_connection(self.backend.state / "canvas.sqlite3")) as database:
             original = database.execute("SELECT record FROM runtime_agents WHERE id=?", (self.agent_id,)).fetchone()[0]
@@ -373,9 +417,161 @@ class WorkWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         archive = self.organization({"id": self.agent_id, "archived": True})
         self.assertEqual(archive.status, 400, archive.body[:1000])
 
+    def test_organization_folder_revision_parity_and_projection(self):
+        original = self.agent_record()
+        self.addCleanup(self.restore_agent_record, original)
+        project_id = str(self.backend.cwd)
+        with closing(fixture_connection(self.backend.state / "canvas.sqlite3")) as database:
+            project_row = database.execute(
+                "SELECT record FROM runtime_projects WHERE id=?", (project_id,)
+            ).fetchone()
+        self.addCleanup(self.restore_project_record, project_id, project_row[0] if project_row else None)
+        folders = [
+            {"id": "p16-folder-a", "name": "Folder A"},
+            {"id": "p16-folder-b", "name": "Folder B"},
+        ]
+        with closing(fixture_connection(self.backend.state / "canvas.sqlite3")) as database, database:
+            database.execute(
+                "INSERT OR REPLACE INTO runtime_projects(id,record) VALUES (?,?)",
+                (
+                    project_id,
+                    json.dumps({
+                        "id": project_id,
+                        "path": project_id,
+                        "name": "P16 HTTP fixture",
+                        "created": 1.0,
+                        "accountKey": "default",
+                        "accountRevision": 1,
+                        "folders": folders,
+                    }),
+                ),
+            )
+            agent = json.loads(original)
+            agent.pop("projectFolder", None)
+            agent["projectFolderRevision"] = 0
+            database.execute(
+                "UPDATE runtime_agents SET record=? WHERE id=?",
+                (json.dumps(agent), self.agent_id),
+            )
+        moved = self.assert_organization_matches_python({
+            "id": self.agent_id,
+            "project_path": str(self.backend.cwd),
+            "project_folder": "p16-folder-a",
+            "expected_revision": 0,
+            "expected_folder": None,
+        })
+        self.assertEqual(moved["projectFolder"], "p16-folder-a")
+        self.assertEqual(moved["projectFolderRevision"], 1)
+        moved_again = self.assert_organization_matches_python({
+            "id": self.agent_id,
+            "project_path": str(self.backend.cwd),
+            "project_folder": "p16-folder-b",
+            "expected_revision": 1,
+            "expected_folder": "p16-folder-a",
+        })
+        self.assertEqual(moved_again["projectFolder"], "p16-folder-b")
+        self.assertEqual(moved_again["projectFolderRevision"], 2)
+        replay = self.assert_organization_matches_python({
+            "id": self.agent_id,
+            "project_path": str(self.backend.cwd),
+            "project_folder": "p16-folder-b",
+            "expected_revision": 1,
+            "expected_folder": "p16-folder-a",
+        })
+        self.assertEqual(replay["projectFolderRevision"], 2)
+        before = no_write_snapshot(self.backend.state)
+        stale = self.organization({
+            "id": self.agent_id,
+            "project_path": str(self.backend.cwd),
+            "project_folder": "p16-folder-a",
+            "expected_revision": 0,
+            "expected_folder": None,
+        })
+        self.assertEqual(stale.status, 400, stale.body[:1000])
+        self.assertEqual(no_write_snapshot(self.backend.state), before)
+
+    def test_organization_archive_refuses_active_monitor_without_writes(self):
+        original = self.agent_record()
+        self.addCleanup(self.restore_agent_record, original)
+        self.addCleanup(self.remove_monitor, "p16-active-monitor")
+        with closing(fixture_connection(self.backend.state / "canvas.sqlite3")) as database, database:
+            agent = json.loads(original)
+            agent.pop("inFlight", None)
+            database.execute(
+                "UPDATE runtime_agents SET record=? WHERE id=?",
+                (json.dumps(agent), self.agent_id),
+            )
+            database.execute(
+                "INSERT OR REPLACE INTO runtime_monitors(id,record) VALUES (?,?)",
+                ("p16-active-monitor", json.dumps({"id": "p16-active-monitor", "agent": self.agent_id, "status": "running", "created": 1.0})),
+            )
+        with closing(fixture_connection(self.backend.state / "canvas.sqlite3")) as database:
+            self.assertTrue(database.execute(
+                "SELECT EXISTS(SELECT 1 FROM runtime_monitors WHERE json_extract(record,'$.agent')=? AND json_extract(record,'$.status') IN ('running','approval','starting'))",
+                (self.agent_id,),
+            ).fetchone()[0])
+        expected_state = no_write_snapshot(self.backend.state)
+        with self.assertRaisesRegex(ValueError, "Stop active work before archiving"):
+            reference_organization(self.backend, {"id": self.agent_id, "archived": True})
+        response = self.organization({"id": self.agent_id, "archived": True})
+        self.assertEqual(response.status, 400, response.body[:1000])
+        self.assertIn("Stop active work before archiving", response.body.decode())
+        self.assertEqual(no_write_snapshot(self.backend.state), expected_state)
+
+    @unittest.skipUnless(os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"), "strict persisted-row validation is Rust-specific")
+    def test_organization_corrupt_revisions_are_located_and_no_write(self):
+        original = self.agent_record()
+        self.addCleanup(self.restore_agent_record, original)
+        cases = (
+            ("projectFolderRevision", "bad"),
+            ("readState", []),
+            ("readState", {"threadId": "thread-p16", "turnId": "turn-p16", "read": True, "revision": "bad"}),
+        )
+        for field, corrupt in cases:
+            with self.subTest(field=field, corrupt=corrupt):
+                with closing(fixture_connection(self.backend.state / "canvas.sqlite3")) as database, database:
+                    agent = json.loads(original)
+                    agent.update(threadId="thread-p16", lastCompletedTurn="turn-p16", lastCompletedTurnStatus="completed")
+                    agent[field] = corrupt
+                    database.execute(
+                        "UPDATE runtime_agents SET record=? WHERE id=?",
+                        (json.dumps(agent), self.agent_id),
+                    )
+                before = no_write_snapshot(self.backend.state)
+                body = (
+                    {"id": self.agent_id, "project_folder": None, "project_path": str(self.backend.cwd), "expected_revision": 0, "expected_folder": None}
+                    if field == "projectFolderRevision"
+                    else {"id": self.agent_id, "read_state": {"thread_id": "thread-p16", "turn_id": "turn-p16", "read": True, "expected_revision": 0}}
+                )
+                response = self.organization(body)
+                self.assertEqual(response.status, 500, response.body[:1000])
+                self.assertIn("runtime_agents", response.body.decode())
+                self.assertIn(self.agent_id, response.body.decode())
+                self.assertEqual(no_write_snapshot(self.backend.state), before)
+
+    def agent_record(self):
+        with closing(fixture_connection(self.backend.state / "canvas.sqlite3")) as database:
+            return database.execute(
+                "SELECT record FROM runtime_agents WHERE id=?", (self.agent_id,)
+            ).fetchone()[0]
+
     def restore_agent_record(self, record):
         with closing(fixture_connection(self.backend.state / "canvas.sqlite3")) as database, database:
             database.execute("UPDATE runtime_agents SET record=? WHERE id=?", (record, self.agent_id))
+
+    def restore_project_record(self, project_id, record):
+        with closing(fixture_connection(self.backend.state / "canvas.sqlite3")) as database, database:
+            if record is None:
+                database.execute("DELETE FROM runtime_projects WHERE id=?", (project_id,))
+            else:
+                database.execute(
+                    "INSERT OR REPLACE INTO runtime_projects(id,record) VALUES (?,?)",
+                    (project_id, record),
+                )
+
+    def remove_monitor(self, monitor_id):
+        with closing(fixture_connection(self.backend.state / "canvas.sqlite3")) as database, database:
+            database.execute("DELETE FROM runtime_monitors WHERE id=?", (monitor_id,))
 
     def assert_matches_python(self, body):
         return self.assert_matches_python_as(self.agent_id, body)
