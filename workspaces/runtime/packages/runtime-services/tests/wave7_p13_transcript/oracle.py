@@ -107,13 +107,19 @@ def review_cases(runtime, root):
 
     # A writer commits on the other side of a one-item page boundary.
     request = {'after':'agent:old-7','limit':1}
-    before = runtime.transcript('agent', **request)
+    # Match page_at's fixed observation time. reasoningObservedAt is part of
+    # the projection, so comparing against wall-clock Python output makes this
+    # concurrency check depend on how long the rest of the suite took.
+    with patch('time.time', return_value=1000.0):
+        before = runtime.transcript('agent', **request)
     case = snapshot('concurrent-append', pages=False)
     with runtime.db() as db:
         runtime.item(db,'agent','concurrent','assistant','concurrent append','Agent',at=150.0)
         db.execute("UPDATE runtime_items SET created=150.0 WHERE id='agent:concurrent'")
         record = json.loads(db.execute("SELECT record FROM runtime_items WHERE id='agent:concurrent'").fetchone()[0])
-    case['append'] = {'request':request,'before':before,'after':runtime.transcript('agent',**request),'record':record,'created':150.0}
+    with patch('time.time', return_value=1000.0):
+        after = runtime.transcript('agent', **request)
+    case['append'] = {'request':request,'before':before,'after':after,'record':record,'created':150.0}
 
     with runtime.db() as db:
         answer = db.execute("SELECT record FROM runtime_items WHERE id='agent:answer'").fetchone()[0]
