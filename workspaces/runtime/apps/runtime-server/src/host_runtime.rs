@@ -122,6 +122,7 @@ impl HostRuntime {
         })
         .await
         .map_err(|_| WorkerError::TaskFailed)??;
+        resources.account_driver = Some(accounts.clone());
         let claude_bridge_dir = install_root.claude_bridge_dir();
         *state = state.clone().with_tool_catalog(CatalogSnapshot {
             source: CatalogSource::Current,
@@ -194,6 +195,15 @@ impl AccountLauncher for HostLauncher {
                     .map_err(|_| WorkerError::TaskFailed)??;
             let mut resources = self.resources.clone();
             resources.account_home.clone_from(&home);
+            let accounts = self.accounts.clone();
+            let key = account.clone();
+            resources.claude_account_pin =
+                tokio::task::spawn_blocking(move || accounts.auth_pin(&key))
+                    .await
+                    .map_err(|_| WorkerError::TaskFailed)?
+                    .map_err(|_| {
+                        WorkerError::PreparationRefused("account-driver/unavailable".into())
+                    })?;
             let launch = if let Some(profile) = claude_profile {
                 claude_launch(
                     profile,

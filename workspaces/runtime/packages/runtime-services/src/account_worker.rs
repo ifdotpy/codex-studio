@@ -761,6 +761,28 @@ impl Worker {
         }
         Ok(())
     }
+    async fn require_claude_auth(
+        &mut self,
+        driver: Arc<crate::account_driver::AccountDriver>,
+        intent: &TurnIntent,
+    ) -> Result<bool, WorkerError> {
+        let port = self.retained_port.clone();
+        crate::claude_auth_runtime::require_before_start(
+            self.bridge.store.clone(),
+            driver,
+            self.resources.claude_account_pin.clone(),
+            intent,
+            |actor, deadline| {
+                let port = port.clone();
+                async move {
+                    let request = crate::claude_auth_runtime::account_read(&port, actor, deadline);
+                    self.drive_retained(request).await
+                }
+            },
+        )
+        .await
+        .map_err(|error| WorkerError::PreparationRefused(error.to_string()))
+    }
     async fn submit(
         &mut self,
         intent: TurnIntent,
@@ -785,6 +807,16 @@ impl Worker {
                 })
                 .await?
             {
+                return Ok(());
+            }
+        }
+        if method == Method::TurnStart && intent.provider == "claude" {
+            let Some(driver) = self.resources.account_driver.clone() else {
+                return Err(WorkerError::PreparationRefused(
+                    "claude-auth/account-driver-unavailable".into(),
+                ));
+            };
+            if !self.require_claude_auth(driver, &intent).await? {
                 return Ok(());
             }
         }
