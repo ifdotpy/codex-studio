@@ -4,7 +4,7 @@
 use serde_json::{Value, json};
 use studio_runtime_store::{
     AgentId, AgentRecord, AgentRepository, EventWriteRepository, MonitorsRepository, QueueEvent,
-    QueueEventId, RuntimeStore, SyncDocumentsRepository, Table, Transaction,
+    QueueEventId, RequestRecord, RuntimeStore, SyncDocumentsRepository, Table, Transaction,
     monitor_runtime as repository,
 };
 
@@ -15,6 +15,159 @@ use crate::monitor_policy::{
 
 pub const SESSION_DEPENDENCY: &str = "provider-session/monitor-commands";
 pub const RULE_DEPENDENCY: &str = "rule-driver/monitor-finish";
+const STARTUP_RECEIPT_BATCH: usize = 64;
+const RESTART_EVENT_ERROR: &str = "Server restarted before delivery acknowledgement";
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct StartupRecovery {
+    pub receipts: usize,
+    pub requests: usize,
+    pub events: usize,
+    pub monitors: usize,
+}
+
+/// Recover durable monitor results first, then expire requests and mark only
+/// monitors with no surviving process as lost. All row and projection writes
+/// share one transaction; result files are handled before that transaction.
+pub fn recover_on_startup(store: &RuntimeStore, now: f64) -> Result<StartupRecovery, MonitorError> {
+    if !now.is_finite() || now < 0.0 {
+        return Err(MonitorError::Refused("Invalid startup recovery clock"));
+    }
+    let mut recovery = StartupRecovery::default();
+    loop {
+        let count = crate::monitor_receipts::recover_pending(store, STARTUP_RECEIPT_BATCH)?;
+        recovery.receipts += count;
+        if count < STARTUP_RECEIPT_BATCH {
+            break;
+        }
+    }
+    let (requests, events, monitors) = store.transaction_with::<_, MonitorError>(|tx| {
+        let requests = recover_requests(tx)?;
+        let events = recover_uncovered_events(tx)?;
+        let monitors = recover_active_monitors(tx, now)?;
+        Ok((requests, events, monitors))
+    })?;
+    recovery.requests = requests;
+    recovery.events = events;
+    recovery.monitors = monitors;
+    Ok(recovery)
+}
+
+fn recover_requests(tx: &Transaction<'_>) -> Result<usize, MonitorError> {
+    let agents = Table::<AgentRecord>::new(tx).list()?;
+    let agents = agents
+        .into_iter()
+        .map(|agent| (agent.id.0.clone(), agent.value().clone()))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    let mut count = 0;
+    for request in Table::<RequestRecord>::new(tx).list()? {
+        let mut value = request.value().clone();
+        match value.get("status").and_then(Value::as_str) {
+            Some("answering") => {
+                value["status"] = json!("uncertain");
+                value["answerError"] = json!("Server restarted before answer delivery completed");
+            }
+            Some("pending") if !retained_question(&value, &agents) => {
+                value["status"] = json!("expired");
+            }
+            _ => continue,
+        }
+        let request =
+            RequestRecord::from_value(value).map_err(studio_runtime_store::StoreError::from)?;
+        Table::<RequestRecord>::new(tx).put(&request)?;
+        let view = crate::sync_views::project_persisted_record("request", request.value())
+            .ok_or_else(|| MonitorError::Refused("Invalid request projection"))?;
+        SyncDocumentsRepository::put_entity(
+            tx,
+            "request",
+            request.id(),
+            view,
+            request.value()["status"] != "pending",
+        )?;
+        count += 1;
+    }
+    Ok(count)
+}
+
+fn retained_question(request: &Value, agents: &std::collections::BTreeMap<String, Value>) -> bool {
+    if request.get("method").and_then(Value::as_str) != Some("agent/asyncQuestion") {
+        return false;
+    }
+    let Some(agent) = request
+        .get("agent")
+        .and_then(Value::as_str)
+        .and_then(|id| agents.get(id))
+    else {
+        return false;
+    };
+    let same_epoch = agent.get("epoch") == request.get("epoch");
+    if event_write::truthy(agent.get("deletedAt")) || !same_epoch {
+        return false;
+    }
+    if event_write::truthy(agent.get("autoWake")) {
+        return true;
+    }
+    agent.get("restartRecovery").is_some_and(|marker| {
+        marker.get("stage").and_then(Value::as_str) == Some("pending")
+            && event_write::truthy(marker.get("autoWake"))
+            && marker.get("epoch") == agent.get("epoch")
+    })
+}
+
+fn recover_uncovered_events(tx: &Transaction<'_>) -> Result<usize, MonitorError> {
+    // The scheduler owns exact reserved batches named by a current, unsubmitted
+    // startAttempt. It restores those to pending; all other reserved/dispatching
+    // rows have no scheduler proof and must remain uncertain after restart.
+    Ok(tx
+        .execute(
+            "UPDATE runtime_events AS e SET status='uncertain',error=?1 \
+         WHERE e.status IN ('reserved','dispatching') AND NOT ( \
+           e.status='reserved' AND EXISTS ( \
+             SELECT 1 FROM runtime_agents AS a \
+             WHERE a.id=e.agent AND json_extract(a.record,'$.deletedAt') IS NULL \
+               AND json_extract(a.record,'$.status')='starting' \
+               AND json_extract(a.record,'$.autoWake')=1 \
+               AND json_extract(a.record,'$.inFlight')=1 \
+               AND json_extract(a.record,'$.startAttempt.submitted')=0 \
+               AND json_extract(a.record,'$.startAttempt.epoch')=e.epoch \
+               AND EXISTS (SELECT 1 FROM json_each(json_extract(a.record,'$.startAttempt.events')) \
+                           WHERE value=e.id) \
+           ) \
+         )",
+            [RESTART_EVENT_ERROR],
+        )
+        .map_err(studio_runtime_store::StoreError::from)?)
+}
+
+fn recover_active_monitors(tx: &Transaction<'_>, now: f64) -> Result<usize, MonitorError> {
+    let exists: bool = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='runtime_monitors')",
+        [],
+        |row| row.get(0),
+    ).map_err(studio_runtime_store::StoreError::from)?;
+    if !exists {
+        return Ok(0);
+    }
+    let mut statement = tx
+        .prepare(
+            "SELECT id FROM runtime_monitors \
+         WHERE json_extract(record,'$.status') IN ('running','starting','approval') \
+         ORDER BY id",
+        )
+        .map_err(studio_runtime_store::StoreError::from)?;
+    let ids = statement
+        .query_map([], |row| row.get::<_, String>(0))
+        .map_err(studio_runtime_store::StoreError::from)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(studio_runtime_store::StoreError::from)?;
+    drop(statement);
+    for id in &ids {
+        let (snapshot, actor) = snapshot(tx, id)?;
+        let decision = policy::restart_loss(&snapshot)?;
+        apply(tx, &snapshot, &actor, &decision, now)?;
+    }
+    Ok(ids.len())
+}
 
 pub fn snapshot(
     transaction: &Transaction<'_>,

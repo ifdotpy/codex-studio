@@ -84,6 +84,8 @@ pub enum TerminalError {
     InvalidCursor,
     #[error("terminal output history range is invalid")]
     InvalidHistoryRange,
+    #[error("startup recovery failed: {0}")]
+    StartupRecovery(String),
     #[error(transparent)]
     Store(#[from] StoreError),
     #[error(transparent)]
