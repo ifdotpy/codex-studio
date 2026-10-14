@@ -332,6 +332,53 @@ fn pull_with_maintenance(
         );
     }
 
+    if generation_before_vault_read == observed_generation
+        && sync_policy::has_complete_entity_seed(&reader).map_err(map_sync_store_error)?
+        && vault_snapshot
+            .matches_entity_projections(&reader)
+            .map_err(map_sync_store_error)?
+    {
+        store
+            .mark_entity_projections_maintained(observed_generation, vault_signature)
+            .map_err(map_sync_store_error)?;
+        let response = store
+            .read_transaction(|transaction| {
+                pull_entities(
+                    transaction,
+                    state_dir,
+                    false,
+                    None,
+                    None,
+                    None,
+                    after,
+                    limit,
+                    fresh,
+                    initial_high,
+                    reset_support,
+                    priority_id,
+                    generation,
+                    validators,
+                )
+            })
+            .map_err(map_sync_store_error)?;
+        drop(maintenance_lock);
+        if store.committed_change_generation() == observed_generation {
+            return Ok(response);
+        }
+        return pull_with_maintenance(
+            store,
+            state_dir,
+            validators,
+            after,
+            limit,
+            fresh,
+            initial_high,
+            reset_support,
+            priority_id,
+            generation,
+        );
+    }
+
     let project_server_id = store.local_server_id().map_err(map_sync_store_error)?;
     let rooms = studio_runtime_services::sync_entity_context::RoomDirectory::prepare(&reader)
         .map_err(map_sync_store_error)?;
@@ -716,7 +763,8 @@ fn query_integer(query: &QueryParams, name: &str, default: i64) -> Result<i64, A
 
 #[cfg(test)]
 mod vault_maintenance_tests {
-    use super::pull_with_maintenance;
+    use super::sync_policy;
+    use super::{capture_project_vault_snapshot, pull_with_maintenance};
     use serde_json::{Value, json};
     use studio_runtime_store::{ProjectsRepository, RuntimeStore, SyncDocumentsRepository};
 
@@ -835,6 +883,99 @@ mod vault_maintenance_tests {
             "https://after.example/"
         );
         assert_ne!(first_payload, second_payload);
+    }
+
+    #[test]
+    fn cold_entity_pull_reuses_complete_seed_without_scanning_source_rows() {
+        const ENTITY_COUNT: usize = 2_000;
+        let directory = tempfile::tempdir().expect("isolated state directory");
+        let store = RuntimeStore::open(Some(directory.path())).expect("runtime store opens");
+        store
+            .transaction(|transaction| {
+                for index in 0..ENTITY_COUNT {
+                    let id = format!("agent-{index:04}");
+                    transaction.execute(
+                        "INSERT INTO runtime_agents(id,record) VALUES(?1,?2)",
+                        rusqlite::params![id, json!({"id":id,"status":"idle"}).to_string()],
+                    )?;
+                    transaction.execute(
+                        "INSERT INTO runtime_work(id,record) VALUES(?1,?2)",
+                        rusqlite::params![
+                            format!("work-{index:04}"),
+                            json!({"id":format!("work-{index:04}"),"owner":id,"results":[]})
+                                .to_string()
+                        ],
+                    )?;
+                    SyncDocumentsRepository::put_entity(
+                        transaction,
+                        "agent",
+                        &id,
+                        json!({
+                            "id":id,
+                            "kind":"agent",
+                            "source":"managed",
+                            "canSend":true,
+                            "launcherAlive":true,
+                        }),
+                        false,
+                    )?;
+                }
+                Ok(())
+            })
+            .expect("synthetic Python-seeded state is stored");
+        let seeded_generation = store.committed_change_generation();
+        let validators = crate::validation::Registry::compile(&[(
+            "GET".to_owned(),
+            "/api/sync/pull".to_owned(),
+        )])
+        .expect("sync pull validators compile");
+        let state_dir = store.root().to_string_lossy().into_owned();
+        let started = std::time::Instant::now();
+        let response = pull_with_maintenance(
+            &store,
+            &state_dir,
+            &validators,
+            0,
+            100,
+            false,
+            0,
+            false,
+            None,
+            0,
+        )
+        .expect("cold pull succeeds");
+        let cold_elapsed = started.elapsed();
+        assert_eq!(response["documents"].as_array().unwrap().len(), 100);
+        assert_eq!(store.committed_change_generation(), seeded_generation);
+        let reader = store.read().expect("store reader");
+        assert!(sync_policy::has_complete_entity_seed(&reader).expect("seed marker reads"));
+        let (_, vault_snapshot) =
+            capture_project_vault_snapshot(&store, &state_dir).expect("vault snapshot");
+        assert!(
+            !store
+                .entity_projections_need_maintenance(&vault_snapshot.signature())
+                .expect("projection watermark reads")
+        );
+        let warm_started = std::time::Instant::now();
+        let warm_response = pull_with_maintenance(
+            &store,
+            &state_dir,
+            &validators,
+            0,
+            100,
+            false,
+            0,
+            false,
+            None,
+            0,
+        )
+        .expect("warm pull succeeds");
+        let warm_elapsed = warm_started.elapsed();
+        assert_eq!(warm_response["documents"].as_array().unwrap().len(), 100);
+        eprintln!(
+            "synthetic sync pull: entities={ENTITY_COUNT}, source rows scanned=0, agent contexts computed=0, cold page rows={}, cold elapsed={cold_elapsed:?}, warm elapsed={warm_elapsed:?}",
+            response["documents"].as_array().unwrap().len(),
+        );
     }
 }
 

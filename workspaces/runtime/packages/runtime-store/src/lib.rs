@@ -272,10 +272,13 @@ impl RuntimeStore {
         fresh_state::validate(&root)?;
         let canvas_path = root.join("canvas.sqlite3");
         let analytics_path = root.join("analytics.sqlite3");
+        let runtime_lock = RuntimeLock::acquire(&root)?;
+        // Verify once after acquiring the ownership lock. The earlier pre-lock
+        // verification duplicated the complete registered-schema inspection
+        // on every open and raced another writer before the lock was held.
         if canvas_path.is_file() && analytics_path.is_file() {
             schema::verify_core(&canvas_path, &analytics_path)?;
         }
-        let runtime_lock = RuntimeLock::acquire(&root)?;
         fresh_state::prepare(&root)?;
         let local_server_id = local_server_id(&root)?;
 

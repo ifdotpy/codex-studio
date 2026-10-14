@@ -33,8 +33,39 @@ use tokio::sync::watch;
 
 const DEFAULT_PORT: u16 = 4620;
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn main() {
+    std::panic::set_hook(Box::new(|panic| {
+        eprintln!("{}", panic_exit_log(&panic.to_string()));
+    }));
+    let runtime = match tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(runtime) => runtime,
+        Err(error) => {
+            eprintln!("{}", runtime_initialization_exit_log(&error.to_string()));
+            std::process::exit(1);
+        }
+    };
+    if let Err(error) = runtime.block_on(run()) {
+        eprintln!("{}", error_exit_log(&error.to_string()));
+        std::process::exit(1);
+    }
+}
+
+fn runtime_initialization_exit_log(reason: &str) -> String {
+    format!("runtime server exiting because Tokio runtime initialization failed: {reason}")
+}
+
+fn error_exit_log(reason: &str) -> String {
+    format!("runtime server exiting after error: {reason}")
+}
+
+fn panic_exit_log(reason: &str) -> String {
+    format!("runtime server exiting after panic: {reason}")
+}
+
+async fn run() -> Result<(), Box<dyn std::error::Error>> {
     studio_runtime_process::child_priority::ChildPriority::from_environment();
     studio_runtime_services::diagnostics::mark_startup_memory(
         studio_runtime_services::diagnostics::StartupMemoryMark::ProcessStarted,
@@ -475,7 +506,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         app.into_make_service_with_connect_info::<SocketAddr>(),
     )
     .with_graceful_shutdown(async move {
-        shutdown_signal().await;
+        let reason = shutdown_signal().await;
+        eprintln!("{}", shutdown_exit_log(reason));
         shutdown_monitor_task.send_replace(true);
         #[cfg(unix)]
         stop_runtime.cancel();
@@ -622,24 +654,80 @@ fn parse_port(mut args: impl Iterator<Item = String>) -> Result<u16, Box<dyn std
     Ok(port)
 }
 
-async fn shutdown_signal() {
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ShutdownReason {
+    CtrlC,
+    Sigterm,
+}
+
+fn shutdown_exit_log(reason: ShutdownReason) -> &'static str {
+    match reason {
+        ShutdownReason::CtrlC => "runtime server shutdown requested by Ctrl-C",
+        ShutdownReason::Sigterm => "runtime server shutdown requested by SIGTERM",
+    }
+}
+
+async fn shutdown_signal() -> ShutdownReason {
     #[cfg(unix)]
     {
         match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
             Ok(mut terminate) => tokio::select! {
-                result = tokio::signal::ctrl_c() => { if let Err(error) = result { eprintln!("failed to listen for Ctrl-C: {error}"); } }
-                _ = terminate.recv() => {}
+                result = tokio::signal::ctrl_c() => {
+                    if let Err(error) = result { eprintln!("failed to listen for Ctrl-C: {error}"); }
+                    ShutdownReason::CtrlC
+                }
+                _ = terminate.recv() => ShutdownReason::Sigterm
             },
             Err(error) => {
                 eprintln!("failed to listen for SIGTERM: {error}");
                 if let Err(error) = tokio::signal::ctrl_c().await {
                     eprintln!("failed to listen for Ctrl-C: {error}");
                 }
+                ShutdownReason::CtrlC
             }
         }
     }
     #[cfg(not(unix))]
-    if let Err(error) = tokio::signal::ctrl_c().await {
-        eprintln!("failed to listen for Ctrl-C: {error}");
+    {
+        if let Err(error) = tokio::signal::ctrl_c().await {
+            eprintln!("failed to listen for Ctrl-C: {error}");
+        }
+        ShutdownReason::CtrlC
+    }
+}
+
+#[cfg(test)]
+mod exit_logging_tests {
+    use super::{
+        ShutdownReason, error_exit_log, panic_exit_log, runtime_initialization_exit_log,
+        shutdown_exit_log,
+    };
+
+    #[test]
+    fn every_graceful_exit_signal_has_a_reason_log() {
+        assert_eq!(
+            shutdown_exit_log(ShutdownReason::CtrlC),
+            "runtime server shutdown requested by Ctrl-C"
+        );
+        assert_eq!(
+            shutdown_exit_log(ShutdownReason::Sigterm),
+            "runtime server shutdown requested by SIGTERM"
+        );
+    }
+
+    #[test]
+    fn startup_runtime_and_panic_exit_paths_log_their_reason() {
+        assert_eq!(
+            runtime_initialization_exit_log("resource limit reached"),
+            "runtime server exiting because Tokio runtime initialization failed: resource limit reached"
+        );
+        assert_eq!(
+            error_exit_log("state lock is busy"),
+            "runtime server exiting after error: state lock is busy"
+        );
+        assert_eq!(
+            panic_exit_log("projection invariant failed"),
+            "runtime server exiting after panic: projection invariant failed"
+        );
     }
 }
