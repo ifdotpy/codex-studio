@@ -116,6 +116,21 @@ fn state(store: &RuntimeStore) -> Value {
     json!({"tables":records,"sync":sync})
 }
 
+fn parsed_child_event_rows(rows: &Value) -> Value {
+    let mut rows = rows.clone();
+    for row in rows.as_array_mut().expect("event rows") {
+        if row
+            .get("id")
+            .and_then(Value::as_str)
+            .is_some_and(|id| id.starts_with("child-stop:"))
+            && let Some(text) = row.get("text").and_then(Value::as_str)
+        {
+            row["text"] = serde_json::from_str(text).expect("child event JSON payload");
+        }
+    }
+    rows
+}
+
 // A fixture for the transaction boundary only. Provider transport is owned by
 // account_worker, whose direct Stop receipt tests run in the crate suite.
 struct InterruptFixture {
@@ -622,38 +637,38 @@ fn production_child_notification_matches_python_corpus() {
             .expect("local stop and durable parent event"),
         case["expected"]["result"]
     );
-    // The Python oracle injects `enqueue_recovery_event` as a rows-only
-    // boundary, while the production event writer also queues an auto-wake
-    // parent. Compare the child event rows and every other record verbatim.
+    // The oracle mirrors Runtime.enqueue's auto-wake state transition. Event
+    // payloads are JSON values in both implementations; serializer whitespace
+    // and map-key order are not part of the event contract.
     let actual = state(&store);
     for (table, expected) in case["expected"]["records"]["tables"]
         .as_object()
         .expect("Python output tables")
     {
-        if table != "runtime_agents" {
+        if table == "runtime_events" {
+            assert_eq!(
+                parsed_child_event_rows(&actual["tables"][table]),
+                parsed_child_event_rows(expected),
+                "Python child notification event rows"
+            );
+        } else {
             assert_eq!(
                 &actual["tables"][table], expected,
                 "Python event corpus: {table}"
             );
         }
     }
-    let actual_events = actual["tables"]["runtime_events"].clone();
-    assert_eq!(
-        actual_events, case["expected"]["records"]["tables"]["runtime_events"],
-        "Python child notification event rows"
-    );
     let actual_sync = actual["sync"]
         .as_array()
         .expect("sync rows")
         .iter()
-        .filter(|row| row[0] != "workspace" && row[0] != "agent")
+        .filter(|row| row[0] != "workspace")
         .map(|row| json!([row[0], row[1], row[4], row[5]]))
         .collect::<Vec<_>>();
     let mut expected_sync = case["expected"]["syncEntities"]
         .as_array()
         .expect("Python sync rows")
         .iter()
-        .filter(|row| row[0] != "agent")
         .map(|row| json!([row[0], row[1], row[2], row[3]]))
         .collect::<Vec<_>>();
     expected_sync.sort_by_key(|row| (row[0].to_string(), row[1].to_string()));
@@ -661,6 +676,103 @@ fn production_child_notification_matches_python_corpus() {
         actual_sync, expected_sync,
         "Python notification projections"
     );
+}
+
+#[test]
+fn production_restart_scan_settles_durable_deleted_agent_state() {
+    struct NoBroker;
+    impl AccountSessionPort for NoBroker {}
+
+    let case = cases()
+        .into_iter()
+        .find(|case| case["name"] == "delete-running")
+        .expect("active delete corpus case");
+    let mut records: Records =
+        serde_json::from_value(case["records"].clone()).expect("Python rows");
+    let deleted = records
+        .tables
+        .get_mut("runtime_agents")
+        .expect("agent rows")
+        .iter_mut()
+        .find(|agent| agent["id"] == "worker")
+        .expect("deleted worker");
+    deleted["deletedAt"] = json!(case["now"]);
+    deleted["status"] = json!("running");
+    deleted["inFlight"] = json!(true);
+    deleted["turnId"] = json!("turn-running");
+    deleted["activity"] = json!({"at":case["now"]});
+    deleted["activeTools"] = json!(["tool"]);
+    deleted["startAttempt"]["activeAtReservation"] = json!(true);
+
+    let root = tempfile::tempdir().expect("root");
+    template(root.path());
+    let store = Arc::new(RuntimeStore::open(Some(root.path())).expect("open"));
+    seed(&store, records);
+
+    // Constructing the production bundle represents process restart. The
+    // tombstone and stale activity are the durable cleanup intent.
+    let _ports = ProductionLifecyclePorts::new(
+        store.clone(),
+        Arc::new(Notify::new()),
+        Arc::new(Notify::new()),
+        Arc::new(NoBroker),
+    );
+    let settled = state(&store)["tables"]["runtime_agents"]
+        .as_array()
+        .expect("agent rows")
+        .iter()
+        .find(|agent| agent["id"] == "worker")
+        .expect("settled worker");
+    assert_eq!(settled["status"], "paused");
+    assert_eq!(settled["inFlight"], false);
+    assert_eq!(settled["turnId"], Value::Null);
+    assert_eq!(settled["activity"], Value::Null);
+    assert_eq!(settled["activeTools"], json!([]));
+    assert_eq!(settled["startAttempt"]["activeAtReservation"], false);
+}
+
+#[test]
+fn production_interrupt_requires_in_flight_active_turn() {
+    struct NoBroker;
+    impl AccountSessionPort for NoBroker {}
+
+    let case = cases()
+        .into_iter()
+        .find(|case| case["name"] == "running-True")
+        .expect("active stop corpus case");
+    let mut records: Records =
+        serde_json::from_value(case["records"].clone()).expect("Python rows");
+    let lead = records
+        .tables
+        .get_mut("runtime_agents")
+        .expect("agent rows")
+        .iter_mut()
+        .find(|agent| agent["id"] == "lead")
+        .expect("lead agent");
+    lead["inFlight"] = json!(false);
+    lead["turnId"] = json!("turn-stale");
+
+    let root = tempfile::tempdir().expect("root");
+    template(root.path());
+    let store = Arc::new(RuntimeStore::open(Some(root.path())).expect("open"));
+    seed(&store, records);
+    let ports = ProductionLifecyclePorts::new(
+        store.clone(),
+        Arc::new(Notify::new()),
+        Arc::new(Notify::new()),
+        Arc::new(NoBroker),
+    );
+    let action: Action = serde_json::from_value(case["action"].clone()).expect("action");
+    ports
+        .execute(&action, case["now"].as_f64().expect("time"))
+        .expect("stop");
+    let agent = state(&store)["tables"]["runtime_agents"]
+        .as_array()
+        .expect("agent rows")
+        .iter()
+        .find(|agent| agent["id"] == "lead")
+        .expect("stopped lead");
+    assert_eq!(agent["startAttempt"].get("interrupt"), None);
 }
 
 #[test]
