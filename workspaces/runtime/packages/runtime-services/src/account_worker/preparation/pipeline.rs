@@ -291,6 +291,59 @@ pub(crate) fn prepare_native_action(
     attempt_id: &str,
     generation: u64,
 ) -> Result<super::PreparedNativeAction, WorkerError> {
+    let snapshot = prepare_native_snapshot(store, resources, agent_id, attempt_id, generation)?;
+    let settings = thread::turn_params(
+        &snapshot,
+        &thread::TurnInput {
+            events: Vec::new(),
+            has_assets: false,
+        },
+    )
+    .map_err(|error| refusal(format!("thread-preparation/{error:?}")))?;
+    let thread_id = snapshot
+        .actor
+        .thread_id
+        .filter(|id| !id.is_empty())
+        .ok_or_else(|| refusal("native-action/thread-required".into()))?;
+    Ok(super::PreparedNativeAction {
+        thread_id,
+        settings: Value::Object(settings),
+    })
+}
+
+/// Python's `Runtime.new_thread_params` counterpart. Reuses the exact checked
+/// snapshot and thread planner used by normal startup, but forces a fresh start.
+pub(crate) fn prepare_native_thread(
+    store: &RuntimeStore,
+    resources: &PreparationResources,
+    agent_id: &str,
+    attempt_id: &str,
+    generation: u64,
+) -> Result<super::PreparedNativeThread, WorkerError> {
+    let mut snapshot = prepare_native_snapshot(store, resources, agent_id, attempt_id, generation)?;
+    snapshot.actor.thread_id = None;
+    snapshot.catalog.saved_thread_id = None;
+    match thread::plan(
+        &snapshot,
+        attempt_id,
+        &format!("native-thread:{agent_id}:{attempt_id}"),
+    ) {
+        thread::Outcome::Start(attempt) => Ok(super::PreparedNativeThread {
+            params: Value::Object(attempt.params),
+        }),
+        thread::Outcome::Refuse(reason) => Err(refusal(format!("thread-preparation/{reason:?}"))),
+        thread::Outcome::Hold(reason) => Err(refusal(format!("thread-preparation/{reason:?}"))),
+        _ => Err(refusal("native-thread/start-required".into())),
+    }
+}
+
+fn prepare_native_snapshot(
+    store: &RuntimeStore,
+    resources: &PreparationResources,
+    agent_id: &str,
+    attempt_id: &str,
+    generation: u64,
+) -> Result<thread::Snapshot, WorkerError> {
     let record = AgentRepository::get(&store.read()?, &AgentId::from(agent_id))?
         .ok_or_else(|| invalid("agent"))?
         .value();
@@ -321,11 +374,9 @@ pub(crate) fn prepare_native_action(
     };
     let admission = admit(store, resources, &intent)?;
     let token = workspace(store, &intent)?;
-    let mut filesystem = FilesystemSnapshot::capture(store, agent_id)?;
-    filesystem.progress_directory =
-        FilesystemSnapshot::capture(store, agent_id)?.progress_directory;
+    let filesystem = FilesystemSnapshot::capture(store, agent_id)?;
     let (identity, _) = catalog(resources, &intent)?;
-    let (snapshot, settings) = scheduler::lifecycle_transaction_with(store, |tx| {
+    scheduler::lifecycle_transaction_with(store, |tx| {
         let current = preconditions(tx, &intent, &filesystem)?;
         let frozen = admission
             .selection
@@ -336,33 +387,14 @@ pub(crate) fn prepare_native_action(
             .map_err(|_| refusal("workspace-readiness/token-stale".into()))?;
         let mut frozen = frozen;
         frozen["cwd"] = json!(cwd);
-        let thread = thread_snapshot(
+        thread_snapshot(
             tx,
             resources,
             &frozen,
             &generation.to_string(),
             store.root(),
             filesystem.progress_directory.clone(),
-        )?;
-        let settings = thread::turn_params(
-            &thread,
-            &thread::TurnInput {
-                events: Vec::new(),
-                has_assets: false,
-            },
         )
-        .map_err(|error| refusal(format!("thread-preparation/{error:?}")))?;
-        Ok::<_, WorkerError>((thread, settings))
-    })?;
-    let settings = Value::Object(settings);
-    let thread_id = snapshot
-        .actor
-        .thread_id
-        .filter(|id| !id.is_empty())
-        .ok_or_else(|| refusal("native-action/thread-required".into()))?;
-    Ok(super::PreparedNativeAction {
-        thread_id,
-        settings,
     })
 }
 
