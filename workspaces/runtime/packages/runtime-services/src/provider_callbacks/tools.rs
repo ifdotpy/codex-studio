@@ -207,6 +207,39 @@ pub(super) fn dispatch_with_ports<P: crate::managed_host_tools::Ports>(
         admission::reserve(tx, candidate, &call.call, &call.prefix, call.alias.clone())?;
         Ok::<_, CallbackError>(())
     })?;
+    // Commit the running claim before entering the transaction that can invoke
+    // a service or write its result. If that later transaction aborts, startup
+    // recovery must see an uncertain call and must not execute it again.
+    let claimed = store.transaction_with(|tx| {
+        let snapshot = storage::snapshot(tx, context)?;
+        snapshot.active()?;
+        let mut record = records::get(tx, "runtime_tool_requests", &call.id)?
+            .ok_or(CallbackError::Invalid("Unknown tool receipt"))?;
+        if record["agent"] != context.agent
+            || record["epoch"].as_u64() != Some(context.epoch)
+            || record["accountKey"] != context.account
+            || record["threadId"] != context.thread
+            || record["signature"] != call.signature
+        {
+            return Err(CallbackError::Stale);
+        }
+        if records::get(tx, "runtime_tool_results", &call.id)?.is_some()
+            || record.get("result").is_some_and(Value::is_object)
+        {
+            return Ok(false);
+        }
+        if record["connectionId"] != context.connection
+            || record.pointer("/supervisor/generation").and_then(Value::as_u64)
+                != Some(context.generation)
+        {
+            return Err(CallbackError::Stale);
+        }
+        let claimed = admission::claim(&mut record, now)?;
+        if claimed {
+            put(tx, &record)?;
+        }
+        Ok::<_, CallbackError>(claimed)
+    })?;
     let (decision, signals) = store.transaction_with(|tx| {
         let snapshot = storage::snapshot(tx, context)?;
         snapshot.active()?;
@@ -235,7 +268,7 @@ pub(super) fn dispatch_with_ports<P: crate::managed_host_tools::Ports>(
                 || record.pointer("/supervisor/generation").and_then(Value::as_u64) != Some(context.generation) {
                 return Err(CallbackError::Stale);
             }
-            if admission::claim(&mut record, now)? {
+            if claimed {
                 execute_once(tx, &snapshot, &call, &mut record, now, ports)?
             } else {
                 (tool_result(json!({"requestId":call.id,"outcome":record["outcome"],"stage":record["stage"],"recovery":"Read orchestration_request with this requestId. Do not repeat the mutation with a new id."}), true), Vec::new())
