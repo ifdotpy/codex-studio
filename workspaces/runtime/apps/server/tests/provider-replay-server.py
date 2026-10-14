@@ -46,6 +46,12 @@ def recorded_reply(method, request, thread_id=None, turn_id=None):
     recorded = reply_frames.get(method)
     if not recorded or recorded.get("direction") != "in" or recorded.get("responseFor") != method:
         raise AssertionError(f"Missing recorded provider reply for {method}")
+    if method == "thread/turns/list" and recorded.get("pages"):
+        cursor = (request.get("params") or {}).get("cursor")
+        page = recorded["pages"].get(cursor or "")
+        if page is None:
+            raise AssertionError(f"Missing recorded turns page for cursor {cursor!r}")
+        recorded = {"message": page}
     value = json.dumps(recorded["message"])
     requested_thread = (request.get("params") or {}).get("threadId")
     if method in {"thread/read", "thread/resume"} and isinstance(requested_thread, str):

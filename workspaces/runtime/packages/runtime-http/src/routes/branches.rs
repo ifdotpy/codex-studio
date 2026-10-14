@@ -10,7 +10,7 @@ use axum::{Json, extract::State, http::StatusCode};
 use rusqlite::OptionalExtension;
 use rusqlite::params;
 use serde_json::{Value, json};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use studio_runtime_providers::Method;
 use studio_runtime_services::account_session_runtime::{
@@ -134,11 +134,11 @@ async fn branch(
                             }
                             Some("failed") => {
                                 prior["phase"] = json!("provider_pending");
-                                prior.as_object_mut().map(|value| {
+                                if let Some(value) = prior.as_object_mut() {
                                     value.remove("provider");
                                     value.remove("result");
                                     value.remove("error");
-                                });
+                                }
                                 tx.execute(
                                     "UPDATE runtime_workspace_operations SET record=?2 WHERE id=?1",
                                     params![operation_id, prior.to_string()],
@@ -253,38 +253,73 @@ async fn branch(
         let thread_id = source["threadId"].as_str().map(str::to_owned);
         let selected_turn = selected.record["turnId"].as_str().map(str::to_owned);
         move || {
-        if before {
-            let turns = provider_request(
-                port.as_ref(),
-                &account,
-                &scope,
-                operation,
-                Some(RequestActor {
-                    agent: actor,
-                    epoch,
-                }),
-                Method::ThreadTurnsList,
-                json!({"threadId":thread_id,"limit":20,"sortDirection":"desc","itemsView":"full"}),
-            )?;
-            let turns = turns
-                .get("data")
-                .and_then(Value::as_array)
-                .ok_or_else(ApiError::internal)?;
-            let selected_turn = selected_turn.as_deref().ok_or_else(ApiError::internal)?;
-            let position = turns
-                .iter()
-                .position(|turn| turn.get("id").and_then(Value::as_str) == Some(selected_turn))
-                .ok_or_else(|| bad_request("The selected turn is absent from native history"))?;
-            Ok::<_, ApiError>(
-                turns
-                    .get(position + 1)
-                    .and_then(|turn| turn.get("id"))
-                    .and_then(Value::as_str)
-                    .map(str::to_owned),
-            )
-        } else {
-            Ok(selected_turn)
-        }
+            if before {
+                // Python reads the full thread history before resolving `before`.
+                // ThreadTurnsList is paged here; stable per-page operation IDs let
+                // the retained broker replay a known page without resending an
+                // uncertain one.
+                let mut cursor: Option<String> = None;
+                let mut seen_cursors = HashSet::new();
+                let mut turn_ids = Vec::new();
+                let mut page = 0_u64;
+                loop {
+                    let mut params = json!({
+                        "threadId":thread_id,
+                        "limit":20,
+                        "sortDirection":"desc",
+                        "itemsView":"full"
+                    });
+                    if let Some(cursor_value) = &cursor {
+                        params["cursor"] = json!(cursor_value);
+                    }
+                    let result = provider_request(
+                        port.as_ref(),
+                        &account,
+                        &scope,
+                        format!("{operation}:{page}"),
+                        Some(RequestActor {
+                            agent: actor.clone(),
+                            epoch,
+                        }),
+                        Method::ThreadTurnsList,
+                        params,
+                    )?;
+                    let turns = result
+                        .get("data")
+                        .and_then(Value::as_array)
+                        .ok_or_else(ApiError::internal)?;
+                    for turn in turns {
+                        let id = turn
+                            .get("id")
+                            .and_then(Value::as_str)
+                            .filter(|id| !id.is_empty())
+                            .ok_or_else(ApiError::internal)?;
+                        turn_ids.push(id.to_owned());
+                    }
+                    let Some(next) = result
+                        .get("nextCursor")
+                        .and_then(Value::as_str)
+                        .filter(|next| !next.is_empty())
+                    else {
+                        break;
+                    };
+                    if !seen_cursors.insert(next.to_owned()) {
+                        return Err(ApiError::internal());
+                    }
+                    cursor = Some(next.to_owned());
+                    page = page.checked_add(1).ok_or_else(ApiError::internal)?;
+                }
+                let selected_turn = selected_turn.as_deref().ok_or_else(ApiError::internal)?;
+                let position = turn_ids
+                    .iter()
+                    .position(|turn| turn == selected_turn)
+                    .ok_or_else(|| {
+                        bad_request("The selected turn is absent from native history")
+                    })?;
+                Ok::<_, ApiError>(turn_ids.get(position + 1).cloned())
+            } else {
+                Ok(selected_turn)
+            }
         }
     })
     .await
@@ -440,14 +475,16 @@ async fn branch(
         .to_owned();
     let branch_result = copy_branch_history(
         &store,
-        &body.agent,
-        &child_id,
-        &selected,
-        &body.message_id,
-        fork_turn.as_deref(),
-        before,
-        &provider,
-        &operation_id,
+        BranchCopy {
+            source: &body.agent,
+            target: &child_id,
+            selected: &selected,
+            message_id: &body.message_id,
+            fork_turn: fork_turn.as_deref(),
+            before,
+            provider: &provider,
+            operation_id: &operation_id,
+        },
     )?;
     state.event_wake.notify_one();
     Ok(Json(super::generated_json::<
@@ -555,17 +592,28 @@ fn persist_fork_turn(
         .map_err(ApiError::stored)
 }
 
-fn copy_branch_history(
-    store: &RuntimeStore,
-    source: &str,
-    target: &str,
-    selected: &studio_runtime_store::TranscriptItem,
-    message_id: &str,
-    fork_turn: Option<&str>,
+struct BranchCopy<'a> {
+    source: &'a str,
+    target: &'a str,
+    selected: &'a studio_runtime_store::TranscriptItem,
+    message_id: &'a str,
+    fork_turn: Option<&'a str>,
     before: bool,
-    provider: &Value,
-    operation_id: &str,
-) -> Result<Value, ApiError> {
+    provider: &'a Value,
+    operation_id: &'a str,
+}
+
+fn copy_branch_history(store: &RuntimeStore, copy: BranchCopy<'_>) -> Result<Value, ApiError> {
+    let BranchCopy {
+        source,
+        target,
+        selected,
+        message_id,
+        fork_turn,
+        before,
+        provider,
+        operation_id,
+    } = copy;
     store.transaction_with(|tx|{
         let raw:String=tx.query_row("SELECT record FROM runtime_workspace_operations WHERE id=?1",[operation_id],|r|r.get(0))?;
         let mut operation:Value=serde_json::from_str(&raw)?;

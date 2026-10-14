@@ -27,19 +27,38 @@
       "timestamp": 0,
       "message": {
         "result": {
-          "data": [
-            {
-              "items": [
-                {
-                  "type": "userMessage",
-                  "content": [
-                    { "type": "text", "text": "Synthetic source question" }
-                  ]
-                },
-                { "type": "agentMessage", "text": "Synthetic source answer" }
-              ]
-            }
-          ]
+          "data": [],
+          "nextCursor": null
+        }
+      },
+      "pages": {
+        "": {
+          "result": {
+            "data": [
+              {
+                "id": "native-new",
+                "items": [
+                  {
+                    "type": "userMessage",
+                    "content": [
+                      { "type": "text", "text": "Synthetic source question" }
+                    ]
+                  },
+                  { "type": "agentMessage", "text": "Synthetic source answer" }
+                ]
+              }
+            ],
+            "nextCursor": "older"
+          }
+        },
+        "older": {
+          "result": {
+            "data": [
+              { "id": "source-turn", "items": [] },
+              { "id": "older-turn", "items": [] }
+            ],
+            "nextCursor": null
+          }
         }
       }
     },

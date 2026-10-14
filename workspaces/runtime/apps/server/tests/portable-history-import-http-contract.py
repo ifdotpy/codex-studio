@@ -46,6 +46,7 @@ class PortableHistoryImportHTTPContract(TimedHTTPContractTest, unittest.TestCase
             if response.status != 200:
                 raise AssertionError(response.body[:1000])
             agent_id = response.json()["id"]
+            cls.prewarm_agent_id = agent_id
             with sqlite3.connect(cls.backend.state / "canvas.sqlite3") as database:
                 agent = json.loads(database.execute(
                     "SELECT record FROM runtime_agents WHERE id=?", (agent_id,),
@@ -209,6 +210,76 @@ class PortableHistoryImportHTTPContract(TimedHTTPContractTest, unittest.TestCase
         self.assertEqual(replay.status, 200, replay.body[:1000])
         self.assertEqual(replay.json()["id"], agent_id)
         self.assertEqual(self._agent_count(), before + 1)
+        frames_before_changed_replay = self.backend.received_provider_frames()
+        changed = {**body, "threadId": "different-source-thread"}
+        rejected = self.backend.request(
+            "POST", "/api/import", body=changed, headers=self._common_headers(),
+        )
+        self.assertNotEqual(rejected.status, 200, self._error_detail(rejected))
+        self.assertEqual(self._agent_count(), before + 1)
+        self.assertEqual(
+            self.backend.received_provider_frames(), frames_before_changed_replay,
+        )
+
+    def test_import_metadata_and_initial_event_commit_atomically(self) -> None:
+        if not os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"):
+            self.skipTest("The Rust import route owns this atomic creation boundary")
+        before = self._agent_count()
+        agent_id = str(uuid.uuid4())
+        body = {
+            "id": agent_id,
+            "threadId": "source-thread",
+            "prompt": "Recover the same import after a failed durable write.",
+        }
+        database_path = self.backend.state / "canvas.sqlite3"
+        with sqlite3.connect(database_path) as database:
+            database.execute(
+                "CREATE TRIGGER fail_import_initial BEFORE INSERT ON runtime_events "
+                f"WHEN NEW.id='{agent_id}:initial' BEGIN "
+                "SELECT RAISE(ABORT, 'injected import event failure'); END"
+            )
+            database.commit()
+        failed = self.backend.request(
+            "POST", "/api/import", body=body, headers=self._common_headers(),
+        )
+        self.assertNotEqual(failed.status, 200, self._error_detail(failed))
+        with sqlite3.connect(database_path) as database:
+            self.assertIsNone(database.execute(
+                "SELECT 1 FROM runtime_agents WHERE id=?", (agent_id,),
+            ).fetchone())
+            self.assertIsNone(database.execute(
+                "SELECT 1 FROM runtime_events WHERE id=?", (f"{agent_id}:initial",),
+            ).fetchone())
+            database.execute("DROP TRIGGER fail_import_initial")
+            database.commit()
+
+        before_retry = self.backend.received_provider_frames()
+        retry = self.backend.request(
+            "POST", "/api/import", body=body, headers=self._common_headers(),
+        )
+        self.assertEqual(retry.status, 200, self._error_detail(retry))
+        with sqlite3.connect(database_path) as database:
+            record = json.loads(database.execute(
+                "SELECT record FROM runtime_agents WHERE id=?", (agent_id,),
+            ).fetchone()[0])
+            event_count = database.execute(
+                "SELECT COUNT(*) FROM runtime_events WHERE id=?", (f"{agent_id}:initial",),
+            ).fetchone()[0]
+        self.assertEqual(record["importedFrom"], "source-thread")
+        self.assertTrue(record["autoWake"])
+        self.assertEqual(event_count, 1)
+        self.assertEqual(self._agent_count(), before + 1)
+        after_retry = self.backend.received_provider_frames()
+        self.assertEqual(
+            [frame for frame in after_retry if frame.get("method") in {"thread/read", "thread/turns/list"}],
+            [frame for frame in before_retry if frame.get("method") in {"thread/read", "thread/turns/list"}],
+        )
+        replay = self.backend.request(
+            "POST", "/api/import", body=body, headers=self._common_headers(),
+        )
+        self.assertEqual(replay.status, 200, replay.body[:1000])
+        self.assertEqual(replay.json()["id"], agent_id)
+        self.assertEqual(self._agent_count(), before + 1)
 
     def test_branch_copies_history_and_replays_completed_request(self) -> None:
         agent_id, message_id = self._seed_branch_source()
@@ -244,6 +315,217 @@ class PortableHistoryImportHTTPContract(TimedHTTPContractTest, unittest.TestCase
         self.assertEqual(replay.status, 200, replay.body[:1000])
         self.assertEqual(replay.json()["id"], branch_id)
         self.assertEqual(self._agent_count(), before + 1)
+        forks_before_changed_replay = sum(
+            frame.get("method") == "thread/fork"
+            for frame in self.backend.received_provider_frames()
+        )
+        changed = {**body, "before": True}
+        rejected = self.backend.request(
+            "POST", "/api/branch", body=changed, headers=self._common_headers(),
+        )
+        self.assertNotEqual(rejected.status, 200, self._error_detail(rejected))
+        self.assertEqual(self._agent_count(), before + 1)
+        forks_after_changed_replay = sum(
+            frame.get("method") == "thread/fork"
+            for frame in self.backend.received_provider_frames()
+        )
+        self.assertEqual(forks_after_changed_replay, forks_before_changed_replay)
+
+    def test_branch_before_searches_older_turn_pages(self) -> None:
+        if not os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"):
+            self.skipTest("The Python backend reads turns from thread/read in one response")
+        agent_id, message_id = self._seed_branch_source()
+        body = {
+            "agent": agent_id,
+            "id": str(uuid.uuid4()),
+            "message_id": message_id,
+            "before": True,
+        }
+        response = self.backend.request(
+            "POST", "/api/branch", body=body, headers=self._common_headers(),
+        )
+        self.assertEqual(response.status, 200, self._error_detail(response))
+        frames = self.backend.received_provider_frames()
+        turns = [frame for frame in frames if frame.get("method") == "thread/turns/list"]
+        self.assertEqual(len(turns), 2)
+        self.assertEqual(turns[0].get("params", {}).get("cursor"), None)
+        self.assertEqual(turns[1].get("params", {}).get("cursor"), "older")
+        fork = next(frame for frame in frames if frame.get("method") == "thread/fork")
+        self.assertEqual(fork["params"]["lastTurnId"], "older-turn")
+
+    def test_branch_provider_result_write_failure_is_not_replayed(self) -> None:
+        if not os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"):
+            self.skipTest("The Rust branch route owns durable provider-result recovery")
+        agent_id, message_id = self._seed_branch_source()
+        body = {"agent": agent_id, "id": str(uuid.uuid4()), "message_id": message_id}
+        operation_id = f"branch:{body['id']}"
+        prior_forks = sum(
+            frame.get("method") == "thread/fork"
+            for frame in self.backend.received_provider_frames()
+        )
+        database_path = self.backend.state / "canvas.sqlite3"
+        with sqlite3.connect(database_path) as database:
+            database.execute(
+                "CREATE TRIGGER fail_branch_provider_result BEFORE UPDATE ON "
+                "runtime_workspace_operations "
+                "WHEN NEW.id='" + operation_id + "' "
+                "AND json_extract(NEW.record,'$.phase')='provider_ready' BEGIN "
+                "SELECT RAISE(ABORT, 'injected provider result persistence failure'); END"
+            )
+            database.commit()
+        failed = self.backend.request(
+            "POST", "/api/branch", body=body, headers=self._common_headers(),
+        )
+        self.assertNotEqual(failed.status, 200, self._error_detail(failed))
+        with sqlite3.connect(database_path) as database:
+            operation = json.loads(database.execute(
+                "SELECT record FROM runtime_workspace_operations WHERE id=?", (operation_id,),
+            ).fetchone()[0])
+            database.execute("DROP TRIGGER fail_branch_provider_result")
+            database.commit()
+        self.assertEqual(operation["phase"], "recovery_required")
+        forks_after_failure = sum(
+            frame.get("method") == "thread/fork"
+            for frame in self.backend.received_provider_frames()
+        )
+        self.assertEqual(forks_after_failure, prior_forks + 1)
+
+        replay = self.backend.request(
+            "POST", "/api/branch", body=body, headers=self._common_headers(),
+        )
+        self.assertNotEqual(replay.status, 200, self._error_detail(replay))
+        forks_after_replay = sum(
+            frame.get("method") == "thread/fork"
+            for frame in self.backend.received_provider_frames()
+        )
+        self.assertEqual(forks_after_replay, forks_after_failure)
+
+    def test_branch_reservation_failure_does_not_call_provider(self) -> None:
+        if not os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"):
+            self.skipTest("The Rust branch route owns workspace reservation")
+        agent_id, message_id = self._seed_branch_source()
+        body = {"agent": agent_id, "id": str(uuid.uuid4()), "message_id": message_id}
+        operation_id = f"branch:{body['id']}"
+        prior_forks = sum(
+            frame.get("method") == "thread/fork"
+            for frame in self.backend.received_provider_frames()
+        )
+        database_path = self.backend.state / "canvas.sqlite3"
+        with sqlite3.connect(database_path) as database:
+            database.execute(
+                "CREATE TRIGGER fail_branch_reservation BEFORE INSERT ON "
+                "runtime_workspace_operations WHEN NEW.id='" + operation_id + "' BEGIN "
+                "SELECT RAISE(ABORT, 'injected branch reservation failure'); END"
+            )
+            database.commit()
+        failed = self.backend.request(
+            "POST", "/api/branch", body=body, headers=self._common_headers(),
+        )
+        self.assertNotEqual(failed.status, 200, self._error_detail(failed))
+        with sqlite3.connect(database_path) as database:
+            self.assertIsNone(database.execute(
+                "SELECT 1 FROM runtime_workspace_operations WHERE id=?", (operation_id,),
+            ).fetchone())
+            agent = json.loads(database.execute(
+                "SELECT record FROM runtime_agents WHERE id=?", (agent_id,),
+            ).fetchone()[0])
+            database.execute("DROP TRIGGER fail_branch_reservation")
+            database.commit()
+        self.assertIsNone(agent.get("workspaceReservationId"))
+        forks_after_failure = sum(
+            frame.get("method") == "thread/fork"
+            for frame in self.backend.received_provider_frames()
+        )
+        self.assertEqual(forks_after_failure, prior_forks)
+
+    def test_branch_local_copy_failure_recovers_after_restart_without_refork(self) -> None:
+        if not os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"):
+            self.skipTest("The Rust branch route owns provider-ready recovery")
+        agent_id, message_id = self._seed_branch_source()
+        body = {"agent": agent_id, "id": str(uuid.uuid4()), "message_id": message_id}
+        prior_fork_count = sum(
+            frame.get("method") == "thread/fork"
+            for frame in self.backend.received_provider_frames()
+        )
+        prior_provider_starts = len(self.backend.provider_start_times())
+        database_path = self.backend.state / "canvas.sqlite3"
+        with sqlite3.connect(database_path) as database:
+            database.execute(
+                "CREATE TRIGGER fail_branch_copy BEFORE INSERT ON runtime_items "
+                f"WHEN NEW.agent<>'{agent_id}' BEGIN "
+                "SELECT RAISE(ABORT, 'injected branch transcript copy failure'); END"
+            )
+            database.commit()
+        failed = self.backend.request(
+            "POST", "/api/branch", body=body, headers=self._common_headers(),
+        )
+        self.assertNotEqual(failed.status, 200, self._error_detail(failed))
+        operation_id = f"branch:{body['id']}"
+        with sqlite3.connect(database_path) as database:
+            operation = json.loads(database.execute(
+                "SELECT record FROM runtime_workspace_operations WHERE id=?", (operation_id,),
+            ).fetchone()[0])
+            database.execute("DROP TRIGGER fail_branch_copy")
+            database.commit()
+        self.assertEqual(operation["phase"], "provider_ready")
+        forks_before_restart = [
+            frame for frame in self.backend.received_provider_frames()
+            if frame.get("method") == "thread/fork"
+        ]
+        self.assertEqual(len(forks_before_restart), prior_fork_count + 1)
+
+        self.backend.stop()
+        with sqlite3.connect(database_path) as database:
+            database.create_function(
+                "sync_entity_payload", 4,
+                lambda collection, key, raw, deleted: json.dumps(
+                    {"collection": collection, "id": key,
+                     "value": {} if deleted else json.loads(raw),
+                     "deleted": bool(deleted)}, sort_keys=True, separators=(",", ":"),
+                ),
+            )
+            database.create_function(
+                "sync_entity_hash", 1,
+                lambda payload: hashlib.sha256(payload.encode()).hexdigest(),
+            )
+            raw = database.execute(
+                "SELECT record FROM runtime_agents WHERE id=?", (self.prewarm_agent_id,),
+            ).fetchone()[0]
+            prewarm = json.loads(raw)
+            prewarm.update(status="queued", autoWake=True, inFlight=False)
+            database.execute(
+                "UPDATE runtime_agents SET record=? WHERE id=?",
+                (json.dumps(prewarm), self.prewarm_agent_id),
+            )
+            database.execute(
+                "UPDATE runtime_events SET status='pending' WHERE id=?",
+                (f"{self.prewarm_agent_id}:initial",),
+            )
+            database.commit()
+        self.backend.start()
+        self.backend.wait_until(
+            lambda: len(self.backend.provider_start_times()) > prior_provider_starts,
+            "provider session after backend restart",
+        )
+        replay = self.backend.request(
+            "POST", "/api/branch", body=body, headers=self._common_headers(),
+        )
+        self.assertEqual(replay.status, 200, self._error_detail(replay))
+        forks_after_restart = [
+            frame for frame in self.backend.received_provider_frames()
+            if frame.get("method") == "thread/fork"
+        ]
+        self.assertEqual(forks_after_restart, forks_before_restart)
+        with sqlite3.connect(database_path) as database:
+            final = json.loads(database.execute(
+                "SELECT record FROM runtime_workspace_operations WHERE id=?", (operation_id,),
+            ).fetchone()[0])
+            child = database.execute(
+                "SELECT id FROM runtime_agents WHERE json_extract(record,'$.forkedFrom')=?",
+                (agent_id,),
+            ).fetchall()
+        self.assertEqual(final["phase"], "completed")
+        self.assertEqual(len(child), 1)
 
 
 if __name__ == "__main__":

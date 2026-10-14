@@ -37,7 +37,7 @@ async fn import_list(
         .unwrap_or("default")
         .to_owned();
     let cursor = query.nonempty_str("cursor").map(str::to_owned);
-    let port = state.account_session.clone().ok_or_else(|| unavailable())?;
+    let port = state.account_session.clone().ok_or_else(unavailable)?;
     let result = tokio::task::spawn_blocking(move || {
         let scope = port.current_scope(&account).ok_or_else(unavailable)?;
         provider_request(
@@ -86,7 +86,7 @@ async fn import_thread(
             >(value)?));
         }
     }
-    let port = state.account_session.clone().ok_or_else(|| unavailable())?;
+    let port = state.account_session.clone().ok_or_else(unavailable)?;
     let operation_id = body.id.clone().flatten().unwrap_or_else(operation_nonce);
     let (thread, turns) = tokio::task::spawn_blocking({
         let account = account.clone();
@@ -193,29 +193,8 @@ async fn import_thread(
         create["model"] = json!(model);
     }
     // The source thread id is metadata, never an agent id.
-    let Json(created) = super::agents_create::create_imported_agent(state.clone(), create).await?;
-    let id = created
-        .get("id")
-        .and_then(Value::as_str)
-        .ok_or_else(ApiError::internal)?
-        .to_owned();
-    let imported = thread_id.clone();
-    store
-        .transaction_with(|tx| {
-            let mut record = AgentRepository::get(tx, &AgentId::from(id.as_str()))?.ok_or(
-                studio_runtime_store::StoreError::InvalidStoredObject {
-                    table: "runtime_agents",
-                    id: id.clone(),
-                },
-            )?;
-            record.extra.insert("importedFrom".into(), json!(imported));
-            record.extra.insert("autoWake".into(), json!(true));
-            AgentRepository::put(tx, &record)?;
-            studio_runtime_services::agents_create::publish_agent(tx, &record.value())?;
-            Ok::<_, studio_runtime_store::StoreError>(())
-        })
-        .map_err(ApiError::stored)?;
-    state.event_wake.notify_one();
+    let Json(created) =
+        super::agents_create::create_imported_agent(state, create, thread_id).await?;
     Ok(Json(super::generated_json::<
         crate::generated::AgentResponse,
     >(created)?))

@@ -243,6 +243,14 @@ async fn create_agent(
     State(state): State<HttpState>,
     ApiJson(body): ApiJson<generated::CreateAgentRequest>,
 ) -> Result<Json<Value>, ApiError> {
+    create_agent_with_import(State(state), ApiJson(body), None).await
+}
+
+async fn create_agent_with_import(
+    State(state): State<HttpState>,
+    ApiJson(body): ApiJson<generated::CreateAgentRequest>,
+    imported_from: Option<String>,
+) -> Result<Json<Value>, ApiError> {
     if state.store.is_none() && state.account_driver.is_none() {
         return Err(operation_error(OperationError::Unavailable(
             "account-driver/unavailable",
@@ -268,6 +276,7 @@ async fn create_agent(
         token_budget: body.token_budget.flatten(),
         profile: body.profile_id.flatten(),
         parent: body.parent.flatten(),
+        imported_from,
         ..Creation::default()
     };
     dispatch::<generated::AgentResponse>(state, move |context| {
@@ -281,10 +290,11 @@ async fn create_agent(
 pub(super) async fn create_imported_agent(
     state: HttpState,
     body: Value,
+    imported_from: String,
 ) -> Result<Json<Value>, ApiError> {
     let body: generated::CreateAgentRequest =
         serde_json::from_value(body).map_err(|_| ApiError::internal())?;
-    create_agent(State(state), ApiJson(body)).await
+    create_agent_with_import(State(state), ApiJson(body), Some(imported_from)).await
 }
 
 pub(super) async fn create_branch_draft(
