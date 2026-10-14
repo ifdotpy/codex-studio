@@ -400,18 +400,20 @@ impl RuntimeOrchestrationEffects {
                     }
                     crate::coordination::send_followup(
                         tx,
-                        target_id,
-                        worker_id,
-                        epoch,
-                        key,
-                        message,
-                        delivery,
-                        now,
+                        crate::coordination::AgentFollowup {
+                            sender_id: worker_id,
+                            sender_epoch: epoch,
+                            recipient_id: target_id,
+                            id: key,
+                            text: message,
+                            delivery,
+                            now,
+                        },
                         move_admission.as_ref().ok_or_else(|| {
                             refused(503, "send_admission", "The message could not be admitted")
                         })?,
                     )
-                    .map(ExchangeOutcome::Applied)
+                    .map(|result| ExchangeOutcome::Applied(result.receipt))
                     .map_err(|_| refused(403, "send_refused", "The message was refused"))
                 }
                 _ => Err(refused(
