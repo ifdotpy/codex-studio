@@ -223,20 +223,35 @@ pub fn reserve(
         .context
         .as_object()
         .ok_or(NativeError::Invalid("context"))?;
-    if context.iter().any(|(key, value)| {
-        !identity.get(key).is_some_and(|expected| {
-            expected == value
-                || (key == "epoch"
-                    && expected.as_i64().is_some_and(|expected| {
-                        value.as_f64().is_some_and(|value| {
-                            value.is_finite()
-                                && value.fract() == 0.0
-                                && value as i128 == i128::from(expected)
-                                && (value as i128) as f64 == value
-                        })
-                    }))
+    let matches_identity = |expected: &Value| {
+        context.iter().all(|(key, value)| {
+            expected.get(key).is_some_and(|expected| {
+                expected == value
+                    || (key == "epoch"
+                        && expected.as_i64().is_some_and(|expected| {
+                            value.as_f64().is_some_and(|value| {
+                                value.is_finite()
+                                    && value.fract() == 0.0
+                                    && value as i128 == i128::from(expected)
+                                    && (value as i128) as f64 == value
+                            })
+                        }))
+            })
         })
-    }) {
+    };
+    let current_matches = matches_identity(&identity);
+    let repair = agent.get("contextRepair").unwrap_or(&Value::Null);
+    let source = &repair["source"];
+    let repaired_destination = repair["phase"] == "completed"
+        && repair["agent"] == request.agent
+        && source["id"] == request.agent
+        && source["accountKey"] == identity["accountKey"]
+        && source["epoch"] == identity["epoch"]
+        && source["threadId"].is_string()
+        && source["threadId"] != identity["threadId"]
+        && repair["newThreadId"] == identity["threadId"]
+        && matches_identity(source);
+    if !current_matches && !repaired_destination {
         return Err(NativeError::Changed);
     }
     let receipt = json!({"requestId":request.request_id,"agentId":request.agent,"action":request.action,

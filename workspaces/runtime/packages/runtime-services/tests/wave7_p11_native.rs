@@ -117,6 +117,41 @@ fn complete_python_native_admission_rows_match() {
         assert_eq!(row(&db), before);
     }
 }
+
+#[test]
+fn reservation_targets_the_authorized_repair_destination_and_keeps_request_identity() {
+    let mut case = corpus()["actions"][0].clone();
+    case["request"]["context"] = json!({
+        "accountKey":"default",
+        "threadId":"thread",
+        "epoch":3
+    });
+    case["agent"]["threadId"] = json!("thread-repaired");
+    case["agent"]["contextRepair"] = json!({
+        "id":"repair-1",
+        "agent":"lead",
+        "phase":"completed",
+        "source":{"id":"lead","accountKey":"default","threadId":"thread","epoch":3},
+        "newThreadId":"thread-repaired"
+    });
+    let mut db = db(&case);
+    reserve_case(&mut db, &case);
+
+    let receipt: Value = db
+        .query_row(
+            "SELECT receipt FROM runtime_native_action_receipts WHERE id='action-request'",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .map(|raw| serde_json::from_str(&raw).expect("receipt"))
+        .expect("reserved receipt");
+    assert_eq!(receipt["threadId"], "thread-repaired");
+    assert!(
+        row(&db)[1]
+            .as_str()
+            .is_some_and(|signature| signature.contains("\"threadId\":\"thread\""))
+    );
+}
 #[test]
 fn crash_matrix_never_reclaims_committed_handoff() {
     let case = &corpus()["actions"][0];
