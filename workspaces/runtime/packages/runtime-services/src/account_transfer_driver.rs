@@ -504,12 +504,14 @@ pub fn send_once(
             .is_some_and(|s| !s.is_empty());
     provider_receipt(
         store,
-        &ticket.operation,
-        &ticket.agent,
-        &ticket.request,
-        dispatch.receipt,
-        dispatch.result,
-        dispatch.certainty,
+        ProviderReceipt {
+            operation: &ticket.operation,
+            agent: &ticket.agent,
+            provider_operation: &ticket.request,
+            receipt: dispatch.receipt,
+            result: dispatch.result,
+            certainty: dispatch.certainty,
+        },
         now,
     )?;
     Ok(if known {
@@ -536,67 +538,98 @@ pub fn begin_read(
 
 /// Persist a stable provider operation and its observed connection scope after
 /// history/settings preparation and before calling the retained session.
+pub struct ProviderIntent<'a> {
+    pub operation: &'a str,
+    pub agent: &'a str,
+    pub provider_operation: &'a str,
+    pub scope: Value,
+    pub method: &'a str,
+    pub params: Value,
+}
+
 pub fn provider_intent(
     store: &RuntimeStore,
-    operation: &str,
-    agent: &str,
-    provider_operation: &str,
-    scope: Value,
-    method: &str,
-    params: Value,
+    intent: ProviderIntent<'_>,
     now: f64,
 ) -> Result<(), TransferError> {
     store.transaction_with_error(|tx| {
-        let snapshot = load(tx, operation)?;
+        let snapshot = load(tx, intent.operation)?;
         persist(
             tx,
-            snapshot.provider_intent(agent, provider_operation, scope, method, params)?,
+            snapshot.provider_intent(
+                intent.agent,
+                intent.provider_operation,
+                intent.scope,
+                intent.method,
+                intent.params,
+            )?,
             now,
         )?;
         Ok(())
     })
 }
 
-pub fn provider_read_intent(
+pub(crate) struct ProviderReadIntent<'a> {
+    pub transfer: &'a str,
+    pub agent: &'a str,
+    pub operation: &'a str,
+    pub account: &'a str,
+    pub scope: Value,
+    pub method: &'a str,
+    pub params: Value,
+}
+
+pub(crate) fn provider_read_intent(
     store: &RuntimeStore,
-    transfer: &str,
-    agent: &str,
-    operation: &str,
-    account: &str,
-    scope: Value,
-    method: &str,
-    params: Value,
+    intent: ProviderReadIntent<'_>,
     now: f64,
 ) -> Result<Option<Value>, TransferError> {
     store.transaction_with_error(|tx| {
-        let snapshot = load(tx, transfer)?;
-        let prior = snapshot.operation()["members"][agent]["providerReadReceipts"][operation]
+        let snapshot = load(tx, intent.transfer)?;
+        let prior = snapshot.operation()["members"][intent.agent]["providerReadReceipts"]
+            [intent.operation]
             .as_object()
             .filter(|receipt| receipt.get("certainty") == Some(&Value::String("written".into())))
             .cloned()
             .map(Value::Object);
-        let decision =
-            snapshot.provider_read_intent(agent, operation, account, scope, method, params)?;
+        let decision = snapshot.provider_read_intent(
+            intent.agent,
+            intent.operation,
+            intent.account,
+            intent.scope,
+            intent.method,
+            intent.params,
+        )?;
         persist(tx, decision, now)?;
         Ok(prior)
     })
 }
 
-pub fn provider_read_receipt(
+pub(crate) struct ProviderReadReceipt<'a> {
+    pub transfer: &'a str,
+    pub agent: &'a str,
+    pub operation: &'a str,
+    pub receipt: Value,
+    pub result: Option<Value>,
+    pub certainty: &'a str,
+}
+
+pub(crate) fn provider_read_receipt(
     store: &RuntimeStore,
-    transfer: &str,
-    agent: &str,
-    operation: &str,
-    receipt: Value,
-    result: Option<Value>,
-    certainty: &str,
+    receipt: ProviderReadReceipt<'_>,
     now: f64,
 ) -> Result<(), TransferError> {
     store.transaction_with_error(|tx| {
-        let snapshot = load(tx, transfer)?;
+        let snapshot = load(tx, receipt.transfer)?;
         persist(
             tx,
-            snapshot.provider_read_receipt(agent, operation, receipt, result, certainty)?,
+            snapshot.provider_read_receipt(
+                receipt.agent,
+                receipt.operation,
+                receipt.receipt,
+                receipt.result,
+                receipt.certainty,
+            )?,
             now,
         )?;
         Ok(())
@@ -605,21 +638,31 @@ pub fn provider_read_receipt(
 
 /// Persist the provider's exact ticket and certainty before adopting any returned
 /// thread. Unknown stays held; only a proven NotSent receipt can be retried.
-pub fn provider_receipt(
+pub(crate) struct ProviderReceipt<'a> {
+    pub operation: &'a str,
+    pub agent: &'a str,
+    pub provider_operation: &'a str,
+    pub receipt: Value,
+    pub result: Option<Value>,
+    pub certainty: &'a str,
+}
+
+pub(crate) fn provider_receipt(
     store: &RuntimeStore,
-    operation: &str,
-    agent: &str,
-    provider_operation: &str,
-    receipt: Value,
-    result: Option<Value>,
-    certainty: &str,
+    receipt: ProviderReceipt<'_>,
     now: f64,
 ) -> Result<(), TransferError> {
     store.transaction_with_error(|tx| {
-        let snapshot = load(tx, operation)?;
+        let snapshot = load(tx, receipt.operation)?;
         persist(
             tx,
-            snapshot.provider_receipt(agent, provider_operation, receipt, result, certainty)?,
+            snapshot.provider_receipt(
+                receipt.agent,
+                receipt.provider_operation,
+                receipt.receipt,
+                receipt.result,
+                receipt.certainty,
+            )?,
             now,
         )?;
         Ok(())
@@ -786,8 +829,8 @@ mod request_tests {
     use studio_runtime_store::{AgentId, AgentRecord, AgentRepository};
 
     fn store_with_agents() -> (tempfile::TempDir, RuntimeStore) {
-        let root = tempfile::tempdir().unwrap();
-        let store = RuntimeStore::open(Some(root.path())).unwrap();
+        let root = tempfile::tempdir().expect("test fixture operation succeeds");
+        let store = RuntimeStore::open(Some(root.path())).expect("test fixture operation succeeds");
         store.transaction_with_error(|tx| {
             for value in [
                 json!({"id":"lead","rootId":"lead","epoch":1,"status":"idle","isLead":true,
@@ -795,11 +838,11 @@ mod request_tests {
                 json!({"id":"child","rootId":"lead","epoch":2,"status":"idle","isLead":false,
                     "accountKey":"source","provider":"codex","model":"gpt-6-astra","cwd":"/tmp/work"}),
             ] {
-                let agent = AgentRecord::from_value(value).unwrap();
-                AgentRepository::put(tx, &agent).unwrap();
+                let agent = AgentRecord::from_value(value).expect("test fixture operation succeeds");
+                AgentRepository::put(tx, &agent).expect("test fixture operation succeeds");
             }
             Ok::<_, studio_runtime_store::StoreError>(())
-        }).unwrap();
+        }).expect("test fixture operation succeeds");
         (root, store)
     }
 
@@ -807,17 +850,22 @@ mod request_tests {
     fn new_request_adopts_lazy_members_and_exact_replay_is_read_only() {
         let (_root, store) = store_with_agents();
         let id = "5a300f72-4ea6-4d30-8a0e-9b2c13c4226d";
-        let first = request(&store, id, "lead", "target", "team", "codex", 10.0).unwrap();
+        let first = request(&store, id, "lead", "target", "team", "codex", 10.0)
+            .expect("test fixture operation succeeds");
         assert_eq!(first["id"], id);
         assert_eq!(first["targetAccountKey"], "target");
         assert_eq!(first["members"]["child"]["phase"], "lazy");
-        let child = AgentRepository::get(&store.read().unwrap(), &AgentId::from("child"))
-            .unwrap()
-            .unwrap()
-            .value();
+        let child = AgentRepository::get(
+            &store.read().expect("test fixture operation succeeds"),
+            &AgentId::from("child"),
+        )
+        .expect("test fixture operation succeeds")
+        .expect("test fixture operation succeeds")
+        .value();
         assert_eq!(child["accountKey"], "target");
         assert_eq!(child["lazyAccountTransfer"]["sourceAccountKey"], "source");
-        let replay = request(&store, id, "lead", "target", "team", "codex", 11.0).unwrap();
+        let replay = request(&store, id, "lead", "target", "team", "codex", 11.0)
+            .expect("test fixture operation succeeds");
         assert_eq!(replay, first);
     }
 
@@ -833,16 +881,16 @@ mod request_tests {
             "codex",
             10.0,
         )
-        .unwrap();
+        .expect("test fixture operation succeeds");
         store
             .transaction_with_error(|tx| {
                 let late = AgentRecord::from_value(json!({"id":"late","rootId":"lead","epoch":3,
                 "status":"idle","isLead":false,"accountKey":"source","provider":"codex",
                 "model":"gpt-6-astra","cwd":"/tmp/work"}))
-                .unwrap();
+                .expect("test fixture operation succeeds");
                 AgentRepository::put(tx, &late)
             })
-            .unwrap();
+            .expect("test fixture operation succeeds");
         let result = request(
             &store,
             "5a300f72-4ea6-4d30-8a0e-9b2c13c42272",
@@ -852,28 +900,34 @@ mod request_tests {
             "codex",
             11.0,
         )
-        .unwrap();
+        .expect("test fixture operation succeeds");
         assert_eq!(result["members"]["late"]["phase"], "lazy");
-        let late = AgentRepository::get(&store.read().unwrap(), &AgentId::from("late"))
-            .unwrap()
-            .unwrap()
-            .value();
+        let late = AgentRepository::get(
+            &store.read().expect("test fixture operation succeeds"),
+            &AgentId::from("late"),
+        )
+        .expect("test fixture operation succeeds")
+        .expect("test fixture operation succeeds")
+        .value();
         assert_eq!(late["accountKey"], "target");
         assert_eq!(late["lazyAccountTransfer"]["sourceAccountKey"], "source");
         store.transaction_with_error(|tx| {
-            let stored = load(tx, "5a300f72-4ea6-4d30-8a0e-9b2c13c42271").unwrap();
+            let stored = load(tx, "5a300f72-4ea6-4d30-8a0e-9b2c13c42271").expect("test fixture operation succeeds");
             assert_eq!(stored.operation()["requests"]["5a300f72-4ea6-4d30-8a0e-9b2c13c42272"]["leadId"], "lead");
             Ok::<_, studio_runtime_store::StoreError>(())
-        }).unwrap();
+        }).expect("test fixture operation succeeds");
     }
 
     #[test]
     fn invalid_scope_and_excluded_account_refuse_without_writes() {
         let (_root, store) = store_with_agents();
-        let before = AgentRepository::get(&store.read().unwrap(), &AgentId::from("lead"))
-            .unwrap()
-            .unwrap()
-            .value();
+        let before = AgentRepository::get(
+            &store.read().expect("test fixture operation succeeds"),
+            &AgentId::from("lead"),
+        )
+        .expect("test fixture operation succeeds")
+        .expect("test fixture operation succeeds")
+        .value();
         assert!(
             request(
                 &store,
@@ -888,17 +942,21 @@ mod request_tests {
         );
         store
             .transaction_with_error(|tx| {
-                let mut lead = AgentRepository::get(tx, &AgentId::from("lead"))?.unwrap();
+                let mut lead = AgentRepository::get(tx, &AgentId::from("lead"))?
+                    .expect("test fixture operation succeeds");
                 lead.extra
                     .insert("excludedAccountKeys".into(), json!(["blocked"]));
                 AgentRepository::put(tx, &lead)?;
                 Ok::<_, studio_runtime_store::StoreError>(())
             })
-            .unwrap();
-        let before_blocked = AgentRepository::get(&store.read().unwrap(), &AgentId::from("lead"))
-            .unwrap()
-            .unwrap()
-            .value();
+            .expect("test fixture operation succeeds");
+        let before_blocked = AgentRepository::get(
+            &store.read().expect("test fixture operation succeeds"),
+            &AgentId::from("lead"),
+        )
+        .expect("test fixture operation succeeds")
+        .expect("test fixture operation succeeds")
+        .value();
         assert!(
             request(
                 &store,
@@ -911,10 +969,13 @@ mod request_tests {
             )
             .is_err()
         );
-        let after = AgentRepository::get(&store.read().unwrap(), &AgentId::from("lead"))
-            .unwrap()
-            .unwrap()
-            .value();
+        let after = AgentRepository::get(
+            &store.read().expect("test fixture operation succeeds"),
+            &AgentId::from("lead"),
+        )
+        .expect("test fixture operation succeeds")
+        .expect("test fixture operation succeeds")
+        .value();
         assert_eq!(after, before_blocked);
         assert_eq!(before["accountKey"], "source");
     }

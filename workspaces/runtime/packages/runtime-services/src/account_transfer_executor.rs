@@ -169,40 +169,51 @@ pub struct AccountTransferExecutor<'a> {
     pub now: f64,
 }
 
-fn session_reply(
-    store: &RuntimeStore,
-    session: &dyn AccountSessionPort,
-    transfer: &str,
-    agent: &str,
-    account: &str,
+struct ProviderReadContext<'a> {
+    store: &'a RuntimeStore,
+    session: &'a dyn AccountSessionPort,
+    transfer: &'a str,
+    agent: &'a str,
+    account: &'a str,
+    now: f64,
+}
+
+struct ProviderReadCall {
     actor: Option<crate::account_worker::retained::RequestActor>,
-    transfer_source_thread: Option<&str>,
+    transfer_source_thread: Option<String>,
     operation: String,
     method: Method,
     params: Value,
-    now: f64,
     deadline: Duration,
+}
+
+fn session_reply(
+    context: &ProviderReadContext<'_>,
+    call: ProviderReadCall,
 ) -> Result<(SessionReceipt, Value), TransferError> {
-    let scope = session
-        .current_scope(account)
+    let scope = context
+        .session
+        .current_scope(context.account)
         .ok_or(TransferError::Requires("provider-session/account-worker"))?;
-    if scope.account != account {
+    if scope.account != context.account {
         return Err(TransferError::Refused(
             "Provider read account scope changed",
         ));
     }
-    let method_name = method.as_str();
+    let method_name = call.method.as_str();
     let replay = driver::provider_read_intent(
-        store,
-        transfer,
-        agent,
-        &operation,
-        account,
-        serde_json::to_value(&scope)
-            .map_err(|_| TransferError::Refused("Invalid provider scope"))?,
-        method_name,
-        params.clone(),
-        now,
+        context.store,
+        driver::ProviderReadIntent {
+            transfer: context.transfer,
+            agent: context.agent,
+            operation: &call.operation,
+            account: context.account,
+            scope: serde_json::to_value(&scope)
+                .map_err(|_| TransferError::Refused("Invalid provider scope"))?,
+            method: method_name,
+            params: call.params.clone(),
+        },
+        context.now,
     )?;
     if let Some(saved) = replay {
         let value = match saved["result"]["kind"].as_str() {
@@ -244,27 +255,29 @@ fn session_reply(
     }
     let mut last_receipt = None;
     for attempt in 0..2 {
-        let receipt = (if let Some(thread_id) = transfer_source_thread {
-            session.transfer_provider_request(TransferProviderRequest {
-                transfer_id: transfer.into(),
-                member: agent.into(),
-                source_account: account.into(),
-                thread_id: thread_id.into(),
-                operation: operation.clone(),
-                expected_scope: scope.clone(),
-                method,
-                params: params.clone(),
-                deadline: Instant::now() + deadline,
-            })
+        let receipt = (if let Some(thread_id) = &call.transfer_source_thread {
+            context
+                .session
+                .transfer_provider_request(TransferProviderRequest {
+                    transfer_id: context.transfer.into(),
+                    member: context.agent.into(),
+                    source_account: context.account.into(),
+                    thread_id: thread_id.clone(),
+                    operation: call.operation.clone(),
+                    expected_scope: scope.clone(),
+                    method: call.method,
+                    params: call.params.clone(),
+                    deadline: Instant::now() + call.deadline,
+                })
         } else {
-            session.provider_request(ProviderRequest {
-                account: account.into(),
-                operation: operation.clone(),
-                actor: actor.clone(),
+            context.session.provider_request(ProviderRequest {
+                account: context.account.into(),
+                operation: call.operation.clone(),
+                actor: call.actor.clone(),
                 expected_scope: Some(scope.clone()),
-                method,
-                params: params.clone(),
-                deadline: Instant::now() + deadline,
+                method: call.method,
+                params: call.params.clone(),
+                deadline: Instant::now() + call.deadline,
             })
         })
         .map_err(|error| match error {
@@ -293,20 +306,22 @@ fn session_reply(
             "certainty":certainty,"ticket":ticket,
             "notSentReason":receipt.not_sent_reason.map(|reason| format!("{reason:?}"))});
         driver::provider_read_receipt(
-            store,
-            transfer,
-            agent,
-            &operation,
-            exact,
-            result.clone(),
-            certainty,
-            now,
+            context.store,
+            driver::ProviderReadReceipt {
+                transfer: context.transfer,
+                agent: context.agent,
+                operation: &call.operation,
+                receipt: exact,
+                result: result.clone(),
+                certainty,
+            },
+            context.now,
         )?;
         if receipt.certainty == RequestCertainty::NotSent && attempt == 0 {
             last_receipt = Some(receipt);
             continue;
         }
-        if receipt.operation != operation
+        if receipt.operation != call.operation
             || receipt.scope != scope
             || receipt.certainty != RequestCertainty::Written
             || receipt.ticket.is_none()
@@ -336,45 +351,38 @@ fn session_reply(
     ))
 }
 
-fn source_transfer_call(
-    store: &RuntimeStore,
-    session: &dyn AccountSessionPort,
-    transfer: &str,
-    agent: &str,
-    account: &str,
-    thread: &str,
-    suffix: &str,
+struct SourceTransferCall<'a> {
+    thread: &'a str,
+    suffix: &'a str,
     method: Method,
     params: Value,
-    now: f64,
+}
+
+fn source_transfer_call(
+    context: &ProviderReadContext<'_>,
+    call: SourceTransferCall<'_>,
 ) -> Result<Value, TransferError> {
     let (_, response) = session_reply(
-        store,
-        session,
-        transfer,
-        agent,
-        account,
-        None,
-        Some(thread),
-        format!("transfer:{transfer}:{agent}:{suffix}"),
-        method,
-        params,
-        now,
-        READ_DEADLINE,
+        context,
+        ProviderReadCall {
+            actor: None,
+            transfer_source_thread: Some(call.thread.into()),
+            operation: format!(
+                "transfer:{}:{}:{}",
+                context.transfer, context.agent, call.suffix
+            ),
+            method: call.method,
+            params: call.params,
+            deadline: READ_DEADLINE,
+        },
     )?;
     Ok(response)
 }
 
 fn read_catalog(
-    store: &RuntimeStore,
-    session: &dyn AccountSessionPort,
-    transfer: &str,
-    account: &str,
+    context: &ProviderReadContext<'_>,
     provider: &str,
     home: &str,
-    agent: &str,
-    transfer_id: &str,
-    now: f64,
 ) -> Result<CatalogObservation, TransferError> {
     let mut cursor: Option<String> = None;
     let mut seen = std::collections::HashSet::new();
@@ -385,20 +393,20 @@ fn read_catalog(
         if let Some(value) = &cursor {
             params["cursor"] = json!(value);
         }
-        let operation = format!("account-transfer:{transfer_id}:{agent}:model-list:{page}");
+        let operation = format!(
+            "account-transfer:{}:{}:model-list:{page}",
+            context.transfer, context.agent
+        );
         let (_, response) = session_reply(
-            store,
-            session,
-            transfer,
-            agent,
-            account,
-            None,
-            None,
-            operation,
-            Method::ModelList,
-            params,
-            now,
-            READ_DEADLINE,
+            context,
+            ProviderReadCall {
+                actor: None,
+                transfer_source_thread: None,
+                operation,
+                method: Method::ModelList,
+                params,
+                deadline: READ_DEADLINE,
+            },
         )?;
         let data = response["data"]
             .as_array()
@@ -456,7 +464,7 @@ fn read_catalog(
                     .collect::<Result<Vec<_>, TransferError>>()?;
                 return Ok(CatalogObservation {
                     identity: CatalogIdentity {
-                        account_key: account.into(),
+                        account_key: context.account.into(),
                         home: home.into(),
                         provider: provider.into(),
                         generation: 0,
@@ -670,17 +678,15 @@ impl TransferExecutor for AccountTransferExecutor<'_> {
                 "Destination provider changed during transfer",
             ));
         }
-        let catalog = read_catalog(
-            self.store,
-            &*self.session,
-            transfer_id,
-            target_account,
-            target_provider,
-            &home,
-            agent_id,
-            transfer_id,
-            self.now,
-        )?;
+        let catalog_context = ProviderReadContext {
+            store: self.store,
+            session: &*self.session,
+            transfer: transfer_id,
+            agent: agent_id,
+            account: target_account,
+            now: self.now,
+        };
+        let catalog = read_catalog(&catalog_context, target_provider, &home)?;
         let settings = destination_settings(agent, source_provider, target_provider, &catalog)?;
 
         let mut portable = None;
@@ -688,20 +694,25 @@ impl TransferExecutor for AccountTransferExecutor<'_> {
         let mut copied_history_path = None;
         let source_thread = member["sourceThreadId"].as_str();
         if let Some(thread_id) = source_thread {
+            let source_context = ProviderReadContext {
+                store: self.store,
+                session: &*self.session,
+                transfer: transfer_id,
+                agent: agent_id,
+                account: source_account,
+                now: self.now,
+            };
             let operation_id = format!("account-transfer:{transfer_id}:{agent_id}:thread-read");
             let (_, read) = session_reply(
-                self.store,
-                &*self.session,
-                transfer_id,
-                agent_id,
-                source_account,
-                None,
-                None,
-                operation_id,
-                Method::ThreadRead,
-                json!({"threadId":thread_id,"includeTurns":false}),
-                self.now,
-                READ_DEADLINE,
+                &source_context,
+                ProviderReadCall {
+                    actor: None,
+                    transfer_source_thread: None,
+                    operation: operation_id,
+                    method: Method::ThreadRead,
+                    params: json!({"threadId":thread_id,"includeTurns":false}),
+                    deadline: READ_DEADLINE,
+                },
             )?;
             let thread = read
                 .get("thread")
@@ -714,16 +725,13 @@ impl TransferExecutor for AccountTransferExecutor<'_> {
                 return Err(TransferError::Refused("Source thread is not idle"));
             }
             let queue = source_transfer_call(
-                self.store,
-                &*self.session,
-                transfer_id,
-                agent_id,
-                source_account,
-                thread_id,
-                "queue-before",
-                Method::ThreadQueueList,
-                json!({"threadId":thread_id}),
-                self.now,
+                &source_context,
+                SourceTransferCall {
+                    thread: thread_id,
+                    suffix: "queue-before",
+                    method: Method::ThreadQueueList,
+                    params: json!({"threadId":thread_id}),
+                },
             )?;
             if !queue["data"].is_array() {
                 return Err(TransferError::Refused("Invalid source native queue page"));
@@ -740,16 +748,13 @@ impl TransferExecutor for AccountTransferExecutor<'_> {
                 Some("idle" | "systemError")
             ) {
                 let background = source_transfer_call(
-                    self.store,
-                    &*self.session,
-                    transfer_id,
-                    agent_id,
-                    source_account,
-                    thread_id,
-                    "background-before",
-                    Method::ThreadBackgroundTerminalsList,
-                    json!({"threadId":thread_id}),
-                    self.now,
+                    &source_context,
+                    SourceTransferCall {
+                        thread: thread_id,
+                        suffix: "background-before",
+                        method: Method::ThreadBackgroundTerminalsList,
+                        params: json!({"threadId":thread_id}),
+                    },
                 )?;
                 if !background["data"].is_array() {
                     return Err(TransferError::Refused(
@@ -764,29 +769,23 @@ impl TransferExecutor for AccountTransferExecutor<'_> {
                     ));
                 }
                 source_transfer_call(
-                    self.store,
-                    &*self.session,
-                    transfer_id,
-                    agent_id,
-                    source_account,
-                    thread_id,
-                    "unsubscribe",
-                    Method::ThreadUnsubscribe,
-                    json!({"threadId":thread_id}),
-                    self.now,
+                    &source_context,
+                    SourceTransferCall {
+                        thread: thread_id,
+                        suffix: "unsubscribe",
+                        method: Method::ThreadUnsubscribe,
+                        params: json!({"threadId":thread_id}),
+                    },
                 )?;
             }
             let queue = source_transfer_call(
-                self.store,
-                &*self.session,
-                transfer_id,
-                agent_id,
-                source_account,
-                thread_id,
-                "queue-after",
-                Method::ThreadQueueList,
-                json!({"threadId":thread_id}),
-                self.now,
+                &source_context,
+                SourceTransferCall {
+                    thread: thread_id,
+                    suffix: "queue-after",
+                    method: Method::ThreadQueueList,
+                    params: json!({"threadId":thread_id}),
+                },
             )?;
             if !queue["data"].is_array() {
                 return Err(TransferError::Refused("Invalid source native queue page"));
@@ -827,18 +826,17 @@ impl TransferExecutor for AccountTransferExecutor<'_> {
                     params["cursor"] = json!(value);
                 }
                 let (_, page_value) = session_reply(
-                    self.store,
-                    &*self.session,
-                    transfer_id,
-                    agent_id,
-                    source_account,
-                    None,
-                    None,
-                    format!("account-transfer:{transfer_id}:{agent_id}:turns:{page}"),
-                    Method::ThreadTurnsList,
-                    params.clone(),
-                    self.now,
-                    READ_DEADLINE,
+                    &source_context,
+                    ProviderReadCall {
+                        actor: None,
+                        transfer_source_thread: None,
+                        operation: format!(
+                            "account-transfer:{transfer_id}:{agent_id}:turns:{page}"
+                        ),
+                        method: Method::ThreadTurnsList,
+                        params: params.clone(),
+                        deadline: READ_DEADLINE,
+                    },
                 )?;
                 if !page_value["data"].is_array() {
                     return Err(TransferError::Refused("Invalid source history page"));
@@ -1201,7 +1199,7 @@ mod retained_executor_tests {
         ) -> Result<SessionReceipt, AccountSessionError> {
             self.requests
                 .lock()
-                .unwrap()
+                .expect("test fixture operation succeeds")
                 .push(request.method.as_str().into());
             let value = match request.method {
                 Method::ModelList => json!({"data":[{"model":"gpt-6-astra","isDefault":true,
@@ -1231,14 +1229,15 @@ mod retained_executor_tests {
             let raw: String = self
                 .store
                 .read()
-                .unwrap()
+                .expect("test fixture operation succeeds")
                 .query_row(
                     "SELECT record FROM runtime_account_transfers WHERE id=?1",
                     [&self.transfer_id],
                     |row| row.get(0),
                 )
-                .unwrap();
-            let operation: Value = serde_json::from_str(&raw).unwrap();
+                .expect("test fixture operation succeeds");
+            let operation: Value =
+                serde_json::from_str(&raw).expect("test fixture operation succeeds");
             assert!(
                 operation["members"]["lead"]["providerReadIntents"]
                     .get(&request.operation)
@@ -1246,7 +1245,7 @@ mod retained_executor_tests {
             );
             self.requests
                 .lock()
-                .unwrap()
+                .expect("test fixture operation succeeds")
                 .push(request.method.as_str().into());
             Ok(self.receipt(
                 &request.source_account,
@@ -1259,18 +1258,20 @@ mod retained_executor_tests {
 
     #[test]
     fn before_start_executor_checks_and_durably_authorizes_source_queue() {
-        let root = tempfile::tempdir().unwrap();
-        let store = Arc::new(RuntimeStore::open(Some(root.path())).unwrap());
+        let root = tempfile::tempdir().expect("test fixture operation succeeds");
+        let store = Arc::new(
+            RuntimeStore::open(Some(root.path())).expect("test fixture operation succeeds"),
+        );
         let lead = AgentRecord::from_value(json!({"id":"lead","rootId":"lead","epoch":1,
             "status":"idle","isLead":true,"accountKey":"source","provider":"codex",
             "model":"gpt-6-astra","cwd":"/tmp/work","threadId":"source-thread"}))
-        .unwrap();
+        .expect("test fixture operation succeeds");
         store
             .transaction_with_error(|tx| {
                 AgentRepository::put(tx, &lead)?;
                 Ok::<_, studio_runtime_store::StoreError>(())
             })
-            .unwrap();
+            .expect("test fixture operation succeeds");
         let transfer_id = "5a300f72-4ea6-4d30-8a0e-9b2c13c42281";
         crate::account_transfer_driver::request(
             &store,
@@ -1281,7 +1282,7 @@ mod retained_executor_tests {
             "codex",
             1.0,
         )
-        .unwrap();
+        .expect("test fixture operation succeeds");
         let session = Arc::new(GuardSession {
             store: store.clone(),
             transfer_id: transfer_id.into(),
@@ -1323,27 +1324,34 @@ mod retained_executor_tests {
             ))
         ));
         assert_eq!(
-            *session.requests.lock().unwrap(),
+            *session
+                .requests
+                .lock()
+                .expect("test fixture operation succeeds"),
             ["model/list", "thread/read", "thread/queue/list"]
         );
         let operation: String = store
             .read()
-            .unwrap()
+            .expect("test fixture operation succeeds")
             .query_row(
                 "SELECT record FROM runtime_account_transfers WHERE id=?1",
                 [transfer_id],
                 |row| row.get(0),
             )
-            .unwrap();
-        let operation: Value = serde_json::from_str(&operation).unwrap();
+            .expect("test fixture operation succeeds");
+        let operation: Value =
+            serde_json::from_str(&operation).expect("test fixture operation succeeds");
         let intent = operation["members"]["lead"]["providerReadIntents"]
             .as_object()
-            .unwrap();
+            .expect("test fixture operation succeeds");
         assert_eq!(intent.len(), 3);
         assert!(
-            AgentRepository::get(&store.read().unwrap(), &AgentId::from("lead"))
-                .unwrap()
-                .is_some()
+            AgentRepository::get(
+                &store.read().expect("test fixture operation succeeds"),
+                &AgentId::from("lead")
+            )
+            .expect("test fixture operation succeeds")
+            .is_some()
         );
     }
 }

@@ -1384,7 +1384,7 @@ mod provider_receipt_tests {
             &operation.to_string(),
             [("agent".into(), agent.to_string())],
         )
-        .unwrap()
+        .expect("test fixture operation succeeds")
     }
 
     fn after(decision: Decision) -> Snapshot {
@@ -1395,19 +1395,23 @@ mod provider_receipt_tests {
                 .into_iter()
                 .map(|(id, agent)| (id, agent.to_string())),
         )
-        .unwrap()
+        .expect("test fixture operation succeeds")
     }
 
     fn intent(snapshot: &Snapshot) -> Decision {
-        after(snapshot.begin_read("agent").unwrap())
-            .provider_intent(
-                "agent",
-                "transfer:agent:thread-start",
-                json!({"account":"target","connection":"connection-1"}),
-                "thread/start",
-                json!({"model":"model-a"}),
-            )
-            .unwrap()
+        after(
+            snapshot
+                .begin_read("agent")
+                .expect("test fixture operation succeeds"),
+        )
+        .provider_intent(
+            "agent",
+            "transfer:agent:thread-start",
+            json!({"account":"target","connection":"connection-1"}),
+            "thread/start",
+            json!({"model":"model-a"}),
+        )
+        .expect("test fixture operation succeeds")
     }
 
     #[test]
@@ -1431,7 +1435,7 @@ mod provider_receipt_tests {
                 result.clone(),
                 "written",
             )
-            .unwrap();
+            .expect("test fixture operation succeeds");
         let recorded = after(recorded);
         assert_eq!(recorded.operation["members"]["agent"]["phase"], "ready");
         assert_eq!(
@@ -1446,17 +1450,21 @@ mod provider_receipt_tests {
                 result,
                 "written",
             )
-            .unwrap();
+            .expect("test fixture operation succeeds");
         assert!(!replay.changed);
     }
 
     #[test]
     fn adoption_requires_saved_written_receipt_and_validated_target_settings() {
-        let reading = after(snapshot().begin_read("agent").unwrap());
+        let reading = after(
+            snapshot()
+                .begin_read("agent")
+                .expect("test fixture operation succeeds"),
+        );
         let reading = after(
             reading
                 .prepared_member("agent", json!({"model":"model-b"}), None)
-                .unwrap(),
+                .expect("test fixture operation succeeds"),
         );
         let submitted = after(
             reading
@@ -1467,19 +1475,35 @@ mod provider_receipt_tests {
                     "thread/start",
                     json!({"model":"model-b"}),
                 )
-                .unwrap(),
+                .expect("test fixture operation succeeds"),
         );
         let ready = after(submitted.provider_receipt(
             "agent", "transfer:agent:thread-start",
             json!({"operation":"transfer:agent:thread-start", "scope":{"account":"target","connection":"connection-1"}, "certainty":"written", "ticket":{"id":11}}),
             Some(json!({"thread":{"id":"target-thread"}})), "written",
-        ).unwrap());
-        let adopted = after(ready.adopt_receipt("agent").unwrap());
+        ).expect("test fixture operation succeeds"));
+        let adopted = after(
+            ready
+                .adopt_receipt("agent")
+                .expect("test fixture operation succeeds"),
+        );
         assert_eq!(adopted.operation["members"]["agent"]["phase"], "completed");
-        assert_eq!(adopted.agent("agent").unwrap()["threadId"], "target-thread");
-        assert_eq!(adopted.agent("agent").unwrap()["model"], "model-b");
         assert_eq!(
-            adopted.agent("agent").unwrap()["accountHistory"][0]["targetThreadId"],
+            adopted
+                .agent("agent")
+                .expect("test fixture operation succeeds")["threadId"],
+            "target-thread"
+        );
+        assert_eq!(
+            adopted
+                .agent("agent")
+                .expect("test fixture operation succeeds")["model"],
+            "model-b"
+        );
+        assert_eq!(
+            adopted
+                .agent("agent")
+                .expect("test fixture operation succeeds")["accountHistory"][0]["targetThreadId"],
             "target-thread"
         );
     }
@@ -1497,7 +1521,7 @@ mod provider_receipt_tests {
                     None,
                     "not_sent",
                 )
-                .unwrap(),
+                .expect("test fixture operation succeeds"),
         );
         assert_eq!(released.operation["members"]["agent"]["phase"], "lazy");
         let retry = after(intent(&released));
@@ -1510,7 +1534,7 @@ mod provider_receipt_tests {
             "agent", "transfer:agent:thread-start",
             json!({"operation":"transfer:agent:thread-start", "scope":{"account":"target","connection":"connection-1"}, "certainty":"unknown", "ticket":{"id":10}}),
             None, "unknown",
-        ).unwrap());
+        ).expect("test fixture operation succeeds"));
         assert_eq!(unknown.operation["members"]["agent"]["phase"], "unknown");
         assert!(
             unknown
@@ -1527,7 +1551,11 @@ mod provider_receipt_tests {
 
     #[test]
     fn provider_read_journal_replays_written_and_holds_uncertain_calls() {
-        let reading = after(snapshot().begin_read("agent").unwrap());
+        let reading = after(
+            snapshot()
+                .begin_read("agent")
+                .expect("test fixture operation succeeds"),
+        );
         let intent = |snapshot: &Snapshot| {
             snapshot.provider_read_intent(
                 "agent",
@@ -1538,7 +1566,7 @@ mod provider_receipt_tests {
                 json!({"limit":100}),
             )
         };
-        let prepared = after(intent(&reading).unwrap());
+        let prepared = after(intent(&reading).expect("test fixture operation succeeds"));
         let op_id = "account-transfer:transfer:agent:model-list:0";
         let receipt = json!({"operation":op_id,"scope":{"account":"target","connection":"conn","generation":4},
             "certainty":"written","ticket":{"generation":4,"id":"claude:4","method":"model/list"}});
@@ -1552,13 +1580,17 @@ mod provider_receipt_tests {
                     Some(response.clone()),
                     "written",
                 )
-                .unwrap(),
+                .expect("test fixture operation succeeds"),
         );
         assert_eq!(
             recorded.operation["members"]["agent"]["providerReadIntents"][op_id]["params"]["limit"],
             100
         );
-        assert!(!intent(&recorded).unwrap().changed);
+        assert!(
+            !intent(&recorded)
+                .expect("test fixture operation succeeds")
+                .changed
+        );
         assert_eq!(
             recorded.operation["members"]["agent"]["providerReadReceipts"][op_id]["result"],
             response
@@ -1574,7 +1606,7 @@ mod provider_receipt_tests {
                     "thread/read",
                     json!({"threadId":"source-thread","includeTurns":false}),
                 )
-                .unwrap(),
+                .expect("test fixture operation succeeds"),
         );
         let read_op = "account-transfer:transfer:agent:thread-read";
         let not_sent_receipt = json!({"operation":read_op,"scope":{"account":"source","connection":"source-conn","generation":2},
@@ -1582,9 +1614,13 @@ mod provider_receipt_tests {
         let released = after(
             not_sent
                 .provider_read_receipt("agent", read_op, not_sent_receipt, None, "not_sent")
-                .unwrap(),
+                .expect("test fixture operation succeeds"),
         );
-        assert!(!intent(&released).unwrap().changed);
+        assert!(
+            !intent(&released)
+                .expect("test fixture operation succeeds")
+                .changed
+        );
         assert!(
             !released
                 .provider_read_intent(
@@ -1608,7 +1644,7 @@ mod provider_receipt_tests {
                     "thread/turns/list",
                     json!({"threadId":"source-thread"}),
                 )
-                .unwrap(),
+                .expect("test fixture operation succeeds"),
         );
         let unknown_op = "account-transfer:transfer:agent:turns:0";
         let unknown_receipt = json!({"operation":unknown_op,"scope":{"account":"source","connection":"source-conn","generation":2},
@@ -1616,7 +1652,7 @@ mod provider_receipt_tests {
         let held = after(
             unknown
                 .provider_read_receipt("agent", unknown_op, unknown_receipt, None, "unknown")
-                .unwrap(),
+                .expect("test fixture operation succeeds"),
         );
         assert_eq!(held.operation["members"]["agent"]["phase"], "unknown");
         assert!(intent(&held).is_err());
@@ -1624,7 +1660,11 @@ mod provider_receipt_tests {
 
     #[test]
     fn source_queue_preflight_requires_transfer_scope_and_exact_receipt() {
-        let reading = after(snapshot().begin_read("agent").unwrap());
+        let reading = after(
+            snapshot()
+                .begin_read("agent")
+                .expect("test fixture operation succeeds"),
+        );
         let params = json!({"threadId":"source-thread"});
         let scope = json!({"account":"source","connection":"source-conn","generation":2});
         assert!(
@@ -1650,7 +1690,7 @@ mod provider_receipt_tests {
                     "thread/queue/list",
                     params.clone(),
                 )
-                .unwrap(),
+                .expect("test fixture operation succeeds"),
         );
         assert_eq!(
             intent.operation["members"]["agent"]["providerReadIntents"][operation]["params"],
@@ -1668,7 +1708,7 @@ mod provider_receipt_tests {
                     Some(json!({"kind":"reply","value":response})),
                     "written",
                 )
-                .unwrap(),
+                .expect("test fixture operation succeeds"),
         );
         assert_eq!(recorded.operation["members"]["agent"]["phase"], "reading");
         assert_eq!(

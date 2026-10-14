@@ -31,7 +31,7 @@ class AccountTransferHTTPContract(TimedHTTPContractTest, unittest.TestCase):
                 def put(self,db,table,record): db.execute('INSERT OR REPLACE INTO runtime_'+table+'(id,record) VALUES(?,?)',(record['id'],json.dumps(record)))
                 def agent(self,key,db): return json.loads(db.execute('SELECT record FROM runtime_agents WHERE id=?',(key,)).fetchone()[0])
             ports=Ports(); transfers=object.__new__(AccountTransfers); transfers.rt=ports
-            for name in ('cancel','finish','refuse','replay'):
+            for name in ('cancel','finish','refuse','replay','late-root'):
                 key=str(uuid.uuid4()); cls.operations[name]=key
                 agent=dict(id=name,rootId=name,epoch=0,status='idle',name=name,isLead=True,autoWake=False,accountKey='default',cwd=str(cls.backend.cwd),model='gpt-6-astra',accountTransferId=key)
                 ports.put(db,'agents',agent)
@@ -70,20 +70,20 @@ class AccountTransferHTTPContract(TimedHTTPContractTest, unittest.TestCase):
     def test_new_request_adopts_descendants_created_during_active_transfer(self):
         with sqlite3.connect(self.backend.state/'canvas.sqlite3') as db:
             db.execute('INSERT INTO runtime_agents(id,record) VALUES(?,?)',('late',json.dumps(dict(
-                id='late',rootId='replay',epoch=1,status='idle',name='Late member',isLead=False,
+                id='late',rootId='late-root',epoch=1,status='idle',name='Late member',isLead=False,
                 autoWake=False,accountKey='default',provider='codex',model='gpt-6-astra',cwd=str(self.backend.cwd)))))
         request_id=str(uuid.uuid4())
-        result=self.post(dict(request_id=request_id,id='replay',account_key='default',scope='team'))
+        result=self.post(dict(request_id=request_id,id='late-root',account_key='default',scope='team'))
         self.assertEqual(result.status,200,result.body)
         self.assertEqual(result.json()['members']['late']['phase'],'completed')
         with sqlite3.connect(self.backend.state/'canvas.sqlite3') as db:
             operation=json.loads(db.execute('SELECT record FROM runtime_account_transfers WHERE id=?',
-                (self.operations['replay'],)).fetchone()[0])
-            self.assertEqual(operation['requests'][request_id],dict(leadId='replay',targetAccountKey='default',scope='team'))
-        before=self.stored('replay')
-        conflict=self.post(dict(request_id=self.operations['replay'],id='replay',account_key='default',scope='subagents'))
+                (self.operations['late-root'],)).fetchone()[0])
+            self.assertEqual(operation['requests'][request_id],dict(leadId='late-root',targetAccountKey='default',scope='team'))
+        before=self.stored('late-root')
+        conflict=self.post(dict(request_id=self.operations['late-root'],id='late-root',account_key='default',scope='subagents'))
         self.assertEqual(conflict.status,400,conflict.body)
-        self.assertEqual(self.stored('replay'),before)
+        self.assertEqual(self.stored('late-root'),before)
     def test_same_account_selection_is_read_only(self):
         before=self.stored('replay')
         result=self.post(dict(id='replay',account_key='default'),'/api/agents/account')

@@ -98,29 +98,6 @@ pub fn prepare_safety_retry(
     pipeline::prepare_safety_retry(store, resources, request)
 }
 
-#[cfg(test)]
-mod safety_retry_tests {
-    use super::*;
-    use serde_json::json;
-
-    #[test]
-    fn safety_retry_binds_fork_receipt_to_complete_turn_params() {
-        let mut prepared = PreparedSafetyRetry {
-            attempt_id: "attempt-1".into(),
-            thread_id: "attempt-1".into(),
-            fork_params: json!({"threadId":"source"}),
-            turn_params: json!({"threadId":"attempt-1","input":[]}),
-        };
-
-        prepared.with_thread_id("forked-thread").unwrap();
-
-        assert_eq!(prepared.thread_id, "forked-thread");
-        assert_eq!(prepared.turn_params["threadId"], "forked-thread");
-        assert_eq!(prepared.turn_params["input"], json!([]));
-        assert!(prepared.with_thread_id("").is_err());
-    }
-}
-
 pub fn prepare_turn(
     store: &RuntimeStore,
     resources: &PreparationResources,
@@ -129,6 +106,7 @@ pub fn prepare_turn(
 ) -> Result<PreparedTurn, WorkerError> {
     pipeline::prepare(store, resources, intent, Method::TurnStart, generation).map(PreparedTurn)
 }
+
 impl PreparedTurn {
     /// Exact native method and parameters handed to SessionControl::prepare.
     pub fn native_request(&self) -> Value {
@@ -178,5 +156,30 @@ impl PreparedTurn {
             prepared.submission.as_ref(),
             Some(&prepared.guard),
         )
+    }
+}
+
+#[cfg(test)]
+mod safety_retry_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn safety_retry_binds_fork_receipt_to_complete_turn_params() {
+        let mut prepared = PreparedSafetyRetry {
+            attempt_id: "attempt-1".into(),
+            thread_id: "attempt-1".into(),
+            fork_params: json!({"threadId":"source"}),
+            turn_params: json!({"threadId":"attempt-1","input":[]}),
+        };
+
+        prepared
+            .with_thread_id("forked-thread")
+            .expect("valid safety retry receipt binds its thread id");
+
+        assert_eq!(prepared.thread_id, "forked-thread");
+        assert_eq!(prepared.turn_params["threadId"], "forked-thread");
+        assert_eq!(prepared.turn_params["input"], json!([]));
+        assert!(prepared.with_thread_id("").is_err());
     }
 }
