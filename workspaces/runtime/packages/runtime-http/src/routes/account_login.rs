@@ -337,9 +337,9 @@ pub(super) fn session_error(error: AccountSessionError) -> ApiError {
     let status = match error {
         AccountSessionError::Requires(_) => StatusCode::NOT_IMPLEMENTED,
         AccountSessionError::Refused(_) => StatusCode::BAD_REQUEST,
-        AccountSessionError::InvalidResponse(_) | AccountSessionError::Persistence => {
-            StatusCode::INTERNAL_SERVER_ERROR
-        }
+        AccountSessionError::InvalidResponse(_)
+        | AccountSessionError::Persistence
+        | AccountSessionError::Unknown => StatusCode::INTERNAL_SERVER_ERROR,
     };
     ApiError::new(status, error.to_string())
 }
