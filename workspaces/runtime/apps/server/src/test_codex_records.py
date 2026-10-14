@@ -67,7 +67,7 @@ AGENT_FIELD_GROUPS = {
         restartRecovery restoredCheckpoint reviewArchiveAttempts reviewArchiveError reviewArchiveNextAt
         reviewArchiveScheduled
         sandbox startOutcomeHold steerRejectedTurnId supervisorRestore tokenBudget tokenUsageAccounting
-        turnEpoch turnRecovery usageResumeEnabled workerBaseBehindMain workerBaseCommit
+        turnEpoch turnRecovery usageResumeEnabled vmAccountSwitch workerBaseBehindMain workerBaseCommit
         workerBaseMainRef workerBaseRef workerBaseStatus worktreeCleanup worktreeReady
         worktreeWarning authResumeAttempt cleanedImageWorkspace imageWorkspaceCleanupResult
         imageWorkspaceBaseError nativeToolRefreshId nativeToolUpdate portableHistory
