@@ -3,7 +3,7 @@ use super::{ToolRequestError, text};
 use serde_json::{Value, json};
 use studio_operations::*;
 
-fn state(record: &Value) -> Result<State, ToolRequestError> {
+pub(crate) fn state(record: &Value) -> Result<State, ToolRequestError> {
     let (revision, lifecycle) = match (text(record, "stage"), text(record, "outcome")) {
         ("queued", "pending") => (0, OperationState::Reserved),
         ("running", "pending") if record["cancelRequested"] == true => {
@@ -64,7 +64,7 @@ fn operation(state: &State) -> Result<&Operation, ToolRequestError> {
         ))
 }
 
-fn apply(record: &mut Value, state: &State) -> Result<bool, ToolRequestError> {
+pub(crate) fn apply(record: &mut Value, state: &State) -> Result<bool, ToolRequestError> {
     let operation = operation(state)?;
     let (stage, outcome, cancel) = match operation.state {
         OperationState::Reserved => ("queued", "pending", false),
@@ -103,7 +103,7 @@ pub(super) fn cancel(record: &mut Value) -> Result<bool, ToolRequestError> {
     }
 }
 
-pub(super) fn settle(
+pub(crate) fn settle(
     record: &mut Value,
     result: &Value,
     committed: bool,

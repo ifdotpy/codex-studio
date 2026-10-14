@@ -583,6 +583,42 @@ test("Playwright JSON reports enforce process and test outcome status", () => {
     unexpected.errors.includes("Playwright reported 1 unexpected test(s)"),
   );
 
+  const identifiedFailure = evaluatePlaywrightReport(
+    JSON.stringify({
+      stats: { expected: 4, unexpected: 1, flaky: 0, skipped: 0 },
+      suites: [
+        {
+          title: "runtime smoke",
+          specs: [
+            {
+              title: "loads the agent list",
+              tests: [
+                {
+                  status: "unexpected",
+                  results: [
+                    {
+                      status: "failed",
+                      errors: [
+                        { message: "locator did not appear\nstack trace" },
+                      ],
+                    },
+                  ],
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    }),
+    1,
+  );
+  assert.deepEqual(identifiedFailure.failures, [
+    {
+      title: "runtime smoke › loads the agent list",
+      error: "locator did not appear",
+    },
+  ]);
+
   const flaky = evaluate({ expected: 4, unexpected: 0, flaky: 1, skipped: 0 });
   assert.equal(flaky.exitCode, 1);
   assert.ok(flaky.errors.includes("Playwright reported 1 flaky test(s)"));

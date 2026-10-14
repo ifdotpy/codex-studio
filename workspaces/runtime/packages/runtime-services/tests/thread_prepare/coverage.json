@@ -1,0 +1,118 @@
+{
+  "consumer": "stage-5 account worker preparation step (adapter integration is a separate assignment)",
+  "pythonFunctions": [
+    "Runtime.prepare_locked",
+    "Runtime.new_thread_params",
+    "Runtime.tool_definitions",
+    "Runtime.turn_permissions",
+    "Runtime.preparation_context_versions",
+    "Runtime.prepared_result",
+    "codex_daybreak.turn_params",
+    "codex_native_tools.digest",
+    "Runtime.validate_execution",
+    "Runtime.start turn-parameter statements (AST projection only, never Runtime.start execution)",
+    "Runtime.notification close statements (AST projection)",
+    "codex_native_release.preparation_release_id",
+    "codex_native_release._retire_unsubmitted_inspection"
+  ],
+  "families": {
+    "catalog": {
+      "fast": 3,
+      "full": 3
+    },
+    "guidance": {
+      "fast": 12,
+      "full": 12
+    },
+    "inspection": {
+      "fast": 10,
+      "full": 10
+    },
+    "loaded": {
+      "fast": 2,
+      "full": 2
+    },
+    "native-effort": {
+      "fast": 2,
+      "full": 2
+    },
+    "parameters": {
+      "fast": 12,
+      "full": 144
+    },
+    "receipts": {
+      "fast": 10,
+      "full": 37
+    },
+    "release": {
+      "fast": 2,
+      "full": 2
+    },
+    "release-association": {
+      "fast": 10,
+      "full": 10
+    },
+    "replacement": {
+      "fast": 5,
+      "full": 5
+    },
+    "stale": {
+      "fast": 18,
+      "full": 18
+    },
+    "tools": {
+      "fast": 7,
+      "full": 48
+    },
+    "turn-command": {
+      "fast": 9,
+      "full": 9
+    },
+    "uncertainty": {
+      "fast": 4,
+      "full": 4
+    }
+  },
+  "effectsOutsidePlanner": [
+    "validated settings and delegation admission",
+    "workspace/progress provisioning",
+    "immutable catalog and guidance reads",
+    "role snapshot materialization",
+    "durable preparation journal before submission",
+    "provider request dispatch",
+    "agent/sync/execution transaction and post-commit loaded publication"
+  ],
+  "unsupported": [
+    "image_workspace",
+    "vm_workspace",
+    "native_catalog_mutation",
+    "portable_history_import",
+    "frozen_import",
+    "native_review",
+    "browser_registration",
+    "daybreak"
+  ],
+  "deviations": [
+    {
+      "id": "resume-operation-identity",
+      "scope": "durable operation ID only; provider method and params unchanged",
+      "reason": "Lead explicitly requires original operation identity only when unchanged resume parameters are reissued on a replacement connection. Changed parameters get a fresh identity. Python supplies a fresh uid. Oracle injects the caller-selected identity; separate witnesses check preservation and changes."
+    },
+    {
+      "id": "complete-settings-revalidation",
+      "scope": "receipt acceptance only; provider request unchanged",
+      "reason": "Preserve every Python preparation_settings field including presence-aware daybreakEnabled/cyberAccessProgram; additionally compare provider/isLead/needsTitle/claudeOptions, as required by the assigned frozen-settings guard."
+    }
+  ],
+  "normalization": "No request/patch/content normalization. Both Rust patches apply to an independent original stored actor, with complete before/after comparison; only external current/close observations are injected between patches. Clock and uid are injected effect boundaries. External observations include removals. AST projections verify enclosing-function digests before extraction; control-flow changes require re-deriving the boundary.",
+  "defensiveFamilies": {
+    "malformed-stored-catalog": {
+      "differential": 15,
+      "typed-boundary": 3
+    },
+    "empty-stored-thread": 1,
+    "receipt-binding": 7,
+    "pending-ownership": 3,
+    "actor-ownership": 1
+  }
+}

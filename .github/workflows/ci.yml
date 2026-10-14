@@ -103,6 +103,13 @@ jobs:
             grep -n -E -A 80 '^(ERROR|FAIL): ' "$log" | head -n 800 || true
             tail -n 100 "$log"
           fi
+      - name: Upload facade log from failed server shard
+        if: failure() || cancelled()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: facade-full-log-server-${{ matrix.index }}
+          path: ${{ runner.temp }}/codex-studio-cache/codex-studio/checks/run-*/full.log
+          if-no-files-found: ignore
 
   fast-rest:
     name: "Fast tier: remaining checks"
@@ -115,8 +122,8 @@ jobs:
       - uses: ./.github/actions/fast-tier-setup
       - name: List facade recipes
         run: just --list
-      - name: Run non-server fast-tier checks
-        run: just test-fast-rest
+      - name: Run non-Rust fast-tier checks
+        run: just test-fast-rest-non-rust
       - name: Pre-commit hook tests
         run: pnpm run test:pre-commit
       - name: Workspace boundary check
@@ -133,6 +140,36 @@ jobs:
             grep -n -E -A 80 '^(ERROR|FAIL): ' "$log" | head -n 800 || true
             tail -n 100 "$log"
           fi
+      - name: Upload facade log from failed remaining checks
+        if: failure() || cancelled()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: facade-full-log-fast-rest
+          path: ${{ runner.temp }}/codex-studio-cache/codex-studio/checks/run-*/full.log
+          if-no-files-found: ignore
+
+  fast-rust:
+    name: "Fast tier: Rust workspace (${{ matrix.partition }}/4)"
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        partition: [1, 2, 3, 4]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - uses: ./.github/actions/fast-tier-setup
+      - name: Run Rust workspace partition
+        run: just test-fast-rust-partition ${{ matrix.partition }} 4
+      - name: Upload Rust nextest report
+        if: failure() || cancelled()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: rust-nextest-${{ matrix.partition }}-of-4
+          path: target/nextest/ci/junit.xml
+          if-no-files-found: ignore
 
   fast-browser-smoke:
     name: "Fast tier: browser smoke"
@@ -155,3 +192,10 @@ jobs:
         run: pnpm --filter codex-agents-web exec playwright install chromium
       - name: Run browser smoke subset
         run: just test-browser-smoke
+      - name: Upload browser smoke diagnostics
+        if: failure() || cancelled()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: facade-browser-smoke-diagnostics
+          path: ${{ runner.temp }}/codex-studio-cache/codex-studio/checks/run-*/
+          if-no-files-found: ignore

@@ -5,7 +5,11 @@ mod path;
 mod records;
 mod repositories;
 mod schema;
-pub use schema::{python_json, python_json_compact, sha256_hex, truthy};
+pub mod supervisor_journal;
+pub use schema::{
+    python_float_json, python_json, python_json_compact, python_json_utf8,
+    python_json_with_separators, sha256_hex, truthy,
+};
 mod state_check;
 pub use state_check::{StateCheckFailure, StateCheckReport, StateCheckTable, check_state_readonly};
 
@@ -19,9 +23,12 @@ pub use repositories::analytics::{
     SessionCostError,
 };
 pub use repositories::analytics_capture;
+pub use repositories::budget;
+pub use repositories::capability_reads::CapabilityReadsRepository;
 pub use repositories::checkpoints::{
     CaptureKind, CheckpointsRepository, StoredCheckpointObject, WorkspaceSnapshot,
 };
+pub use repositories::claude_controls::ClaudeControlRepository;
 pub use repositories::cost_usage::{CostUsageRepositoryError, CostUsageRow, read_cost_usage};
 pub use repositories::remote_transport::{
     AccessNonceOutcome, OutboundReservation, RemoteTransportRepository,
@@ -48,16 +55,19 @@ pub use records::{
     TranscriptItemRecord, UsageResumeRecord, WorkItemRecord, WorkStatus, WorkspaceOperationRecord,
 };
 pub use repositories::agent_move::{AgentMoveRepository, MoveRecord};
+pub use repositories::claude_retry::{ClaudeRetryRecords, ClaudeRetryRepository};
 pub use repositories::context_repair::ContextRepairRepository;
 pub use repositories::continuation::{ContinuationRepository, ContinuationTable};
 pub use repositories::coordination::{CanvasMessage, ChatGroup, CoordinationRepository};
 pub use repositories::event_write::{EventWriteReceipt, EventWriteRepository};
+pub use repositories::execution_history::ExecutionHistoryRepository;
 pub use repositories::federation::FederationRepository;
 pub use repositories::federation_credentials::FederationCredentialsRepository;
 pub use repositories::federation_messaging;
 pub use repositories::monitor_runtime;
 pub use repositories::monitors::{MonitorsRepository, StoredMonitor};
 pub use repositories::multi_server::MultiServerRepository;
+pub use repositories::notification_dispatch::NotificationDispatchRepository;
 pub use repositories::profiles::{ProfileRecord, ProfileRepository, ProfileRole, ReasoningEffort};
 pub use repositories::project_locations::{ProjectLocationRecord, ProjectLocationsRepository};
 pub use repositories::projects::ProjectsRepository;
@@ -66,7 +76,7 @@ pub use repositories::questions_write::QuestionsWriteRepository;
 pub use repositories::queue_write::{PendingEvent, QueueWriteRepository};
 pub use repositories::rules::RulesRepository;
 pub use repositories::rules_tick;
-pub use repositories::scheduler::{ClaimedEvents, SchedulerRepository};
+pub use repositories::scheduler::{ClaimedEvents, SchedulerRepository, TurnAttemptIdentity};
 pub use repositories::sync_documents::{
     EntityPage, EntityRow, SyncDocument, SyncDocumentsRepository,
 };

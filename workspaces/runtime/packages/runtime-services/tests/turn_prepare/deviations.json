@@ -1,0 +1,22 @@
+[
+  {
+    "id": "canonical-context-versions",
+    "approval": "Lead decision, 2026-10-13, turn-prepare-types-1",
+    "reason": "Context versions are opaque tokens computed from recursively sorted canonical JSON. The first Rust turn of an agent may resend context blocks once after cutover. The corpus keeps a one-to-one Python-token to canonical-Rust-token mapping, compares exact mapped versions and tests changed-versus-unchanged block decisions. Tokens are never collapsed to a common placeholder."
+  },
+  {
+    "id": "full-changed-role-block",
+    "approval": "Lead decision, 2026-10-13, turn-prepare-types-1",
+    "reason": "Changed role guidance is delivered as the full current block instead of a unified diff. The delivered role version still determines whether it changed. Rust needs no prior role snapshot file. The oracle runs Python context selection with this approved presentation substitution."
+  },
+  {
+    "id": "generated-object-key-order",
+    "approval": "Lead correction decision, 2026-10-13, turn-prepare-serde-features-1 and turn-prepare-producer-order-1",
+    "reason": "Only newly generated context objects (plans and complaint messages) and generic event summary envelopes use sorted keys. Their parsed values are equal; embedded strings, including excerpt and tail, compare byte for byte. Producer payloads retain insertion order, including nested objects and the first position of a duplicate key, while rewriting. Their full generated text compares byte for byte with Python. This preserves the evidence retained by clipping."
+  },
+  {
+    "id": "u64-progress-revisions",
+    "approval": "Lead correction decision, 2026-10-13, turn-prepare-serde-features-1",
+    "reason": "Valid progress revisions are non-negative integers fitting u64. JSON -0 and integers above u64::MAX are treated as invalid and their messages are kept rather than coalesced. Python accepts these revisions. Our own producers emit small counters, so these values cannot occur in practice. Each boundary has a witness that records the different Python projection before applying the approved preservation policy."
+  }
+]

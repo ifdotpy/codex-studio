@@ -1,0 +1,590 @@
+[
+  {
+    "id": "SG01",
+    "description": "allow foreign sender through same-team predicate",
+    "file": "workspaces/runtime/packages/runtime-services/src/submit_gates.rs",
+    "edits": [
+      {
+        "before": ".is_some_and(|agent| agent.root_id.as_deref() == Some(root))",
+        "after": ".is_some_and(|agent| agent.root_id.is_some() || !root.is_empty())"
+      }
+    ],
+    "witnesses": ["followup-True-foreign"]
+  },
+  {
+    "id": "SG02",
+    "description": "allow global and foreign broadcasts",
+    "file": "workspaces/runtime/packages/runtime-services/src/submit_gates.rs",
+    "edits": [
+      {
+        "before": "return Err(D::BroadcastDisabled);",
+        "after": "return Ok(());"
+      }
+    ],
+    "witnesses": ["broadcast-foreign"]
+  },
+  {
+    "id": "SG03",
+    "description": "allow deleted peer leads",
+    "file": "workspaces/runtime/packages/runtime-services/src/submit_gates.rs",
+    "edits": [
+      {
+        "before": "&& !agent.deleted",
+        "after": "&& (agent.deleted || !agent.deleted)"
+      }
+    ],
+    "witnesses": ["peer-deleted-True"]
+  },
+  {
+    "id": "SG04",
+    "description": "skip complaint recipient ownership",
+    "file": "workspaces/runtime/packages/runtime-services/src/submit_gates.rs",
+    "edits": [
+      {
+        "before": ".filter(|c| c.author.as_ref() == Some(&recipient.id))",
+        "after": ".filter(|c| c.author.is_some())"
+      }
+    ],
+    "witnesses": ["complaint-foreign-recipient"]
+  },
+  {
+    "id": "SG05",
+    "description": "treat agent followups as system",
+    "file": "workspaces/runtime/packages/runtime-services/src/submit_gates.rs",
+    "edits": [
+      {
+        "before": "if !sender_present {",
+        "after": "if *sender_present || !sender_present {"
+      }
+    ],
+    "witnesses": ["followup-True-None"]
+  },
+  {
+    "id": "SG06",
+    "description": "conflate explicit null with missing pins",
+    "file": "workspaces/runtime/packages/runtime-services/src/submit_gates.rs",
+    "edits": [
+      {
+        "before": "Self::Null => None,",
+        "after": "Self::Null => default,"
+      }
+    ],
+    "witnesses": ["pending-explicit-null-pin"]
+  },
+  {
+    "id": "SG07",
+    "description": "drop model race check",
+    "file": "workspaces/runtime/packages/runtime-services/src/submit_gates.rs",
+    "edits": [
+      {
+        "before": "|| observed.settings.model != current.settings.model",
+        "after": "|| false && observed.settings.model != current.settings.model"
+      }
+    ],
+    "witnesses": ["changed-during-read-settings/model"]
+  },
+  {
+    "id": "SG08",
+    "description": "admit unsupported fast mode",
+    "file": "workspaces/runtime/packages/runtime-services/src/submit_gates.rs",
+    "edits": [
+      {
+        "before": "if settings.fast_mode == Some(true) && !info.priority {",
+        "after": "if false && settings.fast_mode == Some(true) && !info.priority {"
+      }
+    ],
+    "witnesses": ["fast-denied"]
+  },
+  {
+    "id": "SG09",
+    "description": "accept expired catalog",
+    "file": "workspaces/runtime/packages/runtime-services/src/submit_gates.rs",
+    "edits": [
+      {
+        "before": "if catalog.expires_at <= now {",
+        "after": "if false && catalog.expires_at <= now {"
+      }
+    ],
+    "witnesses": ["expired-catalog"]
+  },
+  {
+    "id": "SG10",
+    "description": "admit bounded roots without coverage",
+    "file": "workspaces/runtime/packages/runtime-services/src/submit_gates.rs",
+    "edits": [
+      {
+        "before": "Some(value) if value.as_u64().is_some() => Err(BudgetDenial::CoverageUnavailable),",
+        "after": "Some(value) if value.as_u64().is_some() => Ok(()),"
+      }
+    ],
+    "witnesses": ["budget-0-spent-0"]
+  },
+  {
+    "id": "SG11",
+    "description": "lose revalidated provider default",
+    "file": "workspaces/runtime/packages/runtime-services/src/submit_gates.rs",
+    "edits": [
+      {
+        "before": "settings.native_effort = native_effort.map_or(StoredField::Null, StoredField::Value);",
+        "after": "let _ignored = native_effort;\n            settings.native_effort = StoredField::Null;"
+      }
+    ],
+    "witnesses": ["changed-account"]
+  },
+  {
+    "id": "SG12",
+    "description": "consume pending on a fixed retry",
+    "file": "workspaces/runtime/packages/runtime-services/src/submit_gates.rs",
+    "edits": [
+      {
+        "before": "if !current.settings_fixed {",
+        "after": "if true {"
+      }
+    ],
+    "witnesses": ["fixed-keeps-pending"]
+  },
+  {
+    "id": "SG13",
+    "description": "drop catalog profile identity check",
+    "file": "workspaces/runtime/packages/runtime-services/src/submit_gates.rs",
+    "edits": [
+      {
+        "before": "if catalog.identity != observed.account || current.account != observed.account {",
+        "after": "if false && (catalog.identity != observed.account || current.account != observed.account) {"
+      }
+    ],
+    "witnesses": ["foreign-catalog"]
+  },
+  {
+    "id": "SG14",
+    "description": "omit private-room sender inclusion",
+    "file": "workspaces/runtime/packages/runtime-services/src/submit_gates.rs",
+    "edits": [
+      {
+        "before": "if !sender.as_ref().is_some_and(|s| members.contains(s))",
+        "after": "if false && !sender.as_ref().is_some_and(|s| members.contains(s))"
+      }
+    ],
+    "witnesses": ["private-room-missing-sender"]
+  },
+  {
+    "id": "SG15",
+    "description": "omit private-room recipient inclusion",
+    "file": "workspaces/runtime/packages/runtime-services/src/submit_gates.rs",
+    "edits": [
+      {
+        "before": "|| !members.contains(&recipient.id)",
+        "after": "|| false && !members.contains(&recipient.id)"
+      }
+    ],
+    "witnesses": ["private-room-missing-recipient"]
+  },
+  {
+    "id": "SG16",
+    "description": "allow peer self-pair",
+    "file": "workspaces/runtime/packages/runtime-services/src/submit_gates.rs",
+    "edits": [
+      {
+        "before": "if left == right {",
+        "after": "if false && left == right {"
+      }
+    ],
+    "witnesses": ["peer_pair_requires_distinct_checked_leads"]
+  },
+  {
+    "id": "SG17",
+    "description": "allow nonlead peer",
+    "file": "workspaces/runtime/packages/runtime-services/src/submit_gates.rs",
+    "edits": [
+      {
+        "before": "            agent.is_lead\n",
+        "after": "            true\n"
+      }
+    ],
+    "witnesses": ["peer-is_lead-False"]
+  },
+  {
+    "id": "SG18",
+    "description": "allow peer with parent",
+    "file": "workspaces/runtime/packages/runtime-services/src/submit_gates.rs",
+    "edits": [
+      {
+        "before": "&& agent.parent_id.is_none()",
+        "after": "&& (agent.parent_id.is_some() || agent.parent_id.is_none())"
+      }
+    ],
+    "witnesses": ["peer-parent_id-parent"]
+  },
+  {
+    "id": "SG19",
+    "description": "allow peer with foreign root",
+    "file": "workspaces/runtime/packages/runtime-services/src/submit_gates.rs",
+    "edits": [
+      {
+        "before": "&& agent.root_id.as_ref() == Some(&agent.id)",
+        "after": "&& (agent.root_id.is_some() || agent.root_id.is_none())"
+      }
+    ],
+    "witnesses": ["peer-root_id-other"]
+  },
+  {
+    "id": "SG20",
+    "description": "allow moved peer",
+    "file": "workspaces/runtime/packages/runtime-services/src/submit_gates.rs",
+    "edits": [
+      {
+        "before": "&& agent.resolved_cwd.as_deref() == Some(path)",
+        "after": "&& agent.resolved_cwd.is_some()"
+      }
+    ],
+    "witnesses": ["peer-resolved_cwd-/var/tmp/moved"]
+  },
+  {
+    "id": "SG21",
+    "description": "ignore project path authority",
+    "file": "workspaces/runtime/packages/runtime-services/src/submit_gates.rs",
+    "edits": [
+      {
+        "before": "if path == *key {",
+        "after": "if true {"
+      }
+    ],
+    "witnesses": ["peer-project-path-mismatch"]
+  },
+  {
+    "id": "SG22",
+    "description": "ignore peer membership of sender",
+    "file": "workspaces/runtime/packages/runtime-services/src/submit_gates.rs",
+    "edits": [
+      {
+        "before": "team.contains(&left.id) && team.contains(&right.id)",
+        "after": "team.contains(&left.id)"
+      }
+    ],
+    "witnesses": ["peer-membership-omits-sender"]
+  },
+  {
+    "id": "SG23",
+    "description": "ignore complaint response author",
+    "file": "workspaces/runtime/packages/runtime-services/src/submit_gates.rs",
+    "edits": [
+      {
+        "before": "if response_author.is_none() || response_author != responder {",
+        "after": "if false && (response_author.is_none() || response_author != responder) {"
+      }
+    ],
+    "witnesses": ["complaint-sender-foreign-sender"]
+  },
+  {
+    "id": "SG24",
+    "description": "ignore complaint lead match",
+    "file": "workspaces/runtime/packages/runtime-services/src/submit_gates.rs",
+    "edits": [
+      {
+        "before": "if complaint.lead_id != *responder {",
+        "after": "if false && complaint.lead_id != *responder {"
+      }
+    ],
+    "witnesses": ["complaint-sender-sender-foreign"]
+  },
+  {
+    "id": "SG25",
+    "description": "allow retired chat-review events",
+    "file": "workspaces/runtime/packages/runtime-services/src/submit_gates.rs",
+    "edits": [
+      {
+        "before": "EventSnapshot::ChatReview => return Err(D::ChatReviewRemoved),",
+        "after": "EventSnapshot::ChatReview => return Ok(()),"
+      }
+    ],
+    "witnesses": ["kind-chat_review"]
+  },
+  {
+    "id": "SG26",
+    "description": "allow unsupported radio",
+    "file": "workspaces/runtime/packages/runtime-services/src/submit_gates.rs",
+    "edits": [
+      {
+        "before": "EventSnapshot::RadioTurn => return Err(D::RadioUnsupported),",
+        "after": "EventSnapshot::RadioTurn => return Ok(()),"
+      }
+    ],
+    "witnesses": ["kind-radio_turn"]
+  },
+  {
+    "id": "SG27",
+    "description": "allow unsupported Daybreak",
+    "file": "workspaces/runtime/packages/runtime-services/src/submit_gates.rs",
+    "edits": [
+      {
+        "before": "if settings.daybreak_enabled != Some(false) {",
+        "after": "if false && settings.daybreak_enabled != Some(false) {"
+      }
+    ],
+    "witnesses": ["daybreak-refusal"]
+  },
+  {
+    "id": "SG28",
+    "description": "allow hidden model",
+    "file": "workspaces/runtime/packages/runtime-services/src/submit_gates.rs",
+    "edits": [
+      {
+        "before": "            !row.hidden\n",
+        "after": "            true\n"
+      }
+    ],
+    "witnesses": ["hidden-model"]
+  },
+  {
+    "id": "SG29",
+    "description": "allow unsupported effort",
+    "file": "workspaces/runtime/packages/runtime-services/src/submit_gates.rs",
+    "edits": [
+      {
+        "before": ".is_some_and(|v| !info.supported_efforts.contains(v))",
+        "after": ".is_some_and(|v| false && !info.supported_efforts.contains(v))"
+      }
+    ],
+    "witnesses": ["invalid-effort-extreme"]
+  },
+  {
+    "id": "SG30",
+    "description": "ignore model identity",
+    "file": "workspaces/runtime/packages/runtime-services/src/submit_gates.rs",
+    "edits": [
+      {
+        "before": "(row.model == model || row.resolved_model.as_deref() == Some(model))",
+        "after": "(row.model == model || true || row.resolved_model.as_deref() == Some(model))"
+      }
+    ],
+    "witnesses": ["invalid-model-missing"]
+  },
+  {
+    "id": "SG31",
+    "description": "serve pending admission cache",
+    "file": "workspaces/runtime/packages/runtime-services/src/model_catalog.rs",
+    "edits": [
+      {
+        "before": "        if entry.pending {\n            return AdmissionCatalogRead::Pending;",
+        "after": "        if false && entry.pending {\n            return AdmissionCatalogRead::Pending;"
+      }
+    ],
+    "witnesses": ["admission_never_exposes"]
+  },
+  {
+    "id": "SG32",
+    "description": "serve failed admission cache",
+    "file": "workspaces/runtime/packages/runtime-services/src/model_catalog.rs",
+    "edits": [
+      {
+        "before": "        if entry.error {\n            return AdmissionCatalogRead::Unavailable;",
+        "after": "        if false && entry.error {\n            return AdmissionCatalogRead::Unavailable;"
+      }
+    ],
+    "witnesses": ["admission_never_exposes"]
+  },
+  {
+    "id": "SG33",
+    "description": "serve another home admission cache",
+    "file": "workspaces/runtime/packages/runtime-services/src/model_catalog.rs",
+    "edits": [
+      {
+        "before": "let Some(entry) = cache.get(&key) else {",
+        "after": "let Some(entry) = cache.get(&key).or_else(|| cache.get(&(account_key.to_owned(), \"/disposable\".to_owned(), provider.to_owned()))) else {"
+      }
+    ],
+    "witnesses": ["admission_never_exposes"]
+  },
+  {
+    "id": "SG34",
+    "description": "accept unsupported admission provider",
+    "file": "workspaces/runtime/packages/runtime-services/src/model_catalog.rs",
+    "edits": [
+      {
+        "before": "        if provider != \"codex\" {\n            return AdmissionCatalogRead::Unavailable;",
+        "after": "        if false && provider != \"codex\" {\n            return AdmissionCatalogRead::Unavailable;"
+      }
+    ],
+    "witnesses": ["admission_never_exposes"]
+  },
+  {
+    "id": "SG35",
+    "description": "lose admission generation",
+    "file": "workspaces/runtime/packages/runtime-services/src/model_catalog.rs",
+    "edits": [
+      {
+        "before": "generation: entry.generation,",
+        "after": "generation: 0,"
+      }
+    ],
+    "witnesses": ["admission_never_exposes"]
+  },
+  {
+    "id": "SG36",
+    "description": "retain applied pending settings",
+    "file": "workspaces/runtime/packages/runtime-services/src/submit_gates.rs",
+    "edits": [
+      {
+        "before": "            object.remove(\"pendingSettings\");",
+        "after": "            // MUTATION: leave pending settings stored."
+      }
+    ],
+    "witnesses": ["pending"]
+  },
+  {
+    "id": "SG37",
+    "description": "retain consumed pending account pin",
+    "file": "workspaces/runtime/packages/runtime-services/src/submit_gates.rs",
+    "edits": [
+      {
+        "before": "            object.remove(\"pendingSettingsAccountKey\");",
+        "after": "            // MUTATION: leave pending pin stored."
+      }
+    ],
+    "witnesses": ["pending"]
+  },
+  {
+    "id": "SG38",
+    "description": "silently downgrade service tier",
+    "file": "workspaces/runtime/packages/runtime-services/src/submit_gates.rs",
+    "edits": [
+      {
+        "before": "if self.settings.fast_mode == Some(true) { \"priority\" } else { \"default\" }",
+        "after": "if false && self.settings.fast_mode == Some(true) { \"priority\" } else { \"default\" }"
+      }
+    ],
+    "witnesses": ["fast-supported"]
+  },
+  {
+    "id": "SG39",
+    "description": "allow invalid budget as unlimited",
+    "file": "workspaces/runtime/packages/runtime-services/src/submit_gates.rs",
+    "edits": [
+      {
+        "before": "Some(_) => Err(BudgetDenial::InvalidBudget),",
+        "after": "Some(_) => Ok(()),"
+      }
+    ],
+    "witnesses": ["invalid-budget--1"]
+  },
+  {
+    "id": "SG40",
+    "description": "accept empty stored agent id",
+    "file": "workspaces/runtime/packages/runtime-services/src/submit_gates.rs",
+    "edits": [
+      {
+        "before": ".filter(|id| !id.is_empty() && *id == key)",
+        "after": ".filter(|id| *id == key)"
+      }
+    ],
+    "witnesses": ["empty-agent-key-and-id"]
+  },
+  {
+    "id": "SG41",
+    "description": "accept mismatched stored agent key",
+    "file": "workspaces/runtime/packages/runtime-services/src/submit_gates.rs",
+    "edits": [
+      {
+        "before": ".filter(|id| !id.is_empty() && *id == key)",
+        "after": ".filter(|id| !id.is_empty())"
+      }
+    ],
+    "witnesses": ["peer-key-record-id-mismatch"]
+  },
+  {
+    "id": "SG42",
+    "description": "interpret truthy isLead as literal true",
+    "file": "workspaces/runtime/packages/runtime-services/src/submit_gates.rs",
+    "edits": [
+      {
+        "before": "is_lead: row.get(\"isLead\") == Some(&Value::Bool(true)),",
+        "after": "is_lead: truthy(row.get(\"isLead\")),"
+      }
+    ],
+    "witnesses": ["literal-lead-1"]
+  },
+  {
+    "id": "SG43",
+    "description": "ignore legacy lead fallback",
+    "file": "workspaces/runtime/packages/runtime-services/src/submit_gates.rs",
+    "edits": [
+      {
+        "before": ".or_else(|| payload.get(\"lead\"))",
+        "after": ".or_else(|| None)"
+      }
+    ],
+    "witnesses": ["lead-fallback"]
+  },
+  {
+    "id": "SG44",
+    "description": "fallback from explicit null responder",
+    "file": "workspaces/runtime/packages/runtime-services/src/submit_gates.rs",
+    "edits": [
+      {
+        "before": ".get(\"responder\")\n                        .or_else",
+        "after": ".get(\"responder\").filter(|v| !v.is_null())\n                        .or_else"
+      }
+    ],
+    "witnesses": ["lead-null-responder"]
+  },
+  {
+    "id": "SG45",
+    "description": "lose settingsFixed persistence",
+    "file": "workspaces/runtime/packages/runtime-services/src/submit_gates.rs",
+    "edits": [
+      {
+        "before": ".insert(\"settingsFixed\".into(), Value::Bool(true));",
+        "after": ".insert(\"settingsFixed\".into(), Value::Bool(false));"
+      }
+    ],
+    "witnesses": ["unchanged"]
+  },
+  {
+    "id": "SG46",
+    "description": "skip selected-record check on fixed retry",
+    "file": "workspaces/runtime/packages/runtime-services/src/submit_gates.rs",
+    "edits": [
+      {
+        "before": "if current != self.expected {",
+        "after": "if self.freeze.is_some() && current != self.expected {"
+      }
+    ],
+    "witnesses": ["fixed-race-daybreakEnabled"]
+  },
+  {
+    "id": "SG47",
+    "description": "require unused catalog generation",
+    "file": "workspaces/runtime/packages/runtime-services/src/submit_gates.rs",
+    "edits": [
+      {
+        "before": "current.account.generation = self.expected.account.generation;",
+        "after": "let _ignored = self.expected.account.generation;"
+      }
+    ],
+    "witnesses": ["unneeded-generation-race"]
+  },
+  {
+    "id": "SG48",
+    "description": "reject nullable stored boolean",
+    "file": "workspaces/runtime/packages/runtime-services/src/submit_gates.rs",
+    "edits": [
+      {
+        "before": "if row.account_key != account.account_key {",
+        "after": "if row.settings.fast_mode.is_none() || row.account_key != account.account_key {"
+      }
+    ],
+    "witnesses": ["nullable-fastMode-pending-False"]
+  },
+  {
+    "id": "SG49",
+    "description": "ignore enclosing Python control flow",
+    "file": "workspaces/runtime/packages/runtime-services/tests/submit_gates/oracle.py",
+    "edits": [
+      {
+        "before": "assert actual == expected,",
+        "after": "assert True,"
+      }
+    ],
+    "witnesses": ["oracle_boundaries_and_separate_preparation_default"]
+  }
+]

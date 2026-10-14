@@ -1,0 +1,71 @@
+[
+  {
+    "name": "direct-room-wrong-peer-link",
+    "family": "room",
+    "direct": true,
+    "peer_shared_room_id": "other-room"
+  },
+  {
+    "name": "direct-room-missing-participant",
+    "family": "room",
+    "direct": true,
+    "room_members": ["a", "missing-agent"]
+  },
+  {
+    "name": "room-extra-member",
+    "family": "membership",
+    "room_members": ["a", "b", "c"]
+  },
+  {
+    "name": "recipient-transfer-empty-is-inactive",
+    "family": "availability",
+    "account_transfer_id": ""
+  },
+  {
+    "name": "empty-native-block-is-inactive",
+    "family": "availability",
+    "native_thread_block": {}
+  },
+  {
+    "name": "recipient-hold-empty-object-is-inactive",
+    "family": "readiness",
+    "native_failure_hold": {}
+  },
+  {
+    "name": "peer-hold-empty-object-is-inactive",
+    "family": "readiness",
+    "peer_native_failure_hold": {}
+  },
+  {
+    "name": "binding-attempt-has-extra-event",
+    "family": "binding",
+    "bind_thread": true,
+    "attempt_events": ["radio-event", "other-event"]
+  },
+  {
+    "name": "binding-attempt-epoch-missing",
+    "family": "binding",
+    "bind_thread": true,
+    "attempt_epoch": null
+  },
+  {
+    "name": "binding-agent-epoch-mismatch",
+    "family": "binding",
+    "bind_thread": true,
+    "agent_epoch": 2
+  },
+  {
+    "name": "binding-agent-has-no-native-thread",
+    "family": "binding",
+    "agent_thread_id": null
+  },
+  {
+    "name": "existing-thread-identity-allows-without-new-binding",
+    "family": "turn-identity"
+  },
+  {
+    "name": "nonterminal-speaking-room-allows",
+    "family": "room-status",
+    "status": "speaking"
+  }
+]

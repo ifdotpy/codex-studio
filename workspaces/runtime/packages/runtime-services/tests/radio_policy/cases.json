@@ -1,0 +1,122 @@
+[
+  { "name": "ready-peer-team", "family": "room" },
+  { "name": "direct-room", "family": "room", "direct": true },
+  {
+    "name": "direct-room-duplicate-members",
+    "family": "room",
+    "direct": true,
+    "room_members": ["a", "a"]
+  },
+  {
+    "name": "revoked-peer-team",
+    "family": "membership",
+    "peer_cwd": "/other-project"
+  },
+  {
+    "name": "peer-team-duplicate-members",
+    "family": "membership",
+    "peer_team_members": ["a", "a", "b"]
+  },
+  { "name": "stopped-recipient", "family": "readiness", "auto_wake": false },
+  { "name": "stopped-peer", "family": "readiness", "peer_auto_wake": false },
+  {
+    "name": "held-recipient",
+    "family": "readiness",
+    "native_failure_hold": true
+  },
+  {
+    "name": "held-peer",
+    "family": "readiness",
+    "peer_native_failure_hold": true
+  },
+  {
+    "name": "transferring-recipient",
+    "family": "availability",
+    "account_transfer_id": "transfer-1"
+  },
+  {
+    "name": "transferring-peer",
+    "family": "availability",
+    "peer_account_transfer_id": "transfer-1"
+  },
+  {
+    "name": "native-thread-blocked-recipient",
+    "family": "availability",
+    "native_thread_block": { "reason": "pending" }
+  },
+  {
+    "name": "native-thread-blocked-peer",
+    "family": "availability",
+    "peer_native_thread_block": { "reason": "pending" }
+  },
+  { "name": "blocked-room", "family": "room-status", "status": "blocked" },
+  { "name": "stopping-room", "family": "room-status", "status": "stopping" },
+  {
+    "name": "denied-blocked-binding-has-no-rust-write-intent",
+    "family": "binding",
+    "status": "blocked",
+    "bind_thread": true,
+    "expect_python_bind_side_effect": true
+  },
+  {
+    "name": "denied-stopping-binding-has-no-rust-write-intent",
+    "family": "binding",
+    "status": "stopping",
+    "bind_thread": true,
+    "expect_python_bind_side_effect": true
+  },
+  { "name": "missing-receipt", "family": "receipt", "active": false },
+  {
+    "name": "duplicate-active-receipt",
+    "family": "receipt",
+    "duplicate_active": true,
+    "rust_denial": "ambiguous_room_receipt",
+    "deviation": "ambiguous_receipt_fail_closed"
+  },
+  { "name": "first-thread-binding", "family": "binding", "bind_thread": true },
+  {
+    "name": "binding-wrong-event",
+    "family": "binding",
+    "bind_thread": true,
+    "attempt_event": "other-event"
+  },
+  {
+    "name": "binding-wrong-epoch",
+    "family": "binding",
+    "bind_thread": true,
+    "attempt_epoch": 9
+  },
+  {
+    "name": "binding-wrong-thread",
+    "family": "binding",
+    "bind_thread": true,
+    "attempt_thread": "unrelated-thread"
+  },
+  {
+    "name": "compactions-null-binding",
+    "family": "binding",
+    "bind_thread": true,
+    "compactions": null
+  },
+  {
+    "name": "missing-compactions-defaults-to-zero-on-binding",
+    "family": "binding",
+    "bind_thread": true,
+    "omit_compactions": true
+  },
+  {
+    "name": "active-thread-mismatch",
+    "family": "turn-identity",
+    "active_thread_id": "other-thread"
+  },
+  {
+    "name": "active-agent-mismatch",
+    "family": "turn-identity",
+    "active_agent_id": "b"
+  },
+  {
+    "name": "active-epoch-mismatch",
+    "family": "turn-identity",
+    "active_epoch": 2
+  }
+]

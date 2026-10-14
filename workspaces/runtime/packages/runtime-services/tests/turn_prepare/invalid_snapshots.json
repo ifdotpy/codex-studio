@@ -1,0 +1,30 @@
+[
+  { "path": "/actor/epoch", "value": [] },
+  { "path": "/actor/epoch", "value": ["thread"] },
+  { "path": "/actor/epoch", "value": ["thread", -1] },
+  { "path": "/actor/epoch", "value": ["thread", "0"] },
+  { "path": "/actor/epoch", "value": ["thread", true] },
+  { "path": "/actor/epoch", "value": [false, 0] },
+  { "path": "/actor/is_lead", "value": "true" },
+  {
+    "path": "/actor/prepared_context",
+    "value": { "epoch": ["thread", 0], "versions": [] }
+  },
+  { "path": "/root/concurrency", "value": -1 },
+  { "path": "/root/concurrency", "value": true },
+  { "path": "/root/concurrency", "value": "32" },
+  {
+    "path": "/delivered_manifests",
+    "value": [{ "epoch": ["thread", 0], "sequence": "1", "versions": {} }]
+  },
+  {
+    "path": "/delivered_manifests",
+    "value": [{ "epoch": ["thread", 0], "sequence": -1, "versions": {} }]
+  },
+  {
+    "path": "/delivered_manifests",
+    "value": [{ "epoch": ["thread", 0], "sequence": 1, "versions": null }]
+  },
+  { "path": "/guidance/role", "value": null },
+  { "path": "/prepared_at", "value": "yesterday" }
+]

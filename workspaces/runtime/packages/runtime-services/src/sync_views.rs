@@ -288,7 +288,7 @@ pub fn agent_entity_view(record: &Value, context: &AgentViewContext) -> Option<V
     project_persisted_record("agent", &Value::Object(view))
 }
 
-fn native_thread_block(record: &Value) -> Option<Value> {
+pub fn native_thread_block(record: &Value) -> Option<Value> {
     let thread_id = record.get("threadId").and_then(Value::as_str)?;
     if thread_id.is_empty() {
         return None;

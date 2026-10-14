@@ -35,6 +35,9 @@ const TASK_RECORD_URI: &str = "https://codex-studio.invalid/persisted-task-recor
 const PLAN_RECORD_URI: &str = "https://codex-studio.invalid/persisted-plan-record.schema.json";
 const ANNOTATION_RECORD_URI: &str =
     "https://codex-studio.invalid/persisted-annotation-record.schema.json";
+const RECOVERY_AGENT_URI: &str = "https://codex-studio.invalid/recovery-agent-record.schema.json";
+const RECOVERY_RECEIPT_URI: &str = "https://codex-studio.invalid/recovery-tool-receipt.schema.json";
+const RECOVERY_TASK_URI: &str = "https://codex-studio.invalid/recovery-task-record.schema.json";
 const REQUEST_RECORD_URI: &str =
     "https://codex-studio.invalid/persisted-request-record.schema.json";
 const COMPLAINT_RECORD_URI: &str =
@@ -131,6 +134,9 @@ const AGENT_RECORD: &[u8] = include_bytes!("schemas/persisted-agent-record.schem
 const TASK_RECORD: &[u8] = include_bytes!("schemas/persisted-task-record.schema.json");
 const PLAN_RECORD: &[u8] = include_bytes!("schemas/persisted-plan-record.schema.json");
 const ANNOTATION_RECORD: &[u8] = include_bytes!("schemas/persisted-annotation-record.schema.json");
+const RECOVERY_AGENT: &[u8] = include_bytes!("schemas/recovery-agent-record.schema.json");
+const RECOVERY_RECEIPT: &[u8] = include_bytes!("schemas/recovery-tool-receipt.schema.json");
+const RECOVERY_TASK: &[u8] = include_bytes!("schemas/recovery-task-record.schema.json");
 const REQUEST_RECORD: &[u8] = include_bytes!("schemas/persisted-request-record.schema.json");
 const COMPLAINT_RECORD: &[u8] = include_bytes!("schemas/persisted-complaint-record.schema.json");
 const CHECKPOINT_RECORD: &[u8] = include_bytes!("schemas/persisted-checkpoint-record.schema.json");
@@ -189,7 +195,33 @@ const FEDERATION_ROOM_PAYLOAD_URI: &str =
 const FEDERATION_ROOM_PAYLOAD: &[u8] =
     include_bytes!("schemas/federation-room-payload.schema.json");
 
+const CLAUDE_ATTEMPT_URI: &str =
+    "https://codex-studio.invalid/persisted-claude-attempt.schema.json";
+const CLAUDE_CONTROL_URI: &str =
+    "https://codex-studio.invalid/persisted-claude-control.schema.json";
+const CLAUDE_LOGIN_URI: &str = "https://codex-studio.invalid/persisted-claude-login.schema.json";
+
 const PERSISTED_SCHEMAS: &[(&str, &[u8])] = &[
+    (
+        "https://codex-studio.invalid/budget-capture.schema.json",
+        include_bytes!("schemas/budget-capture.schema.json"),
+    ),
+    (
+        "https://codex-studio.invalid/budget-history.schema.json",
+        include_bytes!("schemas/budget-history.schema.json"),
+    ),
+    (
+        "https://codex-studio.invalid/persisted-budget-agent.schema.json",
+        include_bytes!("schemas/persisted-budget-agent.schema.json"),
+    ),
+    (
+        "https://codex-studio.invalid/persisted-budget-state.schema.json",
+        include_bytes!("schemas/persisted-budget-state.schema.json"),
+    ),
+    (
+        "https://codex-studio.invalid/persisted-budget-usage.schema.json",
+        include_bytes!("schemas/persisted-budget-usage.schema.json"),
+    ),
     (ACCESS_CLIENT_URI, ACCESS_CLIENT),
     (ACCESS_INVITE_URI, ACCESS_INVITE),
     (ACCESS_RECEIPT_URI, ACCESS_RECEIPT),
@@ -203,6 +235,18 @@ const PERSISTED_SCHEMAS: &[(&str, &[u8])] = &[
     (ANNOTATION_RECORD_URI, ANNOTATION_RECORD),
     (CHAT_MESSAGE_URI, CHAT_MESSAGE),
     (CHECKPOINT_RECORD_URI, CHECKPOINT_RECORD),
+    (
+        CLAUDE_ATTEMPT_URI,
+        include_bytes!("schemas/persisted-claude-attempt.schema.json"),
+    ),
+    (
+        CLAUDE_CONTROL_URI,
+        include_bytes!("schemas/persisted-claude-control.schema.json"),
+    ),
+    (
+        CLAUDE_LOGIN_URI,
+        include_bytes!("schemas/persisted-claude-login.schema.json"),
+    ),
     (COMPLAINT_RECORD_URI, COMPLAINT_RECORD),
     (CONTINUATION_URI, CONTINUATION),
     (EVENT_METADATA_URI, EVENT_METADATA),
@@ -225,6 +269,9 @@ const PERSISTED_SCHEMAS: &[(&str, &[u8])] = &[
     (PROFILE_RECORD_URI, PROFILE_RECORD),
     (PROJECT_LOCATION_OUTBOX_URI, PROJECT_LOCATION_OUTBOX),
     (PROJECT_RECORD_URI, PROJECT_RECORD),
+    (RECOVERY_AGENT_URI, RECOVERY_AGENT),
+    (RECOVERY_RECEIPT_URI, RECOVERY_RECEIPT),
+    (RECOVERY_TASK_URI, RECOVERY_TASK),
     (RELOCATION_URI, RELOCATION),
     (REQUEST_RECORD_URI, REQUEST_RECORD),
     (ROOM_RECORD_URI, ROOM_RECORD),
@@ -334,12 +381,15 @@ pub fn table_schema(table: &str) -> Option<&'static str> {
         "runtime_agents" => "PersistedAgentRecord",
         "runtime_annotations" => "PersistedAnnotationRecord",
         "runtime_assets" => "PersistedTranscriptAsset",
+        "runtime_budget" => "PersistedBudgetState",
+        "runtime_budget_usage" => "PersistedBudgetUsage",
         "runtime_capacity_retries" => "continuation/CapacityContinuation",
         "runtime_chat_messages" => "PersistedChatMessage",
         "runtime_checkpoints" => "PersistedCheckpointRecord",
         "runtime_complaints" => "PersistedComplaintRecord",
         "runtime_event_meta" => "RuntimeEventMetadataRecord",
         "runtime_events" => "PersistedMessageEvent",
+        "runtime_execution_attempts" => "PersistedClaudeAttemptRecord",
         "runtime_execution_effects" => "PersistedExecutionRecord",
         "runtime_execution_runs" => "PersistedExecutionRunRecord",
         "runtime_federation_inbox" => "PersistedFederationInbox",
@@ -444,6 +494,14 @@ fn compile_schemas() -> SchemaResult<CompiledSchemas> {
     }
     for (name, uri) in [
         (
+            "BudgetCapture",
+            "https://codex-studio.invalid/budget-capture.schema.json",
+        ),
+        (
+            "BudgetHistory",
+            "https://codex-studio.invalid/budget-history.schema.json",
+        ),
+        (
             "AnalyticsAgent",
             "https://codex-studio.invalid/analytics-agent.schema.json",
         ),
@@ -480,8 +538,23 @@ fn compile_schemas() -> SchemaResult<CompiledSchemas> {
         ("PersistedAccountTransferRecord", ACCOUNT_TRANSFER_URI),
         ("PersistedAgentRecord", AGENT_RECORD_URI),
         ("PersistedAnnotationRecord", ANNOTATION_RECORD_URI),
+        (
+            "PersistedBudgetAgent",
+            "https://codex-studio.invalid/persisted-budget-agent.schema.json",
+        ),
+        (
+            "PersistedBudgetState",
+            "https://codex-studio.invalid/persisted-budget-state.schema.json",
+        ),
+        (
+            "PersistedBudgetUsage",
+            "https://codex-studio.invalid/persisted-budget-usage.schema.json",
+        ),
         ("PersistedChatMessage", CHAT_MESSAGE_URI),
         ("PersistedCheckpointRecord", CHECKPOINT_RECORD_URI),
+        ("PersistedClaudeAttemptRecord", CLAUDE_ATTEMPT_URI),
+        ("PersistedClaudeControlRecord", CLAUDE_CONTROL_URI),
+        ("PersistedClaudeLoginRecord", CLAUDE_LOGIN_URI),
         ("PersistedComplaintRecord", COMPLAINT_RECORD_URI),
         ("PersistedExecutionRecord", EXECUTION_RECORD_URI),
         ("PersistedExecutionRunRecord", EXECUTION_RUN_RECORD_URI),
@@ -519,6 +592,9 @@ fn compile_schemas() -> SchemaResult<CompiledSchemas> {
         ("PersistedUsageResumeRecord", USAGE_RESUME_RECORD_URI),
         ("PersistedWorkItemRecord", WORK_ITEM_RECORD_URI),
         ("PersistedWorkspaceOperationRecord", WORKSPACE_OPERATION_URI),
+        ("RecoveryAgentRecord", RECOVERY_AGENT_URI),
+        ("RecoveryTaskRecord", RECOVERY_TASK_URI),
+        ("RecoveryToolReceipt", RECOVERY_RECEIPT_URI),
         ("RuntimeEventMetadataRecord", EVENT_METADATA_URI),
         (
             "WorkspaceCheckpointAgentRecord",

@@ -1,0 +1,372 @@
+[
+  {
+    "id": "WR1",
+    "description": "retry-ignores-existing-branch",
+    "file": "workspaces/runtime/packages/runtime-services/src/workspace_ready.rs",
+    "edits": [
+      {
+        "before": "&& !observed.branch_exists",
+        "after": "&& true"
+      }
+    ],
+    "witnesses": [
+      "journal_recovery_requires_absent_or_exact_complete_evidence"
+    ],
+    "suite": "workspace_ready",
+    "filter": "test(journal_recovery_requires_absent_or_exact_complete_evidence)"
+  },
+  {
+    "id": "WR2",
+    "description": "publish-ignores-base",
+    "file": "workspaces/runtime/packages/runtime-services/src/workspace_ready.rs",
+    "edits": [
+      {
+        "before": "&& observed.head.as_deref() == Some(&plan.base_commit)",
+        "after": "&& true"
+      }
+    ],
+    "witnesses": [
+      "journal_recovery_requires_absent_or_exact_complete_evidence"
+    ],
+    "suite": "workspace_ready",
+    "filter": "test(journal_recovery_requires_absent_or_exact_complete_evidence)"
+  },
+  {
+    "id": "WR3",
+    "description": "ambiguity-is-retry",
+    "file": "workspaces/runtime/packages/runtime-services/src/workspace_ready.rs",
+    "edits": [
+      {
+        "before": "let effect = if absent {",
+        "after": "let effect = if absent || !complete {"
+      }
+    ],
+    "witnesses": [
+      "journal_recovery_requires_absent_or_exact_complete_evidence"
+    ],
+    "suite": "workspace_ready",
+    "filter": "test(journal_recovery_requires_absent_or_exact_complete_evidence)"
+  },
+  {
+    "id": "WR4",
+    "description": "publish-dirty-creation",
+    "file": "workspaces/runtime/packages/runtime-services/src/workspace_ready.rs",
+    "edits": [
+      {
+        "before": "&& observed.clean;",
+        "after": "&& true;"
+      }
+    ],
+    "witnesses": [
+      "journal_recovery_requires_absent_or_exact_complete_evidence"
+    ],
+    "suite": "workspace_ready",
+    "filter": "test(journal_recovery_requires_absent_or_exact_complete_evidence)"
+  },
+  {
+    "id": "WR5",
+    "description": "adopt-without-journal",
+    "file": "workspaces/runtime/packages/runtime-services/src/workspace_ready.rs",
+    "edits": [
+      {
+        "before": "} else if journaled && complete {",
+        "after": "} else if complete {"
+      }
+    ],
+    "witnesses": [
+      "journal_recovery_requires_absent_or_exact_complete_evidence"
+    ],
+    "suite": "workspace_ready",
+    "filter": "test(journal_recovery_requires_absent_or_exact_complete_evidence)"
+  },
+  {
+    "id": "WR6",
+    "description": "ready-ignores-branch",
+    "file": "workspaces/runtime/packages/runtime-services/src/workspace_ready.rs",
+    "edits": [
+      {
+        "before": "&& actor.branch == observed.branch",
+        "after": "&& true"
+      }
+    ],
+    "witnesses": [
+      "ready_boolean_requires_identity_but_preserves_dirty_advanced_worktree"
+    ],
+    "suite": "workspace_ready",
+    "filter": "test(ready_boolean_requires_identity_but_preserves_dirty_advanced_worktree)"
+  },
+  {
+    "id": "WR7",
+    "description": "publication-ignores-generation",
+    "file": "workspaces/runtime/packages/runtime-store/src/repositories/workspace_ready.rs",
+    "edits": [
+      {
+        "before": "workspace_generation(&a.record) == plan.source",
+        "after": "true"
+      }
+    ],
+    "witnesses": [
+      "late_completion_never_attaches_to_deleted_stopped_replaced_or_new_epoch_actor"
+    ],
+    "suite": "workspace_ready",
+    "filter": "test(late_completion_never_attaches_to_deleted_stopped_replaced_or_new_epoch_actor)"
+  },
+  {
+    "id": "WR8",
+    "description": "A1-inherit-git-environment",
+    "file": "workspaces/runtime/packages/runtime-services/src/workspace_ready_git.rs",
+    "edits": [
+      {
+        "before": "bounded_child::run_without_git_environment(bounded_child::Request",
+        "after": "bounded_child::run(bounded_child::Request"
+      }
+    ],
+    "witnesses": ["isolated_child_rejects_all_ambient_git_overrides"],
+    "suite": "workspace_ready",
+    "filter": "test(isolated_child_rejects_all_ambient_git_overrides)"
+  },
+  {
+    "id": "WR9",
+    "description": "A4-ignore-hidden-index-flags",
+    "file": "workspaces/runtime/packages/runtime-services/src/workspace_ready_git.rs",
+    "edits": [
+      {
+        "before": ".all(|entry| entry.starts_with(\"H \"))",
+        "after": ".all(|_entry| true)"
+      }
+    ],
+    "witnesses": [
+      "hidden_index_flags_and_sparse_checkout_never_prove_recovery_complete"
+    ],
+    "suite": "workspace_ready",
+    "filter": "test(hidden_index_flags_and_sparse_checkout_never_prove_recovery_complete)"
+  },
+  {
+    "id": "WR10",
+    "description": "A4-ignore-sparse-checkout",
+    "file": "workspaces/runtime/packages/runtime-services/src/workspace_ready_git.rs",
+    "edits": [
+      {
+        "before": "sparse.trim() == \"false\"",
+        "after": "true"
+      }
+    ],
+    "witnesses": [
+      "hidden_index_flags_and_sparse_checkout_never_prove_recovery_complete"
+    ],
+    "suite": "workspace_ready",
+    "filter": "test(hidden_index_flags_and_sparse_checkout_never_prove_recovery_complete)"
+  },
+  {
+    "id": "WR11",
+    "description": "A5-equal-paths-only",
+    "file": "workspaces/runtime/packages/runtime-store/src/repositories/workspace_ready.rs",
+    "edits": [
+      {
+        "before": "a.starts_with(b) || b.starts_with(a)",
+        "after": "a == b"
+      }
+    ],
+    "witnesses": [
+      "parent_and_destination_reservations_block_but_progress_does_not"
+    ],
+    "suite": "workspace_ready",
+    "filter": "test(parent_and_destination_reservations_block_but_progress_does_not)"
+  },
+  {
+    "id": "WR12",
+    "description": "A6-skip-final-git-evidence",
+    "file": "workspaces/runtime/packages/runtime-services/src/workspace_ready_git.rs",
+    "edits": [
+      {
+        "before": "let valid = current.as_ref().is_some_and",
+        "after": "let valid = true || current.as_ref().is_some_and"
+      }
+    ],
+    "witnesses": [
+      "checkpoint_window_revalidates_git_and_reservations_and_recovers_exact_replay"
+    ],
+    "suite": "workspace_ready",
+    "filter": "test(checkpoint_window_revalidates_git_and_reservations_and_recovers_exact_replay)"
+  },
+  {
+    "id": "WR13",
+    "description": "A7-ignore-ready-generation",
+    "file": "workspaces/runtime/packages/runtime-store/src/repositories/workspace_ready.rs",
+    "edits": [
+      {
+        "before": "workspace_generation(&current.agent.record) == self.source",
+        "after": "true"
+      }
+    ],
+    "witnesses": [
+      "ready_token_requires_current_generation_and_no_conflicting_reservation"
+    ],
+    "suite": "workspace_ready",
+    "filter": "test(ready_token_requires_current_generation_and_no_conflicting_reservation)"
+  },
+  {
+    "id": "WR14",
+    "description": "A8-overwrite-checkpoint-ref",
+    "file": "workspaces/runtime/packages/runtime-services/src/workspace_ready_git.rs",
+    "edits": [
+      {
+        "before": "&[\"update-ref\", &reference, &plan.base_commit, &expected]",
+        "after": "&[\"update-ref\", &reference, &plan.base_commit]"
+      }
+    ],
+    "witnesses": ["checkpoint_ref_collision_is_preserved_and_reported"],
+    "suite": "workspace_ready",
+    "filter": "test(checkpoint_ref_collision_is_preserved_and_reported)"
+  },
+  {
+    "id": "WR15",
+    "description": "A9-empty-history",
+    "file": "workspaces/runtime/packages/runtime-store/src/repositories/workspace_ready.rs",
+    "edits": [
+      {
+        "before": "value[\"historyDelta\"] = json!(delta);",
+        "after": "value[\"historyDelta\"] = json!([]);"
+      }
+    ],
+    "witnesses": ["publication_and_checkpoint_history_match_python"],
+    "suite": "workspace_ready",
+    "filter": "test(publication_and_checkpoint_history_match_python)"
+  },
+  {
+    "id": "WR16",
+    "description": "backend-refusal-disabled",
+    "file": "workspaces/runtime/packages/runtime-services/src/workspace_ready.rs",
+    "edits": [
+      {
+        "before": "if let Some(refusal) = unsupported(actor)",
+        "after": "if false && let Some(refusal) = unsupported(actor)"
+      }
+    ],
+    "witnesses": [
+      "unsupported_modes_are_refused_for_new_existing_and_stopped_records"
+    ],
+    "suite": "workspace_ready",
+    "filter": "test(unsupported_modes_are_refused_for_new_existing_and_stopped_records)"
+  },
+  {
+    "id": "WR17",
+    "description": "path-confinement-disabled",
+    "file": "workspaces/runtime/packages/runtime-services/src/workspace_ready_git.rs",
+    "edits": [
+      {
+        "before": "    identity.destination.canonicalize().ok().is_some_and",
+        "after": "    true || identity.destination.canonicalize().ok().is_some_and"
+      }
+    ],
+    "witnesses": ["public_adapter_refuses_escape_after_final_git_observation"],
+    "suite": "workspace_ready",
+    "filter": "test(public_adapter_refuses_escape_after_final_git_observation)"
+  },
+  {
+    "id": "WR18",
+    "description": "journal-before-effect-disabled",
+    "file": "workspaces/runtime/packages/runtime-services/src/workspace_ready_git.rs",
+    "edits": [
+      {
+        "before": "    if !store.transaction(|tx|",
+        "after": "    if false && !store.transaction(|tx|"
+      }
+    ],
+    "witnesses": ["stale_reservation_precondition_never_starts_git_effect"],
+    "suite": "workspace_ready",
+    "filter": "test(stale_reservation_precondition_never_starts_git_effect)"
+  },
+  {
+    "id": "WR19",
+    "description": "reservation-identity-disabled",
+    "file": "workspaces/runtime/packages/runtime-services/src/workspace_ready.rs",
+    "edits": [
+      {
+        "before": "&& plan.is_some_and(|p| reservation.id.as_deref() == Some(&p.id))",
+        "after": "&& true"
+      }
+    ],
+    "witnesses": [
+      "reservations_defer_capture_and_refuse_restore_or_replaced_ownership"
+    ],
+    "suite": "workspace_ready",
+    "filter": "test(reservations_defer_capture_and_refuse_restore_or_replaced_ownership)"
+  },
+  {
+    "id": "WR20",
+    "description": "common-directory-serialization-disabled",
+    "file": "workspaces/runtime/packages/runtime-services/src/workspace_ready_git.rs",
+    "edits": [
+      {
+        "before": "let lock = repository_lock(&plan.identity.common_dir)?;",
+        "after": "let lock = Arc::new(Mutex::new(()));"
+      }
+    ],
+    "witnesses": [
+      "common_git_directory_serialization_defers_without_starting_another_effect"
+    ],
+    "suite": "workspace_ready",
+    "filter": "test(common_git_directory_serialization_defers_without_starting_another_effect)"
+  },
+  {
+    "id": "WR21",
+    "description": "A10-child-inside-publication-transaction",
+    "file": "workspaces/runtime/packages/runtime-services/src/workspace_ready_git.rs",
+    "edits": [
+      {
+        "before": "    let observed = git.worktree(identity).ok();\n    let confined = confined(identity);\n    let token = store.transaction(|tx| {",
+        "after": "    let confined = confined(identity);\n    let token = store.transaction(|tx| {\n        let observed = git.worktree(identity).ok();"
+      }
+    ],
+    "witnesses": ["final_git_observation_does_not_hold_store_writer"],
+    "suite": "workspace_ready",
+    "filter": "test(final_git_observation_does_not_hold_store_writer)"
+  },
+  {
+    "id": "WR22",
+    "description": "A11-skip-exact-ref-replay-CAS",
+    "file": "workspaces/runtime/packages/runtime-services/src/workspace_ready_git.rs",
+    "edits": [
+      {
+        "before": "self.run(\n            &plan.destination,\n            &[\"update-ref\", &reference, &plan.base_commit, &expected],\n        )",
+        "after": "if existing.trim() == plan.base_commit { Ok(String::new()) } else { self.run(&plan.destination, &[\"update-ref\", &reference, &plan.base_commit, &expected]) }"
+      }
+    ],
+    "witnesses": [
+      "exact_checkpoint_replay_atomically_rejects_ref_changed_after_read"
+    ],
+    "suite": "workspace_ready",
+    "filter": "test(exact_checkpoint_replay_atomically_rejects_ref_changed_after_read)"
+  },
+  {
+    "id": "WR23",
+    "description": "B7-trust-stale-stat-cache",
+    "file": "workspaces/runtime/packages/runtime-services/src/workspace_ready_git.rs",
+    "edits": [
+      {
+        "before": "self.run(destination, &[\"diff\", \"--cached\", \"--quiet\", \"HEAD\", \"--\"])?;",
+        "after": "self.run(destination, &[\"diff\", \"--cached\", \"--quiet\", \"HEAD\", \"--\"])?; self.run(destination, &[\"diff-files\", \"--quiet\", \"--\"])?;"
+      }
+    ],
+    "witnesses": [
+      "timestamp_only_change_preserves_ready_and_recovery_without_index_writes"
+    ],
+    "suite": "workspace_ready",
+    "filter": "test(timestamp_only_change_preserves_ready_and_recovery_without_index_writes)"
+  },
+  {
+    "id": "WR24",
+    "description": "B8-clear-helper-environment",
+    "file": "workspaces/runtime/packages/runtime-services/src/bounded_child.rs",
+    "edits": [
+      {
+        "before": "    if remove_git {",
+        "after": "    if remove_git { command.env_clear();"
+      }
+    ],
+    "witnesses": ["required_filter_receives_non_git_caller_environment"],
+    "suite": "workspace_ready",
+    "filter": "test(required_filter_receives_non_git_caller_environment)"
+  }
+]

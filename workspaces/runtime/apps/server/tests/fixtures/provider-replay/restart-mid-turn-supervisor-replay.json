@@ -2,6 +2,37 @@
   "source": "hand-authored supervisor event frames based on workspaces/runtime/apps/server/tests/process-supervisor-contract.py",
   "supervisorReplay": true,
   "rpcReplies": {
+    "skills/list": {
+      "direction": "in",
+      "responseFor": "skills/list",
+      "timestamp": 0,
+      "message": { "result": { "data": [] } }
+    },
+    "mcpServerStatus/list": {
+      "direction": "in",
+      "responseFor": "mcpServerStatus/list",
+      "timestamp": 0,
+      "message": { "result": { "servers": [], "nextCursor": null } }
+    },
+    "thread/backgroundTerminals/list": {
+      "direction": "in",
+      "responseFor": "thread/backgroundTerminals/list",
+      "timestamp": 0,
+      "message": {
+        "result": {
+          "data": [
+            { "itemId": "catalog-http-command-item", "processId": "44" }
+          ],
+          "nextCursor": null
+        }
+      }
+    },
+    "thread/backgroundTerminals/terminate": {
+      "direction": "in",
+      "responseFor": "thread/backgroundTerminals/terminate",
+      "timestamp": 0,
+      "message": { "result": { "terminated": true } }
+    },
     "thread/settings/update": {
       "direction": "in",
       "responseFor": "thread/settings/update",

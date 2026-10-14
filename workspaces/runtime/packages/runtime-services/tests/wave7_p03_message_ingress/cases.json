@@ -1,0 +1,252 @@
+[
+  {
+    "name": "send-replay",
+    "steps": [{}, {}]
+  },
+  {
+    "name": "changed-text",
+    "steps": [
+      {},
+      {
+        "text": "changed"
+      }
+    ]
+  },
+  {
+    "name": "delivery-change-is-replay",
+    "steps": [
+      {
+        "delivery": "after_turn"
+      },
+      {
+        "delivery": "steer"
+      }
+    ]
+  },
+  {
+    "name": "delivered-receipt",
+    "steps": [
+      {},
+      {
+        "status": "delivered"
+      },
+      {}
+    ]
+  },
+  {
+    "name": "uncertain-receipt",
+    "steps": [
+      {},
+      {
+        "status": "uncertain",
+        "error": "Outcome unknown"
+      },
+      {}
+    ]
+  },
+  {
+    "name": "failed-receipt",
+    "steps": [
+      {},
+      {
+        "status": "failed",
+        "error": "Input failed"
+      },
+      {}
+    ]
+  },
+  {
+    "name": "unknown-attachment-accepted",
+    "steps": [
+      {
+        "text": "",
+        "assets": ["missing-upload"]
+      },
+      {
+        "text": "",
+        "assets": ["missing-upload"]
+      }
+    ]
+  },
+  {
+    "name": "attachment-change",
+    "steps": [
+      {
+        "assets": ["one"]
+      },
+      {
+        "assets": ["two"]
+      }
+    ]
+  },
+  {
+    "name": "attachment-count-deferred",
+    "steps": [
+      {
+        "assets": ["a", "b", "c", "d", "e", "f", "g", "h", "i"]
+      }
+    ]
+  },
+  {
+    "name": "null-text-attachment-empty",
+    "steps": [
+      {
+        "text": "  "
+      }
+    ]
+  },
+  {
+    "name": "excluded-account",
+    "agent": {
+      "excludedAccountKeys": ["default"]
+    },
+    "steps": [{}],
+    "rustResults": [
+      {
+        "error": "This account is disabled for this chat"
+      }
+    ]
+  },
+  {
+    "name": "capture-waiting",
+    "agent": {
+      "workspaceOperation": "capture"
+    },
+    "steps": [{}]
+  },
+  {
+    "name": "checkpoint-waiting",
+    "agent": {
+      "workspaceOperation": "checkpoint"
+    },
+    "steps": [{}]
+  },
+  {
+    "name": "changed-recipient",
+    "others": [
+      {
+        "id": "other",
+        "rootId": "other"
+      }
+    ],
+    "steps": [
+      {},
+      {
+        "room": "other"
+      }
+    ]
+  },
+  {
+    "name": "deleted-recipient",
+    "agent": {
+      "deletedAt": 1.0
+    },
+    "steps": [{}]
+  },
+  {
+    "name": "child-allowed",
+    "others": [
+      {
+        "id": "root",
+        "rootId": "root",
+        "concurrency": 16
+      }
+    ],
+    "agent": {
+      "rootId": "root",
+      "isLead": false,
+      "parentId": "root"
+    },
+    "steps": [{}]
+  },
+  {
+    "name": "child-disabled",
+    "others": [
+      {
+        "id": "root",
+        "rootId": "root",
+        "concurrency": 0
+      }
+    ],
+    "agent": {
+      "rootId": "root",
+      "isLead": false,
+      "parentId": "root"
+    },
+    "steps": [{}],
+    "existingDifference": "Inherited event_write::assert_delegation error omits the final period from codex_agent_modes.assert_delegation; behavior is the same.",
+    "rustResults": [
+      {
+        "error": "Single agent mode disables new delegation. Complete the task in the lead chat or select Multi agent"
+      }
+    ]
+  },
+  {
+    "name": "native-failure-hold-cleared",
+    "agent": {
+      "nativeFailureHold": true,
+      "status": "failed"
+    },
+    "steps": [{}]
+  },
+  {
+    "name": "native-thread-hold",
+    "agent": {
+      "threadId": "thread",
+      "nativeThreadBlock": {
+        "threadId": "thread",
+        "error": {
+          "message": "policy",
+          "codexErrorInfo": "misalignmentPolicyViolation"
+        }
+      }
+    },
+    "steps": [{}]
+  },
+  {
+    "name": "safety-retry-hold",
+    "agent": {
+      "nativeSafetyRetry": {
+        "stage": "turns",
+        "epoch": 0,
+        "accountKey": "default"
+      }
+    },
+    "steps": [{}]
+  },
+  {
+    "name": "capacity-reset",
+    "capacity": {
+      "id": "retry",
+      "status": "scheduled",
+      "dueAt": 100,
+      "updatedAt": 1
+    },
+    "steps": [{}]
+  },
+  {
+    "name": "capacity-unsubmitted-attempt",
+    "agent": {
+      "startAttempt": {
+        "capacityRetryId": "retry",
+        "submitted": false
+      },
+      "inFlight": true
+    },
+    "capacity": {
+      "id": "retry",
+      "status": "scheduled",
+      "dueAt": 100,
+      "updatedAt": 1
+    },
+    "steps": [{}]
+  },
+  {
+    "name": "capture-starts-after-preparation",
+    "steps": [
+      {
+        "startOperation": "capture"
+      }
+    ]
+  }
+]

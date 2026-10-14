@@ -5,18 +5,17 @@
 mod callback_queue_limit_generated;
 mod codec;
 mod connection;
-mod dispatch;
 mod session;
+pub mod supervisor_v1;
 
+pub use callback_queue_limit_generated::CALLBACK_QUEUE_LIMIT;
 pub use codec::{
-    CodecError, Frame, LineDecoder, MAX_FRAME_BYTES, Method, NotificationFrame, RequestFrame,
-    RequestId, ResponseBody, UnknownMethodFrame, encode_line,
+    CodecError, DecodedJournalEntry, DecodedJournalPayload, Frame, LineDecoder, MAX_FRAME_BYTES,
+    Method, NotificationFrame, RequestFrame, RequestId, ResponseBody, UnknownMethodFrame,
+    decode_journal_entry, encode_line, validate_initialize_params,
 };
 pub use connection::{
-    Action, ConnectionDriver, DriverConfig, DriverError, Lifecycle, ReaderThread, RequestOutcome,
-    RequestTicket, SessionError, SessionState,
-};
-pub use dispatch::{
-    CALLBACK_QUEUE_LIMIT, CallbackDispatcher, DispatchError, DispatchQueue, Handler, Inbound,
+    Action, Inbound, InitializationStatus, Lifecycle, RequestOutcome, RequestTicket, SessionError,
+    SessionState,
 };
 pub use session::{BookError, PendingBook, RequestState, ResponseMatch};

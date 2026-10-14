@@ -1951,6 +1951,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "studio-process-supervisor"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "studio-runtime-process",
+ "tempfile",
+]
+
+[[package]]
 name = "studio-runtime-http"
 version = "0.1.0"
 dependencies = [
@@ -1967,6 +1976,7 @@ dependencies = [
  "serde_json",
  "serde_path_to_error",
  "sha2",
+ "studio-runtime-providers",
  "studio-runtime-schema",
  "studio-runtime-services",
  "studio-runtime-store",
@@ -1987,6 +1997,7 @@ dependencies = [
 name = "studio-runtime-process"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "command-fds",
  "process-wrap",
  "rustix",
@@ -1994,6 +2005,8 @@ dependencies = [
  "serde_json",
  "strum",
  "studio-runtime-priority-sys",
+ "studio-runtime-providers",
+ "studio-runtime-store",
  "tempfile",
  "thiserror",
  "tokio",
@@ -2022,13 +2035,17 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "data-encoding",
+ "futures-util",
  "getrandom 0.3.4",
  "serde_json",
  "studio-runtime-http",
  "studio-runtime-process",
+ "studio-runtime-providers",
  "studio-runtime-services",
  "studio-runtime-store",
+ "tempfile",
  "tokio",
+ "tower",
 ]
 
 [[package]]
@@ -2038,12 +2055,14 @@ dependencies = [
  "base64",
  "chrono",
  "data-encoding",
+ "futures-util",
  "getrandom 0.3.4",
  "jsonschema",
  "mime_guess",
  "nix 0.31.3",
  "notify",
  "process-wrap",
+ "regex",
  "ring",
  "rusqlite",
  "rustix",
@@ -2053,6 +2072,7 @@ dependencies = [
  "serde_json",
  "serde_path_to_error",
  "sha2",
+ "shlex",
  "spki",
  "studio-operations",
  "studio-runtime-process",
@@ -2078,6 +2098,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "studio-runtime-providers",
  "studio-runtime-schema",
  "tempfile",
  "thiserror",

@@ -2,7 +2,7 @@
 
 use super::accounts_response;
 use super::extractors::ApiJson;
-use super::manifest::{Dependency, OperationStatus, RouteGroup, dependency_unavailable, get, post};
+use super::manifest::{Dependency, OperationStatus, RouteGroup, dependency_unavailable, post};
 use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
@@ -18,36 +18,10 @@ use crate::router::HttpState;
 
 const CLAUDE_DISCOVERY: [Dependency; 1] = [Dependency::new("provider-session/claude-discovery")];
 const CODEX_LOGIN: [Dependency; 1] = [Dependency::new("provider-session/codex-login")];
-const CLAUDE_LOGIN: [Dependency; 1] = [Dependency::new("provider-session/claude-login")];
 const CLAUDE_PROFILE: [Dependency; 1] = [Dependency::new("provider-session/claude-profile-auth")];
 
 pub(crate) fn routes() -> RouteGroup {
     RouteGroup::new(vec![
-        post(
-            "/api/accounts/claude/add",
-            OperationStatus::partial(&CLAUDE_LOGIN),
-            claude_add,
-        ),
-        get(
-            "/api/accounts/claude/login",
-            OperationStatus::partial(&CLAUDE_LOGIN),
-            claude_login_status,
-        ),
-        post(
-            "/api/accounts/claude/login",
-            OperationStatus::partial(&CLAUDE_LOGIN),
-            claude_login,
-        ),
-        post(
-            "/api/accounts/claude/login/cancel",
-            OperationStatus::partial(&CLAUDE_LOGIN),
-            claude_login_cancel,
-        ),
-        post(
-            "/api/accounts/claude/login/code",
-            OperationStatus::partial(&CLAUDE_LOGIN),
-            claude_login_code,
-        ),
         post(
             "/api/accounts/default",
             OperationStatus::Implemented,
@@ -308,46 +282,6 @@ async fn codex_login_cancel(
         .map_err(|_| ApiError::internal())
 }
 
-async fn claude_login_status() -> Result<Json<Value>, ApiError> {
-    Err(unavailable(
-        "GET",
-        "/api/accounts/claude/login",
-        &CLAUDE_LOGIN,
-    ))
-}
-
-async fn claude_login() -> Result<Json<Value>, ApiError> {
-    Err(unavailable(
-        "POST",
-        "/api/accounts/claude/login",
-        &CLAUDE_LOGIN,
-    ))
-}
-
-async fn claude_add() -> Result<Json<Value>, ApiError> {
-    Err(unavailable(
-        "POST",
-        "/api/accounts/claude/add",
-        &CLAUDE_LOGIN,
-    ))
-}
-
-async fn claude_login_cancel() -> Result<Json<Value>, ApiError> {
-    Err(unavailable(
-        "POST",
-        "/api/accounts/claude/login/cancel",
-        &CLAUDE_LOGIN,
-    ))
-}
-
-async fn claude_login_code() -> Result<Json<Value>, ApiError> {
-    Err(unavailable(
-        "POST",
-        "/api/accounts/claude/login/code",
-        &CLAUDE_LOGIN,
-    ))
-}
-
 async fn claude_profile() -> Result<Json<Value>, ApiError> {
     Err(unavailable("POST", "/api/claude/profiles", &CLAUDE_PROFILE))
 }
@@ -465,7 +399,6 @@ inventory::submit! {
         routes: Some(routes),
         dependencies: &[
         "provider-session/claude-discovery",
-        "provider-session/claude-login",
         "provider-session/claude-profile-auth",
         "provider-session/codex-login",
         ],

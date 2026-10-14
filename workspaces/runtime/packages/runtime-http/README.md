@@ -186,6 +186,13 @@ Run the shared corpus differential with the prepared Python interpreter using
 
 ### Known differences from the Python server
 
+- Token-rate `rate` and `outputTokens` fields compare by numeric value when
+  integral rates are rendered as integers by Python and as decimals by Rust.
+  The API schema types these fields as `number`; token-rate documents are
+  volatile stream and resource-hub output, never written to `sync_entities` or
+  hashed; and JavaScript parses `400` and `400.0` to the same value. If token-rate
+  snapshots are ever persisted or hashed, the representation must be made
+  identical first. The differential keeps every other document field exact.
 - Validation errors use a short `error` and one `location`; the differential
   checks the envelope shape on refusals.
 - Rust rejects JSON nested beyond 127 containers to bound parser stack use.

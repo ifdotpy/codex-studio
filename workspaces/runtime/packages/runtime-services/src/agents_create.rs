@@ -580,6 +580,8 @@ fn rename(
 #[allow(clippy::duplicate_mod)]
 #[path = "../tests/support/prepared_python.rs"]
 mod prepared_python_test_support;
+#[cfg(test)]
+pub(crate) use prepared_python_test_support::prepared_python;
 
 #[cfg(test)]
 mod tests {

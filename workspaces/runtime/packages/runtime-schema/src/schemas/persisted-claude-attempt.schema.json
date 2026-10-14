@@ -1,0 +1,261 @@
+{
+  "$defs": {
+    "ClaudeEventSnapshot": {
+      "additionalProperties": {
+        "$ref": "#/$defs/JsonValue"
+      },
+      "properties": {
+        "assets": {
+          "items": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "maxItems": 256,
+          "title": "Assets",
+          "type": "array"
+        },
+        "created": {
+          "title": "Created",
+          "type": "number"
+        },
+        "id": {
+          "maxLength": 1024,
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "kind": {
+          "title": "Kind",
+          "type": "string"
+        },
+        "textHash": {
+          "pattern": "^[a-f0-9]{64}$",
+          "title": "Texthash",
+          "type": "string"
+        }
+      },
+      "required": ["id", "kind", "created", "assets", "textHash"],
+      "title": "ClaudeEventSnapshot",
+      "type": "object"
+    },
+    "ClaudeFrozenInput": {
+      "additionalProperties": {
+        "$ref": "#/$defs/JsonValue"
+      },
+      "properties": {
+        "clientUserMessageId": {
+          "maxLength": 1024,
+          "minLength": 1,
+          "title": "Clientusermessageid",
+          "type": "string"
+        },
+        "configuration": {
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "title": "Configuration",
+          "type": "object"
+        },
+        "events": {
+          "items": {
+            "$ref": "#/$defs/ClaudeEventSnapshot"
+          },
+          "maxItems": 32,
+          "minItems": 1,
+          "title": "Events",
+          "type": "array"
+        },
+        "input": {
+          "items": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "maxItems": 1024,
+          "title": "Input",
+          "type": "array"
+        },
+        "source": {
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "title": "Source",
+          "type": "object"
+        },
+        "textHash": {
+          "pattern": "^[a-f0-9]{64}$",
+          "title": "Texthash",
+          "type": "string"
+        },
+        "transcriptItemId": {
+          "maxLength": 1024,
+          "minLength": 1,
+          "title": "Transcriptitemid",
+          "type": "string"
+        }
+      },
+      "required": [
+        "input",
+        "source",
+        "configuration",
+        "events",
+        "transcriptItemId",
+        "clientUserMessageId",
+        "textHash"
+      ],
+      "title": "ClaudeFrozenInput",
+      "type": "object"
+    },
+    "JsonValue": {}
+  },
+  "additionalProperties": {
+    "$ref": "#/$defs/JsonValue"
+  },
+  "properties": {
+    "accountKey": {
+      "anyOf": [
+        {
+          "maxLength": 1024,
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Accountkey"
+    },
+    "activeAtReservation": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Activeatreservation"
+    },
+    "claudeInputRejection": {
+      "anyOf": [
+        {
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Claudeinputrejection"
+    },
+    "claudeInputRequest": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ClaudeFrozenInput"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "connectionId": {
+      "anyOf": [
+        {
+          "maxLength": 1024,
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Connectionid"
+    },
+    "created": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Created"
+    },
+    "epoch": {
+      "anyOf": [
+        {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Epoch"
+    },
+    "events": {
+      "anyOf": [
+        {
+          "items": {
+            "maxLength": 1024,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 32,
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Events"
+    },
+    "id": {
+      "maxLength": 1024,
+      "minLength": 1,
+      "title": "Id",
+      "type": "string"
+    },
+    "nativeOperationId": {
+      "anyOf": [
+        {
+          "maxLength": 1024,
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Nativeoperationid"
+    },
+    "submitted": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Submitted"
+    },
+    "threadId": {
+      "anyOf": [
+        {
+          "maxLength": 1024,
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Threadid"
+    }
+  },
+  "required": ["id"],
+  "title": "PersistedClaudeAttemptRecord",
+  "type": "object"
+}

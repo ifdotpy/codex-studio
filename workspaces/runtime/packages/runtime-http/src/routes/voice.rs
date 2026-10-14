@@ -13,8 +13,7 @@ use super::manifest::{Dependency, OperationStatus, RouteGroup, dependency_unavai
 use crate::error::ApiError;
 use crate::router::HttpState;
 
-const VOICE_PROVIDER: [Dependency; 1] = [Dependency::new("provider-session/voice")];
-const VOICE_AUDIO: [Dependency; 1] = [Dependency::new("payload-store/voice-audio")];
+const VOICE_PROVIDER: [Dependency; 1] = [Dependency::new("account-worker/voice-session")];
 
 pub(crate) fn routes() -> RouteGroup {
     RouteGroup::new(vec![
@@ -33,11 +32,7 @@ pub(crate) fn routes() -> RouteGroup {
             OperationStatus::partial(&VOICE_PROVIDER),
             refuse,
         ),
-        post(
-            "/api/voice/audio",
-            OperationStatus::partial(&VOICE_AUDIO),
-            refuse,
-        ),
+        post("/api/voice/audio", OperationStatus::Implemented, audio),
         post(
             "/api/voice/end",
             OperationStatus::partial(&VOICE_PROVIDER),
@@ -53,7 +48,7 @@ pub(crate) fn routes() -> RouteGroup {
         post(
             "/api/voice/start",
             OperationStatus::partial(&VOICE_PROVIDER),
-            refuse,
+            start,
         ),
         post("/api/voice/status", OperationStatus::Implemented, status),
         post("/api/voice/submit", OperationStatus::Implemented, submit),
@@ -93,6 +88,29 @@ async fn status(
         .map_err(voice_error)?;
     Ok(Json(super::generated_json::<
         crate::generated::VoiceStatusResponse,
+    >(result)?))
+}
+
+async fn audio(
+    State(state): State<HttpState>,
+    ApiJson(body): ApiJson<crate::generated::VoiceAudioRequest>,
+) -> Result<Json<Value>, ApiError> {
+    let store = state.store.ok_or_else(ApiError::internal)?;
+    let (agent, session, chunk, encoded, mime) = (
+        body.agent,
+        body.session_id,
+        body.chunk_id,
+        body.audio,
+        body.mime,
+    );
+    let result = tokio::task::spawn_blocking(move || {
+        voice::save_audio(&store, &agent, &session, &chunk, &encoded, &mime)
+    })
+    .await
+    .map_err(|_| ApiError::internal())?
+    .map_err(voice_audio_error)?;
+    Ok(Json(super::generated_json::<
+        crate::generated::VoiceRecordResponse,
     >(result)?))
 }
 
@@ -199,10 +217,23 @@ async fn end(
 ) -> Result<Json<Value>, ApiError> {
     let store = state.store.ok_or_else(ApiError::internal)?;
     let (agent, session) = (body.agent, body.session_id);
-    let result = tokio::task::spawn_blocking(move || voice::end(&store, &agent, &session))
+    let Some(provider) = state.voice_provider.clone() else {
+        if let Some(result) = voice::provider::read_terminal_session(&store, &agent, &session)
+            .map_err(provider_error)?
+        {
+            return Ok(Json(super::generated_json::<
+                crate::generated::VoiceSessionResponse,
+            >(result)?));
+        }
+        return Err(
+            dependency_unavailable("POST", "/api/voice/end", &VOICE_PROVIDER)
+                .unwrap_or_else(|_| ApiError::internal()),
+        );
+    };
+    let now = now_seconds()?;
+    let result = voice::provider::end(store, provider, agent, session, now)
         .await
-        .map_err(|_| ApiError::internal())?
-        .map_err(voice_error)?;
+        .map_err(provider_error)?;
     Ok(Json(super::generated_json::<
         crate::generated::VoiceSessionResponse,
     >(result)?))
@@ -214,12 +245,23 @@ async fn speech(
 ) -> Result<Json<Value>, ApiError> {
     let store = state.store.ok_or_else(ApiError::internal)?;
     let (agent, session, record) = (body.agent, body.session_id, body.record_id);
-    let result = tokio::task::spawn_blocking(move || {
-        voice::speech_receipt(&store, &agent, &session, &record, None)
-    })
-    .await
-    .map_err(|_| ApiError::internal())?
-    .map_err(voice_error)?;
+    let Some(provider) = state.voice_provider.clone() else {
+        if let Some(result) =
+            voice::provider::read_speech_receipt(&store, &agent, &session, &record)
+                .map_err(provider_error)?
+        {
+            return Ok(Json(super::generated_json::<
+                crate::generated::VoiceSpeechReceiptResponse,
+            >(result)?));
+        }
+        return Err(
+            dependency_unavailable("POST", "/api/voice/speech", &VOICE_PROVIDER)
+                .unwrap_or_else(|_| ApiError::internal()),
+        );
+    };
+    let result = voice::provider::speech(store, provider, agent, session, record, None)
+        .await
+        .map_err(provider_error)?;
     Ok(Json(super::generated_json::<
         crate::generated::VoiceSpeechReceiptResponse,
     >(result)?))
@@ -247,13 +289,64 @@ async fn submit(
     >(result)?))
 }
 
+async fn start(
+    State(state): State<HttpState>,
+    ApiJson(body): ApiJson<crate::generated::VoiceStartRequest>,
+) -> Result<Json<Value>, ApiError> {
+    let provider = state.voice_provider.clone().ok_or_else(|| {
+        dependency_unavailable("POST", "/api/voice/start", &VOICE_PROVIDER)
+            .unwrap_or_else(|_| ApiError::internal())
+    })?;
+    let store = state.store.ok_or_else(ApiError::internal)?;
+    let result = voice::provider::start(
+        store,
+        provider,
+        body.agent,
+        body.session_id,
+        body.sdp,
+        now_seconds()?,
+    )
+    .await
+    .map_err(provider_error)?;
+    Ok(Json(super::generated_json::<
+        crate::generated::VoiceSessionResponse,
+    >(result)?))
+}
+
+fn now_seconds() -> Result<f64, ApiError> {
+    Ok(std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|_| ApiError::internal())?
+        .as_secs_f64())
+}
+
+fn provider_error(error: voice::provider::VoiceProviderError) -> ApiError {
+    use voice::provider::VoiceProviderError as E;
+    match error {
+        E::ContextUnavailable | E::AdapterUnavailable => ApiError::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "voice provider context is unavailable",
+        ),
+        E::ContextChanged => ApiError::new(StatusCode::CONFLICT, "voice provider context changed"),
+        E::NotSent => ApiError::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "voice request was not sent",
+        ),
+        E::Unknown => ApiError::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "voice request outcome is unknown",
+        ),
+        E::Rejected(_) => ApiError::new(StatusCode::BAD_GATEWAY, "voice provider rejected request"),
+        _ => ApiError::internal(),
+    }
+}
+
 async fn refuse(
     path: axum::extract::MatchedPath,
     ApiJson(_body): ApiJson<Value>,
 ) -> Result<Json<Value>, ApiError> {
     Err(
         dependency_unavailable("POST", path.as_str(), &VOICE_PROVIDER)
-            .or_else(|_| dependency_unavailable("POST", path.as_str(), &VOICE_AUDIO))
             .unwrap_or_else(|_| ApiError::internal()),
     )
 }
@@ -308,13 +401,46 @@ fn voice_error(error: VoiceError) -> ApiError {
     }
 }
 
+fn voice_audio_error(error: voice::VoiceAudioError) -> ApiError {
+    match error {
+        voice::VoiceAudioError::Voice(error) => voice_error(error),
+        voice::VoiceAudioError::Request(error) => match error {
+            voice::policy::VoiceError::UnknownSession
+            | voice::policy::VoiceError::UnsupportedAudioFormat
+            | voice::policy::VoiceError::InvalidAudioEncoding
+            | voice::policy::VoiceError::AudioTooLarge => {
+                ApiError::validation(vec![Value::String("body".into())])
+            }
+            voice::policy::VoiceError::AudioIdentityConflict
+            | voice::policy::VoiceError::SessionIdentityConflict => ApiError::new(
+                StatusCode::BAD_REQUEST,
+                "Voice session or audio identity conflicts with its original content",
+            ),
+            _ => ApiError::internal(),
+        },
+        voice::VoiceAudioError::Store(studio_runtime_store::StoreError::InvalidStoredRecord {
+            object,
+            id,
+        }) => ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Invalid stored object {object}/{id}"),
+        ),
+        voice::VoiceAudioError::Store(studio_runtime_store::StoreError::AlreadyOwned) => {
+            ApiError::new(
+                StatusCode::CONFLICT,
+                "another runtime owns the state directory",
+            )
+        }
+        voice::VoiceAudioError::Store(_) | voice::VoiceAudioError::Io(_) => ApiError::internal(),
+    }
+}
+
 inventory::submit! {
     crate::routes::manifest::RouteModuleRegistration {
         name: "voice",
         routes: Some(routes),
         dependencies: &[
-        "payload-store/voice-audio",
-        "provider-session/voice",
+            "account-worker/voice-session",
         ],
     }
 }

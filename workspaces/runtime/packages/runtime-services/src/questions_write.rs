@@ -93,26 +93,44 @@ pub fn delete_question(
     validate: impl Fn(&Value) -> bool,
 ) -> Result<Value, QuestionsWriteError> {
     let mut record = request(transaction, id, &validate)?;
-    if !is_question(&record) {
-        return Err(QuestionsWriteError::InvalidRequest(
-            "Only a question can be deleted",
-        ));
-    }
     let agent_id = record
         .get("agent")
         .and_then(Value::as_str)
         .ok_or_else(|| invalid_stored("runtime_requests", id))?;
     let agent = stored_agent(transaction, agent_id)?
         .ok_or(QuestionsWriteError::InvalidRequest("Unknown agent"))?;
-    if event_write::truthy(agent.extra.get("deletedAt")) {
+    if !state_only_delete_allowed(
+        &record,
+        event_write::truthy(agent.extra.get("deletedAt")),
+        true,
+    )? {
+        return Ok(json!({"id":id,"status":"deleted"}));
+    }
+    mark_state_only_deleted(&mut record, unix_time()?);
+    put_request(transaction, id, &record, &validate)?;
+    Ok(json!({"id":id,"status":"deleted"}))
+}
+
+pub(crate) fn state_only_delete_allowed(
+    record: &Value,
+    agent_deleted: bool,
+    reject_pending_native: bool,
+) -> Result<bool, QuestionsWriteError> {
+    if !is_question(record) {
+        return Err(QuestionsWriteError::InvalidRequest(
+            "Only a question can be deleted",
+        ));
+    }
+    if agent_deleted {
         return Err(QuestionsWriteError::InvalidRequest(
             "This agent was deleted",
         ));
     }
     if event_write::truthy(record.get("deletedAt")) {
-        return Ok(json!({"id":id,"status":"deleted"}));
+        return Ok(false);
     }
-    if record.get("status").and_then(Value::as_str) == Some(PENDING)
+    if reject_pending_native
+        && record.get("status").and_then(Value::as_str) == Some(PENDING)
         && record.get("method").and_then(Value::as_str) != Some("agent/asyncQuestion")
     {
         return Err(QuestionsWriteError::QuestionAnswerUnavailable);
@@ -125,12 +143,14 @@ pub fn delete_question(
             "Question delivery is uncertain; wait for its receipt",
         ));
     }
+    Ok(true)
+}
+
+pub(crate) fn mark_state_only_deleted(record: &mut Value, deleted_at: f64) {
     record["status"] = json!("deleted");
-    record["deletedAt"] = json!(unix_time()?);
+    record["deletedAt"] = json!(deleted_at);
     record["deletedBy"] = json!(USER);
     record["deferred"] = json!(false);
-    put_request(transaction, id, &record, &validate)?;
-    Ok(json!({"id":id,"status":"deleted"}))
 }
 
 pub fn submit_complaint(

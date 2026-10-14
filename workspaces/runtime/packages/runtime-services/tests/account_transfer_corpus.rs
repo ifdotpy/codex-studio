@@ -4,7 +4,11 @@
 #[path = "support/prepared_python.rs"]
 mod prepared_python_support;
 use serde_json::{Value, json};
-use std::{path::Path, process::Command};
+use std::{
+    path::{Path, PathBuf},
+    process::Command,
+    sync::OnceLock,
+};
 use studio_runtime_services::account_transfer::{
     Action, Command as Transition, Snapshot, Ticket, before_start,
 };
@@ -25,24 +29,38 @@ fn read(case: &Value) -> Snapshot {
     )
     .expect("Python-written state validates")
 }
+
+fn python_transfer_cases() -> &'static [Value] {
+    static CASES: OnceLock<Vec<Value>> = OnceLock::new();
+    CASES.get_or_init(|| {
+        let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src");
+        let script =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/account_transfer/oracle.py");
+        let python = prepared_python_support::prepared_python(&source);
+        let mut command = Command::new(python);
+        command.arg(&script);
+        let output = prepared_python_support::output_with_timeout(
+            &mut command,
+            &script,
+            prepared_python_support::PYTHON_ORACLE_TIMEOUT,
+        )
+        .unwrap_or_else(|error| panic!("{}: {error}", script.display()));
+        assert!(
+            output.status.success(),
+            "{}: {}",
+            script.display(),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        serde_json::from_slice(&output.stdout).expect("Python transfer cases")
+    })
+}
+
 #[test]
 fn python_transfer_actions_restart_and_projection() {
-    let python = prepared_python_support::prepared_python(
-        &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src"),
-    );
-    let output = Command::new(python)
-        .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/account_transfer/oracle.py"))
-        .output()
-        .expect("oracle starts");
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let cases: Vec<Value> = serde_json::from_slice(&output.stdout).expect("oracle cases");
+    let cases = python_transfer_cases();
     assert!(cases.len() >= 60);
     for case in cases {
-        let snapshot = read(&case);
+        let snapshot = read(case);
         let command = match case["command"].as_str().expect("command") {
             "restart" => Transition::Restart,
             "cancel" => Transition::Action(Action::Cancel),
@@ -333,16 +351,7 @@ fn selection_holds_pending_resume_without_changing_agent() {
 
 #[test]
 fn python_written_legacy_truthy_deleted_at_row_is_readable() {
-    let python = prepared_python_support::prepared_python(
-        &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src"),
-    );
-    let output = Command::new(python)
-        .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/account_transfer/oracle.py"))
-        .output()
-        .expect("oracle starts");
-    assert!(output.status.success());
-    let cases: Vec<Value> = serde_json::from_slice(&output.stdout).expect("oracle cases");
-    let case = cases
+    let case = python_transfer_cases()
         .iter()
         .find(|case| case["name"] == "legacy-deleted-at-truthy")
         .expect("Python writes the legacy row");

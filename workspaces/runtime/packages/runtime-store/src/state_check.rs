@@ -47,6 +47,9 @@ pub fn check_state_readonly(state_dir: &Path) -> StoreResult<StateCheckReport> {
     let mut tables = vec![
         check_table::<crate::AccountTransferRecord>(&connection)?,
         check_table::<AgentRecord>(&connection)?,
+        check_table::<crate::repositories::claude_records::ClaudeAttemptRecord>(&connection)?,
+        check_table::<crate::budget::BudgetRecord>(&connection)?,
+        crate::budget::check_usage_readonly(&connection)?,
         check_table::<crate::repositories::continuation::CapacityContinuationRecord>(&connection)?,
         check_table::<TaskRecord>(&connection)?,
         check_table::<PlanRecord>(&connection)?,

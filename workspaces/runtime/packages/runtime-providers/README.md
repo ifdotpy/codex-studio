@@ -2,11 +2,11 @@
 
 ## Change Contract
 
-- **Responsibility:** Synchronous JSON-line framing, per-connection lifecycle, request tracking, and ordered handoff of provider callbacks for Codex app-server and the Claude bridge.
-- **Public interface:** Pure `SessionState` events/actions, split-I/O `ConnectionDriver<R, W, H>`, `Handler`, `CallbackDispatcher`, `LineDecoder`, `encode_line`, typed `Frame`/`Method`/`RequestId`, and `PendingBook` state transitions.
+- **Responsibility:** Synchronous JSON-line framing and request lifecycle state for Codex app-server and the Claude bridge.
+- **Public interface:** Pure `SessionState` events/actions, `LineDecoder`, `encode_line`, typed `Frame`/`Method`/`RequestId`, `Inbound`, and `PendingBook` state transitions.
 - **Boundaries:** No process spawning, Tokio, HTTP, SQLite, account discovery, turn orchestration, repair, or Claude Node bridge implementation. The caller owns the transport halves and supplies monotonic deadline values.
-- **Invariants:** Initialize is written first and `initialized` follows its reply; each connection has a unique generation; IDs are registered before writes; deadlines and transport loss make unresolved requests unknown without retries; late matched replies remain evidence; callback delivery is FIFO and bounded.
-- **Configuration owner:** The provider process owner supplies the duplex byte stream and timeout clock. The frame-size maximum is owned by `src/codec.rs`.
+- **Invariants:** Initialize is written first and `initialized` follows its reply; each connection has a unique generation; IDs are registered before writes; deadlines and transport loss make unresolved requests unknown without retries; late matched replies remain evidence. The account session owns transport, callback delivery, and backpressure.
+- **Configuration owner:** The provider session owns the duplex byte stream and timeout clock. The frame-size maximum is owned by `src/codec.rs`.
 - **Focused check:** `cargo nextest run -p studio-runtime-providers`.
 
 ## Python wire inventory
@@ -132,14 +132,12 @@ The caller supplies `now_ms` to `expire`, so timeout decisions need no sleeps.
 Late replies for timed-out IDs remain evidence; canceled Claude IDs are removed
 from `PendingBook`, and their later orphan replies are silently ignored.
 
-`ConnectionDriver<R, W, H>` owns separate read and write halves. A dedicated
-reader decodes frames, a write mutex serializes complete encoded lines, and a
-bounded callback worker drains provider requests and notifications in FIFO order.
-The reader does not execute user handlers. Claude requests use `claude:` IDs;
-`turn/start`, `turn/steer`, `thread/resume`, `thread/fork`, and non-lightweight
-`thread/read` are queued per thread, while independent threads proceed. The
-driver's owner calls `pump_next` to apply incoming frames and deliver callback
-work; it calls `close` after its transport owner has ended the read half.
+`SessionState` owns provider request transitions only. The account-scoped
+`ProviderSession` owns transport and delivers callbacks to the account actor,
+which controls durable settlement and supervisor cursor acknowledgement.
+Claude requests use `claude:` IDs; `turn/start`, `turn/steer`,
+`thread/resume`, `thread/fork`, and non-lightweight `thread/read` are queued
+per thread, while independent threads proceed.
 
 ### Session state transitions
 

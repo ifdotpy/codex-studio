@@ -1,0 +1,70 @@
+{
+  "boundary": "Runtime.start immediately before Runtime.item for the prepared user batch",
+  "capture": "Real Runtime.start executes team authorization, metadata preparation, and model context. The oracle commits and clones the caller-written pre-state before applying the captured item call.",
+  "caller_owned_fields": {
+    "runtime_agents.record": [
+      "startAttempt.id",
+      "startAttempt.epoch",
+      "startAttempt.accountKey",
+      "startAttempt.events",
+      "startAttempt.submitted",
+      "startAttempt.activeAtReservation",
+      "startAttempt.created",
+      "startAttempt.settingsFixed",
+      "complaintsPresented",
+      "status",
+      "inFlight",
+      "turnId",
+      "epoch",
+      "autoWake",
+      "executionSettingsAccountKey",
+      "model"
+    ],
+    "runtime_events": ["status", "epoch", "turn_id"],
+    "runtime_event_meta.record": [
+      "assets (when present)",
+      "modelEventProjection",
+      "contextManifest.epoch",
+      "contextManifest.versions",
+      "contextManifest.sequence"
+    ]
+  },
+  "notification_owned_writes": [
+    "runtime_items and original creation order",
+    "runtime_item_fulltext",
+    "runtime_event_meta.record.transcriptItemId",
+    "runtime_event_meta.record.modelEventProjection for absent metadata",
+    "runtime_operation_receipts",
+    "transcript sync revisions",
+    "legacy search projection",
+    "next search projection and postings"
+  ],
+  "not_applicable": [
+    "Start/delta/snapshot/completion ordering applies only to stream notifications, not prepared submissions or token usage.",
+    "An identical replay has a persisted receipt; fresh Python provider notifications do not carry this caller envelope. The oracle uses Runtime.save_receipt for that envelope and Rust verifies no writes on replay.",
+    "The scheduler refuses radio_turn and radioAnswerTurnId with radio-policy before prepared submission. Plain radio is allowed by assert_events.",
+    "Python represents a stopped agent as paused with autoWake=false, not literal status=stopped."
+  ],
+  "required_event_metadata": ["modelEventProjection"],
+  "required_first_event_metadata": [
+    "contextManifest.epoch",
+    "contextManifest.versions",
+    "contextManifest.sequence"
+  ],
+  "agent_values": {
+    "startAttempt.settingsFixed": true,
+    "startAttempt.submitted": false,
+    "startAttempt.activeAtReservation": true,
+    "status": "running",
+    "inFlight": true,
+    "epoch": 1,
+    "autoWake": true,
+    "executionSettingsAccountKey": "default",
+    "model": "fixture-model"
+  },
+  "event_values": {
+    "status": "dispatching",
+    "epoch": 1,
+    "turn_id": null
+  }
+}

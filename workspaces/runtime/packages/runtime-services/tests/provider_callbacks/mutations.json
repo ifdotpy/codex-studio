@@ -1,0 +1,86 @@
+[
+  {
+    "id": "human-authority",
+    "file": "workspaces/runtime/packages/runtime-services/src/provider_callbacks/cards.rs",
+    "edits": [
+      {
+        "before": "if !matches!(authority, AnswerAuthority::User) {",
+        "after": "if false && !matches!(authority, AnswerAuthority::User) {"
+      }
+    ]
+  },
+  {
+    "id": "actor-epoch",
+    "file": "workspaces/runtime/packages/runtime-services/src/provider_callbacks/model.rs",
+    "edits": [
+      {
+        "before": "actor[\"epoch\"].as_u64() != Some(context.epoch)",
+        "after": "false"
+      },
+      {
+        "before": "epoch.as_u64() != Some(context.epoch)",
+        "after": "false"
+      }
+    ]
+  },
+  {
+    "id": "unknown-reply",
+    "file": "workspaces/runtime/packages/runtime-services/src/provider_callbacks/storage.rs",
+    "edits": [
+      {
+        "before": "Some(\"submitted\" | \"unknown\") => return Err(CallbackError::Unknown),",
+        "after": "Some(\"submitted\" | \"unknown\") => {},"
+      }
+    ]
+  },
+  {
+    "id": "replacement-unknown",
+    "file": "workspaces/runtime/packages/runtime-services/src/provider_callbacks/tools.rs",
+    "edits": [
+      {
+        "before": "if uncertain != 0 {",
+        "after": "if uncertain < 0 {"
+      }
+    ]
+  },
+  {
+    "id": "secret-history",
+    "file": "workspaces/runtime/packages/runtime-services/src/provider_callbacks/cards.rs",
+    "edits": [
+      {
+        "before": "let secret = studio_runtime_store::truthy(field.get(\"isSecret\"));",
+        "after": "let secret = false;"
+      }
+    ]
+  },
+  {
+    "id": "refusal-proof",
+    "file": "workspaces/runtime/packages/runtime-services/src/provider_callbacks/tools.rs",
+    "edits": [
+      {
+        "before": "admission::reject(record)?;",
+        "after": "lifecycle::settle(record, &value, true)?;"
+      }
+    ]
+  },
+  {
+    "id": "resolver-ambiguity",
+    "file": "workspaces/runtime/packages/runtime-services/src/provider_callbacks/tools/services/messages.rs",
+    "edits": [
+      {
+        "before": "if matches.next().is_some() {",
+        "after": "if false && matches.next().is_some() {"
+      }
+    ]
+  },
+  {
+    "id": "resolver-scope",
+    "file": "workspaces/runtime/packages/runtime-services/src/provider_callbacks/tools/services/messages.rs",
+    "edits": [
+      {
+        "before": "if allowed {",
+        "after": "if true || allowed {"
+      }
+    ]
+  }
+]

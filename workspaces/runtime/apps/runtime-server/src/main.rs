@@ -1,3 +1,11 @@
+#[cfg(unix)]
+mod account_registry;
+#[cfg(unix)]
+mod claude_login;
+#[cfg(unix)]
+mod host_runtime;
+#[cfg(unix)]
+mod runtime_shutdown;
 use std::env;
 use std::fs::File;
 use std::io::Read;
@@ -88,29 +96,70 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let native_path = env::var("CODEX_BIN").ok();
     let public_origin = env::var("CODEX_CANVAS_PUBLIC_ORIGIN").ok();
-    let state = HttpState::new(
+    let mut state = HttpState::new(
         token,
         workspace_id,
-        native_path,
-        state_dir,
+        native_path.clone(),
+        state_dir.clone(),
         address.port(),
         public_origin,
-        Some(store),
+        Some(store.clone()),
         Some(account_policy),
     )
-    .with_account_driver(account_driver);
+    .with_account_driver(account_driver.clone());
+    #[cfg(unix)]
+    claude_login::attach(
+        &mut state,
+        PathBuf::from(&state_dir),
+        store.clone(),
+        account_driver.clone(),
+    )
+    .await?;
+    #[cfg(unix)]
+    let runtime = match host_runtime::HostRuntime::start(
+        &mut state,
+        store,
+        account_driver,
+        native_path,
+    )
+    .await
+    {
+        Ok(runtime) => runtime,
+        Err(error) => {
+            state.shutdown_services().await?;
+            return Err(error.into());
+        }
+    };
     let sync_changes = state.sync_changes_handle();
-    let app = router(state)?;
+    let app = match router(state.clone()) {
+        Ok(app) => app,
+        Err(error) => {
+            #[cfg(unix)]
+            runtime_shutdown::close(runtime, &state).await?;
+            #[cfg(not(unix))]
+            state.shutdown_services().await?;
+            return Err(error);
+        }
+    };
     println!("Codex Canvas: http://{}:{}", address.ip(), address.port());
-    axum::serve(
+    #[cfg(unix)]
+    let stop_runtime = runtime.shutdown_handle();
+    let result = axum::serve(
         listener,
         app.into_make_service_with_connect_info::<SocketAddr>(),
     )
     .with_graceful_shutdown(async move {
         shutdown_signal().await;
+        #[cfg(unix)]
+        stop_runtime.cancel();
         sync_changes.close();
     })
-    .await?;
+    .await;
+    #[cfg(unix)]
+    runtime_shutdown::close(runtime, &state).await?;
+    #[cfg(not(unix))]
+    state.shutdown_services().await?;
+    result?;
     Ok(())
 }
 

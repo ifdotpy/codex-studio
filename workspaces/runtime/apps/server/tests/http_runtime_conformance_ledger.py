@@ -22,6 +22,7 @@ from typing import Any, Iterator
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from runtime_test_environment import runtime_environment
+from http_runtime_test_support import ANSWER_REFUSAL_DEPENDENCIES, answer_refusal_error
 
 ROOT = Path(__file__).resolve().parents[5]
 TESTS = ROOT / "workspaces/runtime/apps/server/tests"
@@ -35,14 +36,13 @@ DEFAULT_LEDGER = DEFAULT_CACHE / "codex-studio" / "rust-runtime-http-conformance
 # service. Each exclusion is tied to that operation so it becomes stale when
 # the corresponding dependency is implemented.
 MISSING_SERVICE_TESTS: dict[str, dict[str, dict[str, str]]] = {
-    "workspaces/runtime/apps/server/tests/http-boundary-contract.py": {
-        "__main__.BoundaryContractTests.test_codex_provider_turn_uses_replay_executable": {"operation": "GET /api/transcript", "service": "transcript/event-driver", "reason": "The transcript request requires transcript/event-driver."},
-        "__main__.RestartContractTests.test_restart_serves_sync_receipt_and_provider_facts": {"operation": "GET /api/transcript", "service": "transcript/event-driver", "reason": "The transcript request requires transcript/event-driver."},
-    },
-    "workspaces/runtime/apps/server/tests/protocol-fixtures-contract.py": {
-        "__main__.ProtocolFixturesContract.test_supervisor_and_provider_fixtures_match_http_observations": {"operation": "GET /api/transcript", "service": "transcript/event-driver", "reason": "The transcript request requires transcript/event-driver."},
-    },
 }
+
+# This HTTP suite proves Python's explicit-null refusal. Its paired Rust
+# evidence is the native `wave7_p04_callback_http` integration test.
+PYTHON_BASELINE_ONLY_SUITES = frozenset({
+    "workspaces/runtime/apps/server/tests/wave7-p04-native-http-contract.py",
+})
 
 # These tests need provider turn execution, but no current route declares that
 # dependency. Keep them under one explicit unresolved-service group and fail
@@ -56,6 +56,13 @@ UNDECLARED_PROVIDER_TURN_TESTS: dict[str, dict[str, str]] = {
     },
     "workspaces/runtime/apps/server/tests/tool-request-http-contract.py": {
         "__main__.ToolRequestHTTPContract.test_provider_tool_request_is_recoverable_and_scoped_by_actor": "Recovering the tool request requires a provider turn; no operation declares this dependency yet.",
+    },
+    "workspaces/runtime/apps/server/tests/http-boundary-contract.py": {
+        "__main__.BoundaryContractTests.test_codex_provider_turn_uses_replay_executable": "The Rust HTTP contract fixture starts no persistent supervisor; provider-session/supervisor-transport is required to start a turn.",
+        "__main__.RestartContractTests.test_restart_serves_sync_receipt_and_provider_facts": "The Rust HTTP contract fixture starts no persistent supervisor; provider-session/supervisor-transport is required before the restart scenario can reach a turn.",
+    },
+    "workspaces/runtime/apps/server/tests/protocol-fixtures-contract.py": {
+        "__main__.ProtocolFixturesContract.test_supervisor_and_provider_fixtures_match_http_observations": "The supervisor-enabled fixture still times out before provider output reaches the transcript; the cause is not yet known and remains an open provider-session finding.",
     },
     "workspaces/runtime/apps/server/tests/yolo-contract.py": {
         "__main__.YoloHTTPContract.test_turns_after_yolo_is_disabled_use_restricted_provider_permissions": "The test executes provider turns; no operation declares this dependency yet.",
@@ -117,17 +124,21 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
                     "expected": "501", "expected_error": "Not implemented: requires account-transfer/provider-history-executor",
                     "assert_no_write": True},
     },
+    ("POST", "/api/connection-recovery"): {
+        "primary": {"body": {"id": "$agent"}, "expected": "501",
+                    "expected_error": "Not implemented: requires account-worker/recovery-history", "assert_no_write": True},
+    },
     ("GET", "/api/agent-chat"): {
         "primary": {"query": {"room": "$room"}, "query_omit": ["before", "after"], "expected": "2xx"},
     },
     ("GET", "/api/agents/finder-view"): {
-        "primary": {"query": {"agent": "$agent"}},
+        "primary": {"query": {"agent": "$agent"}, "expected": "2xx"},
     },
     ("GET", "/api/analytics"): {
         "primary": {"query": {"agent": "$analyticsAgent"}, "query_omit": ["view", "detail", "item", "turn", "thread", "turns", "tool", "timing", "export"], "expected": "2xx"},
     },
     ("GET", "/api/capabilities"): {
-        "primary": {"query": {"agent": "$agent"}},
+        "primary": {"query": {"agent": "$agent"}, "expected": "2xx"},
     },
     ("GET", "/api/changes"): {
         "primary": {
@@ -262,20 +273,24 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
         "primary": {"query": {"protocol": "3", "resources": "[{\"kind\":\"state\"}]", "apiSchema": "$schemaHash"}, "expected": "2xx"},
     },
     ("GET", "/api/skills"): {
-        "primary": {"query": {"agent": "$agent"}},
+        "primary": {"query": {"agent": "$agent"}, "expected": "2xx"},
     },
     ("GET", "/api/tool-requests"): {
         "primary": {"query": {"agent": "$agent", "request_id": "$toolReceipt"}, "expected": "2xx", "assert_no_write": True},
         "additional": [{"name": "list", "query": {"agent": "$agent"}, "query_omit": ["request_id"], "expected": "2xx", "assert_no_write": True}],
     },
     ("GET", "/api/transcript"): {
-        "primary": {"query": {"id": "$agent"}, "expected": "501"},
+        "primary": {"query": {"id": "$agent"}, "expected": "2xx"},
     },
     ("GET", "/api/transcript/page"): {
-        "primary": {"query": {"id": "$agent"}, "expected": "501"},
+        "primary": {
+            "query": {"id": "$agent"},
+            "query_omit": ["before", "around", "after"],
+            "expected": "2xx",
+        },
     },
     ("GET", "/api/accounts/claude/login"): {
-        "primary": {"query": {"request_id": "88888888-8888-4888-8888-888888888888"}, "expected": "501"},
+        "primary": {"query": {"request_id": "88888888-8888-4888-8888-888888888888"}, "expected": "400"},
     },
     ("GET", "/api/multi-server/v1/identity"): {"primary": {"expected": "501"}},
     ("GET", "/api/multi-server/v1/status"): {"primary": {"expected": "501"}},
@@ -284,7 +299,7 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
         "primary": {"query": {"id": "$agent", "message_id": "$item"}, "expected": "2xx"},
     },
     ("GET", "/api/search"): {
-        "primary": {"query": {"q": "ledger-probe"}, "expected": "501"},
+        "primary": {"query": {"q": "ledger-probe"}, "expected": "2xx"},
     },
     ("GET", "/api/complaint"): {
         "primary": {"query": {"id": "$complaint"}},
@@ -513,17 +528,20 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
         "primary": {"body": {"id": "$agent", "name": "HTTP ledger probe rename", "request_id": "ledger-rename"}, "fixture_mutations": {"agent_name": "HTTP ledger probe rename"}, "restore": ["agent_record"], "expected": "2xx"},
         "additional": [{"name": "provider generated title", "body": {"id": "$agent", "name": None, "request_id": "ledger-smart-title"}, "expected": "501", "expected_error": "Not implemented: requires provider-session/title-generation", "assert_no_write": True}],
     },
+    ("POST", "/api/claude/session"): {
+        "primary": {"body": {"id":"$agent","action":"state"},"replace_body":True,"expected":"501","expected_error":"Not implemented: requires provider-session/claude-controls","assert_no_write":True},
+    },
     ("POST", "/api/accounts/claude/add"): {
-        "primary": {"body": {"login_id": "88888888-8888-4888-8888-888888888881", "email": "ledger@example.test"}, "replace_body": True, "expected": "501", "expected_error": "Not implemented: requires provider-session/claude-login", "assert_no_write": True},
+        "primary": {"body": {"login_id": "88888888-8888-4888-8888-888888888881", "email": "ledger@example.test"}, "replace_body": True, "expected": "400", "assert_no_write": True},
     },
     ("POST", "/api/accounts/claude/login"): {
-        "primary": {"body": {"login_id": "88888888-8888-4888-8888-888888888882", "account_key": "$claudeAccount"}, "replace_body": True, "expected": "501", "expected_error": "Not implemented: requires provider-session/claude-login", "assert_no_write": True},
+        "primary": {"body": {"login_id": "88888888-8888-4888-8888-888888888882", "account_key": "$claudeAccount"}, "replace_body": True, "expected": "400", "assert_no_write": True},
     },
     ("POST", "/api/accounts/claude/login/cancel"): {
-        "primary": {"body": {"login_id": "88888888-8888-4888-8888-888888888883"}, "replace_body": True, "expected": "501", "expected_error": "Not implemented: requires provider-session/claude-login", "assert_no_write": True},
+        "primary": {"body": {"login_id": "88888888-8888-4888-8888-888888888883"}, "replace_body": True, "expected": "400", "assert_no_write": True},
     },
     ("POST", "/api/accounts/claude/login/code"): {
-        "primary": {"body": {"login_id": "88888888-8888-4888-8888-888888888884", "code": "123456"}, "replace_body": True, "expected": "501", "expected_error": "Not implemented: requires provider-session/claude-login", "assert_no_write": True},
+        "primary": {"body": {"login_id": "88888888-8888-4888-8888-888888888884", "code": "123456"}, "replace_body": True, "expected": "400", "assert_no_write": True},
     },
     ("POST", "/api/accounts/login"): {
         "primary": {"body": {"login_id": "88888888-8888-4888-8888-888888888885"}, "replace_body": True, "expected": "501", "expected_error": "Not implemented: requires provider-session/codex-login", "assert_no_write": True},
@@ -547,7 +565,7 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
         "primary": {"body": {"home": "$projectPath"}, "expected": "400", "assert_no_write": True},
     },
     ("POST", "/api/accounts/discover"): {"primary": {"body": {}, "expected": "2xx"}},
-    ("POST", "/api/answer"): {"primary": {"body": {"id": "$question", "decision": "cancel"}, "expected": "501", "assert_no_write": True}},
+    ("POST", "/api/answer"): {"primary": {"body": {"id": "$question", "decision": "cancel"}, "expected": "501", "expected_error": answer_refusal_error(), "assert_no_write": True}},
     ("POST", "/api/branch"): {"primary": {"body": {"agent": "$agent", "id": "ledger-branch", "message_id": "ledger-message"}, "expected": "501", "assert_no_write": True}},
     ("POST", "/api/capacity-retry"): {
         "primary": {"body": {"id": "$agent", "retry_id": "ledger-capacity-cancel", "action": "cancel"}, "expected": "2xx"},
@@ -573,12 +591,26 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
     ("POST", "/api/terminals/input"): {"primary": {"body": {"id": "$terminal", "text": "x", "request_id": "ledger-input"}, "expected": "501", "assert_no_write": True}},
     ("POST", "/api/terminals/rename"): {"primary": {"body": {"id": "$terminal", "title": "Ledger"}, "expected": "501", "assert_no_write": True}},
     ("POST", "/api/terminals/resize"): {"primary": {"body": {"id": "$terminal", "cols": 80, "rows": 24}, "expected": "501", "assert_no_write": True}},
+    ("POST", "/api/native-command"): {
+        "primary": {
+            "body": {"id": "$activeCommand", "action": "input", "text": "ledger input"},
+            "expected": "501",
+            "expected_error": "Not implemented: requires turn-path/native-command-input",
+            "assert_no_write": True,
+        },
+    },
+    ("POST", "/api/sync/notify"): {
+        "primary": {
+            "body": {"requestId": "ledger-sync-notify", "resources": [{"kind": "state"}]},
+            "expected": "2xx",
+        },
+    },
     ("POST", "/api/usage-resume"): {
         "primary": {"body": {"id": "$agent", "resume_id": "ledger-resume-disable", "enabled": False}, "expected": "2xx"},
         "additional": [{"name": "provider turn resume", "body": {"id": "$agent", "resume_id": "ledger-resume-enable", "enabled": True}, "expected": "501", "expected_error": "Not implemented: requires store-bootstrap/usage-resume-schema, turn-driver/usage-resume", "assert_no_write": True}],
     },
     ("POST", "/api/voice/approve"): {"primary": {"body": {"agent": "$agent", "session_id": "$voiceActiveSession", "speech_id": "ledger-speech", "transcript_id": "ledger-transcript"}, "expected": "501", "assert_no_write": True}},
-    ("POST", "/api/voice/audio"): {"primary": {"body": {"agent": "$agent", "session_id": "$voiceActiveSession", "chunk_id": "ledger-audio", "audio": "", "mime": "audio/webm"}, "expected": "501", "assert_no_write": True}},
+    ("POST", "/api/voice/audio"): {"primary": {"body": {"agent": "$agent", "session_id": "$voiceActiveSession", "chunk_id": "ledger-audio", "audio": "", "mime": "audio/webm"}, "expected": "2xx"}},
     ("POST", "/api/voice/start"): {"primary": {"body": {"agent": "$agent", "session_id": "ledger-voice-start", "sdp": "v=0\\r\\n"}, "expected": "501", "assert_no_write": True}},
     ("POST", "/api/agents"): {
         "primary": {"body": {"id": "66666666-6666-4666-8666-666666666666", "prompt": "Ledger agent", "cwd": "$projectPath"}, "expected": "2xx"},
@@ -589,7 +621,7 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
     },
     ("POST", "/api/checkpoint"): {
         "primary": {"body": {"agent": "$imageAgent", "label": "ledger checkpoint"}, "expected": "501", "expected_error": "Not implemented: requires workspace-state/image-execution", "assert_no_write": True},
-        "additional": [{"name": "lead checkpoint shape", "body": {"agent": "$agent", "label": "ledger checkpoint alternate"}, "fixture_mutations": {"clear_workspace_monitors": True}, "restore": ["workspace_monitors"], "expected": "2xx"}],
+        "additional": [{"name": "lead checkpoint shape", "body": {"agent": "$agent", "label": "ledger checkpoint alternate"}, "fixture_mutations": {"clear_workspace_monitors": True, "clear_workspace_commands": True}, "restore": ["workspace_monitors", "workspace_commands"], "expected": "2xx"}],
     },
     ("POST", "/api/checkpoint/preview"): {
         "primary": {"body": {"agent": "$agent", "checkpoint": "$checkpoint"}, "expected": "2xx"},
@@ -624,11 +656,11 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
     },
     ("POST", "/api/voice/end"): {
         "primary": {"body": {"agent": "$agent", "session_id": "$voiceEndedSession"}, "expected": "2xx"},
-        "additional": [{"name": "active voice session dependency", "body": {"agent": "$agent", "session_id": "$voiceActiveSession"}, "expected": "501", "expected_error": "Not implemented: requires provider-session/voice", "assert_no_write": True}],
+        "additional": [{"name": "active voice session dependency", "body": {"agent": "$agent", "session_id": "$voiceActiveSession"}, "expected": "501", "expected_error": "Not implemented: requires account-worker/voice-session", "assert_no_write": True}],
     },
     ("POST", "/api/voice/speech"): {
         "primary": {"body": {"agent": "$agent", "record_id": "$voiceRecord", "session_id": "$voiceEndedSession"}, "expected": "2xx"},
-        "additional": [{"name": "provider-backed voice speech", "body": {"agent": "$agent", "record_id": "$voiceRecord", "session_id": "$voiceActiveSession"}, "expected": "501", "expected_error": "Not implemented: requires provider-session/voice", "assert_no_write": True}],
+        "additional": [{"name": "provider-backed voice speech", "body": {"agent": "$agent", "record_id": "$voiceRecord", "session_id": "$voiceActiveSession"}, "expected": "501", "expected_error": "Not implemented: requires account-worker/voice-session", "assert_no_write": True}],
     },
     ("POST", "/api/rules"): {
         "primary": {"body": {
@@ -855,6 +887,7 @@ def seed_python_probe_state(backend: Any) -> dict[str, str]:
     agent_id = "ledger-probe-agent"
     image_agent_id = "ledger-probe-image-agent"
     task_id = "ledger-probe-task"
+    active_command_id = "ledger-probe-active-command"
     work_id = "ledger-probe-work"
     complaint_id = "ledger-probe-complaint"
     room_id = "ledger-probe-room"
@@ -882,6 +915,7 @@ try:
     agent = {{
         "id": {agent_id!r}, "rootId": {agent_id!r}, "epoch": 0,
         "status": "idle", "name": "HTTP ledger probe owner", "role": "orchestrator",
+        "model": "fixture-model",
         "cwd": os.environ["CODEX_CANVAS_CWD"], "isLead": True,
         "autoWake": True, "approvalPolicy": "never", "worktreeReady": True,
         "accountKey": "default", "threadId": "ledger-probe-thread",
@@ -930,6 +964,11 @@ try:
             "id": {task_id!r}, "agent": {agent_id!r}, "kind": "command",
             "status": "completed",
             "created": 1.0, "finished": 2.0,
+        }}, sync_rooms=False)
+        runtime.put(db, "tasks", {{
+            "id": {active_command_id!r}, "agent": {agent_id!r}, "kind": "command",
+            "status": "running", "processId": "44", "itemId": "ledger-command-item",
+            "created": 1.0,
         }}, sync_rooms=False)
         runtime.put(db, "work", {{
             "id": {work_id!r}, "rootId": {agent_id!r}, "owner": {agent_id!r},
@@ -1087,6 +1126,7 @@ finally:
         "agent": agent_id,
         "imageAgent": image_agent_id,
         "task": task_id,
+        "activeCommand": active_command_id,
         "complaint": complaint_id,
         "room": room_id,
         "checkpoint": terminal_identifiers["checkpoint"],
@@ -1191,6 +1231,8 @@ def probe_fixture_state(
         raise ValueError("session cost cache mutations must declare cache restoration")
     if ("clear_workspace_monitors" in mutations) != ("workspace_monitors" in restore):
         raise ValueError("workspace monitor mutations must declare restoration")
+    if ("clear_workspace_commands" in mutations) != ("workspace_commands" in restore):
+        raise ValueError("workspace command mutations must declare restoration")
     if ("activate_rule_check" in mutations) != ("rule_monitor" in restore):
         raise ValueError("active rule-check mutations must declare restoration")
 
@@ -1198,6 +1240,7 @@ def probe_fixture_state(
     identity_file: tuple[Path, bytes, int] | None = None
     session_cost_cache: tuple[Path, bytes] | None = None
     workspace_monitors: dict[str, str] | None = None
+    workspace_commands: dict[str, str] | None = None
     rule_monitor: tuple[str, str] | None = None
     try:
         if {"agent_execution_mode", "agent_name"} & mutations.keys():
@@ -1230,6 +1273,16 @@ def probe_fixture_state(
             cache = json.loads(session_cost_cache[1])
             cache["source"]["usage"]["generation"] += 1
             path.write_text(json.dumps(cache), encoding="utf-8")
+        if mutations.get("clear_workspace_commands"):
+            with sqlite3.connect(backend.state / "canvas.sqlite3") as connection:
+                workspace_commands = dict(connection.execute(
+                    "SELECT id,record FROM runtime_tasks WHERE "
+                    "json_extract(record,'$.status') IN ('running','starting','pending','unknown')"
+                ))
+                for task_id, raw in workspace_commands.items():
+                    changed = json.loads(raw)
+                    changed["status"] = "completed"
+                    connection.execute("UPDATE runtime_tasks SET record=? WHERE id=?", (json.dumps(changed), task_id))
         if mutations.get("clear_workspace_monitors") or mutations.get("activate_rule_check"):
             with sqlite3.connect(backend.state / "canvas.sqlite3") as connection:
                 if mutations.get("clear_workspace_monitors"):
@@ -1281,6 +1334,10 @@ def probe_fixture_state(
                 if session_cost_cache is not None:
                     path, content = session_cost_cache
                     path.write_bytes(content)
+                if workspace_commands is not None:
+                    with sqlite3.connect(backend.state / "canvas.sqlite3") as connection:
+                        for task_id, raw in workspace_commands.items():
+                            connection.execute("UPDATE runtime_tasks SET record=? WHERE id=?", (raw, task_id))
                 if workspace_monitors is not None or rule_monitor is not None:
                     with sqlite3.connect(backend.state / "canvas.sqlite3") as connection:
                         if workspace_monitors is not None:
@@ -1610,6 +1667,15 @@ def case_results(log_text: str) -> list[dict[str, Any]]:
             current = None
     if current is not None:
         cases.append({**current, "status": "unreported"})
+    for failure in failure_headings(log_text):
+        if failure["test"] == "setUpClass":
+            test_id = f"setUpClass ({failure['context']})"
+            if not any(case["testId"] == test_id for case in cases):
+                cases.append({
+                    "test": failure["test"],
+                    "testId": test_id,
+                    "status": failure["kind"],
+                })
     return cases
 
 
@@ -1707,8 +1773,13 @@ def run_suite(
 ) -> dict[str, Any]:
     relative = str(path.relative_to(ROOT))
     trace_path = trace_root / f"{path.stem}.jsonl"
+    python_baseline_only = relative in PYTHON_BASELINE_ONLY_SUITES
     suite_environment = environment.copy()
-    suite_environment["STUDIO_HTTP_LEDGER_TRACE"] = str(trace_path)
+    if python_baseline_only:
+        suite_environment.pop("STUDIO_HTTP_BACKEND_COMMAND", None)
+        suite_environment.pop("STUDIO_HTTP_LEDGER_TRACE", None)
+    else:
+        suite_environment["STUDIO_HTTP_LEDGER_TRACE"] = str(trace_path)
     # Preserve complete unittest records and HTTP attribution across runner output.
     suite_environment["CODEX_SERVER_TEST_JOBS"] = "1"
     skipped_for_service = missing_service_tests_for_suite(relative)
@@ -1752,7 +1823,14 @@ def run_suite(
         "skipped": sum(case["status"] == "skipped" for case in cases),
     }
     ran_summaries = re.findall(r"^Ran (\d+) tests? in ", log_text, re.MULTILINE)
-    ran_count = sum(map(int, ran_summaries))
+    setup_failures = {
+        failure["context"]
+        for failure in failure_headings(log_text)
+        if failure["test"] == "setUpClass"
+    }
+    # unittest reports a failed class setup as a failure but excludes it from
+    # `Ran N tests`; include each such suite-level case in the count contract.
+    ran_count = sum(map(int, ran_summaries)) + len(setup_failures)
     suite_summary = re.search(
         r"Server suites: (\d+) passed, (\d+) failed, (\d+) skipped \(opt-in\), (\d+) skipped \(environment\)",
         log_text,
@@ -1851,6 +1929,7 @@ def run_suite(
         case["standard501Envelope"] = all(valid_501_envelope(event, manifest) for event in case_requests if event["status"] == 501)
     return {
         "suite": relative,
+        "backend": "python-baseline" if python_baseline_only else "rust",
         "status": result.get("status", "failed"),
         "passed": result.get("passed") or 0,
         "failed": result.get("failed") or 0,
@@ -1965,6 +2044,11 @@ def main() -> int:
         raise RuntimeError("HTTP ledger error-body trace regression failed")
     routes = operations()
     manifest = rust_operation_manifest()
+    answer_manifest = manifest.get(("POST", "/api/answer"), {})
+    if tuple(answer_manifest.get("dependencies", [])) != ANSWER_REFUSAL_DEPENDENCIES:
+        raise RuntimeError(
+            "POST /api/answer refusal expectation does not match the Rust operation manifest"
+        )
     validate_missing_service_exclusions(manifest)
     ensure_operation_probe_cases(manifest)
     DEFAULT_CACHE.mkdir(parents=True, exist_ok=True)

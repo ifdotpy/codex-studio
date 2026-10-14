@@ -10,7 +10,9 @@ use studio_runtime_store::{
 };
 use thiserror::Error;
 
-pub use studio_runtime_store::{python_json, python_json_compact, truthy};
+pub use studio_runtime_store::{
+    python_json, python_json_compact, python_json_with_separators, truthy,
+};
 
 pub fn request_signature(value: &Value) -> String {
     studio_runtime_store::sha256_hex(python_json(value).as_bytes())

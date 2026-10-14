@@ -1,0 +1,127 @@
+{
+  "$defs": {
+    "JsonValue": {}
+  },
+  "additionalProperties": {
+    "$ref": "#/$defs/JsonValue"
+  },
+  "properties": {
+    "after": {
+      "maximum": 9007199254740991,
+      "minimum": 0,
+      "title": "After",
+      "type": "integer"
+    },
+    "ambiguousNotices": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Ambiguousnotices",
+      "type": "array"
+    },
+    "before": {
+      "maximum": 9007199254740991,
+      "minimum": 0,
+      "title": "Before",
+      "type": "integer"
+    },
+    "counter": {
+      "anyOf": [
+        {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Counter"
+    },
+    "created": {
+      "title": "Created",
+      "type": "number"
+    },
+    "cutoff": {
+      "title": "Cutoff",
+      "type": "number"
+    },
+    "faults": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Faults",
+      "type": "array"
+    },
+    "floor": {
+      "maximum": 9007199254740991,
+      "minimum": 0,
+      "title": "Floor",
+      "type": "integer"
+    },
+    "historicalNotices": {
+      "maximum": 9007199254740991,
+      "minimum": 0,
+      "title": "Historicalnotices",
+      "type": "integer"
+    },
+    "lastAmount": {
+      "anyOf": [
+        {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Lastamount"
+    },
+    "noticeAt": {
+      "title": "Noticeat",
+      "type": "number"
+    },
+    "noticeSpent": {
+      "maximum": 9007199254740991,
+      "minimum": 0,
+      "title": "Noticespent",
+      "type": "integer"
+    },
+    "spent": {
+      "maximum": 9007199254740991,
+      "minimum": 0,
+      "title": "Spent",
+      "type": "integer"
+    },
+    "thread": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Thread"
+    }
+  },
+  "required": [
+    "cutoff",
+    "floor",
+    "spent",
+    "before",
+    "after",
+    "historicalNotices",
+    "noticeSpent",
+    "counter",
+    "thread",
+    "noticeAt",
+    "created",
+    "lastAmount",
+    "ambiguousNotices",
+    "faults"
+  ],
+  "title": "PersistedBudgetState",
+  "type": "object"
+}

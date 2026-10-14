@@ -19,10 +19,18 @@ use crate::validation::Registry;
 
 #[derive(Clone)]
 pub struct HttpState {
+    /// Host policy; absent uses pre-resolved workspace paths and the named budget refusal.
+    pub message_admission:
+        Option<Arc<dyn studio_runtime_services::message_admission::MessageAdmission>>,
+    pub(crate) callback_runtime:
+        Option<Arc<studio_runtime_services::callback_runtime::CallbackRuntime>>,
+    pub claude_login: Option<Arc<studio_runtime_services::claude_login::service::LoginService>>,
     pub(crate) multi_server_boundary:
         Option<Arc<studio_runtime_services::multi_server_pairing::MultiServerBoundary>>,
     pub account_driver:
         Option<std::sync::Arc<studio_runtime_services::account_driver::AccountDriver>>,
+    pub(crate) voice_provider:
+        Option<Arc<dyn studio_runtime_services::voice::provider::VoiceProviderPort>>,
     pub(crate) credentials: Arc<studio_runtime_services::federation_credentials::Credentials>,
     pub(crate) token: String,
     pub(crate) workspace_id: String,
@@ -34,7 +42,11 @@ pub struct HttpState {
     pub(crate) store: Option<Arc<RuntimeStore>>,
     pub(crate) account_policy:
         Option<Arc<studio_runtime_services::account_policy::AccountPolicyState>>,
+    pub(crate) tool_catalog: Option<Arc<studio_runtime_services::thread_prepare::CatalogSnapshot>>,
     pub(crate) model_catalog: studio_runtime_services::model_catalog::ModelCatalogService,
+    pub(crate) capabilities_cache: Arc<studio_runtime_services::catalog_reads::CapabilitiesCache>,
+    pub(crate) resource_notifications:
+        Arc<studio_runtime_services::resource_notify::ResourceNotifications>,
     pub(crate) sync_changes: Arc<ChangeNotificationHub>,
     pub(crate) token_rates: Arc<TokenRateHub>,
     pub(crate) event_wake: Arc<Notify>,
@@ -65,7 +77,11 @@ impl HttpState {
             store.set_commit_notifier(move || changes.notify_one());
         }
         Self {
+            message_admission: None,
+            callback_runtime: None,
             account_driver: None,
+            claude_login: None,
+            voice_provider: None,
             credentials: Arc::default(),
             multi_server_boundary: None,
             token,
@@ -77,9 +93,16 @@ impl HttpState {
             validators: Registry::default(),
             store,
             account_policy,
+            tool_catalog: None,
             model_catalog,
-            sync_changes,
-            token_rates: Arc::new(TokenRateHub::new()),
+            capabilities_cache: Arc::new(Default::default()),
+            resource_notifications: Arc::new(
+                studio_runtime_services::resource_notify::ResourceNotifications::new(Arc::clone(
+                    &sync_changes,
+                )),
+            ),
+            sync_changes: Arc::clone(&sync_changes),
+            token_rates: Arc::new(TokenRateHub::with_change_hub(Arc::clone(&sync_changes))),
             event_wake: Arc::new(Notify::new()),
             etag_operations: BTreeSet::new(),
         }
@@ -93,6 +116,15 @@ impl HttpState {
         self
     }
 
+    /// Attach the retained provider callback reply adapter.
+    pub fn with_callback_runtime(
+        mut self,
+        runtime: Arc<studio_runtime_services::callback_runtime::CallbackRuntime>,
+    ) -> Self {
+        self.callback_runtime = Some(runtime);
+        self
+    }
+
     /// Attach the retained account refresh driver used by account admission.
     pub fn with_account_driver(
         mut self,
@@ -102,9 +134,47 @@ impl HttpState {
         self
     }
 
+    /// Attach the account worker's generic provider-session voice adapter.
+    pub fn with_voice_provider(
+        mut self,
+        provider: Arc<dyn studio_runtime_services::voice::provider::VoiceProviderPort>,
+    ) -> Self {
+        self.voice_provider = Some(provider);
+        self
+    }
+
+    /// Attach the full selected native tool catalog for capabilities reads.
+    pub fn with_tool_catalog(
+        mut self,
+        catalog: studio_runtime_services::thread_prepare::CatalogSnapshot,
+    ) -> Self {
+        self.tool_catalog = Some(Arc::new(catalog));
+        self
+    }
+
+    pub async fn shutdown_services(&self) -> std::io::Result<()> {
+        let model = self.model_catalog.shutdown().await;
+        if let Some(login) = &self.claude_login {
+            login.shutdown().await.map_err(std::io::Error::other)?;
+        }
+        model
+    }
+
     /// Shared post-commit signal for durable event writers and the scheduler.
     pub fn event_wake_handle(&self) -> Arc<Notify> {
         Arc::clone(&self.event_wake)
+    }
+
+    pub fn model_catalog_handle(
+        &self,
+    ) -> studio_runtime_services::model_catalog::ModelCatalogService {
+        self.model_catalog.clone()
+    }
+
+    pub fn resource_notifications_handle(
+        &self,
+    ) -> Arc<studio_runtime_services::resource_notify::ResourceNotifications> {
+        Arc::clone(&self.resource_notifications)
     }
 
     pub fn sync_changes_handle(&self) -> Arc<ChangeNotificationHub> {
@@ -658,6 +728,9 @@ mod tests {
             let app = router(state()).expect("router starts");
             let at_limit_status = if path == "/api/assets" {
                 StatusCode::BAD_REQUEST
+            } else if path == "/api/voice/audio" {
+                // This route is implemented; the boundary-only fixture has no store.
+                StatusCode::INTERNAL_SERVER_ERROR
             } else {
                 StatusCode::NOT_IMPLEMENTED
             };

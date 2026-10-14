@@ -30,6 +30,85 @@ spec.loader.exec_module(ledger)
 
 
 class LedgerTraceContract(unittest.TestCase):
+    def test_native_p04_http_suite_is_registered_as_python_baseline_only(self) -> None:
+        relative = "workspaces/runtime/apps/server/tests/wave7-p04-native-http-contract.py"
+        selected = {str(path.relative_to(ROOT)) for path in ledger.consumer_suites()}
+        self.assertIn(relative, selected)
+        self.assertIn(relative, ledger.PYTHON_BASELINE_ONLY_SUITES)
+        self.assertTrue(
+            (ROOT / "workspaces/runtime/packages/runtime-http/tests/wave7_p04_callback_http.rs").is_file()
+        )
+
+    def test_setup_class_error_is_a_named_failure_and_counts_as_one_case(self) -> None:
+        log = """setUpClass (__main__.NativeNullHTTP) ... ERROR
+======================================================================
+ERROR: setUpClass (__main__.NativeNullHTTP)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  RuntimeError: fixture requires the Python backend
+
+----------------------------------------------------------------------
+Ran 0 tests in 0.000s
+FAILED (errors=1)
+FAIL workspaces/runtime/apps/server/tests/wave7-p04-native-http-contract.py: test failure; failing IDs: ['setUpClass (__main__.NativeNullHTTP)']; reproduce: python
+Server suites: 0 passed, 1 failed, 0 skipped (opt-in), 0 skipped (environment), 0.1s; 0 runner errors
+"""
+        self.assertEqual(
+            ledger.case_results(log),
+            [{
+                "test": "setUpClass",
+                "testId": "setUpClass (__main__.NativeNullHTTP)",
+                "status": "error",
+            }],
+        )
+        with tempfile.TemporaryDirectory() as scratch:
+            trace_root = Path(scratch)
+            log_path = trace_root / "setup-failure.log"
+            log_path.write_text(log)
+            process = SimpleNamespace(returncode=1, stderr="", stdout=json.dumps({
+                "logPath": str(log_path), "status": "failed", "passed": 0,
+                "failed": 1, "skipped": 0, "exitCode": 1,
+            }))
+            relative = "workspaces/runtime/apps/server/tests/wave7-p04-native-http-contract.py"
+            path = ROOT / relative
+            with patch.object(ledger.subprocess, "run", return_value=process) as run:
+                result = ledger.run_suite(path, {"STUDIO_HTTP_BACKEND_COMMAND": "rust"}, trace_root, [], {})
+            self.assertEqual(result["failed"], 1)
+            self.assertEqual(result["failures"][0]["context"], "__main__.NativeNullHTTP")
+            self.assertNotIn("STUDIO_HTTP_BACKEND_COMMAND", run.call_args.kwargs["env"])
+            self.assertNotIn("STUDIO_HTTP_LEDGER_TRACE", run.call_args.kwargs["env"])
+
+    def test_provider_turn_refusals_are_keyed_to_the_undeclared_dependency(self) -> None:
+        boundary = "workspaces/runtime/apps/server/tests/http-boundary-contract.py"
+        protocol = "workspaces/runtime/apps/server/tests/protocol-fixtures-contract.py"
+        boundary_tests = ledger.UNDECLARED_PROVIDER_TURN_TESTS[boundary]
+        self.assertIn(
+            "__main__.BoundaryContractTests.test_codex_provider_turn_uses_replay_executable",
+            boundary_tests,
+        )
+        self.assertIn(
+            "__main__.RestartContractTests.test_restart_serves_sync_receipt_and_provider_facts",
+            boundary_tests,
+        )
+        self.assertIn(
+            "__main__.ProtocolFixturesContract.test_supervisor_and_provider_fixtures_match_http_observations",
+            ledger.UNDECLARED_PROVIDER_TURN_TESTS[protocol],
+        )
+        self.assertNotIn(boundary, ledger.MISSING_SERVICE_TESTS)
+        self.assertNotIn(protocol, ledger.MISSING_SERVICE_TESTS)
+        self.assertEqual(
+            ledger.missing_service_tests_for_suite(boundary)[
+                "__main__.RestartContractTests.test_restart_serves_sync_receipt_and_provider_facts"
+            ]["service"],
+            ledger.UNDECLARED_PROVIDER_TURN_SERVICE,
+        )
+        self.assertIn(
+            "cause is not yet known",
+            ledger.UNDECLARED_PROVIDER_TURN_TESTS[protocol][
+                "__main__.ProtocolFixturesContract.test_supervisor_and_provider_fixtures_match_http_observations"
+            ],
+        )
+
     def test_split_suite_counts_include_every_unittest_summary(self) -> None:
         with tempfile.TemporaryDirectory() as scratch:
             root = Path(scratch)
@@ -63,7 +142,7 @@ class LedgerTraceContract(unittest.TestCase):
             "layoutRevision", "emptyQueueRevision", "queueIds", "question", "toolReceipt", "toolCancel",
             "questionDelete", "providerQuestion", "projectPath", "claudeAccount",
             "voiceRecord", "voiceEndedSession", "voiceActiveSession",
-            "analyticsAgent", "schemaHash", "approvalRequest", "codexLogin",
+            "analyticsAgent", "schemaHash", "approvalRequest", "codexLogin", "activeCommand",
         }
 
         def references(value):

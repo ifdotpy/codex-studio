@@ -39,7 +39,12 @@ PROVIDER_FIXTURES = Path(__file__).parent / "fixtures/provider-replay"
 HTTP_WAIT_GUARD_SECONDS = HANG_GUARD_SECONDS
 HTTP_WAIT_POLL_SECONDS = POLL_INTERVAL_SECONDS
 STARTUP_TIMEOUT_SECONDS = HTTP_WAIT_GUARD_SECONDS
+SUPERVISOR_SOCKET_TIMEOUT_SECONDS = HANG_GUARD_SECONDS
+STATE_BOOTSTRAP_TIMEOUT_SECONDS = HANG_GUARD_SECONDS
+BACKEND_READY_POLL_SECONDS = 0.1
 STOP_TIMEOUT_SECONDS = 4.0
+FORCED_STOP_TIMEOUT_SECONDS = 2.0
+PIPE_READER_DRAIN_TIMEOUT_SECONDS = 2.0
 PROVIDER_SELECTION_ENVIRONMENT = frozenset({
     "CODEX_BIN",
     "CODEX_AGENTS_NATIVE_RUNTIME_PIN",
@@ -252,8 +257,12 @@ class BackendProcess:
         self._supervisor_log: TextIO | None = None
         self._backend_python: Path | None = None
         self._claude_bin = claude_bin
-        self._output: queue.Queue[str] = queue.Queue()
+        self._output: queue.Queue[str | None] = queue.Queue()
+        self._backend_activity = threading.Event()
+        self._stdout_reader_done = threading.Event()
+        self._stderr_reader_done = threading.Event()
         self._reader: threading.Thread | None = None
+        self._stderr_reader: threading.Thread | None = None
         self._stderr: list[str] = []
         self._stderr_lock = threading.Lock()
         self._codex_log: Path | None = None
@@ -353,10 +362,12 @@ class BackendProcess:
             values["CODEX_AGENTS_SUPERVISOR_MODE"] = "1"
             values["CODEX_AGENTS_BACKEND_ID"] = "provider-fixture-backend"
         # Keep the equipped interpreter when this factory is called from system Python.
-        if not os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"):
-            values["CODEX_AGENTS_PYTHON"] = os.environ.get(
-                "STUDIO_HTTP_BACKEND_PYTHON", os.environ.get("CODEX_AGENTS_PYTHON", sys.executable)
-            )
+        # A Rust backend command still needs this selection for its Python bootstrap.
+        configured_python = os.environ.get("STUDIO_HTTP_BACKEND_PYTHON")
+        if configured_python is None and not os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"):
+            configured_python = os.environ.get("CODEX_AGENTS_PYTHON", sys.executable)
+        if configured_python is not None:
+            values["CODEX_AGENTS_PYTHON"] = configured_python
         executable = getattr(self, "_provider_executable", None)
         # Never expose caller-installed provider candidates to the test backend.
         # Native discovery honors this explicit test pin before PATH or its
@@ -415,12 +426,23 @@ class BackendProcess:
                 stderr=subprocess.STDOUT,
                 start_new_session=(os.name != "nt"),
             )
-            wait_for_condition(
-                lambda: (self.state / "supervisor.sock").exists(),
-                "disposable supervisor socket did not appear",
-                retry_exceptions=(),
-                timeout_exception=TimeoutError,
-            )
+            try:
+                wait_for_condition(
+                    lambda: (self.state / "supervisor.sock").exists(),
+                    f"disposable supervisor socket at {self.state / 'supervisor.sock'}",
+                    retry_exceptions=(),
+                    timeout_exception=TimeoutError,
+                )
+            except TimeoutError as error:
+                raise TimeoutError(
+                    f"Timed out after {SUPERVISOR_SOCKET_TIMEOUT_SECONDS:g}s waiting for "
+                    f"the supervisor socket at {self.state / 'supervisor.sock'}; "
+                    f"supervisor log tail:\n{self._supervisor_log_tail()}"
+                ) from error
+        self._output = queue.Queue()
+        self._backend_activity.clear()
+        self._stdout_reader_done.clear()
+        self._stderr_reader_done.clear()
         if self._codex_log is not None:
             environment["CODEX_FAKE_RECEIVED"] = str(self._codex_log)
         started = time.monotonic()
@@ -440,35 +462,64 @@ class BackendProcess:
             target=self._read_stdout, args=(self._process.stdout,), daemon=True
         )
         self._reader.start()
-        threading.Thread(
+        self._stderr_reader = threading.Thread(
             target=self._read_stderr, args=(self._process.stderr,), daemon=True
-        ).start()
+        )
+        self._stderr_reader.start()
         deadline = started + STARTUP_TIMEOUT_SECONDS
         ready_line_at: float
         while True:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
-                self._raise_backend_not_ready("startup guard expired", self._process.poll())
+                self._raise_backend_not_ready(
+                    f"timed out after {STARTUP_TIMEOUT_SECONDS:g}s waiting for "
+                    "the backend ready origin on stdout",
+                    self._process.poll(),
+                )
             try:
-                line = self._output.get(timeout=min(0.1, remaining))
+                line = self._output.get(timeout=min(BACKEND_READY_POLL_SECONDS, remaining))
                 break
             except queue.Empty:
                 status = self._process.poll()
                 if status is not None:
                     self._raise_backend_not_ready("process exited before the ready line", status)
+        if line is None:
+            self._raise_backend_not_ready("stdout closed before the ready line", self._process.poll())
         ready_line_at = time.monotonic()
         prefix = "Codex Canvas: "
         if not line.startswith(prefix):
+            stderr_tail = self.stderr or "<empty>"
             self.stop()
-            raise RuntimeError(f"Backend did not emit its ready origin: {line!r}; {self.stderr}")
+            raise RuntimeError(
+                f"Backend emitted an invalid ready origin while waiting for "
+                f"'Codex Canvas: http://127.0.0.1:<port>'; state={self.state}; "
+                f"stdout line={line!r}; stderr tail:\n{stderr_tail}"
+            )
         self.origin = line.removeprefix(prefix).strip()
-        port = int(self.origin.rsplit(":", 1)[1])
+        try:
+            port = int(self.origin.rsplit(":", 1)[1])
+        except (IndexError, ValueError) as error:
+            stderr_tail = self.stderr or "<empty>"
+            self.stop()
+            raise RuntimeError(
+                f"Backend emitted a malformed ephemeral-port origin while waiting for "
+                f"HTTP readiness; origin={self.origin!r}; state={self.state}; "
+                f"stderr tail:\n{stderr_tail}"
+            ) from error
         if port == 4620:
             self.stop()
-            raise RuntimeError("Refusing to connect to the live backend port 4620")
+            raise RuntimeError(
+                f"Refusing to connect to the live backend port 4620; "
+                f"state={self.state}; stderr tail:\n{self.stderr or '<empty>'}"
+            )
         if not self.origin.startswith("http://127.0.0.1:"):
+            stderr_tail = self.stderr or "<empty>"
             self.stop()
-            raise RuntimeError(f"Backend origin is not loopback: {self.origin!r}")
+            raise RuntimeError(
+                f"Backend emitted a non-IPv4-loopback origin while waiting for HTTP "
+                f"readiness; origin={self.origin!r}; state={self.state}; "
+                f"stderr tail:\n{stderr_tail}"
+            )
         last_health_error: Exception | None = None
         health_started = time.monotonic()
         while time.monotonic() < deadline:
@@ -478,10 +529,10 @@ class BackendProcess:
                     self.session = health.json()
                     break
                 last_health_error = RuntimeError(f"health returned HTTP {health.status}")
-                time.sleep(min(HTTP_WAIT_POLL_SECONDS, max(0.0, deadline-time.monotonic())))
+                self._wait_for_backend_activity(deadline)
             except (RuntimeError, URLError, OSError) as error:
                 last_health_error = error
-                time.sleep(min(HTTP_WAIT_POLL_SECONDS, max(0.0, deadline-time.monotonic())))
+                self._wait_for_backend_activity(deadline)
         else:
             self.stop()
             raise RuntimeError(f"Backend health request exceeded its bound: {last_health_error}; {self.stderr}")
@@ -505,10 +556,10 @@ class BackendProcess:
                 last_identity_error = RuntimeError(
                     f"contract identity returned HTTP {identity.status}"
                 )
-                time.sleep(min(HTTP_WAIT_POLL_SECONDS, max(0.0, deadline-time.monotonic())))
+                self._wait_for_backend_activity(deadline)
             except (RuntimeError, URLError, OSError) as error:
                 last_identity_error = error
-                time.sleep(min(HTTP_WAIT_POLL_SECONDS, max(0.0, deadline-time.monotonic())))
+                self._wait_for_backend_activity(deadline)
         else:
             self.stop()
             raise RuntimeError(
@@ -543,13 +594,13 @@ class BackendProcess:
                         )
                     break
                 last_provider_status = native
-                time.sleep(min(HTTP_WAIT_POLL_SECONDS, max(0.0, deadline - time.monotonic())))
+                self._wait_for_backend_activity(deadline)
             except ProviderSelectionError:
                 self.stop()
                 raise
             except (RuntimeError, URLError, OSError, ValueError) as error:
                 last_provider_status = error
-                time.sleep(min(HTTP_WAIT_POLL_SECONDS, max(0.0, deadline - time.monotonic())))
+                self._wait_for_backend_activity(deadline)
         else:
             self.stop()
             raise RuntimeError(
@@ -571,42 +622,108 @@ class BackendProcess:
         bootstrap_environment = environment.copy()
         bootstrap_environment["CODEX_AGENTS_PYTHON"] = python
         bootstrap_environment["PYTHONUNBUFFERED"] = "1"
-        log_path = self.root / "python-state-bootstrap.log"
-        with log_path.open("w", encoding="utf-8") as log:
-            process = subprocess.Popen(
-                [python, "-B", str(SERVER_SCRIPT), "--port", "0"],
-                cwd=self.cwd,
-                env=bootstrap_environment,
-                stdout=log,
-                stderr=subprocess.STDOUT,
-                start_new_session=(os.name != "nt"),
-            )
+        output: queue.Queue[str | None] = queue.Queue()
+        output_tail: list[str] = []
+        output_lock = threading.Lock()
+        reader_done = threading.Event()
+        process = subprocess.Popen(
+            [python, "-B", str(SERVER_SCRIPT), "--port", "0"],
+            cwd=self.cwd,
+            env=bootstrap_environment,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            start_new_session=(os.name != "nt"),
+        )
+        bootstrap_stdout = process.stdout
+        assert bootstrap_stdout is not None
+
+        def read_output() -> None:
             try:
-                wait_for_condition(
-                    lambda: "Codex Canvas: http://127.0.0.1:" in log_path.read_text(encoding="utf-8")
-                    or process.poll() is not None,
-                    "Python runtime did not initialize disposable state",
-                    retry_exceptions=(OSError,),
-                    timeout_exception=TimeoutError,
-                )
-                if process.poll() is not None:
-                    raise RuntimeError(
-                        "Python state bootstrap exited early: "
-                        + log_path.read_text(encoding="utf-8")[-4000:]
-                    )
+                for line in bootstrap_stdout:
+                    with output_lock:
+                        output_tail.append(line)
+                        del output_tail[:-80]
+                    output.put(line)
             finally:
-                if process.poll() is None:
-                    process.terminate()
+                output.put(None)
+                reader_done.set()
+
+        threading.Thread(target=read_output, daemon=True).start()
+
+        def output_tail_text() -> str:
+            with output_lock:
+                return "".join(output_tail)[-4000:] or "<empty>"
+
+        deadline = time.monotonic() + STATE_BOOTSTRAP_TIMEOUT_SECONDS
+        try:
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError(
+                        f"Timed out after {STATE_BOOTSTRAP_TIMEOUT_SECONDS:g}s waiting for "
+                        f"the disposable Python backend ready line on stdout; "
+                        f"state={self.state}; server stderr/stdout tail:\n{output_tail_text()}"
+                    )
                 try:
-                    process.wait(timeout=STOP_TIMEOUT_SECONDS)
-                except subprocess.TimeoutExpired:
+                    line = output.get(timeout=min(BACKEND_READY_POLL_SECONDS, remaining))
+                except queue.Empty:
+                    if process.poll() is not None:
+                        raise RuntimeError(
+                            f"Python state bootstrap exited with status {process.returncode} "
+                            f"while waiting for its ready line; state={self.state}; "
+                            f"server stderr/stdout tail:\n{output_tail_text()}"
+                        )
+                    continue
+                if line is None:
+                    raise RuntimeError(
+                        f"Python state bootstrap closed stdout before its ready line; "
+                        f"state={self.state}; server stderr/stdout tail:\n{output_tail_text()}"
+                    )
+                if "Codex Canvas: http://127.0.0.1:" in line:
+                    break
+        finally:
+            if process.poll() is None:
+                if os.name == "nt":
+                    process.terminate()
+                else:
+                    try:
+                        os.killpg(process.pid, signal.SIGTERM)
+                    except ProcessLookupError:
+                        pass
+            try:
+                process.wait(timeout=STOP_TIMEOUT_SECONDS)
+            except subprocess.TimeoutExpired:
+                if os.name == "nt":
                     process.kill()
-                    process.wait(timeout=2)
+                else:
+                    try:
+                        os.killpg(process.pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                try:
+                    process.wait(timeout=FORCED_STOP_TIMEOUT_SECONDS)
+                except subprocess.TimeoutExpired as error:
+                    raise RuntimeError(
+                        f"Python state bootstrap did not exit within "
+                        f"{FORCED_STOP_TIMEOUT_SECONDS:g}s after forced termination; "
+                        f"state={self.state}; server stderr/stdout tail:\n"
+                        f"{output_tail_text()}"
+                    ) from error
+            if not reader_done.wait(PIPE_READER_DRAIN_TIMEOUT_SECONDS):
+                raise RuntimeError(
+                    f"Python state bootstrap stdout reader did not reach EOF within "
+                    f"{PIPE_READER_DRAIN_TIMEOUT_SECONDS:g}s after process shutdown; "
+                    f"state={self.state}; server stderr/stdout tail:\n"
+                    f"{output_tail_text()}"
+                )
+            bootstrap_stdout.close()
 
     def _raise_backend_not_ready(self, reason: str, exit_status: int | None) -> None:
         stderr_tail = self.stderr or "<empty>"
         message = (
-            f"Backend did not emit its ready line: {reason}; "
+            f"Backend did not emit its ready line while waiting for state={self.state}: "
+            f"{reason}; "
             f"child exit status={exit_status}; stderr tail:\n{stderr_tail}"
         )
         if "studio_operations_native" in stderr_tail:
@@ -634,15 +751,43 @@ class BackendProcess:
         with self._stderr_lock:
             return "".join(self._stderr)[-4000:]
 
+    @staticmethod
+    def _file_tail(path: Path) -> str:
+        try:
+            return path.read_text(encoding="utf-8", errors="replace")[-4000:] or "<empty>"
+        except OSError as error:
+            return f"<could not read {path}: {error}>"
+
+    def _supervisor_log_tail(self) -> str:
+        return self._file_tail(self.root / "supervisor.log")
+
+    def _wait_for_backend_activity(self, deadline: float) -> None:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return
+        self._backend_activity.wait(min(HTTP_WAIT_POLL_SECONDS, remaining))
+        self._backend_activity.clear()
+
     def _read_stdout(self, stream: Any) -> None:
-        for line in stream:
-            self._output.put(line.rstrip("\r\n"))
+        try:
+            for line in stream:
+                self._output.put(line.rstrip("\r\n"))
+                self._backend_activity.set()
+        finally:
+            self._output.put(None)
+            self._backend_activity.set()
+            self._stdout_reader_done.set()
 
     def _read_stderr(self, stream: Any) -> None:
-        for line in stream:
-            with self._stderr_lock:
-                self._stderr.append(line)
-                del self._stderr[:-80]
+        try:
+            for line in stream:
+                with self._stderr_lock:
+                    self._stderr.append(line)
+                    del self._stderr[:-80]
+                self._backend_activity.set()
+        finally:
+            self._backend_activity.set()
+            self._stderr_reader_done.set()
 
     def request(
         self,
@@ -682,7 +827,10 @@ class BackendProcess:
                                   {key.lower(): value for key, value in error.headers.items()},
                                   error.read())
         except URLError as error:
-            raise HTTPTransportError(f"HTTP request failed at {path}: {error}") from error
+            raise HTTPTransportError(
+                f"HTTP request failed at {path} while backend state={self.state}: {error}; "
+                f"stderr tail:\n{self.stderr or '<empty>'}"
+            ) from error
 
     def create_codex_replay(self, fixture_name: str) -> Path:
         (self.codex_home / "auth.json").write_text(
@@ -795,12 +943,19 @@ class BackendProcess:
 
     def wait_until(self, condition: Callable[[], Any], description: str) -> Any:
         """Wait for an observable fixture condition with one shared hang guard."""
-        return wait_for_condition(
-            condition,
-            f"HTTP condition did not settle: {description}",
-            retry_exceptions=(HTTPTransportError,),
-            timeout_exception=TimeoutError,
-        )
+        try:
+            return wait_for_condition(
+                condition,
+                f"HTTP condition did not settle: {description}",
+                wake_event=self._backend_activity,
+                retry_exceptions=(HTTPTransportError,),
+                timeout_exception=TimeoutError,
+            )
+        except TimeoutError as error:
+            raise TimeoutError(
+                f"Timed out after {HTTP_WAIT_GUARD_SECONDS:g}s waiting for {description}; "
+                f"backend stderr tail:\n{self.stderr or '<empty>'}"
+            ) from error
 
     def received_provider_frames(self) -> list[dict[str, Any]]:
         if self._codex_log is None or not self._codex_log.exists():
@@ -846,7 +1001,14 @@ class BackendProcess:
                     os.killpg(process.pid, signal.SIGKILL)
                 except ProcessLookupError:
                     pass
-            process.wait(timeout=2)
+            try:
+                process.wait(timeout=FORCED_STOP_TIMEOUT_SECONDS)
+            except subprocess.TimeoutExpired as error:
+                raise RuntimeError(
+                    f"Backend did not exit within {FORCED_STOP_TIMEOUT_SECONDS:g}s "
+                    f"after forced termination; waited for backend process shutdown; "
+                    f"state={self.state}; stderr tail:\n{self.stderr or '<empty>'}"
+                ) from error
         finally:
             group_cleanup_started = time.monotonic()
             self.origin = None
@@ -855,8 +1017,15 @@ class BackendProcess:
                     os.killpg(process.pid, signal.SIGKILL)
                 except ProcessLookupError:
                     pass
+            stuck_readers = []
+            for stream_name, reader_done in (
+                ("stdout", self._stdout_reader_done),
+                ("stderr", self._stderr_reader_done),
+            ):
+                if not reader_done.wait(PIPE_READER_DRAIN_TIMEOUT_SECONDS):
+                    stuck_readers.append(stream_name)
             for stream in (process.stdout, process.stderr):
-                if stream is not None:
+                if stream is not None and not stuck_readers:
                     stream.close()
             self.stop_phases.append({
                 "exitWaitSeconds": round(exit_wait_seconds, 4),
@@ -864,6 +1033,13 @@ class BackendProcess:
                 "groupAndPipeCleanupSeconds": round(time.monotonic() - group_cleanup_started, 4),
                 "totalStopSeconds": round(time.monotonic() - stop_started, 4),
             })
+            if stuck_readers:
+                raise RuntimeError(
+                    f"Backend {', '.join(stuck_readers)} pipe reader did not reach EOF "
+                    f"within {PIPE_READER_DRAIN_TIMEOUT_SECONDS:g}s after process-group "
+                    f"shutdown; waited for pipe closure; state={self.state}; "
+                    f"stderr tail:\n{self.stderr or '<empty>'}"
+                )
 
     def close(self) -> None:
         self.stop()
@@ -876,7 +1052,15 @@ class BackendProcess:
                 supervisor.wait(timeout=STOP_TIMEOUT_SECONDS)
             except subprocess.TimeoutExpired:
                 supervisor.kill()
-                supervisor.wait(timeout=2)
+                try:
+                    supervisor.wait(timeout=FORCED_STOP_TIMEOUT_SECONDS)
+                except subprocess.TimeoutExpired as error:
+                    raise RuntimeError(
+                        f"Supervisor did not exit within {FORCED_STOP_TIMEOUT_SECONDS:g}s "
+                        f"after forced termination; waited for supervisor shutdown; "
+                        f"state={self.state}; supervisor log tail:\n"
+                        f"{self._supervisor_log_tail()}"
+                    ) from error
         if self._supervisor_log is not None:
             self._supervisor_log.close()
             self._supervisor_log = None

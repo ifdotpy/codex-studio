@@ -759,6 +759,12 @@ function fastTierRestCommands(root) {
     .filter(({ label }) => label !== "browser smoke subset");
 }
 
+function fastTierRestNonRustCommands(root) {
+  return fastTierRestCommands(root).filter(
+    ({ label }) => label !== "Rust nextest",
+  );
+}
+
 function heavyTierCommands(root) {
   const server = serverPackage();
   return [
@@ -781,19 +787,26 @@ function recipePlan(root, name) {
       ? fastTierCommands(root)
       : name === "test-fast-rest"
         ? fastTierRestCommands(root)
-        : heavyTierCommands(root);
+        : name === "test-fast-rest-non-rust"
+          ? fastTierRestNonRustCommands(root)
+          : heavyTierCommands(root);
   const commandLists = commands.map(
     ({ item, options = {}, commands: override }) =>
       override ?? commandFor(root, item, "test", "", options),
   );
-  const fast = name === "test-fast" || name === "test-fast-rest";
+  const fast =
+    name === "test-fast" ||
+    name === "test-fast-rest" ||
+    name === "test-fast-rest-non-rust";
   return {
     package: name,
     case: null,
     target: fast
       ? name === "test-fast"
         ? "repository fast tier"
-        : "fast tier excluding the server suites"
+        : name === "test-fast-rest"
+          ? "fast tier excluding the default server suites"
+          : "non-Rust fast-tier remainder"
       : "server heavy suites followed by full browser project",
     workingDirectory: root,
     invocationDirectory: root,
@@ -801,7 +814,9 @@ function recipePlan(root, name) {
     selector: fast
       ? name === "test-fast"
         ? "default server run, server bridge, Rust workspace nextest, web type checks and unit tests, tooling tests"
-        : "server bridge, Rust workspace nextest, web type checks and unit tests, tooling tests"
+        : name === "test-fast-rest"
+          ? "server bridge, Rust workspace nextest, web type checks and unit tests, tooling tests"
+          : "server bridge, web type checks and unit tests, tooling tests"
       : "server --only heavy, then codex-agents-web test:browser",
     requiredSetup:
       "Frozen pnpm dependencies, managed Python runtime and development dependencies, Rust toolchain and cargo-nextest, browser binaries",
@@ -1010,6 +1025,7 @@ export function parseCounts(item, output) {
 
 export function evaluatePlaywrightReport(reportText, processExitCode) {
   const errors = [];
+  let failures = [];
   if (processExitCode !== 0)
     errors.push(`Playwright exited with code ${processExitCode}`);
   let report;
@@ -1018,6 +1034,7 @@ export function evaluatePlaywrightReport(reportText, processExitCode) {
       throw new Error("Playwright JSON report is missing");
     report =
       typeof reportText === "string" ? JSON.parse(reportText) : reportText;
+    failures = playwrightFailureSummaries(report);
   } catch (error) {
     errors.push(
       error.message === "Playwright JSON report is missing"
@@ -1045,6 +1062,7 @@ export function evaluatePlaywrightReport(reportText, processExitCode) {
         summaryFound: false,
       },
       errors,
+      failures,
       exitCode: 1,
     };
   }
@@ -1064,8 +1082,50 @@ export function evaluatePlaywrightReport(reportText, processExitCode) {
   return {
     counts,
     errors,
+    failures,
     exitCode: errors.length ? 1 : 0,
   };
+}
+
+function playwrightFailureSummaries(report) {
+  const failures = [];
+  const visitSuite = (suite, parents = []) => {
+    const suiteTitles = suite.title ? [...parents, suite.title] : parents;
+    for (const spec of suite.specs ?? []) {
+      for (const test of spec.tests ?? []) {
+        const results = test.results ?? [];
+        if (
+          test.status !== "unexpected" &&
+          test.status !== "flaky" &&
+          !results.some((result) =>
+            ["failed", "timedOut"].includes(result.status),
+          )
+        )
+          continue;
+        const result = results.find((entry) =>
+          ["failed", "timedOut", "interrupted"].includes(entry.status),
+        );
+        const error = result?.errors?.[0] ?? test.errors?.[0];
+        const detail =
+          typeof error === "string"
+            ? error
+            : (error?.message ??
+              result?.status ??
+              test.status ??
+              "unexpected result");
+        const firstLine = String(detail).split(/\r?\n/, 1)[0].trim();
+        failures.push({
+          title: [...suiteTitles, spec.title, test.projectName]
+            .filter(Boolean)
+            .join(" › "),
+          error: firstLine || "no error message reported",
+        });
+      }
+    }
+    for (const child of suite.suites ?? []) visitSuite(child, suiteTitles);
+  };
+  for (const suite of report.suites ?? []) visitSuite(suite);
+  return failures;
 }
 
 function runLogged(command, args, cwd, log, environment = process.env) {
@@ -1154,6 +1214,7 @@ export async function execute(
   let exitCode = 0;
   let signal = null;
   let output = "";
+  let playwrightFailures = [];
   const errors = [];
   for (const [bin, args] of commands) {
     const baseEnv =
@@ -1208,6 +1269,7 @@ export async function execute(
       : null;
     const reportResult = evaluatePlaywrightReport(reportText, exitCode);
     counts = reportResult.counts;
+    playwrightFailures = reportResult.failures;
     errors.push(...reportResult.errors);
   } else {
     counts = parseCounts(item, output);
@@ -1240,6 +1302,7 @@ export async function execute(
     invocationDirectory: root,
     logPath,
     ...(playwrightReportPath ? { reportPath: playwrightReportPath } : {}),
+    ...(playwrightReportPath ? { failures: playwrightFailures } : {}),
     requiredSetup: run.requiredSetup,
     costCategory: run.costCategory,
     notStarted: run.notStarted,
@@ -1251,10 +1314,13 @@ export async function execute(
     item.ecosystem === "server" && exitCode !== 0
       ? output.split("\n").filter((line) => line.startsWith("FAIL "))
       : [];
+  const playwrightFailureOutput = playwrightFailures.length
+    ? `Failing Playwright tests:\n${playwrightFailures.map(({ title, error }) => `- ${title}: ${error}`).join("\n")}\n`
+    : "";
   if (asJson) process.stdout.write(`${JSON.stringify(result)}\n`);
   else
     process.stdout.write(
-      `${options.label ?? item.name}${caseName ? ` / ${caseName}` : ""}: ${result.status}${counts.passed === null ? "" : ` — ${counts.passed} passed, ${counts.failed} failed${counts.flaky === null || counts.flaky === undefined ? "" : `, ${counts.flaky} flaky`}, ${counts.skipped} skipped`}${counts.executed === 0 && !options.allowZeroTests ? " — zero tests executed" : ""}; ${durationSeconds}s\nCommand: ${run.command}\nFull log: ${logPath}${playwrightReportPath ? `\nPlaywright JSON report: ${playwrightReportPath}` : ""}\n${item.ecosystem === "server" ? formatServerRunDiagnostics(output) : ""}${serverFailures.length ? `Failing server suites:\n${serverFailures.join("\n")}\n` : ""}`,
+      `${options.label ?? item.name}${caseName ? ` / ${caseName}` : ""}: ${result.status}${counts.passed === null ? "" : ` — ${counts.passed} passed, ${counts.failed} failed${counts.flaky === null || counts.flaky === undefined ? "" : `, ${counts.flaky} flaky`}, ${counts.skipped} skipped`}${counts.executed === 0 && !options.allowZeroTests ? " — zero tests executed" : ""}; ${durationSeconds}s\nCommand: ${run.command}\nFull log: ${logPath}${playwrightReportPath ? `\nPlaywright JSON report: ${playwrightReportPath}` : ""}\n${item.ecosystem === "server" ? formatServerRunDiagnostics(output) : ""}${serverFailures.length ? `Failing server suites:\n${serverFailures.join("\n")}\n` : ""}${playwrightFailureOutput}`,
     );
   return result;
 }
@@ -1275,7 +1341,7 @@ function formatServerRunDiagnostics(output) {
 
 function usage() {
   process.stdout.write(
-    "Usage: facade.mjs packages | test <package> [file-or-case] [--name <pattern>] [-- <cargo args>] [--json] | test-plan <package> [file-or-case] [--name <pattern>] [-- <cargo args>] [--json] | test-fast | test-fast-rest | test-server-shard <index> <count> | test-heavy | test-browser | test-browser-smoke | test-server-category <category> | test-server-load <suite-path> | check <package> [--dry-run] [--json] | contracts-check | boundaries-check | check-affected <base> [--dry-run]\n",
+    "Usage: facade.mjs packages | test <package> [file-or-case] [--name <pattern>] [-- <cargo args>] [--json] | test-plan <package> [file-or-case] [--name <pattern>] [-- <cargo args>] [--json] | test-fast | test-fast-rest | test-fast-rest-non-rust | test-server-shard <index> <count> | test-heavy | test-browser | test-browser-smoke | test-server-category <category> | test-server-load <suite-path> | check <package> [--dry-run] [--json] | contracts-check | boundaries-check | check-affected <base> [--dry-run]\n",
   );
 }
 
@@ -1737,6 +1803,14 @@ export async function main(argv = process.argv.slice(2)) {
     );
     return result.exitCode;
   }
+  if (action === "test-fast-rest-non-rust") {
+    const result = await executeRecipe(
+      root,
+      "test-fast-rest-non-rust",
+      fastTierRestNonRustCommands(root),
+    );
+    return result.exitCode;
+  }
   if (action === "test-server-shard") {
     const options = serverShardOptions(packageName || "", requestedCase || "");
     return (await execute(root, serverPackage(), "", json, options)).exitCode;
@@ -1777,7 +1851,10 @@ export async function main(argv = process.argv.slice(2)) {
       reportPlan(recipePlan(root, packageName), json);
       return 0;
     }
-    if (packageName === "test-fast-rest") {
+    if (
+      packageName === "test-fast-rest" ||
+      packageName === "test-fast-rest-non-rust"
+    ) {
       reportPlan(recipePlan(root, packageName), json);
       return 0;
     }

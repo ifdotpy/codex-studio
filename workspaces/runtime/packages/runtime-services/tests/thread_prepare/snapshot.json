@@ -1,0 +1,269 @@
+{
+  "actor": {
+    "id": "agent",
+    "epoch": 7,
+    "thread_id": null,
+    "cwd": "/workspace/project",
+    "compactions": 2,
+    "prepare_attempt": null,
+    "native_teleport_tool": null,
+    "native_role_guidance": null,
+    "native_tool_source": null,
+    "native_tool_update": null,
+    "error": null,
+    "native_release": null,
+    "deleted": false,
+    "root_id": "root",
+    "parent_id": null,
+    "auto_wake": true,
+    "native_effort_present": true
+  },
+  "root": {
+    "can_delegate": true,
+    "federation_enabled": false
+  },
+  "account": {
+    "key": "account",
+    "provider": "codex",
+    "connection_id": "connection",
+    "available": true,
+    "supervisor_identity": null
+  },
+  "settings": {
+    "model": "model-selected",
+    "effort": "high",
+    "native_effort": "high",
+    "fast_mode": false,
+    "yolo_mode": false,
+    "profile_instructions": "",
+    "role": "orchestrator",
+    "is_lead": true,
+    "needs_title": false,
+    "claude_options": {},
+    "daybreak_enabled": {
+      "state": "absent"
+    },
+    "cyber_access_program": {
+      "state": "absent"
+    }
+  },
+  "guidance": {
+    "instructions": "System guidance",
+    "role": "[Synthetic role]\nAuthority comes from the root.\n[End role]",
+    "progress": "Your progress file is /workspace/progress/PROGRESS.md.",
+    "thread_config": {
+      "auto_review.circuit_break_action": "strict",
+      "features.context_management.experimental_mode": true,
+      "features.multi_agent": false,
+      "features.multi_agent_v2": false,
+      "agents.enabled": false,
+      "features.current_time_reminder.enabled": true,
+      "features.current_time_reminder.reminder_interval_seconds": 0,
+      "features.current_time_reminder.delivery_mode": "after_user_or_tool_output",
+      "features.current_time_reminder.clock_source": "system"
+    }
+  },
+  "catalog": {
+    "source": "current",
+    "definitions": [
+      {
+        "name": "orchestration_move",
+        "description": "Move your own session for a move",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "action": {
+              "type": "string",
+              "enum": ["emit", "park"]
+            },
+            "accept_cache_loss": {
+              "type": "boolean",
+              "description": "Explicit approval for a move"
+            }
+          }
+        }
+      },
+      {
+        "name": "orchestration_spawn",
+        "description": "Tool orchestration_spawn caf\u00e9 \ud83e\udd80",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "action": {
+              "type": "string",
+              "enum": ["emit", "park"]
+            },
+            "accept_cache_loss": {
+              "type": "boolean",
+              "description": "Explicit approval for a move"
+            }
+          }
+        }
+      },
+      {
+        "name": "orchestration_speak",
+        "description": "Tool orchestration_speak caf\u00e9 \ud83e\udd80",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "action": {
+              "type": "string",
+              "enum": ["emit", "park"]
+            },
+            "accept_cache_loss": {
+              "type": "boolean",
+              "description": "Explicit approval for a move"
+            }
+          }
+        }
+      },
+      {
+        "name": "orchestration_servers",
+        "description": "Tool orchestration_servers caf\u00e9 \ud83e\udd80",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "action": {
+              "type": "string",
+              "enum": ["emit", "park"]
+            },
+            "accept_cache_loss": {
+              "type": "boolean",
+              "description": "Explicit approval for a move"
+            }
+          }
+        }
+      },
+      {
+        "name": "orchestration_review",
+        "description": "Tool orchestration_review caf\u00e9 \ud83e\udd80",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "action": {
+              "type": "string",
+              "enum": ["emit", "park"]
+            },
+            "accept_cache_loss": {
+              "type": "boolean",
+              "description": "Explicit approval for a move"
+            }
+          }
+        }
+      },
+      {
+        "name": "orchestration_agent_manage",
+        "description": "Tool orchestration_agent_manage caf\u00e9 \ud83e\udd80",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "action": {
+              "type": "string",
+              "enum": ["emit", "park"]
+            },
+            "accept_cache_loss": {
+              "type": "boolean",
+              "description": "Explicit approval for a move"
+            }
+          }
+        }
+      },
+      {
+        "name": "orchestration_complaint",
+        "description": "Tool orchestration_complaint caf\u00e9 \ud83e\udd80",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "action": {
+              "type": "string",
+              "enum": ["emit", "park"]
+            },
+            "accept_cache_loss": {
+              "type": "boolean",
+              "description": "Explicit approval for a move"
+            }
+          }
+        }
+      },
+      {
+        "name": "orchestration_peers",
+        "description": "Tool orchestration_peers caf\u00e9 \ud83e\udd80",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "action": {
+              "type": "string",
+              "enum": ["emit", "park"]
+            },
+            "accept_cache_loss": {
+              "type": "boolean",
+              "description": "Explicit approval for a move"
+            }
+          }
+        }
+      },
+      {
+        "name": "orchestration_message",
+        "description": "Tool orchestration_message caf\u00e9 \ud83e\udd80",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "action": {
+              "type": "string",
+              "enum": ["emit", "park"]
+            },
+            "accept_cache_loss": {
+              "type": "boolean",
+              "description": "Explicit approval for a move"
+            }
+          }
+        }
+      },
+      {
+        "name": "orchestration_chat_read",
+        "description": "Tool orchestration_chat_read caf\u00e9 \ud83e\udd80",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "action": {
+              "type": "string",
+              "enum": ["emit", "park"]
+            },
+            "accept_cache_loss": {
+              "type": "boolean",
+              "description": "Explicit approval for a move"
+            }
+          }
+        }
+      },
+      {
+        "name": "other_tool",
+        "description": "Tool other_tool caf\u00e9 \ud83e\udd80",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "action": {
+              "type": "string",
+              "enum": ["emit", "park"]
+            },
+            "accept_cache_loss": {
+              "type": "boolean",
+              "description": "Explicit approval for a move"
+            }
+          }
+        }
+      }
+    ],
+    "saved_thread_id": null,
+    "saved_digest": null
+  },
+  "workspace": {
+    "state": "ready",
+    "progress_directory": "/workspace/progress"
+  },
+  "unsupported": null,
+  "admission": null,
+  "pending": null,
+  "loaded": null,
+  "closed": false
+}

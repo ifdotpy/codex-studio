@@ -12,6 +12,17 @@ use thiserror::Error;
 
 use crate::event_write::{self, EventWriteError};
 
+#[path = "voice/policy.rs"]
+pub mod policy;
+
+#[path = "voice/audio.rs"]
+mod audio;
+
+pub use audio::{VoiceAudioError, save_audio};
+
+#[path = "voice/provider.rs"]
+pub mod provider;
+
 const MAX_RECORD_TEXT: usize = 100_000;
 const MAX_IDENTITY: usize = 240;
 const MAX_PAYLOAD: usize = 100_000;
@@ -244,6 +255,9 @@ pub fn submit(
         ));
     }
 
+    let admission = crate::message_admission::PreparedAdmission::load(&store.read()?, agent_id)?;
+    #[cfg(test)]
+    ingress_tests::support::after_preparation(agent_id);
     store.transaction_with_error(|transaction| {
         checked_agent(transaction, agent_id)?;
         let input_records = serde_json::to_string(record_ids)?;
@@ -341,7 +355,7 @@ pub fn submit(
         if text.is_empty() || text.chars().count() > MAX_DELIVERY_TEXT {
             return Err(VoiceError::InvalidRequest("Invalid transcript delivery"));
         }
-        let result = crate::coordination::post_message_with_delivery(
+        let result = crate::coordination::post_message_with_admission(
             transaction,
             crate::coordination::PostManagedMessage {
                 room: agent_id,
@@ -350,6 +364,7 @@ pub fn submit(
                 delivery: "queue",
                 assets: &[],
             },
+            &admission,
         )?;
         Ok(result.receipt)
     })
@@ -372,7 +387,9 @@ pub fn end(store: &RuntimeStore, agent_id: &str, session_id: &str) -> Result<Val
     {
         return Ok(session);
     }
-    Err(VoiceError::RequiresDependency("provider-session/voice"))
+    Err(VoiceError::RequiresDependency(
+        "account-worker/voice-session",
+    ))
 }
 
 pub fn speech_receipt(
@@ -419,7 +436,9 @@ pub fn speech_receipt(
             "Start voice before audio playback",
         ));
     }
-    Err(VoiceError::RequiresDependency("provider-session/voice"))
+    Err(VoiceError::RequiresDependency(
+        "account-worker/voice-session",
+    ))
 }
 
 pub fn approval_speech(
@@ -595,3 +614,7 @@ fn invalid(object: &'static str, id: &str) -> VoiceError {
         id: id.to_owned(),
     }
 }
+
+#[cfg(test)]
+#[path = "../tests/wave7_p03_gate_tests/voice.rs"]
+mod ingress_tests;
