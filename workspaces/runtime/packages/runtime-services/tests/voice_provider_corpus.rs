@@ -377,7 +377,6 @@ fn seeded_store() -> (tempfile::TempDir, RuntimeStore) {
         )
         .arg(&template)
         .env("CODEX_HOME", codex_home)
-        .env("CODEX_NODE", "/usr/bin/node")
         .status()
         .expect("Python writes the disposable runtime fixture");
     assert!(status.success(), "Python fixture creation failed");

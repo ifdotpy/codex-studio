@@ -1290,7 +1290,7 @@ fn public_probe(fixture: Fixture, action: &str, expectation: &str) -> Fixture {
     let bin = root.path().join("bin");
     std::fs::create_dir(&bin).expect("wrapper directory");
     let script = format!(
-        r#"#!/usr/bin/python3
+        r#"#!/usr/bin/env python3
 import os, pathlib, sqlite3, subprocess, sys
 root = pathlib.Path(os.environ["WORKSPACE_PROBE_ROOT"])
 repo = root / "repo"

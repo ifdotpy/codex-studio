@@ -17,23 +17,28 @@ struct Oracle {
     child: Child,
     input: ChildStdin,
     output: BufReader<ChildStdout>,
+    _environment: python_test_support::IsolatedTestEnvironment,
 }
 impl Oracle {
     fn new() -> Self {
-        let mut child = Command::new(python_test_support::prepared_python(
+        let environment = python_test_support::IsolatedTestEnvironment::new();
+        let mut command = Command::new(python_test_support::prepared_python(
             &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src"),
-        ))
-        .arg("-B")
-        .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/budget/oracle.py"))
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
-        .spawn()
-        .expect("oracle");
+        ));
+        environment.apply(&mut command);
+        let mut child = command
+            .arg("-B")
+            .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/budget/oracle.py"))
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .expect("oracle");
         Self {
             input: child.stdin.take().expect("stdin"),
             output: BufReader::new(child.stdout.take().expect("stdout")),
             child,
+            _environment: environment,
         }
     }
     fn call(&mut self, case: &Value) -> Value {
@@ -46,9 +51,25 @@ impl Oracle {
 }
 impl Drop for Oracle {
     fn drop(&mut self) {
-        let _ignored = writeln!(self.input, "{{\"close\":true}}");
-        let _ignored = self.input.flush();
-        assert!(self.child.wait().expect("reap").success());
+        if writeln!(self.input, "{{\"close\":true}}").is_ok() && self.input.flush().is_ok() {
+            match self.child.wait() {
+                Ok(status) if status.success() => {}
+                Ok(status) => eprintln!("budget oracle exited during teardown: {status}"),
+                Err(error) => eprintln!("could not reap budget oracle during teardown: {error}"),
+            }
+        } else {
+            match self.child.try_wait() {
+                Ok(Some(_)) => {}
+                Ok(None) => match self.child.kill() {
+                    Ok(()) => match self.child.wait() {
+                        Ok(_) => {}
+                        Err(error) => eprintln!("could not reap budget oracle: {error}"),
+                    },
+                    Err(error) => eprintln!("could not stop budget oracle: {error}"),
+                },
+                Err(error) => eprintln!("could not inspect budget oracle: {error}"),
+            }
+        }
     }
 }
 fn db(records: &Value, case: &Value) -> Connection {

@@ -63,7 +63,7 @@ class Services(unittest.TestCase):
             service.idle(self.state)
 
     def test_linux_units_keep_supervisor_independent(self) -> None:
-        units = service.linux_units(self.resources, self.state, '/usr/bin/python3', 4720,
+        units = service.linux_units(self.resources, self.state, sys.executable, 4720,
                                     {'CODEX_HOME': '/private/profile'})
         supervisor, backend = (units[name].decode() for name in
                                ('codex-studio-supervisor.service', 'codex-studio.service'))
@@ -198,7 +198,7 @@ class Services(unittest.TestCase):
         recovery.touch()
         self.assertEqual(service._runtime_source(resources), scripts)
         self.assertEqual(service._recovery_script(resources), recovery)
-        units = service.linux_units(resources, self.state, '/usr/bin/python3', 4720)
+        units = service.linux_units(resources, self.state, sys.executable, 4720)
         supervisor = units['codex-studio-supervisor.service'].decode()
         backend = units['codex-studio.service'].decode()
         self.assertIn(str(scripts / 'codex_process_supervisor.py'), supervisor)

@@ -16,20 +16,17 @@ struct Oracle {
     child: Child,
     input: ChildStdin,
     output: BufReader<ChildStdout>,
+    _environment: prepared_python::IsolatedTestEnvironment,
 }
 impl Oracle {
     fn new() -> Self {
         let python = prepared_python::prepared_python(
             &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src"),
         );
-        for key in ["HOME", "CODEX_HOME", "CLAUDE_CONFIG_DIR"] {
-            assert!(
-                std::env::var(key)
-                    .expect("disposable environment")
-                    .starts_with("/var/tmp/")
-            );
-        }
-        let mut child = Command::new(python)
+        let environment = prepared_python::IsolatedTestEnvironment::new();
+        let mut command = Command::new(python);
+        environment.apply(&mut command);
+        let mut child = command
             .arg("-B")
             .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/submit_gates/oracle.py"))
             .stdin(Stdio::piped())
@@ -41,6 +38,7 @@ impl Oracle {
             input: child.stdin.take().expect("stdin"),
             output: BufReader::new(child.stdout.take().expect("stdout")),
             child,
+            _environment: environment,
         }
     }
     fn call(&mut self, value: &Value) -> Value {
@@ -53,9 +51,26 @@ impl Oracle {
 }
 impl Drop for Oracle {
     fn drop(&mut self) {
-        let _ignored = writeln!(self.input, "{{\"close\":true}}");
-        let _ignored = self.input.flush();
-        assert!(self.child.wait().expect("reap oracle").success());
+        let graceful =
+            writeln!(self.input, "{{\"close\":true}}").is_ok() && self.input.flush().is_ok();
+        if graceful {
+            if let Err(error) = self.child.wait() {
+                eprintln!("could not reap submit-gates oracle during teardown: {error}");
+            }
+        } else {
+            match self.child.try_wait() {
+                Ok(Some(_)) => {}
+                Ok(None) => match self.child.kill() {
+                    Ok(()) => {
+                        if let Err(error) = self.child.wait() {
+                            eprintln!("could not reap submit-gates oracle: {error}");
+                        }
+                    }
+                    Err(error) => eprintln!("could not stop submit-gates oracle: {error}"),
+                },
+                Err(error) => eprintln!("could not inspect submit-gates oracle: {error}"),
+            }
+        }
     }
 }
 fn profile(case: &Value, record: &Value, key: &str) -> CatalogIdentity {

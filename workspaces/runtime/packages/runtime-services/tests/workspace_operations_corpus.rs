@@ -27,7 +27,7 @@ fn oracle(root: &Path, request: Value) -> Value {
     for name in ["home", "codex", "claude"] {
         std::fs::create_dir_all(root.join(name)).expect("isolated home");
     }
-    let mut child = Command::new("/usr/bin/timeout")
+    let mut child = Command::new("timeout")
         .arg("120")
         .arg(&python)
         .arg("-B")

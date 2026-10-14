@@ -120,7 +120,7 @@ async fn oversized_stdout_stops_and_reaps_child() {
 async fn stalled_stdin_is_interrupted_by_the_exchange_deadline() {
     use studio_runtime_process::OperationId;
     use studio_runtime_providers::{Frame, Method, RequestFrame, RequestId};
-    let mut attachment = child(r#"exec /usr/bin/python3 -c 'import os,signal,fcntl,json; print(json.dumps({"method":"pipe-ready","params":{"capacity":fcntl.fcntl(0,fcntl.F_GETPIPE_SZ)}}),flush=True); os.read(0,1); print("{\"method\":\"stdin-progress\"}",flush=True); signal.pause()'"#).await;
+    let mut attachment = child(r#"exec python3 -c 'import os,signal,fcntl,json; print(json.dumps({"method":"pipe-ready","params":{"capacity":fcntl.fcntl(0,fcntl.F_GETPIPE_SZ)}}),flush=True); os.read(0,1); print("{\"method\":\"stdin-progress\"}",flush=True); signal.pause()'"#).await;
     let pid = pid(&attachment);
     let ready = tokio::time::timeout(Duration::from_secs(10), attachment.journal.recv())
         .await
@@ -187,7 +187,7 @@ async fn cancellation_stops_the_entire_owned_process_group() {
                 clock: SessionClock::default(),
                 expected_generation: Some(Generation(1)),
                 launch: ProviderLaunchSpec::new(
-                    vec!["/usr/bin/python3".into(), "-c".into(), code],
+                    vec!["python3".into(), "-c".into(), code],
                     BTreeMap::new(),
                     "/var/tmp".into(),
                 ),
