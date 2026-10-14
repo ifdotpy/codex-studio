@@ -85,7 +85,6 @@ EXACT_OWNERS: dict[str, list[str]] = {
     "store-bootstrap/context-repair-schema": ["P11"],
     "cross-server/agent-management": ["R1", "P10"],
     "cross-server/remote-events": ["R1"],
-    "remote-transport/browser-forward": ["P17", "R1"],
     "cross-server-driver/local-identity": ["P19", "R1"],
     "cross-server-driver/project-binding": ["P19"],
     "cross-server-driver/peer-team-transport": ["R1", "P19"],
@@ -212,7 +211,6 @@ UNREGISTERED_BY_PATH: dict[str, list[str]] = {
     "/api/conversation/delete": ["P10"],
     "/api/agents/account": ["P12", "P18"],
     "/api/agents/account-transfer": ["P07", "P18"],
-    "/api/browser/forward": ["remote-transport/browser-forward"],
     "/api/claude/session": ["P08"],
     "/api/connection-recovery": ["P07"],
     "/api/context-repair": ["P11"],
@@ -372,8 +370,8 @@ class RouteCensusContract(unittest.TestCase):
         expected = json.loads(CORPUS.read_text(encoding="utf-8"))
         self.assertEqual(actual, expected)
         self.assertEqual(actual["counts"]["total"], 160)
-        self.assertEqual(actual["counts"]["implemented"], 78)
-        self.assertEqual(actual["counts"]["partial"], 70)
+        self.assertEqual(actual["counts"]["implemented"], 79)
+        self.assertEqual(actual["counts"]["partial"], 69)
         self.assertEqual(actual["counts"]["not_registered"], 12)
 
     def test_every_partial_and_unregistered_route_has_a_named_closure(self) -> None:

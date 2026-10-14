@@ -189,10 +189,19 @@ driver=orchestration.MultiServerService(runtime,Transport())
 with patch.object(orchestration.time,"time",return_value=NOW),runtime.db() as db:
     driver.queue(db,"peer-server","browser_callback",{"actor":"fixture","url":"http://127.0.0.1/callback"},"python-queued")
     queued=dict(db.execute("SELECT * FROM runtime_server_outbox WHERE id='python-queued'").fetchone())
+    driver.queue(db,"peer-server","event",{"link":"fixture-link","kind":"agent_message","parentEpoch":3,"text":"owner monitor exit"},"python-event")
+    event_queued=dict(db.execute("SELECT * FROM runtime_server_outbox WHERE id='python-event'").fetchone())
     # All three producers share this durable row writer. The storage contract
     # must accept location and orchestration bodies as well as browser bodies.
     driver.queue(db,"peer-server","add_location",{"project":"fixture","path":"/fixture","request":{"path":"/fixture"}},"python-location")
     driver.queue(db,"peer-server","input",{"actor":"fixture","text":"fixture"},"python-input")
+event_envelope={"requestId":"python-event-http","action":"event","payload":{"link":"fixture-link","parentEpoch":3,"kind":"agent_message","text":"signed owner event"}}
+event_raw=access._json(event_envelope).encode()
+event_nonce="c"*32
+event_timestamp=str(NOW)
+event_headers=list(zip(access.SIGNATURE_HEADERS[:5],("peer-server","local-server",event_timestamp,event_nonce,event_envelope["requestId"])))
+event_signing=access.request_bytes("POST","/api/servers/orchestration","local-server","peer-server",event_timestamp,event_nonce,event_envelope["requestId"],event_raw)
+event_headers.append(("X-Studio-Signature",crypto.call("sign",privateKey=keys["privateKey"],data=base64.b64encode(event_signing).decode())["signature"]))
 # The real receive writer creates waiting/running/complete rows; retain each
 # pre-restart record, then ask Python to resume the exact same envelope.
 delivery_states=[]
@@ -224,6 +233,6 @@ with runtime.db() as db:
     discovered=db.execute("SELECT record FROM runtime_access_discovered WHERE id='discovered-peer'").fetchone()[0]
 with patch.object(access,"_tailscale_json",return_value=status):
     discovery_identity=service.discovery().identity()
-output={"deliveryStates":delivery_states,"discoveryIdentity":discovery_identity,"discoveryProbe":discovery_probe,"discovered":json.loads(discovered),"freshPair":fresh,"candidates":sorted(candidates),"now":NOW,"identity":service.identity(),"invitation":invitation,"client":client_raw,"invite":invite_raw,"status":status,"whois":whois,"auth":cases,"queued":queued,"pairReply":peer_reply}
+output={"deliveryStates":delivery_states,"discoveryIdentity":discovery_identity,"discoveryProbe":discovery_probe,"discovered":json.loads(discovered),"freshPair":fresh,"candidates":sorted(candidates),"now":NOW,"identity":service.identity(),"invitation":invitation,"client":client_raw,"invite":invite_raw,"status":status,"whois":whois,"auth":cases,"queued":queued,"eventQueued":event_queued,"eventRequest":{"method":"POST","target":"/api/servers/orchestration","raw":event_raw.decode(),"headers":event_headers,"address":"100.64.0.2","logins":[OWNER]},"pairReply":peer_reply}
 service.close();crypto.shutdown()
 print(json.dumps(output,ensure_ascii=False))

@@ -4,6 +4,343 @@ use common::*;
 use serde_json::{Value, json};
 use studio_runtime_services::multi_server_auth::{AccessSnapshot, OwnerObservation, authorize_at};
 use studio_runtime_services::multi_server_discovery::DiscoverySnapshot;
+use studio_runtime_store::RuntimeStore;
+
+#[test]
+fn peer_delivery_replays_same_identity_after_lost_receipt_and_restart_once() {
+    use std::collections::{HashMap, HashSet};
+    use std::sync::{Arc, Mutex};
+    use std::time::Duration;
+    use studio_runtime_services::multi_server_auth::{AccessError, refused};
+    use studio_runtime_services::multi_server_orchestration::{
+        ExchangeOutcome, OrchestrationDriver, OrchestrationEffects, PairedTransport,
+    };
+
+    struct Effects;
+    impl OrchestrationEffects for Effects {
+        fn supports(&self, _: &str) -> bool {
+            false
+        }
+        fn execute(&self, _: &str, _: &Value) -> Result<ExchangeOutcome, AccessError> {
+            Ok(ExchangeOutcome::Unknown)
+        }
+    }
+    #[derive(Default)]
+    struct Peer {
+        seen: Mutex<HashMap<String, Value>>,
+        applied: Mutex<HashSet<String>>,
+        calls: Mutex<HashMap<String, usize>>,
+    }
+    impl PairedTransport for Peer {
+        fn exchange(
+            &self,
+            server: &str,
+            envelope: &Value,
+            _: Duration,
+        ) -> Result<Value, AccessError> {
+            assert_eq!(server, "peer-server");
+            let id = envelope["requestId"]
+                .as_str()
+                .expect("request id")
+                .to_owned();
+            let mut seen = self.seen.lock().unwrap();
+            if let Some(previous) = seen.get(&id) {
+                assert_eq!(
+                    previous, envelope,
+                    "replay keeps exact identity and content"
+                );
+            } else {
+                seen.insert(id.clone(), envelope.clone());
+            }
+            self.applied.lock().unwrap().insert(id.clone());
+            let mut calls = self.calls.lock().unwrap();
+            let count = calls.entry(id.clone()).or_default();
+            *count += 1;
+            if *count == 1 {
+                return Err(refused(503, "exchange_unknown", "reply was lost"));
+            }
+            Ok(json!({"requestId":id,"outcome":"applied","value":{"stored":true}}))
+        }
+    }
+
+    let (root, store) = store();
+    let peer = Arc::new(Peer::default());
+    let driver = OrchestrationDriver::new(
+        Arc::clone(&store),
+        Arc::clone(&peer) as _,
+        Arc::new(Effects),
+    );
+    let payload = json!({"link":"link-1","worker":"worker-1","args":{"text":"same"}});
+    assert_eq!(
+        driver
+            .exchange("peer-server", "message", &payload, "stable-message-1", 100)
+            .unwrap(),
+        ExchangeOutcome::Unknown
+    );
+    // Simulate process loss after the request was claimed and sent but before
+    // the retry schedule was persisted. Restart recovery must replay only this
+    // idempotent peer action with the same identity and content.
+    store
+        .transaction_with(|tx| {
+            tx.execute(
+                "UPDATE runtime_server_outbox SET state='running',next_at=0 WHERE id='stable-message-1'",
+                [],
+            )?;
+            Ok::<_, studio_runtime_store::StoreError>(())
+        })
+        .expect("simulate restart between claim and retry persistence");
+    drop(driver);
+    drop(store);
+
+    let restarted =
+        Arc::new(RuntimeStore::open(Some(root.path())).expect("reopen persistent outbox"));
+    let driver = OrchestrationDriver::new(
+        Arc::clone(&restarted),
+        Arc::clone(&peer) as _,
+        Arc::new(Effects),
+    );
+    assert!(driver.pump_due(105).unwrap() > 0);
+    assert!(
+        peer.applied.lock().unwrap().contains("stable-message-1"),
+        "receiver commits stable message identity once"
+    );
+    assert_eq!(
+        peer.calls.lock().unwrap()["stable-message-1"],
+        2,
+        "lost response causes one exact replay"
+    );
+    let connection = restarted.read().expect("reopened store reads");
+    let state: String = connection
+        .query_row(
+            "SELECT state FROM runtime_server_outbox WHERE id='stable-message-1'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(state, "complete");
+}
+
+#[test]
+fn received_remote_event_replays_cached_receipt_after_restart_without_duplicate_event() {
+    use std::sync::Arc;
+    use std::time::Duration;
+    use studio_runtime_services::multi_server_auth::{AccessError, refused};
+    use studio_runtime_services::multi_server_orchestration::{
+        ExchangeOutcome, OrchestrationDriver, PairedTransport, RuntimeOrchestrationEffects,
+    };
+    use studio_runtime_store::{AgentId, AgentRecord, AgentRepository, AgentStatus};
+
+    struct NoTransport;
+    impl PairedTransport for NoTransport {
+        fn exchange(&self, _: &str, _: &Value, _: Duration) -> Result<Value, AccessError> {
+            Err(refused(503, "unused", "transport unused in receive test"))
+        }
+    }
+    let (root, store) = store();
+    let mut parent = AgentRecord {
+        id: AgentId::from("test-parent"),
+        root_id: AgentId::from("test-parent"),
+        epoch: 3,
+        status: AgentStatus::Idle,
+        extra: Default::default(),
+    };
+    parent.extra.insert("autoWake".into(), json!(true));
+    parent.extra.insert("moveImportPending".into(), json!(true));
+    let link = json!({"id":"test-link","side":"home","server":"peer-server","home":"local-server","parent":"test-parent","parentEpoch":3,"workers":[]});
+    store
+        .transaction_with(|tx| {
+            tx.execute(
+                "INSERT INTO runtime_server_links(id,record) VALUES('test-link',?1)",
+                [link.to_string()],
+            )?;
+            AgentRepository::put(tx, &parent)?;
+            Ok::<_, AccessError>(())
+        })
+        .expect("link and owner agent fixture");
+    let envelope = json!({"requestId":"stable-event-test","action":"event","payload":{"link":"test-link","parentEpoch":3,"kind":"agent_message","text":"owner monitor exit"}});
+    let make_driver = |store: Arc<RuntimeStore>| {
+        OrchestrationDriver::new(
+            store.clone(),
+            Arc::new(NoTransport),
+            Arc::new(RuntimeOrchestrationEffects::new(store)),
+        )
+    };
+    let driver = make_driver(Arc::clone(&store));
+    let lost_reply = driver
+        .receive("peer-server", &envelope, 100)
+        .expect("event applied");
+    assert!(matches!(lost_reply, ExchangeOutcome::Applied(_)));
+    drop(driver);
+    drop(store);
+
+    let restarted = Arc::new(RuntimeStore::open(Some(root.path())).expect("restart state"));
+    let driver = make_driver(Arc::clone(&restarted));
+    let receipt = driver
+        .receive("peer-server", &envelope, 101)
+        .expect("cached receipt replays");
+    assert_eq!(receipt, lost_reply);
+    let connection = restarted.read().expect("event rows");
+    let count: i64 = connection
+        .query_row(
+            "SELECT count(*) FROM runtime_events WHERE id='stable-event-test'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(count, 1);
+    let text: String = connection
+        .query_row(
+            "SELECT text FROM runtime_events WHERE id='stable-event-test'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(text, "owner monitor exit");
+}
+
+#[test]
+fn moved_worker_send_reaches_a_local_descendant_once() {
+    use std::sync::Arc;
+    use std::time::Duration;
+    use studio_runtime_services::multi_server_auth::{AccessError, refused};
+    use studio_runtime_services::multi_server_orchestration::{
+        ExchangeOutcome, OrchestrationDriver, PairedTransport, RuntimeOrchestrationEffects,
+    };
+    use studio_runtime_store::{AgentId, AgentRecord, AgentRepository, AgentStatus};
+
+    struct NoTransport;
+    impl PairedTransport for NoTransport {
+        fn exchange(&self, _: &str, _: &Value, _: Duration) -> Result<Value, AccessError> {
+            Err(refused(503, "unused", "transport unused in receive test"))
+        }
+    }
+
+    let (_root, store) = store();
+    let mut parent = AgentRecord {
+        id: AgentId::from("move-parent"),
+        root_id: AgentId::from("move-parent"),
+        epoch: 3,
+        status: AgentStatus::Idle,
+        extra: Default::default(),
+    };
+    parent.extra.insert("autoWake".into(), json!(true));
+    let mut worker = AgentRecord {
+        id: AgentId::from("remote-worker"),
+        root_id: AgentId::from("move-parent"),
+        epoch: 4,
+        status: AgentStatus::Idle,
+        extra: Default::default(),
+    };
+    worker.extra.insert("autoWake".into(), json!(true));
+    worker.extra.insert("movedTo".into(), json!("server-two"));
+    worker.extra.insert(
+        "remoteWorker".into(),
+        json!({"server":"peer-server","link":"move-link"}),
+    );
+    let mut child = AgentRecord {
+        id: AgentId::from("local-child"),
+        root_id: AgentId::from("move-parent"),
+        epoch: 1,
+        status: AgentStatus::Idle,
+        extra: Default::default(),
+    };
+    child.extra.insert("autoWake".into(), json!(true));
+    child
+        .extra
+        .insert("parentId".into(), json!("remote-worker"));
+    let link = json!({"id":"move-link","side":"home","server":"peer-server","parent":"move-parent","parentEpoch":3,"workers":["remote-worker"]});
+    store
+        .transaction_with(|tx| {
+            tx.execute(
+                "INSERT INTO runtime_server_links(id,record) VALUES('move-link',?1)",
+                [link.to_string()],
+            )?;
+            AgentRepository::put(tx, &parent)?;
+            AgentRepository::put(tx, &worker)?;
+            AgentRepository::put(tx, &child)?;
+            Ok::<_, studio_runtime_store::StoreError>(())
+        })
+        .expect("moved worker and descendant fixture");
+
+    let envelope = json!({
+        "requestId":"stable-move-send",
+        "action":"move_send",
+        "payload":{
+            "link":"move-link",
+            "worker":"remote-worker",
+            "epoch":4,
+            "parentEpoch":3,
+            "args":{"agent_id":"local-child","text":"continue this task","delivery":"queue"}
+        }
+    });
+    let driver = OrchestrationDriver::new(
+        Arc::clone(&store),
+        Arc::new(NoTransport),
+        Arc::new(RuntimeOrchestrationEffects::new(Arc::clone(&store))),
+    );
+    let receipt = driver
+        .receive("peer-server", &envelope, 100)
+        .expect("move-send is applied through the incoming caller");
+    assert!(matches!(receipt, ExchangeOutcome::Applied(_)));
+    let replay = driver
+        .receive("peer-server", &envelope, 101)
+        .expect("stable move-send replays its saved receipt");
+    assert_eq!(receipt, replay);
+    let connection = store.read().expect("event rows");
+    let count: i64 = connection
+        .query_row(
+            "SELECT count(*) FROM runtime_events WHERE id='stable-move-send' AND agent='local-child' AND kind='followup' AND text='continue this task'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(count, 1);
+}
+
+#[test]
+fn rust_remote_event_outbox_row_matches_python_queue_writer() {
+    let expected = &fixture().data["eventQueued"];
+    let request_id = expected["id"].as_str().expect("Python request identity");
+    let server = expected["server"].as_str().expect("Python destination");
+    let envelope: Value = serde_json::from_str(expected["body"].as_str().unwrap()).unwrap();
+    let payload = envelope["payload"].clone();
+    let now = fixture().data["now"].as_i64().unwrap();
+    let (_root, store) = store();
+    store
+        .transaction_with(|tx| {
+            tx.execute(
+                "DELETE FROM runtime_server_outbox WHERE id=?1",
+                [request_id],
+            )?;
+            studio_runtime_services::multi_server_orchestration::enqueue_in_transaction(
+                tx, server, "event", &payload, request_id, now,
+            )
+            .expect("valid Python event envelope");
+            Ok::<_, studio_runtime_store::StoreError>(())
+        })
+        .expect("Rust owner transaction queues event");
+    let connection = store.read().unwrap();
+    let raw: String = connection.query_row(
+        "SELECT json_object('id',id,'server',server,'body',body,'state',state,'attempts',attempts,'next_at',next_at,'created_at',created_at,'fingerprint',fingerprint) FROM runtime_server_outbox WHERE id=?1",
+        [request_id], |row| row.get(0),
+    ).unwrap();
+    let actual: Value = serde_json::from_str(&raw).unwrap();
+    for key in [
+        "id",
+        "server",
+        "state",
+        "attempts",
+        "next_at",
+        "created_at",
+        "fingerprint",
+    ] {
+        assert_eq!(actual[key], expected[key], "Python parity field {key}");
+    }
+    assert_eq!(
+        serde_json::from_str::<Value>(actual["body"].as_str().unwrap()).unwrap(),
+        envelope
+    );
+}
 
 fn full_matrix() -> bool {
     std::env::var_os("STUDIO_RUNTIME_CORPUS_FULL").is_some()

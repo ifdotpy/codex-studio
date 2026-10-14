@@ -7,6 +7,7 @@ mod host_runtime;
 #[cfg(unix)]
 mod io_runtime;
 mod monitor_port;
+mod multi_server_owner;
 #[cfg(unix)]
 mod runtime_shutdown;
 use std::env;
@@ -126,6 +127,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             Arc::new(studio_runtime_services::provider_versions::NpmReleaseFetcher),
             Arc::new(studio_runtime_services::provider_versions::SystemClock),
         )?;
+    let multi_server_boundary = public_origin
+        .as_deref()
+        .map(|origin| {
+            let identity = credentials.identity(&store, Some(origin))?;
+            let boundary = studio_runtime_services::multi_server_pairing::MultiServerBoundary::new(
+                identity,
+                Arc::new(multi_server_owner::TailscaleOwnerLookup),
+            )?;
+            let credentials = Arc::clone(&credentials);
+            let origin = origin.to_owned();
+            Ok::<_, Box<dyn std::error::Error>>(boundary.with_identity_source(move |store| {
+                credentials.identity(store, Some(&origin)).map_err(|_| {
+                    studio_runtime_services::multi_server_auth::refused(
+                        503,
+                        "identity_unavailable",
+                        "The server identity is unavailable",
+                    )
+                })
+            }))
+        })
+        .transpose()?;
     let mut state = HttpState::new(
         token,
         workspace_id,
@@ -139,6 +161,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     .with_account_driver(account_driver.clone())
     .with_provider_versions(provider_versions)
     .with_credentials(credentials);
+    if let Some(boundary) = multi_server_boundary {
+        state = state.with_multi_server_boundary(Arc::new(boundary));
+    }
     account_driver.recover_codex_logins()?;
     let home = env::var_os("HOME")
         .map(PathBuf::from)
@@ -229,6 +254,60 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         monitor_runtime,
         monitor_shutdown.subscribe(),
     );
+    let orchestration_task = state.orchestration_driver_handle().map(|driver| {
+        let mut shutdown = monitor_shutdown.subscribe();
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(std::time::Duration::from_secs(1));
+            loop {
+                tokio::select! {
+                    _ = shutdown.changed() => break,
+                    _ = tick.tick() => {
+                        let driver = Arc::clone(&driver);
+                        let now = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map(|value| value.as_secs() as i64)
+                            .unwrap_or_default();
+                        let _ = tokio::task::spawn_blocking(move || driver.pump_due(now)).await;
+                    }
+                }
+            }
+        })
+    });
+    let federation_cancelled = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let federation_store = Arc::clone(&store);
+    let federation_stop = Arc::clone(&federation_cancelled);
+    let mut federation_shutdown = monitor_shutdown.subscribe();
+    let federation_task = tokio::spawn(async move {
+        let mut tick = tokio::time::interval(std::time::Duration::from_secs(1));
+        loop {
+            tokio::select! {
+                _ = federation_shutdown.changed() => {
+                    federation_stop.store(true, std::sync::atomic::Ordering::Release);
+                    break;
+                }
+                _ = tick.tick() => {
+                    let store = Arc::clone(&federation_store);
+                    let cancelled = Arc::clone(&federation_stop);
+                    let _ = tokio::task::spawn_blocking(move || {
+                        let Ok(snapshot) = studio_runtime_services::federation::snapshot(&store) else { return };
+                        let now = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map(|value| value.as_secs_f64())
+                            .unwrap_or_default();
+                        for peer in snapshot["peers"].as_array().into_iter().flatten() {
+                            if peer["status"] != "approved" { continue; }
+                            let Some(id) = peer["id"].as_str() else { continue };
+                            let mut transport = studio_runtime_services::federation_delivery::HttpsFederationTransport;
+                            let _ = studio_runtime_services::federation_delivery::pump_peer(
+                                &store, id, now, &mut transport, &cancelled,
+                            );
+                            if cancelled.load(std::sync::atomic::Ordering::Acquire) { break; }
+                        }
+                    }).await;
+                }
+            }
+        }
+    });
     println!("Codex Canvas: http://{}:{}", address.ip(), address.port());
     #[cfg(unix)]
     let stop_runtime = runtime.shutdown_handle();
@@ -246,6 +325,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     })
     .await;
     monitor_shutdown.send_replace(true);
+    federation_cancelled.store(true, std::sync::atomic::Ordering::Release);
+    federation_task.await?;
+    if let Some(task) = orchestration_task {
+        task.await?;
+    }
     monitor_task.await??;
     #[cfg(unix)]
     {

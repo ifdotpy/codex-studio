@@ -50,7 +50,7 @@ impl AccessError {
         }
     }
 }
-pub(crate) fn refused(status: u16, code: &'static str, message: &'static str) -> AccessError {
+pub fn refused(status: u16, code: &'static str, message: &'static str) -> AccessError {
     AccessError::Refused {
         status,
         code,
@@ -204,6 +204,9 @@ impl SignedRequest {
     }
     pub fn is_auto_pairing(&self) -> bool {
         self.method == "POST" && self.target == AUTO_PAIR_PATH
+    }
+    pub fn is_orchestration(&self) -> bool {
+        self.method == "POST" && self.target.split('?').next() == Some("/api/servers/orchestration")
     }
     pub fn fingerprint(&self) -> String {
         digest(
