@@ -482,7 +482,7 @@ fn create(
                     .ok_or(OperationError::Internal)?
                     .remove("pendingSettingsAccountKey");
             }
-            ensure_project(tx, &reused)?;
+            ensure_project(tx, &reused, server_id.as_deref())?;
             save_agent(tx, &reused, &validate)?;
             tx.execute(
                 "INSERT INTO runtime_lead_requests(id,agent,signature) VALUES(?1,?2,?3)",
@@ -1167,6 +1167,7 @@ pub fn conversation(context: &Context<'_>, request: Conversation) -> Result<Valu
             Ok(target)
         });
     }
+    let server_id = local_server_id(context)?;
     mutate(context, |tx| {
         let mut target =
             load_agent_value(tx, &request.id, &validate)?.ok_or(MutationError::UnknownAgent)?;
@@ -1230,7 +1231,7 @@ pub fn conversation(context: &Context<'_>, request: Conversation) -> Result<Valu
             target["hostProjectPath"] = json!(cwd);
             target["accountKey"] = json!(account);
             target["provider"] = json!(provider);
-            ensure_project(tx, &target)?;
+            ensure_project(tx, &target, server_id.as_deref())?;
             if account != old_account {
                 target["daybreakEnabled"] = json!(false);
                 target["cyberAccessProgram"] = json!("standard");
