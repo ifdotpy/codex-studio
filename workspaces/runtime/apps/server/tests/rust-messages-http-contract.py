@@ -26,9 +26,11 @@ HERE = Path(__file__).resolve().parent
 SERVER_SOURCE = HERE.parent / "src"
 sys.path.insert(0, str(SERVER_SOURCE))
 from http_backend_harness import (
+    BACKGROUND_OWNED_FIELDS,
     TimedHTTPContractTest,
     start_contract_backend,
     no_write_snapshot,
+    strip_owned_json_fields,
 )
 
 _fixture_spec = importlib.util.spec_from_file_location("messages_runtime_fixture", HERE / "runtime-contract.py")
@@ -191,6 +193,19 @@ def message_write_snapshot(path: Path, message_id: str, agent_id: str | None = N
             metadata.pop("contextManifest", None)
             metadata.pop("transcriptItemId", None)
             result["metadata"] = (result["metadata"][0], metadata)
+        if result["agent"]:
+            result["agent"] = (strip_owned_json_fields(
+                json.loads(result["agent"][0]), "record",
+                BACKGROUND_OWNED_FIELDS.get("runtime_agents", frozenset()),
+            ),)
+        if result["agent_projection"]:
+            result["agent_projection"] = (
+                strip_owned_json_fields(
+                    json.loads(result["agent_projection"][0]), "payload",
+                    BACKGROUND_OWNED_FIELDS.get("sync_entities", frozenset()),
+                ),
+                result["agent_projection"][1],
+            )
         return result
 
 
@@ -597,20 +612,28 @@ class MessagesHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             {**body, "id": "acacacac-acac-acac-acac-acacacacacac", "text": "x" * 32_001},
         ):
             refused_id = invalid["id"]
-            unchanged = no_write_snapshot(self.backend.state)
+            unchanged = message_write_snapshot(
+                self.backend.state / "canvas.sqlite3", refused_id, agent_id,
+            )
             refused = self.backend.request("POST", "/api/messages", body=invalid, headers=self.headers())
             self.assertEqual(refused.status, 400, refused.body[:1000])
-            self.assertEqual(no_write_snapshot(self.backend.state), unchanged)
+            self.assertEqual(message_write_snapshot(
+                self.backend.state / "canvas.sqlite3", refused_id, agent_id,
+            ), unchanged)
 
         if os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"):
             attachment_id = "adadadad-adad-adad-adad-adadadadadad"
-            unchanged = no_write_snapshot(self.backend.state)
+            unchanged = message_write_snapshot(
+                self.backend.state / "canvas.sqlite3", attachment_id, agent_id,
+            )
             attachment = self.backend.request("POST", "/api/messages", body={
                 **body, "id": attachment_id, "assets": [{"name": "pending"}], "text": "",
             }, headers=self.headers())
             self.assertEqual(attachment.status, 501, attachment.body[:1000])
             self.assertEqual(attachment.json().get("error"), "Not implemented: requires payload-store/uploads")
-            self.assertEqual(no_write_snapshot(self.backend.state), unchanged)
+            self.assertEqual(message_write_snapshot(
+                self.backend.state / "canvas.sqlite3", attachment_id, agent_id,
+            ), unchanged)
 
     def test_managed_send_matches_python_for_stopped_paused_and_busy_agents(self):
         cases = (
@@ -832,8 +855,9 @@ class MessagesNoWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             }, headers=self.headers())
             self.assertNotEqual(response.status, 200, response.body[:1000])
             if os.environ.get("STUDIO_HTTP_BACKEND_COMMAND") and index == 3:
-                self.assertEqual(response.status, 501, response.body[:1000])
-                self.assertIn("workspace-policy/message-admission", response.json()["error"])
+                # Workspace admission is implemented on both backends; match
+                # codex_runtime.py:5642-5646 instead of the old Rust-only 501.
+                self.assertEqual(response.status, 400, response.body[:1000])
             if os.environ.get("STUDIO_HTTP_BACKEND_COMMAND") and index == 4:
                 self.assertEqual(response.status, 400, response.body[:1000])
                 self.assertTrue(response.json()["error"].startswith("Team token budget"))

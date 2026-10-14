@@ -142,6 +142,24 @@ BACKGROUND_OWNED_ROW_PREFIXES: dict[str, tuple[str, ...]] = {
     "runtime_operation_receipts": ("account-worker:",),
 }
 
+# These accepted contract fixtures are claimed and released by Rust's
+# background scheduler after enqueue (runtime-store/src/repositories/
+# scheduler/lifecycle.rs:1412). Their status is not owned by the HTTP request
+# being checked; all other fields and rows remain in the no-write proof.
+BACKGROUND_OWNED_ROW_FIELDS: dict[str, dict[str, frozenset[str]]] = {
+    "runtime_events": {
+        "06060606-0606-0606-0606-060606060606": frozenset({"status", "error"}),
+        "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb": frozenset({"status", "error"}),
+        "bcbcbcbc-bcbc-bcbc-bcbc-bcbcbcbcbcbc": frozenset({"status", "error"}),
+        "cdcdcdcd-cdcd-cdcd-cdcd-cdcdcdcdcdcd": frozenset({"status", "error"}),
+        "dededede-dede-dede-dede-dededededede": frozenset({"status", "error"}),
+        "04040404-0404-0404-0404-000000000000": frozenset({"status", "error"}),
+        "04040404-0404-0404-0404-000000000001": frozenset({"status", "error"}),
+        "08080808-0808-0808-0808-000000000000": frozenset({"status", "error"}),
+        "08080808-0808-0808-0808-000000000001": frozenset({"status", "error"}),
+    },
+}
+
 # The accepted-archive tick owns retry metadata on its durable operation
 # receipts; retain the row and every field outside this exact set.
 BACKGROUND_OWNED_ROW_JSON_FIELDS: dict[str, dict[str, dict[str, frozenset[str]]]] = {
@@ -198,11 +216,15 @@ def no_write_snapshot(state: Path) -> tuple[object, ...]:
                         if not isinstance(row[id_index], str)
                         or not row[id_index].startswith(prefixes)
                     ]
+                row_owned_fields = BACKGROUND_OWNED_ROW_FIELDS.get(table, {})
                 if not rows:
                     continue
                 retained_rows = []
                 for row in rows:
                     values = dict(zip(columns, row, strict=True))
+                    if "id" in values:
+                        for field in row_owned_fields.get(values["id"], frozenset()):
+                            values[field] = None
                     row_json_fields = {}
                     if table in BACKGROUND_OWNED_ROW_JSON_FIELDS and "id" in columns:
                         row_json_fields = next((
@@ -242,6 +264,31 @@ def no_write_snapshot(state: Path) -> tuple[object, ...]:
                 snapshots.append((table, retained_columns, tuple(retained_rows)))
             database_snapshots.append((database_path.name, tuple(snapshots)))
     return tuple(database_snapshots)
+
+
+def strip_owned_json_fields(value: object, column: str, owned: frozenset[str]) -> object:
+    """Remove named background-owned paths from a JSON object snapshot."""
+    if not isinstance(value, dict):
+        return value
+    for field in owned:
+        prefix = f"{column}."
+        if column == "record" and not field.startswith(("record.", "payload.")):
+            path = field
+        elif field.startswith(prefix):
+            path = field[len(prefix):]
+        else:
+            continue
+        parts = path.split(".")
+        current = value
+        for part in parts[:-1]:
+            child = current.get(part)
+            if not isinstance(child, dict):
+                current = None
+                break
+            current = child
+        if current is not None:
+            current.pop(parts[-1], None)
+    return value
 
 
 def assert_read_succeeds_unchanged_under_writer(test_case, backend, path, headers) -> None:

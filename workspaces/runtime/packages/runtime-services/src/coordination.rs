@@ -226,7 +226,13 @@ fn post_managed_message(
             receipt: studio_runtime_store::system_reads::validate(
                 "runtime_events",
                 input.id,
-                json!({"id": input.id, "status": event.status, "error": event.error}),
+                // Python keeps accepted input pending until actual submission;
+                // Rust's reservation is only an internal claim phase.
+                json!({
+                    "id": input.id,
+                    "status": if event.status == "reserved" { "pending" } else { &event.status },
+                    "error": event.error,
+                }),
             )?,
             event_inserted: false,
         });
