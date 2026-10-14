@@ -60,13 +60,22 @@ impl Drop for Oracle {
     fn drop(&mut self) {
         let _ignored = writeln!(self.input, "{{\"command\":\"close\"}}");
         let _ignored = self.input.flush();
-        self.child.wait().expect("reap oracle");
+        if let Err(error) = self.child.wait() {
+            eprintln!("could not reap turn-lifecycle oracle: {error}");
+        }
     }
 }
 struct State(PathBuf);
 impl Drop for State {
     fn drop(&mut self) {
-        fs::remove_dir_all(&self.0).expect("remove disposable states");
+        if let Err(error) = fs::remove_dir_all(&self.0)
+            && error.kind() != std::io::ErrorKind::NotFound
+        {
+            eprintln!(
+                "could not remove disposable state {}: {error}",
+                self.0.display()
+            );
+        }
     }
 }
 fn apply(store: &RuntimeStore, case: &Value) -> Result<Value, String> {

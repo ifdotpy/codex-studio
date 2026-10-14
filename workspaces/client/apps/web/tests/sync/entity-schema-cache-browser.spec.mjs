@@ -649,13 +649,16 @@ test.describe("legacy schema mismatch", () => {
       await expect
         .poll(readNewPageStateCheckpoint)
         .toMatchObject({ ready: "ready", complete: true });
+      // Prove the reload kept the checkpoint while its entity-change stream
+      // response is still held. Once released, the client may apply it before
+      // the next Playwright poll runs.
+      await expect
+        .poll(readNewPageStateCheckpoint)
+        .toMatchObject(newPageStateCheckpoint);
       allowPendingChangeEvent = true;
       allowPendingChangeEventResolve?.();
       allowPendingChangeEventResolve = undefined;
       await changeEventInjected;
-      await expect
-        .poll(readNewPageStateCheckpoint)
-        .toMatchObject(newPageStateCheckpoint);
       assert.ok(
         entityChangePages.has(newPage),
         "the valid tab receives the fixture's separate entity change event",

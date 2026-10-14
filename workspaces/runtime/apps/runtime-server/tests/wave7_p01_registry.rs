@@ -758,16 +758,36 @@ async fn connection_loss_replaces_worker_before_delivering_new_input() {
 fn seed_backlog(fixture: &Fixture, count: usize, each_account: bool) -> Vec<String> {
     let source = fixture.agents[0]["id"].as_str().unwrap();
     fixture.store.transaction(|tx| {
-        let raw: String = tx.query_row("SELECT record FROM runtime_agents WHERE id=?1", [source], |r| r.get(0))?;
-        let mut ids = Vec::new();
-        for i in 0..count {
-            let id = format!("00000000-0000-4000-8000-{i:012}");
-            let account = if each_account {format!("page-{i:06}")} else {"default".into()};
-            tx.execute("INSERT INTO runtime_agents(id,record) VALUES(?1,json_set(?2,'$.id',?1,'$.accountKey',?3,'$.contextRepairWait','blocked'))", (id.as_str(), raw.as_str(), account.as_str()))?;
-            tx.execute("INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch) VALUES(?1,?1,'annotation','fixture','pending',0,json_extract(?2,'$.epoch'))", (id.as_str(), raw.as_str()))?;
-            ids.push(id);
-        }
-        Ok(ids)
+        // One recursive insert per table keeps this 4,100-record paging fixture
+        // from recompiling and executing two SQL statements for every row.
+        let sequence = "WITH RECURSIVE seq(i) AS (
+                SELECT 0 WHERE ?1 > 0
+                UNION ALL SELECT i + 1 FROM seq WHERE i + 1 < ?1
+            ), source(record) AS (
+                SELECT record FROM runtime_agents WHERE id = ?2
+            )";
+        tx.execute(
+            &format!("{sequence}
+                INSERT INTO runtime_agents(id, record)
+                SELECT printf('00000000-0000-4000-8000-%012d', seq.i),
+                       json_set(source.record, '$.id', printf('00000000-0000-4000-8000-%012d', seq.i),
+                                '$.accountKey', CASE WHEN ?3 THEN printf('page-%06d', seq.i) ELSE 'default' END,
+                                '$.contextRepairWait', 'blocked')
+                FROM seq CROSS JOIN source"),
+            (count as i64, source, each_account),
+        )?;
+        tx.execute(
+            &format!("{sequence}
+                INSERT INTO runtime_events(id, agent, kind, text, status, created, epoch)
+                SELECT printf('00000000-0000-4000-8000-%012d', seq.i),
+                       printf('00000000-0000-4000-8000-%012d', seq.i),
+                       'annotation', 'fixture', 'pending', 0, json_extract(source.record, '$.epoch')
+                FROM seq CROSS JOIN source"),
+            (count as i64, source),
+        )?;
+        Ok((0..count)
+            .map(|i| format!("00000000-0000-4000-8000-{i:012}"))
+            .collect())
     }).unwrap()
 }
 

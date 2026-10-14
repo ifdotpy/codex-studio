@@ -19,6 +19,19 @@ class IsolationViolation(BaseException):
     pass
 
 
+def assert_isolated_path(path, variable):
+    root = Path(os.environ["STUDIO_TEST_ISOLATION_ROOT"]).resolve()
+    resolved = Path(path).resolve()
+    if not resolved.is_relative_to(root):
+        raise IsolationViolation(f"{variable} must stay under the oracle isolation root")
+    return resolved
+
+
+def _validate_provider_home_isolation():
+    for variable in ("HOME", "CODEX_HOME", "CLAUDE_CONFIG_DIR"):
+        assert_isolated_path(os.environ[variable], variable)
+
+
 class OracleGuard:
     def __init__(self, *, block_processes=False, allow_loopback=False):
         real_home = Path(pwd.getpwuid(os.getuid()).pw_dir)
@@ -103,8 +116,9 @@ class OracleGuard:
 def install_guard(*, block_processes=False, allow_loopback=False):
     # Give every oracle process private provider homes and scratch space even
     # when the CI parent intentionally supplies no application environment.
-    isolated = tempfile.TemporaryDirectory(prefix="runtime-oracle-", dir="/var/tmp")
+    isolated = tempfile.TemporaryDirectory(prefix="runtime-oracle-")
     root = Path(isolated.name)
+    os.environ["STUDIO_TEST_ISOLATION_ROOT"] = str(root)
     for variable, directory in (
         ("HOME", "home"),
         ("CODEX_HOME", "codex-home"),
@@ -114,7 +128,12 @@ def install_guard(*, block_processes=False, allow_loopback=False):
         path = root / directory
         path.mkdir()
         os.environ[variable] = str(path)
-    node = shutil.which("node")
+    _validate_provider_home_isolation()
+    # A parent harness may deliberately pin a Node executable before it
+    # narrows PATH (for example, the HTTP backend keeps only its replay tools
+    # and system directories visible). Preserve that selected executable;
+    # resolve from PATH only when no explicit selection was inherited.
+    node = os.environ.get("CODEX_NODE") or shutil.which("node")
     if node:
         os.environ["CODEX_NODE"] = node
     else:

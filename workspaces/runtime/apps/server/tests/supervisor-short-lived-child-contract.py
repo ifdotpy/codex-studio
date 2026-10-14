@@ -23,7 +23,7 @@ from server_test_waits import wait_for_condition
 @unittest.skipUnless(sys.platform.startswith("linux"), "Linux zombie identity contract")
 class ShortLivedChildContract(unittest.TestCase):
     def test_open_records_output_and_exit_after_child_exits_before_identity_check(self):
-        with tempfile.TemporaryDirectory(prefix="supervisor-short-lived-", dir="/var/tmp") as name:
+        with tempfile.TemporaryDirectory(prefix="supervisor-short-lived-") as name:
             root = Path(name)
             instance = process_supervisor.Supervisor(root)
             original_start_time = process_supervisor.process_start_time

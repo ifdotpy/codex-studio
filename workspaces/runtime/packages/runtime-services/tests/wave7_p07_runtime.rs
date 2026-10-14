@@ -202,7 +202,6 @@ fn records(store: &RuntimeStore, table: &str) -> Vec<Value> {
         .map(|r| serde_json::from_str(&r.expect("row")).expect("json"))
         .collect()
 }
-#[test]
 fn python_terminal_notification_count_decodes_without_changing_attempt_events() {
     let record = corpus()["notification_counter"].clone();
     let snapshot = RecoverySnapshot::from_record(record.clone()).expect("Python terminal record");
@@ -218,7 +217,6 @@ fn python_terminal_notification_count_decodes_without_changing_attempt_events() 
     invalid["startAttempt"]["events"] = json!(8);
     assert!(RecoverySnapshot::from_record(invalid).is_err());
 }
-#[test]
 fn connection_completion_matches_python_full_records_and_results() {
     let cases = corpus()["connection"].as_array().expect("cases");
     assert_eq!(cases.len(), 27);
@@ -264,7 +262,6 @@ fn connection_completion_matches_python_full_records_and_results() {
         );
     }
 }
-#[test]
 fn unresolved_operations_match_python_including_legacy_scope() {
     let cases = corpus()["unresolved"].as_array().expect("cases");
     assert_eq!(cases.len(), 36);
@@ -291,7 +288,6 @@ fn unresolved_operations_match_python_including_legacy_scope() {
         assert_eq!(json!(actual), case["expected"], "{case}");
     }
 }
-#[test]
 fn completion_failpoints_roll_back_all_rows_and_restart_is_replay_safe() {
     let case = &corpus()["connection"][0];
     for (table, op) in [
@@ -339,7 +335,6 @@ fn completion_failpoints_roll_back_all_rows_and_restart_is_replay_safe() {
     assert!(apply(&store, &case["before"], terminal(case), true).is_err());
     assert_eq!(agent(&store), case["before"]);
 }
-#[test]
 fn stop_or_notification_before_response_supersedes_completion() {
     for change in ["epoch", "turnId", "inFlight", "error"] {
         let case = &corpus()["connection"][0];
@@ -390,7 +385,6 @@ impl RetainedHistory for Port<'_> {
         Ok(())
     }
 }
-#[test]
 fn retained_reads_enforce_deadline_thread_generation_and_stop() {
     for scenario in ["ok", "expired", "thread", "generation", "stopped"] {
         let stopped = Cell::new(false);
@@ -426,7 +420,6 @@ fn retained_reads_enforce_deadline_thread_generation_and_stop() {
         }
     }
 }
-#[test]
 fn barrier_requires_committed_journal_and_preserves_absolute_deadline() {
     let drained = Cell::new(false);
     let observe = |_: &ConnectionScope| {
@@ -453,7 +446,6 @@ fn barrier_requires_committed_journal_and_preserves_absolute_deadline() {
         RetainedRecoveryReader::new(scope(), "thread".into(), &mut port, &observe).expect("reader");
     reader.barrier(&scope(), deadline).expect("drained");
 }
-#[test]
 fn scan_is_bounded_serial_and_uses_backoff_without_sleeping() {
     let job = RecoveryJob::Connection {
         snapshot: RecoverySnapshot::from_record(corpus()["connection"][0]["before"].clone())
@@ -480,7 +472,6 @@ fn scan_is_bounded_serial_and_uses_backoff_without_sleeping() {
     .expect("finish");
     assert_eq!(scan.next_at(now), Some(now + Duration::from_secs(45)));
 }
-#[test]
 fn blob_preview_is_never_mistaken_for_complete_receipt() {
     assert!(matches!(
         resolve_inline_receipt(
@@ -492,7 +483,6 @@ fn blob_preview_is_never_mistaken_for_complete_receipt() {
     ));
 }
 
-#[test]
 fn unknown_start_accepts_exact_client_receipt_without_resending_input() {
     let root = fixture();
     let store = RuntimeStore::open(Some(root.path())).expect("store");
@@ -544,7 +534,6 @@ fn unknown_start_accepts_exact_client_receipt_without_resending_input() {
     );
 }
 
-#[test]
 fn task_writer_checks_receipts_and_scope_in_the_completion_transaction() {
     for scenario in [
         "complete",
@@ -627,7 +616,6 @@ fn task_writer_checks_receipts_and_scope_in_the_completion_transaction() {
     }
 }
 
-#[test]
 fn runtime_entry_applies_history_only_after_barrier_and_rechecks_notification_race() {
     struct History<'a> {
         store: &'a RuntimeStore,
@@ -709,7 +697,6 @@ fn runtime_entry_applies_history_only_after_barrier_and_rechecks_notification_ra
     }
 }
 
-#[test]
 fn stored_scan_pages_alternate_without_starving_later_agents_or_foreign_scope() {
     let root = fixture();
     let store = RuntimeStore::open(Some(root.path())).expect("store");
@@ -770,7 +757,6 @@ fn stored_scan_pages_alternate_without_starving_later_agents_or_foreign_scope() 
     );
 }
 
-#[test]
 fn diagnostic_updates_do_not_reset_connection_backoff() {
     let mut before = corpus()["connection"][0]["before"].clone();
     let job = RecoveryJob::Connection {
@@ -790,7 +776,6 @@ fn diagnostic_updates_do_not_reset_connection_backoff() {
     assert!(scan.take([checked], now, 1001.).is_none());
 }
 
-#[test]
 fn accepted_start_failpoints_never_deliver_input_without_its_attempt_receipt() {
     let before = json!({"id":"agent","rootId":"agent","epoch":0,"status":"running","accountKey":"default","threadId":"thread","turnEpoch":0,"turnId":null,"inFlight":true,"autoWake":true,"error":"turn/start response timed out; outcome unknown","startAttempt":{"id":"attempt","epoch":0,"accountKey":"default","threadId":"thread","connectionId":"connection","connectionGeneration":1,"requestTicket":"request","events":["event"],"created":1.0,"submitted":true,"executionOutcome":"unknown"}});
     let turn = json!({"id":"turn","status":"inProgress","items":[{"id":"input","type":"userMessage","clientId":"event"}]});
@@ -852,7 +837,6 @@ fn accepted_start_failpoints_never_deliver_input_without_its_attempt_receipt() {
     }
 }
 
-#[test]
 fn task_completion_rejects_changed_alias_or_operation_receipt() {
     for change in ["alias", "receipt"] {
         let root = fixture();
@@ -900,7 +884,6 @@ fn task_completion_rejects_changed_alias_or_operation_receipt() {
     }
 }
 
-#[test]
 fn held_scan_survives_257_full_pages_and_check_eviction() {
     let root = fixture();
     let store = RuntimeStore::open(Some(root.path())).expect("store");
@@ -944,7 +927,6 @@ fn held_scan_survives_257_full_pages_and_check_eviction() {
     }
 }
 
-#[test]
 fn corrupt_scan_rows_keep_the_sql_table_and_identity() {
     for bad in ["agent", "task", "receipt"] {
         let root = fixture();
@@ -1087,7 +1069,6 @@ async fn blocked_retained_barrier_ends_at_the_absolute_deadline() {
     );
 }
 
-#[test]
 fn accepted_start_matches_real_python_agent_event_and_transcript_rows() {
     let case = &corpus()["accepted_start"];
     let root = fixture();
@@ -1113,7 +1094,6 @@ fn accepted_start_matches_real_python_agent_event_and_transcript_rows() {
     assert_eq!(json!(records(&store, "runtime_items")), case["items"]);
 }
 
-#[test]
 fn accepted_terminal_start_calls_canonical_messages_and_finishes_atomically() {
     // Include the receipt records and sync publication contents, not just row
     // counts: rollback must restore existing rows as well as remove new ones.
@@ -1271,4 +1251,106 @@ fn accepted_terminal_start_calls_canonical_messages_and_finishes_atomically() {
             );
         }
     }
+}
+
+#[test]
+fn wave7_p07_runtime_corpus() {
+    let cases: &[(&str, fn())] = &[
+        (
+            "python_terminal_notification_count_decodes_without_changing_attempt_events",
+            python_terminal_notification_count_decodes_without_changing_attempt_events,
+        ),
+        (
+            "connection_completion_matches_python_full_records_and_results",
+            connection_completion_matches_python_full_records_and_results,
+        ),
+        (
+            "unresolved_operations_match_python_including_legacy_scope",
+            unresolved_operations_match_python_including_legacy_scope,
+        ),
+        (
+            "completion_failpoints_roll_back_all_rows_and_restart_is_replay_safe",
+            completion_failpoints_roll_back_all_rows_and_restart_is_replay_safe,
+        ),
+        (
+            "stop_or_notification_before_response_supersedes_completion",
+            stop_or_notification_before_response_supersedes_completion,
+        ),
+        (
+            "retained_reads_enforce_deadline_thread_generation_and_stop",
+            retained_reads_enforce_deadline_thread_generation_and_stop,
+        ),
+        (
+            "barrier_requires_committed_journal_and_preserves_absolute_deadline",
+            barrier_requires_committed_journal_and_preserves_absolute_deadline,
+        ),
+        (
+            "scan_is_bounded_serial_and_uses_backoff_without_sleeping",
+            scan_is_bounded_serial_and_uses_backoff_without_sleeping,
+        ),
+        (
+            "blob_preview_is_never_mistaken_for_complete_receipt",
+            blob_preview_is_never_mistaken_for_complete_receipt,
+        ),
+        (
+            "unknown_start_accepts_exact_client_receipt_without_resending_input",
+            unknown_start_accepts_exact_client_receipt_without_resending_input,
+        ),
+        (
+            "task_writer_checks_receipts_and_scope_in_the_completion_transaction",
+            task_writer_checks_receipts_and_scope_in_the_completion_transaction,
+        ),
+        (
+            "runtime_entry_applies_history_only_after_barrier_and_rechecks_notification_race",
+            runtime_entry_applies_history_only_after_barrier_and_rechecks_notification_race,
+        ),
+        (
+            "stored_scan_pages_alternate_without_starving_later_agents_or_foreign_scope",
+            stored_scan_pages_alternate_without_starving_later_agents_or_foreign_scope,
+        ),
+        (
+            "diagnostic_updates_do_not_reset_connection_backoff",
+            diagnostic_updates_do_not_reset_connection_backoff,
+        ),
+        (
+            "accepted_start_failpoints_never_deliver_input_without_its_attempt_receipt",
+            accepted_start_failpoints_never_deliver_input_without_its_attempt_receipt,
+        ),
+        (
+            "task_completion_rejects_changed_alias_or_operation_receipt",
+            task_completion_rejects_changed_alias_or_operation_receipt,
+        ),
+        (
+            "held_scan_survives_257_full_pages_and_check_eviction",
+            held_scan_survives_257_full_pages_and_check_eviction,
+        ),
+        (
+            "corrupt_scan_rows_keep_the_sql_table_and_identity",
+            corrupt_scan_rows_keep_the_sql_table_and_identity,
+        ),
+        (
+            "accepted_start_matches_real_python_agent_event_and_transcript_rows",
+            accepted_start_matches_real_python_agent_event_and_transcript_rows,
+        ),
+        (
+            "accepted_terminal_start_calls_canonical_messages_and_finishes_atomically",
+            accepted_terminal_start_calls_canonical_messages_and_finishes_atomically,
+        ),
+    ];
+    let mut failures = Vec::new();
+    for (name, case) in cases {
+        if let Err(payload) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(case)) {
+            let message = payload
+                .downcast_ref::<String>()
+                .map(String::as_str)
+                .or_else(|| payload.downcast_ref::<&str>().copied())
+                .unwrap_or("non-string panic");
+            failures.push(format!("{name}: {message}"));
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "wave7 p07 failures:\n{}",
+        failures.join("\n")
+    );
 }

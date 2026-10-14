@@ -3,7 +3,11 @@
 #[path = "support/prepared_python.rs"]
 mod prepared_python;
 use serde_json::{Value, json};
-use std::{path::PathBuf, process::Command, sync::OnceLock};
+use std::{
+    path::PathBuf,
+    process::{Command, Stdio},
+    sync::OnceLock,
+};
 use studio_runtime_providers::{Frame, Method, RequestFrame, RequestId, ResponseBody};
 use studio_runtime_services::provider_callbacks::*;
 use studio_runtime_store::RuntimeStore;
@@ -18,13 +22,20 @@ fn template() -> &'static Template {
         let scratch = tempfile::tempdir().unwrap();
         let script =
             PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/provider_callbacks/oracle.py");
-        let output = Command::new(prepared_python::prepared_python(
-            &PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src"),
-        ))
-        .arg(script)
-        .arg(scratch.path())
-        .output()
-        .unwrap();
+        let source = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src");
+        let environment = prepared_python::IsolatedTestEnvironment::new();
+        let mut command = Command::new(prepared_python::prepared_python(&source));
+        environment.apply(&mut command);
+        command
+            .arg(&script)
+            .arg(scratch.path())
+            .stdin(Stdio::null());
+        let output = prepared_python::output_with_timeout(
+            &mut command,
+            &script,
+            prepared_python::PYTHON_ORACLE_TIMEOUT,
+        )
+        .unwrap_or_else(|error| panic!("provider callbacks Python oracle: {error}"));
         assert!(
             output.status.success(),
             "oracle: {}",
@@ -91,7 +102,6 @@ fn tool_value(reply: &Reply) -> Value {
     serde_json::from_str(body(reply)["contentItems"][0]["text"].as_str().unwrap()).unwrap()
 }
 
-#[test]
 fn provider_callbacks_python_answer_corpus() {
     for case in template().value["answers"].as_array().unwrap() {
         let (actual, history) = answer_value(
@@ -104,7 +114,6 @@ fn provider_callbacks_python_answer_corpus() {
         assert_eq!(history, case["history"]);
     }
 }
-#[test]
 fn provider_callbacks_durable_tool_replay_and_content_conflict() {
     let (_dir, store, context) = fixture();
     let frame = call(
@@ -145,7 +154,6 @@ fn provider_callbacks_durable_tool_replay_and_content_conflict() {
     assert_ne!(first.identity, replay.identity);
     assert!(!tool_value(&first)["id"].as_str().unwrap().is_empty());
 }
-#[test]
 fn provider_callbacks_human_pending_and_write_outcomes() {
     let (_dir, store, context) = fixture();
     let frame = request(
@@ -183,7 +191,6 @@ fn provider_callbacks_human_pending_and_write_outcomes() {
         prepared
     );
 }
-#[test]
 fn provider_callbacks_unknown_never_resends_or_reexecutes() {
     let (_dir, store, context) = fixture();
     let frame = call(
@@ -211,7 +218,6 @@ fn provider_callbacks_unknown_never_resends_or_reexecutes() {
         Err(CallbackError::Unknown)
     ));
 }
-#[test]
 fn provider_callbacks_stale_and_worker_authority() {
     let (_dir, store, context) = fixture();
     let mut stale = context.clone();
@@ -249,7 +255,6 @@ fn provider_callbacks_stale_and_worker_authority() {
     );
 }
 
-#[test]
 fn provider_callbacks_transaction_failpoint_matrix() {
     // Abort before and after each durable write family. The second transaction
     // retains admission but rolls back effects/result/outbox together.
@@ -339,7 +344,6 @@ fn provider_callbacks_transaction_failpoint_matrix() {
         }
     }
 }
-#[test]
 fn provider_callbacks_restart_after_submission_stays_unknown() {
     let (dir, store, context) = fixture();
     let frame = call(
@@ -366,7 +370,6 @@ fn provider_callbacks_restart_after_submission_stays_unknown() {
         1
     );
 }
-#[test]
 fn provider_callbacks_not_sent_and_expiry() {
     let (_dir, store, context) = fixture();
     let frame = request(
@@ -401,7 +404,6 @@ fn provider_callbacks_not_sent_and_expiry() {
     expire(&store, &context.account, &context.connection).unwrap();
     assert!(dispatch(&store, &context, &frame, 13.0).is_err());
 }
-#[test]
 fn provider_callbacks_malformed_and_foreign_records_are_refused() {
     let (_dir, store, context) = fixture();
     for field in ["epoch", "accountKey", "threadId", "turnId"] {
@@ -441,7 +443,6 @@ fn provider_callbacks_malformed_and_foreign_records_are_refused() {
         0
     );
 }
-#[test]
 fn provider_callbacks_local_message_once_and_worker_chat() {
     let (_dir, store, context) = fixture();
     let worker = template().value["agents"][1]["id"].as_str().unwrap();
@@ -479,7 +480,6 @@ fn provider_callbacks_local_message_once_and_worker_chat() {
     );
 }
 
-#[test]
 fn provider_callbacks_python_reservations_and_restart() {
     let (_dir, store, context) = fixture();
     recover_connection(&store, &context.account, &context.connection, 20.0).unwrap();
@@ -562,7 +562,6 @@ fn provider_callbacks_python_reservations_and_restart() {
     }
 }
 
-#[test]
 fn provider_callbacks_utility_invalid_and_deleted() {
     let (_dir, store, context) = fixture();
     let time = request(Method::CurrentTimeRead, RequestId::Number(0), json!({}));
@@ -601,7 +600,6 @@ fn provider_callbacks_utility_invalid_and_deleted() {
     assert!(delivery(&store, &denial.identity, DeliveryOutcome::Submitted).unwrap());
 }
 
-#[test]
 fn provider_callbacks_concurrent_duplicate_and_stop_before_write() {
     let (_dir, store, context) = fixture();
     let store = std::sync::Arc::new(store);
@@ -642,7 +640,6 @@ fn provider_callbacks_concurrent_duplicate_and_stop_before_write() {
     assert!(delivery(&store, &replies[0].identity, DeliveryOutcome::Submitted).is_err());
 }
 
-#[test]
 fn provider_callbacks_answer_commit_failpoint() {
     let (_dir, store, context) = fixture();
     let frame = request(
@@ -694,7 +691,6 @@ fn provider_callbacks_answer_commit_failpoint() {
     ));
 }
 
-#[test]
 fn provider_callbacks_python_durable_answers() {
     let (_dir, store, context) = fixture();
     for (index, case) in template().value["answers"]
@@ -747,7 +743,6 @@ fn provider_callbacks_python_durable_answers() {
     }
 }
 
-#[test]
 fn provider_callbacks_python_dynamic_read_and_title() {
     let (_dir, store, context) = fixture();
     for case in template().value["dynamic"].as_array().unwrap() {
@@ -765,7 +760,6 @@ fn provider_callbacks_python_dynamic_read_and_title() {
     }
 }
 
-#[test]
 fn provider_callbacks_python_visible_id_resolution() {
     let (_dir, store, context) = fixture();
     for (index, case) in template().value["resolutions"]
@@ -827,7 +821,6 @@ fn provider_callbacks_python_visible_id_resolution() {
     }
 }
 
-#[test]
 fn provider_callbacks_existing_python_card_uses_stored_identity() {
     let (_dir, store, context) = fixture();
     let card = &template().value["legacyCard"];
@@ -861,3 +854,98 @@ fn provider_callbacks_existing_python_card_uses_stored_identity() {
 
 #[path = "provider_callbacks/review.rs"]
 mod review_regressions;
+
+#[test]
+fn provider_callbacks_corpus() {
+    let cases: &[(&str, fn())] = &[
+        (
+            "python_answer_corpus",
+            provider_callbacks_python_answer_corpus,
+        ),
+        (
+            "durable_tool_replay_and_content_conflict",
+            provider_callbacks_durable_tool_replay_and_content_conflict,
+        ),
+        (
+            "human_pending_and_write_outcomes",
+            provider_callbacks_human_pending_and_write_outcomes,
+        ),
+        (
+            "unknown_never_resends_or_reexecutes",
+            provider_callbacks_unknown_never_resends_or_reexecutes,
+        ),
+        (
+            "stale_and_worker_authority",
+            provider_callbacks_stale_and_worker_authority,
+        ),
+        (
+            "transaction_failpoint_matrix",
+            provider_callbacks_transaction_failpoint_matrix,
+        ),
+        (
+            "restart_after_submission_stays_unknown",
+            provider_callbacks_restart_after_submission_stays_unknown,
+        ),
+        (
+            "not_sent_and_expiry",
+            provider_callbacks_not_sent_and_expiry,
+        ),
+        (
+            "malformed_and_foreign_records_are_refused",
+            provider_callbacks_malformed_and_foreign_records_are_refused,
+        ),
+        (
+            "local_message_once_and_worker_chat",
+            provider_callbacks_local_message_once_and_worker_chat,
+        ),
+        (
+            "python_reservations_and_restart",
+            provider_callbacks_python_reservations_and_restart,
+        ),
+        (
+            "utility_invalid_and_deleted",
+            provider_callbacks_utility_invalid_and_deleted,
+        ),
+        (
+            "concurrent_duplicate_and_stop_before_write",
+            provider_callbacks_concurrent_duplicate_and_stop_before_write,
+        ),
+        (
+            "answer_commit_failpoint",
+            provider_callbacks_answer_commit_failpoint,
+        ),
+        (
+            "python_durable_answers",
+            provider_callbacks_python_durable_answers,
+        ),
+        (
+            "python_dynamic_read_and_title",
+            provider_callbacks_python_dynamic_read_and_title,
+        ),
+        (
+            "python_visible_id_resolution",
+            provider_callbacks_python_visible_id_resolution,
+        ),
+        (
+            "existing_python_card_uses_stored_identity",
+            provider_callbacks_existing_python_card_uses_stored_identity,
+        ),
+        ("review regressions", review_regressions::run_corpus),
+    ];
+    let mut failures = Vec::new();
+    for (name, case) in cases {
+        if let Err(payload) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(case)) {
+            let message = payload
+                .downcast_ref::<String>()
+                .map(String::as_str)
+                .or_else(|| payload.downcast_ref::<&str>().copied())
+                .unwrap_or("non-string panic");
+            failures.push(format!("{name}: {message}"));
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "provider callback failures:\n{}",
+        failures.join("\n")
+    );
+}

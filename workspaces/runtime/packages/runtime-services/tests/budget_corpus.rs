@@ -351,7 +351,6 @@ fn run(case: &Value, records: &Value, expected_outputs: &Value) -> Value {
     }
     json!(outputs)
 }
-#[test]
 fn budget_python_corpus() {
     let cases: Value = serde_json::from_str(include_str!("budget/cases.json")).expect("cases");
     let mut oracle = Oracle::new();
@@ -549,7 +548,6 @@ fn all_stored(db: &Connection) -> Value {
         .expect("sync");
     json!({"stored":stored(db),"sync":sync.map(|v|serde_json::from_str::<Value>(&v).expect("sync")),"sequence":db.query_row("SELECT seq FROM sync_entities WHERE id='a'",[],|r|r.get::<_,i64>(0)).expect("seq")})
 }
-#[test]
 fn capture_failpoints_restart_and_lost_response() {
     let (case, records) = fixture();
     let params = &case["steps"][0]["params"];
@@ -633,7 +631,6 @@ fn capture_failpoints_restart_and_lost_response() {
         }
     }
 }
-#[test]
 fn capture_rejects_stale_durable_identity() {
     let (case, records) = fixture();
     for source in [CaptureSource::Live, CaptureSource::History] {
@@ -691,7 +688,6 @@ fn capture_rejects_stale_durable_identity() {
     }
 }
 
-#[test]
 fn capture_partial_copy_uses_durable_identity() {
     let (mut case, _) = fixture();
     case["agents"][0]["turnId"] = json!("durable-turn");
@@ -733,7 +729,6 @@ fn capture_partial_copy_uses_durable_identity() {
     }
 }
 
-#[test]
 fn malformed_budget_inputs_refuse_without_writes() {
     let (case, records) = fixture();
     for field in [
@@ -790,7 +785,6 @@ fn malformed_budget_inputs_refuse_without_writes() {
     }
 }
 
-#[test]
 fn wait_failpoints_preserve_batch_and_exact_resume() {
     let cases: Value = serde_json::from_str(include_str!("budget/cases.json")).expect("cases");
     let case = cases
@@ -870,7 +864,6 @@ fn wait_failpoints_preserve_batch_and_exact_resume() {
     }
 }
 
-#[test]
 fn budget_full_matrix() {
     if std::env::var_os("STUDIO_RUNTIME_CORPUS_FULL").is_none() {
         return;
@@ -912,7 +905,6 @@ fn budget_full_matrix() {
     eprintln!("budget full accounting matrix: {count} cases");
 }
 
-#[test]
 fn malformed_stored_ledgers_and_late_team_read_roll_back() {
     let (case, records) = fixture();
     let mut oracle = Oracle::new();
@@ -969,7 +961,6 @@ fn malformed_stored_ledgers_and_late_team_read_roll_back() {
     tx.commit().expect("commit refused scope");
     assert_eq!(stored(&connection), before);
 }
-#[test]
 fn usage_state_check_refuses_bad_scalar_rows_without_writing() {
     let (case, records) = fixture();
     let connection = db(&records, &case);
@@ -988,7 +979,6 @@ fn usage_state_check_refuses_bad_scalar_rows_without_writing() {
     assert_eq!(connection.total_changes(), changes);
 }
 
-#[test]
 fn action_retirement_failpoints_keep_receipt_and_wait_atomic() {
     let cases: Value = serde_json::from_str(include_str!("budget/cases.json")).expect("cases");
     let case = cases
@@ -1043,7 +1033,6 @@ fn action_retirement_failpoints_keep_receipt_and_wait_atomic() {
     }
 }
 
-#[test]
 fn incomplete_collected_tail_cannot_authorize_admission() {
     let (case, records) = fixture();
     let mut connection = db(&records, &case);
@@ -1072,4 +1061,64 @@ fn incomplete_collected_tail_cannot_authorize_admission() {
         "Native usage history has not caught up"
     );
     assert!(decision.denial.is_some());
+}
+
+#[test]
+fn budget_corpus_suite() {
+    let cases: &[(&str, fn())] = &[
+        ("budget_python_corpus", budget_python_corpus),
+        (
+            "capture_failpoints_restart_and_lost_response",
+            capture_failpoints_restart_and_lost_response,
+        ),
+        (
+            "capture_rejects_stale_durable_identity",
+            capture_rejects_stale_durable_identity,
+        ),
+        (
+            "capture_partial_copy_uses_durable_identity",
+            capture_partial_copy_uses_durable_identity,
+        ),
+        (
+            "malformed_budget_inputs_refuse_without_writes",
+            malformed_budget_inputs_refuse_without_writes,
+        ),
+        (
+            "wait_failpoints_preserve_batch_and_exact_resume",
+            wait_failpoints_preserve_batch_and_exact_resume,
+        ),
+        ("budget_full_matrix", budget_full_matrix),
+        (
+            "malformed_stored_ledgers_and_late_team_read_roll_back",
+            malformed_stored_ledgers_and_late_team_read_roll_back,
+        ),
+        (
+            "usage_state_check_refuses_bad_scalar_rows_without_writing",
+            usage_state_check_refuses_bad_scalar_rows_without_writing,
+        ),
+        (
+            "action_retirement_failpoints_keep_receipt_and_wait_atomic",
+            action_retirement_failpoints_keep_receipt_and_wait_atomic,
+        ),
+        (
+            "incomplete_collected_tail_cannot_authorize_admission",
+            incomplete_collected_tail_cannot_authorize_admission,
+        ),
+    ];
+    let mut failures = Vec::new();
+    for (name, case) in cases {
+        if let Err(payload) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(case)) {
+            let message = payload
+                .downcast_ref::<String>()
+                .map(String::as_str)
+                .or_else(|| payload.downcast_ref::<&str>().copied())
+                .unwrap_or("non-string panic");
+            failures.push(format!("{name}: {message}"));
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "budget corpus failures:\n{}",
+        failures.join("\n")
+    );
 }

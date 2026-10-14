@@ -9,12 +9,9 @@ from pathlib import Path
 import sys
 
 sys.path.insert(0, str(Path(__file__).absolute().parents[1] / "turn_lifecycle"))
-from oracle_guard import install_guard, IsolationViolation
+from oracle_guard import install_guard
 
 _GUARD = install_guard(block_processes=True)
-for key in ("HOME", "CODEX_HOME", "CLAUDE_CONFIG_DIR"):
-    if not os.environ[key].startswith("/var/tmp/"):
-        raise IsolationViolation("disposable /var/tmp homes required")
 if "--guard-test" in sys.argv:
     _GUARD.self_test()
     sys.exit(0)

@@ -21,12 +21,7 @@ if (separatorIndex !== -1) args.splice(separatorIndex, 1);
 
 const environment = { ...process.env };
 environment.PLAYWRIGHT_BROWSERS_PATH ??= defaultBrowserPath();
-const stateRoot = mkdtempSync(
-  join(
-    process.platform === "win32" ? tmpdir() : "/var/tmp",
-    "codex-playwright-",
-  ),
-);
+const stateRoot = mkdtempSync(join(tmpdir(), "codex-playwright-"));
 const outputDirectory = join(stateRoot, "playwright-output");
 mkdirSync(outputDirectory);
 environment.PLAYWRIGHT_OUTPUT_DIR = outputDirectory;
