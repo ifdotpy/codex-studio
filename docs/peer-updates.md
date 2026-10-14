@@ -53,7 +53,9 @@ after the start, when the setting `autoUpdate` is on:
 1. Ask each paired server that is online for `update.offer`.
 2. Take the newest offer with `builtAt` greater than the local stamp. Skip a build that failed
    verification before (kept in `<state>/peer-update.json`).
-3. Export, pull every chunk, and check each chunk hash and the whole file hash.
+3. Export, pull every chunk, and check each chunk hash and the whole file hash. Over the QUIC
+   link (`docs/peer-link.md`) the archive comes as one stream; the chunks continue from the
+   received offset when the stream stops.
 4. Extract into `<state>/updates/<builtAt>/` with `ditto -x -k`.
 5. Verify the extracted app:
    - `codesign --verify --deep --strict`;

@@ -43,6 +43,8 @@ async function exchange() {
     status: response.status,
     url: response.url,
     body: Buffer.concat(output).toString("base64"),
+    // The QUIC link address of the paired server (docs/peer-link.md).
+    link: response.headers.get("x-studio-link"),
   };
 }
 try {

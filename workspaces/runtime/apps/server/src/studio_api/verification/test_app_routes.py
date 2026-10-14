@@ -163,9 +163,11 @@ STREAM_OR_FILE_ROUTES = frozenset(
     {
         ("GET", "/api/sync/stream"),
         ("GET", "/api/monitor/log"),
+        ("GET", "/api/servers/exports/{name}"),
     }
 )
-HIDDEN_COMPATIBILITY_ROUTES = frozenset({("POST", "/api/voice/{action:path}")})
+# The export stream serves paired servers over the QUIC link only (docs/peer-link.md).
+HIDDEN_COMPATIBILITY_ROUTES = frozenset({("POST", "/api/voice/{action:path}"), ("GET", "/api/servers/exports/{name}")})
 
 
 class VerifierRemote:
@@ -239,7 +241,7 @@ class ApplicationRouteContract(unittest.TestCase):
                 original_keys = {(method, route.path) for method in methods}
                 effective_keys = {(method, path) for method in methods}
                 if original_keys & HIDDEN_COMPATIBILITY_ROUTES:
-                    self.assertEqual(original_keys, {("POST", "/api/voice/{action:path}")})
+                    self.assertLessEqual(original_keys, HIDDEN_COMPATIBILITY_ROUTES)
                     self.assertFalse(route.include_in_schema)
                 elif not any(key in STREAM_OR_FILE_ROUTES for key in effective_keys):
                     self.assertIsNotNone(route.response_model)

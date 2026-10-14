@@ -1,5 +1,6 @@
 """Adapter to the owner-pairing service. No agent-provided credentials."""
 from __future__ import annotations
+from collections.abc import Callable
 from typing import Any, cast
 
 
@@ -17,3 +18,7 @@ class PairedServerTransport:
     def request(self, server: str, envelope: dict[str, Any], *, timeout: int) -> dict[str, Any]:
         return cast(dict[str, Any], self.runtime.paired_access().request(server, 'POST', '/api/servers/orchestration', envelope,
             request_id=envelope['requestId'], timeout=timeout))
+
+    def stream(self, server: str, path: str, *, timeout: float, sink: Callable[[bytes], None]) -> bool:
+        """A raw file over the QUIC link (docs/peer-link.md); False when the server has no link."""
+        return bool(self.runtime.paired_access().stream(server, path, timeout, sink))

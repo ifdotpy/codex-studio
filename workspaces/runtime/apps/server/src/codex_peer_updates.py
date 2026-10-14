@@ -20,7 +20,7 @@ import subprocess
 import tempfile
 import threading
 import time
-from typing import Any, Protocol, cast
+from typing import Any, BinaryIO, Protocol, cast
 import uuid
 
 from codex_multi_server import MAX_RESPONSE_BYTES as MULTI_SERVER_MAX_RESPONSE_BYTES
@@ -56,6 +56,8 @@ CODESIGN_SECONDS = 300
 SHORT_REQUEST_SECONDS = 20
 # Seconds for one update.chunk request.
 CHUNK_REQUEST_SECONDS = 60
+# Seconds for the whole archive as one stream over the QUIC link.
+STREAM_SECONDS = 900
 
 if 4 * math.ceil(CHUNK_BYTES / 3) + 4096 >= MULTI_SERVER_MAX_RESPONSE_BYTES:
     raise RuntimeError('An update chunk answer would exceed the signed response limit')
@@ -370,6 +372,27 @@ class Puller:
             raise UpdateError('The paired server did not answer')
         return value
 
+    def _stream(self, server: str, export: str, size: int, stream: BinaryIO, whole: Any) -> int:
+        """Receive the archive as one stream over the QUIC link (docs/peer-link.md). Returns the
+        bytes received; the chunk actions continue from there."""
+        sender = getattr(self.transport, 'stream', None)
+        received = 0
+
+        def sink(data: bytes) -> None:
+            nonlocal received
+            if received + len(data) > size:
+                raise UpdateError('The update archive stream is too long')
+            stream.write(data)
+            whole.update(data)
+            received += len(data)
+
+        if sender is not None:
+            try:
+                sender(server, f'/api/servers/exports/{export}{EXPORT_SUFFIX}', timeout=STREAM_SECONDS, sink=sink)
+            except Exception:
+                pass  # A lost or refused stream leaves its bytes; the chunks continue from there.
+        return received
+
     def offers(self, local: Build) -> list[tuple[Build, str]]:
         found = []
         for server in self.transport.servers():
@@ -479,8 +502,8 @@ class Puller:
             if shutil.disk_usage(updates).free < size * 4:
                 raise UpdateError('Not enough free disk space for the update')
             whole = hashlib.sha256()
-            offset = 0
             with archive.open('wb') as stream:
+                offset = self._stream(server, export, size, stream, whole)
                 while offset < size:
                     if self.stop.is_set():
                         raise Stopped()

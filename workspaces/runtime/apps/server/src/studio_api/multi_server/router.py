@@ -1,13 +1,17 @@
 """Local owner management and signed remote pairing routes."""
 from __future__ import annotations
 
+import os
+from pathlib import Path
+import re
 import sqlite3
-from collections.abc import Callable
-from typing import TYPE_CHECKING, Any, Protocol, cast
+import stat
+from collections.abc import Callable, Iterator
+from typing import TYPE_CHECKING, Any, BinaryIO, Protocol, cast
 
 from fastapi import APIRouter, Request
 from starlette.concurrency import run_in_threadpool
-from starlette.responses import Response
+from starlette.responses import Response, StreamingResponse
 
 from codex_multi_server import AccessError, MultiServerService
 from studio_api.multi_server.models import (
@@ -24,6 +28,28 @@ if TYPE_CHECKING:
 ERRORS: dict[int | str, dict[str, Any]] = {
     status: {"model": ErrorResponse} for status in (400, 401, 403, 404, 409, 410, 413, 429, 502, 503, 504)
 }
+
+
+EXPORT_STREAM_CHUNK = 1024 * 1024
+EXPORT_NAME = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.(zip|bundle)\Z")
+
+
+def export_file(root: Path, name: str, offset: str) -> tuple[BinaryIO, int, int] | None:
+    """The open export file, its size and the start offset; None for another name or offset."""
+    if not EXPORT_NAME.fullmatch(name) or not offset.isdigit() or len(offset) > 15:
+        return None
+    path = Path(root) / "server-exports" / name
+    try:
+        stream = path.open("rb")
+    except OSError:
+        return None
+    size = os.fstat(stream.fileno()).st_size
+    start = int(offset)
+    if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode) or not 0 <= start < size:
+        stream.close()
+        return None
+    stream.seek(start)
+    return stream, size, start
 
 
 class OrchestrationService(Protocol):
@@ -154,6 +180,30 @@ def create_router(context: ApiContext) -> APIRouter:
                 raise AccessError(503, "orchestration_unavailable", "The cross-server service is unavailable")
             return orchestration_runtime.multi_server().receive(principal["clientId"], body.model_dump())
         return await dispatch(request, action)
+
+    # A file of server-exports/ as raw bytes from an offset (docs/peer-link.md). The paired
+    # server reads the same files with the chunk actions; this route serves them as one stream.
+    @router.get("/api/servers/exports/{name}", include_in_schema=False)
+    async def export_stream(request: Request, name: str) -> Response:
+        principal = request.scope.get("studio_principal")
+        if not isinstance(principal, dict) or principal.get("kind") != "server" or principal.get("pairing"):
+            return context.send(request, ErrorResponse(error="A paired server credential is required", code="server_required"), status=403)
+        runtime = context.runtime
+        if runtime is None:
+            return context.send(request, ErrorResponse(error="The server runtime is unavailable", code="runtime_unavailable"), status=503)
+        offset = request.query_params.get("offset", "0")
+        opened = export_file(runtime.root, name, offset)
+        if opened is None:
+            return context.send(request, ErrorResponse(error="The export has expired, was released, or the offset is invalid", code="export_unavailable"), status=404)
+        stream, size, start = opened
+
+        def chunks() -> Iterator[bytes]:
+            with stream:
+                while data := stream.read(EXPORT_STREAM_CHUNK):
+                    yield data
+
+        return StreamingResponse(chunks(), media_type="application/octet-stream", headers={
+            "Content-Length": str(size - start), "X-Studio-Export-Size": str(size), "Cache-Control": "no-store"})
 
     @router.get("/api/multi-server/v1/pair", response_model=ErrorResponse, include_in_schema=False)
     async def no_pair_get(request: Request) -> Response:

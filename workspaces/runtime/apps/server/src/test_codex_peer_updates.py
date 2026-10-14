@@ -90,6 +90,31 @@ class Transport:
             raise AssertionError('The answer exceeds the signed response limit')
 
 
+class LinkTransport(Transport):
+    """A server with a QUIC link: the archive comes as one stream, read by the export route."""
+
+    def __init__(self, network: Network, local: str, lose_after: int | None = None) -> None:
+        super().__init__(network, local)
+        self.lose_after = lose_after
+        self.streams: list[str] = []
+
+    def stream(self, server: str, path: str, *, timeout: float, sink: Any) -> bool:
+        from studio_api.multi_server.router import export_file
+
+        self.streams.append(path)
+        opened = export_file(self.network.services[server].runtime.root, path.rsplit('/', 1)[1], '0')
+        assert opened is not None
+        stream, _size, _start = opened
+        sent = 0
+        with stream:
+            while data := stream.read(64 * 1024):
+                if self.lose_after is not None and sent + len(data) > self.lose_after:
+                    raise OSError('The link lost the stream')
+                sink(data)
+                sent += len(data)
+        return True
+
+
 def make_app(folder: Path, build: dict[str, Any], certificate: str = 'Studio Local Signing') -> Path:
     app = folder / updates.APP_NAME
     resources = app / 'Contents' / 'Resources'
@@ -180,6 +205,30 @@ class PeerUpdates(unittest.TestCase):
         # The next pass finds the staged build and pulls nothing again.
         self.assertEqual(self.puller.pull()['outcome'], 'none')
         self.assertEqual(len(self.actions('update.export')), 1)
+
+    def test_a_link_stream_replaces_the_chunks(self) -> None:
+        transport = LinkTransport(self.network, 'mac')
+        self.puller.transport = transport
+        self.assertEqual(self.puller.pull()['outcome'], 'staged')
+        export = self.actions('update.export')
+        self.assertEqual(len(export), 1)
+        self.assertEqual(len(transport.streams), 1)
+        self.assertRegex(transport.streams[0], r'^/api/servers/exports/[0-9a-f-]{36}\.zip$')
+        self.assertEqual(self.actions('update.chunk'), [])
+        pending = updates.read_pending(self.state)
+        assert pending is not None
+        self.assertEqual((Path(pending['app']) / 'Contents/Resources/payload.bin').read_bytes(),
+                         (self.peer_app / 'Contents/Resources/payload.bin').read_bytes())
+
+    def test_a_lost_stream_continues_with_chunks_from_its_offset(self) -> None:
+        self.puller.transport = LinkTransport(self.network, 'mac', lose_after=300 * 1024)
+        self.assertEqual(self.puller.pull()['outcome'], 'staged')
+        offsets = [payload['offset'] for _, action, payload in self.network.calls if action == 'update.chunk']
+        self.assertEqual(offsets[0], 256 * 1024)
+        pending = updates.read_pending(self.state)
+        assert pending is not None
+        self.assertEqual((Path(pending['app']) / 'Contents/Resources/payload.bin').read_bytes(),
+                         (self.peer_app / 'Contents/Resources/payload.bin').read_bytes())
 
     def test_same_or_older_build_is_not_pulled(self) -> None:
         for build in (OLD, {**OLD, 'builtAt': OLD['builtAt'] - 1, 'commit': 'c' * 40}):

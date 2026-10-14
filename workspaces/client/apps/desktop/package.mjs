@@ -33,7 +33,15 @@ if (!uiOnly) {
   try {
     execFileSync(
       "cargo",
-      ["build", "--locked", "--release", "-p", "studio-diagnostics"],
+      [
+        "build",
+        "--locked",
+        "--release",
+        "-p",
+        "studio-diagnostics",
+        "-p",
+        "studio-peer-link",
+      ],
       { cwd: repositoryRoot, stdio: "inherit" },
     );
   } catch (error) {
@@ -144,6 +152,13 @@ try {
         !source.endsWith(".pyc"),
     });
     await cp(diagnosticsBinary, path.join(resources, "bin/codex-diagnostics"));
+    // The QUIC link to paired servers (docs/peer-link.md).
+    const peerLink = path.join(resources, "bin/studio-peer-link");
+    await cp(
+      path.join(cargoTargetDirectory, "release/studio-peer-link"),
+      peerLink,
+    );
+    signCode(peerLink, identity);
     execFileSync(
       "pnpm",
       [

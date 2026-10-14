@@ -743,6 +743,8 @@ def main():
             return
         from codex_live_updates import start as start_updates
         updates = start_updates(runtime)
+        from codex_peer_link import start as start_peer_link
+        start_peer_link(runtime, server.server_port)
         print(f"Codex Canvas: http://127.0.0.1:{server.server_port}", flush=True)
         server.serve_forever(poll_interval=0.5, shutdown_requested=shutdown.requested)
     except KeyboardInterrupt:

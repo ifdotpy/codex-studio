@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import base64
 from collections import deque
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 import hashlib
 import hmac
@@ -29,6 +29,7 @@ from codex_executables import tailscale as resolve_tailscale, command as executa
 from codex_remote import RemoteAccess, validate_origin
 
 if TYPE_CHECKING:
+    from codex_peer_link import PeerLink
     from codex_server_discovery import ServerDiscovery
 
 PROTOCOL = 1
@@ -43,6 +44,8 @@ MAX_UNPAIRED_NONCES = 1280
 PAIRING_WINDOW_SECONDS = 60
 RECEIPT_SECONDS = 7 * 86400
 OUTBOUND_CACHE_SECONDS = 86400
+# The largest raw stream over the QUIC link: an app archive is at most 1 GiB.
+MAX_STREAM_BYTES = 1024 * 1024 * 1024
 PAIR_PATH = "/api/multi-server/v1/pair"
 SIGNATURE_HEADERS = (
     "X-Studio-Client", "X-Studio-Server", "X-Studio-Timestamp",
@@ -221,6 +224,8 @@ class MultiServerService:
         self.crypto = CryptoProcess()
         self.identity_cache: dict[str, tuple[float, str]] = {}
         self.pairing_attempts: deque[float] = deque()
+        # The QUIC link to paired servers, when the backend started one (codex_peer_link.py).
+        self.link: PeerLink | None = None
         with self.runtime.db() as db:
             self.ensure_tables(db)
             self.prune(db)
@@ -229,6 +234,8 @@ class MultiServerService:
         discovery = getattr(self, "_discovery_service", None)
         if discovery is not None:
             discovery.close()
+        if self.link is not None:
+            self.link.close()
         self.crypto.shutdown()
 
     def discovery(self) -> ServerDiscovery:
@@ -929,6 +936,52 @@ class MultiServerService:
             raise AccessError(403, "identity_mismatch", "The UI invitation does not match the paired server")
         return result
 
+    def _link_exchange(self, server_id: str, public_key: str | None, method: str, path: str,
+                       headers: dict[str, str], raw: bytes, timeout: float) -> dict[str, Any] | None:
+        """The response over the QUIC link (docs/peer-link.md), or None to use HTTPS."""
+        link = self.link
+        route = link.route(server_id) if link is not None and public_key else None
+        if link is None or route is None or public_key is None:
+            return None
+        from codex_peer_link import LinkFailure
+
+        try:
+            response = link.exchange(server_id, route, public_key, method, path, headers, raw, timeout,
+                                     MAX_RESPONSE_BYTES)
+        except LinkFailure as failure:
+            if not failure.sent:
+                return None
+            if failure.reason == "response_size":
+                raise AccessError(502, "response_size", "The server response exceeds 1 MiB. Keep the request ID") from None
+            if failure.reason == "timeout":
+                raise AccessError(504, "remote_timeout", "The server request timed out. Keep the request ID") from None
+            raise AccessError(503, "remote_unavailable", "The server is unavailable or its response is invalid. Keep the request ID") from None
+        advert = next((value for name, value in response["headers"] if name.lower() == "x-studio-link"), None)
+        return {**response, "link": advert}
+
+    def stream(self, server_id: str, path: str, timeout: float, sink: Callable[[bytes], None]) -> bool:
+        """A signed GET of raw bytes over the QUIC link. The body goes to `sink`. False when the
+        server has no link route or the link did not send the request; then use the chunk actions."""
+        peer = self.paired_server(server_id)
+        link = self.link
+        route = link.route(server_id) if link is not None else None
+        if link is None or route is None:
+            return False
+        from codex_peer_link import LinkFailure
+
+        headers = self.signed_headers(server_id, "GET", path, b"", uuid.uuid4().hex)
+        headers["Accept-Encoding"] = "identity"
+        try:
+            response = link.exchange(server_id, route, peer["publicKey"], "GET", path, headers, b"", timeout,
+                                     MAX_STREAM_BYTES, sink)
+        except LinkFailure as failure:
+            if not failure.sent:
+                return False
+            raise AccessError(503, "remote_unavailable", "The server stream was lost") from None
+        if response["status"] != 200:
+            raise AccessError(response["status"], "remote_error", "The server refused the stream")
+        return True
+
     def request(self, server_id: str, method: str, path: str, body: dict[str, Any] | None,
                 request_id: str, timeout: float = 15) -> dict[str, Any]:
         peer = self.paired_server(server_id)
@@ -970,11 +1023,17 @@ class MultiServerService:
         if raw:
             headers["Content-Type"] = "application/json"
         headers["Accept-Encoding"] = "identity"
-        response = _exchange(origin + path, method, headers, raw, timeout)
+        response = self._link_exchange(server_id, public_key, method, path, headers, raw, timeout)
+        if response is None:
+            response = _exchange(origin + path, method, headers, raw, timeout)
+        else:
+            response["url"] = origin + path
         if response.get("url") != origin + path or 300 <= response["status"] < 400:
             raise AccessError(403, "redirect_refused", "The server redirect was refused")
+        if self.link is not None and 200 <= response["status"] < 300:
+            self.link.learn(server_id, response.get("link"))
         try:
-            result_bytes = base64.b64decode(response["body"], validate=True)
+            result_bytes = response["raw"] if "raw" in response else base64.b64decode(response["body"], validate=True)
             if len(result_bytes) > MAX_RESPONSE_BYTES:
                 raise AccessError(502, "response_size", "The server response exceeds 1 MiB")
             value = json.loads(result_bytes)

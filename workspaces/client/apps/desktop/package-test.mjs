@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createServer } from "node:net";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 const root = path.dirname(fileURLToPath(import.meta.url));
 const temp = await mkdtemp(path.join(tmpdir(), "codex-desktop-package-test-"));
 const state = path.join(temp, "state");
@@ -66,6 +66,32 @@ try {
     { encoding: "utf8" },
   );
   assert.ok(diagnosticsHelp.includes("--port PORT"));
+  // The backend finds the QUIC link binary next to its scripts (docs/peer-link.md).
+  const peerLink = execFileSync(
+    "python3",
+    [
+      "-B",
+      "-c",
+      "import sys; sys.path.insert(0, sys.argv[1]); import codex_peer_link; print(codex_peer_link.binary())",
+      path.join(path.dirname(executable), "../Resources/workspace/scripts"),
+    ],
+    { encoding: "utf8", env: { ...process.env, STUDIO_PEER_LINK_BIN: "" } },
+  ).trim();
+  assert.equal(
+    peerLink,
+    await realpath(
+      path.join(
+        path.dirname(executable),
+        "../Resources/workspace/bin/studio-peer-link",
+      ),
+    ),
+  );
+  const peerLinkStart = spawnSync(peerLink, [], {
+    input: "",
+    encoding: "utf8",
+  });
+  assert.equal(peerLinkStart.status, 1);
+  assert.ok(peerLinkStart.stderr.includes("The configuration is missing"));
   const roleSkills = JSON.parse(
     execFileSync(
       "python3",
