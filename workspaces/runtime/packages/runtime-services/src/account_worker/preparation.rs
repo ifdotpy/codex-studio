@@ -36,6 +36,14 @@ pub struct PreparedNativeThread {
     pub params: serde_json::Value,
 }
 
+/// Monitor thread identity and exact permission params prepared from the current
+/// actor record. Unlike turn preparation this is valid during an active turn.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PreparedMonitorCommand {
+    pub thread_id: String,
+    pub settings: serde_json::Value,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct SafetyRetryPreparation {
     pub agent_id: String,
@@ -88,6 +96,18 @@ pub fn prepare_native_thread(
     generation: u64,
 ) -> Result<PreparedNativeThread, WorkerError> {
     pipeline::prepare_native_thread(store, resources, agent_id, attempt_id, generation)
+}
+
+/// Prepare permission settings for an already-admitted monitor command. This
+/// deliberately skips native-action startAttempt admission; monitor owners
+/// authorize the running monitor and pass its observed agent epoch.
+pub fn prepare_monitor_command(
+    store: &RuntimeStore,
+    resources: &PreparationResources,
+    agent_id: &str,
+    epoch: u64,
+) -> Result<PreparedMonitorCommand, WorkerError> {
+    pipeline::prepare_monitor_command(store, resources, agent_id, epoch)
 }
 
 pub fn prepare_safety_retry(

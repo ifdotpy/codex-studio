@@ -461,6 +461,214 @@ pub(crate) fn prepare_native_thread(
     }
 }
 
+/// Prepare the permission portion of Python's monitor command path. Monitor
+/// ownership is checked by the monitor service; this snapshot only rechecks
+/// the actor epoch/deletion state and intentionally has no startAttempt gate.
+pub(crate) fn prepare_monitor_command(
+    store: &RuntimeStore,
+    resources: &PreparationResources,
+    agent_id: &str,
+    epoch: u64,
+) -> Result<super::PreparedMonitorCommand, WorkerError> {
+    if agent_id.is_empty() || agent_id.len() > 200 {
+        return Err(refusal("monitor-preparation/agent-id-invalid".into()));
+    }
+    let filesystem = FilesystemSnapshot::capture(store, agent_id)?;
+    let observed = AgentRepository::get(&store.read()?, &AgentId::from(agent_id))?
+        .ok_or_else(|| invalid(agent_id))?
+        .value();
+    validate_monitor_actor(&observed, epoch)?;
+    let image_temp = if observed["imageWorkspace"] == true
+        && observed["imageWorkspaceReady"] != true
+        && observed["provider"] != "claude"
+    {
+        Some(ensure_image_workspace_temp(store, agent_id)?)
+    } else {
+        None
+    };
+    scheduler::lifecycle_transaction_with(store, |tx| {
+        let current = agent(tx, agent_id)?.value();
+        validate_monitor_actor(&current, epoch)?;
+        let connection = current["startAttempt"]["connectionId"]
+            .as_str()
+            .filter(|id| !id.is_empty())
+            .unwrap_or("monitor-preparation");
+        let snapshot = thread_snapshot(
+            tx,
+            resources,
+            &current,
+            connection,
+            store.root(),
+            filesystem.progress_directory.clone(),
+        )?;
+        let thread_id = snapshot
+            .actor
+            .thread_id
+            .as_deref()
+            .filter(|id| !id.is_empty())
+            .ok_or_else(|| refusal("monitor-preparation/thread-required".into()))?
+            .to_owned();
+        let progress_directory = match &snapshot.workspace {
+            thread::WorkspaceReadiness::Ready { progress_directory } => progress_directory.clone(),
+            _ => None,
+        };
+        let settings = monitor_command_settings(
+            &current,
+            &snapshot.actor.cwd,
+            snapshot.settings.role,
+            snapshot.settings.is_lead,
+            snapshot.settings.yolo_mode,
+            progress_directory,
+            image_temp.as_deref(),
+        )?;
+        Ok(super::PreparedMonitorCommand {
+            thread_id,
+            settings,
+        })
+    })
+}
+
+fn validate_monitor_actor(record: &Value, epoch: u64) -> Result<(), WorkerError> {
+    if record["epoch"] != json!(epoch)
+        || record
+            .get("deletedAt")
+            .is_some_and(|value| !value.is_null())
+        || record["autoWake"] != true
+    {
+        return Err(refusal("monitor-preparation/actor-changed".into()));
+    }
+    Ok(())
+}
+
+fn monitor_command_settings(
+    record: &Value,
+    cwd: &str,
+    role: thread::Role,
+    is_lead: bool,
+    yolo_mode: Option<bool>,
+    progress_directory: Option<String>,
+    image_temp: Option<&str>,
+) -> Result<Value, WorkerError> {
+    let permissions = if record["imageWorkspace"] == true && record["imageWorkspaceReady"] != true {
+        if record["provider"] == "claude" {
+            json!({"approvalPolicy":"never","sandboxPolicy":{"type":"readOnly"}})
+        } else {
+            let temp = image_temp
+                .ok_or_else(|| refusal("monitor-preparation/image-temp-required".into()))?;
+            json!({"approvalPolicy":"never","sandboxPolicy":{"type":"workspaceWrite","writableRoots":[temp],"networkAccess":false}})
+        }
+    } else if record["executionMode"] == "vm" && role == thread::Role::Reviewer {
+        json!({"approvalPolicy":"never","sandboxPolicy":{"type":"readOnly"}})
+    } else {
+        match yolo_mode {
+            Some(true) => {
+                json!({"approvalPolicy":"never","sandboxPolicy":{"type":"dangerFullAccess"}})
+            }
+            Some(false) if role == thread::Role::Reviewer => {
+                json!({"approvalPolicy":"on-request","sandboxPolicy":{"type":"readOnly"}})
+            }
+            Some(false) => {
+                let mut roots = vec![Value::String(cwd.into())];
+                if is_lead && let Some(progress) = progress_directory {
+                    roots.push(Value::String(progress));
+                }
+                json!({"approvalPolicy":"on-request","sandboxPolicy":{"type":"workspaceWrite","writableRoots":roots,"networkAccess":false}})
+            }
+            None => json!({}),
+        }
+    };
+    let mut permissions = permissions;
+    let object = permissions
+        .as_object_mut()
+        .ok_or_else(|| refusal("monitor-preparation/permissions-invalid".into()))?;
+    if !object.contains_key("sandboxPolicy") {
+        let sandbox = record.get("sandbox").filter(|value| json_truthy(value));
+        let Some(sandbox) = sandbox else {
+            return Err(refusal("monitor-preparation/sandbox-unknown".into()));
+        };
+        if let Some(profile_id) = record["profile"]["id"].as_str().filter(|id| !id.is_empty()) {
+            object.insert("permissionProfile".into(), json!(profile_id));
+        } else {
+            object.insert("sandboxPolicy".into(), sandbox.clone());
+        }
+    }
+    Ok(permissions)
+}
+
+fn json_truthy(value: &Value) -> bool {
+    match value {
+        Value::Null => false,
+        Value::Bool(value) => *value,
+        Value::Number(value) => value.as_f64() != Some(0.0),
+        Value::String(value) => !value.is_empty(),
+        Value::Array(value) => !value.is_empty(),
+        Value::Object(value) => !value.is_empty(),
+    }
+}
+
+fn ensure_image_workspace_temp(
+    store: &RuntimeStore,
+    agent_id: &str,
+) -> Result<String, WorkerError> {
+    use std::fs;
+    let root = store
+        .root()
+        .canonicalize()
+        .map_err(|_| refusal("monitor-preparation/image-temp-root".into()))?;
+    let temp_root = root.join("image-workspace-temp");
+    ensure_private_directory(&temp_root)?;
+    if fs::canonicalize(&temp_root)
+        .ok()
+        .and_then(|path| path.parent().map(PathBuf::from))
+        .as_deref()
+        != Some(root.as_path())
+    {
+        return Err(refusal("monitor-preparation/image-temp-escape".into()));
+    }
+    let name = uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_URL, agent_id.as_bytes()).to_string();
+    let temp = temp_root.join(name);
+    ensure_private_directory(&temp)?;
+    let resolved_root = fs::canonicalize(&temp_root)
+        .map_err(|_| refusal("monitor-preparation/image-temp-root".into()))?;
+    let resolved = fs::canonicalize(&temp)
+        .map_err(|_| refusal("monitor-preparation/image-temp-directory".into()))?;
+    if resolved.parent() != Some(resolved_root.as_path()) {
+        return Err(refusal("monitor-preparation/image-temp-escape".into()));
+    }
+    Ok(resolved.to_string_lossy().into_owned())
+}
+
+fn ensure_private_directory(path: &std::path::Path) -> Result<(), WorkerError> {
+    use std::fs;
+    use std::os::unix::fs::PermissionsExt;
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_dir() => {
+            return Err(refusal("monitor-preparation/image-temp-unsafe".into()));
+        }
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            if let Err(error) = fs::create_dir(path)
+                && error.kind() != std::io::ErrorKind::AlreadyExists
+            {
+                return Err(refusal("monitor-preparation/image-temp-create".into()));
+            }
+        }
+        Err(_) => return Err(refusal("monitor-preparation/image-temp-create".into())),
+    }
+    let metadata = fs::symlink_metadata(path)
+        .map_err(|_| refusal("monitor-preparation/image-temp-create".into()))?;
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return Err(refusal("monitor-preparation/image-temp-unsafe".into()));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o700))
+            .map_err(|_| refusal("monitor-preparation/image-temp-permissions".into()))?;
+    }
+    Ok(())
+}
+
 fn prepare_native_snapshot(
     store: &RuntimeStore,
     resources: &PreparationResources,
@@ -1200,5 +1408,63 @@ mod daybreak_tests {
                 thread::Stored::Present(Some(enabled))
             );
         }
+    }
+
+    #[test]
+    fn monitor_preparation_accepts_submitted_running_actor_without_start_admission() {
+        let record = json!({
+            "id":"agent", "epoch":7, "autoWake":true, "deletedAt":null,
+            "status":"running", "startAttempt":{"id":"submitted","submitted":true}
+        });
+        assert!(validate_monitor_actor(&record, 7).is_ok());
+        assert!(validate_monitor_actor(&record, 8).is_err());
+        let deleted = json!({"epoch":7,"autoWake":true,"deletedAt":1});
+        assert!(validate_monitor_actor(&deleted, 7).is_err());
+    }
+
+    #[test]
+    fn monitor_settings_match_turn_permission_and_sandbox_fallback() {
+        let yolo = monitor_command_settings(
+            &json!({"sandbox":"workspace-write"}),
+            "/workspace",
+            thread::Role::Implementer,
+            false,
+            Some(true),
+            None,
+            None,
+        );
+        assert_eq!(
+            yolo.ok(),
+            Some(json!({
+                "approvalPolicy":"never","sandboxPolicy":{"type":"dangerFullAccess"}
+            }))
+        );
+
+        let profile = monitor_command_settings(
+            &json!({"sandbox":"workspace-write","profile":{"id":"strict"}}),
+            "/workspace",
+            thread::Role::Implementer,
+            false,
+            None,
+            None,
+            None,
+        );
+        assert_eq!(profile.ok(), Some(json!({"permissionProfile":"strict"})));
+
+        let reviewer = monitor_command_settings(
+            &json!({"sandbox":"workspace-write"}),
+            "/workspace",
+            thread::Role::Reviewer,
+            false,
+            Some(false),
+            None,
+            None,
+        );
+        assert_eq!(
+            reviewer.ok(),
+            Some(json!({
+                "approvalPolicy":"on-request","sandboxPolicy":{"type":"readOnly"}
+            }))
+        );
     }
 }
