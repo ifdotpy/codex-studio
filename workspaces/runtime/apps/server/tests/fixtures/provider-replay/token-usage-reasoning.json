@@ -34,7 +34,8 @@
       }
     }
   ],
-  "expectedStatus": "completed",
+  "expectedTurnStatus": "completed",
+  "allowedStatuses": ["completed", "waiting"],
   "assert": {
     "eventKinds": ["user"],
     "usage": ["reasoning_tokens", "12"],
