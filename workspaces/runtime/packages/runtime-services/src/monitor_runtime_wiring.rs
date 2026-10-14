@@ -2,7 +2,7 @@
 //! this task owns no provider connection and never repeats an uncertain command.
 //! Result recovery precedes stall decisions. Publication and transport ACK follow commit.
 //!
-//! Registered HTTP contract gap: `MonitorInput` has no request identity, pending owner decision.
+//! Registered HTTP gap: "monitor input has no request identity; pending owner decision".
 //! Python has the same acknowledged-response gap: codex_rules.py:727 refuses only while
 //! `inputAttempt` exists; codex_rules.py:781-782 clears it on settlement and saves
 //! `lastInputAttempt` without comparing it on the next call. Therefore an identical HTTP retry
