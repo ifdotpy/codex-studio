@@ -394,6 +394,19 @@ fn prepare_native_snapshot(
     } else {
         Some(workspace(store, &intent)?)
     };
+    let restore_cwd = if allow_paused_start {
+        let cwd = intent
+            .cwd
+            .as_ref()
+            .map(PathBuf::from)
+            .ok_or_else(|| refusal("workspace-readiness/cwd-required".into()))?;
+        if std::fs::canonicalize(&cwd).ok().as_ref() != Some(&cwd) || !cwd.is_dir() {
+            return Err(refusal("workspace-readiness/cwd-unavailable".into()));
+        }
+        Some(cwd)
+    } else {
+        None
+    };
     let filesystem = FilesystemSnapshot::capture(store, agent_id)?;
     let (identity, _) = catalog(resources, &intent)?;
     scheduler::lifecycle_transaction_with(store, |tx| {
@@ -407,14 +420,10 @@ fn prepare_native_snapshot(
                 .validate(tx)?
                 .map_err(|_| refusal("workspace-readiness/token-stale".into()))?
         } else {
-            let cwd = intent
-                .cwd
+            restore_cwd
                 .as_ref()
-                .map(PathBuf::from)
+                .cloned()
                 .ok_or_else(|| refusal("workspace-readiness/cwd-required".into()))?;
-            if std::fs::canonicalize(&cwd).ok().as_ref() != Some(&cwd) || !cwd.is_dir() {
-                return Err(refusal("workspace-readiness/cwd-unavailable".into()));
-            }
             cwd
         };
         let mut frozen = frozen;
