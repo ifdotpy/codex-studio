@@ -109,6 +109,11 @@ mod local_server_id_tests {
     use serde_json::json;
     use std::fs;
 
+    fn project(root: &std::path::Path) -> studio_runtime_store::StoreResult<Option<String>> {
+        let state_dir = root.to_str().expect("temporary test path is UTF-8");
+        local_server_id(state_dir)
+    }
+
     fn private_identity_file(root: &std::path::Path, bytes: &[u8]) -> std::path::PathBuf {
         let directory = root.join("multi-server");
         fs::create_dir(&directory).expect("credential directory");
@@ -133,7 +138,10 @@ mod local_server_id_tests {
     fn missing_directory_returns_none_without_creating_files() {
         let root = tempfile::tempdir().expect("isolated state");
         let state = root.path().join("state");
-        assert_eq!(local_server_id(state.to_str().unwrap()).unwrap(), None);
+        assert_eq!(
+            project(&state).expect("missing directory is a valid empty projection"),
+            None
+        );
         assert!(!state.exists(), "the projection read must remain read-only");
     }
 
@@ -149,8 +157,8 @@ mod local_server_id_tests {
                 .expect("private directory");
         }
         assert_eq!(
-            local_server_id(root.path().to_str().unwrap()).unwrap(),
-            None
+            project(root.path()).expect("missing file is a valid empty projection"),
+            None,
         );
         assert!(directory.is_dir());
         assert!(!directory.join("identity.json").exists());
@@ -160,7 +168,7 @@ mod local_server_id_tests {
     fn malformed_identity_refuses_with_path_and_reason() {
         let root = tempfile::tempdir().expect("isolated state");
         private_identity_file(root.path(), b"invalid identity");
-        let error = local_server_id(root.path().to_str().unwrap()).unwrap_err();
+        let error = project(root.path()).expect_err("malformed identity must be refused");
         let message = error.to_string();
         assert!(message.contains("identity.json"), "{message}");
         assert!(message.contains("malformed JSON"), "{message}");
@@ -171,7 +179,7 @@ mod local_server_id_tests {
         let root = tempfile::tempdir().expect("isolated state");
         private_identity_file(root.path(), br#"{"serverId":"fixture-server"}"#);
         assert_eq!(
-            local_server_id(root.path().to_str().unwrap()).unwrap(),
+            project(root.path()).expect("safe partial identity must project"),
             Some("fixture-server".to_owned())
         );
     }
@@ -180,7 +188,7 @@ mod local_server_id_tests {
     fn empty_server_id_refuses() {
         let root = tempfile::tempdir().expect("isolated state");
         private_identity_file(root.path(), json!({"serverId": ""}).to_string().as_bytes());
-        let error = local_server_id(root.path().to_str().unwrap()).unwrap_err();
+        let error = project(root.path()).expect_err("empty serverId must be refused");
         let message = error.to_string();
         assert!(message.contains("identity.json"), "{message}");
         assert!(message.contains("serverId"), "{message}");
@@ -190,7 +198,7 @@ mod local_server_id_tests {
     fn missing_server_id_refuses() {
         let root = tempfile::tempdir().expect("isolated state");
         private_identity_file(root.path(), json!({}).to_string().as_bytes());
-        let error = local_server_id(root.path().to_str().unwrap()).unwrap_err();
+        let error = project(root.path()).expect_err("missing serverId must be refused");
         let message = error.to_string();
         assert!(message.contains("identity.json"), "{message}");
         assert!(message.contains("serverId"), "{message}");
@@ -203,7 +211,7 @@ mod local_server_id_tests {
             root.path(),
             json!({"serverId": "bad/id"}).to_string().as_bytes(),
         );
-        let error = local_server_id(root.path().to_str().unwrap()).unwrap_err();
+        let error = project(root.path()).expect_err("unusable serverId must be refused");
         let message = error.to_string();
         assert!(message.contains("identity.json"), "{message}");
         assert!(message.contains("serverId"), "{message}");
@@ -221,7 +229,7 @@ mod local_server_id_tests {
             fs::Permissions::from_mode(0o755),
         )
         .expect("unsafe directory mode");
-        let error = local_server_id(directory_root.path().to_str().unwrap()).unwrap_err();
+        let error = project(directory_root.path()).expect_err("unsafe directory must be refused");
         let message = error.to_string();
         assert!(message.contains("identity.json"), "{message}");
         assert!(message.contains("permissions"), "{message}");
@@ -236,7 +244,7 @@ mod local_server_id_tests {
         let path = private_identity_file(file_root.path(), br#"{"serverId":"fixture-server"}"#);
         fs::set_permissions(&path, fs::Permissions::from_mode(0o644))
             .expect("unsafe identity mode");
-        let error = local_server_id(file_root.path().to_str().unwrap()).unwrap_err();
+        let error = project(file_root.path()).expect_err("unsafe identity file must be refused");
         let message = error.to_string();
         assert!(message.contains("identity.json"), "{message}");
         assert!(message.contains("permissions"), "{message}");
