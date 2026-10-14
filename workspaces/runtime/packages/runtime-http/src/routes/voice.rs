@@ -13,7 +13,7 @@ use super::manifest::{Dependency, OperationStatus, RouteGroup, dependency_unavai
 use crate::error::ApiError;
 use crate::router::HttpState;
 
-const VOICE_PROVIDER: [Dependency; 1] = [Dependency::new("account-worker/voice-session")];
+const VOICE_PROVIDER: [Dependency; 1] = [Dependency::new("provider-session/voice")];
 
 pub(crate) fn routes() -> RouteGroup {
     RouteGroup::new(vec![
@@ -30,7 +30,7 @@ pub(crate) fn routes() -> RouteGroup {
         post(
             "/api/voice/approve",
             OperationStatus::partial(&VOICE_PROVIDER),
-            refuse,
+            approve,
         ),
         post("/api/voice/audio", OperationStatus::Implemented, audio),
         post(
@@ -217,7 +217,7 @@ async fn end(
 ) -> Result<Json<Value>, ApiError> {
     let store = state.store.ok_or_else(ApiError::internal)?;
     let (agent, session) = (body.agent, body.session_id);
-    let Some(provider) = state.voice_provider.clone() else {
+    let Some(provider) = state.voice_request_port.clone() else {
         if let Some(result) = voice::provider::read_terminal_session(&store, &agent, &session)
             .map_err(provider_error)?
         {
@@ -245,7 +245,7 @@ async fn speech(
 ) -> Result<Json<Value>, ApiError> {
     let store = state.store.ok_or_else(ApiError::internal)?;
     let (agent, session, record) = (body.agent, body.session_id, body.record_id);
-    let Some(provider) = state.voice_provider.clone() else {
+    let Some(provider) = state.voice_request_port.clone() else {
         if let Some(result) =
             voice::provider::read_speech_receipt(&store, &agent, &session, &record)
                 .map_err(provider_error)?
@@ -264,6 +264,31 @@ async fn speech(
         .map_err(provider_error)?;
     Ok(Json(super::generated_json::<
         crate::generated::VoiceSpeechReceiptResponse,
+    >(result)?))
+}
+
+async fn approve(
+    State(state): State<HttpState>,
+    ApiJson(body): ApiJson<crate::generated::VoiceApproveRequest>,
+) -> Result<Json<Value>, ApiError> {
+    let provider = state.voice_request_port.clone().ok_or_else(|| {
+        dependency_unavailable("POST", "/api/voice/approve", &VOICE_PROVIDER)
+            .unwrap_or_else(|_| ApiError::internal())
+    })?;
+    let store = state.store.ok_or_else(ApiError::internal)?;
+    let result = voice::provider::approve(
+        store,
+        provider,
+        body.agent,
+        body.session_id,
+        body.speech_id,
+        body.transcript_id,
+        now_seconds()?,
+    )
+    .await
+    .map_err(provider_error)?;
+    Ok(Json(super::generated_json::<
+        crate::generated::VoiceApprovalResponse,
     >(result)?))
 }
 
@@ -293,7 +318,7 @@ async fn start(
     State(state): State<HttpState>,
     ApiJson(body): ApiJson<crate::generated::VoiceStartRequest>,
 ) -> Result<Json<Value>, ApiError> {
-    let provider = state.voice_provider.clone().ok_or_else(|| {
+    let provider = state.voice_request_port.clone().ok_or_else(|| {
         dependency_unavailable("POST", "/api/voice/start", &VOICE_PROVIDER)
             .unwrap_or_else(|_| ApiError::internal())
     })?;
@@ -336,19 +361,9 @@ fn provider_error(error: voice::provider::VoiceProviderError) -> ApiError {
             StatusCode::SERVICE_UNAVAILABLE,
             "voice request outcome is unknown",
         ),
-        E::Rejected(_) => ApiError::new(StatusCode::BAD_GATEWAY, "voice provider rejected request"),
+        E::Rejected => ApiError::new(StatusCode::BAD_GATEWAY, "voice provider rejected request"),
         _ => ApiError::internal(),
     }
-}
-
-async fn refuse(
-    path: axum::extract::MatchedPath,
-    ApiJson(_body): ApiJson<Value>,
-) -> Result<Json<Value>, ApiError> {
-    Err(
-        dependency_unavailable("POST", path.as_str(), &VOICE_PROVIDER)
-            .unwrap_or_else(|_| ApiError::internal()),
-    )
 }
 
 fn voice_error(error: VoiceError) -> ApiError {
@@ -439,8 +454,6 @@ inventory::submit! {
     crate::routes::manifest::RouteModuleRegistration {
         name: "voice",
         routes: Some(routes),
-        dependencies: &[
-            "account-worker/voice-session",
-        ],
+        dependencies: &["provider-session/voice"],
     }
 }

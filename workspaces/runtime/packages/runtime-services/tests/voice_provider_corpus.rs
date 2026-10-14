@@ -11,10 +11,11 @@ use studio_runtime_services::voice;
 use studio_runtime_services::voice::policy::{
     self, SessionSignal, VoiceSession, VoiceSessionRow, VoiceSessionState,
 };
+use studio_runtime_services::voice::provider::VoiceCallbackActor;
 use studio_runtime_services::voice::provider::notification_requires_stop;
-use studio_runtime_services::voice::provider::{
-    ProviderFuture, VoiceCallbackActor, VoiceProviderContext, VoiceProviderFailure,
-    VoiceProviderPort, VoiceRpcCall,
+use studio_runtime_services::voice::runtime::{
+    VoiceConnectionScope as VoiceProviderContext, VoiceFuture as ProviderFuture,
+    VoiceRequestPort as VoiceProviderPort, VoiceRequestReceipt, VoiceWriteCertainty,
 };
 use studio_runtime_store::RuntimeStore;
 
@@ -535,7 +536,7 @@ impl VoiceProviderPort for BlockingProvider {
         account_key: &'a str,
         thread_id: &'a str,
         epoch: i64,
-    ) -> ProviderFuture<'a, Result<VoiceProviderContext, VoiceProviderFailure>> {
+    ) -> ProviderFuture<'a, Result<VoiceProviderContext, VoiceWriteCertainty>> {
         Box::pin(async move {
             Ok(VoiceProviderContext {
                 agent_id: agent_id.to_owned(),
@@ -549,14 +550,15 @@ impl VoiceProviderPort for BlockingProvider {
 
     fn request<'a>(
         &'a self,
-        call: VoiceRpcCall,
-    ) -> ProviderFuture<'a, Result<(), VoiceProviderFailure>> {
+        scope: VoiceProviderContext,
+        operation_id: String,
+        method: Method,
+        params: serde_json::Value,
+        deadline: std::time::Instant,
+    ) -> ProviderFuture<'a, VoiceRequestReceipt> {
         Box::pin(async move {
-            self.methods
-                .lock()
-                .expect("provider call log")
-                .push(call.method);
-            match call.method {
+            self.methods.lock().expect("provider call log").push(method);
+            match method {
                 Method::ThreadRealtimeStart => {
                     self.start_entered.notify_one();
                     self.release_start.notified().await;
@@ -564,9 +566,49 @@ impl VoiceProviderPort for BlockingProvider {
                 Method::ThreadRealtimeStop => self.stop_entered.notify_one(),
                 _ => {}
             }
-            Ok(())
+            let _ = (scope, operation_id, params, deadline);
+            VoiceRequestReceipt {
+                certainty: VoiceWriteCertainty::Written,
+            }
         })
     }
+}
+
+#[tokio::test]
+async fn unknown_stop_receipt_is_held_without_resending() {
+    let (_root, store) = seeded_store();
+    store
+        .transaction(|connection| {
+            connection.execute(
+                "UPDATE voice_sessions SET native_thread='thread',account_key='account',connection_id='voice-corpus-connection',state='unknown' WHERE id='session'",
+                [],
+            )?;
+            Ok(())
+        })
+        .expect("persist uncertain stop state");
+    let provider = Arc::new(BlockingProvider {
+        start_entered: tokio::sync::Notify::new(),
+        release_start: tokio::sync::Notify::new(),
+        stop_entered: tokio::sync::Notify::new(),
+        methods: Mutex::new(Vec::new()),
+    });
+    let result = voice::provider::end(
+        Arc::new(store),
+        provider.clone(),
+        "agent".into(),
+        "session".into(),
+        2.0,
+    )
+    .await
+    .expect("unknown stop is a stable read");
+    assert_eq!(result["state"], "unknown");
+    assert!(
+        provider
+            .methods
+            .lock()
+            .expect("provider call log")
+            .is_empty()
+    );
 }
 
 #[tokio::test]
