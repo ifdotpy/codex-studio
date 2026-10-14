@@ -59,6 +59,21 @@ pub struct ProviderRequest {
     pub deadline: std::time::Instant,
 }
 
+/// A narrowly scoped source-session preflight authorized by a persisted account
+/// transfer member, independent of the agent's already adopted destination account.
+#[derive(Clone)]
+pub struct TransferProviderRequest {
+    pub transfer_id: String,
+    pub member: String,
+    pub source_account: String,
+    pub thread_id: String,
+    pub operation: String,
+    pub expected_scope: ConnectionScope,
+    pub method: Method,
+    pub params: Value,
+    pub deadline: std::time::Instant,
+}
+
 pub use crate::account_driver::CodexLoginRequest as LoginRequest;
 
 #[derive(Clone, Deserialize)]
@@ -83,6 +98,14 @@ pub trait AccountSessionPort: Send + Sync {
     ) -> Result<SessionReceipt, AccountSessionError> {
         Err(AccountSessionError::Requires(
             "provider-session/native-request",
+        ))
+    }
+    fn transfer_provider_request(
+        &self,
+        _request: TransferProviderRequest,
+    ) -> Result<SessionReceipt, AccountSessionError> {
+        Err(AccountSessionError::Requires(
+            "account-transfer/source-session-preflight",
         ))
     }
     fn callback_barrier(
@@ -241,6 +264,13 @@ pub trait RetainedAccountSession: Send + Sync {
         None
     }
     fn request(&self, request: ProviderRequest) -> SessionFuture;
+    fn transfer_request(&self, _request: TransferProviderRequest) -> SessionFuture {
+        Box::pin(async {
+            Err(AccountSessionError::Requires(
+                "account-transfer/source-session-preflight",
+            ))
+        })
+    }
     fn callback_barrier(
         &self,
         _account: String,
@@ -457,6 +487,35 @@ impl AccountSessionPort for AccountSessionRuntime {
         }) {
             Ok(Ok(receipt))
                 if receipt.operation == operation && receipt.scope.account == account =>
+            {
+                Ok(receipt)
+            }
+            Ok(Err(error)) => Err(error),
+            _ => Err(AccountSessionError::Unknown),
+        }
+    }
+    fn transfer_provider_request(
+        &self,
+        request: TransferProviderRequest,
+    ) -> Result<SessionReceipt, AccountSessionError> {
+        let session = self.session.as_ref().ok_or(AccountSessionError::Requires(
+            "account-transfer/source-session-preflight",
+        ))?;
+        let deadline = request.deadline;
+        let operation = request.operation.clone();
+        let account = request.source_account.clone();
+        let scope = request.expected_scope.clone();
+        match self.runtime.block_on(async {
+            tokio::time::timeout_at(
+                tokio::time::Instant::from_std(deadline),
+                session.transfer_request(request),
+            )
+            .await
+        }) {
+            Ok(Ok(receipt))
+                if receipt.operation == operation
+                    && receipt.scope.account == account
+                    && receipt.scope == scope =>
             {
                 Ok(receipt)
             }

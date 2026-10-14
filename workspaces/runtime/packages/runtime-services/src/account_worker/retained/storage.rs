@@ -2,6 +2,34 @@ use super::*;
 use rusqlite::OptionalExtension;
 pub(super) fn authorize(tx: &rusqlite::Transaction<'_>, call: &Call) -> Result<bool, WorkerError> {
     let Some(actor) = call.actor.as_ref() else {
+        if let Some(transfer) = call.transfer.as_ref() {
+            let Some(raw) =
+                studio_runtime_store::AccountTransferRepository::get(tx, &transfer.transfer_id)?
+            else {
+                return Ok(false);
+            };
+            let operation: Value = match serde_json::from_str(&raw) {
+                Ok(operation) => operation,
+                Err(_) => return Ok(false),
+            };
+            let member = &operation["members"][&transfer.member];
+            return Ok(operation["status"] == "pending"
+                && operation["id"] == transfer.transfer_id
+                && member.is_object()
+                && member["sourceAccountKey"] == transfer.source_account
+                && member["sourceThreadId"] == transfer.thread_id
+                && call.scope.account == transfer.source_account
+                && call.params.get("threadId").and_then(Value::as_str)
+                    == Some(transfer.thread_id.as_str())
+                && call.operation.starts_with(&format!(
+                    "transfer:{}:{}:",
+                    transfer.transfer_id, transfer.member
+                ))
+                && matches!(
+                    call.method.as_str(),
+                    "thread/queue/list" | "thread/backgroundTerminals/list" | "thread/unsubscribe"
+                ));
+        }
         return Ok(match call.method.as_str() {
             "thread/list" => call.params.get("threadId").is_none(),
             "thread/loaded/list" | "model/list" | "claude/diagnostics" => true,
@@ -48,6 +76,49 @@ pub(super) fn authorize(tx: &rusqlite::Transaction<'_>, call: &Call) -> Result<b
         && !studio_runtime_store::truthy(agent_record.extra.get("deletedAt"))
         && agent_record.extra.get("deleted") != Some(&json!(true));
     let actor_identity = common_identity && agent_record.epoch == actor.epoch;
+    let repair_fork = if call.method == "thread/fork" {
+        let repair = &agent_record.extra["contextRepair"];
+        let source = &repair["source"];
+        let snapshot = &repair["snapshot"];
+        let fork_params = &repair["forkParams"];
+        let path_is_absolute = |value: &Value| {
+            value
+                .as_str()
+                .is_some_and(|path| std::path::Path::new(path).is_absolute())
+        };
+        repair["id"].as_str().is_some_and(|id| {
+            !id.is_empty()
+                && repair["agent"] == actor.agent
+                && repair["phase"] == "submitted"
+                && repair["rpcMethod"] == "thread/fork"
+                && repair["forkOperation"] == call.operation
+                && source["id"] == actor.agent
+                && source["epoch"].as_i64() == Some(actor.epoch)
+                && source["accountKey"].as_str() == Some(call.scope.account.as_str())
+                && source["threadId"].as_str()
+                    == agent_record.extra.get("threadId").and_then(Value::as_str)
+                && path_is_absolute(&snapshot["sourcePath"])
+                && path_is_absolute(&snapshot["copyPath"])
+                && snapshot["sourceSha256"]
+                    .as_str()
+                    .is_some_and(|value| !value.is_empty())
+                && snapshot["sourceBytes"].as_u64().is_some()
+                && snapshot["sourceFileIdentity"].is_object()
+                && snapshot["copySha256"]
+                    .as_str()
+                    .is_some_and(|value| !value.is_empty())
+                && snapshot["copyBytes"].as_u64().is_some()
+                && snapshot["eventIds"].is_array()
+                && snapshot["importThreadId"].as_str()
+                    == call.params.get("threadId").and_then(Value::as_str)
+                && snapshot["copyPath"].as_str() == call.params.get("path").and_then(Value::as_str)
+                && fork_params == &call.params
+                && call.params.get("excludeTurns") == Some(&json!(true))
+                && call.params.get("deferGoalContinuation") == Some(&json!(true))
+        })
+    } else {
+        false
+    };
     // Stop commits the next epoch before asking the retained provider session
     // to interrupt the previous turn. Permit only that exact prior epoch for
     // turn/interrupt, while the agent is no longer eligible to wake.
@@ -164,7 +235,12 @@ pub(super) fn authorize(tx: &rusqlite::Transaction<'_>, call: &Call) -> Result<b
         false
     };
     Ok((actor_identity || stopped_turn_interrupt)
-        && (thread_matches || thread_start || ephemeral_turn || config_read || monitor_matches))
+        && (thread_matches
+            || (actor_identity && repair_fork)
+            || thread_start
+            || ephemeral_turn
+            || config_read
+            || monitor_matches))
 }
 
 fn thread_started_for_actor(

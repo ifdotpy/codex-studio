@@ -17,6 +17,7 @@ fn request(state: &State, port: &RetainedSessionPort, operation: &str) -> Sessio
             agent: state.agent.clone(),
             epoch: state.epoch,
         }),
+        transfer: None,
         method: Method::ThreadRead,
         params: json!({"threadId":"fake-thread-0","includeTurns":false}),
         deadline: (tokio::time::Instant::now() + std::time::Duration::from_secs(60)).into_std(),

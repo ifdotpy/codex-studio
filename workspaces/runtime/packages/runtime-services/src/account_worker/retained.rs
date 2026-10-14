@@ -11,12 +11,20 @@ pub struct RequestActor {
     pub agent: String,
     pub epoch: i64,
 }
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct TransferAuthorization {
+    pub transfer_id: String,
+    pub member: String,
+    pub source_account: String,
+    pub thread_id: String,
+}
 #[derive(Clone)]
 pub struct SessionRequest {
     pub scope: ConnectionScope,
     pub expected_scope: Option<ConnectionScope>,
     pub operation: String,
     pub actor: Option<RequestActor>,
+    pub transfer: Option<TransferAuthorization>,
     pub method: Method,
     pub params: Value,
     pub deadline: Instant,
@@ -141,7 +149,8 @@ fn validate(request: &SessionRequest) -> Result<(), PortError> {
     {
         return Err(PortError::ScopeMismatch);
     }
-    let actorless_read = request.actor.is_none()
+    let actorless_read = request.transfer.is_none()
+        && request.actor.is_none()
         && matches!(
             request.method,
             Method::ThreadList
@@ -153,31 +162,55 @@ fn validate(request: &SessionRequest) -> Result<(), PortError> {
                 | Method::ThreadTurnsList
         )
         && (request.method != Method::ThreadList || request.params.get("threadId").is_none());
-    let actor_method = matches!(
-        request.method,
-        Method::ThreadRead
-            | Method::ThreadTurnsList
-            | Method::ThreadItemsList
-            | Method::ThreadBackgroundTerminalsList
-            | Method::ThreadStart
-            | Method::TurnStart
-            | Method::ThreadFork
-            | Method::ThreadCompactStart
-            | Method::ReviewStart
-            | Method::ClaudeState
-            | Method::ClaudeCommands
-            | Method::ClaudeSettings
-            | Method::ClaudeStopTask
-            | Method::ThreadRollback
-            | Method::ThreadQueueList
-            | Method::TurnInterrupt
-            | Method::ConfigRead
-            | Method::CommandExec
-            | Method::CommandExecWrite
-            | Method::CommandExecResize
-            | Method::CommandExecTerminate
-    );
-    if !(actorless_read || (request.actor.is_some() && actor_method))
+    let actor_method = request.transfer.is_none()
+        && request.actor.is_some()
+        && matches!(
+            request.method,
+            Method::ThreadRead
+                | Method::ThreadTurnsList
+                | Method::ThreadItemsList
+                | Method::ThreadBackgroundTerminalsList
+                | Method::ThreadStart
+                | Method::TurnStart
+                | Method::ThreadFork
+                | Method::ThreadCompactStart
+                | Method::ReviewStart
+                | Method::ClaudeState
+                | Method::ClaudeCommands
+                | Method::ClaudeSettings
+                | Method::ClaudeStopTask
+                | Method::ThreadRollback
+                | Method::ThreadQueueList
+                | Method::TurnInterrupt
+                | Method::ConfigRead
+                | Method::CommandExec
+                | Method::CommandExecWrite
+                | Method::CommandExecResize
+                | Method::CommandExecTerminate
+        );
+    let transfer_method = request.transfer.as_ref().is_some_and(|transfer| {
+        matches!(
+            request.method,
+            Method::ThreadQueueList
+                | Method::ThreadBackgroundTerminalsList
+                | Method::ThreadUnsubscribe
+        ) && !transfer.transfer_id.is_empty()
+            && !transfer.member.is_empty()
+            && !transfer.source_account.is_empty()
+            && !transfer.thread_id.is_empty()
+            && request.scope.account == transfer.source_account
+            && request
+                .params
+                .as_object()
+                .is_some_and(|params| params.len() == 1 && params.contains_key("threadId"))
+            && request.params.get("threadId").and_then(Value::as_str)
+                == Some(transfer.thread_id.as_str())
+            && request.operation.starts_with(&format!(
+                "transfer:{}:{}:",
+                transfer.transfer_id, transfer.member
+            ))
+    });
+    if !(actorless_read || actor_method || transfer_method)
         || request.operation.is_empty()
         || request.operation.len() > 1024
         || request.params.to_string().len() > 2 * 1024 * 1024
@@ -232,6 +265,7 @@ pub(super) struct Call {
     scope: ConnectionScope,
     operation: String,
     actor: Option<RequestActor>,
+    transfer: Option<TransferAuthorization>,
     method: String,
     params: Value,
 }
@@ -288,6 +322,7 @@ mod validation_tests {
                 agent: "fixture-agent".into(),
                 epoch: 1,
             }),
+            transfer: None,
             method: Method::ThreadTurnsList,
             params: json!({
                 "threadId":"fixture-thread",
@@ -338,6 +373,37 @@ mod validation_tests {
         });
         assert!(validate(&request).is_ok());
         request.params = json!({});
+        assert_eq!(validate(&request), Err(PortError::Invalid));
+    }
+
+    #[test]
+    fn transfer_source_requests_are_thread_and_method_scoped() {
+        let mut request = turns_request("full", 1, false);
+        request.scope.account = "source-account".into();
+        request.expected_scope = Some(request.scope.clone());
+        request.operation = "transfer:transfer-a:agent-a:queue-check".into();
+        request.method = Method::ThreadQueueList;
+        request.params = json!({"threadId":"source-thread"});
+        request.transfer = Some(TransferAuthorization {
+            transfer_id: "transfer-a".into(),
+            member: "agent-a".into(),
+            source_account: "source-account".into(),
+            thread_id: "source-thread".into(),
+        });
+        assert!(validate(&request).is_ok());
+
+        request.params["threadId"] = json!("another-thread");
+        assert_eq!(validate(&request), Err(PortError::Invalid));
+        request.params = json!({"threadId":"source-thread", "cursor":"page"});
+        assert_eq!(validate(&request), Err(PortError::Invalid));
+        request.params = json!({"threadId":"source-thread"});
+        request.operation = "provider:agent-a:queue-check".into();
+        assert_eq!(validate(&request), Err(PortError::Invalid));
+
+        request.operation = "transfer:transfer-a:agent-a:unsubscribe".into();
+        request.method = Method::ThreadUnsubscribe;
+        assert!(validate(&request).is_ok());
+        request.method = Method::ThreadFork;
         assert_eq!(validate(&request), Err(PortError::Invalid));
     }
 }

@@ -49,6 +49,7 @@ impl RetainedAccountSession for Session {
         let mut scope = ConnectionScope {
             account: request.account.clone(),
             connection: "fixture-connection".into(),
+            generation: 1,
         };
         if self.foreign {
             scope.connection = "foreign".into();
