@@ -166,7 +166,6 @@ impl ModelCatalogService {
             return CatalogRead::Unavailable;
         }
 
-        let now = Instant::now();
         let cache_key = (account_key.to_owned(), home.to_owned(), provider.to_owned());
         // Own task-slot registration before marking the cache pending. If this
         // future is cancelled while waiting for the registry, no orphaned
@@ -187,6 +186,10 @@ impl ModelCatalogService {
                 index += 1;
             }
         }
+        // Registry acquisition and completed-task cleanup can suspend. Sample
+        // freshness only after those waits so an entry cannot expire while this
+        // read is queued and still be returned as fresh.
+        let now = Instant::now();
         let (generation, stale, permit) = {
             let Ok(mut cache) = self.0.cache.lock() else {
                 return CatalogRead::Unavailable;
@@ -704,6 +707,42 @@ pub(crate) mod tests {
                 .expect("catalog cache")
                 .contains_key(&("account".to_owned(), "/home".to_owned(), "codex".to_owned(),))
         );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn read_rechecks_expiry_after_waiting_for_task_registry() {
+        let service = ModelCatalogService::new(None);
+        let key = ("account".to_owned(), "/home".to_owned(), "codex".to_owned());
+        service.0.cache.lock().expect("cache").insert(
+            key.clone(),
+            CacheEntry {
+                generation: 7,
+                value: Some(json!({"models":[{"model":"stale"}]})),
+                expires_at: Some(Instant::now() + Duration::from_secs(1)),
+                error: false,
+                pending: false,
+            },
+        );
+        let task_guard = service.0.tasks.lock().await;
+        let read = service.read("account", "/home", "codex", false);
+        tokio::pin!(read);
+        tokio::select! {
+            biased;
+            result = &mut read => panic!("read passed the held task registry: {result:?}"),
+            () = tokio::task::yield_now() => {},
+        }
+        tokio::time::advance(Duration::from_secs(2)).await;
+        drop(task_guard);
+
+        assert_eq!(
+            read.await,
+            CatalogRead::Ready(json!({"models":[{"model":"stale"}]})),
+        );
+        assert!(
+            service.0.cache.lock().expect("cache")[&key].pending,
+            "expired stale data must have a refresh registered"
+        );
+        service.shutdown().await.expect("join refresh task");
     }
 
     #[tokio::test]
