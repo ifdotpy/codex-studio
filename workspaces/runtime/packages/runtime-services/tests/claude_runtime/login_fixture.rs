@@ -60,7 +60,6 @@ pub struct Launches {
     pub receiver: tokio::sync::Mutex<mpsc::Receiver<Script>>,
     sender: mpsc::Sender<Script>,
 }
-const LAUNCH_RECEIVE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 pub struct Script {
     pub command: LoginCommand,
     pub output: mpsc::Sender<LoginEvent>,
@@ -86,10 +85,13 @@ impl Launches {
         })
     }
     pub async fn next(&self) -> Script {
-        tokio::time::timeout(LAUNCH_RECEIVE_TIMEOUT, self.receiver.lock().await.recv())
-            .await
-            .expect("scripted Claude login child was not launched within 60 seconds")
-            .expect("Claude login launch channel closed before a child was launched")
+        tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            self.receiver.lock().await.recv(),
+        )
+        .await
+        .expect("valid fixture")
+        .expect("valid fixture")
     }
 }
 impl LoginLauncher for Launches {
