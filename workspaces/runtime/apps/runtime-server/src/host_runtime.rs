@@ -806,6 +806,7 @@ mod voice_composition_tests {
                     result,
                     not_sent_reason: (certainty == RequestCertainty::NotSent)
                         .then_some(NotSentReason::WorkerNotSent),
+                    replayed: false,
                 })
             })
         }

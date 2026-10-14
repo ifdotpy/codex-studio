@@ -604,7 +604,15 @@ async fn create_lead(
     State(state): State<HttpState>,
     ApiJson(body): ApiJson<generated::CreateLeadRequest>,
 ) -> Result<Json<generated::AgentResponse>, ApiError> {
-    if body.model.as_ref().is_some_and(Option::is_some) {
+    create_lead_with_model(State(state), ApiJson(body), false).await
+}
+
+async fn create_lead_with_model(
+    State(state): State<HttpState>,
+    ApiJson(body): ApiJson<generated::CreateLeadRequest>,
+    allow_requested_model: bool,
+) -> Result<Json<generated::AgentResponse>, ApiError> {
+    if !allow_requested_model && body.model.as_ref().is_some_and(Option::is_some) {
         return Err(ApiError::new(
             StatusCode::NOT_IMPLEMENTED,
             "Not implemented: requires provider-session/model-list",
@@ -698,7 +706,7 @@ pub(super) async fn create_branch_draft(
 ) -> Result<Json<generated::AgentResponse>, ApiError> {
     let body: generated::CreateLeadRequest =
         serde_json::from_value(body).map_err(|_| ApiError::internal())?;
-    create_lead(State(state), ApiJson(body)).await
+    create_lead_with_model(State(state), ApiJson(body), true).await
 }
 async fn configure(
     State(state): State<HttpState>,

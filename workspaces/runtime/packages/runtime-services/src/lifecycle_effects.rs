@@ -972,6 +972,7 @@ mod tests {
                 result: self.response.clone(),
                 not_sent_reason: (certainty == RequestCertainty::NotSent)
                     .then_some(NotSentReason::WorkerNotSent),
+                replayed: false,
             };
             *self.observed.lock().expect("observed request lock") = Some(request);
             Ok(receipt)

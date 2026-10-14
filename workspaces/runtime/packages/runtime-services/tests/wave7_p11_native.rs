@@ -346,6 +346,8 @@ fn invalid_worker_not_sent_receipts_keep_intent_unknown_and_unclaimable() {
             certainty: RequestCertainty::NotSent,
             result: None,
             not_sent_reason: Some(NotSentReason::WorkerNotSent),
+
+            replayed: false,
         };
         let tx = db.transaction().expect("begin receipt settlement");
         assert!(matches!(

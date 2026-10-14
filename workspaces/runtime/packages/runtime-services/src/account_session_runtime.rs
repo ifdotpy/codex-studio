@@ -280,6 +280,32 @@ pub struct SessionReceipt {
     pub certainty: RequestCertainty,
     pub result: Option<ProviderResponse>,
     pub not_sent_reason: Option<NotSentReason>,
+    /// True only when the retained broker returned a checkpoint-verified replay.
+    pub replayed: bool,
+}
+
+fn provider_receipt_matches(
+    receipt: &SessionReceipt,
+    account: &str,
+    operation: &str,
+    expected_scope: Option<&ConnectionScope>,
+) -> Result<(), AccountSessionError> {
+    let same_identity = receipt.operation == operation && receipt.scope.account == account;
+    let valid_scope = match expected_scope {
+        None => receipt.certainty == RequestCertainty::NotSent,
+        Some(scope) if receipt.scope == *scope => true,
+        Some(scope) => {
+            receipt.replayed
+                && receipt.certainty == RequestCertainty::Written
+                && receipt.scope.generation < scope.generation
+                && receipt.scope.account == scope.account
+        }
+    };
+    if same_identity && valid_scope {
+        Ok(())
+    } else {
+        Err(AccountSessionError::Unknown)
+    }
 }
 pub type SessionFuture =
     Pin<Box<dyn Future<Output = Result<SessionReceipt, AccountSessionError>> + Send>>;
@@ -487,10 +513,13 @@ impl AccountSessionRuntime {
         });
         match receipt {
             Ok(Ok(receipt))
-                if receipt.operation == operation
-                    && receipt.scope.account == account
-                    && (receipt.certainty == RequestCertainty::NotSent
-                        || expected_scope.as_ref() == Some(&receipt.scope)) =>
+                if provider_receipt_matches(
+                    &receipt,
+                    &account,
+                    &operation,
+                    expected_scope.as_ref(),
+                )
+                .is_ok() =>
             {
                 Ok(receipt)
             }
@@ -684,10 +713,13 @@ impl AccountSessionPort for AccountSessionRuntime {
             .await
         }) {
             Ok(Ok(receipt))
-                if receipt.operation == operation
-                    && receipt.scope.account == account
-                    && (receipt.certainty == RequestCertainty::NotSent
-                        || expected_scope.as_ref() == Some(&receipt.scope)) =>
+                if provider_receipt_matches(
+                    &receipt,
+                    &account,
+                    &operation,
+                    expected_scope.as_ref(),
+                )
+                .is_ok() =>
             {
                 Ok(receipt)
             }
@@ -1193,6 +1225,91 @@ pub fn normalize_profile(
     }
     crate::claude_bridge::bridge_options(&value).map_err(|_| invalid())?;
     Ok(options)
+}
+
+#[cfg(test)]
+mod historical_receipt_tests {
+    use super::{
+        AccountSessionError, ConnectionScope, ProviderResponse, RequestCertainty, SessionReceipt,
+        provider_receipt_matches,
+    };
+    use serde_json::json;
+
+    fn scope(generation: u64) -> ConnectionScope {
+        ConnectionScope {
+            account: "default".into(),
+            connection: generation.to_string(),
+            generation,
+        }
+    }
+
+    fn receipt(
+        scope: ConnectionScope,
+        certainty: RequestCertainty,
+        replayed: bool,
+    ) -> SessionReceipt {
+        SessionReceipt {
+            scope,
+            operation: "branch:request-1".into(),
+            ticket: None,
+            certainty,
+            result: (certainty == RequestCertainty::Written)
+                .then(|| ProviderResponse::Reply(json!({"thread":{"id":"branch-thread"}}))),
+            not_sent_reason: None,
+            replayed,
+        }
+    }
+
+    #[test]
+    fn accepts_only_checkpoint_verified_historical_receipts_for_same_identity() {
+        let old_scope = scope(1);
+        let current_scope = scope(2);
+        let replayed = receipt(old_scope.clone(), RequestCertainty::Written, true);
+
+        assert!(
+            provider_receipt_matches(
+                &replayed,
+                "default",
+                "branch:request-1",
+                Some(&current_scope),
+            )
+            .is_ok()
+        );
+
+        let fresh_request = receipt(old_scope.clone(), RequestCertainty::Written, false);
+        assert!(matches!(
+            provider_receipt_matches(
+                &fresh_request,
+                "default",
+                "branch:request-1",
+                Some(&current_scope),
+            ),
+            Err(AccountSessionError::Unknown)
+        ));
+
+        let mut different_identity = receipt(old_scope.clone(), RequestCertainty::Written, true);
+        different_identity.operation = "branch:request-2".into();
+        assert!(matches!(
+            provider_receipt_matches(
+                &different_identity,
+                "default",
+                "branch:request-1",
+                Some(&current_scope),
+            ),
+            Err(AccountSessionError::Unknown)
+        ));
+
+        let beyond_checkpoint = receipt(old_scope, RequestCertainty::Unknown, true);
+        assert!(matches!(
+            provider_receipt_matches(
+                &beyond_checkpoint,
+                "default",
+                "branch:request-1",
+                Some(&current_scope),
+            ),
+            Err(AccountSessionError::Unknown)
+        ));
+    }
 }
 
 #[cfg(test)]

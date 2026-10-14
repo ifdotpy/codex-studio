@@ -236,6 +236,7 @@ struct CatalogInner {
     account_session: Mutex<Option<Arc<dyn crate::account_session_runtime::AccountSessionPort>>>,
     next_generation: Mutex<u64>,
     on_change: ChangeCallback,
+    refresh_changed: tokio::sync::Notify,
     tasks: tokio::sync::Mutex<Vec<tokio::task::JoinHandle<()>>>,
     cleanup_error: Arc<Mutex<Option<String>>>,
     stop: Shutdown,
@@ -314,6 +315,7 @@ impl ModelCatalogService {
             account_session: Mutex::new(None),
             next_generation: Mutex::new(0),
             on_change,
+            refresh_changed: tokio::sync::Notify::new(),
             tasks: tokio::sync::Mutex::new(Vec::new()),
             cleanup_error: Arc::default(),
             stop: Shutdown::default(),
@@ -487,6 +489,46 @@ impl ModelCatalogService {
         }));
         stale.map_or(CatalogRead::Pending, CatalogRead::Ready)
     }
+
+    /// Start or join a catalog refresh and wait for its completion notification.
+    /// Admission paths use this before durable provider effects so they never
+    /// create a child from stale or pending model metadata.
+    pub async fn read_until_fresh(
+        &self,
+        account_key: &str,
+        home: &str,
+        provider: &str,
+    ) -> CatalogRead {
+        if provider != "codex" {
+            return CatalogRead::Unavailable;
+        }
+        let wait_for_result = async {
+            loop {
+                if let AdmissionCatalogRead::Fresh { value, .. } =
+                    self.read_for_admission(account_key, home, provider)
+                {
+                    return CatalogRead::Ready(value);
+                }
+                let changed = self.0.refresh_changed.notified();
+                tokio::pin!(changed);
+                changed.as_mut().enable();
+                match self.read(account_key, home, provider, false).await {
+                    CatalogRead::Unavailable => return CatalogRead::Unavailable,
+                    CatalogRead::Pending | CatalogRead::Ready(_) => {
+                        if let AdmissionCatalogRead::Fresh { value, .. } =
+                            self.read_for_admission(account_key, home, provider)
+                        {
+                            return CatalogRead::Ready(value);
+                        }
+                        changed.await;
+                    }
+                }
+            }
+        };
+        tokio::time::timeout(CATALOG_TIMEOUT, wait_for_result)
+            .await
+            .unwrap_or(CatalogRead::Pending)
+    }
     pub fn retain_accounts(&self, accounts: &[Value]) {
         if let Ok(mut profiles) = self.0.accounts.lock() {
             profiles.clear();
@@ -621,6 +663,7 @@ fn store_result(
     };
     if stored {
         (inner.on_change)();
+        inner.refresh_changed.notify_waiters();
     }
     stored
 }
@@ -937,6 +980,8 @@ pub(crate) mod tests {
                     self.pages.lock().expect("pages").remove(0),
                 )),
                 not_sent_reason: None,
+
+                replayed: false,
             })
         }
     }
@@ -1069,6 +1114,34 @@ pub(crate) mod tests {
             },
         );
         assert!(store_result(&service.0, &key, 7, Ok(value)));
+    }
+
+    #[tokio::test]
+    async fn read_until_fresh_waits_for_catalog_change_notification() {
+        let service = ModelCatalogService::new(None);
+        let key = ("account".to_owned(), "/home".to_owned(), "codex".to_owned());
+        service.0.cache.lock().expect("cache").insert(
+            key.clone(),
+            CacheEntry {
+                generation: 7,
+                value: Some(json!({"data":[{"model":"stale"}]})),
+                expires_at: None,
+                error: false,
+                pending: true,
+            },
+        );
+        let waiting = service.clone();
+        let read =
+            tokio::spawn(
+                async move { waiting.read_until_fresh("account", "/home", "codex").await },
+            );
+        tokio::task::yield_now().await;
+        let value = json!({"data":[{"model":"fixture"}]});
+        assert!(store_result(&service.0, &key, 7, Ok(value.clone())));
+        assert_eq!(
+            read.await.expect("catalog waiter"),
+            CatalogRead::Ready(value)
+        );
     }
 
     #[tokio::test]

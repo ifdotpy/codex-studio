@@ -785,6 +785,7 @@ mod tests {
                 certainty,
                 result,
                 not_sent_reason: None,
+                replayed: false,
             })
         }
     }

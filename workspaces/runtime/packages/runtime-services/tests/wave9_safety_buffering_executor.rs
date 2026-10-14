@@ -126,6 +126,8 @@ impl AccountSessionPort for Session<'_> {
                 certainty: RequestCertainty::Unknown,
                 result: None,
                 not_sent_reason: None,
+
+                replayed: false,
             });
         }
         if self.requires_at == Some(call_index) {
@@ -144,6 +146,8 @@ impl AccountSessionPort for Session<'_> {
                     certainty: RequestCertainty::NotSent,
                     result: None,
                     not_sent_reason: Some(NotSentReason::WorkerNotSent),
+
+                    replayed: false,
                 });
             }
         }
@@ -178,6 +182,8 @@ impl AccountSessionPort for Session<'_> {
                 },
             ),
             not_sent_reason: None,
+
+            replayed: false,
         })
     }
 }
@@ -285,6 +291,8 @@ impl AccountSessionPort for StartBlockingSession {
             certainty: RequestCertainty::Written,
             result: Some(ProviderResponse::Reply(result)),
             not_sent_reason: None,
+
+            replayed: false,
         })
     }
 }
@@ -374,6 +382,8 @@ impl AccountSessionPort for BlockingSession {
                 json!({"data":[{"id":"turn","status":"inProgress"}]}),
             )),
             not_sent_reason: None,
+
+            replayed: false,
         })
     }
 }

@@ -355,9 +355,9 @@ pub(super) fn replay(
         // A committed operation may be inspected after the provider reconnects.
         // Return its original ticket and scope; this path only reads receipts and
         // never queues another provider write.
-        Ok(Ok(Replay::Return(
-            prior_call.receipt(request.ticket, result),
-        )))
+        let mut receipt = prior_call.receipt(request.ticket, result);
+        receipt.replayed = true;
+        Ok(Ok(Replay::Return(receipt)))
     })
 }
 

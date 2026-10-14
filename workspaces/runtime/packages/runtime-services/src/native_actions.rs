@@ -698,6 +698,7 @@ mod native_action_retry_tests {
             certainty: RequestCertainty::NotSent,
             result: None,
             not_sent_reason: Some(NotSentReason::WorkerNotSent),
+            replayed: false,
         }
     }
 

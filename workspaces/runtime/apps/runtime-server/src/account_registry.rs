@@ -335,6 +335,8 @@ impl studio_runtime_services::account_session_runtime::RetainedAccountSession
                 certainty: RequestCertainty::NotSent,
                 result: None,
                 not_sent_reason: Some(reason),
+
+                replayed: false,
             };
             let Some(session) = session.filter(|session| session.is_live()) else {
                 return Ok(not_sent(NotSentReason::NoLiveAccountWorker));
@@ -406,6 +408,7 @@ impl studio_runtime_services::account_session_runtime::RetainedAccountSession
                         certainty,
                         result,
                         not_sent_reason: None,
+                        replayed: false,
                     })
                 }
                 Ok(_) => Err(AccountSessionError::Unknown),
@@ -505,6 +508,7 @@ fn not_sent_receipt(
         certainty: studio_runtime_services::account_session_runtime::RequestCertainty::NotSent,
         result: None,
         not_sent_reason: Some(reason),
+        replayed: false,
     }
 }
 
@@ -597,6 +601,7 @@ async fn dispatch_request(
         not_sent_reason: (certainty == RequestCertainty::NotSent).then_some(
             studio_runtime_services::account_session_runtime::NotSentReason::WorkerNotSent,
         ),
+        replayed: receipt.replayed,
     })
 }
 

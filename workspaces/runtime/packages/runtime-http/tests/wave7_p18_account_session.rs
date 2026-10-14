@@ -77,6 +77,7 @@ impl RetainedAccountSession for Session {
                 certainty,
                 result: Some(ProviderResponse::Reply(result)),
                 not_sent_reason: None,
+                replayed: false,
             })
         })
     }

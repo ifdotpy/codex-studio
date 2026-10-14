@@ -516,6 +516,8 @@ fn production_interrupt_is_durable_post_commit_and_retry_coalesces_after_rollbac
                 certainty: RequestCertainty::Written,
                 result: Some(ProviderResponse::Reply(json!({"ok":true}))),
                 not_sent_reason: None,
+
+                replayed: false,
             })
         }
     }
@@ -1085,6 +1087,8 @@ fn production_unknown_interrupt_is_never_resent_on_repeated_stop() {
                 certainty: RequestCertainty::Unknown,
                 result: None,
                 not_sent_reason: None,
+
+                replayed: false,
             })
         }
     }

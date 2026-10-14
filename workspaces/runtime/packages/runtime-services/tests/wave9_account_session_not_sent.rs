@@ -125,6 +125,7 @@ impl RetainedAccountSession for FakeSession {
                 result,
                 not_sent_reason: (certainty == RequestCertainty::NotSent)
                     .then_some(NotSentReason::NoLiveAccountWorker),
+                replayed: false,
             })
         })
     }

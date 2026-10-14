@@ -528,6 +528,9 @@ class CombinedHostLifecycleContract(unittest.TestCase):
                 def turn_completed() -> bool:
                     response = self.request("GET", transcript_path)
                     if response.status == 501:
+                        completed["refusal"] = response.body[:1000].decode(
+                            "utf-8", errors="replace"
+                        )
                         return False
                     self.assertEqual(response.status, 200, response.body[:1000])
                     completed["value"] = response.json()
@@ -542,14 +545,26 @@ class CombinedHostLifecycleContract(unittest.TestCase):
                 if turn_did_complete:
                     steps.append({"step": "complete turn", "status": "passed"})
                     self.assertIn("Recovered output.", json.dumps(completed["value"]))
+                    provider_frames = [
+                        frame
+                        for frame in self.backend.received_provider_frames()
+                        if frame.get("method") in {"thread/start", "turn/start"}
+                    ]
+                    provider_methods = [frame["method"] for frame in provider_frames]
+                    self.assertIn("thread/start", provider_methods, provider_frames)
+                    self.assertIn("turn/start", provider_methods, provider_frames)
+                    print(json.dumps({"p20ProviderFrames": provider_frames}))
                     steps.append({"step": "read transcript", "status": "passed"})
-                elif os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"):
-                    dependency = "direct provider launch"
-                    self.assertEqual(self.census["lifecycle_dependencies"][dependency]["kind"], "open_task")
-                    steps.append({"step": "complete turn", "status": "skipped", "dependencies": [dependency]})
-                    steps.append({"step": "read transcript", "status": "skipped", "dependencies": [dependency]})
                 else:
-                    self.fail("Python provider turn did not complete through the transcript HTTP route")
+                    methods = [
+                        frame.get("method")
+                        for frame in self.backend.received_provider_frames()
+                    ]
+                    self.fail(
+                        "Provider turn did not complete through the transcript HTTP route; "
+                        f"last refusal={completed.get('refusal')!r}, "
+                        f"transcript={completed.get('value')!r}, methods={methods!r}"
+                    )
 
         question_id = self.seed_answerable_question(agent_id)
         answer = self.request("POST", "/api/answer", {"id": question_id, "decision": "decline"})

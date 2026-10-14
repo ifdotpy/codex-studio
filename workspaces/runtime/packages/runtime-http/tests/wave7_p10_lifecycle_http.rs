@@ -72,6 +72,8 @@ impl AccountSessionPort for InterruptBroker {
             certainty: RequestCertainty::Written,
             result: Some(ProviderResponse::Reply(json!({"ok":true}))),
             not_sent_reason: None,
+
+            replayed: false,
         })
     }
 }

@@ -112,7 +112,7 @@ class PortableHistoryImportHTTPContract(TimedHTTPContractTest, unittest.TestCase
                     try:
                         if table == "runtime_agents":
                             rows = connection.execute(
-                                "SELECT id,json_extract(record,'$.status'),json_extract(record,'$.threadId'),json_extract(record,'$.importedFrom'),json_extract(record,'$.workspaceOperation') FROM runtime_agents ORDER BY rowid DESC LIMIT 6",
+                                "SELECT id,json_extract(record,'$.status'),json_extract(record,'$.threadId'),json_extract(record,'$.importedFrom'),json_extract(record,'$.workspaceOperation'),json_extract(record,'$.workspaceReservationId'),json_extract(record,'$.autoWake'),json_extract(record,'$.error') FROM runtime_agents ORDER BY rowid DESC LIMIT 6",
                             ).fetchall()
                         else:
                             rows = connection.execute(
