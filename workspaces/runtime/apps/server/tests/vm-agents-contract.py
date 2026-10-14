@@ -43,6 +43,8 @@ class Guest(fixture.NativeGuest):
         self.save_failure = None
         self.error_receipts = {}
         self.exec_argv = []
+        # The output of `layr op log` in the line.
+        self.op_log = ''
         self.merges = 0
         self.state_dir = root / 'vm-state'
         self.during_import = []
@@ -130,7 +132,8 @@ class Guest(fixture.NativeGuest):
             result = {'synced': True}
         elif method == 'layr.exec':
             self.exec_argv.append(params['argv'])
-            stdout = b'state-from-exec\n' if params['argv'][1] == 'rev-parse' else b''
+            stdout = (b'state-from-exec\n' if params['argv'][1] == 'rev-parse'
+                      else self.op_log.encode() if params['argv'][1:3] == ['op', 'log'] else b'')
             result = {'exitCode': 0, 'stdout': base64.b64encode(stdout).decode(), 'stderr': '', 'reason': None}
         else:
             raise AssertionError(method)
@@ -299,6 +302,35 @@ class VmAgents(unittest.TestCase):
         saves = [options['request_id'] for method, _, options in self.guest.calls if method == 'line.save']
         self.assertEqual(saves, ['layr-turn:' + lead['id'] + ':turn-1', 'layr-turn:' + lead['id'] + ':turn-1:1'])
         self.assertEqual(self.guest.exec_argv, [])
+
+    def test_an_unknown_save_outcome_is_settled_by_the_layr_op_log(self):
+        # 2026-10-13: a guest kernel oops hung the save; the guest killed it and keeps
+        # outcome_unknown for its request ID. The op log has no save for the turn.
+        lead = self.pending_turn()
+        self.guest.save_failure = 'outcome_unknown'
+        self.guest.op_log = ('54083c752217 2026-10-13 10:57:09 +0000 owner [' + lead['id'] +
+                             '] save 97c6946 Studio turn turn-0\n'
+                             '3ad9981f78cf 2026-10-13 10:58:26 +0000 owner [other] save df782b8 Studio turn turn-1\n')
+        with self.assertRaises(LinuxVMError):
+            flush_turns(self.runtime, self.runtime.agent(lead['id']))
+        self.assertEqual(self.runtime.agent(lead['id'])['layrTurnSaves']['turn-1'], {'status': 'pending', 'attempt': 1})
+        self.guest.save_failure = None
+        flush_turns(self.runtime, self.runtime.agent(lead['id']))
+        self.assertEqual(self.runtime.agent(lead['id'])['layrTurnSaves']['turn-1']['status'], 'saved')
+        self.assertEqual(self.guest.saves, 1)
+        self.assertEqual(self.guest.exec_argv, [['layr', 'op', 'log', '-n', '500']])
+
+    def test_an_unknown_save_outcome_that_committed_takes_its_state(self):
+        lead = self.pending_turn()
+        self.guest.save_failure = 'outcome_unknown'
+        self.guest.op_log = ('54083c752217 2026-10-13 10:57:09 +0000 owner [' + lead['id'] +
+                             '] save 97c6946 Studio turn turn-1\n')
+        flush_turns(self.runtime, self.runtime.agent(lead['id']))
+        saved = self.runtime.agent(lead['id'])
+        self.assertEqual(saved['layrTurnSaves']['turn-1'], {'status': 'saved', 'stateId': 'state-from-exec'})
+        self.assertEqual(saved['layrStateId'], 'state-from-exec')
+        self.assertEqual(self.guest.saves, 0)
+        self.assertEqual(self.guest.exec_argv, [['layr', 'op', 'log', '-n', '500'], ['layr', 'rev-parse', '97c6946']])
 
     def test_vm_restart_ends_providers_shows_a_notice_and_reconnects_without_resending(self):
         # docs/linux-vm-workspaces.md, "Guest crash watchdog": the watchdog stopped a dead guest.
