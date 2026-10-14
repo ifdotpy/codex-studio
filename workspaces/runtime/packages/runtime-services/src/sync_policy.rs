@@ -11,11 +11,13 @@ use serde_json::{Map, Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Component, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
+use studio_runtime_schema::SYNC_ENTITY_SCOPE;
+pub use studio_runtime_schema::shared_values::{SYNC_BATCH_LIMIT, SYNC_ENTITY_PAGE_LIMIT};
 use studio_runtime_store::{RuntimeStore, StoreError, StoreResult, SyncDocumentsRepository};
 use thiserror::Error;
 
-pub const ENTITY_PAGE_LIMIT: i64 = 500;
-pub const OTHER_PAGE_LIMIT: i64 = 100;
+pub const ENTITY_PAGE_LIMIT: i64 = SYNC_ENTITY_PAGE_LIMIT;
+pub const OTHER_PAGE_LIMIT: i64 = SYNC_BATCH_LIMIT;
 const PREFERENCE_FIELD_CAP: usize = 3000;
 const MAX_CLOCK_SKEW_MS: i64 = 5 * 60 * 1000;
 const MONITOR_TERMINAL_WINDOW: usize = 100;
@@ -702,7 +704,7 @@ pub enum SyncPolicyError {
 pub fn effective_limit(scope: &str, limit: i64) -> i64 {
     limit.clamp(
         1,
-        if scope == "state:entities:v1" {
+        if scope == SYNC_ENTITY_SCOPE {
             ENTITY_PAGE_LIMIT
         } else {
             OTHER_PAGE_LIMIT
@@ -1134,7 +1136,7 @@ mod tests {
 
     #[test]
     fn cursor_limits_match_scope_contract() {
-        assert_eq!(effective_limit("state:entities:v1", 900), 500);
+        assert_eq!(effective_limit(SYNC_ENTITY_SCOPE, 900), 500);
         assert_eq!(effective_limit("drafts", 900), 100);
         assert_eq!(effective_limit("drafts", 0), 1);
     }

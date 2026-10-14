@@ -16,6 +16,7 @@ from uuid import uuid4
 from pydantic import ValidationError
 
 from studio_api.models import SyncEntity
+from studio_api.sync.protocol import SYNC_PROTOCOL_VERSION
 from studio_api.sync.entity_response import response_entity_document
 
 from studio_api.sync.resources.models import (
@@ -612,7 +613,7 @@ class ResourceHub:
         entity_changes: EntityChangeBatch | None = None,
     ) -> ResourceChangeEvent:
         return ResourceChangeEvent(
-            protocol=3,
+            protocol=SYNC_PROTOCOL_VERSION,
             workspaceId=self.workspace_id,
             epoch=self.epoch,
             revision=self._revision,
@@ -641,7 +642,7 @@ class ResourceHub:
 
     def _heartbeat(self) -> ResourceHeartbeatEvent:
         return ResourceHeartbeatEvent(
-            protocol=3,
+            protocol=SYNC_PROTOCOL_VERSION,
             workspaceId=self.workspace_id,
             epoch=self.epoch,
             revision=self._revision,
@@ -649,7 +650,7 @@ class ResourceHub:
 
     def _token_rates_event(self, snapshot: TokenRateSnapshot) -> ResourceTokenRatesEvent:
         return ResourceTokenRatesEvent(
-            protocol=3,
+            protocol=SYNC_PROTOCOL_VERSION,
             workspaceId=self.workspace_id,
             epoch=self.epoch,
             revision=self._revision,
@@ -937,12 +938,14 @@ def publish_resource_overflow(state_dir: str | Path) -> None:
             _LOGGER.exception("Unable to publish resource reconciliation")
 
 
-def publish_token_rates(state_dir: str | Path, snapshot: TokenRateSnapshot) -> None:
+def publish_token_rates(state_dir: str | Path, snapshot: TokenRateSnapshot) -> bool | None:
     """Publish an actual changed token-rate snapshot without polling."""
     with _registry_lock:
         hub = _hub_registry.get(_root_key(state_dir))
-    if hub is not None:
-        try:
-            hub.publish_token_rates(snapshot)
-        except Exception:
-            _LOGGER.exception("Unable to publish committed token-rate changes")
+    if hub is None:
+        return None
+    try:
+        hub.publish_token_rates(snapshot)
+        return True
+    except Exception:
+        return False

@@ -23,6 +23,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import studio_operations_native as native
 
 from codex_operations_adapter import PROTOCOL_VERSION, check_protocol
+from codex_shared_values import OPERATIONS_PYTHON_PROTOCOL_VERSION
 from codex_tool_requests import (
     RequestMixin, _apply_decision, _content_fingerprint, _lifecycle, _prefix,
 )
@@ -170,10 +171,10 @@ class OperationsNativeContract(unittest.TestCase):
                 self.assertEqual(record.get("outcome", "unknown"), case["python_outcome"])
 
     def test_protocol_mismatch_fails_clearly(self):
-        self.assertEqual(PROTOCOL_VERSION, 4)
-        self.assertEqual(native.PROTOCOL_VERSION, PROTOCOL_VERSION)
+        self.assertEqual(PROTOCOL_VERSION, OPERATIONS_PYTHON_PROTOCOL_VERSION)
+        self.assertEqual(native.PROTOCOL_VERSION, OPERATIONS_PYTHON_PROTOCOL_VERSION)
         with self.assertRaisesRegex(RuntimeError, "protocol mismatch"):
-            check_protocol(SimpleNamespace(PROTOCOL_VERSION=3))
+            check_protocol(SimpleNamespace(PROTOCOL_VERSION=PROTOCOL_VERSION + 1))
 
     def test_supported_persisted_pairs_replay_without_a_transition(self):
         records = [

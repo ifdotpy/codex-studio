@@ -306,6 +306,52 @@ class StaleToolRequestAckContract(unittest.TestCase):
         self.assertEqual(self.operations, 0)
         self.assertEqual(self.runtime.tool_request(self.key)['outcome'], 'not_applied')
 
+    def test_unbound_old_turn_waits_for_exact_turn_then_is_rejected(self):
+        attempt = {'id': 'fixture-start', 'epoch': 3, 'submitted': True,
+                   'accountKey': 'default', 'threadId': self.actor['threadId'],
+                   'connectionId': 'old', 'observedTurnId': None, 'turnId': None}
+        self.update_actor(turnId=None, inFlight=True, turnEpoch=3, startAttempt=attempt)
+        message = copy.deepcopy(self.message)
+        message['params']['turnId'] = 'older-turn'
+        registered = threading.Event()
+        waiters = self.runtime._tool_turn_binding_waiters
+
+        class RegisteredWaiterMap(dict):
+            def setdefault(self, key, default=None):
+                value = super().setdefault(key, default)
+                registered.set()
+                return value
+
+        self.runtime._tool_turn_binding_waiters = RegisteredWaiterMap()
+        binding_errors = []
+        def bind_new_turn():
+            if not registered.wait(1):
+                binding_errors.append('The callback did not register its turn waiter')
+                return
+            self.update_actor(
+                turnId='current-turn',
+                startAttempt={**attempt, 'observedTurnId': 'current-turn', 'turnId': 'current-turn'},
+            )
+            with self.runtime.lock:
+                self.runtime.wake_tool_turn_binding_waiters('default', self.actor['threadId'])
+        notifier = threading.Thread(target=bind_new_turn)
+        notifier.start()
+        frames = RetainedFrames(message)
+        try:
+            server = self.dispatcher(frames, 'old')
+        finally:
+            notifier.join(timeout=1)
+            self.runtime._tool_turn_binding_waiters = waiters
+        self.assertFalse(notifier.is_alive(), 'Turn binding fixture did not finish')
+        self.assertEqual(binding_errors, [])
+        self.assertEqual(server.errors, [])
+        self.assertEqual(frames.acknowledged, 7)
+        self.assertEqual(self.operations, 0)
+        self.assertEqual(self.runtime.tool_request(self.key)['outcome'], 'not_applied')
+        self.assertFalse(self.sink.messages[0]['result']['success'])
+        self.assertEqual(self.runtime._tool_turn_binding_waiter_count, 0)
+        self.assertEqual(self.runtime._tool_turn_binding_waiters, {})
+
     def test_old_queued_receipt_cannot_execute_after_stop_and_resume(self):
         self.runtime.reserve_tool_request(self.message, 'default', 'old')
         self.update_actor(epoch=4, autoWake=True, turnEpoch=4)

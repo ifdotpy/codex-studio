@@ -8,6 +8,8 @@ use axum::http::StatusCode;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::path::PathBuf;
+use studio_runtime_schema::shared_values::SYNC_STREAM_BYTE_LIMIT;
+use studio_runtime_schema::{SYNC_ENTITY_SCOPE, SYNC_PROTOCOL_VERSION};
 use studio_runtime_services::sync_documents::{self, DraftWrite};
 use studio_runtime_services::sync_policy::{self, PreferenceScope, SyncPolicyError};
 use studio_runtime_services::transcript;
@@ -16,8 +18,6 @@ use studio_runtime_store::{StoreError, SyncDocumentsRepository};
 
 use crate::error::ApiError;
 use crate::router::HttpState;
-
-const SYNC_STREAM_BYTE_LIMIT: i64 = 1_048_576;
 
 pub(crate) fn routes() -> RouteGroup {
     RouteGroup::new(vec![
@@ -59,10 +59,10 @@ pub(crate) async fn protocol(State(state): State<HttpState>) -> Result<Json<Valu
         capabilities.push("unixSocket");
     }
     let response = json!({
-        "protocolVersion": 3,
-        "supportedVersions": [3],
+        "protocolVersion": SYNC_PROTOCOL_VERSION,
+        "supportedVersions": [SYNC_PROTOCOL_VERSION],
         "capabilities": capabilities,
-        "scopes": ["state:entities:v1", "transcript:<agent-id>", "drafts"],
+        "scopes": [SYNC_ENTITY_SCOPE, "transcript:<agent-id>", "drafts"],
         "pullEndpoint": "/api/sync/pull",
         "streamEndpoint": "/api/sync/stream",
         "maxEntityPage": sync_policy::ENTITY_PAGE_LIMIT,
@@ -82,10 +82,10 @@ pub(crate) async fn pull(
     let scope = query
         .typed_value("scope")
         .and_then(Value::as_str)
-        .unwrap_or("state:entities:v1")
+        .unwrap_or(SYNC_ENTITY_SCOPE)
         .to_owned();
     if scope != "drafts"
-        && scope != "state:entities:v1"
+        && scope != SYNC_ENTITY_SCOPE
         && !(scope.starts_with("transcript:") && scope.chars().count() < 300)
     {
         return Err(ApiError::validation(vec![
@@ -94,7 +94,10 @@ pub(crate) async fn pull(
         ]));
     }
     let after = query_integer(&query, "after", 0)?.max(0);
-    let limit = sync_policy::effective_limit(&scope, query_integer(&query, "limit", 100)?);
+    let limit = sync_policy::effective_limit(
+        &scope,
+        query_integer(&query, "limit", sync_policy::OTHER_PAGE_LIMIT)?,
+    );
     let fresh = query.typed_value("fresh").and_then(Value::as_str) == Some("1");
     let initial_high = query_integer(&query, "initialHigh", 0)?.max(0);
     let reset_support = query.typed_value("reset").and_then(Value::as_str) == Some("1");

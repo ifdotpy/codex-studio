@@ -1516,15 +1516,42 @@ class RuntimeContract(unittest.TestCase):
             result = db.execute("SELECT text FROM runtime_events WHERE kind='child_result'").fetchone()[0]
         self.assertEqual(json.loads(result)['result'], 'Final result after the lead answer')
 
+    def test_child_result_waits_for_inflight_input_receipt(self):
+        lead = self.lead()
+        children = [self.runtime.create({'name': 'Child ' + status, 'prompt': 'Review', 'role': 'reviewer'},
+                                        lead['id']) for status in ('dispatching', 'uncertain')]
+        for child in children:
+            eventually(lambda child=child: self.runtime.agent(child['id'])['status'] == 'running')
+        with patch.object(self.runtime, 'dispatch_candidates', lambda *_args, **_kwargs: 0):
+            for child, status in zip(children, ('dispatching', 'uncertain')):
+                first = self.runtime.agent(child['id'])
+                receipt = self.runtime.send(child['id'], 'The lead answered your question')
+                with self.runtime.lock, self.runtime.db() as db:
+                    changed = db.execute('UPDATE runtime_events SET status=? WHERE id=? AND status=?',
+                                         (status, receipt['id'], 'pending'))
+                    self.assertEqual(changed.rowcount, 1)
+                self.complete(first)
+                with self.runtime.read_db() as db:
+                    self.assertEqual(db.execute(
+                        "SELECT count(*) FROM runtime_events WHERE agent=? AND kind='child_result'",
+                        (lead['id'],)).fetchone()[0], 0)
+
     def test_failed_child_result_is_immediate_with_pending_input(self):
         lead = self.lead()
         child = self.runtime.create({'name': 'Child', 'prompt': 'Review', 'role': 'reviewer'}, lead['id'])
         eventually(lambda: self.runtime.agent(child['id'])['status'] == 'running')
         current = self.runtime.agent(child['id'])
-        self.runtime.send(child['id'], 'A late answer')
-        self.runtime.server.notify({'method': 'turn/completed', 'params': {'threadId': current['threadId'],
-            'turn': {'id': current['turnId'], 'status': 'failed', 'error': {'message': 'failed now'}}}})
-        eventually(lambda: len([e for e in read_runtime_state(self.runtime)['events'] if e['kind'] == 'child_result']) == 1)
+        with patch.object(self.runtime, 'dispatch_candidates', lambda *_args, **_kwargs: 0):
+            receipt = self.runtime.send(child['id'], 'A late answer')
+            with self.runtime.read_db() as db:
+                status = db.execute(
+                    'SELECT status FROM runtime_events WHERE id=?', (receipt['id'],)
+                ).fetchone()[0]
+            self.assertEqual(status, 'pending')
+            self.runtime.server.notify({'method': 'turn/completed', 'params': {'threadId': current['threadId'],
+                'turn': {'id': current['turnId'], 'status': 'failed', 'error': {'message': 'failed now'}}}})
+            eventually(lambda: len([e for e in read_runtime_state(self.runtime)['events']
+                                   if e['kind'] == 'child_result']) == 1)
         with self.runtime.db() as db:
             result = db.execute("SELECT text FROM runtime_events WHERE kind='child_result'").fetchone()[0]
         self.assertEqual(json.loads(result)['status'], 'failed')

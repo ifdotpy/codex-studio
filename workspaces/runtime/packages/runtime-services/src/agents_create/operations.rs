@@ -6,6 +6,9 @@ use crate::event_write::{python_json, python_strip, truthy};
 use crate::host_worker_create::{AccountIdentity, ExecutionSettings};
 use sha2::{Digest, Sha256};
 use std::path::PathBuf;
+use studio_runtime_schema::agent_limits_generated::{
+    DEFAULT_MAX_TEAM_AGENTS, DEFAULT_SUBAGENT_CONCURRENCY, TEAM_AGENT_HEADROOM,
+};
 use studio_runtime_store::RuntimeStore;
 
 pub struct Context<'a> {
@@ -88,9 +91,7 @@ pub struct Conversation {
     pub non_defaults: bool,
 }
 
-pub(crate) const DEFAULT_LEAD_MODEL: &str = "gpt-6-astra";
-pub(crate) const DEFAULT_CONCURRENCY: i64 = 32;
-pub(crate) const DEFAULT_MAX_AGENTS: i64 = 64;
+const DEFAULT_LEAD_MODEL: &str = "gpt-6-astra";
 
 pub fn lead(context: &Context<'_>, request: Creation) -> Result<Value, OperationError> {
     create(context, request, true)
@@ -309,8 +310,8 @@ fn create(
             .and_then(Value::as_bool)
             .unwrap_or(true)
     });
-    let concurrency = request.concurrency.unwrap_or(DEFAULT_CONCURRENCY);
-    let requested_max_agents = request.max_agents.unwrap_or(DEFAULT_MAX_AGENTS);
+    let concurrency = request.concurrency.unwrap_or(DEFAULT_SUBAGENT_CONCURRENCY);
+    let requested_max_agents = request.max_agents.unwrap_or(DEFAULT_MAX_TEAM_AGENTS);
     if !(0..=512).contains(&concurrency) || !(1..=1024).contains(&requested_max_agents) {
         return Err(OperationError::Invalid(
             "Concurrency must be 0 to 512 and team size must be 1 to 1024",
@@ -325,7 +326,7 @@ fn create(
     let max_agents = if request.max_agents.is_some() || role != "orchestrator" {
         requested_max_agents
     } else {
-        requested_max_agents.max(concurrency + 2)
+        requested_max_agents.max(concurrency + TEAM_AGENT_HEADROOM)
     };
     let prompt = python_strip(&request.prompt);
     let created = crate::event_write::unix_time().map_err(|_| OperationError::Internal)?;
@@ -669,7 +670,7 @@ fn create_child(
     record["maxAgents"] = root
         .get("maxAgents")
         .cloned()
-        .unwrap_or(json!(DEFAULT_MAX_AGENTS));
+        .unwrap_or(json!(DEFAULT_MAX_TEAM_AGENTS));
     record["tokenBudget"] = root.get("tokenBudget").cloned().unwrap_or(Value::Null);
     let created = record
         .get("created")

@@ -7,7 +7,7 @@ use std::{
 };
 
 use serde_json::{Value, json};
-use studio_runtime_providers::{Frame, RequestId};
+use studio_runtime_providers::{CALLBACK_QUEUE_LIMIT, Frame, RequestId};
 use studio_runtime_store::RuntimeStore;
 
 use crate::provider_callbacks::{
@@ -15,7 +15,6 @@ use crate::provider_callbacks::{
     ReplyIdentity,
 };
 
-const MAX_QUEUED_REPLIES: usize = 128;
 pub const REPLY_DEADLINE: Duration = Duration::from_secs(5);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -193,7 +192,8 @@ impl CallbackMailbox {
     pub fn new(
         wake: Arc<dyn Fn() + Send + Sync>,
     ) -> (Arc<Self>, std::sync::mpsc::Receiver<CommittedReply>) {
-        let (sender, receiver) = std::sync::mpsc::sync_channel(MAX_QUEUED_REPLIES);
+        // Match the Python provider callback queue limit through the generated contract.
+        let (sender, receiver) = std::sync::mpsc::sync_channel(CALLBACK_QUEUE_LIMIT);
         (Arc::new(Self { sender, wake }), receiver)
     }
 }

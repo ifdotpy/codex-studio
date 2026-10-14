@@ -2,6 +2,7 @@
 
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde_json::{Value, json};
+use studio_runtime_schema::shared_values::{SYNC_BATCH_LIMIT, SYNC_ENTITY_PAGE_LIMIT};
 
 use crate::schema::{SchemaRequirements, TableRequirement, TriggerRequirement};
 use crate::{StoreError, StoreResult};
@@ -190,7 +191,7 @@ impl SyncDocumentsRepository {
             });
         }
 
-        let limit = limit.clamp(1, 500);
+        let limit = limit.clamp(1, SYNC_ENTITY_PAGE_LIMIT);
         let priority_id = (after == 0 && fresh).then_some(priority_id).flatten();
         let rows = read_entity_page(
             transaction,
@@ -288,15 +289,21 @@ impl SyncDocumentsRepository {
             "SELECT collection,id,seq,payload,deleted FROM sync_entities \
              WHERE seq>?1 AND collection NOT LIKE 'transcript:%' ORDER BY seq LIMIT ?2",
         )?;
-        let rows = statement.query_map(params![after, limit.clamp(1, 501)], |row| {
-            Ok(EntityRow {
-                collection: row.get(0)?,
-                id: row.get(1)?,
-                sequence: row.get(2)?,
-                payload: row.get(3)?,
-                deleted: row.get::<_, i64>(4)? != 0,
-            })
-        })?;
+        let rows = statement.query_map(
+            params![
+                after,
+                limit.clamp(1, SYNC_ENTITY_PAGE_LIMIT.saturating_add(1))
+            ],
+            |row| {
+                Ok(EntityRow {
+                    collection: row.get(0)?,
+                    id: row.get(1)?,
+                    sequence: row.get(2)?,
+                    payload: row.get(3)?,
+                    deleted: row.get::<_, i64>(4)? != 0,
+                })
+            },
+        )?;
         rows.collect::<Result<Vec<_>, _>>()
             .map_err(StoreError::from)
     }
@@ -330,14 +337,17 @@ impl SyncDocumentsRepository {
             "SELECT seq,id,payload,deleted FROM sync_documents \
              WHERE scope='drafts' AND seq>?1 ORDER BY seq LIMIT ?2",
         )?;
-        let rows = statement.query_map(params![after.max(0), limit.clamp(1, 100)], |row| {
-            Ok(SyncDocument {
-                sequence: row.get(0)?,
-                id: row.get(1)?,
-                payload: row.get(2)?,
-                deleted: row.get::<_, i64>(3)? != 0,
-            })
-        })?;
+        let rows = statement.query_map(
+            params![after.max(0), limit.clamp(1, SYNC_BATCH_LIMIT)],
+            |row| {
+                Ok(SyncDocument {
+                    sequence: row.get(0)?,
+                    id: row.get(1)?,
+                    payload: row.get(2)?,
+                    deleted: row.get::<_, i64>(3)? != 0,
+                })
+            },
+        )?;
         rows.collect::<Result<Vec<_>, _>>()
             .map_err(StoreError::from)
     }

@@ -130,7 +130,7 @@ Use the root [`justfile`](../justfile) for the three independent scopes:
    hypothesis does not replace this gate.
 
 The repository checks add three focused commands: `just contracts-check` runs
-the existing generated API check in read-only mode; `just boundaries-check`
+the generated API and persisted-state checks in read-only mode; `just boundaries-check`
 checks manifest-declared imports and workspace direction; and
 `just check-affected <base>` checks changed packages and reverse dependents
 discovered from workspace manifests. It widens to all packages for root policy

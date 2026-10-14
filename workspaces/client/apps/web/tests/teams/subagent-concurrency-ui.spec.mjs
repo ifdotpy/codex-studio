@@ -207,7 +207,7 @@ test("subagent concurrency ui", async ({ browser: _browser }) => {
     assert.equal(await input.inputValue(), "32");
     assert.equal(await control.getAttribute("data-agent-mode"), "multi");
     assert.equal(await input.getAttribute("min"), "0");
-    assert.equal(await input.getAttribute("max"), "512");
+    assert.equal(await input.getAttribute("max"), "2048");
     assert.equal(
       await input.getAttribute("title"),
       "0 disables subagents. The lead does not count. Extra work waits in the queue.",
@@ -258,11 +258,11 @@ test("subagent concurrency ui", async ({ browser: _browser }) => {
       );
 
     // Capacity at the product maximum remains available; positive values restore Multi.
-    await input.fill("512");
+    await input.fill("2048");
     await input.blur();
-    await waitConcurrency(512);
+    await waitConcurrency(2048);
     assert.equal(await control.getAttribute("data-agent-mode"), "multi");
-    assert.equal((await currentLead()).concurrency, 512);
+    assert.equal((await currentLead()).concurrency, 2048);
     assert.deepEqual(prompts, []);
     console.log(
       "PASS numeric limit, 0/positive mode derivation, and active workers retained",
@@ -706,18 +706,18 @@ test("subagent concurrency ui", async ({ browser: _browser }) => {
     );
     const box = await input.boundingBox();
     assert(box && box.x >= 0 && box.x + box.width <= 390 && box.height >= 36);
-    await input.fill("512");
+    await input.fill("2048");
     await input.blur();
-    await waitConcurrency(512);
+    await waitConcurrency(2048);
     await control.getByText("Off", { exact: true }).click();
     await waitConcurrency(0);
     assert.equal(await input.inputValue(), "0");
     await control.getByText("On", { exact: true }).click();
     await waitConcurrency(32);
-    await input.fill("512");
+    await input.fill("2048");
     await input.blur();
-    await waitConcurrency(512);
-    assert.equal((await currentLead()).concurrency, 512);
+    await waitConcurrency(2048);
+    assert.equal((await currentLead()).concurrency, 2048);
     assert.deepEqual(prompts, []);
     assert.deepEqual(errors, []);
     await page.screenshot({ path: join(root, "mobile-subagent-limit.png") });

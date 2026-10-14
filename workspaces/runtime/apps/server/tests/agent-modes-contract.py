@@ -184,17 +184,17 @@ class AgentModes(unittest.TestCase):
             self.rt.create({'name': 'Blocked', 'prompt': 'No new worker'}, self.lead['id'])
         with self.assertRaisesRegex(ValueError, 'Single agent'):
             self.rt.send(self.worker['id'], 'No new worker turn')
-        for invalid in (-1, 513, True, 1.5):
-            with self.subTest(invalid=invalid), self.assertRaisesRegex(ValueError, '0 to 512'):
+        for invalid in (-1, 2049, True, 1.5):
+            with self.subTest(invalid=invalid), self.assertRaisesRegex(ValueError, '0 to 2048'):
                 self.concurrency(invalid)
-        maximum = self.concurrency(512)
-        self.assertEqual((maximum['concurrency'], maximum['agentMode']), (512, 'multi'))
-        self.assertEqual(maximum['maxAgents'], 514)
-        self.assertEqual(self.rt.agent(self.lead['id'])['concurrency'], 512)
+        maximum = self.concurrency(2048)
+        self.assertEqual((maximum['concurrency'], maximum['agentMode']), (2048, 'multi'))
+        self.assertEqual(maximum['maxAgents'], 2050)
+        self.assertEqual(self.rt.agent(self.lead['id'])['concurrency'], 2048)
         # The exact old request returns the latest canonical value without
         # applying the stale request a second time.
         replay = self.concurrency(0, revision=0, request='zero')
-        self.assertEqual((replay['concurrency'], replay['agentModeRevision']), (512, 2))
+        self.assertEqual((replay['concurrency'], replay['agentModeRevision']), (2048, 2))
         with self.assertRaisesRegex(ValueError, 'different content'):
             self.concurrency(1, revision=0, request='zero')
 
@@ -361,7 +361,7 @@ class AgentModes(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'revision'):
             self.rt.configure(self.lead['id'], {'concurrency': 7})
         for invalid in (True, 1.5, '7'):
-            with self.subTest(invalid=invalid), self.assertRaisesRegex(ValueError, 'integer from 0 to 512'):
+            with self.subTest(invalid=invalid), self.assertRaisesRegex(ValueError, 'integer from 0 to 2048'):
                 self.rt.configure(self.lead['id'], {'concurrency': invalid,
                     'expected_mode_revision': 0, 'request_id': 'invalid-config'})
         result = self.rt.configure(self.lead['id'], {'concurrency': 7,

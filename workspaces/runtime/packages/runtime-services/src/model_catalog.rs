@@ -18,13 +18,18 @@ use studio_runtime_process::{
     provider_seam::{InitializationStatus, Shutdown},
 };
 use studio_runtime_providers::{Method, RequestId, RequestOutcome, ResponseBody};
+use studio_runtime_schema::shared_values::{
+    MODEL_CATALOG_CACHE_TTL_SECONDS, MODEL_CATALOG_ITEMS_PER_PAGE, MODEL_CATALOG_MAX_FRAME_BYTES,
+    MODEL_CATALOG_MAX_PAGES, MODEL_CATALOG_MAX_RESPONSE_BYTES,
+    MODEL_CATALOG_OPERATION_TIMEOUT_SECONDS,
+};
 use tokio::time::Instant;
 
-const CATALOG_TTL: Duration = Duration::from_secs(300);
-const CATALOG_TIMEOUT: Duration = Duration::from_secs(30);
-const MAX_CATALOG_PAGE_BYTES: usize = 2 * 1024 * 1024;
-const MAX_CATALOG_RESPONSE_BYTES: usize = 16 * 1024 * 1024;
-const MAX_CATALOG_PAGES: usize = 100;
+const CATALOG_TTL: Duration = Duration::from_secs(MODEL_CATALOG_CACHE_TTL_SECONDS);
+const CATALOG_TIMEOUT: Duration = Duration::from_secs(MODEL_CATALOG_OPERATION_TIMEOUT_SECONDS);
+const MAX_CATALOG_PAGE_BYTES: usize = MODEL_CATALOG_MAX_FRAME_BYTES;
+const MAX_CATALOG_RESPONSE_BYTES: usize = MODEL_CATALOG_MAX_RESPONSE_BYTES;
+const MAX_CATALOG_PAGES: usize = MODEL_CATALOG_MAX_PAGES;
 pub type ChangeCallback = Arc<dyn Fn() + Send + Sync + 'static>;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -481,8 +486,10 @@ async fn read_pages(session: &mut SessionHandle, started: Instant) -> Result<Val
         let remaining = CATALOG_TIMEOUT.checked_sub(started.elapsed()).ok_or(())?;
         let timeout_ms = duration_ms(remaining);
         let params = match &cursor {
-            Some(cursor) => json!({"limit": 100, "includeHidden": true, "cursor": cursor}),
-            None => json!({"limit": 100, "includeHidden": true}),
+            Some(cursor) => {
+                json!({"limit": MODEL_CATALOG_ITEMS_PER_PAGE, "includeHidden": true, "cursor": cursor})
+            }
+            None => json!({"limit": MODEL_CATALOG_ITEMS_PER_PAGE, "includeHidden": true}),
         };
         let control = session.control.clone();
         let prepared = catalog_drive(

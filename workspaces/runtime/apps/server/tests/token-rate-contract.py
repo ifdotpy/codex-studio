@@ -14,23 +14,494 @@ from runtime_test_environment import make_runtime
 
 import contextlib
 import importlib.util
+import json
 from pathlib import Path
 import sys
 import tempfile
+import threading
 import unittest
 from unittest.mock import patch
 
 ROOT = REPOSITORY_ROOT
 sys.path.insert(0, str(SERVER_SOURCE_ROOT))
+import codex_token_rate
 from codex_token_rate import TokenRates, TurnRate, event_time
 from codex_runtime import Runtime
+from codex_agent_modes import MAX_SUBAGENT_CONCURRENCY
 from codex_streaming import StreamBuffer
+from studio_api.generate_types import (
+    OPENAPI_AUTHORITY,
+    TOKEN_RATE_LIMITS_OUTPUT,
+    _token_rate_max_entries,
+    render_token_rate_limits,
+    render_token_rate_typescript_constant,
+)
+from studio_api.sync.resources.models import (
+    MAX_TOKEN_RATE_IDENTIFIER_CODEPOINTS,
+    MAX_TOKEN_RATE_ENTRIES,
+    MAX_TOKEN_RATE_TOTAL_ENTRIES,
+    ResourceTokenRatesEvent,
+    TokenRateSnapshot,
+)
 spec = importlib.util.spec_from_file_location('runtime_fixture', SERVER_TESTS_ROOT / 'runtime-contract.py')
 fixture = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(fixture)
 
 
 class RateContract(unittest.TestCase):
+    def test_pending_response_duration_total_tracks_eviction_correction_and_consumption(self):
+        with patch.object(codex_token_rate, 'MAX_PENDING_RESPONSE_DURATION_ENTRIES', 2):
+            rate = TurnRate('duration-window', 0)
+            rate.response(10, 0.1, 'known-response')
+            for index, (text_length, text_at, tool_at, finish_at) in enumerate((
+                    (8, 0.5, 1.1, 2.0),
+                    (12, 2.5, 3.0, 4.0),
+                    (20, 4.5, 5.0, 6.0))):
+                rate.text('x' * text_length, text_at)
+                rate.start_tool(f'tool-{index}', tool_at)
+                rate.finish_tool(f'tool-{index}', finish_at)
+
+            # The third append evicts the oldest of two pending segments.
+            self.assertEqual(list(rate.response_durations), [(1.0, 3.0), (1.0, 5.0)])
+            self.assertEqual(rate.response_duration_pending_tokens, 8.0)
+            rate.response(12, 6.1, 'known-response')
+            self.assertEqual(rate.response_duration_pending_tokens, 8.0)
+            self.assertEqual(rate.snapshot(6.1)['outputTokens'], 20.0)
+
+            # A new response consumes the oldest retained segment exactly once.
+            rate.response(7, 6.2, 'new-response')
+            self.assertEqual(list(rate.response_durations), [(1.0, 5.0)])
+            self.assertEqual(rate.response_duration_pending_tokens, 5.0)
+            self.assertEqual(rate.snapshot(6.2)['outputTokens'], 24.0)
+
+            # Finishing snapshots first, then releases the bounded queue.
+            rate.finish(7.0)
+            self.assertEqual(rate.snapshot(7.0)['outputTokens'], 24.0)
+            self.assertEqual(len(rate.response_durations), 0)
+            self.assertEqual(rate.response_duration_pending_tokens, 0.0)
+
+    def test_long_turn_response_history_stops_admitting_unseen_ids_safely(self):
+        with patch.object(codex_token_rate, 'MAX_TURN_RESPONSE_HISTORY_ENTRIES', 3):
+            rate = TurnRate('long-turn', 0)
+            for index in range(3):
+                self.assertTrue(rate.response(10, index + 1, f'response-{index}'))
+
+            with self.assertLogs('codex_token_rate', level='WARNING') as captured:
+                self.assertFalse(rate.response(20, 4, 'response-overflow'))
+                self.assertFalse(rate.response(20, 5, 'response-overflow'))
+                for index in range(3, 100):
+                    self.assertFalse(rate.response(10, index + 3, f'response-{index}'))
+
+            self.assertEqual(len(captured.records), 1)
+            self.assertEqual(len(rate.messages), 3)
+            self.assertTrue(rate.message_history_saturated)
+            self.assertEqual(rate.actual, 30)
+
+            # Retained exact IDs remain correctable even after saturation.
+            self.assertTrue(rate.response(15, 200, 'response-1'))
+            self.assertEqual(rate.actual, 35)
+            self.assertFalse(rate.response(15, 201, 'response-1'))
+            self.assertEqual(rate.actual, 35)
+
+            # An authoritative cumulative total can still reconcile omitted IDs.
+            rate.reconcile(500)
+            self.assertEqual(rate.actual, 500)
+            next_turn = TurnRate('next-turn', 202)
+            self.assertFalse(next_turn.message_history_saturated)
+            self.assertEqual(next_turn.messages, {})
+
+    def test_saturated_history_still_accepts_cumulative_total_deltas(self):
+        with patch.object(codex_token_rate, 'MAX_TURN_RESPONSE_HISTORY_ENTRIES', 1):
+            rates = TokenRates(lambda: 0)
+            agent = {'id': 'worker', 'threadId': 'thread'}
+            rates.observe(agent, 'turn/started', {'turn': {'id': 'turn'}}, 'a', 'c', 0)
+            rate = rates.entries[('a', 'c', 'thread')]['rate']
+            self.assertTrue(rate.response(5, 1, 'retained-response'))
+            self.assertFalse(rate.response(7, 2, 'untracked-response'))
+            self.assertTrue(rate.message_history_saturated)
+
+            usage = {'total': {'outputTokens': 110}, 'last': {'outputTokens': 10}}
+            params = {'turnId': 'turn', 'tokenUsage': usage}
+            rates.observe(agent, 'thread/tokenUsage/updated', params, 'a', 'c', 3)
+            self.assertEqual(rate.actual, 10)
+            rates.observe(agent, 'thread/tokenUsage/updated', params, 'a', 'c', 4)
+            self.assertEqual(rate.actual, 10)
+            self.assertEqual(set(rate.messages), {'retained-response'})
+
+
+    def test_request_cleanup_is_scoped_to_entry_and_turn(self):
+        class NoGlobalIterationDict(dict):
+            def items(self):
+                raise AssertionError('request cleanup must not scan every request')
+
+        rates = TokenRates(lambda: 0)
+        rates.requests = NoGlobalIterationDict()
+        agents = {
+            'a': {'id': 'a', 'threadId': 'thread-a'},
+            'b': {'id': 'b', 'threadId': 'thread-b'},
+        }
+        for agent in agents.values():
+            thread = agent['threadId']
+            rates.observe(agent, 'turn/started', {'turn': {'id': 'turn-1'}}, 'account', thread, 0)
+            rates.request_started('account', thread, agent['threadId'], f'{agent["id"]}-request', 1)
+
+        rates.observe(agents['a'], 'turn/started', {'turn': {'id': 'turn-2'}}, 'account', 'thread-a', 2)
+        self.assertEqual(set(rates.requests), {('account', 'thread-b', 'b-request')})
+        self.assertEqual(rates.request_keys_by_entry, {
+            ('account', 'thread-b', 'thread-b'): {('account', 'thread-b', 'b-request')},
+        })
+
+        rates.request_started('account', 'thread-a', 'thread-a', 'a-new', 3)
+        rates.observe(agents['a'], 'turn/completed', {'turnId': 'turn-2'}, 'account', 'thread-a', 4)
+        self.assertEqual(set(rates.requests), {('account', 'thread-b', 'b-request')})
+        self.assertNotIn(('account', 'thread-a', 'thread-a'), rates.request_keys_by_entry)
+        rates.request_finished('account', 'thread-b', 'b-request', 5)
+        self.assertEqual(rates.requests, {})
+        self.assertEqual(rates.request_keys_by_entry, {})
+
+    def test_request_index_preserves_exact_id_overwrite_and_entry_eviction(self):
+        class NoGlobalIterationDict(dict):
+            def items(self):
+                raise AssertionError('request cleanup must not scan every request')
+
+        rates = TokenRates(lambda: 0)
+        rates.requests = NoGlobalIterationDict()
+        with patch.object(codex_token_rate, 'MAX_RATE_ENTRIES', 1):
+            first = {'id': 'first', 'threadId': 'thread-first'}
+            second = {'id': 'second', 'threadId': 'thread-second'}
+            rates.observe(first, 'turn/started', {'turn': {'id': 'turn-1'}}, 'account', 'connection', 0)
+            rates.request_started('account', 'connection', 'thread-first', 'same-id', 1)
+            rates.observe(second, 'turn/started', {'turn': {'id': 'turn-2'}}, 'account', 'connection', 2)
+            self.assertEqual(rates.requests, {})
+            self.assertEqual(rates.request_keys_by_entry, {})
+
+            rates.request_started('account', 'connection', 'thread-second', 'same-id', 3)
+            rates.request_started('account', 'connection', 'thread-second', 'same-id', 4)
+            request_key = ('account', 'connection', 'same-id')
+            entry_key = ('account', 'connection', 'thread-second')
+            self.assertEqual(rates.requests[request_key][:2], (entry_key, 'turn-2'))
+            self.assertEqual(rates.request_keys_by_entry, {entry_key: {request_key}})
+
+
+    def test_pydantic_token_rate_contract_owns_all_per_map_bounds(self):
+        self.assertGreaterEqual(MAX_TOKEN_RATE_ENTRIES, MAX_SUBAGENT_CONCURRENCY + 1)
+        self.assertGreaterEqual(
+            MAX_TOKEN_RATE_TOTAL_ENTRIES,
+            2 * (MAX_SUBAGENT_CONCURRENCY + 1),
+        )
+        self.assertEqual(MAX_TOKEN_RATE_TOTAL_ENTRIES, MAX_TOKEN_RATE_ENTRIES * 2)
+        schema = TokenRateSnapshot.model_json_schema()
+        properties = schema['properties']
+        self.assertEqual(properties['rates']['maxProperties'], MAX_TOKEN_RATE_ENTRIES)
+        teams = properties['teams']
+        self.assertEqual(teams['maxProperties'], MAX_TOKEN_RATE_ENTRIES)
+        self.assertEqual(teams['additionalProperties']['maxProperties'], MAX_TOKEN_RATE_ENTRIES)
+        self.assertEqual(
+            schema['properties']['rates']['propertyNames']['maxLength'],
+            MAX_TOKEN_RATE_IDENTIFIER_CODEPOINTS,
+        )
+        self.assertEqual(
+            schema['properties']['teams']['propertyNames']['maxLength'],
+            MAX_TOKEN_RATE_IDENTIFIER_CODEPOINTS,
+        )
+        self.assertEqual(
+            schema['properties']['teams']['additionalProperties']['propertyNames']['maxLength'],
+            MAX_TOKEN_RATE_IDENTIFIER_CODEPOINTS,
+        )
+        self.assertEqual(
+            schema['$defs']['TokenRateValue']['properties']['turnId']['maxLength'],
+            MAX_TOKEN_RATE_IDENTIFIER_CODEPOINTS,
+        )
+        sample = {'turnId': 'turn', 'active': True, 'estimated': False,
+                  'rate': 1.0, 'outputTokens': 1.0}
+        TokenRateSnapshot.model_validate({
+            'rates': {f'rate-{index}': sample for index in range(MAX_TOKEN_RATE_ENTRIES)},
+            'teams': {'team': {f'rate-{index}': sample for index in range(MAX_TOKEN_RATE_ENTRIES)}},
+        })
+        with self.assertRaises(ValueError):
+            TokenRateSnapshot.model_validate({
+                'rates': {f'rate-{index}': sample for index in range(MAX_TOKEN_RATE_ENTRIES + 1)},
+                'teams': {},
+            })
+        with self.assertRaises(ValueError):
+            TokenRateSnapshot.model_validate({
+                'rates': {},
+                'teams': {f'team-{index}': {} for index in range(MAX_TOKEN_RATE_ENTRIES + 1)},
+            })
+        with self.assertRaises(ValueError):
+            TokenRateSnapshot.model_validate({
+                'rates': {},
+                'teams': {'team': {
+                    f'rate-{index}': sample for index in range(MAX_TOKEN_RATE_ENTRIES + 1)
+                }},
+            })
+
+    def test_token_rate_identifier_bound_counts_opaque_unicode_codepoints(self):
+        identifier = '💠' * MAX_TOKEN_RATE_IDENTIFIER_CODEPOINTS
+        sample = {'turnId': 'turn', 'active': True, 'estimated': False,
+                  'rate': 1.0, 'outputTokens': 1.0}
+        TokenRateSnapshot.model_validate({
+            'rates': {identifier: {**sample, 'turnId': identifier}},
+            'teams': {},
+        })
+        too_long = identifier + '💠'
+        with self.assertRaises(ValueError):
+            TokenRateSnapshot.model_validate({
+                'rates': {too_long: sample},
+                'teams': {},
+            })
+        with self.assertRaises(ValueError):
+            TokenRateSnapshot.model_validate({
+                'rates': {'agent': {**sample, 'turnId': too_long}},
+                'teams': {},
+            })
+
+    def test_total_token_rate_values_are_bounded_across_workspace_and_team_views(self):
+        sample = {'turnId': 'turn', 'active': True, 'estimated': False,
+                  'rate': 1.0, 'outputTokens': 1.0}
+        rates = {f'rate-{index}': sample for index in range(MAX_TOKEN_RATE_ENTRIES)}
+        team_rates = {f'rate-{index}': sample for index in range(MAX_TOKEN_RATE_ENTRIES)}
+        exact = {'rates': rates, 'teams': {'team': team_rates}}
+        TokenRateSnapshot.model_validate(exact)
+        ResourceTokenRatesEvent.model_validate({
+            'protocol': 3,
+            'workspaceId': 'workspace',
+            'epoch': 'epoch',
+            'revision': 1,
+            **exact,
+        })
+        over_limit = {
+            'rates': rates,
+            'teams': {'team': team_rates, 'other': {'extra': sample}},
+        }
+        with self.assertRaises(ValueError):
+            TokenRateSnapshot.model_validate(over_limit)
+        with self.assertRaises(ValueError):
+            ResourceTokenRatesEvent.model_validate({
+                'protocol': 3,
+                'workspaceId': 'workspace',
+                'epoch': 'epoch',
+                'revision': 1,
+                **over_limit,
+            })
+
+    def test_rate_producer_emits_at_most_two_bounded_views_per_retained_agent(self):
+        rates = TokenRates(lambda: 0)
+        for index in range(codex_token_rate.MAX_RATE_ENTRIES + 1):
+            agent_id = f'agent-{index}'
+            rates.observe(
+                {'id': agent_id, 'threadId': f'thread-{index}', 'rootId': 'lead'},
+                'turn/started',
+                {'turn': {'id': f'turn-{index}'}},
+                'account',
+                'connection',
+                0,
+            )
+        snapshot = rates.workspace_snapshot()
+        total_values = len(snapshot['rates']) + sum(
+            len(team) for team in snapshot['teams'].values()
+        )
+        self.assertEqual(len(snapshot['rates']), codex_token_rate.MAX_RATE_ENTRIES)
+        self.assertEqual(total_values, MAX_TOKEN_RATE_TOTAL_ENTRIES)
+
+    def test_generated_token_rate_caps_match_the_pydantic_openapi_contract(self):
+        document = json.loads(OPENAPI_AUTHORITY.read_text(encoding='utf-8'))
+        self.assertEqual(_token_rate_max_entries(document), MAX_TOKEN_RATE_ENTRIES)
+        typescript = render_token_rate_typescript_constant(document)
+        self.assertTrue(
+            (ROOT / 'workspaces/client/apps/web/src/generated/api.ts')
+            .read_text(encoding='utf-8')
+            .endswith(f'\n{typescript}\n')
+        )
+        self.assertEqual(MAX_TOKEN_RATE_TOTAL_ENTRIES, MAX_TOKEN_RATE_ENTRIES * 2)
+        self.assertEqual(
+            TOKEN_RATE_LIMITS_OUTPUT.read_text(encoding='utf-8'),
+            render_token_rate_limits(document),
+        )
+        self.assertIn(
+            f"TOKEN_RATE_IDENTIFIER_MAX_CODEPOINTS: usize = {MAX_TOKEN_RATE_IDENTIFIER_CODEPOINTS};",
+            render_token_rate_limits(document),
+        )
+        self.assertIn(
+            f"export const TOKEN_RATE_IDENTIFIER_MAX_CODEPOINTS = {MAX_TOKEN_RATE_IDENTIFIER_CODEPOINTS} as const;",
+            render_token_rate_typescript_constant(document),
+        )
+
+    def test_event_producer_does_not_wait_for_snapshot_publication(self):
+        class DeferredTimer:
+            instances = []
+
+            def __init__(self, _delay, callback):
+                self.callback = callback
+                self.daemon = False
+                self.instances.append(self)
+
+            def start(self):
+                pass
+
+            def fire(self):
+                self.callback()
+
+        entered = threading.Event()
+        release = threading.Event()
+
+        def blocked_publish(_root, _snapshot):
+            entered.set()
+            if not release.wait(2):
+                raise AssertionError('publication was not released')
+            return True
+
+        with tempfile.TemporaryDirectory() as state_dir:
+            rates = TokenRates(lambda: 1, state_dir=state_dir)
+            agent = {'id': 'worker', 'threadId': 'thread'}
+            with patch.object(codex_token_rate.threading, 'Timer', DeferredTimer), \
+                    patch('studio_api.sync.resources.hub.publish_token_rates', side_effect=blocked_publish):
+                rates.observe(agent, 'turn/started', {'turn': {'id': 'turn'}}, 'a', 'c', 0)
+                flush = threading.Thread(target=DeferredTimer.instances[0].fire)
+                flush.start()
+                self.assertTrue(entered.wait(2))
+
+                event_done = threading.Event()
+                event = threading.Thread(target=lambda: (
+                    rates.stream('item/agentMessage/delta', {
+                        'threadId': 'thread', 'turnId': 'turn', 'delta': 'x' * 40,
+                    }, 'a', 'c', 1), event_done.set()))
+                event.start()
+                try:
+                    self.assertTrue(event_done.wait(.5), 'event waited for publication lock')
+                finally:
+                    release.set()
+                    flush.join(2)
+                    event.join(2)
+                self.assertFalse(flush.is_alive())
+                self.assertFalse(event.is_alive())
+                self.assertEqual(len(DeferredTimer.instances), 2)
+
+    def test_failed_publication_retains_dirty_state_for_bounded_retry(self):
+        class DeferredTimer:
+            instances = []
+
+            def __init__(self, delay, callback):
+                self.delay = delay
+                self.callback = callback
+                self.daemon = False
+                self.instances.append(self)
+
+            def start(self):
+                pass
+
+            def fire(self):
+                self.callback()
+
+        with tempfile.TemporaryDirectory() as state_dir:
+            rates = TokenRates(lambda: 1, state_dir=state_dir)
+            agent = {'id': 'worker', 'threadId': 'thread'}
+            with patch.object(codex_token_rate.threading, 'Timer', DeferredTimer), \
+                    patch('studio_api.sync.resources.hub.publish_token_rates',
+                          side_effect=[False, True]) as publish:
+                rates.observe(agent, 'turn/started', {'turn': {'id': 'turn'}}, 'a', 'c', 0)
+                DeferredTimer.instances[0].fire()
+
+                self.assertEqual(publish.call_count, 1)
+                self.assertEqual(len(DeferredTimer.instances), 2)
+                self.assertEqual(DeferredTimer.instances[1].delay,
+                                 codex_token_rate.TOKEN_RATE_PUBLICATION_RETRY_SECONDS)
+                self.assertTrue(rates._publication_dirty)
+                DeferredTimer.instances[1].fire()
+
+            self.assertEqual(publish.call_count, 2)
+            self.assertFalse(rates._publication_dirty)
+            self.assertFalse(rates._publication_scheduled)
+
+    def test_missing_hub_retries_quietly_until_resource_publication_is_available(self):
+        class DeferredTimer:
+            instances = []
+
+            def __init__(self, delay, callback):
+                self.delay = delay
+                self.callback = callback
+                self.daemon = False
+                self.instances.append(self)
+
+            def start(self):
+                pass
+
+            def fire(self):
+                self.callback()
+
+        with tempfile.TemporaryDirectory() as state_dir:
+            rates = TokenRates(lambda: 1, state_dir=state_dir)
+            agent = {'id': 'worker', 'threadId': 'thread'}
+            with patch.object(codex_token_rate.threading, 'Timer', DeferredTimer), \
+                    patch('studio_api.sync.resources.hub.publish_token_rates',
+                          side_effect=[None, True]) as publish, \
+                    self.assertNoLogs('codex_token_rate', level='ERROR'):
+                rates.observe(agent, 'turn/started', {'turn': {'id': 'turn'}}, 'a', 'c', 0)
+                DeferredTimer.instances[0].fire()
+
+                self.assertEqual(publish.call_count, 1)
+                self.assertEqual(len(DeferredTimer.instances), 2)
+                self.assertEqual(DeferredTimer.instances[1].delay,
+                                 codex_token_rate.TOKEN_RATE_PUBLICATION_RETRY_SECONDS)
+                self.assertTrue(rates._publication_dirty)
+                DeferredTimer.instances[1].fire()
+
+            self.assertEqual(publish.call_count, 2)
+            self.assertFalse(rates._publication_dirty)
+            self.assertFalse(rates._publication_scheduled)
+
+    def test_workspace_publication_coalesces_events_into_latest_bounded_snapshot(self):
+        class DeferredTimer:
+            instances = []
+
+            def __init__(self, delay, callback):
+                self.delay = delay
+                self.callback = callback
+                self.daemon = False
+                self.started = False
+                self.instances.append(self)
+
+            def start(self):
+                self.started = True
+
+            def fire(self):
+                self.callback()
+
+        with tempfile.TemporaryDirectory() as state_dir:
+            rates = TokenRates(lambda: 1, state_dir=state_dir)
+            agent = {'id': 'worker', 'rootId': 'lead', 'threadId': 'thread'}
+            published = []
+            with patch.object(codex_token_rate.threading, 'Timer', DeferredTimer), \
+                    patch('studio_api.sync.resources.hub.publish_token_rates',
+                          side_effect=lambda _root, snapshot: (published.append(snapshot), True)[1]), \
+                    patch.object(rates, 'workspace_snapshot', wraps=rates.workspace_snapshot) as snapshot:
+                rates.observe(agent, 'turn/started', {'turn': {'id': 'turn'}}, 'a', 'c', 0)
+                for _ in range(25):
+                    rates.stream('item/agentMessage/delta', {
+                        'threadId': 'thread', 'turnId': 'turn', 'delta': 'x' * 40,
+                    }, 'a', 'c', 1)
+
+                self.assertEqual(snapshot.call_count, 0)
+                self.assertEqual(len(DeferredTimer.instances), 1)
+                self.assertTrue(DeferredTimer.instances[0].started)
+                self.assertEqual(DeferredTimer.instances[0].delay,
+                                 codex_token_rate.TOKEN_RATE_PUBLICATION_DELAY_SECONDS)
+                DeferredTimer.instances[0].fire()
+                rates.stream('item/agentMessage/delta', {
+                    'threadId': 'thread', 'turnId': 'turn', 'delta': 'x' * 40,
+                }, 'a', 'c', 2)
+                self.assertEqual(len(DeferredTimer.instances), 2)
+                DeferredTimer.instances[1].fire()
+
+            self.assertEqual(snapshot.call_count, 2)
+            self.assertEqual(len(published), 2)
+            self.assertEqual(set(published[0].rates), {'worker'})
+            self.assertEqual(set(published[0].teams), {'lead'})
+            self.assertEqual(published[0].rates['worker'].outputTokens, 250)
+            self.assertEqual(published[0].teams['lead']['worker'].outputTokens, 250)
+            self.assertEqual(len(published), 2)
+            self.assertEqual(published[1].rates['worker'].outputTokens, 260)
+
     def test_codex_rollout_usage_after_tool_result_uses_generation_span(self):
         # rollout: token_usage_record precedes a tool call; token_count arrives after its result.
         rates = TokenRates(lambda: 100.1)
@@ -342,6 +813,43 @@ class RateContract(unittest.TestCase):
             ambiguous.observe(agent, 'thread/tokenUsage/updated', {'turnId': 'turn', 'tokenUsage': {
                 'total': {'outputTokens': total}, 'last': {'outputTokens': 1141}}}, 'a', 'c', at)
         self.assertFalse(ambiguous.associate_response_rate('codex', 'thread', 'turn', 'ambiguous', 1141))
+
+    def test_response_rate_cache_uses_its_named_bound(self):
+        with patch.object(codex_token_rate, 'MAX_RESPONSE_RATE_CACHE_ENTRIES', 2):
+            rates = TokenRates(lambda: 0)
+            agent = {'id': 'cache-bound', 'threadId': 'thread', 'inFlight': True}
+            rates.observe(agent, 'turn/started', {'turn': {'id': 'turn'}}, 'a', 'c', 0)
+            for index, total in enumerate((10, 20, 30), start=1):
+                rates.observe(agent, 'thread/tokenUsage/updated', {
+                    'turnId': 'turn', 'responseId': f'response-{index}',
+                    'responseOutputTokens': 10,
+                    'tokenUsage': {'total': {'outputTokens': total},
+                                   'last': {'outputTokens': 10}},
+                }, 'a', 'c', index)
+            self.assertEqual(len(rates.response_rates), 2)
+            self.assertIsNone(rates.response_rate('cache-bound', 'thread', 'turn', 'response-1'))
+            self.assertIsNotNone(rates.response_rate('cache-bound', 'thread', 'turn', 'response-2'))
+            self.assertIsNotNone(rates.response_rate('cache-bound', 'thread', 'turn', 'response-3'))
+
+    def test_pending_response_index_tracks_eviction_and_exact_association(self):
+        with patch.object(codex_token_rate, 'MAX_RESPONSE_RATE_CACHE_ENTRIES', 2):
+            rates = TokenRates(lambda: 0)
+            agent = {'id': 'indexed', 'threadId': 'thread', 'inFlight': True}
+            rates.observe(agent, 'turn/started', {'turn': {'id': 'turn'}}, 'a', 'c', 0)
+            for at, total, output in ((1, 10, 10), (2, 30, 20), (3, 60, 30)):
+                rates.observe(agent, 'thread/tokenUsage/updated', {
+                    'turnId': 'turn',
+                    'tokenUsage': {'total': {'outputTokens': total},
+                                   'last': {'outputTokens': output}},
+                }, 'a', 'c', at)
+
+            self.assertEqual(len(rates.pending_response_rates), 2)
+            self.assertNotIn(('indexed', 'thread', 'turn', 10), rates.pending_response_rate_index)
+            self.assertFalse(rates.associate_response_rate('indexed', 'thread', 'turn', 'old', 10))
+            self.assertTrue(rates.associate_response_rate('indexed', 'thread', 'turn', 'middle', 20))
+            self.assertNotIn(('indexed', 'thread', 'turn', 20), rates.pending_response_rate_index)
+            self.assertTrue(rates.associate_response_rate('indexed', 'thread', 'turn', 'new', 30))
+            self.assertFalse(rates.pending_response_rate_index)
 
     def test_claude_turn_output_corrections_are_cumulative(self):
         now = [0]

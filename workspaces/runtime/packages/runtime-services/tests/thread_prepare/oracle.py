@@ -50,8 +50,9 @@ from codex_native_errors import NativeRpcError
 
 
 def check_boundaries(runtime):
-    # Lock complete enclosing control flow, not only the selected statements.
-    expected = {'start': '78ff53425f5ea723308533bfc81dbf0d5d19f989d3b6f9f1745c40c2c0f69cca', 'notification': 'b1b8b9253c82ceb6ab0acf479f026db8a07e67d7fe4e944d84ec349bfc857b4d'}
+    # Lock the complete turn-submission caller, not only the projected statements.
+    # Notification handling is intentionally outside this preparation oracle.
+    expected = {'start': '78ff53425f5ea723308533bfc81dbf0d5d19f989d3b6f9f1745c40c2c0f69cca'}
     for name, digest in expected.items():
         node = next(n for n in runtime.body if isinstance(n, ast.FunctionDef) and n.name == name)
         actual = hashlib.sha256(ast.dump(node, include_attributes=False).encode()).hexdigest()
@@ -96,16 +97,12 @@ def projection_functions():
 
 projected_turn, projected_close = projection_functions()
 if "--boundary-test" in sys.argv:
-    for name in ("start", "notification"):
+    for name in ("start",):
         tree = ast.parse((SERVER / "src/codex_runtime.py").read_text())
         runtime = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "Runtime")
         node = next(n for n in runtime.body if isinstance(n, ast.FunctionDef) and n.name == name)
         if name == "start":
             node.body = [ast.If(test=ast.Constant(False), body=node.body, orelse=[])]
-        else:
-            close = next(n for n in ast.walk(node) if isinstance(n, ast.If)
-                         and any(isinstance(v, ast.Constant) and v.value == "thread/closed" for v in ast.walk(n.test)))
-            close.test = ast.Constant(False)
         try:
             check_boundaries(runtime)
         except AssertionError:

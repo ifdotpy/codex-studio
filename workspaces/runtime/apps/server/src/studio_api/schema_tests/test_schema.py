@@ -7,9 +7,18 @@ import json
 import hashlib
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from typing import cast
+from typing import Literal, cast
 
 from codex_layout import REPOSITORY_ROOT
+from codex_multi_server_protocol import ACCESS_PROTOCOL_VERSION
+from codex_agent_modes import (
+    DEFAULT_MAX_TEAM_AGENTS,
+    DEFAULT_SUBAGENT_CONCURRENCY,
+    MAX_SUBAGENT_CONCURRENCY,
+    MAX_TEAM_AGENTS,
+    MIN_SUBAGENT_CONCURRENCY,
+    MIN_TEAM_AGENTS,
+)
 from pydantic import TypeAdapter, ValidationError
 from codex_sync_entities import _DTO_MODELS
 from studio_api.models import (
@@ -30,10 +39,23 @@ from studio_api.work.models import (
     _record_response_model,
 )
 from codex_records import SafeNumber, WorktreeCleanupRecord
+from studio_api.sync.resources.models import (
+    MAX_TOKEN_RATE_IDENTIFIER_CODEPOINTS,
+    MAX_TOKEN_RATE_ENTRIES,
+    MAX_TOKEN_RATE_TOTAL_ENTRIES,
+)
 import codex_records as record_contracts
 from studio_api.io.models import TerminalRecord
 from studio_api.work.models import RuleRecord, WorkItem
-from studio_api.generate_types import render
+from studio_api.generate_state_schemas import render_rust_agent_limits
+from studio_api.generate_multi_server_protocol import OUTPUTS as MULTI_SERVER_PROTOCOL_OUTPUTS
+from studio_api.sync.protocol import SYNC_PROTOCOL_VERSION
+from studio_api.generate_types import (
+    render,
+    render_schema_identity,
+    render_token_rate_limits,
+)
+from studio_api.persisted_account_transfer import PersistedAccountTransferRecord
 from studio_api.schema import (
     canonical_openapi_json,
     entity_schema_names,
@@ -44,6 +66,7 @@ from studio_api.schema import (
     normalize_optional_parameter_schemas,
     validate_error_responses,
     validate_contract_schemas,
+    api_schema_hash,
     openapi_document,
 )
 from studio_api.request_schema_audit import (
@@ -108,6 +131,75 @@ def sample_document(response_schema: dict[str, JsonValue]) -> dict[str, JsonValu
                 },
                 "Status": {"type": "string", "enum": ["idle", "running"]},
                 "TaskEntityDto": {"type": "object", "properties": {"id": {"type": "string"}}},
+                "SyncProtocolResponse": {
+                    "type": "object",
+                    "properties": {
+                        "protocolVersion": {
+                            "type": "integer", "const": SYNC_PROTOCOL_VERSION,
+                            "minimum": SYNC_PROTOCOL_VERSION, "maximum": SYNC_PROTOCOL_VERSION,
+                        },
+                        "supportedVersions": {
+                            "type": "array",
+                            "items": {
+                                "type": "integer", "const": SYNC_PROTOCOL_VERSION,
+                                "minimum": SYNC_PROTOCOL_VERSION, "maximum": SYNC_PROTOCOL_VERSION,
+                            },
+                        },
+                    },
+                },
+                "TokenRateSnapshot": {
+                    "type": "object",
+                    "required": ["rates", "teams"],
+                    "properties": {
+                        "rates": {
+                            "type": "object",
+                            "maxProperties": MAX_TOKEN_RATE_ENTRIES,
+                            "propertyNames": {
+                                "minLength": 1,
+                                "maxLength": MAX_TOKEN_RATE_IDENTIFIER_CODEPOINTS,
+                            },
+                            "additionalProperties": {
+                                "$ref": "#/components/schemas/TokenRateValue",
+                            },
+                        },
+                        "teams": {
+                            "type": "object",
+                            "maxProperties": MAX_TOKEN_RATE_ENTRIES,
+                            "propertyNames": {
+                                "minLength": 1,
+                                "maxLength": MAX_TOKEN_RATE_IDENTIFIER_CODEPOINTS,
+                            },
+                            "additionalProperties": {
+                                "type": "object",
+                                "maxProperties": MAX_TOKEN_RATE_ENTRIES,
+                                "propertyNames": {
+                                    "minLength": 1,
+                                    "maxLength": MAX_TOKEN_RATE_IDENTIFIER_CODEPOINTS,
+                                },
+                                "additionalProperties": {
+                                    "$ref": "#/components/schemas/TokenRateValue",
+                                },
+                            },
+                        },
+                    },
+                    "additionalProperties": False,
+                },
+                "TokenRateValue": {
+                    "type": "object",
+                    "required": ["turnId", "active", "estimated", "rate", "outputTokens"],
+                    "properties": {
+                        "turnId": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": MAX_TOKEN_RATE_IDENTIFIER_CODEPOINTS,
+                        },
+                        "active": {"type": "boolean"},
+                        "estimated": {"type": "boolean"},
+                        "rate": {"type": "number", "minimum": 0},
+                        "outputTokens": {"type": "number", "minimum": 0},
+                    },
+                    "additionalProperties": False,
+                },
             }
         },
     }
@@ -117,6 +209,105 @@ def sample_document(response_schema: dict[str, JsonValue]) -> dict[str, JsonValu
 
 
 class SchemaContractTests(unittest.TestCase):
+    def test_multi_server_access_protocol_has_one_generated_owner(self) -> None:
+        from studio_api.multi_server.models import AccessProtocolVersion
+
+        self.assertEqual(AccessProtocolVersion, Literal[ACCESS_PROTOCOL_VERSION])
+        document = openapi_document()
+        components = document["components"]
+        assert isinstance(components, dict)
+        schemas = components["schemas"]
+        assert isinstance(schemas, dict)
+        for model_name in (
+            "AccessInvitation",
+            "DiscoveryIdentity",
+            "AccessSnapshot",
+            "AutoPairRequest",
+            "DevicePairRequest",
+            "DevicePairResponse",
+        ):
+            model = schemas[model_name]
+            assert isinstance(model, dict)
+            properties = model["properties"]
+            assert isinstance(properties, dict)
+            protocol = properties["protocol"]
+            assert isinstance(protocol, dict)
+            with self.subTest(model=model_name):
+                self.assertEqual(protocol["const"], ACCESS_PROTOCOL_VERSION)
+        for path, expected in MULTI_SERVER_PROTOCOL_OUTPUTS.items():
+            with self.subTest(generated=path.name):
+                self.assertEqual(path.read_text(encoding="utf-8"), expected)
+
+    def assert_token_rate_limit_exports(
+        self, generated: str, document: dict[str, JsonValue]
+    ) -> None:
+        self.assertIn(
+            f"export const TOKEN_RATE_MAX_ENTRIES = {MAX_TOKEN_RATE_ENTRIES} as const;",
+            generated,
+        )
+        self.assertIn(
+            f"export const TOKEN_RATE_MAX_TOTAL_ENTRIES = {MAX_TOKEN_RATE_TOTAL_ENTRIES} as const;",
+            generated,
+        )
+        self.assertIn(
+            "export const TOKEN_RATE_IDENTIFIER_MAX_CODEPOINTS = "
+            f"{MAX_TOKEN_RATE_IDENTIFIER_CODEPOINTS} as const;",
+            generated,
+        )
+        self.assertIn(
+            "TOKEN_RATE_IDENTIFIER_MAX_CODEPOINTS: usize = "
+            f"{MAX_TOKEN_RATE_IDENTIFIER_CODEPOINTS};",
+            render_token_rate_limits(document),
+        )
+
+    def test_agent_capacity_contracts_derive_from_runtime_limits(self) -> None:
+        document = openapi_document()
+        components = document["components"]
+        assert isinstance(components, dict)
+        schemas = components["schemas"]
+        assert isinstance(schemas, dict)
+        expected = {
+            "concurrency": (MIN_SUBAGENT_CONCURRENCY, DEFAULT_SUBAGENT_CONCURRENCY, MAX_SUBAGENT_CONCURRENCY),
+            "maxAgents": (MIN_TEAM_AGENTS, DEFAULT_MAX_TEAM_AGENTS, MAX_TEAM_AGENTS),
+        }
+        for model_name in ("CreateAgentRequest", "ConfigureRequest"):
+            model = schemas[model_name]
+            assert isinstance(model, dict)
+            properties = model["properties"]
+            assert isinstance(properties, dict)
+            for field, (minimum, default, maximum) in expected.items():
+                schema = properties[field]
+                assert isinstance(schema, dict)
+                self.assertEqual(schema["minimum"], minimum)
+                self.assertEqual(schema["default"], default)
+                self.assertEqual(schema["maximum"], maximum)
+        conversation = schemas["ConversationRequest"]
+        assert isinstance(conversation, dict)
+        conversation_properties = conversation["properties"]
+        assert isinstance(conversation_properties, dict)
+        concurrency = conversation_properties["subagent_concurrency"]
+        assert isinstance(concurrency, dict)
+        self.assertEqual(concurrency["minimum"], MIN_SUBAGENT_CONCURRENCY)
+        self.assertEqual(concurrency["default"], DEFAULT_SUBAGENT_CONCURRENCY)
+        self.assertEqual(concurrency["maximum"], MAX_SUBAGENT_CONCURRENCY)
+
+        persisted_schema = PersistedAccountTransferRecord.model_json_schema()
+        self.assertEqual(persisted_schema["properties"]["members"]["maxProperties"], MAX_TEAM_AGENTS)
+        generated_identity = render_schema_identity(api_schema_hash(document), document)
+        for name, value in (
+            ("MIN_SUBAGENT_CONCURRENCY", MIN_SUBAGENT_CONCURRENCY),
+            ("DEFAULT_SUBAGENT_CONCURRENCY", DEFAULT_SUBAGENT_CONCURRENCY),
+            ("MAX_SUBAGENT_CONCURRENCY", MAX_SUBAGENT_CONCURRENCY),
+            ("MIN_TEAM_AGENTS", MIN_TEAM_AGENTS),
+            ("DEFAULT_MAX_TEAM_AGENTS", DEFAULT_MAX_TEAM_AGENTS),
+            ("MAX_TEAM_AGENTS", MAX_TEAM_AGENTS),
+        ):
+            self.assertIn(f"export const {name} = {value};", generated_identity)
+        generated_api = REPOSITORY_ROOT / "workspaces/client/apps/web/src/generated/apiSchema.ts"
+        self.assertEqual(generated_api.read_text(encoding="utf-8"), generated_identity)
+        generated_rust = REPOSITORY_ROOT / "workspaces/runtime/packages/runtime-schema/src/agent_limits_generated.rs"
+        self.assertEqual(generated_rust.read_text(encoding="utf-8"), render_rust_agent_limits())
+
     def test_openapi_defaults_ignore_unrelated_same_named_models(self) -> None:
         from pydantic import BaseModel
 
@@ -349,6 +540,26 @@ class SchemaContractTests(unittest.TestCase):
         candidate = constraint_snapshot(committed_document)
         loosenings, _tightenings = constraint_changes(baseline, candidate)
         accepted_loosenings = {
+            ("/components/schemas/ConfigureRequest/properties/concurrency", "maximum"):
+                ("512.0", "2048.0", "Raises the approved subagent concurrency ceiling to support 2048 configured slots."),
+            ("/components/schemas/ConfigureRequest/properties/maxAgents", "maximum"):
+                ("1024.0", "2050.0", "Allows the lead, 2048 workers, and one queued worker."),
+            ("/components/schemas/ConversationRequest/properties/subagent_concurrency", "maximum"):
+                ("512.0", "2048.0", "Raises the approved subagent concurrency ceiling to support 2048 configured slots."),
+            ("/components/schemas/CreateAgentRequest/properties/concurrency", "maximum"):
+                ("512.0", "2048.0", "Raises the approved subagent concurrency ceiling to support 2048 configured slots."),
+            ("/components/schemas/CreateAgentRequest/properties/maxAgents", "maximum"):
+                ("1024.0", "2050.0", "Allows the lead, 2048 workers, and one queued worker."),
+            ("/paths/~1api~1agents/post/requestBody/content/application~1json/schema/properties/concurrency", "maximum"):
+                ("512.0", "2048.0", "Raises the approved subagent concurrency ceiling to support 2048 configured slots."),
+            ("/paths/~1api~1agents/post/requestBody/content/application~1json/schema/properties/maxAgents", "maximum"):
+                ("1024.0", "2050.0", "Allows the lead, 2048 workers, and one queued worker."),
+            ("/paths/~1api~1configure/post/requestBody/content/application~1json/schema/properties/concurrency", "maximum"):
+                ("512.0", "2048.0", "Raises the approved subagent concurrency ceiling to support 2048 configured slots."),
+            ("/paths/~1api~1configure/post/requestBody/content/application~1json/schema/properties/maxAgents", "maximum"):
+                ("1024.0", "2050.0", "Allows the lead, 2048 workers, and one queued worker."),
+            ("/paths/~1api~1conversation/post/requestBody/content/application~1json/schema/properties/subagent_concurrency", "maximum"):
+                ("512.0", "2048.0", "Raises the approved subagent concurrency ceiling to support 2048 configured slots."),
             ("/components/schemas/DraftDocumentInput/properties/deleted", "property"):
                 ("absent from closed object", "accepted property", "Adds the deleted state to the draft input DTO."),
             ("/components/schemas/DraftPushRequest/properties/rows/items/properties/newDocumentState/properties/deleted", "property"):
@@ -1189,6 +1400,7 @@ class SchemaContractTests(unittest.TestCase):
         self.assertIn('export type AgentEntityDto = components["schemas"]["AgentEntityDto"];', generated)
         self.assertIn('export type TaskEntityDto = components["schemas"]["TaskEntityDto"];', generated)
         self.assertIn('Status: "idle" | "running";', generated)
+        self.assert_token_rate_limit_exports(generated, document)
 
     def test_sync_pull_registers_entity_payload_union_and_all_dtos(self) -> None:
         document = openapi_document()
@@ -1309,6 +1521,7 @@ class SchemaContractTests(unittest.TestCase):
             'export type SyncEntityPayload = components["schemas"]["SyncEntityPayload"];',
             generated,
         )
+        self.assert_token_rate_limit_exports(generated, document)
 
     def test_generator_preserves_required_and_optional_defaulted_properties(self) -> None:
         document = sample_document({"$ref": "#/components/schemas/ResponseContract"})
@@ -1349,6 +1562,7 @@ class SchemaContractTests(unittest.TestCase):
         }
 
         generated = render(document)
+        self.assert_token_rate_limit_exports(generated, document)
 
         monitor_input = generated.split("MonitorInput: {", 1)[1].split("\n    };", 1)[0]
         response_contract = generated.split("ResponseContract: {", 1)[1].split("\n    };", 1)[0]

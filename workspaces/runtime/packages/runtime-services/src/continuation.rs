@@ -4,6 +4,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::OnceLock;
+use studio_runtime_schema::shared_values::MAX_SAFE_INTEGER;
 use studio_runtime_store::AgentRecord;
 use thiserror::Error;
 
@@ -252,7 +253,7 @@ pub(crate) fn account(v: &Value) -> &str {
         .unwrap_or("default")
 }
 pub(crate) fn now_checked(now: f64) -> Result<()> {
-    if !now.is_finite() || !(0.0..=9_007_199_254_740_991.0).contains(&now) {
+    if !now.is_finite() || !(0.0..=(MAX_SAFE_INTEGER as f64)).contains(&now) {
         Err(ContinuationError::Invalid("/now".into()))
     } else {
         Ok(())

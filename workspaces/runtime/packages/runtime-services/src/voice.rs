@@ -3,6 +3,7 @@
 use std::collections::BTreeSet;
 
 use serde_json::{Value, json};
+use studio_runtime_schema::shared_values::MAX_SAFE_INTEGER;
 use studio_runtime_store::{
     AgentId, AgentRepository, Connection, QuestionsReadsRepository, RuntimeStore, StoreError,
     VoiceRecord, VoiceRepository,
@@ -30,7 +31,6 @@ const MAX_IDENTITY: usize = 240;
 const MAX_PAYLOAD: usize = 100_000;
 const MAX_DELIVERY_RECORDS: usize = 2_000;
 const MAX_DELIVERY_TEXT: usize = 32_000;
-const MAX_SAFE_INTEGER: i64 = 9_007_199_254_740_991;
 const RECORD_KINDS: &[&str] = &[
     "user",
     "courier",

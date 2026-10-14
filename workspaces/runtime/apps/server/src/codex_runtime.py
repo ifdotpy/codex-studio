@@ -43,9 +43,12 @@ from codex_questions import QuestionsMixin, is_question, answer_signature, recor
 from codex_panel import PanelMixin
 from codex_tool_requests import RequestMixin, request_tools
 from codex_turn_recovery import TurnRecoveryMixin
+from codex_agent_message_limits import MAX_AGENT_MESSAGE_CODEPOINTS
 from codex_capacity_retry import CapacityRetryMixin
 from codex_agent_modes import (DEFAULT_MAX_TEAM_AGENTS, DEFAULT_SUBAGENT_CONCURRENCY,
                                MAX_SUBAGENT_CONCURRENCY, MAX_TEAM_AGENTS,
+                               MIN_SUBAGENT_CONCURRENCY, MIN_TEAM_AGENTS,
+                               TEAM_AGENT_HEADROOM,
                                global_concurrency_limit)
 from codex_startup_memory import mark as startup_memory_mark
 from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
@@ -55,6 +58,7 @@ from codex_usage_resume import UsageResumeMixin, _auth_error
 from codex_scheduler_wake import SchedulerWake, record_needs_dispatch
 from codex_safety_buffering import active as safety_retry_active
 from codex_native_errors import NativeRpcError, SUPPORTED_REQUESTS, error_message, native_thread_block, assert_native_thread_open, THREAD_BLOCK_MESSAGE, refresh_native_limits
+from codex_provider_limits import CALLBACK_QUEUE_LIMIT as PROVIDER_CALLBACK_QUEUE_LIMIT
 
 from native_notifications.dispatch import consume_native_notification, advance_native_status, notice, account_notices
 
@@ -88,6 +92,7 @@ if TYPE_CHECKING:
 MAX_STAGED_RESOURCE_CHANGES = 256
 MAX_QUEUED_RESOURCE_CHANGES = 4096
 MAX_RECOVERY_TOKEN_OBSERVATIONS = 4096
+MAX_TOOL_TURN_BINDING_WAITERS = 4096
 WORKSPACE_AGENT_RESOURCE_FIELDS = (
     "name", "status", "parentId", "rootId", "threadId", "deletedAt", "isLead", "role",
     "sharedRoomId", "model", "provider", "effort", "fastMode", "concurrency", "accountKey",
@@ -447,7 +452,7 @@ def app_server_launch_environment(*, home=None, isolated=False):
 
 class AppServer:
     WRITE_TIMEOUT = 5
-    CALLBACK_QUEUE_LIMIT = 65536
+    CALLBACK_QUEUE_LIMIT = PROVIDER_CALLBACK_QUEUE_LIMIT
     # Streamed fragments are redundant: item/completed carries the full text.
     # Past this depth they are shed so the queue never closes the connection.
     DELTA_SHED_DEPTH = 2048
@@ -1559,6 +1564,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         self._fast_delivery_enabled = False
         self._fast_dispatch_lock = threading.Lock()
         self._fast_dispatch_states = {}
+        self._tool_turn_binding_waiters: dict[tuple[str, str], set[threading.Event]] = {}
+        self._tool_turn_binding_waiter_count = 0
         self._wal_keeper = None
         self._shutdown_writers_drained = False
         self.server = None
@@ -2636,18 +2643,53 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         delay = .05
         while True:
             entered = False
+            retry = False
+            wait_for_lock_turnover = False
+            lock_acquired = False
             try:
-                with self.lock, self.db(busy_timeout=50) as db:
-                    db.execute("UPDATE runtime_supervisor_cursor SET sequence=sequence WHERE handle='' ")
-                    entered = True
-                    yield db
-                return
+                try:
+                    # Claim the SQLite writer before Runtime.lock. If another
+                    # transaction owns the writer, this wait must not block
+                    # unrelated runtime state access.
+                    with self.db(busy_timeout=50) as db:
+                        db.execute("UPDATE runtime_supervisor_cursor SET sequence=sequence WHERE handle='' ")
+                        lock_acquired = self.lock.acquire(blocking=False)
+                        if not lock_acquired:
+                            # No callback work has run, so this transaction is
+                            # safe to discard before retrying the lock claim.
+                            db.rollback()
+                            retry = True
+                            wait_for_lock_turnover = True
+                        else:
+                            entered = True
+                            yield db
+                finally:
+                    # Runtime.db commits on context exit. Keep the state lock
+                    # through that commit, as well as through the callback.
+                    if lock_acquired:
+                        self.lock.release()
             except sqlite3.OperationalError as error:
                 # A body or commit failure is uncertain. Never run it twice.
                 if entered or outer_owner or not sqlite_busy(error) or self.closed or time.monotonic() >= deadline:
                     raise
-            time.sleep(min(delay, max(0, deadline - time.monotonic())))
-            delay = min(.5, delay * 2)
+                retry = True
+            if retry:
+                if self.closed or time.monotonic() >= deadline:
+                    raise TimeoutError("Timed out waiting to enter the notification transaction")
+                if wait_for_lock_turnover:
+                    # The writer has been released. It is now safe to wait for
+                    # the current state-lock owner, then retry the writer-first
+                    # claim without an arbitrary backoff floor.
+                    remaining = max(0, deadline - time.monotonic())
+                    if not self.lock.acquire(timeout=remaining):
+                        raise TimeoutError("Timed out waiting for Runtime.lock before notification transaction")
+                    self.lock.release()
+                else:
+                    # SQLite writer contention has its own bounded backoff.
+                    time.sleep(min(delay, max(0, deadline - time.monotonic())))
+                    delay = min(.5, delay * 2)
+                continue
+            return
 
     def close_notification_database(self):
         """Close the dispatcher-owned reused connection on its owner thread."""
@@ -4774,11 +4816,11 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 raise ValueError("Select an existing project directory")
             concurrency = data.get("concurrency", DEFAULT_SUBAGENT_CONCURRENCY)
             max_agents = int(data.get("maxAgents", DEFAULT_MAX_TEAM_AGENTS))
-            if type(concurrency) is not int or not 0 <= concurrency <= MAX_SUBAGENT_CONCURRENCY or not 1 <= max_agents <= MAX_TEAM_AGENTS:
-                raise ValueError(f"Concurrency must be 0 to {MAX_SUBAGENT_CONCURRENCY}; team size must be 1 to {MAX_TEAM_AGENTS}")
+            if type(concurrency) is not int or not MIN_SUBAGENT_CONCURRENCY <= concurrency <= MAX_SUBAGENT_CONCURRENCY or not MIN_TEAM_AGENTS <= max_agents <= MAX_TEAM_AGENTS:
+                raise ValueError(f"Concurrency must be {MIN_SUBAGENT_CONCURRENCY} to {MAX_SUBAGENT_CONCURRENCY}; team size must be {MIN_TEAM_AGENTS} to {MAX_TEAM_AGENTS}")
             max_agents_explicit = "maxAgents" in data
             if is_lead and not max_agents_explicit:
-                max_agents = max(max_agents, concurrency + 2)
+                max_agents = max(max_agents, concurrency + TEAM_AGENT_HEADROOM)
             budget = data.get("tokenBudget") or None
             if budget is not None and (not isinstance(budget, int) or budget <= 0):
                 raise ValueError("Token budget must be a positive integer")
@@ -8385,10 +8427,13 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                         self.store_completed_broadcasts(db, a)
                 self.capacity_completed(db, a, turn, known_capacity_source)
                 self.usage_resume_completed(db, a, turn, known_capacity_source)
+                # A reserved, dispatching, or uncertain input still owns the
+                # child's continuation until its exact delivery is resolved.
                 pending = db.execute(
-                    "SELECT 1 FROM runtime_events WHERE agent=? AND status IN "
-                    "('pending','reserved') AND epoch=?",
-                    (a["id"], a["epoch"]),
+                    "SELECT 1 FROM runtime_events WHERE agent=? AND epoch=? AND "
+                    "(status IN ('pending','reserved') OR "
+                    "(id<>? AND status IN ('dispatching','uncertain'))) LIMIT 1",
+                    (a["id"], a["epoch"], a["id"] + ":initial"),
                 ).fetchone()
                 retrying_after_input = turn.get("status") == "completed" and pending is not None
                 if (not a.get('executionMove') and not claude_pre_input_retry and a["status"] != "waiting" and (not retrying_after_input or restart_event)
@@ -8432,6 +8477,9 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     observed_at=token_rate_at,
                 )
             self.put(db, "agents", a)
+            if (method in {"turn/started", "item/started", "item/completed"}
+                    and a.get("turnId")):
+                self.wake_tool_turn_binding_waiters(account_key, tid)
             # Most teams have no budget. Avoid decoding the root's large record
             # on every notification when the budget check cannot run.
             if a["rootId"] == a["id"]:
@@ -8867,6 +8915,56 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                                  {"state": "failed", "error": str(error)})
         return value
 
+    def wait_for_tool_turn_binding(self, account_key, connection_id, thread_id, turn_id,
+                                   timeout=1.0):
+        """Wait for notification handling to commit this submitted turn identity."""
+        if not isinstance(thread_id, str) or not thread_id or not isinstance(turn_id, str) or not turn_id:
+            return False
+        waiter_key = (account_key, thread_id)
+        waiter = threading.Event()
+        deadline = time.monotonic() + timeout
+        with self.lock, self.db() as db:
+            if not self.connection_current(account_key, connection_id):
+                return False
+            actor = self.tool_request_actor(db, thread_id, account_key)
+            if actor is None:
+                return False
+            bound = actor.get("turnId")
+            if bound is not None:
+                return bound == turn_id
+            attempt = actor.get("startAttempt") or {}
+            if (not actor.get("inFlight") or actor.get("turnEpoch", actor["epoch"]) != actor["epoch"]
+                    or not attempt.get("submitted") or attempt.get("epoch") != actor["epoch"]
+                    or attempt.get("threadId") != thread_id
+                    or attempt.get("accountKey", "default") != account_key
+                    or attempt.get("connectionId") != connection_id
+                    or attempt.get("turnId") not in (None, turn_id)
+                    or attempt.get("observedTurnId") not in (None, turn_id)
+                    or self._tool_turn_binding_waiter_count >= MAX_TOOL_TURN_BINDING_WAITERS):
+                return False
+            self._tool_turn_binding_waiters.setdefault(waiter_key, set()).add(waiter)
+            self._tool_turn_binding_waiter_count += 1
+        try:
+            waiter.wait(max(0, deadline - time.monotonic()))
+            with self.lock, self.db() as db:
+                if not self.connection_current(account_key, connection_id):
+                    return False
+                actor = self.tool_request_actor(db, thread_id, account_key)
+                return bool(actor and actor.get("turnId") == turn_id)
+        finally:
+            with self.lock:
+                waiters = self._tool_turn_binding_waiters.get(waiter_key)
+                if waiters is not None and waiter in waiters:
+                    waiters.remove(waiter)
+                    self._tool_turn_binding_waiter_count -= 1
+                    if not waiters:
+                        self._tool_turn_binding_waiters.pop(waiter_key, None)
+
+    def wake_tool_turn_binding_waiters(self, account_key, thread_id):
+        """Wake only callbacks waiting for this account's thread."""
+        for waiter in self._tool_turn_binding_waiters.get((account_key, thread_id), ()):
+            waiter.set()
+
     def dynamic(self, message, account_key="default", connection_id=None):
         p = message.get("params", {})
         result = None
@@ -8894,6 +8992,14 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         try:
             record = self.reserve_tool_request(message, account_key, connection_id)
             key = record["id"]
+            if (p.get("turnId") and record.get("stage") == "queued"
+                    and record.get("result") is None):
+                # AppServer can dispatch a turn-scoped tool request before the
+                # corresponding turn/started notification has been applied.
+                # Wait briefly for the actor to bind that exact provider turn;
+                # an unknown binding must never authorize the operation.
+                self.wait_for_tool_turn_binding(
+                    account_key, connection_id, p.get("threadId"), p.get("turnId"))
             with self.lock, self.db() as db:
                 # Another callback can claim this request after reservation returns.
                 # Only the current receipt can prove that execution has not started.
@@ -8906,7 +9012,9 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     self.finish_tool_request(key, result, outcome="not_applied", db=db)
                 stale_epoch = (record.get("epoch") != a["epoch"]
                                or (p.get("turnId") and a.get("turnEpoch", a["epoch"]) != a["epoch"]))
-                if result is None and record.get("stage") == "queued" and stale_epoch:
+                turn_mismatch = bool(p.get("turnId") and p.get("turnId") != a.get("turnId"))
+                if (result is None and record.get("stage") == "queued"
+                        and (stale_epoch or turn_mismatch)):
                     # Only a queued, unstarted receipt proves no mutation ran.
                     # Preserve any ambiguous receipt without claiming it again.
                     from codex_tool_requests import operation_receipt_evidence
@@ -8915,8 +9023,10 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                         self.finish_tool_request(key, result, db=db)
                     elif (record.get("outcome") == "pending" and record.get("started") is None
                           and operation_receipt_evidence(db, key) is None):
+                        error = ("This tool call belongs to an earlier turn" if stale_epoch or a.get("turnId")
+                                 else "Could not verify the current native turn; the operation was not executed")
                         result = stamp_tool_result({"success": False, "contentItems": [
-                            {"type": "inputText", "text": "This tool call belongs to an earlier turn"}]}, time.time())
+                            {"type": "inputText", "text": error}]}, time.time())
                         self.finish_tool_request(key, result, outcome="not_applied", db=db)
                 elif result is None:
                     claimed = self.begin_tool_request(key)
@@ -9854,8 +9964,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             if (importance != "progress" or not isinstance(progress_key, str) or not 1 <= len(progress_key) <= 200
                     or type(progress_version) is not int or progress_version < 0):
                 raise ValueError("Versioned progress requires a progress_key and nonnegative integer progress_version")
-        if not isinstance(text, str) or not 1 <= len(text.strip()) <= 12000:
-            raise ValueError("Message must have 1 to 12000 characters")
+        if not isinstance(text, str) or not 1 <= len(text.strip()) <= MAX_AGENT_MESSAGE_CODEPOINTS:
+            raise ValueError(f"Message must have 1 to {MAX_AGENT_MESSAGE_CODEPOINTS} characters")
         text = text.strip()
         actor = self.agent(sender_id)
         if actor.get('remoteOrigin') and not target.startswith(('federated:', 'remote:')) and target != 'user':
@@ -11340,8 +11450,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 raise ValueError('Configure only team storage and token limits')
             limit = data.get("maxAgents", root["maxAgents"])
             budget = data.get("tokenBudget", root["tokenBudget"])
-            if type(limit) is not int or not 1 <= limit <= MAX_TEAM_AGENTS:
-                raise ValueError("Team size must be an integer from 1 to 1024")
+            if type(limit) is not int or not MIN_TEAM_AGENTS <= limit <= MAX_TEAM_AGENTS:
+                raise ValueError(f"Team size must be an integer from {MIN_TEAM_AGENTS} to {MAX_TEAM_AGENTS}")
             if budget is not None and (type(budget) is not int or budget <= 0):
                 raise ValueError("Token budget must be positive or null")
             for a in self.team_agents(db, key, include_deleted=True):

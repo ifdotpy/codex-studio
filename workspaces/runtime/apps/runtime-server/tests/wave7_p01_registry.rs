@@ -85,6 +85,7 @@ struct Scripted {
     opened: Arc<Mutex<Vec<String>>>,
     active: Arc<AtomicUsize>,
     writes: mpsc::UnboundedSender<(String, Value)>,
+    unknown_writes: bool,
     failures: AtomicUsize,
     stops: Arc<Mutex<Vec<Shutdown>>>,
     opened_notice: Arc<Notify>,
@@ -103,6 +104,7 @@ impl AccountLauncher for Scripted {
                 opened: self.opened.clone(),
                 active: self.active.clone(),
                 writes: self.writes.clone(),
+                unknown_writes: self.unknown_writes,
                 stops: self.stops.clone(),
                 opened_notice: self.opened_notice.clone(),
             });
@@ -142,6 +144,7 @@ struct WireFactory {
     opened: Arc<Mutex<Vec<String>>>,
     active: Arc<AtomicUsize>,
     writes: mpsc::UnboundedSender<(String, Value)>,
+    unknown_writes: bool,
 }
 impl ProviderTaskFactory for WireFactory {
     fn open(&self, handle: ProviderHandle, _: OpenOptions, shutdown: Shutdown) -> OpenFuture<'_> {
@@ -151,6 +154,7 @@ impl ProviderTaskFactory for WireFactory {
         self.active.fetch_add(1, Ordering::SeqCst);
         let active = self.active.clone();
         let writes = self.writes.clone();
+        let unknown_writes = self.unknown_writes;
         Box::pin(async move {
             let (commands, mut inbox) = mpsc::channel::<AdapterCommand>(16);
             let (events, journal) = mpsc::channel(16);
@@ -205,9 +209,15 @@ impl ProviderTaskFactory for WireFactory {
                                     writes
                                         .send((handle.as_str().into(), write.message().clone()))
                                         .unwrap();
-                                    // The peer intentionally loses the acceptance response.
-                                    // Restart may reattach, but must never resend this input.
-                                    CommandReceipt::Unknown
+                                    if unknown_writes {
+                                        // This mode models a lost acceptance response.
+                                        CommandReceipt::Unknown
+                                    } else {
+                                        CommandReceipt::Written {
+                                            remote_id: None,
+                                            duplicate: false,
+                                        }
+                                    }
                                 }
                             };
                             let _ignored = reply.send(receipt);
@@ -232,12 +242,18 @@ impl ProviderTaskFactory for WireFactory {
     }
 }
 fn scripted() -> (Arc<Scripted>, mpsc::UnboundedReceiver<(String, Value)>) {
+    scripted_with_unknown_writes(true)
+}
+fn scripted_with_unknown_writes(
+    unknown_writes: bool,
+) -> (Arc<Scripted>, mpsc::UnboundedReceiver<(String, Value)>) {
     let (writes, rx) = mpsc::unbounded_channel();
     (
         Arc::new(Scripted {
             opened: Arc::default(),
             active: Arc::default(),
             writes,
+            unknown_writes,
             failures: AtomicUsize::new(0),
             stops: Arc::default(),
             opened_notice: Arc::default(),
@@ -281,7 +297,10 @@ async fn two_accounts_are_independent_and_shutdown_joins_all_attachments() {
     let fixture = tokio::task::spawn_blocking(Fixture::new).await.unwrap();
     fixture.enqueue(0, "first");
     fixture.enqueue(1, "second");
-    let (launcher, mut writes) = scripted();
+    // This case exercises independent accounts and orderly attachment shutdown.
+    // Lost write acceptance is covered by the adjacent restart test and can make
+    // an already-failed provider task race the explicit shutdown.
+    let (launcher, mut writes) = scripted_with_unknown_writes(false);
     let mut registry = AccountRegistry::new(fixture.store.clone(), launcher.clone())
         .await
         .unwrap();
@@ -1043,6 +1062,17 @@ async fn host_start_reattaches_python_launch_and_delivers_http_input() {
     use std::os::unix::fs::PermissionsExt;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tower::ServiceExt;
+    let source = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../server/src");
+    let python = prepared_python::prepared_python(&source);
+    let import = std::process::Command::new(&python)
+        .args(["-c", "import studio_operations_native"])
+        .output()
+        .expect("prepared Python interpreter runs");
+    assert!(
+        import.status.success(),
+        "Python supervisor requires the native module studio_operations_native. Prepare the isolated interpreter with `python3 workspaces/runtime/apps/server/src/codex_python.py --prepare`, build it with `cargo build --release -p studio-operations-python`, and install the resulting module into that interpreter. Import error: {}",
+        String::from_utf8_lossy(&import.stderr)
+    );
     // Isolate the supervisor-mode environment without mutating process globals.
     if std::env::var_os("STUDIO_W7_P01_HOST_CHILD").is_none() {
         let output = tokio::process::Command::new(std::env::current_exe().unwrap())

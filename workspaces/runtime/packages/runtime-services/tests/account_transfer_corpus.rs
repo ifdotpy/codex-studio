@@ -128,6 +128,45 @@ fn snapshot(op: &Value, agent: &Value) -> Snapshot {
     Snapshot::read(&op.to_string(), [("a".into(), agent.to_string())]).expect("snapshot")
 }
 #[test]
+fn transfer_snapshot_accepts_configured_team_ceiling_and_rejects_one_more_record() {
+    let (mut op, agent, _) = fixture();
+    let max_records = studio_runtime_schema::agent_limits_generated::MAX_TRANSFER_AGENT_RECORDS;
+    let records = |op: &mut Value, count: usize| {
+        (0..count)
+            .map(|index| {
+                let id = if index == 0 {
+                    "a".to_owned()
+                } else {
+                    format!("worker-{index}")
+                };
+                if index > 0 && index < max_records {
+                    op["members"][&id] = json!({
+                        "phase":"waiting",
+                        "sourceAccountKey":"source",
+                        "lazy":false
+                    });
+                }
+                let mut record = agent.clone();
+                record["id"] = json!(id);
+                (id, record.to_string())
+            })
+            .collect::<Vec<_>>()
+    };
+
+    let at_limit = records(&mut op, max_records);
+    Snapshot::read(&op.to_string(), at_limit)
+        .expect("lead and workers fit the generated transfer member limit");
+    let above_limit = records(&mut op, max_records + 1);
+    let error = Snapshot::read(&op.to_string(), above_limit)
+        .err()
+        .expect("a transfer snapshot above the team limit is refused");
+    assert_eq!(
+        error.to_string(),
+        "invalid stored transfer snapshot at /resourceLimit"
+    );
+}
+
+#[test]
 fn exact_native_receipt_survives_restart_without_resubmission() {
     let (op, agent, ticket) = fixture();
     let preparing = snapshot(&op, &agent)

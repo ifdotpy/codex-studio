@@ -3,6 +3,7 @@ from typing import Annotated, Literal
 
 from pydantic import ConfigDict, Field, StrictBool, StrictInt, StrictStr
 from studio_api.models import ContractModel, JsonValue, MAX_SAFE_INTEGER
+from codex_agent_modes import MAX_TEAM_AGENTS
 
 Text = Annotated[StrictStr, Field(max_length=65536)]
 Identity = Annotated[StrictStr, Field(min_length=1, max_length=200)]
@@ -74,7 +75,7 @@ class PersistedAccountTransferRecord(OpenTransferRecord):
     updated: float | None = None
     targetProvider: Text | None = None
     finishHistory: StrictBool = False
-    members: Annotated[dict[Identity, TransferMemberRecord], Field(max_length=2048)]
+    members: Annotated[dict[Identity, TransferMemberRecord], Field(max_length=MAX_TEAM_AGENTS)]
     requests: Annotated[dict[Identity, TransferRequestIdentity], Field(max_length=4096)] = Field(default_factory=dict)
 
 

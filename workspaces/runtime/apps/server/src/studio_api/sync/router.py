@@ -24,6 +24,7 @@ from studio_api.sync.preferences import (
     PreferencePushResponse,
     merge_preferences,
 )
+from studio_api.sync.protocol import SYNC_ENTITY_SCOPE, SYNC_PROTOCOL_VERSION
 from studio_api.responses import (
     API_BOUNDARY_RESPONSE_HEADERS,
     API_CONTEXT_RESPONSE_HEADERS,
@@ -52,18 +53,24 @@ from studio_api.sync.resources.models import (
     PanelResource,
     ResourceRef,
     ResourceTokenRatesEvent,
+    TokenRateSnapshot,
     TranscriptResource,
+)
+from codex_shared_values import (
+    MAX_SYNC_RESOURCE_COUNT,
+    MAX_SYNC_RESOURCE_QUERY_BYTES,
+    SYNC_BATCH_LIMIT,
+    SYNC_ENTITY_PAGE_LIMIT,
+    SYNC_RESOURCE_HEARTBEAT_SECONDS,
+    SYNC_STREAM_BYTE_LIMIT,
 )
 
 if TYPE_CHECKING:
     from studio_api.context import ApiContext
 
-SYNC_BATCH_LIMIT = 100
-SYNC_ENTITY_PAGE_LIMIT = 500
-SYNC_STREAM_BYTE_LIMIT = 1_048_576
-RESOURCE_HEARTBEAT_SECONDS = 15.0
-MAX_RESOURCE_QUERY_BYTES = 65_536
-MAX_RESOURCE_COUNT = 256
+RESOURCE_HEARTBEAT_SECONDS = float(SYNC_RESOURCE_HEARTBEAT_SECONDS)
+MAX_RESOURCE_QUERY_BYTES = MAX_SYNC_RESOURCE_QUERY_BYTES
+MAX_RESOURCE_COUNT = MAX_SYNC_RESOURCE_COUNT
 RESOURCE_REFS_ADAPTER: TypeAdapter[list[ResourceRef]] = TypeAdapter(list[ResourceRef])
 SYNC_READ_RESPONSES = {
     200: {"headers": {**API_CONTEXT_RESPONSE_HEADERS, **API_BOUNDARY_RESPONSE_HEADERS}},
@@ -93,7 +100,7 @@ class SyncPullProjection(TypedDict):
 class SyncStoreContract(Protocol):
     def identity(self) -> dict[str, object]: ...
     def pull(
-        self, scope: str, after: int = 0, limit: int = 100, fresh: bool = False,
+        self, scope: str, after: int = 0, limit: int = SYNC_BATCH_LIMIT, fresh: bool = False,
         initial_high: int = 0, reset_support: bool = False, priority_id: str | None = None,
     ) -> SyncPullProjection: ...
     def generation(self) -> int: ...
@@ -216,10 +223,10 @@ def create_router(context: ApiContext) -> APIRouter:
         if (Path(context.canvas.root) / "canvas.sock").exists():
             capabilities.append("unixSocket")
         value = {
-            "protocolVersion": 3,
-            "supportedVersions": [3],
+            "protocolVersion": SYNC_PROTOCOL_VERSION,
+            "supportedVersions": [SYNC_PROTOCOL_VERSION],
             "capabilities": capabilities,
-            "scopes": ["state:entities:v1", "transcript:<agent-id>", "drafts"],
+            "scopes": [SYNC_ENTITY_SCOPE, "transcript:<agent-id>", "drafts"],
             "pullEndpoint": "/api/sync/pull",
             "streamEndpoint": "/api/sync/stream",
             "maxEntityPage": SYNC_ENTITY_PAGE_LIMIT,
@@ -236,7 +243,7 @@ def create_router(context: ApiContext) -> APIRouter:
     )
     def pull(
         request: Request,
-        scope: str = Query(default="state:entities:v1", min_length=1),
+        scope: str = Query(default=SYNC_ENTITY_SCOPE, min_length=1),
         after: SafeQueryInt = Query(default=0, ge=0, le=MAX_SAFE_INTEGER),
         limit: SafeQueryInt = Query(
             default=SYNC_BATCH_LIMIT,
@@ -255,7 +262,7 @@ def create_router(context: ApiContext) -> APIRouter:
         priority_id = priorityId
         store = _sync_store(context)
         projection = store.pull(scope, after, limit, fresh_flag, initial_high, reset_flag, priority_id)
-        if scope == "state:entities:v1":
+        if scope == SYNC_ENTITY_SCOPE:
             from studio_api.sync.entity_response import response_entity_document
 
             valid_documents = [
@@ -325,15 +332,18 @@ def create_router(context: ApiContext) -> APIRouter:
     ) -> Response:
         protocol_value = protocol
         header_version = sync_protocol_header
-        if protocol_value not in (None, "3") or header_version not in (None, "3"):
+        protocol_version_text = str(SYNC_PROTOCOL_VERSION)
+        if (protocol_value not in (None, protocol_version_text)
+                or header_version not in (None, protocol_version_text)):
             response = context.send(
                 request,
-                {"error": "Unsupported sync protocol version", "supportedVersions": [3]},
+                {"error": "Unsupported sync protocol version",
+                 "supportedVersions": [SYNC_PROTOCOL_VERSION]},
                 status=426,
             )
             return response
 
-        if protocol_value == "3" or header_version == "3":
+        if protocol_value == protocol_version_text or header_version == protocol_version_text:
             renderer_hash = request.headers.get(API_SCHEMA_HASH_HEADER)
             if renderer_hash is None:
                 renderer_hash = _query.apiSchema
@@ -450,7 +460,8 @@ def create_router(context: ApiContext) -> APIRouter:
 
         return context.send(
             request,
-            {"error": "Unsupported sync protocol version", "supportedVersions": [3]},
+            {"error": "Unsupported sync protocol version",
+             "supportedVersions": [SYNC_PROTOCOL_VERSION]},
             status=426,
         )
 
@@ -466,6 +477,9 @@ def create_router(context: ApiContext) -> APIRouter:
                 ref_template="#/components/schemas/{model}"
             ),
             "ResourceTokenRatesEvent": ResourceTokenRatesEvent.model_json_schema(
+                ref_template="#/components/schemas/{model}"
+            ),
+            "TokenRateSnapshot": TokenRateSnapshot.model_json_schema(
                 ref_template="#/components/schemas/{model}"
             ),
             "ApiSchemaEvent": ApiSchemaEvent.model_json_schema(

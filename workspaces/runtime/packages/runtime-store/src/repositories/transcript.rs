@@ -8,6 +8,7 @@ use crate::repositories::sync_documents::SyncDocumentsRepository;
 use crate::schema::{ConditionalTableRequirement, SchemaRequirements, TableRequirement};
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde_json::{Value, json};
+use studio_runtime_schema::shared_values::TRANSCRIPT_MAX_TOMBSTONES;
 use thiserror::Error;
 
 const LEGACY_TABLES: &[TableRequirement] = &[TableRequirement {
@@ -22,7 +23,6 @@ const BOOTSTRAP_TABLES: &[TableRequirement] = &[TableRequirement {
     name: "runtime_item_fulltext",
     columns: &["id", "body"],
 }];
-const TRANSCRIPT_MAX_TOMBSTONES: usize = 512;
 const TRANSCRIPT_PAGE_SIZE: usize = 120;
 const SEARCH_INDEXED_TABLES: &[TableRequirement] = &[TableRequirement {
     name: "runtime_search_indexed",

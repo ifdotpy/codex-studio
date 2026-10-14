@@ -13,6 +13,10 @@ use axum::response::{IntoResponse, Response};
 use futures_util::Stream;
 use futures_util::stream;
 use serde_json::{Value, json};
+use studio_runtime_schema::shared_values::{
+    MAX_SYNC_RESOURCE_COUNT, MAX_SYNC_RESOURCE_QUERY_BYTES, SYNC_RESOURCE_HEARTBEAT_SECONDS,
+};
+use studio_runtime_schema::{SYNC_PROTOCOL_VERSION, SYNC_PROTOCOL_VERSION_TEXT};
 use studio_runtime_services::change_notifications::{ChangeSnapshot, MAX_SAFE_REVISION};
 use studio_runtime_services::progress_watch::{ProgressFileWatch, watch_progress_files};
 use studio_runtime_services::resource_notify::{
@@ -54,9 +58,6 @@ pub(crate) async fn notify_resources(
     )?))
 }
 
-const MAX_RESOURCE_QUERY_BYTES: usize = 65_536;
-const MAX_RESOURCE_COUNT: usize = 256;
-const RESOURCE_HEARTBEAT_SECONDS: u64 = 15;
 static STREAM_DEPENDENCIES: &[Dependency] = &[
     Dependency::new("provider-session/app-server"),
     Dependency::new("usage-policy/token-rates"),
@@ -90,15 +91,16 @@ async fn sync_stream(
 ) -> Response {
     let protocol = query.typed_value("protocol").and_then(Value::as_str);
     let header_protocol = headers.get("x-codex-sync-protocol").and_then(Value::as_str);
-    if protocol.is_some_and(|value| value != "3")
-        || header_protocol.is_some_and(|value| value != "3")
-        || (protocol != Some("3") && header_protocol != Some("3"))
+    if protocol.is_some_and(|value| value != SYNC_PROTOCOL_VERSION_TEXT)
+        || header_protocol.is_some_and(|value| value != SYNC_PROTOCOL_VERSION_TEXT)
+        || (protocol != Some(SYNC_PROTOCOL_VERSION_TEXT)
+            && header_protocol != Some(SYNC_PROTOCOL_VERSION_TEXT))
     {
         return (
             StatusCode::UPGRADE_REQUIRED,
             Json(json!({
                 "error": "Unsupported sync protocol version",
-                "supportedVersions": [3],
+                "supportedVersions": [SYNC_PROTOCOL_VERSION],
             })),
         )
             .into_response();
@@ -187,8 +189,8 @@ async fn sync_stream(
         token_rates,
         _progress_watch: progress_watch,
         heartbeat: interval_at(
-            Instant::now() + Duration::from_secs(RESOURCE_HEARTBEAT_SECONDS),
-            Duration::from_secs(RESOURCE_HEARTBEAT_SECONDS),
+            Instant::now() + Duration::from_secs(SYNC_RESOURCE_HEARTBEAT_SECONDS),
+            Duration::from_secs(SYNC_RESOURCE_HEARTBEAT_SECONDS),
         ),
     };
     event_response(stream::unfold(stream_state, next_frame))
@@ -245,13 +247,13 @@ fn parse_resources(query: &QueryParams, state: &HttpState) -> Result<Vec<Value>,
         .typed_value("resources")
         .and_then(Value::as_str)
         .ok_or_else(invalid)?;
-    if raw.len() > MAX_RESOURCE_QUERY_BYTES {
+    if raw.len() > MAX_SYNC_RESOURCE_QUERY_BYTES {
         return Err(invalid());
     }
     let parsed: Value = serde_json::from_str(raw).map_err(|_| invalid())?;
     let values = parsed.as_array().ok_or_else(invalid)?;
     if values.is_empty()
-        || values.len() > MAX_RESOURCE_COUNT
+        || values.len() > MAX_SYNC_RESOURCE_COUNT
         || values
             .iter()
             .any(|resource| !state.validators.validate_component("ResourceRef", resource))
@@ -359,8 +361,10 @@ async fn next_frame(
         }
         if heartbeat {
             let event = json!({
-                "protocol": 3, "workspaceId": state.workspace_id,
-                "epoch": state.epoch, "revision": view.cursor.revision,
+                "protocol": SYNC_PROTOCOL_VERSION,
+                "workspaceId": state.workspace_id,
+                "epoch": state.epoch,
+                "revision": view.cursor.revision,
             });
             return Some((
                 Ok(sse_event("heartbeat", Some(view.cursor.revision), event)),
@@ -408,9 +412,12 @@ fn token_rate_event(workspace_id: &str, snapshot: &ChangeSnapshot, rates: &Token
         "token-rates",
         Some(snapshot.revision),
         json!({
-            "protocol": 3, "workspaceId": workspace_id,
-            "epoch": snapshot.epoch, "revision": snapshot.revision,
-            "rates": rates["rates"], "teams": rates["teams"],
+            "protocol": SYNC_PROTOCOL_VERSION,
+            "workspaceId": workspace_id,
+            "epoch": snapshot.epoch,
+            "revision": snapshot.revision,
+            "rates": rates["rates"],
+            "teams": rates["teams"],
         }),
     )
 }
@@ -440,7 +447,7 @@ fn resource_event(
         })
         .collect::<Vec<_>>();
     json!({
-        "protocol": 3,
+        "protocol": SYNC_PROTOCOL_VERSION,
         "workspaceId": workspace_id,
         "epoch": epoch,
         "revision": revision,
@@ -482,6 +489,13 @@ mod tests {
         include!(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/../runtime-services/tests/support/prepared_python.rs"
+        ));
+    }
+
+    mod token_rate_difference {
+        include!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../runtime-services/tests/support/token_rate_difference.rs"
         ));
     }
 
@@ -560,9 +574,11 @@ mod tests {
                 .lines()
                 .find_map(|line| line.strip_prefix("data: "))
                 .expect("data");
-            assert_eq!(
-                serde_json::from_str::<Value>(data).expect("JSON"),
-                expected["rates"]
+            token_rate_difference::assert_token_rate_documents_equal(
+                &expected["rates"],
+                &serde_json::from_str::<Value>(data).expect("JSON"),
+                &[],
+                "stream document oracle",
             );
         }
     }
@@ -586,8 +602,8 @@ mod tests {
             token_rates: tokens.subscribe(),
             _progress_watch: None,
             heartbeat: interval_at(
-                Instant::now() + Duration::from_secs(RESOURCE_HEARTBEAT_SECONDS),
-                Duration::from_secs(RESOURCE_HEARTBEAT_SECONDS),
+                Instant::now() + Duration::from_secs(SYNC_RESOURCE_HEARTBEAT_SECONDS),
+                Duration::from_secs(SYNC_RESOURCE_HEARTBEAT_SECONDS),
             ),
         };
         hub.notify_one();
@@ -626,11 +642,11 @@ mod tests {
             token_rates: token_hub.subscribe(),
             _progress_watch: None,
             heartbeat: interval_at(
-                Instant::now() + Duration::from_secs(RESOURCE_HEARTBEAT_SECONDS),
-                Duration::from_secs(RESOURCE_HEARTBEAT_SECONDS),
+                Instant::now() + Duration::from_secs(SYNC_RESOURCE_HEARTBEAT_SECONDS),
+                Duration::from_secs(SYNC_RESOURCE_HEARTBEAT_SECONDS),
             ),
         };
-        for index in 0..=MAX_RESOURCE_COUNT {
+        for index in 0..=MAX_SYNC_RESOURCE_COUNT {
             token_hub.publish(json!({
                 "rates": {"agent": {"turnId":"turn", "active":true, "estimated":false, "rate":index, "outputTokens":index}}, "teams": {}
             })).expect("publish");
@@ -674,6 +690,10 @@ mod tests {
 
     fn test_rates(rate: u64) -> Value {
         json!({"rates":{"agent":{"turnId":"turn","active":true,"estimated":false,"rate":rate,"outputTokens":rate}},"teams":{}})
+    }
+
+    fn floating_test_rates(rate: u64) -> Value {
+        json!({"rates":{"agent":{"turnId":"turn","active":true,"estimated":false,"rate":rate as f64,"outputTokens":rate as f64}},"teams":{}})
     }
 
     fn test_stream(
@@ -725,7 +745,7 @@ mod tests {
         use std::sync::mpsc;
         let hub = Arc::new(ChangeNotificationHub::new());
         let tokens = TokenRateHub::with_change_hub(hub.clone());
-        tokens.publish(test_rates(1)).expect("first");
+        tokens.publish(floating_test_rates(1)).expect("first");
         let mut reader = tokens.subscribe();
         let (captured, capture_gate) = mpsc::channel();
         let (release, released) = mpsc::channel();
@@ -745,7 +765,7 @@ mod tests {
             let tokens = tokens.clone();
             std::thread::spawn(move || {
                 attempting.send(()).expect("publication gate");
-                tokens.publish(test_rates(2)).expect("second")
+                tokens.publish(floating_test_rates(2)).expect("second")
             })
         };
         attempted
@@ -755,11 +775,11 @@ mod tests {
             .send(())
             .expect("read cursor before releasing rate guard");
         let (rates, cursor) = reading.join().expect("reader");
-        assert_eq!(rates.to_value(), test_rates(1));
+        assert_eq!(rates.to_value(), floating_test_rates(1));
         assert_eq!(cursor.revision, 1);
         assert!(publishing.join().expect("publisher"));
         let (rates, cursor) = token_snapshot(&mut tokens.subscribe(), || hub.snapshot());
-        assert_eq!(rates.to_value(), test_rates(2));
+        assert_eq!(rates.to_value(), floating_test_rates(2));
         assert_eq!(cursor.revision, 2);
     }
 
@@ -794,7 +814,7 @@ mod tests {
                 let tokens = tokens.clone();
                 tokio::spawn(async move {
                     gate.await.expect("reader gate");
-                    tokens.publish(test_rates(rate)).expect("publish")
+                    tokens.publish(floating_test_rates(rate)).expect("publish")
                 })
             };
             publish
@@ -802,12 +822,12 @@ mod tests {
                 .expect("release one publication between polls");
             assert!(producer.await.expect("producer"));
             let document = event_document(first.next().await.expect("token frame")).await;
-            assert_eq!(document["rates"], test_rates(rate)["rates"]);
+            assert_eq!(document["rates"], floating_test_rates(rate)["rates"]);
             assert_eq!(document["revision"], rate);
             assert!(document.get("resources").is_none());
         }
         let latest = event_document(second.next().await.expect("slow reader latest")).await;
-        assert_eq!(latest["rates"], test_rates(4)["rates"]);
+        assert_eq!(latest["rates"], floating_test_rates(4)["rates"]);
         let mut pending = first.next();
         assert!(
             futures_util::poll!(&mut pending).is_pending(),
@@ -899,7 +919,12 @@ mod tests {
                             let mut actual =
                                 event_document(events.next().await.expect("frame")).await;
                             actual["epoch"] = json!("epoch");
-                            assert_eq!(actual, expected, "consumer step {index}");
+                            token_rate_difference::assert_token_rate_documents_equal(
+                                &expected,
+                                &actual,
+                                &[],
+                                &format!("consumer step {index}"),
+                            );
                         }
                     }
                 }
@@ -925,8 +950,8 @@ mod tests {
             token_rates: TokenRateHub::new().subscribe(),
             _progress_watch: None,
             heartbeat: interval_at(
-                Instant::now() + Duration::from_secs(RESOURCE_HEARTBEAT_SECONDS),
-                Duration::from_secs(RESOURCE_HEARTBEAT_SECONDS),
+                Instant::now() + Duration::from_secs(SYNC_RESOURCE_HEARTBEAT_SECONDS),
+                Duration::from_secs(SYNC_RESOURCE_HEARTBEAT_SECONDS),
             ),
         };
         let pending = next_frame(state);

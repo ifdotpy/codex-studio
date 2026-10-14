@@ -472,8 +472,26 @@ class ProcessArgumentsContract(unittest.TestCase):
         child = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                                  stderr=subprocess.DEVNULL)
         try:
-            fixture.wait_for(lambda: supervisor.process_start_time(child.pid) is not None)
-            self.assertEqual(supervisor.process_launch_command(child.pid), command)
+            observed = {"command": None, "error": None}
+
+            def read_expected_command():
+                try:
+                    actual = supervisor.process_launch_command(child.pid)
+                except (OSError, ValueError) as error:
+                    observed["error"] = f"{type(error).__name__}: {error}"
+                    return None
+                observed["command"] = actual
+                return actual if actual == command else None
+
+            try:
+                actual = fixture.wait_for(read_expected_command)
+            except AssertionError as error:
+                raise AssertionError(
+                    f"Could not read expected OS arguments {command!r}; "
+                    f"last arguments={observed['command']!r}, "
+                    f"last read error={observed['error']!r}"
+                ) from error
+            self.assertEqual(actual, command)
         finally:
             child.terminate()
             child.wait(timeout=3)

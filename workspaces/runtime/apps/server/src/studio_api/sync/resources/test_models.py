@@ -8,7 +8,7 @@ from typing import cast
 
 from pydantic import ValidationError
 
-from studio_api.models import JsonValue
+from studio_api.models import JsonValue, MAX_SAFE_INTEGER
 from studio_api.schema import openapi_document
 from studio_api.sync.resources.models import (
     EntityChangeBatch,
@@ -31,7 +31,7 @@ class ResourceContractTests(unittest.TestCase):
         invalid_batches = (
             {**valid, "after": 2},
             {**valid, "after": -1},
-            {**valid, "through": 9_007_199_254_740_992},
+            {**valid, "through": MAX_SAFE_INTEGER + 1},
             {**valid, "documents": [{**document, "seq": 1}]},
             {**valid, "documents": [{**document, "seq": 3}]},
             {**valid, "documents": [document, document]},
@@ -207,7 +207,7 @@ class ResourceContractTests(unittest.TestCase):
             if isinstance(option, dict) and option.get("type") == "number"
         )
         self.assertEqual(integer_schema["minimum"], 0)
-        self.assertEqual(integer_schema["maximum"], 9_007_199_254_740_991)
+        self.assertEqual(integer_schema["maximum"], MAX_SAFE_INTEGER)
         self.assertEqual(number_schema["minimum"], 0)
 
 

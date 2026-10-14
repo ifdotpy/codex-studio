@@ -11,6 +11,7 @@ mod provider_shared;
 pub mod provider_stdio;
 #[cfg(unix)]
 pub mod provider_task;
+mod shared_values_generated;
 #[cfg(unix)]
 mod pty_host;
 #[cfg(unix)]

@@ -1,4 +1,5 @@
 import { SignedEventSource } from "../servers/eventSource";
+import { SYNC_ENTITY_SCOPE, SYNC_PROTOCOL_VERSION } from "../generated/api";
 import {
   API_SCHEMA_HASH,
   API_SCHEMA_HASH_HEADER,
@@ -202,7 +203,7 @@ export function connectUiPreferences(
     let more: boolean;
     do {
       const response = (await request(
-        `/api/sync/pull?scope=state:entities:v1&after=${Math.max(0, cursor.value)}&limit=${SYNC_ENTITY_PAGE_SIZE}`,
+        `/api/sync/pull?scope=${SYNC_ENTITY_SCOPE}&after=${Math.max(0, cursor.value)}&limit=${SYNC_ENTITY_PAGE_SIZE}`,
       )) as Pull & { reset?: boolean };
       if (stopped) return;
       workspaceId = response.workspaceId;
@@ -275,7 +276,7 @@ export function connectUiPreferences(
   const openStream = () => {
     if (stopped || stream) return;
     const query = new URLSearchParams({
-      protocol: "3",
+      protocol: String(SYNC_PROTOCOL_VERSION),
       resources: JSON.stringify([{ kind: "state" }]),
       [API_SCHEMA_HASH_PARAM]: API_SCHEMA_HASH,
     });

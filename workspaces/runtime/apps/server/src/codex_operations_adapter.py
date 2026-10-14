@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-PROTOCOL_VERSION = 4
+from codex_shared_values import OPERATIONS_PYTHON_PROTOCOL_VERSION
+
+PROTOCOL_VERSION = OPERATIONS_PYTHON_PROTOCOL_VERSION
 
 try:
     import studio_operations_native as native

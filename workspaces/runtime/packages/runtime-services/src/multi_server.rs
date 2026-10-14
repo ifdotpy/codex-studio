@@ -1,4 +1,5 @@
 //! Local multi-server access projections and state mutations.
+use crate::multi_server_protocol_generated::ACCESS_PROTOCOL_VERSION;
 use rusqlite::OptionalExtension;
 use serde_json::{Value, json};
 use studio_runtime_store::{MultiServerRepository, RuntimeStore, StoreError};
@@ -37,7 +38,7 @@ pub fn snapshot(store: &RuntimeStore, identity: &Value) -> Result<Value, MultiSe
         let mut servers=clients.iter().filter(|v|v.get("kind").and_then(Value::as_str)==Some("server")).cloned().collect::<Vec<_>>();
         for peer in discovered {if !servers.iter().any(|saved|saved.get("id")==peer.get("id")){servers.push(peer);}}
 
-        Ok(json!({"protocol":1,"identity":identity,"clients":clients,"servers":servers,"invites":invites,"settings":{"autoPair":auto_pair,"aliases":aliases}}))
+        Ok(json!({"protocol":ACCESS_PROTOCOL_VERSION,"identity":identity,"clients":clients,"servers":servers,"invites":invites,"settings":{"autoPair":auto_pair,"aliases":aliases}}))
     })?)
 }
 

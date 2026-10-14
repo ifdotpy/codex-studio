@@ -2026,6 +2026,68 @@ describe("shared resource event transport", () => {
     stop();
   });
 
+  it("recovers from a replaced stream with a new server epoch", async () => {
+    vi.useFakeTimers();
+    vi.spyOn(Math, "random").mockReturnValue(0.5);
+    syncDatabase.mockResolvedValue({ workspaceId });
+    vi.stubGlobal("window", {
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    });
+    vi.stubGlobal("document", {
+      hidden: false,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    });
+    vi.stubGlobal("navigator", { onLine: true });
+    vi.stubGlobal("location", { origin: "http://studio.test" });
+    vi.stubGlobal("crypto", { randomUUID: () => "tab-one" });
+    vi.stubGlobal("EventSource", Source);
+
+    const transport = await loadTransport();
+    const resource = { kind: "state" } as const;
+    const onChange = vi.fn();
+    const states: string[] = [];
+    const stopChanges = transport.watchResourceChanges(resource, onChange);
+    const stopStatus = transport.watchResourceConnection((status) =>
+      states.push(status),
+    );
+    try {
+      await vi.waitFor(() => expect(Source.instances).toHaveLength(1));
+      const original = Source.instances[0]!;
+      original.emit("resources", {
+        protocol: 3,
+        workspaceId,
+        epoch: "server-before-restart",
+        revision: 12,
+        reason: "initial",
+        resources: [resource],
+      });
+      await vi.advanceTimersByTimeAsync(25);
+      expect(states.at(-1)).toBe("live");
+
+      original.onerror?.();
+      await vi.advanceTimersByTimeAsync(500);
+      expect(Source.instances).toHaveLength(2);
+      Source.instances[1]!.emit("resources", {
+        protocol: 3,
+        workspaceId,
+        epoch: "server-after-restart",
+        revision: 1,
+        reason: "initial",
+        resources: [resource],
+      });
+      await vi.advanceTimersByTimeAsync(25);
+
+      expect(states.at(-1)).toBe("live");
+      expect(onChange).toHaveBeenCalledTimes(2);
+    } finally {
+      stopChanges();
+      stopStatus();
+      vi.useRealTimers();
+    }
+  });
+
   it("reconciles an unchanged follower baseline once and forgets unsubscribed markers", async () => {
     syncDatabase.mockResolvedValue({ workspaceId });
     vi.stubGlobal("window", {

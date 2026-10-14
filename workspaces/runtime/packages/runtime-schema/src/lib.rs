@@ -1,4 +1,7 @@
-//! Compiled validators for the schemas persisted by the Rust runtime.
+//! Compiled persisted-state validators and generated shared runtime values.
+
+pub mod federation_limits_generated;
+pub mod shared_values;
 
 use std::collections::BTreeMap;
 use std::sync::OnceLock;
@@ -6,10 +9,19 @@ use std::sync::OnceLock;
 pub use jsonschema::{Draft, Registry as JsonSchemaRegistry, Validator};
 use serde_json::{Value, json};
 
+pub mod agent_limits_generated;
+pub mod sync_protocol;
+pub use sync_protocol::{SYNC_ENTITY_SCOPE, SYNC_PROTOCOL_VERSION, SYNC_PROTOCOL_VERSION_TEXT};
+mod token_rate_limits;
+pub use token_rate_limits::{
+    TOKEN_RATE_IDENTIFIER_MAX_CODEPOINTS, TOKEN_RATE_MAX_ENTRIES, TOKEN_RATE_MAX_TOTAL_ENTRIES,
+};
+
 pub const OPENAPI_URI: &str = "https://codex-studio.invalid/openapi.json";
 const ACCOUNT_REGISTRY_URI: &str = "https://codex-studio.invalid/account-registry.schema.json";
 const ACCOUNT_TRANSFER_URI: &str =
     "https://codex-studio.invalid/persisted-account-transfer-record.schema.json";
+
 const USAGE_LIMITS_URI: &str = "https://codex-studio.invalid/workspace-usage-limits.schema.json";
 const TRANSCRIPT_ASSET_URI: &str =
     "https://codex-studio.invalid/runtime-transcript-asset.schema.json";
@@ -679,6 +691,21 @@ mod tests {
     use serde_json::json;
 
     use super::{initialize, registry_for_document, table_schema, validate};
+
+    #[test]
+    fn generated_agent_contracts_supply_runtime_capacity_values() {
+        use super::agent_limits_generated as limits;
+        assert_eq!(
+            limits::MAX_TEAM_AGENTS as i64,
+            limits::MAX_SUBAGENT_CONCURRENCY + limits::TEAM_AGENT_HEADROOM
+        );
+        assert_eq!(limits::MAX_TRANSFER_AGENT_RECORDS, limits::MAX_TEAM_AGENTS);
+        assert!(limits::DEFAULT_MAX_TEAM_AGENTS <= limits::MAX_TEAM_AGENTS as i64);
+        assert_eq!(
+            limits::DEFAULT_GLOBAL_CONCURRENCY,
+            limits::MAX_SUBAGENT_CONCURRENCY + limits::LEAD_TEAM_RECORDS
+        );
+    }
 
     #[test]
     fn typed_table_selects_one_authoritative_storage_schema() {

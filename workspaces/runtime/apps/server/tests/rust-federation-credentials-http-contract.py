@@ -16,7 +16,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from codex_runtime import Runtime
-from http_backend_harness import TimedHTTPContractTest, start_contract_backend
+from http_backend_harness import TimedHTTPContractTest, no_write_snapshot, start_contract_backend
 from runtime_test_environment import make_runtime
 
 
@@ -37,10 +37,11 @@ class CredentialsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         cls.backend.start()
         cls.backend.ready_samples.append(cls.backend.ready_seconds or 0)
 
-    def headers(self):
-        return {"Origin": self.backend.origin or "",
-                "X-Canvas-Token": self.backend.session["token"],
-                "X-Studio-API-Schema": self.backend.schema_hash}
+    def headers(self, backend=None):
+        backend = backend or self.backend
+        return {"Origin": backend.origin or "",
+                "X-Canvas-Token": backend.session["token"],
+                "X-Studio-API-Schema": backend.schema_hash}
 
     def snapshot(self):
         result = self.backend.request("GET", "/api/multi-server", headers=self.headers())
@@ -143,19 +144,43 @@ class CredentialsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
 
     def test_f_refuses_unsafe_identity_without_replacing_it(self):
         if not os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"):
-            self.skipTest("Rust fail-closed credential loading; Python loads during backend startup")
+            self.skipTest("Rust request-time credential loading; Python validates permissions during startup")
+        # Use a fresh backend whose lazy credential reader has not cached the
+        # identity yet. Python loads it during startup and cannot reach this
+        # request-time permission transition.
+        backend = start_contract_backend(type(self))
+        path = backend.state / "multi-server/identity.json"
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        before = no_write_snapshot(backend.state)
+        path.chmod(0o644)
+        try:
+            result = backend.request("GET", "/api/multi-server", headers=self.headers(backend))
+            self.assertEqual(result.status, 503, result.body[:500])
+            self.assertNotIn(b"PRIVATE KEY", result.body)
+            self.assertEqual(hashlib.sha256(path.read_bytes()).hexdigest(), digest)
+            self.assertEqual(no_write_snapshot(backend.state), before)
+        finally:
+            path.chmod(0o600)
+
+    def test_f_refuses_startup_with_unsafe_identity_without_writes(self):
+        if not os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"):
+            self.skipTest("Rust startup validation of Python's owner-only credential permissions")
         self.backend.stop()
         path = self.backend.state / "multi-server/identity.json"
         digest = self.file_digest()
+        before = no_write_snapshot(self.backend.state)
         path.chmod(0o644)
         try:
-            self.backend.start()
-            result = self.backend.request("GET", "/api/multi-server", headers=self.headers())
-            self.assertEqual(result.status, 503, result.body[:500])
-            self.assertNotIn(b"PRIVATE KEY", result.body)
+            with self.assertRaises(RuntimeError) as refused:
+                self.backend.start()
+            self.assertIn("identity.json", str(refused.exception))
+            self.assertIn("permissions", str(refused.exception))
             self.assertEqual(self.file_digest(), digest)
+            self.assertEqual(no_write_snapshot(self.backend.state), before)
         finally:
+            self.backend.stop()
             path.chmod(0o600)
+            self.backend.start()
 
 
     def test_g_first_use_conflict_leaves_the_credential_directory_absent(self):

@@ -2,7 +2,7 @@
 name = "studio-runtime-schema"
 version.workspace = true
 edition.workspace = true
-description = "Compiled JSON Schemas shared by the Rust runtime HTTP and store layers"
+description = "Compiled schemas and shared runtime contracts"
 license.workspace = true
 publish.workspace = true
 

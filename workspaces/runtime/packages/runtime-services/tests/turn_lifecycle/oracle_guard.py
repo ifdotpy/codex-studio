@@ -110,6 +110,12 @@ def install_guard(*, block_processes=False, allow_loopback=False):
         block_processes=block_processes,
         allow_loopback=allow_loopback,
     )
+    # Executable discovery must not probe provider homes in the inherited PATH.
+    os.environ["PATH"] = os.pathsep.join(
+        entry for entry in os.environ.get("PATH", "").split(os.pathsep)
+        if not any(Path(os.path.abspath(entry)).is_relative_to(root)
+                   for root in guard.forbidden)
+    )
     sys.addaudithook(guard.audit)
     # CPython emits no audit event for these metadata calls.
     os.stat = lambda path, *a, **kw: guard.metadata(guard.stat, path, *a, **kw)

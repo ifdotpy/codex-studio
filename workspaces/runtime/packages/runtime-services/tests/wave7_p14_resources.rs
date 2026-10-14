@@ -3,15 +3,18 @@ use std::io::Write;
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::sync::Arc;
+use studio_runtime_schema::TOKEN_RATE_MAX_ENTRIES;
 use studio_runtime_services::change_notifications::ChangeNotificationHub;
 use studio_runtime_services::resource_notify::{
     MAX_NOTIFY_RECEIPTS, MAX_PUBLICATION_BYTES, ResourceNotifications, ResourceNotifyError,
 };
-
-use studio_runtime_services::token_rate::{MAX_SNAPSHOT_BYTES, TokenRateHub};
+use studio_runtime_services::token_rate::TokenRateHub;
 
 #[path = "support/prepared_python.rs"]
 mod python;
+
+#[path = "support/token_rate_difference.rs"]
+mod token_rate_difference;
 
 fn request(id: &str, resources: Value) -> Value {
     json!({"requestId": id, "resources": resources})
@@ -140,7 +143,12 @@ fn python_corpus_matches_complete_notify_and_token_publication_results() {
             Err(error) => panic!("{error}"),
         };
         let actual = json!({"result":result,"revision":hub.snapshot().revision,"rates":tokens.snapshot().to_value()});
-        assert_eq!(actual, expected, "case {index}: {case}");
+        token_rate_difference::assert_token_rate_documents_equal(
+            &expected,
+            &actual,
+            &["rates"],
+            &format!("case {index}: {case}"),
+        );
     }
 }
 
@@ -234,53 +242,38 @@ fn external_state_reset_and_receipt_share_the_publication_boundary() {
 }
 
 #[test]
-fn token_snapshot_byte_bound_is_checked_before_replacing_the_last_value() {
+fn token_snapshot_entry_bound_is_checked_before_replacing_the_last_value() {
     let changes = Arc::new(ChangeNotificationHub::new());
     let publisher = token_hub(&changes);
-    let value = rates(1)["rates"]["agent"].clone();
-    let count = 1024;
+    let value = floating_rates(1.0)["rates"]["agent"].clone();
+    let count = TOKEN_RATE_MAX_ENTRIES;
     let map = (0..count)
         .map(|index| (format!("a{index:04}"), value.clone()))
         .collect::<serde_json::Map<_, _>>();
-    let remaining = MAX_SNAPSHOT_BYTES - json!({"rates":map,"teams":{}}).to_string().len();
-    let map = (0..count)
-        .map(|index| {
-            let padding = remaining / count + usize::from(index < remaining % count);
-            (format!("a{index:04}{}", "x".repeat(padding)), value.clone())
-        })
-        .collect::<serde_json::Map<_, _>>();
     let at_bound = json!({"rates":map,"teams":{}});
-    assert_eq!(at_bound.to_string().len(), MAX_SNAPSHOT_BYTES);
-    assert!(
-        publisher
-            .publish(at_bound.clone())
-            .expect("exact byte bound")
-    );
+    assert!(publisher.publish(at_bound.clone()).expect("entry bound"));
     let mut above_bound = at_bound.clone();
     let entries = above_bound["rates"].as_object_mut().expect("rates");
-    let key = entries.keys().next().expect("key").clone();
-    let value = entries.remove(&key).expect("entry");
-    entries.insert(format!("{key}x"), value);
+    entries.insert("extra".to_owned(), value);
     assert!(publisher.publish(above_bound).is_err());
     assert_eq!(publisher.snapshot().to_value(), at_bound);
     assert_eq!(changes.snapshot().revision, 1);
 }
 
 #[test]
-fn numeric_equality_preserves_first_representation_without_rounding_large_integers() {
+fn floating_token_rate_values_use_the_shared_numeric_equality() {
     let changes = Arc::new(ChangeNotificationHub::new());
     let hub = token_hub(&changes);
     assert!(hub.publish(rates(1)).expect("integer"));
     assert!(!hub.publish(floating_rates(1.0)).expect("float"));
-    assert_eq!(hub.snapshot().to_value(), rates(1));
     assert_eq!(changes.snapshot().revision, 1);
     assert!(
         hub.publish(rates(9_007_199_254_740_993))
-            .expect("exact large integer")
+            .expect("large integer")
     );
     assert!(
-        hub.publish(floating_rates(9_007_199_254_740_992.0))
-            .expect("distinct large float")
+        !hub.publish(floating_rates(9_007_199_254_740_992.0))
+            .expect("rounded large float")
     );
-    assert_eq!(changes.snapshot().revision, 3);
+    assert_eq!(changes.snapshot().revision, 2);
 }

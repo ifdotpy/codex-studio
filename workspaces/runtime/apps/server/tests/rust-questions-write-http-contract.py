@@ -21,6 +21,7 @@ isolate_supervisor_environment()
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from runtime_test_environment import runtime_environment
 from http_backend_harness import TimedHTTPContractTest, start_contract_backend, no_write_snapshot
+from http_runtime_test_support import answer_refusal_error
 
 
 def seed_records(backend) -> None:
@@ -205,7 +206,7 @@ class QuestionsWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             self.skipTest("provider answer delivery is implemented by the Python backend")
         self._unchanged_error(
             "/api/answer", {"id": "questions-write-native", "decision": "cancel"},
-            501, "Not implemented: requires provider-session/question-answer",
+            501, answer_refusal_error(),
         )
         self._unchanged_error(
             "/api/questions/delete", {"id": "questions-write-native"},

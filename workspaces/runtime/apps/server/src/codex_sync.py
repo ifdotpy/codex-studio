@@ -9,11 +9,12 @@ import zlib
 from contextlib import contextmanager
 from typing import Any, Callable, ContextManager, Iterator
 from codex_records import JsonObject
+from codex_shared_values import SYNC_BATCH_LIMIT, SYNC_ENTITY_PAGE_LIMIT, TRANSCRIPT_MAX_TOMBSTONES
+from codex_sync_protocol import SYNC_ENTITY_SCOPE
 from codex_startup_memory import mark as startup_memory_mark
 from codex_sqlite import scope as sqlite_scope
 
 SCOPE_STRIPES = 64
-TRANSCRIPT_MAX_TOMBSTONES = 512
 TRANSCRIPT_ORDER_ID = '@order'
 TRANSCRIPT_META_ID = '@meta'
 TRANSCRIPT_FLOOR_ID = '@floor'
@@ -130,11 +131,11 @@ class SyncStore:
         with self.connection("SyncStore.draft_sequence") as db:
             return db.execute("SELECT COALESCE(MAX(seq),0) FROM sync_documents WHERE scope='drafts'").fetchone()[0]  # type: ignore[no-any-return]  # typed-narrowing: sqlite3 aggregate results are dynamically typed
 
-    def stream_batch(self, scope: str, after: int, limit: int = 100) -> dict[str, Any]:
+    def stream_batch(self, scope: str, after: int, limit: int = SYNC_BATCH_LIMIT) -> dict[str, Any]:
         """Read one bounded durable stream batch; never retain per-client events."""
         after = int(after)
-        limit = min(100, max(1, int(limit)))
-        if scope == 'state:entities:v1':
+        limit = min(SYNC_BATCH_LIMIT, max(1, int(limit)))
+        if scope == SYNC_ENTITY_SCOPE:
             from codex_sync_entities import entity_tombstone_floor, max_seq
             with self.connection("SyncStore.stream_entities") as db:
                 high, floor = max_seq(db), entity_tombstone_floor(db)
@@ -527,13 +528,14 @@ class SyncStore:
                     'documents': documents, 'checkpoint': {'seq': checkpoint},
                     'maxSeq': high, 'initialHigh': initial_high if fresh else 0}
 
-    def pull(self, scope: str, after: int = 0, limit: int = 100, fresh: bool = False,
+    def pull(self, scope: str, after: int = 0, limit: int = SYNC_BATCH_LIMIT, fresh: bool = False,
              initial_high: int = 0, reset_support: bool = False,
              priority_id: str | None = None) -> dict[str, Any]:
         after = max(0, int(after))
-        limit = min(500 if scope == 'state:entities:v1' else 100, max(1, int(limit)))
+        page_limit = SYNC_ENTITY_PAGE_LIMIT if scope == SYNC_ENTITY_SCOPE else SYNC_BATCH_LIMIT
+        limit = min(page_limit, max(1, int(limit)))
         self._ensure_versions()
-        if scope == 'state:entities:v1':
+        if scope == SYNC_ENTITY_SCOPE:
             # This path has no cached compare-and-replace state. SQLite keeps
             # its read snapshot and maintenance writes consistent. A scope
             # stripe would queue readers behind unrelated transcript work.
@@ -565,7 +567,7 @@ class SyncStore:
                     'checkpoint': {'seq': documents[-1]['seq'] if documents else after}}
 
     def push_drafts(self, rows: Any) -> list[dict[str, Any]]:
-        if not isinstance(rows, list) or len(rows) > 100:
+        if not isinstance(rows, list) or len(rows) > SYNC_BATCH_LIMIT:
             raise ValueError('Invalid draft batch')
         conflicts = []
         # Lazy DDL must finish before the draft write transaction. The

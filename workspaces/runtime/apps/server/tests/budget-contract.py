@@ -105,6 +105,24 @@ class BudgetTests(unittest.TestCase):
         self.assertEqual(self.response('old', 20, at=1), 255)
         self.assertEqual(self.notice(150, 150), 255)
 
+    def test_conflicting_duplicate_response_persists_budget_fault(self):
+        self.assertEqual(self.response('same-response', 100), 100)
+        self.assertEqual(self.response('same-response', 101), 100)
+        state = json.loads(self.r.db.execute('SELECT record FROM runtime_budget WHERE id=?', ('a',)).fetchone()[0])
+        self.assertIn('conflictingResponseUsage', state['faults'])
+        receipt = self.r.db.execute('SELECT kind,tokens FROM runtime_budget_usage').fetchone()
+        self.assertEqual(tuple(receipt), ('response', 100))
+
+    def test_duplicate_notice_can_clear_ambiguous_reset_flag(self):
+        self.assertEqual(self.notice(100, 10, at=1), 10)
+        self.assertEqual(self.notice(10, 10, at=2), 10)
+        state = json.loads(self.r.db.execute('SELECT record FROM runtime_budget WHERE id=?', ('a',)).fetchone()[0])
+        self.assertEqual(len(state['ambiguousNotices']), 1)
+        self.assertEqual(self.notice(10, 10, at=3, responseId='known-response'), 10)
+        state = json.loads(self.r.db.execute('SELECT record FROM runtime_budget WHERE id=?', ('a',)).fetchone()[0])
+        self.assertEqual(state['ambiguousNotices'], [])
+        self.assertEqual(self.r.db.execute('SELECT count(*) FROM runtime_budget_usage').fetchone()[0], 2)
+
     def test_compacted_rollout_latest_usage_counts_once(self):
         self.response('ordinary', 150)
         record = {'type': 'compacted', 'payload': {'latest_token_usage_record': {

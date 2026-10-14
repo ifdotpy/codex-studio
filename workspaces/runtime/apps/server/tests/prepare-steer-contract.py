@@ -274,7 +274,7 @@ class PrepareSteerContract(unittest.TestCase):
                 calls.append(str(repo))
             if str(repo) == str(repos[0]):
                 entered_first.set()
-                release.wait(timeout=10)
+                release.wait()
             else:
                 entered_other.set()
             return True

@@ -8,12 +8,18 @@ if TYPE_CHECKING:
     import sqlite3
     from codex_runtime import Runtime
 
+# Authoritative agent capacity values. API and persisted schemas import these
+# values so generated contracts stay aligned with runtime enforcement.
+MIN_SUBAGENT_CONCURRENCY = 0
 DEFAULT_SUBAGENT_CONCURRENCY = 32
-MAX_SUBAGENT_CONCURRENCY = 512
+MAX_SUBAGENT_CONCURRENCY = 2048
+MIN_TEAM_AGENTS = 1
 DEFAULT_MAX_TEAM_AGENTS = 64
-MAX_TEAM_AGENTS = 1024
 LEAD_TEAM_RECORDS = 1
 QUEUED_WORKER_HEADROOM = 1
+TEAM_AGENT_HEADROOM = LEAD_TEAM_RECORDS + QUEUED_WORKER_HEADROOM
+MAX_TEAM_AGENTS = MAX_SUBAGENT_CONCURRENCY + TEAM_AGENT_HEADROOM
+MIN_GLOBAL_CONCURRENCY = 1
 DEFAULT_GLOBAL_CONCURRENCY = MAX_SUBAGENT_CONCURRENCY + LEAD_TEAM_RECORDS
 CONCURRENCY_SCHEMA_VERSION = 2
 
@@ -22,10 +28,10 @@ def concurrency(agent: AgentRecord) -> int:
     """Read the canonical limit, migrating old mode-only records in memory."""
     if agent.get('subagentConcurrencyVersion', 0) < CONCURRENCY_SCHEMA_VERSION:
         if agent.get('agentMode') == 'single':
-            return 0
+            return MIN_SUBAGENT_CONCURRENCY
     if 'concurrency' in agent:
         return agent['concurrency']
-    return 0 if agent.get('agentMode') == 'single' else DEFAULT_SUBAGENT_CONCURRENCY
+    return MIN_SUBAGENT_CONCURRENCY if agent.get('agentMode') == 'single' else DEFAULT_SUBAGENT_CONCURRENCY
 
 
 def mode_fields(agent: AgentRecord) -> AgentRecord:
@@ -45,7 +51,7 @@ def mode_fields(agent: AgentRecord) -> AgentRecord:
 def global_concurrency_limit() -> int:
     """Global process resource ceiling; per-chat limits remain separate."""
     import os
-    return max(1, int(os.environ.get('CODEX_CANVAS_CONCURRENCY', str(DEFAULT_GLOBAL_CONCURRENCY))))
+    return max(MIN_GLOBAL_CONCURRENCY, int(os.environ.get('CODEX_CANVAS_CONCURRENCY', str(DEFAULT_GLOBAL_CONCURRENCY))))
 
 
 def assert_delegation(root: AgentRecord) -> None:
@@ -72,14 +78,14 @@ def change_mode(runtime: "Runtime", key: str, data: dict[str, object]) -> AgentR
         mode = data.get('agent_mode')
         if not isinstance(mode, str) or mode not in {'multi', 'single'}:
             raise ValueError('Choose multi or single agent mode')
-        limit = DEFAULT_SUBAGENT_CONCURRENCY if mode == 'multi' else 0
+        limit = DEFAULT_SUBAGENT_CONCURRENCY if mode == 'multi' else MIN_SUBAGENT_CONCURRENCY
     else:
         raise ValueError('A subagent concurrency setting is required')
     if set(data) - allowed:
         raise ValueError('Change subagent concurrency separately from execution settings')
     revision, request = data.get('expected_mode_revision'), data.get('request_id')
-    if type(limit) is not int or not 0 <= limit <= MAX_SUBAGENT_CONCURRENCY:
-        raise ValueError('Subagent concurrency must be an integer from 0 to 512')
+    if type(limit) is not int or not MIN_SUBAGENT_CONCURRENCY <= limit <= MAX_SUBAGENT_CONCURRENCY:
+        raise ValueError(f'Subagent concurrency must be an integer from {MIN_SUBAGENT_CONCURRENCY} to {MAX_SUBAGENT_CONCURRENCY}')
     if type(revision) is not int or revision < 0:
         raise ValueError('A nonnegative expected mode revision is required')
     if not isinstance(request, str) or not 1 <= len(request) <= 200:

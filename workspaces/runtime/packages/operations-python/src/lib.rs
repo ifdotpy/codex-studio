@@ -3,9 +3,10 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 
+mod protocol_version_generated;
 mod record_adapter;
 
-const PROTOCOL_VERSION: u32 = 4;
+const PROTOCOL_VERSION: u32 = protocol_version_generated::OPERATIONS_PYTHON_PROTOCOL_VERSION;
 
 fn catch_panic<T, F>(operation: F) -> Result<T, ()>
 where

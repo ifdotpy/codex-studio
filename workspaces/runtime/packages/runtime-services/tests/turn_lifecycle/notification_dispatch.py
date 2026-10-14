@@ -6,6 +6,7 @@ writers execute unchanged.
 """
 import copy
 import hashlib
+import inspect
 import json
 import pathlib
 import sqlite3
@@ -22,6 +23,10 @@ TABLES = ('runtime_native_notices', 'runtime_native_limit_refreshes', 'runtime_p
           'runtime_requests', 'runtime_complaints', 'runtime_context_manifests', 'runtime_context_reminders', 'sync_entities',
           'sync_documents', 'sync_versions', 'runtime_search', 'runtime_search_rows',
           'runtime_search_indexed', 'runtime_search_next_meta')
+# Updated whenever the Runtime.notification boundary inspected by this corpus changes.
+_NOTIFICATION_GUARD_DIGEST = '5803d290ade2087b7a3aa52217a0d1a42cd8ac50c459e38306917c43a3b08b5e'
+assert hashlib.sha256(inspect.getsource(Runtime.notification).encode()).hexdigest() == _NOTIFICATION_GUARD_DIGEST, \
+    'Runtime.notification control flow changed: re-derive notification corpus cases and update the guard digest'
 class ManualTimer:
     def __init__(self, interval, callback): self.callback = callback
     def start(self): pass
@@ -33,8 +38,7 @@ def snapshot(root):
     tables = TABLES + ('runtime_budget', 'runtime_budget_usage', 'runtime_agent_moves') if _real_effects else TABLES
     result = oracle.snapshot(root, tables=tables)
     if _runtime is not None and pathlib.Path(root) != _runtime.root:
-        # Rust durably stores only a base obscured by a later item/started.
-        # Compare it to Python's live buffer before removing this exact internal
+        # Compare Rust's durable stream bases with Python's live buffer before removing this exact internal
         # receipt kind from relational parity; missing/extra/wrong bases fail.
         expected_bases = {}
         with _runtime.read_db() as db:
@@ -46,25 +50,19 @@ def snapshot(root):
                 agent = db.execute("SELECT id FROM runtime_agents WHERE json_extract(record,'$.threadId')=?", (thread,)).fetchone()
                 if agent is None:
                     continue
-                item_id = agent[0] + ':' + item
-                saved = db.execute('SELECT record FROM runtime_items WHERE id=?', (item_id,)).fetchone()
-                record = json.loads(saved[0]) if saved else {}
-                full = db.execute('SELECT body FROM runtime_item_fulltext WHERE id=?', (item_id,)).fetchone()
-                visible = full[0] if record.get('truncated') and full else record.get('text', '')
-                if method == 'item/commandExecution/outputDelta':
-                    try:
-                        visible = (json.loads(visible).get('aggregatedOutput') or '')[-12000:]
-                    except (ValueError, TypeError, AttributeError):
-                        visible = ''
-                if base == visible:
-                    continue
-                stream_key = dict(account=account, generation=int(connection.split('-')[-1]), thread=thread, turn=turn, item=item, method=method)
+                stream_key = dict(agent_id=agent[0], account=account, generation=int(connection.split('-')[-1]), thread=thread, turn=turn, item=item, method=method)
                 encoded = json.dumps(stream_key, ensure_ascii=False, separators=(',', ':'))
                 identity = 'account-worker:stream-base:' + hashlib.sha256(encoded.encode()).hexdigest()
                 expected_bases[identity] = base
         receipts = result['runtime_operation_receipts']
         actual_bases = {row['id']:row['result'] for row in receipts if row['id'].startswith('account-worker:stream-base:') and row['signature'] == 'stream-base'}
-        assert actual_bases == expected_bases, 'durable stream bases differ from Python live state'
+        if actual_bases != expected_bases:
+            def fingerprints(bases):
+                return {key: hashlib.sha256(value.encode()).hexdigest() for key, value in bases.items()}
+            raise AssertionError(
+                f"case={getattr(_runtime, 'corpus_case_id', 'seed')} durable stream bases differ from Python live state; "
+                f"expected hashes={fingerprints(expected_bases)} actual hashes={fingerprints(actual_bases)}"
+            )
         result['runtime_operation_receipts'] = [row for row in receipts if row['id'] not in actual_bases]
     prepared = pathlib.Path(root).parent / 'prepared.json'
     if prepared.exists(): result['prepared'] = json.loads(prepared.read_text())
@@ -134,6 +132,12 @@ def seed(runtime, case):
                 elif event.get('no_metadata'):
                     db.execute('DELETE FROM runtime_event_meta WHERE id=?', (event_id,))
             db.execute("UPDATE runtime_events SET status='dispatching' WHERE agent='agent'")
+        for event in case.get('notification_events', []):
+            db.execute(
+                "INSERT INTO runtime_events VALUES(?,?,?,?,?,?,?,NULL,NULL)",
+                (event['id'], 'agent', 'user', event.get('text', event['id']), event['status'],
+                 1234.5, event.get('epoch', agent['epoch'])),
+            )
         if case.get('account_only'):
             db.execute("DELETE FROM runtime_agents")
             db.execute("DELETE FROM sync_entities WHERE collection='agent'")
@@ -243,6 +247,7 @@ def transition(runtime, case):
             signature = digest({'agent':'agent','firstEventId':prepared['firstEventId'],'submittedAt':1234.5,'createdAt':1234.5,'record':record,'text':prepared['text'],'inputTexts':[i['text'] for i in prepared['inputs']]})
             runtime.save_receipt(db,'provider-submission:' + hashlib.sha256(('agent:' + prepared['firstEventId']).encode()).hexdigest(),signature,{'status':'written'})
         return
+    waiter_observations = []
     with patch.object(codex_streaming.threading, 'Timer', ManualTimer), patch.object(time, 'time', lambda:1234.5):
         for index, step in enumerate(case['steps']):
             if step.get('rollback'): continue  # Discarded Rust caller transaction has no committed Python equivalent.
@@ -266,7 +271,26 @@ def transition(runtime, case):
                 outcome = {'status':'ignored','reason':'stale-turn-item'}
             if step.get('required_service'):
                 runtime.corpus_before_refusal = snapshot(runtime.root)
+            waiter = None
+            if case.get('waiter_wake_probe'):
+                import threading
+                waiter = threading.Event()
+                runtime._tool_turn_binding_waiters = {('default', 'thread'): {waiter}}
+                runtime._tool_turn_binding_waiter_count = 1
             runtime.notification(frame, 'default', 'connection-' + str(generation))
+            if waiter is not None:
+                waiter_observations.append(waiter.is_set())
+            if step.get('python_only'):
+                continue
+            if case.get('pending_continuation_probe'):
+                with runtime.db() as db:
+                    pending = db.execute(
+                        "SELECT 1 FROM runtime_events WHERE agent='agent' AND epoch=? AND "
+                        "(status IN ('pending','reserved') OR "
+                        "(id<>'agent:initial' AND status IN ('dispatching','uncertain'))) LIMIT 1",
+                        (runtime.agent('agent', db)['epoch'],),
+                    ).fetchone() is not None
+                runtime.corpus_captures.append({'pendingContinuation': pending})
             if frame['method'] == 'thread/tokenUsage/updated':
                 updated = runtime.agent(agent_id)
                 runtime.corpus_captures.append({'params': params, 'tokensUsed': updated['tokensUsed'],
@@ -277,6 +301,9 @@ def transition(runtime, case):
                     runtime.save_receipt(db, 'provider-notification:' + digest(identity), signature, outcome)
             if step.get('tick'):
                 runtime._stream_buffer._tick()
+        if case.get('waiter_wake_probe'):
+            assert waiter_observations == case['expected_waiter_wakes'], \
+                f"Python tool-turn waiter wake sequence: {waiter_observations}"
         with runtime.db() as db:
             if case.get('advance_before_flush'):
                 agent = runtime.agent('agent',db)
@@ -321,7 +348,12 @@ def consume_stream_capture(db, effect):
         batches.append((params['delta'] if first else '',bucket['count'],bucket['encoded_bytes'],
             effect['at'] if first else bucket['hour'],params,
             metrics['bytes'] if first else 0,metrics['characters'] if first else 0,metrics['lines'] if first else 0,None))
-    stream.entries[key] = {'base':'','batches':batches}
+    # Let StreamBuffer register its flush indexes and bookkeeping fields. The
+    # aggregate buckets below replace only its batch payload; they contain no
+    # supervisor sequence, so enqueue has already set the correct count.
+    stream._schedule_locked = lambda: None
+    stream.enqueue({'method':effect['method'],'params':params},effect['account'],effect['connection'])
+    stream.entries[key]['batches'] = batches
     captures = []
     with sqlite3.connect(':memory:') as scratch:
         scratch.executescript('CREATE TABLE runtime_agents(id TEXT, record TEXT); CREATE TABLE runtime_items(id TEXT, record TEXT); CREATE TABLE runtime_tasks(id TEXT, record TEXT);')
@@ -359,6 +391,7 @@ def run_case(command, template, runtime_type):
             _pristine = backup(db)
     runtime, case = _runtime, command['case']
     case = copy.deepcopy(case)
+    runtime.corpus_case_id = case.get('id', 'unknown')
     if case.get('empty_deltas'):
         case['steps'] = [copy.deepcopy(case['steps'][0]) for _ in range(case['empty_deltas'])]
     if case.get('many_streams'):

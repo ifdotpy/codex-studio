@@ -75,11 +75,18 @@ def _state(db: sqlite3.Connection, a: "AgentRecord") -> "BudgetStateRecord":
     return _save(db, a, state)
 
 
+def _capture_revision(state: "BudgetStateRecord") -> tuple[Any, ...]:
+    return (state['before'], state['after'], state['historicalNotices'], state['noticeSpent'],
+            state['counter'], state['thread'], state['noticeAt'], state['lastAmount'],
+            len(state['ambiguousNotices']), len(state['faults']))
+
+
 def _capture(db: sqlite3.Connection, a: "AgentRecord", state: "BudgetStateRecord",
-             p: dict[str, Any], at: float, source: str) -> None:
+             p: dict[str, Any], at: float, source: str) -> bool:
     # A new branch receives old native history, not new provider charges.
     if source != 'live' and at < state['created']:
-        return
+        return False
+    before = _capture_revision(state)
     usage = p.get('tokenUsage') or {}
     last = p.get('requestUsage') or usage.get('last') or {}
     amount = _tokens(last.get('totalTokens'))
@@ -105,13 +112,13 @@ def _capture(db: sqlite3.Connection, a: "AgentRecord", state: "BudgetStateRecord
         if exact and amount is not None and previous[0] != amount:
             if 'conflictingResponseUsage' not in state['faults']:
                 state['faults'].append('conflictingResponseUsage')
-        return
+        return before != _capture_revision(state)
     if amount is None and not exact:
         amount = _tokens((usage.get('total') or {}).get('totalTokens'))
     if amount is None:
         if 'missingRequestUsage' not in state['faults']:
             state['faults'].append('missingRequestUsage')
-        return
+        return before != _capture_revision(state)
     db.execute('INSERT INTO runtime_budget_usage VALUES (?,?,?,?,?)', (key, a['id'], 'response' if exact else 'notice', amount, at))
     if exact:
         if p.get('_analyticsTimestampSource') == 'fileModifiedEstimate':
@@ -142,13 +149,16 @@ def _capture(db: sqlite3.Connection, a: "AgentRecord", state: "BudgetStateRecord
                     state['ambiguousNotices'].append(key)
             state['noticeSpent'] += max(0, delta)
             state.update(counter=counter, thread=thread, noticeAt=at, lastAmount=amount)  # type: ignore[call-arg]  # typed-update
+    return before != _capture_revision(state)
 
 
 def budget_capture(db: sqlite3.Connection, a: "AgentRecord", p: dict[str, Any], *,
                    at: float | None = None, source: str = 'live') -> int:
     state = _state(db, a)
-    _capture(db, a, state, p, time.time() if at is None else at, source)
-    return _save(db, a, state)['spent']
+    changed = _capture(db, a, state, p, time.time() if at is None else at, source)
+    if changed:
+        return _save(db, a, state)['spent']
+    return state['spent']
 
 
 def _coverage(runtime: "Runtime", db: sqlite3.Connection, a: "AgentRecord",

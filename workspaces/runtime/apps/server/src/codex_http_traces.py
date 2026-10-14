@@ -13,6 +13,7 @@ from urllib.parse import parse_qs, urlsplit
 from codex_sqlite_traces import _frames
 from codex_private_paths import ensure_private_dir, protect_temp_file
 from codex_lock_metrics import FixedSampleRing, percentile_summary
+from codex_sync_protocol import SYNC_ENTITY_SCOPE
 
 SLOW_MS = 1000
 ACTIVE_LIMIT = 128
@@ -122,7 +123,7 @@ def begin(method, target):
             scope = parse_qs(parsed.query, max_num_fields=32).get("scope", [""])[0]
         except ValueError:
             scope = ""
-        entry["scope"] = (scope if scope in {"state:entities:v1", "drafts"}
+        entry["scope"] = (scope if scope in {SYNC_ENTITY_SCOPE, "drafts"}
                           else "transcript" if scope.startswith("transcript:") else "unknown")
     with _LOCK:
         if len(_ACTIVE) >= ACTIVE_LIMIT:

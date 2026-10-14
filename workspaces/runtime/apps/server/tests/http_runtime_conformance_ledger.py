@@ -22,6 +22,7 @@ from typing import Any, Iterator
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from runtime_test_environment import runtime_environment
+from http_runtime_test_support import ANSWER_REFUSAL_DEPENDENCIES, answer_refusal_error
 
 ROOT = Path(__file__).resolve().parents[5]
 TESTS = ROOT / "workspaces/runtime/apps/server/tests"
@@ -36,6 +37,12 @@ DEFAULT_LEDGER = DEFAULT_CACHE / "codex-studio" / "rust-runtime-http-conformance
 # the corresponding dependency is implemented.
 MISSING_SERVICE_TESTS: dict[str, dict[str, dict[str, str]]] = {
 }
+
+# This HTTP suite proves Python's explicit-null refusal. Its paired Rust
+# evidence is the native `wave7_p04_callback_http` integration test.
+PYTHON_BASELINE_ONLY_SUITES = frozenset({
+    "workspaces/runtime/apps/server/tests/wave7-p04-native-http-contract.py",
+})
 
 # These tests need provider turn execution, but no current route declares that
 # dependency. Keep them under one explicit unresolved-service group and fail
@@ -273,10 +280,14 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
         "additional": [{"name": "list", "query": {"agent": "$agent"}, "query_omit": ["request_id"], "expected": "2xx", "assert_no_write": True}],
     },
     ("GET", "/api/transcript"): {
-        "primary": {"query": {"id": "$agent"}, "expected": "501"},
+        "primary": {"query": {"id": "$agent"}, "expected": "2xx"},
     },
     ("GET", "/api/transcript/page"): {
-        "primary": {"query": {"id": "$agent"}, "expected": "501"},
+        "primary": {
+            "query": {"id": "$agent"},
+            "query_omit": ["before", "around", "after"],
+            "expected": "2xx",
+        },
     },
     ("GET", "/api/accounts/claude/login"): {
         "primary": {"query": {"request_id": "88888888-8888-4888-8888-888888888888"}, "expected": "501"},
@@ -288,7 +299,7 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
         "primary": {"query": {"id": "$agent", "message_id": "$item"}, "expected": "2xx"},
     },
     ("GET", "/api/search"): {
-        "primary": {"query": {"q": "ledger-probe"}, "expected": "501"},
+        "primary": {"query": {"q": "ledger-probe"}, "expected": "2xx"},
     },
     ("GET", "/api/complaint"): {
         "primary": {"query": {"id": "$complaint"}},
@@ -551,7 +562,7 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
         "primary": {"body": {"home": "$projectPath"}, "expected": "400", "assert_no_write": True},
     },
     ("POST", "/api/accounts/discover"): {"primary": {"body": {}, "expected": "2xx"}},
-    ("POST", "/api/answer"): {"primary": {"body": {"id": "$question", "decision": "cancel"}, "expected": "501", "assert_no_write": True}},
+    ("POST", "/api/answer"): {"primary": {"body": {"id": "$question", "decision": "cancel"}, "expected": "501", "expected_error": answer_refusal_error(), "assert_no_write": True}},
     ("POST", "/api/branch"): {"primary": {"body": {"agent": "$agent", "id": "ledger-branch", "message_id": "ledger-message"}, "expected": "501", "assert_no_write": True}},
     ("POST", "/api/capacity-retry"): {
         "primary": {"body": {"id": "$agent", "retry_id": "ledger-capacity-cancel", "action": "cancel"}, "expected": "2xx"},
@@ -900,6 +911,7 @@ try:
     agent = {{
         "id": {agent_id!r}, "rootId": {agent_id!r}, "epoch": 0,
         "status": "idle", "name": "HTTP ledger probe owner", "role": "orchestrator",
+        "model": "fixture-model",
         "cwd": os.environ["CODEX_CANVAS_CWD"], "isLead": True,
         "autoWake": True, "approvalPolicy": "never", "worktreeReady": True,
         "accountKey": "default", "threadId": "ledger-probe-thread",
@@ -1657,6 +1669,15 @@ def case_results(log_text: str) -> list[dict[str, Any]]:
             current = None
     if current is not None:
         cases.append({**current, "status": "unreported"})
+    for failure in failure_headings(log_text):
+        if failure["test"] == "setUpClass":
+            test_id = f"setUpClass ({failure['context']})"
+            if not any(case["testId"] == test_id for case in cases):
+                cases.append({
+                    "test": failure["test"],
+                    "testId": test_id,
+                    "status": failure["kind"],
+                })
     return cases
 
 
@@ -1754,8 +1775,13 @@ def run_suite(
 ) -> dict[str, Any]:
     relative = str(path.relative_to(ROOT))
     trace_path = trace_root / f"{path.stem}.jsonl"
+    python_baseline_only = relative in PYTHON_BASELINE_ONLY_SUITES
     suite_environment = environment.copy()
-    suite_environment["STUDIO_HTTP_LEDGER_TRACE"] = str(trace_path)
+    if python_baseline_only:
+        suite_environment.pop("STUDIO_HTTP_BACKEND_COMMAND", None)
+        suite_environment.pop("STUDIO_HTTP_LEDGER_TRACE", None)
+    else:
+        suite_environment["STUDIO_HTTP_LEDGER_TRACE"] = str(trace_path)
     # Preserve complete unittest records and HTTP attribution across runner output.
     suite_environment["CODEX_SERVER_TEST_JOBS"] = "1"
     skipped_for_service = missing_service_tests_for_suite(relative)
@@ -1799,7 +1825,14 @@ def run_suite(
         "skipped": sum(case["status"] == "skipped" for case in cases),
     }
     ran_summaries = re.findall(r"^Ran (\d+) tests? in ", log_text, re.MULTILINE)
-    ran_count = sum(map(int, ran_summaries))
+    setup_failures = {
+        failure["context"]
+        for failure in failure_headings(log_text)
+        if failure["test"] == "setUpClass"
+    }
+    # unittest reports a failed class setup as a failure but excludes it from
+    # `Ran N tests`; include each such suite-level case in the count contract.
+    ran_count = sum(map(int, ran_summaries)) + len(setup_failures)
     suite_summary = re.search(
         r"Server suites: (\d+) passed, (\d+) failed, (\d+) skipped \(opt-in\), (\d+) skipped \(environment\)",
         log_text,
@@ -1898,6 +1931,7 @@ def run_suite(
         case["standard501Envelope"] = all(valid_501_envelope(event, manifest) for event in case_requests if event["status"] == 501)
     return {
         "suite": relative,
+        "backend": "python-baseline" if python_baseline_only else "rust",
         "status": result.get("status", "failed"),
         "passed": result.get("passed") or 0,
         "failed": result.get("failed") or 0,
@@ -2012,6 +2046,11 @@ def main() -> int:
         raise RuntimeError("HTTP ledger error-body trace regression failed")
     routes = operations()
     manifest = rust_operation_manifest()
+    answer_manifest = manifest.get(("POST", "/api/answer"), {})
+    if tuple(answer_manifest.get("dependencies", [])) != ANSWER_REFUSAL_DEPENDENCIES:
+        raise RuntimeError(
+            "POST /api/answer refusal expectation does not match the Rust operation manifest"
+        )
     validate_missing_service_exclusions(manifest)
     ensure_operation_probe_cases(manifest)
     DEFAULT_CACHE.mkdir(parents=True, exist_ok=True)

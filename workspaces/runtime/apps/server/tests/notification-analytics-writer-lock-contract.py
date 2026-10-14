@@ -375,6 +375,140 @@ class NotificationAnalyticsWriterContract(unittest.TestCase):
         self.assertEqual(value['name'], 'Original name')
         self.assertEqual(count, 1)
 
+    def test_deferred_stream_capture_keeps_its_batch_snapshot(self):
+        stream = self.stream()
+        captures = []
+        with self.runtime.lock, self.runtime.db() as db:
+            stream.flush_locked(db, force=True, analytics_captures=captures)
+        self.assertEqual(len(captures), 1)
+
+        # A later enqueue replaces the live entry state but must not alter the
+        # callback already detached from that committed flush.
+        with patch.object(stream, '_schedule_locked'):
+            stream.enqueue({'method': 'item/agentMessage/delta', 'params': {
+                'threadId': self.agent['threadId'], 'turnId': self.agent['turnId'],
+                'itemId': 'exact-stream-item', 'delta': 'Later response'}}, 'default', None)
+        observed = {}
+        def event(_db, _agent, _method, params, **_kwargs):
+            observed['delta'] = params['delta']
+        with patch.object(self.runtime, 'analytics_event', event), self.runtime.analytics_db() as db:
+            captures[0](db)
+        self.assertEqual(observed['delta'], 'One committed response')
+
+    def test_existing_stream_timer_skips_entry_scan(self):
+        class NoScan(dict):
+            def values(self):
+                raise AssertionError('active timer should skip the entry scan')
+
+        stream = self.stream()
+        scheduled = []
+        class Timer:
+            daemon = False
+            def start(self):
+                scheduled.append(self)
+            def cancel(self):
+                pass
+
+        with patch('codex_streaming.threading.Timer', side_effect=lambda *_args: Timer()) as create:
+            stream._schedule_locked()
+            self.assertEqual(create.call_count, 1)
+            self.assertEqual(scheduled, [stream.timer])
+        timer = stream.timer
+        stream.entries = NoScan()
+        stream._schedule_locked()
+        self.assertIs(stream.timer, timer)
+        self.assertEqual(len(scheduled), 1)
+
+    def test_sequenced_enqueue_skips_entry_scan_and_command_merge_updates_flushability(self):
+        class NoScan(dict):
+            def values(self):
+                raise AssertionError('sequenced-only enqueue should not scan entries')
+
+        stream = StreamBuffer(self.runtime)
+        stream.entries = NoScan()
+        params = {'threadId': self.agent['threadId'], 'turnId': self.agent['turnId'],
+                  'itemId': 'sequenced-command', 'delta': 'one'}
+        stream.enqueue({'method': 'item/commandExecution/outputDelta', 'params': params,
+                        '_studioSupervisorSequence': 8}, 'default', None)
+        key = next(iter(stream.entries))
+        self.assertEqual(stream.entries[key]['_sequenced_batch_count'], 1)
+        self.assertNotIn(key, stream._flushable_keys)
+        self.assertIsNone(stream.timer)
+
+        # Command output coalescing replaces the prior batch sequence with the
+        # newest message's sequence; a non-sequenced replacement becomes due.
+        timer = type('Timer', (), {'start': lambda _self: None, 'cancel': lambda _self: None})
+        with patch('codex_streaming.threading.Timer', return_value=timer()):
+            stream.enqueue({'method': 'item/commandExecution/outputDelta',
+                            'params': {**params, 'delta': 'two'}}, 'default', None)
+        self.assertEqual(stream.entries[key]['_sequenced_batch_count'], 0)
+        self.assertIn(key, stream._flushable_keys)
+        self.assertIsNotNone(stream.timer)
+
+    def test_exact_scope_index_keeps_connection_and_method_variants_in_order(self):
+        stream = StreamBuffer(self.runtime)
+        base = {'threadId': self.agent['threadId'], 'turnId': self.agent['turnId'],
+                'itemId': 'shared-scope-item', 'delta': 'x'}
+        for connection, method in (('first', 'item/agentMessage/delta'),
+                                   ('second', 'item/commandExecution/outputDelta')):
+            stream.enqueue({'method': method, 'params': base,
+                            '_studioSupervisorSequence': 1}, 'default', connection)
+        stream.enqueue({'method': 'item/agentMessage/delta',
+                        'params': {**base, 'turnId': 'other-turn'},
+                        '_studioSupervisorSequence': 2}, 'default', 'third')
+        stream.enqueue({'method': 'item/agentMessage/delta', 'params': base,
+                        '_studioSupervisorSequence': 3}, 'other-account', 'fourth')
+        with stream.lock:
+            keys = [key for key, _ in stream._scope_entries_locked(
+                'default', self.agent['threadId'], 'shared-scope-item', self.agent['turnId'])]
+        self.assertEqual([(key[1], key[5]) for key in keys], [
+            ('first', 'item/agentMessage/delta'),
+            ('second', 'item/commandExecution/outputDelta')])
+
+    def test_exact_supervisor_flush_visits_all_connections_for_one_item(self):
+        stream = StreamBuffer(self.runtime)
+        stream.enqueue({'method': 'item/agentMessage/delta', 'params': {
+            'threadId': self.agent['threadId'], 'turnId': self.agent['turnId'],
+            'itemId': 'exact-index-item', 'delta': 'one'},
+            '_studioSupervisorSequence': 1}, 'default', 'connection-one')
+        stream.enqueue({'method': 'item/agentMessage/delta', 'params': {
+            'threadId': self.agent['threadId'], 'turnId': self.agent['turnId'],
+            'itemId': 'exact-index-item', 'delta': 'two'},
+            '_studioSupervisorSequence': 2}, 'default', 'connection-two')
+        stream.enqueue({'method': 'item/agentMessage/delta', 'params': {
+            'threadId': self.agent['threadId'], 'turnId': self.agent['turnId'],
+            'itemId': 'other-index-item', 'delta': 'later'},
+            '_studioSupervisorSequence': 3}, 'default', 'connection-three')
+
+        with self.runtime.lock, self.runtime.db() as db:
+            stream.flush_locked(db, account='default', thread_id=self.agent['threadId'],
+                                item_id='exact-index-item', turn_id=self.agent['turnId'],
+                                force=True, supervisor_handle='exact-index-handle',
+                                supervisor_sequence=2, analytics_captures=[])
+        with self.runtime.read_db() as db:
+            row = db.execute('SELECT record FROM runtime_items WHERE id=?',
+                             (self.agent['id'] + ':exact-index-item',)).fetchone()
+            cursor = db.execute('SELECT sequence FROM runtime_supervisor_cursor WHERE handle=?',
+                                ('exact-index-handle',)).fetchone()
+        self.assertEqual(json.loads(row['record'])['text'], 'onetwo')
+        self.assertEqual(cursor['sequence'], 2)
+        self.assertEqual({key[4] for key in stream.entries}, {'exact-index-item', 'other-index-item'})
+
+    def test_close_removes_entries_from_the_scope_index(self):
+        stream = StreamBuffer(self.runtime)
+        params = {'threadId': 'missing-thread', 'turnId': 'missing-turn',
+                  'itemId': 'closed-index-item', 'delta': 'discarded'}
+        with patch.object(stream, '_schedule_locked'):
+            stream.enqueue({'method': 'item/agentMessage/delta', 'params': params}, 'default', None)
+        with self.runtime.lock, self.runtime.db() as db:
+            stream.flush_locked(db, account='default', thread_id='missing-thread',
+                                item_id='closed-index-item', turn_id='missing-turn',
+                                force=True, close=True)
+        with stream.lock:
+            self.assertFalse(stream.entries)
+            self.assertFalse(stream._flushable_keys)
+            self.assertFalse(stream._scope_keys)
+
     def test_failed_stream_commit_keeps_the_batch_and_queues_no_analytics(self):
         stream = self.stream()
         with self.assertRaisesRegex(sqlite3.OperationalError, 'fixture commit failure'):
@@ -637,6 +771,8 @@ class NotificationAnalyticsWriterContract(unittest.TestCase):
                 'itemId': 'ordered-item', 'delta': 'three'}, '_studioSupervisorSequence': 2}
             self.runtime.notification(notice)
             self.runtime.commit_supervisor_event('fixture-handle', notice, 2, 'default', None)
+            stream = self.runtime._stream_buffer
+            self.assertFalse(stream._flushable_keys)
             self.assertEqual(self.count(self.runtime.analytics_db_path, 'analytics_items'), 0)
             with closing(sqlite3.connect(self.runtime.analytics_db_path)) as db:
                 self.assertEqual(db.execute("SELECT coalesce(sum(count),0) FROM analytics_notifications WHERE method='item/agentMessage/delta'").fetchone()[0], 0)

@@ -12,6 +12,7 @@ use crate::multi_server_auth::{
     self as auth, AccessError, AccessSnapshot, OwnerObservation, SignedRequest, VerifiedPrincipal,
     refused, text,
 };
+use crate::multi_server_protocol_generated::ACCESS_PROTOCOL_VERSION;
 
 const PAIRING_WINDOW_SECONDS: i64 = 60;
 const MAX_PAIRING_ATTEMPTS: usize = 128;
@@ -153,7 +154,7 @@ impl MultiServerBoundary {
                 |r| r.get::<_, bool>(0),
             )?)
         })?;
-        identity["protocol"] = json!(1);
+        identity["protocol"] = json!(ACCESS_PROTOCOL_VERSION);
         identity["autoPair"] = json!(enabled);
         identity["tailscaleUser"] = json!(owner.login());
         Ok(identity)
@@ -393,7 +394,7 @@ fn apply_pair(
         )
     })?;
     fields.extend(serde_json::Map::from_iter([
-        ("protocol".to_owned(), json!(1)),
+        ("protocol".to_owned(), json!(ACCESS_PROTOCOL_VERSION)),
         ("clientId".to_owned(), json!(request.client_id())),
         (
             "tailscaleUser".to_owned(),
