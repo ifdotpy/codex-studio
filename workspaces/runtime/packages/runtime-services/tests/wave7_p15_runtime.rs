@@ -264,6 +264,9 @@ fn lifecycle_cancel_intent_survives_crash_before_committed_and_dispatches_after_
                 &Action::Stop {
                     target: "agent".to_owned(),
                     descendants: false,
+                    reason: None,
+                    sender: None,
+                    sender_epoch: None,
                 },
                 2000.0,
                 &lifecycle,

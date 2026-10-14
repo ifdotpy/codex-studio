@@ -340,6 +340,9 @@ fn lifecycle_effect_refusals_preserve_rows_and_projections() {
                 Action::Stop {
                     target: "worker".into(),
                     descendants: true,
+                    reason: None,
+                    sender: None,
+                    sender_epoch: None,
                 }
             };
             let before = state(&store);
@@ -388,6 +391,9 @@ fn ended_voice_allows_stop_but_delete_preserves_saved_voice_until_cleanup_exists
         &Action::Stop {
             target: "lead".into(),
             descendants: true,
+            reason: None,
+            sender: None,
+            sender_epoch: None,
         },
         1234567.5,
     )
