@@ -260,35 +260,6 @@ pub fn accepted_archive_tick(store: &RuntimeStore, now: f64) -> Result<usize, Wo
             if receipt_status != "unknown" {
                 current["archive"] = archive.clone();
             }
-            if retryable {
-                let mut row_intent = current.get("archiveIntent").cloned().unwrap_or_else(|| {
-                    json!({
-                        "id":intent_id,"status":"pending","owner":owner_id,"attempts":0,
-                        "created":intent.get("created").and_then(Value::as_f64).unwrap_or(now),
-                    })
-                });
-                row_intent["status"] = json!("pending");
-                row_intent["attempts"] = json!(next_attempt);
-                row_intent["nextAttemptAt"] = json!(now + delay as f64);
-                row_intent["lastOutcome"] = archive.clone();
-                row_intent["updated"] = json!(now);
-                current["archiveIntent"] = row_intent;
-            } else if receipt_status == "unknown" {
-                if let Some(mut row_intent) = current.get("archiveIntent").cloned() {
-                    row_intent["nextAttemptAt"] =
-                        json!(now + ACCEPTED_ARCHIVE_MAX_DELAY_SECONDS as f64);
-                    current["archiveIntent"] = row_intent;
-                }
-            } else if let Some(mut row_intent) = current.get("archiveIntent").cloned() {
-                row_intent["status"] = json!(if receipt_status == "complete" {
-                    "complete"
-                } else {
-                    "terminal"
-                });
-                row_intent["updated"] = json!(now);
-                row_intent["outcome"] = archive.clone();
-                current["archiveIntent"] = row_intent;
-            }
             WorkItemsRepository::update_work(tx, &task_id, &current)?;
             let mut final_intent = intent.clone();
             final_intent["status"] = json!(if retryable { "pending" } else { receipt_status });

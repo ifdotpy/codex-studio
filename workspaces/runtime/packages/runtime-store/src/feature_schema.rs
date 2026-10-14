@@ -10,12 +10,14 @@ const FEATURE_SCHEMA: &str = r#"
                 ON runtime_work(json_extract(record,'$.rootId'),json_extract(record,'$.status'));
             CREATE INDEX IF NOT EXISTS runtime_work_owner_status
                 ON runtime_work(json_extract(record,'$.owner'),json_extract(record,'$.status'));
-            CREATE INDEX IF NOT EXISTS runtime_work_archive_due ON runtime_work(
-                COALESCE(json_extract(record,'$.archiveIntent.nextAttemptAt'),0),id)
-                WHERE json_extract(record,'$.archiveIntent.status')='pending';
+            DROP INDEX IF EXISTS runtime_work_archive_due;
             CREATE TABLE IF NOT EXISTS runtime_plans (id TEXT PRIMARY KEY, record TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS runtime_annotations (id TEXT PRIMARY KEY, record TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS runtime_operation_receipts (id TEXT PRIMARY KEY, signature TEXT NOT NULL, result TEXT NOT NULL);
+            CREATE INDEX IF NOT EXISTS runtime_accepted_archive_due ON runtime_operation_receipts(
+                COALESCE(json_extract(result,'$.nextAttemptAt'),0),id)
+                WHERE signature='accepted-archive-v1'
+                  AND json_extract(result,'$.status') IN ('pending','retryable','unknown');
             CREATE TABLE IF NOT EXISTS runtime_event_meta (id TEXT PRIMARY KEY, record TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS runtime_item_fulltext (id TEXT PRIMARY KEY, body TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS runtime_search_next_meta (
