@@ -131,6 +131,7 @@ pub mod terminal_driver;
 pub mod terminal_pty;
 pub mod thread_fork_runtime;
 pub mod thread_prepare;
+pub mod title_generation;
 pub mod token_rate;
 pub mod tool_requests;
 pub mod transcript;
