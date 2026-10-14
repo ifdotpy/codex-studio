@@ -7,11 +7,11 @@ mod protocol;
 mod provider_launch;
 pub mod provider_seam;
 mod provider_shared;
-mod shared_values_generated;
 #[cfg(unix)]
 pub mod provider_stdio;
 #[cfg(unix)]
 pub mod provider_task;
+mod shared_values_generated;
 #[cfg(unix)]
 pub mod stream_child;
 #[cfg(unix)]

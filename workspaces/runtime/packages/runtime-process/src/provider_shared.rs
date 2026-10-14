@@ -1,6 +1,6 @@
 //! Pure supervisor-v1 framing and retained-child launch policy shared by both adapters.
-use crate::{BackendIdentity, OperationId, SupervisorAction, SupervisorError, SupervisorHandle};
 use crate::shared_values_generated::PROCESS_SUPERVISOR_PROTOCOL_VERSION;
+use crate::{BackendIdentity, OperationId, SupervisorAction, SupervisorError, SupervisorHandle};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::collections::BTreeMap;

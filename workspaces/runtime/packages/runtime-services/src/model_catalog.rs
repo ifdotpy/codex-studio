@@ -17,12 +17,12 @@ use studio_runtime_process::{
     OperationId,
     provider_seam::{InitializationStatus, Shutdown},
 };
+use studio_runtime_providers::{Method, RequestId, RequestOutcome, ResponseBody};
 use studio_runtime_schema::shared_values::{
     MODEL_CATALOG_CACHE_TTL_SECONDS, MODEL_CATALOG_ITEMS_PER_PAGE, MODEL_CATALOG_MAX_FRAME_BYTES,
     MODEL_CATALOG_MAX_PAGES, MODEL_CATALOG_MAX_RESPONSE_BYTES,
     MODEL_CATALOG_OPERATION_TIMEOUT_SECONDS,
 };
-use studio_runtime_providers::{Method, RequestId, RequestOutcome, ResponseBody};
 use tokio::time::Instant;
 
 const CATALOG_TTL: Duration = Duration::from_secs(MODEL_CATALOG_CACHE_TTL_SECONDS);
@@ -486,7 +486,9 @@ async fn read_pages(session: &mut SessionHandle, started: Instant) -> Result<Val
         let remaining = CATALOG_TIMEOUT.checked_sub(started.elapsed()).ok_or(())?;
         let timeout_ms = duration_ms(remaining);
         let params = match &cursor {
-            Some(cursor) => json!({"limit": MODEL_CATALOG_ITEMS_PER_PAGE, "includeHidden": true, "cursor": cursor}),
+            Some(cursor) => {
+                json!({"limit": MODEL_CATALOG_ITEMS_PER_PAGE, "includeHidden": true, "cursor": cursor})
+            }
             None => json!({"limit": MODEL_CATALOG_ITEMS_PER_PAGE, "includeHidden": true}),
         };
         let control = session.control.clone();
