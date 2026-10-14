@@ -241,24 +241,25 @@ impl LifecyclePorts for InterruptFixture {
                 stopped["epoch"].as_i64().unwrap_or_default()
             );
             let parent_id = before["parentId"].as_str().unwrap_or_default();
-            let parent_epoch: i64 = tx
-                .query_row(
-                    "SELECT json_extract(record,'$.epoch') FROM runtime_agents WHERE id=?1",
-                    [parent_id],
-                    |row| row.get(0),
-                )
-                .map_err(studio_runtime_store::StoreError::from)?;
+            let parent = studio_runtime_store::AgentRepository::get(
+                tx,
+                &studio_runtime_store::AgentId::from(parent_id),
+            )?
+            .expect("parent agent");
             let text = self
                 .notification_payloads
                 .get(&id)
                 .map(String::as_str)
                 .unwrap_or("{}");
-            tx.execute(
-                "INSERT OR IGNORE INTO runtime_events(id,agent,kind,text,status,created,epoch) \
-                 VALUES(?1,?2,'child_result',?3,'pending',?4,?5)",
-                rusqlite::params![id, parent_id, text, effect.at(), parent_epoch],
+            studio_runtime_services::event_write::enqueue_recovery_event(
+                tx,
+                &parent,
+                id,
+                "child_result",
+                text.to_owned(),
+                effect.at(),
             )
-            .map_err(studio_runtime_store::StoreError::from)?;
+            .expect("enqueue child notification through the production event writer");
             return Ok(());
         }
         if effect.kind() != LifecycleEffectKind::Interrupt {
