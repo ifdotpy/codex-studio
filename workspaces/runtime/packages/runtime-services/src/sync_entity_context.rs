@@ -1,7 +1,6 @@
 //! Persisted context needed to build canonical renderer entity views.
 
 use rusqlite::{Connection, OptionalExtension, Transaction};
-use serde::Deserialize;
 use serde_json::{Value, json};
 use std::fs::{self, File};
 use std::io::BufReader;
@@ -12,15 +11,10 @@ use crate::event_write::truthy;
 use crate::sync_policy::table_exists;
 use crate::sync_views::{AgentViewContext, RoomViewContext};
 
-#[derive(Clone, Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct LocalIdentity {
-    pub(crate) server_id: String,
-    pub(crate) label: String,
-    pub(crate) public_key: String,
-}
-
-pub(crate) fn local_identity(state_dir: &str) -> StoreResult<Option<LocalIdentity>> {
+/// Read only the public routing identifier used in local sync projections.
+/// Credential validity and key permissions belong to the credentials reader;
+/// an unsafe or partial identity must not prevent the runtime from starting.
+pub(crate) fn local_server_id(state_dir: &str) -> StoreResult<Option<String>> {
     let directory = Path::new(state_dir).join("multi-server");
     let directory_metadata = match fs::symlink_metadata(&directory) {
         Ok(metadata) => metadata,
@@ -28,13 +22,13 @@ pub(crate) fn local_identity(state_dir: &str) -> StoreResult<Option<LocalIdentit
         Err(error) => return Err(error.into()),
     };
     if !directory_metadata.is_dir() || directory_metadata.file_type().is_symlink() {
-        return Err(invalid_identity());
+        return Ok(None);
     }
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         if directory_metadata.permissions().mode() & 0o077 != 0 {
-            return Err(invalid_identity());
+            return Ok(None);
         }
     }
 
@@ -48,37 +42,28 @@ pub(crate) fn local_identity(state_dir: &str) -> StoreResult<Option<LocalIdentit
         || path_metadata.file_type().is_symlink()
         || path_metadata.len() > 16_384
     {
-        return Err(invalid_identity());
+        return Ok(None);
     }
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         if path_metadata.permissions().mode() & 0o077 != 0 {
-            return Err(invalid_identity());
+            return Ok(None);
         }
     }
     let file = File::open(&path)?;
     if !file.metadata()?.is_file() {
-        return Err(invalid_identity());
+        return Ok(None);
     }
-    let identity: LocalIdentity =
-        serde_json::from_reader(BufReader::new(file)).map_err(|_| invalid_identity())?;
-    if identity.server_id.is_empty() || identity.label.is_empty() || identity.public_key.is_empty()
-    {
-        return Err(invalid_identity());
-    }
-    Ok(Some(identity))
-}
-
-pub(crate) fn local_server_id(state_dir: &str) -> StoreResult<Option<String>> {
-    Ok(local_identity(state_dir)?.map(|identity| identity.server_id))
-}
-
-fn invalid_identity() -> studio_runtime_store::StoreError {
-    studio_runtime_store::StoreError::InvalidSyncObject {
-        scope: "multi-server".to_owned(),
-        id: "identity.json".to_owned(),
-    }
+    let identity: Value = match serde_json::from_reader(BufReader::new(file)) {
+        Ok(identity) => identity,
+        Err(_) => return Ok(None),
+    };
+    Ok(identity
+        .get("serverId")
+        .and_then(Value::as_str)
+        .filter(|server_id| !server_id.is_empty())
+        .map(str::to_owned))
 }
 
 pub(crate) fn agent_view_context(

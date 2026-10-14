@@ -117,7 +117,7 @@ impl SchedulerRepository {
         at: f64,
         restart: bool,
     ) -> StoreResult<()> {
-        for mut agent in account_agents(transaction, account, UNRESOLVED_SQL)? {
+        for mut agent in account_agents(transaction, account, &unresolved_sql())? {
             if stored_attempt(&agent).unwrap_or(&Value::Null)["connectionGeneration"]
                 .as_u64()
                 .is_none_or(|g| g == generation)
@@ -136,7 +136,7 @@ impl SchedulerRepository {
         generation: u64,
         at: f64,
     ) -> StoreResult<()> {
-        for mut agent in account_agents(transaction, account, UNRESOLVED_SQL)? {
+        for mut agent in account_agents(transaction, account, &unresolved_sql())? {
             let known = stored_attempt(&agent).and_then(|a| a["connectionGeneration"].as_u64());
             if known != Some(generation) {
                 disconnect_agent(transaction, &mut agent, at, true)?;
@@ -350,7 +350,7 @@ impl SchedulerRepository {
         account_key: &str,
         generation: Option<u64>,
     ) -> StoreResult<Vec<SubmittedStartRequest>> {
-        let agents = account_agents(connection, account_key, UNRESOLVED_SQL)?;
+        let agents = account_agents(connection, account_key, &unresolved_sql())?;
         let mut result = Vec::new();
         for agent in agents {
             let Some(attempt) = stored_attempt(&agent) else {
@@ -686,11 +686,10 @@ impl SchedulerRepository {
 
     /// Restore Python-shaped scoped receipts; the account worker will reattach without replay.
     pub fn recover_submitted(transaction: &Transaction<'_>) -> StoreResult<usize> {
-        let records = select_agents(
-            transaction,
-            "SELECT id,record FROM runtime_agents WHERE COALESCE(json_extract(record,'$.remoteWorker'),0)=0 AND COALESCE(json_extract(record,'$.remoteAnchor'),0)=0 AND ((json_extract(record,'$.startAttempt.submitted')=1 AND COALESCE(json_extract(record,'$.startAttempt.executionOutcome'),'unknown')='unknown') OR (json_extract(record,'$.startAttempt') IS NULL AND (json_extract(record,'$.inFlight')=1 OR json_extract(record,'$.status') IN ('running','starting','approval'))))",
-            [],
-        )?;
+        let query = format!(
+            "SELECT id,record FROM runtime_agents WHERE COALESCE(json_extract(record,'$.remoteWorker'),0)=0 AND COALESCE(json_extract(record,'$.remoteAnchor'),0)=0 AND ((json_extract(record,'$.startAttempt.submitted')=1 AND COALESCE(json_extract(record,'$.startAttempt.executionOutcome'),'unknown')='unknown') OR (json_extract(record,'$.startAttempt') IS NULL AND (json_extract(record,'$.inFlight')=1 OR json_extract(record,'$.status') IN ('running','starting','approval')))) AND NOT ({COMPLETED_START_SQL})"
+        );
+        let records = select_agents(transaction, &query, [])?;
         for mut agent in records.iter().cloned() {
             clear_hold(&mut agent);
             disconnect_agent(transaction, &mut agent, timestamp(), true)?;
@@ -1257,7 +1256,11 @@ pub(super) fn apply_start_error(
     Ok(true)
 }
 
-const UNRESOLVED_SQL: &str = "COALESCE(json_extract(record,'$.startAttempt.submitted'),json_extract(record,'$.disconnectRecovery.startAttempt.submitted'),json_extract(record,'$.restartRecovery.startAttempt.submitted'))=1 AND COALESCE(json_extract(record,'$.startAttempt.executionOutcome'),json_extract(record,'$.disconnectRecovery.startAttempt.executionOutcome'),json_extract(record,'$.restartRecovery.startAttempt.executionOutcome'),'unknown')='unknown'";
+const UNRESOLVED_BASE_SQL: &str = "COALESCE(json_extract(record,'$.startAttempt.submitted'),json_extract(record,'$.disconnectRecovery.startAttempt.submitted'),json_extract(record,'$.restartRecovery.startAttempt.submitted'))=1 AND COALESCE(json_extract(record,'$.startAttempt.executionOutcome'),json_extract(record,'$.disconnectRecovery.startAttempt.executionOutcome'),json_extract(record,'$.restartRecovery.startAttempt.executionOutcome'),'unknown')='unknown'";
+const COMPLETED_START_SQL: &str = "COALESCE(json_extract(record,'$.status'),'') IN ('completed','waiting','paused','parked') AND COALESCE(json_extract(record,'$.inFlight'),0)=0 AND COALESCE(json_extract(record,'$.startAttempt.submitted'),0)=1 AND json_extract(record,'$.startAttempt.action') IS NULL AND COALESCE(json_extract(record,'$.startAttempt.activeAtReservation'),0)=0 AND json_extract(record,'$.startOutcomeHold') IS NULL AND COALESCE(json_extract(record,'$.startAttempt.responseError'),'')='' AND COALESCE(json_extract(record,'$.startAttempt.executionOutcome'),'')!='unknown' AND COALESCE(json_type(record,'$.startAttempt.turnId'),'')='text' AND COALESCE(json_extract(record,'$.startAttempt.turnId'),'')!='' AND json_extract(record,'$.startAttempt.turnId')=COALESCE(json_extract(record,'$.lastCompletedTurn'),'') AND COALESCE(json_extract(record,'$.lastCompletedTurnStatus'),'')='completed'";
+fn unresolved_sql() -> String {
+    format!("{UNRESOLVED_BASE_SQL} AND NOT ({COMPLETED_START_SQL})")
+}
 pub(super) fn account_agents(
     connection: &Connection,
     account: &str,
