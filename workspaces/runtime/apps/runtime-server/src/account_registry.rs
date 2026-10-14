@@ -33,6 +33,7 @@ const MAX_ACCOUNTS: usize = 128;
 const WAKE_PAGE: usize = 32;
 const RETRY_DELAY: Duration = Duration::from_secs(1);
 const MAX_RETRY_DELAY: Duration = Duration::from_secs(30);
+const ACCOUNT_WORKER_SHUTDOWN_WAIT: Duration = Duration::from_secs(5);
 const IMAGE_EXECUTION_DEPENDENCY: &str = "workspace-state/image-execution";
 
 fn next_retry_delay(current: Duration) -> Duration {
@@ -977,8 +978,18 @@ impl AccountRegistry {
         }
         let mut failure = None;
         for (_, mut worker) in std::mem::take(&mut self.workers) {
-            if let Err(error) = worker.completion().await {
-                failure.get_or_insert(error);
+            match tokio::time::timeout(ACCOUNT_WORKER_SHUTDOWN_WAIT, worker.completion()).await {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => {
+                    failure.get_or_insert(error);
+                }
+                Err(_) => {
+                    eprintln!(
+                        "runtime server detached an account worker after its {:.0}s shutdown bound",
+                        ACCOUNT_WORKER_SHUTDOWN_WAIT.as_secs_f64()
+                    );
+                    failure.get_or_insert(WorkerError::TaskFailed);
+                }
             }
         }
         failure.map_or(Ok(()), Err)

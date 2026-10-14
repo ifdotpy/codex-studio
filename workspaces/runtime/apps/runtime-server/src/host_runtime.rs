@@ -10,6 +10,7 @@ use std::{
     env,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
+    time::Duration,
 };
 use studio_runtime_http::HttpState;
 use studio_runtime_process::{
@@ -29,8 +30,10 @@ use studio_runtime_services::{
 };
 use studio_runtime_store::RuntimeStore;
 use tokio::task::JoinHandle;
+use tokio::time::timeout;
 
 const REQUEST_TIMEOUT_MS: u64 = 60_000;
+const HOST_RUNTIME_SHUTDOWN_WAIT: Duration = Duration::from_secs(5);
 const SERVER_SOURCE_RELATIVE: &str = "workspaces/runtime/apps/server/src";
 const CLAUDE_BRIDGE_RELATIVE: &str = "workspaces/providers/apps/claude-bridge";
 
@@ -331,7 +334,16 @@ impl HostRuntime {
 
     pub async fn shutdown(self) -> Result<(), WorkerError> {
         self.shutdown.cancel();
-        self.task.await.map_err(|_| WorkerError::TaskFailed)?
+        match timeout(HOST_RUNTIME_SHUTDOWN_WAIT, self.task).await {
+            Ok(result) => result.map_err(|_| WorkerError::TaskFailed)?,
+            Err(_) => {
+                eprintln!(
+                    "runtime server detached the account registry task after its {:.0}s shutdown bound",
+                    HOST_RUNTIME_SHUTDOWN_WAIT.as_secs_f64()
+                );
+                Err(WorkerError::TaskFailed)
+            }
+        }
     }
 }
 
