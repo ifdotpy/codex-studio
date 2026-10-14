@@ -15,6 +15,8 @@ pub enum ContinuationError {
     Invalid(String),
     #[error("Not implemented: requires {0}")]
     Unavailable(&'static str),
+    #[error("continuation wake failures: {0:?}")]
+    WakeFailures(Vec<String>),
     #[error(transparent)]
     Store(#[from] studio_runtime_store::StoreError),
 }

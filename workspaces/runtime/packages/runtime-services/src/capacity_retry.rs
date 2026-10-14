@@ -58,6 +58,7 @@ pub enum Action<'a> {
     },
     Claim {
         settings: &'a Value,
+        automatic: bool,
     },
 }
 /// Construct a new exact failure row after the turn driver has classified a known terminal failure.
@@ -115,6 +116,9 @@ pub fn transition(s: &Snapshot, action: Action<'_>, now: f64) -> Result<Decision
     match action {
         Action::Completed { turn_id, completed } => {
             if text(&r, "acceptedTurnId") != turn_id {
+                return Ok(Decision::default());
+            }
+            if text(&r, "status") == "finished" {
                 return Ok(Decision::default());
             }
             patch(&mut r, json!({"status":"finished","dueAt":null}));
@@ -240,7 +244,13 @@ pub fn transition(s: &Snapshot, action: Action<'_>, now: f64) -> Result<Decision
                     .saturating_add(1)
             );
         }
-        Action::Claim { settings } => {
+        Action::Claim {
+            settings,
+            automatic,
+        } => {
+            if automatic && text(&r, "status") != "scheduled" {
+                return Ok(Decision::default());
+            }
             if present(&r, "claimedAt")
                 || !matches!(text(&r, "status"), "scheduled" | "cancelled" | "exhausted")
             {
