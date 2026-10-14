@@ -89,6 +89,13 @@ Codex uses the existing external-auth bootstrap and host refresh path.
 Claude uses an access-only guest profile. Guest profiles contain no refresh credentials.
 Each account profile stays private to the Linux user who runs the provider.
 
+A VM chat can change to another Claude account with the normal account transfer
+(`codex_vm_account_switch.py`). Every chat of the team must be idle. Studio saves the
+pending turn states, stops the chat's provider and copies its native session files, as the
+line owner, from the source profile into the target profile. The source files stay. The chat
+keeps its thread ID, so the next turn resumes the same session with the target account. A
+team with Mac chats and VM chats changes each part on its own.
+
 Providers use the existing durable native supervisor transport.
 A guest service or Studio restart can attach to the same live provider.
 A VM reboot ends the process. An unproven result remains unknown.
@@ -102,15 +109,125 @@ Mac-only browser paths are not injected into guest provider configuration.
 Existing native sessions keep their frozen tools, role text, and original Source headers.
 The frozen runtime references are not documentation that can be revised.
 
+## Guest crash watchdog
+
+The guest kernel can panic, for example `Kernel panic - not syncing: corrupted stack end
+detected inside scheduler` in a kernel thread that waits on virtio. The helper and its
+Virtualization process stay alive, so the VM looked `running` while every guest request failed.
+
+### Detection
+
+`Client.status()` (`codex_linux_vm.py status`, `/api/desktop` `linuxVm`, the Linux VM settings)
+reports two states when the helper says `running`:
+
+- `failed`: a kernel line in `console.log` starts with `Kernel panic - not syncing:`,
+  `Internal error: Oops`, `Unable to handle kernel`, `BUG: ` or `general protection fault`.
+  The helper clears `console.log` at each boot, so the line is from the current boot. After
+  a panic, an oops or a kernel BUG the kernel is no longer trustworthy, so this is a proven
+  death. On 2026-10-13 an oops in autofs4 (guest memory zeroed under host memory pressure)
+  was followed by oopses in each reader of the mount table, and `btrfs send` hung in D state
+  for hours, which the host cannot see. The text must start the kernel line:
+  `watchdog: BUG: soft lockup` (a stall that can pass under host load) and
+  `traps: <process> general protection fault` (a user process) are not a death.
+- `unresponsive`: the guest answered in this boot (same helper PID) and then gave no answer
+  for 180 seconds, over at least 3 probes. The backend probes every 30 seconds and
+  `ensure_running` records the first answer, in `guest-health.json`. A booting or provisioning
+  guest is not unresponsive. A gap of more than 90 seconds between two probes (Mac sleep,
+  backend stop) starts a new span. No answer does not prove death, so this state is never
+  restarted.
+
+The probe (`Client.ping`) sends a method that the guest service does not have, and waits for
+one byte. Any byte proves that the kernel, vsock and the service run: the service answers with
+an error from its event loop. The probe does not use `health`, because `health` waits for the
+root broker and layr, which can be slow for minutes during a large import. The probe has
+three results:
+
+- An answer: one byte. It clears `unresponsive`.
+- Busy: a close without any byte in less than 10 seconds. The guest service closes a new
+  connection at once when it has 32 clients (provider streams and `browser.wait` long polls
+  hold them), and the helper does so when its 64 channels are in use. A busy probe is neither
+  an answer nor a failure.
+- No answer: no byte before the probe timeout (15 seconds), or a close without a byte after
+  10 seconds. The helper closes a vsock connection that a dead kernel never accepts after
+  15 seconds.
+
+Both states have `error` (the reason), `guestFailure` (`kernel_panic` or `unanswered`) and
+`helperState: running`. The Linux VM settings show the reason. A stopped helper is `stopped`,
+also when the console of its last boot has a panic.
+
+### Recovery
+
+`codex_linux_vm_watchdog.py` runs in the macOS backend whose state directory holds the VM
+state (`<state>/linux-vm`). It restarts only a proven death: a `failed` guest (kernel panic),
+or a helper that reports `failed` itself (Virtualization stopped the VM with an error). For an
+`unresponsive` guest it adds an episode to `watchdog.json` (start, reason, end) and shows the
+last one in the status as `watchdog.lastUnresponsive`. It does not restart it: an operator
+decides. For a failed VM it:
+
+1. Copies `console.log` to `console-crash-<UTC time>.log` (the newest 5 stay) and adds a
+   record to `watchdog.json`: time, reason, console tail (4 KiB), stage, outcome, and chats.
+2. Stops the VM, then starts it with `ensure_running`. This normal path also ensures the Mac
+   host_exec service, the guest clock, the guest configuration and the share mounts.
+3. Ends the provider connections of the dead boot (see "VM chats" below).
+
+Limits:
+
+- One restart in 10 minutes, and at most 4 in 24 hours. A held restart shows
+  `watchdog.held` (rule and time) in the status. The VM stays failed until the limits permit a
+  restart or an operator restarts it.
+- No restart while `upgrade-linux-vm-layr.py` holds `maintenance.lock` (for the whole upgrade),
+  or while create, start or stop holds `client.lock`. An upgrade does not start during a restart.
+- The watchdog acts only on a live helper. It starts a stopped VM only when its last intent is a
+  start from before the current Mac boot (`kern.boottime`): the Mac restarted under the VM. The
+  same limits apply, and the record has kind `host_restart`. A VM that stopped in this boot (a
+  guest power-off, a helper exit) or by a stop on purpose stays stopped.
+  `Client.stop()` saves `intent.json` before it takes the client lock, also for a stopped VM.
+  A stop at any time before the watchdog's start cancels that start (outcome `cancelled`).
+  The watchdog does not hold the client lock while the helper stops a dead kernel.
+- One exception: a restart that did not reach its start (a backend stop, or a stop without a
+  proven result). The next check finishes it if it is less than 30 minutes old. When the
+  guest of such a restart already answers, the next check closes the restart instead.
+- A failed start is recorded. If the helper still runs with a failed guest, the next attempt
+  waits for the limits. A VM that did not start stays stopped.
+
+`status()` shows the last restart and the number in the last 24 hours as `watchdog`.
+
+### VM chats
+
+A restart ends every guest provider. The watchdog uses the normal transport loss path for
+each chat that had a provider connection in the dead boot (`runtime.disconnected`):
+
+- A running turn becomes `interrupted` with an unknown outcome. Connection recovery checks it.
+- An input in dispatch becomes `uncertain`. Studio does not send a user message or a command
+  again.
+- The chat is offline. Its next message starts a new provider in the new boot.
+
+Each of these chats also gets one notice that tells the reason and the restart time.
+
+### Why not `panic=` and `guestDidStop`
+
+With the kernel option `panic=N`, the kernel resets after a panic. Virtualization then ends the
+VM, calls `guestDidStop`, and the helper exits with code 0. The VM then looks like a VM that a
+person stopped, so the backend still needs a loop that starts it and that knows a crash from a
+stop. It needs a new signed helper and a VM restart on each Mac, and an oops that does not
+panic never resets the kernel. The host-side check reads the panic line and the oops lines
+from the console. It keeps the limits, the console copy, the records, the locks and the chat
+notices in one backend path, and a backend update delivers it. It also shows a guest that gives
+no answer, without a restart. A dead kernel is restarted at the next check (at most
+30 seconds); an unresponsive guest shows after 3 to 4 minutes.
+
 ## Checks
 
 Run checks one at a time:
 
 ```sh
 python3 workspaces/runtime/apps/server/src/codex_python.py --exec workspaces/runtime/apps/server/tests/vm-agents-contract.py
+python3 workspaces/runtime/apps/server/src/codex_python.py --exec workspaces/runtime/apps/server/src/test_codex_linux_vm_watchdog.py
 python3 workspaces/runtime/apps/server/src/codex_python.py --exec workspaces/runtime/apps/server/tests/linux-vm-studio-native.py --state-dir <isolated-vm-state> --helper <native-helper>
 ```
 
 The first suite uses a local native provider fixture. It sends no model request.
-The second suite requires a provisioned isolated VM and explicit authority for live model requests.
+The second suite checks the watchdog with a fake helper. It starts no VM.
+The third suite requires a provisioned isolated VM and explicit authority for live model requests.
 Do not restart a VM or remove a journal that has an active or unknown provider result.
+The watchdog restarts only a guest that is dead or gives no answer: Studio cannot reach its providers.

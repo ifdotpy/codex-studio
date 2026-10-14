@@ -22,6 +22,9 @@ from typing import Any
 from host_exec_protocol import HostExecError, atomic, conflicts, inside, key, page, relative, require, under
 
 EXPORT_MARKER = ".layr-export.json"
+GIT_LAYER = ".git"
+# The objects of the git layer live in the layr project store; the Mac uses the project's own.
+GIT_OBJECTS = "objects"
 METHODS = {"host.slot.prepare", "host.slot.manifest", "host.slot.read", "host.slot.apply", "host.slot.collect", "host.slot.forget", "host.slot.artifact"}
 READ_METHODS = {"host.slot.manifest", "host.slot.read"}
 
@@ -118,6 +121,8 @@ class HostSlotHandlers:
             for size in range(1, len(parts) + 1):
                 entries.setdefault("/".join(parts[:size]), {"kind": "directory"})
             skip = [item[len(cache) + 1:] for item in mac_only if item.startswith(cache + "/")]
+            if cache == GIT_LAYER:
+                skip.append(GIT_OBJECTS)
             found = (await self.io(context, {"action": "manifest", "root": str(line / cache), "skip": skip,
                                              "hashes": self.hash_cache(context, line / cache)}))["entries"]
             entries.update({cache + "/" + path: entry for path, entry in found.items()})
@@ -174,6 +179,12 @@ class HostSlotHandlers:
                 path, _, kind = row.partition("\t")
                 if kind == "cache":
                     caches.append(relative(path))
+            # The line's git layer (layr gitbridge) is outside states too. The slot gets it like a
+            # cache folder, without its objects: the Mac links the project's own objects, and git
+            # changes in the slot never return to the line.
+            git = Path(context["path"]) / GIT_LAYER
+            if git.is_dir() and not git.is_symlink() and GIT_LAYER not in caches and not under(GIT_LAYER, mac_only):
+                caches.append(GIT_LAYER)
             atomic(parent / "paths.json", {"caches": caches, "macOnly": mac_only})
             atomic(held, {"state": state})
             return {"path": str(source), "nameConflicts": bad, "syncOutput": output, "caches": caches,

@@ -1260,6 +1260,8 @@ class AccountHistoryRecord(TypedDict):
     providerOptionsDiscarded: NotRequired[JsonObject]
     portableHistory: NotRequired[PortableHistoryRecord]
     sourceHistoryMissing: NotRequired[JsonObject]
+    # A Linux VM chat keeps its thread; its native session was copied between account profiles.
+    vmSessionCopy: NotRequired[JsonObject]
 
 
 # These receipts are runtime results, not persisted tool-request records.
@@ -1424,6 +1426,7 @@ class AgentRecord(TypedDict):
     nativeTurnError: NotRequired[NativeTurnErrorRecord]
     nativeThreadBlock: NotRequired[NativeThreadBlockRecord]
     nativeFailureHold: NotRequired[bool | JsonObject]
+    vmAccountSwitch: NotRequired[JsonObject]
     nativeLimitErrorAt: NotRequired[float]
     nativeNameSynced: NotRequired[NativeNameSyncedRecord | None]
     nativeNameFailure: NotRequired[NativeNameFailureRecord]

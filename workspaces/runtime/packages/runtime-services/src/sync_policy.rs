@@ -8,7 +8,7 @@ pub use crate::sync_views::{
 };
 use rusqlite::{OptionalExtension, Transaction};
 use serde_json::{Map, Value, json};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Component, Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 use studio_runtime_schema::SYNC_ENTITY_SCOPE;
@@ -55,6 +55,13 @@ impl ProjectVaultSnapshot {
             snapshot.views.insert(id.clone(), view);
         }
         snapshot
+    }
+
+    /// Hash the validated vault views used by project projections for a process-local skip key.
+    pub fn signature(&self) -> String {
+        let serialized = serde_json::to_vec(&self.views)
+            .expect("project vault views serialize as JSON values and error tuples");
+        studio_runtime_store::sha256_hex(&serialized)
     }
 
     fn recheck(&self, transaction: &Transaction<'_>) -> StoreResult<()> {
@@ -120,7 +127,7 @@ pub fn maintain_entity_projections_with_server_id(
     rooms: &crate::sync_entity_context::RoomDirectory,
     validate_projection: impl Fn(&str, &str, &Value, bool) -> bool,
 ) -> StoreResult<()> {
-    for table in [
+    let source_records = [
         "runtime_agents",
         "runtime_rooms",
         "runtime_complaints",
@@ -131,11 +138,28 @@ pub fn maintain_entity_projections_with_server_id(
         "runtime_tasks",
         "runtime_monitors",
         "runtime_federation_rooms",
-    ] {
-        let _ = stored_records(transaction, table)?;
-    }
+    ]
+    .into_iter()
+    .map(|table| stored_records(transaction, table).map(|records| (table, records)))
+    .collect::<StoreResult<HashMap<_, _>>>()?;
     vault_snapshot.recheck(transaction)?;
-    maintain_peer_team_entities(transaction, &validate_projection)?;
+    let peer_agents = source_records
+        .get("runtime_agents")
+        .ok_or(StoreError::RecordContract(
+            "entity projection source snapshot is incomplete",
+        ))?;
+    let peer_projects =
+        source_records
+            .get("runtime_projects")
+            .ok_or(StoreError::RecordContract(
+                "entity projection source snapshot is incomplete",
+            ))?;
+    maintain_peer_team_entities(
+        transaction,
+        peer_agents,
+        peer_projects,
+        &validate_projection,
+    )?;
     let mut current_rooms = BTreeSet::new();
     for (table, collection) in [
         ("runtime_agents", "agent"),
@@ -146,7 +170,10 @@ pub fn maintain_entity_projections_with_server_id(
         ("runtime_rules", "rule"),
         ("runtime_work", "work"),
     ] {
-        for (id, raw) in stored_records(transaction, table)? {
+        let records = source_records.get(table).ok_or(StoreError::RecordContract(
+            "entity projection source snapshot is incomplete",
+        ))?;
+        for (id, raw) in records {
             let record = serde_json::from_str::<Value>(&raw)?;
             if collection == "agent" && truthy(record.get("deletedAt")) {
                 retire_if_live(transaction, collection, &id, &validate_projection)?;
@@ -645,6 +672,8 @@ fn compare_created_desc(left: &Value, right: &Value) -> std::cmp::Ordering {
 
 fn maintain_peer_team_entities(
     transaction: &Transaction<'_>,
+    agent_records: &[(String, String)],
+    project_records: &[(String, String)],
     validate: &impl Fn(&str, &str, &Value, bool) -> bool,
 ) -> StoreResult<()> {
     if !table_exists(transaction, "runtime_projects")?
@@ -652,8 +681,8 @@ fn maintain_peer_team_entities(
     {
         return Ok(());
     }
-    let agents = stored_records(transaction, "runtime_agents")?
-        .into_iter()
+    let agents = agent_records
+        .iter()
         .filter_map(|(_, raw)| serde_json::from_str::<Value>(&raw).ok())
         .filter_map(|agent| {
             let id = agent.get("id")?.as_str()?.to_owned();
@@ -664,13 +693,8 @@ fn maintain_peer_team_entities(
             (live && lead).then_some((id, agent))
         })
         .collect::<BTreeMap<_, _>>();
-    let mut statement = transaction.prepare("SELECT record FROM runtime_projects")?;
-    let projects = statement
-        .query_map([], |row| row.get::<_, String>(0))?
-        .collect::<Result<Vec<_>, _>>()?;
-    drop(statement);
     let mut current = BTreeMap::<String, Value>::new();
-    for raw in projects {
+    for (_, raw) in project_records {
         let Ok(project) = serde_json::from_str::<Value>(&raw) else {
             continue;
         };

@@ -48,26 +48,29 @@ async fn answer(
         axum::Extension<Arc<studio_runtime_services::monitor_runtime_wiring::MonitorRuntime>>,
     >,
     ApiJson(body): ApiJson<crate::generated::AnswerBody>,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<Json<crate::generated::AnswerResult>, ApiError> {
     let id = body.id.clone();
     let data = serde_json::to_value(&body).map_err(|_| ApiError::internal())?;
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
     let monitor_available = monitor.is_some();
     let monitor_id = id.clone();
     let monitor_data = data.clone();
-    if let Some(answer) = tokio::task::spawn_blocking(move || {
-        studio_runtime_services::monitor_runtime::answer_approval(
-            &store,
-            &monitor_id,
-            &monitor_data,
-            callback_clock().map_err(|_| {
-                studio_runtime_services::monitor_policy::MonitorError::Refused(
-                    "The system clock is unavailable",
-                )
-            })?,
-            monitor_available,
-        )
-    })
+    if let Some(answer) = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-http/routes/questions_write",
+        move || {
+            studio_runtime_services::monitor_runtime::answer_approval(
+                &store,
+                &monitor_id,
+                &monitor_data,
+                callback_clock().map_err(|_| {
+                    studio_runtime_services::monitor_policy::MonitorError::Refused(
+                        "The system clock is unavailable",
+                    )
+                })?,
+                monitor_available,
+            )
+        },
+    )
     .await
     .map_err(|_| ApiError::internal())?
     .map_err(monitor_approval_error)?
@@ -89,10 +92,13 @@ async fn answer(
         .callback_runtime
         .clone()
         .ok_or_else(|| ApiError::dependency(CALLBACK_REPLY_DEPENDENCY[0].name()))?;
-    let value = tokio::task::spawn_blocking(move || runtime.answer(&id, &data, callback_clock()?))
-        .await
-        .map_err(|_| ApiError::internal())?
-        .map_err(callback_error)?;
+    let value = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-http/routes/questions_write",
+        move || runtime.answer(&id, &data, callback_clock()?),
+    )
+    .await
+    .map_err(|_| ApiError::internal())?
+    .map_err(callback_error)?;
     state.event_wake.notify_one();
     Ok(Json(
         super::generated_json::<crate::generated::AnswerResult>(value)?,
@@ -142,7 +148,7 @@ fn callback_error(error: studio_runtime_services::provider_callbacks::CallbackEr
 async fn defer_question(
     State(state): State<HttpState>,
     ApiJson(body): ApiJson<crate::generated::QuestionDeferBody>,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<Json<crate::generated::MutationReceipt>, ApiError> {
     let id = body.id;
     let deferred = body.deferred;
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
@@ -153,31 +159,37 @@ async fn defer_question(
         })
     })
     .await?;
-    Ok(Json(generated_receipt(result)?))
+    Ok(Json(super::generated_json::<
+        crate::generated::MutationReceipt,
+    >(result)?))
 }
 
 async fn delete_question(
     State(state): State<HttpState>,
     ApiJson(body): ApiJson<crate::generated::QuestionBody>,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<Json<crate::generated::MutationReceipt>, ApiError> {
     let id = body.id;
     let runtime = state
         .callback_runtime
         .clone()
         .ok_or_else(|| ApiError::dependency(CALLBACK_REPLY_DEPENDENCY[0].name()))?;
-    let value =
-        tokio::task::spawn_blocking(move || runtime.delete_question(&id, callback_clock()?))
-            .await
-            .map_err(|_| ApiError::internal())?
-            .map_err(callback_error)?;
+    let value = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-http/routes/questions_write",
+        move || runtime.delete_question(&id, callback_clock()?),
+    )
+    .await
+    .map_err(|_| ApiError::internal())?
+    .map_err(callback_error)?;
     state.event_wake.notify_one();
-    Ok(Json(generated_receipt(value)?))
+    Ok(Json(super::generated_json::<
+        crate::generated::MutationReceipt,
+    >(value)?))
 }
 
 async fn complaints(
     State(state): State<HttpState>,
     ApiJson(body): ApiJson<crate::generated::ComplaintBody>,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<Json<crate::generated::ComplaintRecordResponse>, ApiError> {
     let request_id = body.id.clone();
     let text = body.text.clone();
     let action = body
@@ -256,10 +268,6 @@ async fn write(
     operation: impl FnOnce(&Transaction<'_>) -> Result<Value, QuestionsWriteError> + Send + 'static,
 ) -> Result<Value, ApiError> {
     super::sync_delta::write(store, operation, api_error).await
-}
-
-fn generated_receipt(value: Value) -> Result<Value, ApiError> {
-    super::generated_json::<crate::generated::MutationReceipt>(value)
 }
 
 fn api_error(error: QuestionsWriteError) -> ApiError {

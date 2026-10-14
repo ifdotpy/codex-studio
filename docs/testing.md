@@ -24,9 +24,9 @@ The fast tier is deterministic. Each server suite is expected to finish in at
 most 10 seconds when run alone; browser smoke targets under 120 seconds total.
 It is the default developer loop, the required
 pre-PR and pre-merge check, and runs in hosted CI on every pull request and push
-to `main`, with the server tier split across four parallel jobs and browser
-smoke in its own job. A direct push to `main` is preceded by `just test-fast`,
-which includes browser smoke. Use
+to `main`, with the server and Rust workspace tiers split across parallel jobs
+and browser smoke in its own job. A direct push to `main` is preceded by
+`just test-fast`, which includes browser smoke. Use
 `just test-fast` for the whole repository. For one
 server suite between edits, use
 `just test server <exact-suite-path>`; exact paths automatically include suites

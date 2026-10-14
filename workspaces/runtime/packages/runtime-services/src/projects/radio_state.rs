@@ -196,12 +196,8 @@ pub(super) fn publish_room(
         }
     }
     let last = db.query_row("SELECT seq,text,created,sender FROM runtime_chat_messages WHERE room=?1 ORDER BY seq DESC LIMIT 1",[id],|r| Ok(json!({"seq":r.get::<_,i64>(0)?,"text":r.get::<_,String>(1)?.chars().take(180).collect::<String>(),"created":r.get::<_,f64>(2)?,"sender":r.get::<_,String>(3)?}))).optional()?;
-    let context = RoomViewContext {
-        agents: all_agents.into_values().collect(),
-        peer_teams: teams,
-        last_message: last,
-        federation: None,
-    };
+    let mut context = RoomViewContext::new(all_agents.into_values().collect(), teams);
+    context.last_message = last;
     let view = room_entity_view(value, &context);
     SyncDocumentsRepository::put_entity(
         db,

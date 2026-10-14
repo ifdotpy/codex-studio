@@ -87,7 +87,9 @@ def create_router(context: ApiContext) -> APIRouter:
                     return service.set_server_alias(body.serverId, body.alias, body.requestId, actor)
                 return service.ui_invite(body.serverId, body.requestId)
             if isinstance(body, SetAccessSettings):
-                return service.discovery().settings(body.autoPair, actor)
+                if body.autoPair is None and body.autoUpdate is None:
+                    raise AccessError(400, "invalid_settings", "Supply autoPair or autoUpdate")
+                return service.discovery().settings(body.autoPair, actor, body.autoUpdate)
             if isinstance(body, UnrevokeServer):
                 return service.discovery().unrevoke(body.clientId, body.requestId, actor)
             if isinstance(body, CreateInvite):

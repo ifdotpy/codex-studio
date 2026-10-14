@@ -455,16 +455,20 @@ fn shutdown_aborts_queued_environment_work_and_reaps_started_work() {
     runtime.block_on(async {
         let (release, wait) = std::sync::mpsc::channel();
         let (started, entered) = oneshot::channel();
-        let first = tokio::task::spawn_blocking(move || {
-            started.send(()).unwrap();
-            wait.recv().unwrap();
-        });
+        let first = crate::blocking_pool::spawn_blocking(
+            "runtime-process/provider_task_tests",
+            move || {
+                started.send(()).unwrap();
+                wait.recv().unwrap();
+            },
+        );
         entered.await.unwrap();
         let executed = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let observed = executed.clone();
-        let queued = tokio::task::spawn_blocking(move || {
-            observed.store(true, std::sync::atomic::Ordering::SeqCst)
-        });
+        let queued = crate::blocking_pool::spawn_blocking(
+            "runtime-process/provider_task_tests",
+            move || observed.store(true, std::sync::atomic::Ordering::SeqCst),
+        );
         let stop = Shutdown::default();
         stop.cancel();
         let mut receiver = stop.subscribe();
@@ -481,10 +485,13 @@ fn shutdown_aborts_queued_environment_work_and_reaps_started_work() {
         assert!(!executed.load(std::sync::atomic::Ordering::SeqCst));
         let (release, wait) = std::sync::mpsc::channel();
         let (started, entered) = oneshot::channel();
-        let running = tokio::task::spawn_blocking(move || {
-            started.send(()).unwrap();
-            wait.recv().unwrap();
-        });
+        let running = crate::blocking_pool::spawn_blocking(
+            "runtime-process/provider_task_tests",
+            move || {
+                started.send(()).unwrap();
+                wait.recv().unwrap();
+            },
+        );
         entered.await.unwrap();
         let mut receiver = stop.subscribe();
         let mut join = Box::pin(reap_environment_job(running, &mut receiver));

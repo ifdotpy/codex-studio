@@ -27,10 +27,13 @@ pub(crate) fn routes() -> RouteGroup {
 
 async fn get_settings(State(state): State<HttpState>) -> Result<Json<Value>, ApiError> {
     let vm_dir = vm_dir(&state);
-    tokio::task::spawn_blocking(move || settings_response(&vm_dir, None))
-        .await
-        .map_err(|_| ApiError::internal())?
-        .map(Json)
+    studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-http/routes/linux_vm_settings",
+        move || settings_response(&vm_dir, None),
+    )
+    .await
+    .map_err(|_| ApiError::internal())?
+    .map(Json)
 }
 
 async fn set_settings(
@@ -41,10 +44,13 @@ async fn set_settings(
     let requested: linux_vm_settings::VmSettings =
         serde_json::from_value(serde_json::to_value(settings).map_err(|_| ApiError::internal())?)
             .map_err(|_| ApiError::new(StatusCode::BAD_REQUEST, "Invalid VM settings"))?;
-    tokio::task::spawn_blocking(move || settings_response(&vm_dir, Some(requested)))
-        .await
-        .map_err(|_| ApiError::internal())?
-        .map(Json)
+    studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-http/routes/linux_vm_settings",
+        move || settings_response(&vm_dir, Some(requested)),
+    )
+    .await
+    .map_err(|_| ApiError::internal())?
+    .map(Json)
 }
 
 fn vm_dir(state: &HttpState) -> std::path::PathBuf {

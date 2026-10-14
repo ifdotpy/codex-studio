@@ -40,7 +40,7 @@ pub(crate) fn routes() -> RouteGroup {
 async fn upload_asset(
     State(state): State<HttpState>,
     ApiJson(mut body): ApiJson<Value>,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<Json<crate::generated::AssetRecord>, ApiError> {
     let agent = take_string(&mut body, "agent").ok_or_else(ApiError::internal)?;
     let name = take_string(&mut body, "name").ok_or_else(ApiError::internal)?;
     let id = take_string(&mut body, "id");
@@ -48,9 +48,10 @@ async fn upload_asset(
         .or_else(|| take_string(&mut body, "data"))
         .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "Invalid file data"))?;
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
-    let asset = tokio::task::spawn_blocking(move || {
-        payload_store::upload(&store, &agent, &name, id.as_deref(), &encoded)
-    })
+    let asset = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-http/routes/workspace_files",
+        move || payload_store::upload(&store, &agent, &name, id.as_deref(), &encoded),
+    )
     .await
     .map_err(|_| ApiError::internal())?
     .map_err(map_payload_store_error)?;
@@ -60,21 +61,24 @@ async fn upload_asset(
 pub(crate) async fn file_info(
     query: QueryParams,
     State(state): State<HttpState>,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<Json<crate::generated::FileInfo>, ApiError> {
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
     let agent_id = string_query(&query, "agent").map(str::to_owned);
     let path = string_query(&query, "path").map(str::to_owned);
     let asset_id = string_query(&query, "asset")
         .filter(|asset| !asset.is_empty())
         .map(str::to_owned);
-    let result = tokio::task::spawn_blocking(move || {
-        read_info(
-            &store,
-            agent_id.as_deref(),
-            path.as_deref(),
-            asset_id.as_deref(),
-        )
-    })
+    let result = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-http/routes/workspace_files",
+        move || {
+            read_info(
+                &store,
+                agent_id.as_deref(),
+                path.as_deref(),
+                asset_id.as_deref(),
+            )
+        },
+    )
     .await
     .map_err(|_| ApiError::internal())??;
     super::generated_json::<crate::generated::FileInfo>(json!({
@@ -89,21 +93,24 @@ pub(crate) async fn file_info(
 pub(crate) async fn file_content(
     query: QueryParams,
     State(state): State<HttpState>,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<Json<crate::generated::FileContent>, ApiError> {
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
     let agent_id = string_query(&query, "agent").map(str::to_owned);
     let path = string_query(&query, "path").map(str::to_owned);
     let asset_id = string_query(&query, "asset")
         .filter(|asset| !asset.is_empty())
         .map(str::to_owned);
-    let result = tokio::task::spawn_blocking(move || {
-        read_content(
-            &store,
-            agent_id.as_deref(),
-            path.as_deref(),
-            asset_id.as_deref(),
-        )
-    })
+    let result = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-http/routes/workspace_files",
+        move || {
+            read_content(
+                &store,
+                agent_id.as_deref(),
+                path.as_deref(),
+                asset_id.as_deref(),
+            )
+        },
+    )
     .await
     .map_err(|_| ApiError::internal())??;
     super::generated_json::<crate::generated::FileContent>(json!({

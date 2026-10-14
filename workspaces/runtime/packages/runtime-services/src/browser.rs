@@ -970,12 +970,15 @@ async fn serve_connection(
             .and_then(|probe| probe.lock().ok()?.take())
             .map(|probe| {
                 let observed = half_close_observed.clone().expect("half-close observer");
-                tokio::task::spawn_blocking(move || {
-                    let mut byte = [0; 1];
-                    if probe.peek(&mut byte).is_ok_and(|count| count == 0) {
-                        observed.send_modify(|count| *count += 1);
-                    }
-                })
+                studio_runtime_process::blocking_pool::spawn_blocking(
+                    "runtime-services/browser",
+                    move || {
+                        let mut byte = [0; 1];
+                        if probe.peek(&mut byte).is_ok_and(|count| count == 0) {
+                            observed.send_modify(|count| *count += 1);
+                        }
+                    },
+                )
             });
         async move {
             let (response, should_close) = handle_request(
@@ -1757,24 +1760,26 @@ mod tests {
         }
         wait_for_count(accepted, MAX_CONNECTIONS).await;
 
-        let refused = tokio::task::spawn_blocking({
-            let port = receipt.port;
-            move || {
-                let mut stream = TcpStream::connect((Ipv4Addr::LOCALHOST, port)).expect("ninth");
-                stream
-                    .write_all(b"GET /oauth/callback HTTP/1.1\r\n\r\n")
-                    .expect("ninth request");
-                let mut response = String::new();
-                match stream.read_to_string(&mut response) {
-                    Ok(_) => {}
-                    Err(error) if error.kind() == std::io::ErrorKind::ConnectionReset => {}
-                    Err(error) => panic!("ninth connection refusal: {error}"),
+        let refused =
+            studio_runtime_process::blocking_pool::spawn_blocking("runtime-services/browser", {
+                let port = receipt.port;
+                move || {
+                    let mut stream =
+                        TcpStream::connect((Ipv4Addr::LOCALHOST, port)).expect("ninth");
+                    stream
+                        .write_all(b"GET /oauth/callback HTTP/1.1\r\n\r\n")
+                        .expect("ninth request");
+                    let mut response = String::new();
+                    match stream.read_to_string(&mut response) {
+                        Ok(_) => {}
+                        Err(error) if error.kind() == std::io::ErrorKind::ConnectionReset => {}
+                        Err(error) => panic!("ninth connection refusal: {error}"),
+                    }
+                    response
                 }
-                response
-            }
-        })
-        .await
-        .expect("ninth client");
+            })
+            .await
+            .expect("ninth client");
         assert!(
             refused.is_empty(),
             "ninth connection is refused before serving"
@@ -1849,9 +1854,10 @@ mod tests {
             .half_closed_connections
             .clone();
         let (shutdown_observed, shutdown_rx) = tokio::sync::oneshot::channel();
-        let request = tokio::task::spawn_blocking(move || {
-            half_closed_request(receipt.port, shutdown_observed)
-        });
+        let request = studio_runtime_process::blocking_pool::spawn_blocking(
+            "runtime-services/browser",
+            move || half_closed_request(receipt.port, shutdown_observed),
+        );
         entered.notified().await;
         shutdown_rx.await.expect("client write half-close");
         while *half_closed.borrow() == 0 {
@@ -1910,7 +1916,10 @@ mod tests {
             .open(expiring_input, 1000.0, Some(0))
             .await
             .expect("open short lease");
-        let request = tokio::task::spawn_blocking(move || normal_request(receipt.port));
+        let request = studio_runtime_process::blocking_pool::spawn_blocking(
+            "runtime-services/browser",
+            move || normal_request(receipt.port),
+        );
         entered.notified().await;
         tokio::time::advance(Duration::from_millis(25)).await;
         assert_eq!(
@@ -1947,7 +1956,10 @@ mod tests {
         let mut requests = Vec::new();
         for _ in 0..MAX_RELAYS {
             let port = receipt.port;
-            requests.push(tokio::task::spawn_blocking(move || normal_request(port)));
+            requests.push(studio_runtime_process::blocking_pool::spawn_blocking(
+                "runtime-services/browser",
+                move || normal_request(port),
+            ));
         }
         while exchange.count.load(Ordering::Acquire) < MAX_RELAYS {
             entered.notified().await;
@@ -2033,25 +2045,30 @@ mod tests {
         let requests = (0..MAX_RELAYS - 1)
             .map(|_| {
                 let port = receipt.port;
-                tokio::task::spawn_blocking(move || normal_request(port))
+                studio_runtime_process::blocking_pool::spawn_blocking(
+                    "runtime-services/browser",
+                    move || normal_request(port),
+                )
             })
             .collect::<Vec<_>>();
         while exchange.count.load(Ordering::Acquire) < MAX_RELAYS - 1 {
             entered.notified().await;
         }
 
-        let fifth = tokio::task::spawn_blocking({
-            let port = receipt.port;
-            move || normal_request(port)
-        });
+        let fifth =
+            studio_runtime_process::blocking_pool::spawn_blocking("runtime-services/browser", {
+                let port = receipt.port;
+                move || normal_request(port)
+            });
         while exchange.count.load(Ordering::Acquire) < MAX_RELAYS {
             entered.notified().await;
         }
 
-        let sixth = tokio::task::spawn_blocking({
-            let port = receipt.port;
-            move || normal_request(port)
-        });
+        let sixth =
+            studio_runtime_process::blocking_pool::spawn_blocking("runtime-services/browser", {
+                let port = receipt.port;
+                move || normal_request(port)
+            });
         assert!(
             sixth
                 .await
@@ -2148,17 +2165,23 @@ mod tests {
                 .open(input(), 1000.0, Some(0))
                 .await
                 .expect("open");
-            let first = tokio::task::spawn_blocking({
-                let port = receipt.port;
-                move || normal_request(port)
-            });
+            let first = studio_runtime_process::blocking_pool::spawn_blocking(
+                "runtime-services/browser",
+                {
+                    let port = receipt.port;
+                    move || normal_request(port)
+                },
+            );
             while exchange.calls.load(Ordering::Acquire) == 0 {
                 entered.notified().await;
             }
-            let second = tokio::task::spawn_blocking({
-                let port = receipt.port;
-                move || normal_request(port)
-            });
+            let second = studio_runtime_process::blocking_pool::spawn_blocking(
+                "runtime-services/browser",
+                {
+                    let port = receipt.port;
+                    move || normal_request(port)
+                },
+            );
             while exchange.calls.load(Ordering::Acquire) < 2 {
                 entered.notified().await;
             }
@@ -2231,7 +2254,10 @@ mod tests {
             .await
             .expect("open");
         let port = receipt.port;
-        let request = tokio::task::spawn_blocking(move || normal_request(port));
+        let request = studio_runtime_process::blocking_pool::spawn_blocking(
+            "runtime-services/browser",
+            move || normal_request(port),
+        );
         entered.notified().await;
         tokio::time::advance(Duration::from_secs(CONNECTION_SECONDS) - RESPONSE_RESERVE).await;
         let response = request.await.expect("client receives timeout response");
@@ -2309,7 +2335,10 @@ mod tests {
             .await
             .expect("open");
         let port = receipt.port;
-        let request = tokio::task::spawn_blocking(move || normal_request(port));
+        let request = studio_runtime_process::blocking_pool::spawn_blocking(
+            "runtime-services/browser",
+            move || normal_request(port),
+        );
         entered.notified().await;
         assert!(
             forwarder
@@ -2394,14 +2423,17 @@ mod tests {
             "x".repeat(HEADER_LIMIT + 1)
         )
         .into_bytes();
-        tokio::task::spawn_blocking(move || {
-            let mut s =
-                std::net::TcpStream::connect((Ipv4Addr::LOCALHOST, port)).expect("loopback");
-            s.write_all(&raw).expect("request");
-            let mut r = String::new();
-            s.read_to_string(&mut r).expect("response");
-            r
-        })
+        studio_runtime_process::blocking_pool::spawn_blocking(
+            "runtime-services/browser",
+            move || {
+                let mut s =
+                    std::net::TcpStream::connect((Ipv4Addr::LOCALHOST, port)).expect("loopback");
+                s.write_all(&raw).expect("request");
+                let mut r = String::new();
+                s.read_to_string(&mut r).expect("response");
+                r
+            },
+        )
         .await
         .expect("client");
         assert_eq!(

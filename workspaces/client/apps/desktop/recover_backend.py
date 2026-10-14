@@ -234,10 +234,55 @@ def desktop_tick(config, state, child=None):
     return child, "desktop started"
 
 
+# Seconds between two installer runs while a staged update waits (docs/peer-updates.md).
+UPDATE_RETRY_SECONDS = 60
+# Seconds that one installer run may take.
+UPDATE_INSTALL_SECONDS = 1800
+
+
+def pending_update_name(resources):
+    """The staged-update file name from the packaged update module, or None without it."""
+    scripts = backend_scripts(resources).resolve()
+    sys.path.insert(0, str(scripts))
+    try:
+        import codex_peer_updates
+        return codex_peer_updates.PENDING_FILE
+    except ImportError:
+        return None
+    finally:
+        sys.path.remove(str(scripts))
+
+
+def update_tick(filename, config, state, run=subprocess.run):
+    """Run the installer of this app when the backend staged an update from a paired server."""
+    name = pending_update_name(config["resources"])
+    if name is None or not (state / name).is_file():
+        return None
+    installer = Path(__file__).resolve().with_name("install_update.py")
+    if not installer.is_file():
+        return "update installer missing"
+    result = run([config["python"], "-B", str(installer), "--config", str(filename)],
+                 cwd=Path.home(), env=launch_environment(config, state), stdin=subprocess.DEVNULL,
+                 timeout=UPDATE_INSTALL_SECONDS, check=False)
+    return {0: "update installed", 75: "update waiting"}.get(result.returncode, "update failed")
+
+
+def own_code():
+    """The bytes of this agent's files in the installed app, or None when they are unreadable."""
+    try:
+        here = Path(__file__).resolve()
+        return tuple(path.read_bytes() for path in (here, here.with_name("install_update.py")) if path.exists())
+    except OSError:
+        return None
+
+
 def run(filename, interval=5):
     os.umask(0o077)
     state = filename.parent.resolve()
     stopping = False
+    # A manual install replaces the app under this running agent. Its code stays old in memory
+    # until launchd starts it again, so it exits when its files changed.
+    started_code = own_code()
 
     def stop(*_):
         nonlocal stopping
@@ -256,6 +301,8 @@ def run(filename, interval=5):
         fallback_pid = None
         fallback_start = None
         desktop_attempt = 0
+        update_attempt = 0
+        update_status = None
         previous = None
         while not stopping:
             try:
@@ -304,12 +351,27 @@ def run(filename, interval=5):
                     if desktop_status == "desktop started":
                         desktop_attempt = time.monotonic() + 60
                     status = f"{status}; {desktop_status}"
+                if time.monotonic() >= update_attempt:
+                    update_attempt = time.monotonic() + UPDATE_RETRY_SECONDS
+                    update_status = None
+                    update_status = update_tick(filename, config, state)
+                    if update_status == "update installed":
+                        # launchd starts this agent again from the new app; it starts the backend.
+                        print(json.dumps({"event": "backend-recovery", "status": update_status}), flush=True)
+                        return
+                if update_status:
+                    status = f"{status}; {update_status}"
             except (OSError, ValueError, KeyError, RuntimeError, subprocess.SubprocessError) as error:
                 # An unavailable or uncertain owner never authorizes a replacement.
                 status = f"waiting: {error}"
             if status != previous:
                 print(json.dumps({"event": "backend-recovery", "status": status}), flush=True)
                 previous = status
+            current_code = own_code()
+            if started_code is not None and current_code is not None and current_code != started_code:
+                # launchd starts this agent again from the installed app; the backend keeps running.
+                print(json.dumps({"event": "backend-recovery", "status": "agent code changed"}), flush=True)
+                return
             deadline = time.monotonic() + interval
             while not stopping and time.monotonic() < deadline:
                 time.sleep(min(.2, max(0, deadline - time.monotonic())))

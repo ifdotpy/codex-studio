@@ -2,6 +2,8 @@
 
 use rusqlite::{Connection, OptionalExtension, Transaction};
 use serde_json::{Value, json};
+use std::collections::HashMap;
+use std::sync::Arc;
 use studio_runtime_store::{StoreResult, system_reads as records};
 
 use crate::event_write::truthy;
@@ -83,9 +85,10 @@ fn exists_for_agent(
 
 /// Schema-validated snapshot; only the database loader can construct its contents.
 pub struct RoomDirectory {
-    agents: Vec<Value>,
+    agents: Arc<Vec<Value>>,
     projects: Vec<Value>,
-    peers: Vec<Value>,
+    peers: Arc<Vec<Value>>,
+    active_agent_indices: Arc<HashMap<String, usize>>,
 }
 impl RoomDirectory {
     pub(crate) fn load(tx: &Transaction<'_>) -> Result<Self, studio_runtime_store::StoreError> {
@@ -145,16 +148,30 @@ impl RoomDirectory {
                 }
             }
         }
+        let active_agent_indices = agents
+            .iter()
+            .enumerate()
+            .filter(|(_, agent)| !truthy(agent.get("deletedAt")))
+            .filter_map(|(index, agent)| {
+                agent
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .map(|id| (id.to_owned(), index))
+            })
+            .collect();
         Ok(Self {
-            agents,
+            agents: Arc::new(agents),
             projects,
-            peers,
+            peers: Arc::new(peers),
+            active_agent_indices: Arc::new(active_agent_indices),
         })
     }
     /// Recheck persisted inputs in the consumer's snapshot without resolving paths again.
     pub fn matches(&self, connection: &Connection) -> StoreResult<bool> {
-        Ok(self.agents == records::all(connection, "runtime_agents")?
-            && self.projects == records::all(connection, "runtime_projects")?)
+        Ok(
+            self.agents.as_ref() == &records::all(connection, "runtime_agents")?
+                && self.projects == records::all(connection, "runtime_projects")?,
+        )
     }
     pub(crate) fn agents(&self) -> &[Value] {
         &self.agents
@@ -180,8 +197,9 @@ impl RoomDirectory {
             None
         };
         Ok(RoomViewContext {
-            agents: self.agents.clone(),
-            peer_teams: self.peers.clone(),
+            agents: Arc::clone(&self.agents),
+            peer_teams: Arc::clone(&self.peers),
+            active_agent_indices: Arc::clone(&self.active_agent_indices),
             last_message,
             federation: if room["kind"] == "federated" {
                 records::get(tx, "runtime_federation_rooms", id)?
@@ -226,5 +244,33 @@ mod room_preparation_tests {
             RoomDirectory::prepare(&tx).is_err(),
             "filesystem preparation inside a transaction must refuse"
         );
+    }
+
+    #[test]
+    fn room_contexts_share_agents_peers_and_the_active_agent_index() {
+        let directory = RoomDirectory::resolve(
+            vec![
+                json!({"id":"agent-a"}),
+                json!({"id":"agent-b","deletedAt":"now"}),
+            ],
+            Vec::new(),
+        )
+        .expect("directory resolves");
+        let connection = Connection::open_in_memory().expect("database");
+        let room = json!({"id":"room"});
+        let first = directory
+            .for_room(&connection, &room, false)
+            .expect("first room context");
+        let second = directory
+            .for_room(&connection, &room, false)
+            .expect("second room context");
+
+        assert!(Arc::ptr_eq(&first.agents, &second.agents));
+        assert!(Arc::ptr_eq(&first.peer_teams, &second.peer_teams));
+        assert!(Arc::ptr_eq(
+            &first.active_agent_indices,
+            &second.active_agent_indices
+        ));
+        assert_eq!(first.active_agent_indices.len(), 1);
     }
 }

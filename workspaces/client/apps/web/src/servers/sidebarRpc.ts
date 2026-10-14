@@ -2,6 +2,8 @@ import { sidebarAgent } from "./sidebarSnapshot";
 import type { Agent } from "../types";
 import {
   ApiError,
+  NetworkTimeoutError,
+  READ_DEADLINE_MS,
   errorText,
   post,
   type PostBody,
@@ -18,6 +20,8 @@ type ErrorResponse = components["schemas"]["ErrorResponse"];
 type SidebarError = {
   message: string;
   status?: number;
+  // The window sends the same request again after a timeout.
+  timedOut?: boolean;
 } & Pick<
   ErrorResponse,
   | "location"
@@ -54,6 +58,7 @@ function copySidebarErrorFields(value: unknown): Partial<SidebarError> {
 /** Serialize only the documented API diagnostics that the sidebar can display. */
 export function serializeSidebarError(failure: unknown): SidebarError {
   const error: SidebarError = { message: errorText(failure) };
+  if (failure instanceof NetworkTimeoutError) error.timedOut = true;
   if (!(failure instanceof ApiError)) return error;
   error.status = failure.status;
   Object.assign(error, copySidebarErrorFields(failure.response));
@@ -120,7 +125,7 @@ export function createSidebarRpcClient(
     pending.delete(event.data.correlation);
     clearTimeout(request.timer);
     if (event.data.error) {
-      const { message, status, ...responseFields } = event.data.error;
+      const { message, status, timedOut, ...responseFields } = event.data.error;
       const diagnostics = copySidebarErrorFields(responseFields);
       request.reject(
         typeof status === "number"
@@ -135,7 +140,9 @@ export function createSidebarRpcClient(
                 ? diagnostics.location
                 : undefined,
             )
-          : new Error(message),
+          : timedOut === true
+            ? new NetworkTimeoutError()
+            : new Error(message),
       );
     } else request.resolve(event.data.result);
   };
@@ -167,7 +174,7 @@ export function createSidebarRpcClient(
           },
           value.action === "post"
             ? (value.options?.timeoutMs ?? 15000) + 2000
-            : 20000,
+            : READ_DEADLINE_MS + 5000,
         );
         pending.set(correlation, {
           frame,

@@ -385,6 +385,13 @@ export function useServerDiscovery(
           requestId: crypto.randomUUID(),
         });
       },
+      setAutoUpdate: (autoUpdate: boolean) => {
+        void run({
+          action: "settings",
+          autoUpdate,
+          requestId: crypto.randomUUID(),
+        });
+      },
     },
     setName: (serverId: string, label: string) =>
       run({ action: "name", serverId, label, requestId: crypto.randomUUID() }),

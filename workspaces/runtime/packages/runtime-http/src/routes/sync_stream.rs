@@ -38,19 +38,22 @@ use crate::schema::{API_SCHEMA_HASH_HEADER, api_schema_hash};
 pub(crate) async fn notify_resources(
     state: HttpState,
     body: Value,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<Json<crate::generated::ResourceNotifyAck>, ApiError> {
     let notifications = state.resource_notifications;
     let request_id = body["requestId"].clone();
-    tokio::task::spawn_blocking(move || notifications.publish_once(&body))
-        .await
-        .map_err(|_| ApiError::internal())?
-        .map_err(|error| match error {
-            ResourceNotifyError::Conflict => ApiError::new(StatusCode::CONFLICT, error.to_string()),
-            ResourceNotifyError::Invalid => ApiError::validation(vec![json!("body")]),
-            ResourceNotifyError::Unavailable => {
-                ApiError::new(StatusCode::SERVICE_UNAVAILABLE, error.to_string())
-            }
-        })?;
+    studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-http/routes/sync_stream",
+        move || notifications.publish_once(&body),
+    )
+    .await
+    .map_err(|_| ApiError::internal())?
+    .map_err(|error| match error {
+        ResourceNotifyError::Conflict => ApiError::new(StatusCode::CONFLICT, error.to_string()),
+        ResourceNotifyError::Invalid => ApiError::validation(vec![json!("body")]),
+        ResourceNotifyError::Unavailable => {
+            ApiError::new(StatusCode::SERVICE_UNAVAILABLE, error.to_string())
+        }
+    })?;
     Ok(Json(super::generated_json::<
         crate::generated::ResourceNotifyAck,
     >(
@@ -210,18 +213,22 @@ async fn active_panel_agents(
     if agents.is_empty() {
         return Ok(Vec::new());
     }
-    tokio::task::spawn_blocking(move || {
-        let connection = store.read().map_err(|_| ApiError::internal())?;
-        let mut active = Vec::new();
-        for id in agents {
-            let agent = AgentRepository::get(&connection, &AgentId::from(id.as_str()))
-                .map_err(|_| ApiError::internal())?;
-            if agent.is_some_and(|agent| !agent.extra.get("deletedAt").is_some_and(json_truthy)) {
-                active.push(id);
+    studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-http/routes/sync_stream",
+        move || {
+            let connection = store.read().map_err(|_| ApiError::internal())?;
+            let mut active = Vec::new();
+            for id in agents {
+                let agent = AgentRepository::get(&connection, &AgentId::from(id.as_str()))
+                    .map_err(|_| ApiError::internal())?;
+                if agent.is_some_and(|agent| !agent.extra.get("deletedAt").is_some_and(json_truthy))
+                {
+                    active.push(id);
+                }
             }
-        }
-        Ok(active)
-    })
+            Ok(active)
+        },
+    )
     .await
     .map_err(|_| ApiError::internal())?
 }
@@ -280,10 +287,13 @@ async fn read_entity_sequence(
         return Ok(0);
     }
     let store = store.ok_or_else(ApiError::internal)?;
-    let sequence = tokio::task::spawn_blocking(move || {
-        let connection = store.read()?;
-        SyncDocumentsRepository::entity_sequence(&connection)
-    })
+    let sequence = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-http/routes/sync_stream",
+        move || {
+            let connection = store.read()?;
+            SyncDocumentsRepository::entity_sequence(&connection)
+        },
+    )
     .await
     .map_err(|_| ApiError::internal())?
     .map_err(|_| ApiError::internal())?;

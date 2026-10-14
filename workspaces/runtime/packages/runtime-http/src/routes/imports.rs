@@ -31,24 +31,27 @@ pub(crate) fn routes() -> RouteGroup {
 async fn import_list(
     State(state): State<HttpState>,
     query: QueryParams,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<Json<crate::generated::ImportListResponse>, ApiError> {
     let account = query
         .nonempty_str("account_key")
         .unwrap_or("default")
         .to_owned();
     let cursor = query.nonempty_str("cursor").map(str::to_owned);
     let port = state.account_session.clone().ok_or_else(unavailable)?;
-    let result = tokio::task::spawn_blocking(move || {
-        let scope = port.current_scope(&account).ok_or_else(unavailable)?;
-        provider_request(
-            port.as_ref(),
-            &account,
-            &scope,
-            format!("import-list:{}", operation_nonce()),
-            "thread/list",
-            json!({"limit":50,"cursor":cursor}),
-        )
-    })
+    let result = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-http/routes/imports",
+        move || {
+            let scope = port.current_scope(&account).ok_or_else(unavailable)?;
+            provider_request(
+                port.as_ref(),
+                &account,
+                &scope,
+                format!("import-list:{}", operation_nonce()),
+                "thread/list",
+                json!({"limit":50,"cursor":cursor}),
+            )
+        },
+    )
     .await
     .map_err(|_| ApiError::internal())??;
     Ok(Json(super::generated_json::<
@@ -59,16 +62,25 @@ async fn import_list(
 async fn import_thread(
     State(state): State<HttpState>,
     ApiJson(body): ApiJson<crate::generated::ImportRequest>,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<Json<crate::generated::AgentResponse>, ApiError> {
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
     let account = body.account_key.clone().unwrap_or_else(|| "default".into());
     let thread_id = body.thread_id.clone();
     if let Some(id) = body.id.as_ref().and_then(|id| id.as_ref()) {
-        let saved = store.read().map_err(ApiError::stored)?;
-        if let Some(record) =
-            AgentRepository::get(&saved, &AgentId::from(id.as_str())).map_err(ApiError::stored)?
-        {
-            let value = record.value();
+        let id = id.clone();
+        let check_store = store.clone();
+        let existing = studio_runtime_process::blocking_pool::spawn_blocking(
+            "runtime-http/routes/imports",
+            move || {
+                let saved = check_store.read().map_err(ApiError::stored)?;
+                AgentRepository::get(&saved, &AgentId::from(id.as_str()))
+                    .map_err(ApiError::stored)
+                    .map(|record| record.map(|record| record.value()))
+            },
+        )
+        .await
+        .map_err(|_| ApiError::internal())??;
+        if let Some(value) = existing {
             if value.get("importedFrom").and_then(Value::as_str) != Some(&thread_id)
                 || value
                     .get("accountKey")
@@ -88,7 +100,7 @@ async fn import_thread(
     }
     let port = state.account_session.clone().ok_or_else(unavailable)?;
     let operation_id = body.id.clone().flatten().unwrap_or_else(operation_nonce);
-    let (thread, turns) = tokio::task::spawn_blocking({
+    let (thread, turns) = studio_runtime_process::blocking_pool::spawn_blocking("runtime-http/routes/imports", {
         let account = account.clone();
         let thread_id = thread_id.clone();
         move || {
@@ -195,9 +207,7 @@ async fn import_thread(
     // The source thread id is metadata, never an agent id.
     let Json(created) =
         super::agents_create::create_imported_agent(state, create, thread_id).await?;
-    Ok(Json(super::generated_json::<
-        crate::generated::AgentResponse,
-    >(created)?))
+    Ok(Json(created))
 }
 
 fn provider_request(

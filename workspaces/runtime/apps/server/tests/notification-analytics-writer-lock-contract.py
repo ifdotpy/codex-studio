@@ -574,11 +574,22 @@ class NotificationAnalyticsWriterContract(unittest.TestCase):
 
     def test_repeated_thread_start_failures_keep_one_bounded_fifo(self):
         limit = self.runtime.analytics_capture_status()['limit']
-        with patch.object(threading.Thread, 'start',
-                side_effect=RuntimeError('fixture thread start failure')) as start:
+        original_start = threading.Thread.start
+        start_attempts = []
+        def fail_analytics_worker(thread, *args, **kwargs):
+            if thread._target == self.runtime.analytics_capture_worker:
+                start_attempts.append(thread)
+                raise RuntimeError('fixture thread start failure')
+            return original_start(thread, *args, **kwargs)
+        with patch.object(threading.Thread, 'start', new=fail_analytics_worker):
+            unrelated_started = threading.Event()
+            unrelated = threading.Thread(target=unrelated_started.set)
+            unrelated.start()
+            self.assertTrue(unrelated_started.wait(HANG_GUARD_SECONDS))
+            unrelated.join()
             for number in range(1000):
                 self.runtime.schedule_analytics_captures([(self.sample, (number,), {}, 64)])
-        self.assertEqual(start.call_count, 1000)
+        self.assertEqual(len(start_attempts), 1000)
         state = self.runtime.analytics_capture_status()
         self.assertEqual(state['queued'], limit)
         self.assertEqual(state['active'], 0)

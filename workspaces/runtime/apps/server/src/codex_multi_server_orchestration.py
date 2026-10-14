@@ -25,6 +25,11 @@ from typing import Any, Protocol, cast
 import uuid
 import zlib
 
+from codex_peer_updates import (
+    ACTIONS as UPDATE_ACTIONS,
+    EXPORT_METADATA_SUFFIX as UPDATE_EXPORT_METADATA_SUFFIX,
+    EXPORT_SUFFIX as UPDATE_EXPORT_SUFFIX,
+)
 from codex_multi_server_transport_limits import (
     MULTI_SERVER_MAX_REQUEST_BYTES,
     MULTI_SERVER_MAX_REQUEST_LABEL,
@@ -102,7 +107,7 @@ def compact_receipt(action: str, result: dict[str, Any]) -> dict[str, Any]:
         # own receipt must not retain another copy of the command output.
         return {**result, 'value': {'requestId': result['value'].get('requestId'),
                                    'outcome': result['value'].get('outcome')}}
-    if action != 'chunk' or result.get('outcome') != 'applied':
+    if action not in {'chunk', 'update.chunk'} or result.get('outcome') != 'applied':
         return result
     return {**result, 'value': {k: v for k, v in result['value'].items() if k != 'data'}}
 
@@ -557,7 +562,7 @@ class MultiServerService:
         folder = self.runtime.root / 'server-exports'
         if folder.is_dir():
             for path in folder.iterdir():
-                if path.suffix in {'.bundle', '.partial'}:
+                if path.suffix in {'.bundle', '.partial', UPDATE_EXPORT_SUFFIX, UPDATE_EXPORT_METADATA_SUFFIX}:
                     try:
                         if path.stat().st_mtime < now - EXPORT_AGE:
                             path.unlink(missing_ok=True)
@@ -815,11 +820,12 @@ class MultiServerService:
             if row:
                 if row['signature'] != signature:
                     raise ValueError('This request id has different content')
-                if row['result'] and action not in {'chunk', 'exec_receipt'}:
+                if row['result'] and action not in {'chunk', 'exec_receipt', 'update.chunk'}:
                     return live_receipt(json.loads(row['result']))
                 # Preserve the crash boundary. Only an exact durable effect can
                 # reconcile a running receipt; no second execution is allowed.
                 if (row['state'] == 'waiting'
+                        or action in UPDATE_ACTIONS
                         or action in {'admit', 'projects', 'folders', 'git', 'chunk', 'directory', 'chat_read', 'context', 'exec_read', 'exec_receipt', 'move_validate', 'move_status', 'move_begin', 'move_chunk', 'move_activate', 'move_home_validate', 'move_route_ready', 'move_route_status', 'move_home_event', 'location_matches', 'location_info'}
                         or action == 'task' and payload.get('args', {}).get('action') in {'list', 'get', 'history'}
                         or action == 'complaint' and payload.get('args', {}).get('action') == 'read'):
@@ -1013,6 +1019,10 @@ class MultiServerService:
             return self._remote_spawn(principal, p, key)
         if action in {'projects', 'folders', 'git', 'export', 'chunk', 'release'}:
             return self._git_action(action, p, key)
+        if action.startswith('update.'):
+            # Updates from a paired server (docs/peer-updates.md). Reads only.
+            from codex_peer_updates import receive as receive_update
+            return receive_update(self.runtime.root, principal, action, p)
         with self.runtime.lock, self.runtime.db() as db:
             link_id = p.get('link')
             if not isinstance(link_id, str):

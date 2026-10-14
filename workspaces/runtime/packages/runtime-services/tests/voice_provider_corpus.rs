@@ -6,7 +6,7 @@ use std::fs;
 use std::path::Path;
 use std::process::Command;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime};
 use studio_runtime_providers::{Method, RequestId, RequestTicket};
 use studio_runtime_services::account_session_runtime::{
@@ -366,33 +366,31 @@ fn callback_actor_flushes_fallback_tail_and_loses_session_on_disconnect() {
 }
 
 fn seeded_store() -> (tempfile::TempDir, RuntimeStore) {
-    let root = if let Some(tmpfs) = std::env::var_os("STUDIO_RUNTIME_CORPUS_TMP") {
-        tempfile::Builder::new()
-            .prefix("voice-state-")
-            .tempdir_in(tmpfs)
-            .expect("temporary voice state root on configured tmpfs")
-    } else {
-        tempfile::tempdir().expect("temporary voice state root")
-    };
-    let python = python_test_support::prepared_python(
-        &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src"),
-    );
-    let template = root.path().join("python-template");
+    static TEMPLATE: OnceLock<tempfile::TempDir> = OnceLock::new();
+    let template = TEMPLATE.get_or_init(|| {
+        let template = fixture_directory();
+        let python = python_test_support::prepared_python(
+            &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src"),
+        );
+        let codex_home = template.path().join("codex-home");
+        let status = Command::new(python)
+            .arg(
+                Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("tests/voice_provider/prepare_state_template.py"),
+            )
+            .arg(template.path())
+            .env("CODEX_HOME", codex_home)
+            .status()
+            .expect("Python writes the disposable runtime fixture template");
+        assert!(status.success(), "Python fixture creation failed");
+        template
+    });
+    let root = fixture_directory();
     let state = root.path().join("state");
-    let codex_home = root.path().join("codex-home");
-    let status = Command::new(python)
-        .arg(
-            Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("tests/voice_provider/prepare_state_template.py"),
-        )
-        .arg(&template)
-        .env("CODEX_HOME", codex_home)
-        .status()
-        .expect("Python writes the disposable runtime fixture");
-    assert!(status.success(), "Python fixture creation failed");
     fs::create_dir(&state).expect("disposable clone state root");
     for database in ["canvas.sqlite3", "analytics.sqlite3"] {
-        fs::copy(template.join(database), state.join(database)).expect("clone Python template");
+        fs::copy(template.path().join(database), state.join(database))
+            .expect("clone Python template");
     }
     let store = RuntimeStore::open(Some(&state)).expect("open voice fixture store");
     store
@@ -430,6 +428,17 @@ fn seeded_store() -> (tempfile::TempDir, RuntimeStore) {
         })
         .expect("seed agent and session rows");
     (root, store)
+}
+
+fn fixture_directory() -> tempfile::TempDir {
+    if let Some(tmpfs) = std::env::var_os("STUDIO_RUNTIME_CORPUS_TMP") {
+        tempfile::Builder::new()
+            .prefix("voice-state-")
+            .tempdir_in(tmpfs)
+            .expect("temporary voice state root on configured tmpfs")
+    } else {
+        tempfile::tempdir().expect("temporary voice state root")
+    }
 }
 
 #[test]

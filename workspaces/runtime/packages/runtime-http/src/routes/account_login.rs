@@ -7,7 +7,6 @@ use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
 use serde::Deserialize;
-use serde_json::Value;
 use std::sync::Arc;
 use studio_runtime_services::account_driver::{
     AccountDriver, AccountDriverError, AuthProfile, ProviderAuthReader, SystemProviderAuthReader,
@@ -183,9 +182,12 @@ where
 {
     let before = driver.revision().map_err(account_error)?;
     let operation_driver = driver.clone();
-    let result = tokio::task::spawn_blocking(move || operation(&operation_driver))
-        .await
-        .map_err(|_| ApiError::internal())?;
+    let result = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-http/routes/account_login",
+        move || operation(&operation_driver),
+    )
+    .await
+    .map_err(|_| ApiError::internal())?;
     if driver.revision().map_err(account_error)? != before {
         state.event_wake.notify_one();
     }
@@ -243,10 +245,13 @@ async fn discover(
     State(state): State<HttpState>,
 ) -> Result<Json<crate::generated::AccountsResponse>, ApiError> {
     if let Some(port) = state.account_session.clone() {
-        let response = tokio::task::spawn_blocking(move || port.discover())
-            .await
-            .map_err(|_| ApiError::internal())?
-            .map_err(session_error)?;
+        let response = studio_runtime_process::blocking_pool::spawn_blocking(
+            "runtime-http/routes/account_login",
+            move || port.discover(),
+        )
+        .await
+        .map_err(|_| ApiError::internal())?
+        .map_err(session_error)?;
         state.event_wake.notify_one();
         return serde_json::from_value(response)
             .map(Json)
@@ -290,15 +295,18 @@ async fn discover(
 async fn codex_login(
     State(state): State<HttpState>,
     ApiJson(body): ApiJson<LoginRequest>,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<Json<crate::generated::AccountLoginResponse>, ApiError> {
     let port = state
         .account_session
         .clone()
         .ok_or_else(|| unavailable(CODEX_LOGIN[0]))?;
-    let result = tokio::task::spawn_blocking(move || port.login(body))
-        .await
-        .map_err(|_| ApiError::internal())?
-        .map_err(session_error)?;
+    let result = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-http/routes/account_login",
+        move || port.login(body),
+    )
+    .await
+    .map_err(|_| ApiError::internal())?
+    .map_err(session_error)?;
     state.event_wake.notify_one();
     super::generated_json::<crate::generated::AccountLoginResponse>(result).map(Json)
 }
@@ -308,10 +316,13 @@ async fn codex_login_cancel(
     ApiJson(body): ApiJson<CancelLoginBody>,
 ) -> Result<Json<crate::generated::AccountLoginResponse>, ApiError> {
     if let Some(port) = state.account_session.clone() {
-        let result = tokio::task::spawn_blocking(move || port.cancel_login(&body.login_id))
-            .await
-            .map_err(|_| ApiError::internal())?
-            .map_err(session_error)?;
+        let result = studio_runtime_process::blocking_pool::spawn_blocking(
+            "runtime-http/routes/account_login",
+            move || port.cancel_login(&body.login_id),
+        )
+        .await
+        .map_err(|_| ApiError::internal())?
+        .map_err(session_error)?;
         state.event_wake.notify_one();
         return serde_json::from_value(result)
             .map(Json)
@@ -335,15 +346,58 @@ async fn codex_login_cancel(
 async fn claude_profile(
     State(state): State<HttpState>,
     ApiJson(body): ApiJson<ProfileRequest>,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<Json<crate::generated::AccountsResponse>, ApiError> {
+    if let Some(account) = body.account_key.as_deref() {
+        let driver = state
+            .account_driver
+            .as_ref()
+            .ok_or_else(|| unavailable(CLAUDE_PROFILE[0]))?;
+        let current = driver
+            .claude_profile(account)
+            .map_err(|error| match error {
+                studio_runtime_services::account_driver::claude::ClaudeAccountError::Account(
+                    error,
+                ) => account_error(error),
+                error => ApiError::new(StatusCode::BAD_REQUEST, error.to_string()),
+            })?;
+        let home = current
+            .get("home")
+            .and_then(serde_json::Value::as_str)
+            .map(std::path::PathBuf::from)
+            .unwrap_or_default();
+        let normalize = |options| {
+            studio_runtime_services::account_session_runtime::normalize_profile(options, &home)
+                .map_err(session_error)
+        };
+        let previous = normalize(
+            current
+                .get("claudeOptions")
+                .and_then(serde_json::Value::as_object)
+                .cloned()
+                .unwrap_or_default(),
+        )?;
+        let requested = normalize(body.options.clone().unwrap_or_default())?;
+        if ["binaryPath", "configDir"]
+            .iter()
+            .any(|field| previous.get(*field) != requested.get(*field))
+        {
+            return Err(ApiError::new(
+                StatusCode::BAD_REQUEST,
+                "Add a separate Claude profile to change the executable or config directory",
+            ));
+        }
+    }
     let port = state
         .account_session
         .clone()
         .ok_or_else(|| unavailable(CLAUDE_PROFILE[0]))?;
-    let result = tokio::task::spawn_blocking(move || port.profile(body))
-        .await
-        .map_err(|_| ApiError::internal())?
-        .map_err(session_error)?;
+    let result = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-http/routes/account_login",
+        move || port.profile(body),
+    )
+    .await
+    .map_err(|_| ApiError::internal())?
+    .map_err(session_error)?;
     state.event_wake.notify_one();
     super::generated_json::<crate::generated::AccountsResponse>(result).map(Json)
 }

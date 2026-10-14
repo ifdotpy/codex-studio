@@ -250,7 +250,10 @@ async fn guest_call(
     call: impl FnOnce(&dyn GuestRpc) -> Result<Value, ProjectSecretsError> + Send + 'static,
 ) -> Result<Json<Value>, ApiError> {
     let rpc = guest(state)?;
-    let result = tokio::task::spawn_blocking(move || call(rpc.as_ref()))
+    let result = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-http/routes/host_secrets",
+        move || call(rpc.as_ref()),
+    )
         .await
         .map_err(|_| {
             let message = if mutation {
@@ -348,8 +351,7 @@ async fn setup(
     let profile = request_string(&body, "profile")?.to_owned();
     let region = request_string(&body, "region")?.to_owned();
     let settings = settings_dir(&state.state_dir);
-    let vm_state_dir =
-        studio_runtime_services::vault::linux_vm_state_dir(std::path::Path::new(&state.state_dir));
+    let vm_state_dir = state.vm_state_dir.clone();
     let (source, prefix) = studio_runtime_services::vault::prepare_new_vault(
         &vm_state_dir,
         &settings,
@@ -387,8 +389,7 @@ async fn setup_facts(
 ) -> Result<Json<Value>, ApiError> {
     let project_id = request_string(&body, "projectId")?;
     let requested_prefix = body.get("prefix").and_then(Value::as_str);
-    let vm_state_dir =
-        studio_runtime_services::vault::linux_vm_state_dir(std::path::Path::new(&state.state_dir));
+    let vm_state_dir = state.vm_state_dir.clone();
     studio_runtime_services::vault::prepare_setup_facts(
         &vm_state_dir,
         project_id,
@@ -913,6 +914,7 @@ mod tests {
             Some(guest) => state.with_project_secrets_guest_rpc(guest),
             None => state,
         };
+        state = state.with_vm_state_dir(state_dir.join("linux-vm"));
         state.vault_host_command = host_command;
         crate::router::router(state).expect("runtime HTTP router starts")
     }

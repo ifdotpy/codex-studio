@@ -210,8 +210,27 @@ class RequestContract(unittest.TestCase):
         self.assertEqual(self.runtime.tool_request(queued['id'])['outcome'], 'not_applied')
         self.assertEqual(self.runtime.tool_request(running['id'])['outcome'], 'unknown')
         self.assertEqual(self.runtime.tool_request(running['id'])['stage'], 'interrupted')
+        # 2026-10-14: a host_exec call of a surviving Claude chat waited for hours, because the
+        # interrupted receipt had no result for tool response recovery to send.
+        answer = json.loads(self.runtime.tool_request(running['id'])['result']['contentItems'][0]['text'])
+        self.assertEqual((answer['stage'], answer['outcome']), ('interrupted', 'unknown'))
+        self.assertIn('Nothing was repeated', answer['message'])
         self.assertEqual(self.runtime.tool_request(cached['id'])['outcome'], 'applied')
         self.assertFalse(self.runtime.begin_tool_request(running['id']))
+
+    def test_a_vm_chat_request_records_the_supervisor_of_its_own_child(self):
+        # 2026-10-14: the receipt of a Linux VM chat named the account's child, so tool response
+        # recovery never answered the VM child after a restart.
+        from types import SimpleNamespace
+        def native(handle):
+            return SimpleNamespace(supervisor_mode=True, proc=SimpleNamespace(
+                root=self.directory.name, handle=handle, generation=3))
+        self.runtime.servers = {'default': native('account:default')}
+        self.runtime.server_for = lambda account, connection: (
+            native('linux-worker:lead') if connection == 'linux-connection' else self.runtime.servers.get(account))
+        self.runtime.connection_ids['default'] = 'linux-connection'
+        record = self.runtime.reserve_tool_request(self.message(call='vm-call'), 'default', 'linux-connection')
+        self.assertEqual(record['supervisor']['handle'], 'linux-worker:lead')
 
     def test_restart_skips_and_logs_unsupported_legacy_lifecycle(self):
         unsupported = {

@@ -973,15 +973,17 @@ pub async fn execute(
 ) -> Result<Outcome> {
     let claim_store = store.clone();
     let claim_id = id.clone();
-    let request = tokio::task::spawn_blocking(move || {
-        claim_store.transaction_with(|tx| claim(tx, &claim_id, &ticket))
-    })
+    let request = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-services/native_actions",
+        move || claim_store.transaction_with(|tx| claim(tx, &claim_id, &ticket)),
+    )
     .await
     .map_err(|_| NativeError::Unknown)??;
     let receipt = send(session, &request, deadline).await?;
-    tokio::task::spawn_blocking(move || {
-        store.transaction_with(|tx| settle(tx, &id, &receipt, effects.as_ref()))
-    })
+    studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-services/native_actions",
+        move || store.transaction_with(|tx| settle(tx, &id, &receipt, effects.as_ref())),
+    )
     .await
     .map_err(|_| NativeError::Unknown)?
 }

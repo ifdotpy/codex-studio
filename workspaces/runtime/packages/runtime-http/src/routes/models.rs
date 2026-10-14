@@ -48,10 +48,13 @@ async fn models(
     let catalog = state.model_catalog.clone();
     catalog.set_account_session(state.account_session.clone());
     let driver = state.account_driver.clone();
-    let snapshot = tokio::task::spawn_blocking(move || match driver {
-        Some(driver) => driver.snapshot().map_err(|_| ApiError::internal()),
-        None => Ok(account_policy.accounts()),
-    })
+    let snapshot = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-http/routes/models",
+        move || match driver {
+            Some(driver) => driver.snapshot().map_err(|_| ApiError::internal()),
+            None => Ok(account_policy.accounts()),
+        },
+    )
     .await
     .map_err(|_| ApiError::internal())??;
     catalog.retain_accounts(&snapshot.accounts);
@@ -79,9 +82,22 @@ async fn account_catalog(
     >,
 ) -> Result<Value, (StatusCode, Value)> {
     let account = account_context(snapshot, account_key)?;
+    if account.provider == "claude" && session.is_none() {
+        return Err(catalog_pending());
+    }
     ensure_session(session, &account.key)
         .await
         .map_err(|error| {
+            if account.provider == "claude"
+                && matches!(
+                    &error,
+                    studio_runtime_services::account_session_runtime::AccountSessionError::Requires(
+                        _
+                    )
+                )
+            {
+                return catalog_pending();
+            }
             (
                 StatusCode::NOT_IMPLEMENTED,
                 json!({"error":error.to_string()}),
@@ -105,6 +121,13 @@ async fn account_catalog(
             json!({"error": if account.provider == "claude" { "Not implemented: requires provider-session/model-list" } else { UNAVAILABLE_MESSAGE }}),
         )),
     }
+}
+
+fn catalog_pending() -> (StatusCode, Value) {
+    (
+        StatusCode::BAD_REQUEST,
+        json!({"error": PENDING_MESSAGE, "catalogPending": true}),
+    )
 }
 
 async fn ensure_session(
@@ -349,7 +372,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn direct_claude_catalog_names_the_missing_provider_session_capability() {
+    async fn claude_catalog_without_a_session_is_pending_after_account_validation() {
         let snapshot =
             snapshot(json!({"id":"claude-account", "provider":"claude", "status":"ready"}));
         let error = account_catalog(
@@ -361,10 +384,10 @@ mod tests {
         )
         .await
         .expect_err("Claude requires its provider service");
-        assert_eq!(error.0, StatusCode::NOT_IMPLEMENTED);
+        assert_eq!(error.0, StatusCode::BAD_REQUEST);
         assert_eq!(
             error.1,
-            json!({"error":"Not implemented: requires provider-session/account-session"})
+            json!({"error":PENDING_MESSAGE,"catalogPending":true})
         );
     }
 

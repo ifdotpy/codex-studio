@@ -96,6 +96,19 @@ pub(crate) struct AccountRegistry {
     after_agent: BTreeMap<String, String>,
 }
 
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct AccountRegistryConfig {
+    pub(crate) accepted_archive_tick_enabled: bool,
+}
+
+impl Default for AccountRegistryConfig {
+    fn default() -> Self {
+        Self {
+            accepted_archive_tick_enabled: true,
+        }
+    }
+}
+
 #[derive(Clone)]
 pub(crate) struct AccountSessionBroker {
     sessions: Arc<
@@ -593,12 +606,14 @@ impl AccountRegistry {
     pub async fn new(
         store: Arc<RuntimeStore>,
         launcher: Arc<dyn AccountLauncher>,
+        config: AccountRegistryConfig,
     ) -> Result<Self, WorkerError> {
         Self::new_with_broker(
             store,
             launcher,
             Arc::new(Notify::new()),
             AccountSessionBroker::new(),
+            config,
         )
         .await
     }
@@ -608,13 +623,10 @@ impl AccountRegistry {
         launcher: Arc<dyn AccountLauncher>,
         monitor_dispatch_wake: Arc<Notify>,
         session_broker: AccountSessionBroker,
+        config: AccountRegistryConfig,
     ) -> Result<Self, WorkerError> {
         let bridge = StoreBridge::new(store.clone()).await?;
         bridge.set_monitor_dispatch_wake(monitor_dispatch_wake);
-        // The HTTP differential harness compares the synchronous work write
-        // boundary; the retry dispatcher has its own injected-clock tests.
-        let accepted_archive_tick_enabled =
-            std::env::var_os("STUDIO_TEST_DISABLE_ACCEPTED_ARCHIVE_TICK").is_none();
         let ensure_requests = session_broker.take_ensure_receiver()?;
         Ok(Self {
             store,
@@ -624,7 +636,7 @@ impl AccountRegistry {
             workers: BTreeMap::new(),
             session_broker,
             last_accepted_archive_tick: None,
-            accepted_archive_tick_enabled,
+            accepted_archive_tick_enabled: config.accepted_archive_tick_enabled,
             ensure_requests,
             after_account: String::new(),
             after_agent: BTreeMap::new(),
@@ -725,10 +737,12 @@ impl AccountRegistry {
         let store = self.store.clone();
         let after_account = self.after_account.clone();
         let after_agent = self.after_agent.clone();
-        let targets =
-            tokio::task::spawn_blocking(move || target_page(&store, &after_account, &after_agent))
-                .await
-                .map_err(|_| WorkerError::TaskFailed)??;
+        let targets = studio_runtime_process::blocking_pool::spawn_blocking(
+            "runtime-server/account_registry",
+            move || target_page(&store, &after_account, &after_agent),
+        )
+        .await
+        .map_err(|_| WorkerError::TaskFailed)??;
         let mut failure = None;
         for (account, pending_agents) in targets {
             if stopped() {
@@ -790,7 +804,7 @@ impl AccountRegistry {
     /// its durable radio_turn events use the same retained account workers.
     async fn tick_radio(&mut self) -> Result<(), WorkerError> {
         let store = self.store.clone();
-        let has_rooms = tokio::task::spawn_blocking(move || -> Result<bool, WorkerError> {
+        let has_rooms = studio_runtime_process::blocking_pool::spawn_blocking("runtime-server/account_registry", move || -> Result<bool, WorkerError> {
             let db = store.read()?;
             db.query_row(
                 "SELECT EXISTS(SELECT 1 FROM runtime_rooms WHERE json_type(record,'$.radio')='object')",
@@ -806,14 +820,17 @@ impl AccountRegistry {
         }
         let now = (self.radio_clock)();
         let store = self.store.clone();
-        let effects = tokio::task::spawn_blocking(move || {
-            let prepared = PreparedHost::load(&store)?;
-            prepared.recheck_paths()?;
-            store.transaction_with(|tx| {
-                let mut ingress = RuntimeRadioIngress;
-                radio_runtime::tick(tx, &prepared, &mut ingress, now)
-            })
-        })
+        let effects = studio_runtime_process::blocking_pool::spawn_blocking(
+            "runtime-server/account_registry",
+            move || {
+                let prepared = PreparedHost::load(&store)?;
+                prepared.recheck_paths()?;
+                store.transaction_with(|tx| {
+                    let mut ingress = RuntimeRadioIngress;
+                    radio_runtime::tick(tx, &prepared, &mut ingress, now)
+                })
+            },
+        )
         .await
         .map_err(|_| WorkerError::TaskFailed)?
         .map_err(|error| WorkerError::PreparationRefused(error.to_string()))?;
@@ -830,11 +847,20 @@ impl AccountRegistry {
             let sender = worker.radio_interrupt_sender();
             let store = self.store.clone();
             let now = (self.radio_clock)();
-            tokio::task::spawn_blocking(move || {
-                let prepared = PreparedHost::load(&store)?;
-                let mut transport = RuntimeRadioInterrupt { sender };
-                radio_runtime::handoff_interrupt(&store, &prepared, &effect, &mut transport, now)
-            })
+            studio_runtime_process::blocking_pool::spawn_blocking(
+                "runtime-server/account_registry",
+                move || {
+                    let prepared = PreparedHost::load(&store)?;
+                    let mut transport = RuntimeRadioInterrupt { sender };
+                    radio_runtime::handoff_interrupt(
+                        &store,
+                        &prepared,
+                        &effect,
+                        &mut transport,
+                        now,
+                    )
+                },
+            )
             .await
             .map_err(|_| WorkerError::TaskFailed)?
             .map_err(|error| WorkerError::PreparationRefused(error.to_string()))?;

@@ -214,7 +214,10 @@ async fn command(state: HttpState, body: Value) -> Result<Json<Value>, ApiError>
         "id":request_id,"room":id,"text":command,"delivery":"queue"
     }))
     .map_err(|_| ApiError::validation(vec![json!("body")]))?;
-    super::messages::post_message(State(state), ApiJson(message)).await
+    let receipt = super::messages::post_message(State(state), ApiJson(message)).await?;
+    serde_json::to_value(receipt.0)
+        .map(Json)
+        .map_err(|_| ApiError::internal())
 }
 
 fn control_error(error: ControlError) -> ApiError {

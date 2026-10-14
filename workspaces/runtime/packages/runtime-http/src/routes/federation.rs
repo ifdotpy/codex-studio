@@ -111,7 +111,7 @@ async fn signed_status() -> Result<Json<Value>, ApiError> {
 async fn manage(
     State(state): State<HttpState>,
     ApiJson(body): ApiJson<Value>,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<Json<crate::generated::FederationSnapshot>, ApiError> {
     let action = body
         .get("action")
         .and_then(Value::as_str)
@@ -119,10 +119,13 @@ async fn manage(
     match action {
         "status" => {
             let store = state.store.clone().ok_or_else(ApiError::internal)?;
-            let snapshot = tokio::task::spawn_blocking(move || federation::snapshot(&store))
-                .await
-                .map_err(|_| ApiError::internal())?
-                .map_err(map_service_error)?;
+            let snapshot = studio_runtime_process::blocking_pool::spawn_blocking(
+                "runtime-http/routes/federation",
+                move || federation::snapshot(&store),
+            )
+            .await
+            .map_err(|_| ApiError::internal())?
+            .map_err(map_service_error)?;
             Ok(Json(super::generated_json::<
                 crate::generated::FederationSnapshot,
             >(snapshot)?))
@@ -132,10 +135,13 @@ async fn manage(
             let store = state.store.clone().ok_or_else(ApiError::internal)?;
             let queue_signal = matches!(action, "create_room" | "approve_room");
             let wake = state.event_wake.clone();
-            let result = tokio::task::spawn_blocking(move || federation::manage(&store, &body))
-                .await
-                .map_err(|_| ApiError::internal())?
-                .map_err(map_service_error)?;
+            let result = studio_runtime_process::blocking_pool::spawn_blocking(
+                "runtime-http/routes/federation",
+                move || federation::manage(&store, &body),
+            )
+            .await
+            .map_err(|_| ApiError::internal())?
+            .map_err(map_service_error)?;
             if queue_signal {
                 wake.notify_one();
             }

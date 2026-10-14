@@ -4,7 +4,6 @@ from __future__ import annotations
 import ast
 import unittest
 import json
-import hashlib
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Literal, cast
@@ -529,7 +528,7 @@ class SchemaContractTests(unittest.TestCase):
     def test_generated_document_does_not_loosen_main_constraint_baseline(self) -> None:
         baseline_path = Path(__file__).with_name("openapi_constraint_baseline.json")
         manifest = json.loads(baseline_path.read_text(encoding="utf-8"))
-        self.assertEqual(manifest["sourceCommit"], "2602cb4e")
+        self.assertEqual(manifest["sourceCommit"], "a3024407")
         self.assertEqual(manifest["sourcePath"], "workspaces/runtime/packages/runtime-http/openapi.json")
         baseline_document = manifest["document"]
         self.assertIsInstance(baseline_document, dict)
@@ -539,92 +538,7 @@ class SchemaContractTests(unittest.TestCase):
         )
         candidate = constraint_snapshot(committed_document)
         loosenings, _tightenings = constraint_changes(baseline, candidate)
-        accepted_loosenings = {
-            ("/components/schemas/ConfigureRequest/properties/concurrency", "maximum"):
-                ("512.0", "2048.0", "Raises the approved subagent concurrency ceiling to support 2048 configured slots."),
-            ("/components/schemas/ConfigureRequest/properties/maxAgents", "maximum"):
-                ("1024.0", "2050.0", "Allows the lead, 2048 workers, and one queued worker."),
-            ("/components/schemas/ConversationRequest/properties/subagent_concurrency", "maximum"):
-                ("512.0", "2048.0", "Raises the approved subagent concurrency ceiling to support 2048 configured slots."),
-            ("/components/schemas/CreateAgentRequest/properties/concurrency", "maximum"):
-                ("512.0", "2048.0", "Raises the approved subagent concurrency ceiling to support 2048 configured slots."),
-            ("/components/schemas/CreateAgentRequest/properties/maxAgents", "maximum"):
-                ("1024.0", "2050.0", "Allows the lead, 2048 workers, and one queued worker."),
-            ("/paths/~1api~1agents/post/requestBody/content/application~1json/schema/properties/concurrency", "maximum"):
-                ("512.0", "2048.0", "Raises the approved subagent concurrency ceiling to support 2048 configured slots."),
-            ("/paths/~1api~1agents/post/requestBody/content/application~1json/schema/properties/maxAgents", "maximum"):
-                ("1024.0", "2050.0", "Allows the lead, 2048 workers, and one queued worker."),
-            ("/paths/~1api~1configure/post/requestBody/content/application~1json/schema/properties/concurrency", "maximum"):
-                ("512.0", "2048.0", "Raises the approved subagent concurrency ceiling to support 2048 configured slots."),
-            ("/paths/~1api~1configure/post/requestBody/content/application~1json/schema/properties/maxAgents", "maximum"):
-                ("1024.0", "2050.0", "Allows the lead, 2048 workers, and one queued worker."),
-            ("/paths/~1api~1conversation/post/requestBody/content/application~1json/schema/properties/subagent_concurrency", "maximum"):
-                ("512.0", "2048.0", "Raises the approved subagent concurrency ceiling to support 2048 configured slots."),
-            ("/components/schemas/DraftDocumentInput/properties/deleted", "property"):
-                ("absent from closed object", "accepted property", "Adds the deleted state to the draft input DTO."),
-            ("/components/schemas/DraftPushRequest/properties/rows/items/properties/newDocumentState/properties/deleted", "property"):
-                ("absent from closed object", "accepted property", "Adds the deleted state to the nested draft push DTO."),
-            ("/components/schemas/DraftPushRow/properties/newDocumentState/properties/deleted", "property"):
-                ("absent from closed object", "accepted property", "Adds the deleted state to the draft push row DTO."),
-            ("/components/schemas/ErrorResponse/properties/location", "property"):
-                ("absent from closed object", "accepted property", "Adds the optional error location field."),
-            ("/components/schemas/ErrorResponse/properties/location", "@nullable"):
-                ("None", "True", "Allows a null error location."),
-            ("/components/schemas/ErrorResponse/properties/location", "@nullableBranch"):
-                ("None", "['{\"items\":{\"type\":\"string\"}}']", "Adds the nullable branch for the error location field."),
-            ("/components/schemas/RuleList/properties/rules/items/properties/fingerprint", "@nullableBranch"):
-                ("sha256:56c216b5c10586d052770d6813aecaff1352ecf11d836081bf2f7426c961cff6", "sha256:0da4a39db36966f70408d5e4a554f4051ea5f0de4ad7aff40b512e27109f4a1c", "Publishes the recursively typed JSON value for a rule fingerprint; the runtime already accepts nested JSON values."),
-            ("/components/schemas/RuleRecordResponse/properties/fingerprint", "@nullableBranch"):
-                ("sha256:56c216b5c10586d052770d6813aecaff1352ecf11d836081bf2f7426c961cff6", "sha256:0da4a39db36966f70408d5e4a554f4051ea5f0de4ad7aff40b512e27109f4a1c", "Publishes the recursively typed JSON value for a rule fingerprint; the runtime already accepts nested JSON values."),
-            ("/paths/~1api~1sync~1drafts/post/requestBody/content/application~1json/schema/properties/rows/items/properties/newDocumentState/properties/deleted", "property"):
-                ("absent from closed object", "accepted property", "Publishes the deleted state in the sync drafts request schema."),
-            ("/paths/~1api~1analytics/get/operationParameters/query/from_time", "parameter"):
-                ("'absent'", "'present'", "Documents the client's from_time filter, which the insights model maps to its legacy 'from' option."),
-            ("/paths/~1api~1analytics/get/operationParameters/query/to_time", "parameter"):
-                ("'absent'", "'present'", "Documents the client's to_time filter, which the insights model maps to its legacy 'to' option."),
-            ("/paths/~1api~1monitor~1log/get/operationParameters/header/Range", "parameter"):
-                ("'absent'", "'present'", "Documents the standard optional HTTP Range header already interpreted by the handler."),
-            ("/paths/~1api~1sync~1stream/get/operationParameters/header/Last-Event-ID", "parameter"):
-                ("'absent'", "'present'", "Documents the optional event cursor header now parsed by the shared safe-integer type."),
-            ("/paths/~1api~1sync~1stream/get/operationParameters/header/X-Codex-Sync-Protocol", "parameter"):
-                ("'absent'", "'present'", "Documents the optional protocol negotiation header already read by the stream handler."),
-            ("/paths/~1api~1sync~1stream/get/operationParameters/query/apiSchema", "parameter"):
-                ("'absent'", "'present'", "Documents the optional API schema query used by the existing client compatibility handshake."),
-            ("/components/schemas/SupervisorHandle/properties/jobIdentity", "property"):
-                ("absent from closed object", "accepted property", "Documents the optional nullable job identity already emitted by supervisor handles."),
-            ("/components/schemas/SupervisorHandle/properties/jobIdentity", "@nullable"):
-                ("None", "True", "Supervisor handles may emit a null job identity."),
-            ("/components/schemas/SupervisorHandle/properties/jobIdentity", "@nullableBranch"):
-                ("None", "['{}']", "Adds the nullable branch for the existing supervisor job identity."),
-            ("/components/schemas/SupervisorHealth/properties/handles/items/properties/jobIdentity", "property"):
-                ("absent from closed object", "accepted property", "Publishes the optional nullable job identity on supervisor health handles."),
-            ("/components/schemas/SupervisorHealth/properties/handles/items/properties/jobIdentity", "@nullable"):
-                ("None", "True", "Supervisor health handles may emit a null job identity."),
-            ("/components/schemas/SupervisorHealth/properties/handles/items/properties/jobIdentity", "@nullableBranch"):
-                ("None", "['{}']", "Adds the nullable branch for the existing supervisor health job identity."),
-        }
-        def accepted_fragment(pointer: str, value: str) -> str:
-            if pointer in {
-                "/components/schemas/RuleList/properties/rules/items/properties/fingerprint",
-                "/components/schemas/RuleRecordResponse/properties/fingerprint",
-            }:
-                return "sha256:" + hashlib.sha256(value.encode()).hexdigest()
-            return value
-
-        self.assertEqual(
-            {
-                (
-                    item["pointer"], item["constraint"],
-                    accepted_fragment(item["pointer"], item["baseline"]),
-                    accepted_fragment(item["pointer"], item["candidate"]),
-                )
-                for item in loosenings
-            },
-            {
-                (path, constraint, before, after)
-                for (path, constraint), (before, after, _reason) in accepted_loosenings.items()
-            },
-        )
+        self.assertEqual(loosenings, [])
 
     def test_constraint_diff_detects_five_removed_constraints(self) -> None:
         baseline_doc: dict[str, JsonValue] = {

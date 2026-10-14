@@ -67,19 +67,22 @@ pub(crate) fn routes() -> RouteGroup {
 async fn finder_view(
     State(state): State<HttpState>,
     params: QueryParams,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<Json<crate::generated::FinderViewApiAgentsFinderViewGetResponse>, ApiError> {
     let agent_id = params
         .nonempty_str("agent")
         .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "Supply an agent ID"))?;
     let store = state.store.as_ref().ok_or_else(ApiError::internal)?;
     let store = std::sync::Arc::clone(store);
     let agent_id = agent_id.to_owned();
-    let agent = tokio::task::spawn_blocking(move || {
-        let connection = store.read().map_err(|_| ApiError::internal())?;
-        WorkspaceViewsRepository::agent(&connection, &agent_id)
-            .map_err(|_| ApiError::internal())?
-            .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "Unknown managed agent"))
-    })
+    let agent = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-http/routes/catalog_agent",
+        move || {
+            let connection = store.read().map_err(|_| ApiError::internal())?;
+            WorkspaceViewsRepository::agent(&connection, &agent_id)
+                .map_err(|_| ApiError::internal())?
+                .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "Unknown managed agent"))
+        },
+    )
     .await
     .map_err(|_| ApiError::internal())??;
     let record = agent.value();
@@ -98,7 +101,7 @@ async fn finder_view(
 async fn skills(
     State(state): State<HttpState>,
     params: QueryParams,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<Json<crate::generated::SkillsResponse>, ApiError> {
     let agent_id = required_agent(&params)?;
     let agent = read_agent(&state, agent_id).await?;
     ensure_live_agent(&agent)?;
@@ -138,7 +141,7 @@ async fn skills(
 async fn capabilities(
     State(state): State<HttpState>,
     params: QueryParams,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<Json<crate::generated::CapabilitiesResponse>, ApiError> {
     let agent_id = required_agent(&params)?;
     let agent = read_agent(&state, agent_id).await?;
     ensure_live_agent(&agent)?;
@@ -170,14 +173,17 @@ async fn capabilities(
     let store = state.store.as_ref().ok_or_else(ApiError::internal)?;
     let store = std::sync::Arc::clone(store);
     let observed_agent_id = agent_id.to_owned();
-    let observed = tokio::task::spawn_blocking(move || {
-        let connection = store.read().map_err(|_| ApiError::internal())?;
-        studio_runtime_store::CapabilityReadsRepository::observed_names(
-            &connection,
-            &observed_agent_id,
-        )
-        .map_err(|_| ApiError::internal())
-    })
+    let observed = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-http/routes/catalog_agent",
+        move || {
+            let connection = store.read().map_err(|_| ApiError::internal())?;
+            studio_runtime_store::CapabilityReadsRepository::observed_names(
+                &connection,
+                &observed_agent_id,
+            )
+            .map_err(|_| ApiError::internal())
+        },
+    )
     .await
     .map_err(|_| ApiError::internal())??;
     let at = std::time::SystemTime::now()
@@ -248,12 +254,15 @@ async fn native_command(
     let store = state.store.as_ref().ok_or_else(ApiError::internal)?;
     let store = std::sync::Arc::clone(store);
     let task_id = body.id.clone();
-    let task = tokio::task::spawn_blocking(move || {
-        let connection = store.read().map_err(|_| ApiError::internal())?;
-        WorkspaceViewsRepository::task(&connection, &task_id)
-            .map_err(|_| ApiError::internal())?
-            .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "Unknown task"))
-    })
+    let task = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-http/routes/catalog_agent",
+        move || {
+            let connection = store.read().map_err(|_| ApiError::internal())?;
+            WorkspaceViewsRepository::task(&connection, &task_id)
+                .map_err(|_| ApiError::internal())?
+                .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "Unknown task"))
+        },
+    )
     .await
     .map_err(|_| ApiError::internal())??;
     if task.get("kind").and_then(Value::as_str) != Some("command")
@@ -313,7 +322,7 @@ async fn native_command(
 async fn sync_notify(
     State(state): State<HttpState>,
     ApiJson(body): ApiJson<Value>,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<Json<crate::generated::ResourceNotifyAck>, ApiError> {
     super::sync_stream::notify_resources(state, body).await
 }
 
@@ -359,13 +368,16 @@ async fn read_agent(state: &HttpState, agent_id: &str) -> Result<Value, ApiError
     let store = state.store.as_ref().ok_or_else(ApiError::internal)?;
     let store = std::sync::Arc::clone(store);
     let agent_id = agent_id.to_owned();
-    tokio::task::spawn_blocking(move || {
-        let connection = store.read().map_err(|_| ApiError::internal())?;
-        WorkspaceViewsRepository::agent(&connection, &agent_id)
-            .map_err(|_| ApiError::internal())?
-            .map(|agent| agent.value())
-            .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "Unknown managed agent"))
-    })
+    studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-http/routes/catalog_agent",
+        move || {
+            let connection = store.read().map_err(|_| ApiError::internal())?;
+            WorkspaceViewsRepository::agent(&connection, &agent_id)
+                .map_err(|_| ApiError::internal())?
+                .map(|agent| agent.value())
+                .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "Unknown managed agent"))
+        },
+    )
     .await
     .map_err(|_| ApiError::internal())?
 }

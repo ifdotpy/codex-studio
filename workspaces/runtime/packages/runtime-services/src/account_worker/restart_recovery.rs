@@ -35,14 +35,17 @@ pub(super) fn start_first_pass(first_pass: FirstPass) -> tokio::task::JoinHandle
     tokio::spawn(async move {
         let store = first_pass.bridge.store.clone();
         let request_scope = first_pass.scope.clone();
-        let result = tokio::task::spawn_blocking(move || {
-            reconcile_first_pass(
-                &store,
-                &first_pass.account,
-                request_scope,
-                first_pass.session,
-            )
-        })
+        let result = studio_runtime_process::blocking_pool::spawn_blocking(
+            "runtime-services/account_worker/restart_recovery",
+            move || {
+                reconcile_first_pass(
+                    &store,
+                    &first_pass.account,
+                    request_scope,
+                    first_pass.session,
+                )
+            },
+        )
         .await;
         if let Ok(Ok(result)) = result {
             if let Some(streams) = result.streams

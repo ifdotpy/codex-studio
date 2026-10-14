@@ -112,6 +112,14 @@ active work running:
    Keep `Codex Studio.previous.app` until the new app opens successfully; remove
    it later if desired. Do not launch both copies.
 
+The package writes the build stamp `Contents/Resources/studio-build.json` and
+includes `Contents/Resources/install_update.py`. After you install a build on one
+Mac, its paired Macs can install it without these steps: their backends pull the
+newer build, and their recovery LaunchAgents run the same swap with
+`install_update.py`. The receipt is `update-receipt.json` in the state directory.
+See [Updates from a paired server](../../../../docs/peer-updates.md). An app
+installed before this change has no installer; install it once by hand.
+
 ## Native bridge
 
 `bridge.d.ts` defines `window.codexDesktop`. The bridge is available only in the workspace main frame.

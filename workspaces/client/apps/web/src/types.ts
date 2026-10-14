@@ -77,6 +77,8 @@ type ProjectionSnapshotFields = {
   chats: Chat[];
   nodes: Array<Agent | Chat>;
   edges: Edge[];
+  /** False while the first sync pull of this projection still runs: records can be missing. */
+  entitiesComplete?: boolean;
 };
 
 export type Snapshot = ProjectionSnapshotFields & { runtime: SnapshotRuntime };

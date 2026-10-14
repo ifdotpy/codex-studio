@@ -25,7 +25,7 @@ use thiserror::Error;
 
 use crate::PtyHost;
 use crate::child_priority::ChildPriority;
-use crate::supervisor_identity::{signal_verified_group_member, start_time};
+use crate::supervisor_identity::{ProcStat, boot_id, signal_verified_group_member, start_time};
 
 #[cfg(test)]
 type BeforeKillHook = Box<dyn Fn(bool) + Send>;
@@ -534,18 +534,17 @@ impl PtyIdentity {
 fn process_identity(pid: i32) -> Option<PtyIdentity> {
     let pid = u32::try_from(pid).ok()?;
     let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
-    let (_, fields) = stat.rsplit_once(')')?;
-    let fields = fields.split_whitespace().collect::<Vec<_>>();
-    let process_group = fields.get(2)?.parse().ok()?;
-    let session = fields.get(3)?.parse().ok()?;
-    let start = start_time(pid, false).ok()??;
-    let (boot_id, ticks) = start.strip_prefix("linux:")?.split_once(':')?;
+    let stat = ProcStat::parse(&stat).ok()?;
+    if stat.state == 'Z' {
+        return None;
+    }
+    let boot_id = boot_id().ok()?;
     Some(PtyIdentity {
         pid,
-        process_group,
-        session,
-        start_time_ticks: ticks.parse().ok()?,
-        boot_id: boot_id.to_owned(),
+        process_group: stat.process_group,
+        session: stat.session,
+        start_time_ticks: stat.start_ticks,
+        boot_id,
     })
 }
 
@@ -560,6 +559,9 @@ fn session_groups(session: u32) -> Vec<SessionGroup> {
     let Ok(entries) = std::fs::read_dir("/proc") else {
         return Vec::new();
     };
+    let Ok(boot_id) = boot_id() else {
+        return Vec::new();
+    };
     for entry in entries.flatten() {
         let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
             continue;
@@ -570,25 +572,19 @@ fn session_groups(session: u32) -> Vec<SessionGroup> {
         let Ok(raw) = std::fs::read_to_string(entry.path().join("stat")) else {
             continue;
         };
-        let Some((_, tail)) = raw.rsplit_once(')') else {
+        let Ok(stat) = ProcStat::parse(&raw) else {
             continue;
         };
-        let fields = tail.split_whitespace().collect::<Vec<_>>();
-        if fields.first() == Some(&"Z")
-            || fields.get(3).and_then(|v| v.parse::<u32>().ok()) != Some(session)
-        {
+        if stat.state == 'Z' || stat.session != session {
             continue;
         }
-        let Some(group) = fields.get(2).and_then(|v| v.parse::<u32>().ok()) else {
-            continue;
-        };
-        let Some(start_time) = start_time(pid, false).ok().flatten() else {
-            continue;
-        };
         groups
-            .entry(group)
+            .entry(stat.process_group)
             .or_default()
-            .push(GroupMember { pid, start_time });
+            .push(GroupMember {
+                pid,
+                start_time: stat.start_identity(&boot_id),
+            });
     }
     groups
         .into_iter()
@@ -606,22 +602,20 @@ fn session_groups(_session: u32) -> Vec<SessionGroup> {
 
 #[cfg(target_os = "linux")]
 fn has_live_anchor(groups: &[SessionGroup], session: u32) -> bool {
+    let Ok(boot_id) = boot_id() else {
+        return false;
+    };
     groups.iter().any(|group| {
         group.members.iter().any(|member| {
-            let current_group_session =
-                std::fs::read_to_string(format!("/proc/{}/stat", member.pid))
-                    .ok()
-                    .and_then(|stat| {
-                        let (_, tail) = stat.rsplit_once(')')?;
-                        let fields = tail.split_whitespace().collect::<Vec<_>>();
-                        Some((
-                            fields.get(2)?.parse::<u32>().ok()?,
-                            fields.get(3)?.parse::<u32>().ok()?,
-                        ))
-                    });
-            current_group_session == Some((group.id, session))
-                && start_time(member.pid, false).ok().flatten().as_deref()
-                    == Some(&member.start_time)
+            let current = std::fs::read_to_string(format!("/proc/{}/stat", member.pid))
+                .ok()
+                .and_then(|raw| ProcStat::parse(&raw).ok());
+            current.is_some_and(|stat| {
+                stat.state != 'Z'
+                    && stat.process_group == group.id
+                    && stat.session == session
+                    && stat.start_identity(&boot_id) == member.start_time
+            })
         })
     })
 }

@@ -48,7 +48,7 @@ pub(crate) fn routes() -> RouteGroup {
 async fn transcript_page(
     State(state): State<HttpState>,
     query: QueryParams,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<Json<crate::generated::TranscriptPageResponse>, ApiError> {
     let request = PageRequest {
         before: query
             .typed_value("before")
@@ -72,21 +72,22 @@ async fn read_page(
     query: QueryParams,
     request: PageRequest,
     native_fallback: bool,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<Json<crate::generated::TranscriptPageResponse>, ApiError> {
     let agent = query
         .typed_value("id")
         .and_then(Value::as_str)
         .unwrap_or_default()
         .to_owned();
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
-    let value = tokio::task::spawn_blocking(move || {
-        match transcript_runtime::page(&store, &agent, &request) {
+    let value = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-http/routes/transcript",
+        move || match transcript_runtime::page(&store, &agent, &request) {
             Err(TranscriptError::UnknownMessage) if native_fallback => Err(
                 TranscriptError::RequiresDependency(CANVAS_DEPENDENCIES[0].name()),
             ),
             result => result,
-        }
-    })
+        },
+    )
     .await
     .map_err(|_| ApiError::internal())?
     .map_err(map_transcript_error)?;
@@ -98,7 +99,7 @@ async fn read_page(
 async fn transcript_item(
     State(state): State<HttpState>,
     query: QueryParams,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<Json<crate::generated::TranscriptItemResponse>, ApiError> {
     let agent = query
         .typed_value("id")
         .and_then(Value::as_str)
@@ -110,10 +111,13 @@ async fn transcript_item(
         .unwrap_or_default()
         .to_owned();
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
-    let value = tokio::task::spawn_blocking(move || transcript::item(&store, &agent, &identity))
-        .await
-        .map_err(|_| ApiError::internal())?
-        .map_err(map_transcript_error)?;
+    let value = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-http/routes/transcript",
+        move || transcript::item(&store, &agent, &identity),
+    )
+    .await
+    .map_err(|_| ApiError::internal())?
+    .map_err(map_transcript_error)?;
     Ok(Json(super::generated_json::<
         crate::generated::TranscriptItemResponse,
     >(value)?))
@@ -122,7 +126,7 @@ async fn transcript_item(
 async fn transcript_search(
     State(state): State<HttpState>,
     query: QueryParams,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<Json<crate::generated::TranscriptSearchResponse>, ApiError> {
     let agent = query
         .typed_value("id")
         .and_then(Value::as_str)
@@ -138,11 +142,13 @@ async fn transcript_search(
         .and_then(Value::as_i64)
         .unwrap_or(100);
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
-    let value =
-        tokio::task::spawn_blocking(move || transcript::search(&store, &agent, &search, limit))
-            .await
-            .map_err(|_| ApiError::internal())?
-            .map_err(map_transcript_error)?;
+    let value = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-http/routes/transcript",
+        move || transcript::search(&store, &agent, &search, limit),
+    )
+    .await
+    .map_err(|_| ApiError::internal())?
+    .map_err(map_transcript_error)?;
     Ok(Json(super::generated_json::<
         crate::generated::TranscriptSearchResponse,
     >(value)?))
@@ -151,17 +157,20 @@ async fn transcript_search(
 async fn search_item(
     State(state): State<HttpState>,
     query: QueryParams,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<Json<crate::generated::SearchItemResponse>, ApiError> {
     let identity = query
         .typed_value("id")
         .and_then(Value::as_str)
         .unwrap_or_default()
         .to_owned();
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
-    let value = tokio::task::spawn_blocking(move || transcript::search_item(&store, &identity))
-        .await
-        .map_err(|_| ApiError::internal())?
-        .map_err(map_transcript_error)?;
+    let value = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-http/routes/transcript",
+        move || transcript::search_item(&store, &identity),
+    )
+    .await
+    .map_err(|_| ApiError::internal())?
+    .map_err(map_transcript_error)?;
     Ok(Json(super::generated_json::<
         crate::generated::SearchItemResponse,
     >(value)?))
@@ -170,7 +179,7 @@ async fn search_item(
 async fn search(
     State(state): State<HttpState>,
     query: QueryParams,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<Json<crate::generated::SearchResponse>, ApiError> {
     let search = query
         .typed_value("q")
         .and_then(Value::as_str)
@@ -181,11 +190,13 @@ async fn search(
         .and_then(Value::as_i64)
         .unwrap_or(50);
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
-    let value =
-        tokio::task::spawn_blocking(move || transcript::search_work(&store, &search, None, limit))
-            .await
-            .map_err(|_| ApiError::internal())?
-            .map_err(map_transcript_error)?;
+    let value = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-http/routes/transcript",
+        move || transcript::search_work(&store, &search, None, limit),
+    )
+    .await
+    .map_err(|_| ApiError::internal())?
+    .map_err(map_transcript_error)?;
     Ok(Json(super::generated_json::<
         crate::generated::SearchResponse,
     >(value)?))
@@ -194,7 +205,7 @@ async fn search(
 async fn canvas_transcript(
     State(state): State<HttpState>,
     query: QueryParams,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<Json<crate::generated::TranscriptPageResponse>, ApiError> {
     read_page(state, query, PageRequest::default(), true).await
 }
 

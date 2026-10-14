@@ -50,7 +50,7 @@ async fn stop(
     State(state): State<HttpState>,
     ports: Option<Extension<Arc<dyn LifecyclePorts>>>,
     ApiJson(body): ApiJson<generated::StopRequest>,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<Json<generated::StopResponse>, ApiError> {
     dispatch::<generated::StopResponse>(
         state,
         Action::Stop {
@@ -68,7 +68,7 @@ async fn delete(
     State(state): State<HttpState>,
     ports: Option<Extension<Arc<dyn LifecyclePorts>>>,
     ApiJson(body): ApiJson<generated::IdRequest>,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<Json<generated::DeletedResponse>, ApiError> {
     dispatch::<generated::DeletedResponse>(
         state,
         Action::Delete { target: body.id },
@@ -121,55 +121,58 @@ async fn native_action(
             .as_str()
             .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "A turn ID is required"))?
             .to_owned();
-        let result = tokio::task::spawn_blocking(move || {
-            let connection = store.read().map_err(|_| ApiError::internal())?;
-            let record = AgentRepository::get(&connection, &AgentId::from(agent.as_str()))
-                .map_err(|_| ApiError::internal())?
-                .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "Agent not found"))?;
-            let account = record
-                .extra
-                .get("accountKey")
-                .and_then(Value::as_str)
-                .unwrap_or("default")
-                .to_owned();
-            let epoch = record.value()["epoch"]
-                .as_i64()
-                .ok_or_else(ApiError::internal)?;
-            let actor = studio_runtime_services::account_worker::retained::RequestActor {
-                agent: agent.clone(),
-                epoch,
-            };
-            drop(connection);
-            let account_driver = account_driver.ok_or_else(|| {
-                ApiError::new(
-                    StatusCode::NOT_IMPLEMENTED,
-                    "Not implemented: requires account-driver/provider-home",
+        let result = studio_runtime_process::blocking_pool::spawn_blocking(
+            "runtime-http/routes/agent_management",
+            move || {
+                let connection = store.read().map_err(|_| ApiError::internal())?;
+                let record = AgentRepository::get(&connection, &AgentId::from(agent.as_str()))
+                    .map_err(|_| ApiError::internal())?
+                    .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "Agent not found"))?;
+                let account = record
+                    .extra
+                    .get("accountKey")
+                    .and_then(Value::as_str)
+                    .unwrap_or("default")
+                    .to_owned();
+                let epoch = record.value()["epoch"]
+                    .as_i64()
+                    .ok_or_else(ApiError::internal)?;
+                let actor = studio_runtime_services::account_worker::retained::RequestActor {
+                    agent: agent.clone(),
+                    epoch,
+                };
+                drop(connection);
+                let account_driver = account_driver.ok_or_else(|| {
+                    ApiError::new(
+                        StatusCode::NOT_IMPLEMENTED,
+                        "Not implemented: requires account-driver/provider-home",
+                    )
+                })?;
+                let accounts = account_driver
+                    .snapshot()
+                    .map_err(|_| ApiError::internal())?;
+                let provider_home = accounts
+                    .accounts
+                    .iter()
+                    .find(|row| row["id"] == account)
+                    .and_then(|row| row["home"].as_str())
+                    .ok_or_else(|| ApiError::internal())?;
+                let mut resources = resources.as_ref().clone();
+                resources.account_home = provider_home.to_owned();
+                let resources = Arc::new(resources);
+                studio_runtime_services::safety_buffering::execute_action(
+                    &store,
+                    port.as_ref(),
+                    &resources,
+                    lifecycle.as_deref(),
+                    &agent,
+                    actor,
+                    &turn_id,
+                    &safety_action,
                 )
-            })?;
-            let accounts = account_driver
-                .snapshot()
-                .map_err(|_| ApiError::internal())?;
-            let provider_home = accounts
-                .accounts
-                .iter()
-                .find(|row| row["id"] == account)
-                .and_then(|row| row["home"].as_str())
-                .ok_or_else(|| ApiError::internal())?;
-            let mut resources = resources.as_ref().clone();
-            resources.account_home = provider_home.to_owned();
-            let resources = Arc::new(resources);
-            studio_runtime_services::safety_buffering::execute_action(
-                &store,
-                port.as_ref(),
-                &resources,
-                lifecycle.as_deref(),
-                &agent,
-                actor,
-                &turn_id,
-                &safety_action,
-            )
-            .map_err(safety_error)
-        })
+                .map_err(safety_error)
+            },
+        )
         .await
         .map_err(|_| ApiError::internal())??;
         return Ok(Json(result));
@@ -224,47 +227,50 @@ async fn native_action(
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
     let account_driver = state.account_driver.clone();
     let admission_override = state.message_admission.clone();
-    let result = tokio::task::spawn_blocking(move || {
-        let connection = store.read().map_err(|_| ApiError::internal())?;
-        let prepared: Box<dyn MessageAdmission> = if admission_override.is_some() {
-            Box::new(
-                studio_runtime_services::message_admission::PreparedAdmission::load(
-                    &connection,
-                    &request.agent,
+    let result = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-http/routes/agent_management",
+        move || {
+            let connection = store.read().map_err(|_| ApiError::internal())?;
+            let prepared: Box<dyn MessageAdmission> = if admission_override.is_some() {
+                Box::new(
+                    studio_runtime_services::message_admission::PreparedAdmission::load(
+                        &connection,
+                        &request.agent,
+                    )
+                    .map_err(|_| ApiError::internal())?,
                 )
-                .map_err(|_| ApiError::internal())?,
-            )
-        } else {
-            Box::new(
-                studio_runtime_services::message_admission::MessageIngressAdmission::load(
-                    &store,
-                    &connection,
-                    &request.agent,
+            } else {
+                Box::new(
+                    studio_runtime_services::message_admission::MessageIngressAdmission::load(
+                        &store,
+                        &connection,
+                        &request.agent,
+                    )
+                    .map_err(|_| ApiError::internal())?,
                 )
-                .map_err(|_| ApiError::internal())?,
+            };
+            let admission = admission_override.as_deref().unwrap_or(prepared.as_ref());
+            let bridge = NativeAdmission(admission);
+            let preparation_run = NativeActionPreparationRun {
+                store: store.clone(),
+                provider: port.clone(),
+                account_driver,
+                repair,
+                preparation: resources,
+            };
+            let now = unix_time();
+            native_actions::execute_provider_prepared(
+                &store,
+                port.as_ref(),
+                &request,
+                now,
+                &bridge,
+                &NativeActionAcceptance,
+                &preparation_run,
             )
-        };
-        let admission = admission_override.as_deref().unwrap_or(prepared.as_ref());
-        let bridge = NativeAdmission(admission);
-        let preparation_run = NativeActionPreparationRun {
-            store: store.clone(),
-            provider: port.clone(),
-            account_driver,
-            repair,
-            preparation: resources,
-        };
-        let now = unix_time();
-        native_actions::execute_provider_prepared(
-            &store,
-            port.as_ref(),
-            &request,
-            now,
-            &bridge,
-            &NativeActionAcceptance,
-            &preparation_run,
-        )
-        .map_err(native_error)
-    })
+            .map_err(native_error)
+        },
+    )
     .await
     .map_err(|_| ApiError::internal())??;
     Ok(Json(result))
@@ -634,35 +640,40 @@ fn unix_time() -> f64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0.0, |duration| duration.as_secs_f64())
 }
-async fn dispatch<T: serde::de::DeserializeOwned + serde::Serialize>(
+async fn dispatch<T: serde::de::DeserializeOwned + serde::Serialize + Send + 'static>(
     state: HttpState,
     action: Action,
     ports: Option<Arc<dyn LifecyclePorts>>,
-) -> Result<Json<Value>, ApiError> {
-    tokio::task::spawn_blocking(move || {
-        let store = state.store.as_deref().ok_or_else(ApiError::internal)?;
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_err(|_| ApiError::internal())?
-            .as_secs_f64();
-        let result = match ports {
-            Some(ports) => agent_lifecycle_runtime::execute(store, &action, now, ports.as_ref()),
-            None => agent_management_store::execute(store, &action, now),
-        }
-        .map_err(|error| match error {
-            ManagementError::Unavailable(_) => {
-                ApiError::new(StatusCode::NOT_IMPLEMENTED, error.to_string())
+) -> Result<Json<T>, ApiError> {
+    studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-http/routes/agent_management",
+        move || {
+            let store = state.store.as_deref().ok_or_else(ApiError::internal)?;
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_err(|_| ApiError::internal())?
+                .as_secs_f64();
+            let result = match ports {
+                Some(ports) => {
+                    agent_lifecycle_runtime::execute(store, &action, now, ports.as_ref())
+                }
+                None => agent_management_store::execute(store, &action, now),
             }
-            ManagementError::Invalid(_) => {
-                ApiError::new(StatusCode::BAD_REQUEST, error.to_string())
-            }
-            ManagementError::Stored { .. } => {
-                ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, error.to_string())
-            }
-            ManagementError::Store(_) => ApiError::internal(),
-        })?;
-        super::generated_json::<T>(result).map(Json)
-    })
+            .map_err(|error| match error {
+                ManagementError::Unavailable(_) => {
+                    ApiError::new(StatusCode::NOT_IMPLEMENTED, error.to_string())
+                }
+                ManagementError::Invalid(_) => {
+                    ApiError::new(StatusCode::BAD_REQUEST, error.to_string())
+                }
+                ManagementError::Stored { .. } => {
+                    ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, error.to_string())
+                }
+                ManagementError::Store(_) => ApiError::internal(),
+            })?;
+            super::generated_json::<T>(result).map(Json)
+        },
+    )
     .await
     .map_err(|_| ApiError::internal())?
 }

@@ -233,6 +233,25 @@ class HostService:
         require(isinstance(value, list) and len(value) <= 256, "Invalid cache folders")
         return [relative(item) for item in value]
 
+    def link_git_objects(self, op: dict[str, Any], source: Path) -> None:
+        """Give the slot's git layer the objects of the project's repository on this Mac.
+
+        The guest sends the line's .git without its objects, which live in the layr project
+        store. Git reads the project's objects through alternates and writes new objects into
+        the slot only, so the project repository does not change (docs/host-exec.md).
+        """
+        git = source / ".git"
+        project = self.project_folder(op["projectId"])
+        objects = project / ".git" / "objects" if project is not None else None
+        if (objects is None or not objects.is_dir() or objects.is_symlink()
+                or not git.is_dir() or git.is_symlink()):
+            return
+        info = git / "objects" / "info"
+        info.mkdir(parents=True, exist_ok=True, mode=0o700)
+        temporary = info / ".alternates.tmp"
+        temporary.write_text(str(objects) + "\n")
+        os.replace(temporary, info / "alternates")
+
     def project_folder(self, project_id: str) -> Path | None:
         """The project's folder on this Mac (layr-projects/<project>/project.json "source")."""
         if not PROJECT_FOLDER.fullmatch(project_id):
@@ -619,6 +638,8 @@ class HostService:
                 slot = self.slot(op)
                 require(not conflicts(list(source)), "The source names conflict on macOS", "name_conflict")
                 require(key(json.dumps(source, sort_keys=True)) == params.get("manifestSha256"), "The Mac sources differ from the layr slot", "sync_conflict")
+                if ".git" in caches:
+                    self.link_git_objects(op, slot / "source")
                 cwd = slot / "source"
                 if params.get("cwd"):
                     cwd = inside(cwd, params["cwd"], leaf=True)

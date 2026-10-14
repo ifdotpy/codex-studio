@@ -234,12 +234,17 @@ pub(crate) fn routes() -> RouteGroup {
     ])
 }
 
-async fn list_projects(State(state): State<HttpState>) -> Result<Json<Value>, ApiError> {
+async fn list_projects(
+    State(state): State<HttpState>,
+) -> Result<Json<crate::generated::ProjectReadResponse>, ApiError> {
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
-    let value = tokio::task::spawn_blocking(move || {
-        let value = projects::list(&store).map_err(projects_error)?;
-        super::generated_json::<crate::generated::ProjectReadResponse>(value)
-    })
+    let value = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-http/routes/projects",
+        move || {
+            let value = projects::list(&store).map_err(projects_error)?;
+            super::generated_json::<crate::generated::ProjectReadResponse>(value)
+        },
+    )
     .await
     .map_err(|_| ApiError::internal())??;
     Ok(Json(value))
@@ -248,7 +253,7 @@ async fn list_projects(State(state): State<HttpState>) -> Result<Json<Value>, Ap
 async fn write_project(
     State(state): State<HttpState>,
     ApiJson(body): ApiJson<Value>,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<Json<ProjectWriteResponse>, ApiError> {
     if let Some(dependency) = projects::write_dependency(&body) {
         return Err(ApiError::new(
             StatusCode::NOT_IMPLEMENTED,
@@ -269,30 +274,45 @@ async fn write_project(
         .to_owned();
     let is_remove = body.get("action").and_then(Value::as_str) == Some("remove");
     let is_sidebar = body.get("action").and_then(Value::as_str) == Some("reorder");
-    let value = tokio::task::spawn_blocking(move || {
-        let value = projects::write(&store, &body, &default, &known).map_err(projects_error)?;
-        if is_remove {
-            super::generated_json::<crate::generated::ProjectRemovalResponse>(value)
-        } else if is_sidebar {
-            super::generated_json::<crate::generated::SidebarOrderResponse>(value)
-        } else {
-            super::generated_json::<crate::generated::ProjectMutationRecord>(value)
-        }
-    })
+    let value = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-http/routes/projects",
+        move || {
+            let value = projects::write(&store, &body, &default, &known).map_err(projects_error)?;
+            if is_remove {
+                super::generated_json::<crate::generated::ProjectRemovalResponse>(value)
+                    .map(ProjectWriteResponse::Removal)
+            } else if is_sidebar {
+                super::generated_json::<crate::generated::SidebarOrderResponse>(value)
+                    .map(ProjectWriteResponse::Sidebar)
+            } else {
+                super::generated_json::<crate::generated::ProjectMutationRecord>(value)
+                    .map(ProjectWriteResponse::Mutation)
+            }
+        },
+    )
     .await
     .map_err(|_| ApiError::internal())??;
     Ok(Json(value))
 }
 
+#[derive(serde::Serialize)]
+#[serde(untagged)]
+enum ProjectWriteResponse {
+    Removal(crate::generated::ProjectRemovalResponse),
+    Sidebar(crate::generated::SidebarOrderResponse),
+    Mutation(crate::generated::ProjectMutationRecord),
+}
+
 async fn project_locations(
     State(state): State<HttpState>,
     query: QueryParams,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<Json<crate::generated::ProjectLocationQueryResponse>, ApiError> {
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
-    let query = Value::Object(query.into_typed());
-    let value = tokio::task::spawn_blocking(move || {
-        projects::location_query(&store, &query).map_err(projects_error)
-    })
+    let query = Value::Object((*query.into_typed()).clone());
+    let value = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-http/routes/projects",
+        move || projects::location_query(&store, &query).map_err(projects_error),
+    )
     .await
     .map_err(|_| ApiError::internal())??;
     super::generated_json::<crate::generated::ProjectLocationQueryResponse>(value).map(Json)
@@ -301,7 +321,7 @@ async fn project_locations(
 async fn peer_teams(
     State(state): State<HttpState>,
     ApiJson(body): ApiJson<Value>,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<Json<PeerTeamWriteResponse>, ApiError> {
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
     let account_policy = state
         .account_policy
@@ -330,33 +350,53 @@ async fn peer_teams(
             rows,
             identities: None,
         };
-        let value = tokio::task::spawn_blocking(move || {
-            studio_runtime_services::radio_runtime::create_with(&store, &body, &mut creation)
-                .map_err(projects_error)
-        })
+        let value = studio_runtime_process::blocking_pool::spawn_blocking(
+            "runtime-http/routes/projects",
+            move || {
+                studio_runtime_services::radio_runtime::create_with(&store, &body, &mut creation)
+                    .map_err(projects_error)
+            },
+        )
         .await
         .map_err(|_| ApiError::internal())??;
         state.event_wake.notify_one();
-        return Ok(Json(value));
+        return Ok(Json(PeerTeamWriteResponse::Raw(value)));
     }
     let is_radio = body.get("action").and_then(Value::as_str) == Some("radio");
-    let result = tokio::task::spawn_blocking(move || {
-        let value = projects::peer_team_write(&store, &body, &default_account, &known)
-            .map_err(projects_error)?;
-        match body["action"].as_str() {
-            Some("radio") => super::generated_json::<crate::generated::PeerRadioResponse>(value),
-            Some("convert") => {
-                super::generated_json::<crate::generated::PeerConversionResponse>(value)
+    let result = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-http/routes/projects",
+        move || {
+            let value = projects::peer_team_write(&store, &body, &default_account, &known)
+                .map_err(projects_error)?;
+            match body["action"].as_str() {
+                Some("radio") => {
+                    super::generated_json::<crate::generated::PeerRadioResponse>(value)
+                        .map(PeerTeamWriteResponse::Radio)
+                }
+                Some("convert") => {
+                    super::generated_json::<crate::generated::PeerConversionResponse>(value)
+                        .map(PeerTeamWriteResponse::Conversion)
+                }
+                _ => super::generated_json::<crate::generated::PeerProjectResponse>(value)
+                    .map(PeerTeamWriteResponse::Project),
             }
-            _ => super::generated_json::<crate::generated::PeerProjectResponse>(value),
-        }
-    })
+        },
+    )
     .await
     .map_err(|_| ApiError::internal())??;
     if is_radio {
         state.event_wake.notify_one();
     }
     Ok(Json(result))
+}
+
+#[derive(serde::Serialize)]
+#[serde(untagged)]
+enum PeerTeamWriteResponse {
+    Raw(Value),
+    Radio(crate::generated::PeerRadioResponse),
+    Conversion(crate::generated::PeerConversionResponse),
+    Project(crate::generated::PeerProjectResponse),
 }
 
 fn projects_error(error: ProjectsError) -> ApiError {

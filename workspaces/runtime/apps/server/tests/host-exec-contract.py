@@ -554,6 +554,35 @@ class Contract(unittest.IsolatedAsyncioTestCase):
         (record / "project.json").write_text(json.dumps({"projectId": "project", "source": str(folder)}))
         return folder
 
+    async def test_the_slot_gets_the_line_git_layer_with_the_project_objects(self):
+        # 2026-10-14: a Mac step of the Attar lead ran `git rev-parse HEAD` in its slot, and the
+        # slot had no .git. The line's git layer keeps its objects in the layr project store.
+        import subprocess
+        project = self.mac_project({"main.swift": b'print("Hello")\n'})
+        git = ["git", "-c", "user.name=t", "-c", "user.email=t@example.test"]
+        subprocess.run([*git, "init", "-q", str(project)], check=True)
+        subprocess.run([*git, "-C", str(project), "add", "."], check=True)
+        subprocess.run([*git, "-C", str(project), "commit", "-qm", "base"], check=True)
+        head = subprocess.run(["git", "-C", str(project), "rev-parse", "HEAD"], check=True,
+                              capture_output=True, text=True).stdout.strip()
+        shutil.copytree(project / ".git", self.line / ".git", ignore=shutil.ignore_patterns("objects"))
+        (self.line / ".git" / "objects" / "info").mkdir(parents=True)
+        (self.line / ".git" / "objects" / "info" / "alternates").write_text("/var/lib/codex-studio/layr/projects/p/git/objects\n")
+        before = sorted(p.relative_to(project / ".git").as_posix() for p in (project / ".git").rglob("*"))
+        result = await self.execute("git-1", 'import subprocess as s;'
+            f'assert s.run(["git","rev-parse","HEAD"],capture_output=True,text=True).stdout.strip()=="{head}";'
+            'assert s.run(["git","cat-file","-t","HEAD"],capture_output=True,text=True).stdout.strip()=="commit";'
+            'open("new.txt","w").write("x");'
+            's.run(["git","-c","user.name=t","-c","user.email=t@example.test","add","new.txt"],check=True);'
+            's.run(["git","-c","user.name=t","-c","user.email=t@example.test","commit","-qm","slot"],check=True)')
+        self.assertEqual(result["exitCode"], 0, result)
+        # The source file returns; git changes in the slot stay there, and the project repository
+        # gets no new object or ref.
+        self.assertEqual((self.line / "new.txt").read_text(), "x")
+        self.assertEqual((self.line / ".git" / "objects" / "info" / "alternates").read_text(),
+                         "/var/lib/codex-studio/layr/projects/p/git/objects\n")
+        self.assertEqual(sorted(p.relative_to(project / ".git").as_posix() for p in (project / ".git").rglob("*")), before)
+
     @unittest.skipUnless(sys.platform == "darwin", "clonefile(2) exists only on macOS")
     async def test_a_new_slot_clones_the_cache_folder_and_sends_only_differences(self):
         files = {"chromium/src/big.bin": os.urandom(3 * 1024 * 1024), "chromium/src/a.cc": b"int a = 1;\n",

@@ -611,10 +611,13 @@ impl ProviderTitleRequestPort {
             params,
             deadline,
         };
-        let receipt = tokio::task::spawn_blocking(move || session.provider_request(request))
-            .await
-            .ok()?
-            .ok()?;
+        let receipt = studio_runtime_process::blocking_pool::spawn_blocking(
+            "runtime-server/provider_ports",
+            move || session.provider_request(request),
+        )
+        .await
+        .ok()?
+        .ok()?;
         (receipt.scope.account == expected_account
             && receipt.operation == expected_operation
             && expected_scope.is_none_or(|scope| &receipt.scope == scope))

@@ -63,13 +63,16 @@ async fn unknown_action(
 async fn status(
     State(state): State<HttpState>,
     ApiJson(body): ApiJson<crate::generated::VoiceStatusRequest>,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<Json<crate::generated::VoiceStatusResponse>, ApiError> {
     let store = state.store.ok_or_else(ApiError::internal)?;
     let agent_id = body.agent;
-    let result = tokio::task::spawn_blocking(move || voice::status(&store, &agent_id))
-        .await
-        .map_err(|_| ApiError::internal())?
-        .map_err(voice_error)?;
+    let result = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-http/routes/voice",
+        move || voice::status(&store, &agent_id),
+    )
+    .await
+    .map_err(|_| ApiError::internal())?
+    .map_err(voice_error)?;
     Ok(Json(super::generated_json::<
         crate::generated::VoiceStatusResponse,
     >(result)?))
@@ -78,7 +81,7 @@ async fn status(
 async fn audio(
     State(state): State<HttpState>,
     ApiJson(body): ApiJson<crate::generated::VoiceAudioRequest>,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<Json<crate::generated::VoiceRecordResponse>, ApiError> {
     let store = state.store.ok_or_else(ApiError::internal)?;
     let (agent, session, chunk, encoded, mime) = (
         body.agent,
@@ -87,9 +90,10 @@ async fn audio(
         body.audio,
         body.mime,
     );
-    let result = tokio::task::spawn_blocking(move || {
-        voice::save_audio(&store, &agent, &session, &chunk, &encoded, &mime)
-    })
+    let result = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-http/routes/voice",
+        move || voice::save_audio(&store, &agent, &session, &chunk, &encoded, &mime),
+    )
     .await
     .map_err(|_| ApiError::internal())?
     .map_err(voice_audio_error)?;
@@ -101,7 +105,7 @@ async fn audio(
 async fn record(
     State(state): State<HttpState>,
     ApiJson(body): ApiJson<crate::generated::VoiceRecordRequest>,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<Json<crate::generated::VoiceRecordResponse>, ApiError> {
     let store = state.store.ok_or_else(ApiError::internal)?;
     let (kind, agent, session, event, text, item, previous, payload) = (
         match body.kind {
@@ -124,22 +128,25 @@ async fn record(
         .map(serde_json::to_value)
         .transpose()
         .map_err(|_| ApiError::internal())?;
-    let result = tokio::task::spawn_blocking(move || {
-        voice::record(
-            &store,
-            voice::VoiceRecordInput {
-                agent_id: agent,
-                session_id: session,
-                event_id: event,
-                kind: kind.to_owned(),
-                text,
-                item_id: item,
-                previous_item_id: previous,
-                payload,
-                internal: false,
-            },
-        )
-    })
+    let result = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-http/routes/voice",
+        move || {
+            voice::record(
+                &store,
+                voice::VoiceRecordInput {
+                    agent_id: agent,
+                    session_id: session,
+                    event_id: event,
+                    kind: kind.to_owned(),
+                    text,
+                    item_id: item,
+                    previous_item_id: previous,
+                    payload,
+                    internal: false,
+                },
+            )
+        },
+    )
     .await
     .map_err(|_| ApiError::internal())?
     .map_err(voice_error)?;
@@ -151,14 +158,17 @@ async fn record(
 async fn records(
     State(state): State<HttpState>,
     ApiJson(body): ApiJson<crate::generated::VoiceRecordsRequest>,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<Json<crate::generated::VoiceRecordsResponse>, ApiError> {
     let store = state.store.ok_or_else(ApiError::internal)?;
     let agent_id = body.agent;
     let after = body.after.unwrap_or_default();
-    let result = tokio::task::spawn_blocking(move || voice::records(&store, &agent_id, after))
-        .await
-        .map_err(|_| ApiError::internal())?
-        .map_err(voice_error)?;
+    let result = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-http/routes/voice",
+        move || voice::records(&store, &agent_id, after),
+    )
+    .await
+    .map_err(|_| ApiError::internal())?
+    .map_err(voice_error)?;
     Ok(Json(super::generated_json::<
         crate::generated::VoiceRecordsResponse,
     >(result)?))
@@ -167,13 +177,16 @@ async fn records(
 async fn approvals(
     State(state): State<HttpState>,
     ApiJson(body): ApiJson<crate::generated::VoiceApprovalsRequest>,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<Json<crate::generated::VoiceApprovalsResponse>, ApiError> {
     let store = state.store.ok_or_else(ApiError::internal)?;
     let agent_id = body.agent;
-    let result = tokio::task::spawn_blocking(move || voice::approvals(&store, &agent_id))
-        .await
-        .map_err(|_| ApiError::internal())?
-        .map_err(voice_error)?;
+    let result = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-http/routes/voice",
+        move || voice::approvals(&store, &agent_id),
+    )
+    .await
+    .map_err(|_| ApiError::internal())?
+    .map_err(voice_error)?;
     Ok(Json(super::generated_json::<
         crate::generated::VoiceApprovalsResponse,
     >(result)?))
@@ -182,14 +195,16 @@ async fn approvals(
 async fn approval_speech(
     State(state): State<HttpState>,
     ApiJson(body): ApiJson<crate::generated::VoiceApprovalSpeechRequest>,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<Json<crate::generated::VoiceRecordResponse>, ApiError> {
     let store = state.store.ok_or_else(ApiError::internal)?;
     let (agent, request_id) = (body.agent, body.request_id);
-    let result =
-        tokio::task::spawn_blocking(move || voice::approval_speech(&store, &agent, &request_id))
-            .await
-            .map_err(|_| ApiError::internal())?
-            .map_err(voice_error)?;
+    let result = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-http/routes/voice",
+        move || voice::approval_speech(&store, &agent, &request_id),
+    )
+    .await
+    .map_err(|_| ApiError::internal())?
+    .map_err(voice_error)?;
     Ok(Json(super::generated_json::<
         crate::generated::VoiceRecordResponse,
     >(result)?))
@@ -198,7 +213,7 @@ async fn approval_speech(
 async fn end(
     State(state): State<HttpState>,
     ApiJson(body): ApiJson<crate::generated::VoiceEndRequest>,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<Json<crate::generated::VoiceSessionResponse>, ApiError> {
     let store = state.store.ok_or_else(ApiError::internal)?;
     let (agent, session) = (body.agent, body.session_id);
     let Some(provider) = state.voice_request_port.clone() else {
@@ -223,7 +238,7 @@ async fn end(
 async fn speech(
     State(state): State<HttpState>,
     ApiJson(body): ApiJson<crate::generated::VoiceSpeechRequest>,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<Json<crate::generated::VoiceSpeechReceiptResponse>, ApiError> {
     let store = state.store.ok_or_else(ApiError::internal)?;
     let (agent, session, record) = (body.agent, body.session_id, body.record_id);
     let Some(provider) = state.voice_request_port.clone() else {
@@ -253,13 +268,14 @@ async fn approve(
         >,
     >,
     ApiJson(body): ApiJson<crate::generated::VoiceApproveRequest>,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<Json<crate::generated::VoiceApprovalResponse>, ApiError> {
     let store = state.store.ok_or_else(ApiError::internal)?;
     let (agent_id, speech_id) = (body.agent.clone(), body.speech_id.clone());
     let store_for_lookup = store.clone();
-    let monitor_approval = tokio::task::spawn_blocking(move || {
-        voice::provider::is_monitor_approval(&store_for_lookup, &agent_id, &speech_id)
-    })
+    let monitor_approval = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-http/routes/voice",
+        move || voice::provider::is_monitor_approval(&store_for_lookup, &agent_id, &speech_id),
+    )
     .await
     .map_err(|_| ApiError::internal())?
     .map_err(provider_error)?;
@@ -306,7 +322,7 @@ async fn approve(
 async fn submit(
     State(state): State<HttpState>,
     ApiJson(body): ApiJson<crate::generated::VoiceSubmitRequest>,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<Json<crate::generated::VoiceDeliveryResponse>, ApiError> {
     let store = state.store.ok_or_else(ApiError::internal)?;
     let (agent, message, record_ids, edited) = (
         body.agent,
@@ -314,9 +330,10 @@ async fn submit(
         body.record_ids,
         body.edited_text.flatten(),
     );
-    let result = tokio::task::spawn_blocking(move || {
-        voice::submit(&store, &agent, &message, &record_ids, edited.as_deref())
-    })
+    let result = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-http/routes/voice",
+        move || voice::submit(&store, &agent, &message, &record_ids, edited.as_deref()),
+    )
     .await
     .map_err(|_| ApiError::internal())?
     .map_err(voice_error)?;
@@ -328,7 +345,7 @@ async fn submit(
 async fn start(
     State(state): State<HttpState>,
     ApiJson(body): ApiJson<crate::generated::VoiceStartRequest>,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<Json<crate::generated::VoiceSessionResponse>, ApiError> {
     let provider = state
         .voice_request_port
         .clone()

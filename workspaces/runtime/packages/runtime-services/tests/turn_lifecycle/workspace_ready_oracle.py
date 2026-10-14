@@ -60,8 +60,10 @@ def blockers(cases):
     return results
 
 
-def seed(root, cwd):
-    with patch.object(codex_accounts, "codex_home", lambda: pathlib.Path(os.environ["CODEX_HOME"])), \
+def seed(root, cwd, codex_home):
+    codex_home = pathlib.Path(codex_home)
+    codex_home.mkdir(parents=True, exist_ok=True)
+    with patch.object(codex_accounts, "codex_home", lambda: codex_home), \
          patch.object(codex_accounts, "auth_metadata", lambda *_: {"status":"signedOut","accountId":None,"email":None,"plan":None}), \
          patch.object(concurrent.futures.ThreadPoolExecutor, "submit", lambda *_a, **_kw: concurrent.futures.Future()), \
          patch.object(threading.Thread, "start", lambda self: None), \
@@ -137,12 +139,16 @@ def publication(request):
         runtime.connection.close()
 
 
-if __name__ == "__main__":
-    request = json.load(sys.stdin)
+def handle(request):
     if request["command"] == "seed":
-        result = seed(request["root"], request["cwd"])
+        result = seed(request["root"], request["cwd"], request["codexHome"])
     elif request["command"] == "publication":
         result = publication(request)
     else:
-        result = blockers(request["cases"])
-    print(json.dumps(result))
+        return blockers(request["cases"])
+    return result
+
+
+if __name__ == "__main__":
+    for line in sys.stdin:
+        print(json.dumps(handle(json.loads(line))), flush=True)

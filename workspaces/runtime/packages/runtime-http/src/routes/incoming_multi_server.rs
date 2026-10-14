@@ -135,9 +135,10 @@ async fn serve_inner(state: HttpState, request: Request<Body>) -> Response {
             .iter()
             .filter_map(|v| v.to_str().ok().map(str::to_owned))
             .collect::<Vec<_>>();
-        return match tokio::task::spawn_blocking(move || {
-            boundary.discovery_identity(&store, &address, &logins)
-        })
+        return match studio_runtime_process::blocking_pool::spawn_blocking(
+            "runtime-http/routes/incoming_multi_server",
+            move || boundary.discovery_identity(&store, &address, &logins),
+        )
         .await
         {
             Ok(Ok(v)) => match super::generated_json::<crate::generated::DiscoveryIdentity>(v) {
@@ -246,31 +247,36 @@ async fn serve_inner(state: HttpState, request: Request<Body>) -> Response {
     let is_orchestration = request.is_orchestration();
     let request_id = request.request_id().to_owned();
     let driver = state.orchestration_driver;
-    let result = tokio::task::spawn_blocking(move || {
-        if is_orchestration {
-            let principal =
-                boundary.authorize_operation_incoming(&store, &request, &address, &logins, now)?;
-            let driver = driver.ok_or_else(|| {
-                multi_server_auth::refused(
-                    501,
-                    "orchestration_unavailable",
-                    "The cross-server orchestration receiver is unavailable",
-                )
-            })?;
-            let outcome = driver.receive(&principal, request.body(), now as i64)?;
-            Ok(outcome.to_value(&request_id))
-        } else {
-            boundary.handle_incoming(&store, &request, &address, &logins, now)
-        }
-    })
+    let result = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-http/routes/incoming_multi_server",
+        move || {
+            if is_orchestration {
+                let principal = boundary
+                    .authorize_operation_incoming(&store, &request, &address, &logins, now)?;
+                let driver = driver.ok_or_else(|| {
+                    multi_server_auth::refused(
+                        501,
+                        "orchestration_unavailable",
+                        "The cross-server orchestration receiver is unavailable",
+                    )
+                })?;
+                let outcome = driver.receive(&principal, request.body(), now as i64)?;
+                Ok(outcome.to_value(&request_id))
+            } else {
+                boundary.handle_incoming(&store, &request, &address, &logins, now)
+            }
+        },
+    )
     .await;
     match result {
         Ok(Ok(value)) if is_orchestration => Json(value).into_response(),
         Ok(Ok(value)) => {
             let checked = if method == "GET" {
                 super::generated_json::<crate::generated::ServerIdentityResponse>(value)
+                    .map(IncomingMultiServerResponse::Identity)
             } else {
                 super::generated_json::<crate::generated::DevicePairResponse>(value)
+                    .map(IncomingMultiServerResponse::Pair)
             };
             match checked {
                 Ok(v) => Json(v).into_response(),
@@ -280,6 +286,13 @@ async fn serve_inner(state: HttpState, request: Request<Body>) -> Response {
         Ok(Err(e)) => failure(e),
         Err(_) => error_response(StatusCode::INTERNAL_SERVER_ERROR, "Internal server error"),
     }
+}
+
+#[derive(serde::Serialize)]
+#[serde(untagged)]
+enum IncomingMultiServerResponse {
+    Identity(crate::generated::ServerIdentityResponse),
+    Pair(crate::generated::DevicePairResponse),
 }
 fn failure(error: AccessError) -> Response {
     let status = StatusCode::from_u16(error.status()).unwrap_or(StatusCode::SERVICE_UNAVAILABLE);

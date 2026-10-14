@@ -2749,12 +2749,12 @@ mod actor_tests {
     use super::SubmitWork;
     use super::{
         AcceptWork, ClaimWork, CreateWork, WorkActorWrite, WorkMutation, WorkWrite, WorkWriteError,
-        accepted_archive_due_records, accepted_archive_tick_due, write_action_as_agent,
-        write_as_agent,
+        accepted_archive_due_records, accepted_archive_tick, accepted_archive_tick_due,
+        write_action_as_agent, write_as_agent,
     };
     use rusqlite::Connection;
     use serde_json::{Value, json};
-    use studio_runtime_store::WorkItemsRepository;
+    use studio_runtime_store::{AgentRecord, AgentRepository, RuntimeStore, WorkItemsRepository};
 
     fn database() -> Connection {
         let connection = Connection::open_in_memory().expect("memory SQLite opens");
@@ -2864,6 +2864,78 @@ mod actor_tests {
             Some(start),
             start + std::time::Duration::from_secs(1)
         ));
+    }
+
+    #[test]
+    fn accepted_archive_tick_persists_terminal_kept_outcome_for_remote_worker() {
+        let root = tempfile::tempdir().expect("state directory");
+        let store = RuntimeStore::open(Some(root.path())).expect("runtime store");
+        store
+            .transaction(|tx| {
+                for agent in [
+                    json!({"id":"lead","rootId":"lead","epoch":1,"status":"running"}),
+                    json!({"id":"worker","rootId":"lead","epoch":2,"status":"paused",
+                        "remoteWorker":{"server":"remote","link":"worker-link"}}),
+                ] {
+                    AgentRepository::put(tx, &AgentRecord::from_value(agent)?)?;
+                }
+                let work = json!({
+                    "id":"accepted-task","rootId":"lead","owner":"worker",
+                    "status":"accepted","version":3,"title":"Accepted result",
+                    "description":"","dependencies":[],"results":[{"id":"result-1",
+                        "text":"verified","revision":"abc1234"}],"decisions":[],
+                    "archiveIntent":{"id":"accepted-task:result-1","owner":"worker",
+                        "status":"pending","attempts":0,"created":10.0}
+                });
+                tx.execute(
+                    "INSERT INTO runtime_work(id,record) VALUES (?1,?2)",
+                    rusqlite::params!["accepted-task", work.to_string()],
+                )?;
+                tx.execute(
+                    "INSERT INTO runtime_operation_receipts(id,signature,result) VALUES (?1,?2,?3)",
+                    rusqlite::params![
+                        "work-archive:accepted-task:result-1",
+                        "accepted-archive-v1",
+                        json!({"taskId":"accepted-task","intentId":"accepted-task:result-1",
+                            "actor":"lead","actorEpoch":1,"target":"worker","attempts":0,
+                            "created":10.0,"status":"pending","nextAttemptAt":100.0})
+                        .to_string(),
+                    ],
+                )?;
+                Ok(())
+            })
+            .expect("archive intent state commits");
+
+        assert_eq!(
+            accepted_archive_tick(&store, 100.0).expect("tick succeeds"),
+            1
+        );
+
+        let connection = store.read().expect("read tick result");
+        let encoded_receipt: String = connection
+            .query_row(
+                "SELECT result FROM runtime_operation_receipts WHERE id=?1",
+                ["work-archive:accepted-task:result-1"],
+                |row| row.get(0),
+            )
+            .expect("archive outcome receipt");
+        let receipt: Value = serde_json::from_str(&encoded_receipt).expect("receipt JSON");
+        assert_eq!(receipt["status"], "terminal");
+        assert_eq!(receipt["outcome"]["status"], "kept");
+        assert_eq!(
+            receipt["outcome"]["reason"],
+            "The remote worker workspace requires review on its own server"
+        );
+        let encoded_work: String = connection
+            .query_row(
+                "SELECT record FROM runtime_work WHERE id=?1",
+                ["accepted-task"],
+                |row| row.get(0),
+            )
+            .expect("accepted work record");
+        let work: Value = serde_json::from_str(&encoded_work).expect("work JSON");
+        assert_eq!(work["archive"]["status"], "kept");
+        assert_eq!(work["archiveIntent"]["status"], "terminal");
     }
 
     #[test]
