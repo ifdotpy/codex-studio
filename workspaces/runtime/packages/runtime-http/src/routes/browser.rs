@@ -39,11 +39,12 @@ mod tests {
 
     #[tokio::test]
     async fn forward_refuses_without_the_orchestration_consumer() {
+        let state_dir = tempfile::tempdir().expect("isolated state directory");
         let state = crate::router::HttpState::new(
             "token".into(),
             "workspace".into(),
             None,
-            "isolated-test-state".into(),
+            state_dir.path().to_string_lossy().into_owned(),
             12345,
             None,
             None,

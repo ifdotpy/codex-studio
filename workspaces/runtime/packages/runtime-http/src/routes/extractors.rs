@@ -271,11 +271,12 @@ mod tests {
             std::fs::read(corpus_path).expect("generated request corpus is readable");
         let corpus: Vec<Value> =
             serde_json::from_slice(&corpus_bytes).expect("generated OpenAPI corpus parses");
+        let state_dir = tempfile::tempdir().expect("isolated state directory");
         let app = crate::router::validation_probe_router(crate::router::HttpState::new(
             "token".to_owned(),
             "workspace".to_owned(),
             None,
-            "state".to_owned(),
+            state_dir.path().to_string_lossy().into_owned(),
             12345,
             None,
             None,

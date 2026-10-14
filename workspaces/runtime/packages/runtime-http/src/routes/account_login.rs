@@ -490,7 +490,7 @@ mod tests {
             String::new(),
             String::new(),
             None,
-            String::new(),
+            directory.to_string_lossy().into_owned(),
             0,
             None,
             None,

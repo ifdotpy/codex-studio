@@ -184,11 +184,12 @@ mod tests {
         let (router, entries) = compose(vec![group], &authority()).expect("compose");
         assert_eq!(entries.len(), 2);
 
+        let state_dir = tempfile::tempdir().expect("isolated state directory");
         let state = HttpState::new(
             "token".to_owned(),
             "workspace".to_owned(),
             None,
-            "state".to_owned(),
+            state_dir.path().to_string_lossy().into_owned(),
             1,
             None,
             None,
