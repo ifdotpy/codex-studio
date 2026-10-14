@@ -10,32 +10,45 @@ use studio_runtime_store::{RuntimeStore, Transaction, agent_management as reposi
 /// Preconditions, decision, writes and renderer changes commit together. No
 /// caller can replay an unknown external effect because none is submitted here.
 pub fn execute(store: &RuntimeStore, action: &Action, now: f64) -> Result<Value, ManagementError> {
-    store.transaction_with_error(|transaction| execute_in_transaction(transaction, action, now))
+    let reader = store.read()?;
+    let rooms = crate::sync_entity_context::RoomDirectory::prepare(&reader)?;
+    store.transaction_with_error(|transaction| {
+        execute_in_transaction(transaction, action, now, &rooms)
+    })
 }
 
 pub fn execute_in_transaction(
     transaction: &Transaction<'_>,
     action: &Action,
     now: f64,
+    rooms: &crate::sync_entity_context::RoomDirectory,
 ) -> Result<Value, ManagementError> {
-    execute_decision(transaction, action, now, None)
+    execute_decision(transaction, action, now, rooms, None)
 }
 
 pub(crate) fn execute_with_ports(
     transaction: &Transaction<'_>,
     action: &Action,
     now: f64,
+    rooms: &crate::sync_entity_context::RoomDirectory,
     ports: &dyn crate::agent_lifecycle_runtime::LifecyclePorts,
 ) -> Result<Value, ManagementError> {
-    execute_decision(transaction, action, now, Some(ports))
+    execute_decision(transaction, action, now, rooms, Some(ports))
 }
 
 fn execute_decision(
     transaction: &Transaction<'_>,
     action: &Action,
     now: f64,
+    rooms: &crate::sync_entity_context::RoomDirectory,
     ports: Option<&dyn crate::agent_lifecycle_runtime::LifecyclePorts>,
 ) -> Result<Value, ManagementError> {
+    if !rooms.matches(transaction)? {
+        return Err(studio_runtime_store::StoreError::RecordContract(
+            "agent management inputs changed after filesystem preparation",
+        )
+        .into());
+    }
     let records = Records {
         tables: repository::read(transaction)?,
     };
@@ -89,7 +102,6 @@ fn execute_decision(
         let deleted = decision.result["deleted"]
             .as_array()
             .ok_or(ManagementError::Invalid("Invalid deletion decision"))?;
-        let room_directory = crate::sync_entity_context::RoomDirectory::load(transaction)?;
         for (_, raw) in crate::sync_policy::stored_records(transaction, "runtime_rooms")? {
             let room: Value =
                 serde_json::from_str(&raw).map_err(studio_runtime_store::StoreError::from)?;
@@ -100,7 +112,7 @@ fn execute_decision(
             {
                 continue;
             }
-            let context = room_directory.for_room(transaction, &room, true)?;
+            let context = rooms.for_room(transaction, &room, true)?;
             if let Some(mut view) = crate::sync_views::room_entity_view(&room, &context) {
                 if let Some(members) = view.get_mut("members").and_then(Value::as_array_mut) {
                     members.retain(|member| {
@@ -170,7 +182,12 @@ fn execute_decision(
         .and_then(|p| std::path::Path::new(p).parent())
         .and_then(|p| p.to_str())
         .unwrap_or_default();
-    crate::sync_policy::maintain_entity_projections(transaction, state_dir, |_, _, _, _| true)?;
+    crate::sync_policy::maintain_entity_projections(
+        transaction,
+        state_dir,
+        rooms,
+        |_, _, _, _| true,
+    )?;
     for (id, view) in fallback_rooms {
         studio_runtime_store::SyncDocumentsRepository::put_entity(
             transaction,

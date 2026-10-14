@@ -52,14 +52,14 @@ async fn run(
 ) -> Result<Json<Value>, ApiError> {
     let store = state.store.ok_or_else(ApiError::internal)?;
     let value = tokio::task::spawn_blocking(move || {
+        let now = studio_runtime_services::event_write::unix_time()
+            .map_err(|_| ToolRequestError::InvalidRequest("The system clock is unavailable"))?;
         let operation = |tx: &studio_runtime_store::Transaction<'_>| {
             let action = match (id.as_deref(), cancel) {
                 (Some(id), true) => Action::Cancel(id),
                 (Some(id), false) => Action::Get(id),
                 _ => Action::List,
             };
-            let now = studio_runtime_services::event_write::unix_time()
-                .map_err(|_| ToolRequestError::InvalidRequest("The system clock is unavailable"))?;
             let value = tool_requests::execute(tx, &actor, action, now)?;
             let canonical = value["id"].as_str().unwrap_or("list").to_owned();
             let response = if cancel {

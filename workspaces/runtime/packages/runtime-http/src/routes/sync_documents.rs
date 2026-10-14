@@ -149,11 +149,15 @@ pub(crate) async fn pull(
             return Ok(response);
         }
         let project_server_id = store.local_server_id().map_err(map_sync_store_error)?;
+        let reader = store.read().map_err(map_sync_store_error)?;
+        let rooms = studio_runtime_services::sync_entity_context::RoomDirectory::prepare(&reader)
+            .map_err(map_sync_store_error)?;
         match store.read_transaction(|transaction| {
             pull_entities(
                 transaction,
                 &state_dir,
                 project_server_id.as_deref(),
+                &rooms,
                 after,
                 limit,
                 fresh,
@@ -174,6 +178,7 @@ pub(crate) async fn pull(
                             transaction,
                             &state_dir,
                             project_server_id.as_deref(),
+                            &rooms,
                             after,
                             limit,
                             fresh,
@@ -327,6 +332,7 @@ fn pull_entities(
     transaction: &Transaction<'_>,
     state_dir: &str,
     project_server_id: Option<&str>,
+    rooms: &studio_runtime_services::sync_entity_context::RoomDirectory,
     after: i64,
     limit: i64,
     fresh: bool,
@@ -336,10 +342,16 @@ fn pull_entities(
     generation: i64,
     validators: &crate::validation::Registry,
 ) -> Result<Value, StoreError> {
+    if !rooms.matches(transaction)? {
+        return Err(StoreError::RecordContract(
+            "entity projection inputs changed after filesystem preparation",
+        ));
+    }
     sync_policy::maintain_entity_projections_with_server_id(
         transaction,
         state_dir,
         project_server_id,
+        rooms,
         |collection, id, value, deleted| {
             validate_entity_envelope(
                 &json!({"collection":collection,"id":id,"value":value}),

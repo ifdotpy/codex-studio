@@ -28,6 +28,7 @@ const TASK_RETIRE_BATCH: usize = 100;
 pub fn maintain_entity_projections(
     transaction: &Transaction<'_>,
     _state_dir: &str,
+    rooms: &crate::sync_entity_context::RoomDirectory,
     validate_projection: impl Fn(&str, &str, &Value, bool) -> bool,
 ) -> StoreResult<()> {
     let project_server_id =
@@ -36,6 +37,7 @@ pub fn maintain_entity_projections(
         transaction,
         _state_dir,
         project_server_id.as_deref(),
+        rooms,
         validate_projection,
     )
 }
@@ -44,6 +46,7 @@ pub fn maintain_entity_projections_with_server_id(
     transaction: &Transaction<'_>,
     state_dir: &str,
     project_server_id: Option<&str>,
+    rooms: &crate::sync_entity_context::RoomDirectory,
     validate_projection: impl Fn(&str, &str, &Value, bool) -> bool,
 ) -> StoreResult<()> {
     for table in [
@@ -60,7 +63,6 @@ pub fn maintain_entity_projections_with_server_id(
     ] {
         let _ = stored_records(transaction, table)?;
     }
-    let rooms = crate::sync_entity_context::RoomDirectory::load(transaction)?;
     maintain_peer_team_entities(transaction, &validate_projection)?;
     let mut current_rooms = BTreeSet::new();
     for (table, collection) in [

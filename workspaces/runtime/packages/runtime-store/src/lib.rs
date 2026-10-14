@@ -35,10 +35,11 @@ pub use repositories::remote_transport::{
 };
 pub use repositories::system_reads;
 
+use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
 use std::io::BufReader;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub use rusqlite::{Connection, Error as SqliteError, ErrorCode, Transaction};
@@ -94,6 +95,16 @@ pub use repositories::workspace_ready;
 pub use repositories::workspace_views::{WorkspaceTaskRow, WorkspaceViewsRepository};
 
 const DATABASE_BUSY_TIMEOUT_MS: u32 = 15_000;
+
+struct IdentityEntry {
+    server_id: Option<String>,
+    stores: usize,
+}
+
+fn identity_registry() -> &'static Mutex<HashMap<PathBuf, IdentityEntry>> {
+    static REGISTRY: OnceLock<Mutex<HashMap<PathBuf, IdentityEntry>>> = OnceLock::new();
+    REGISTRY.get_or_init(|| Mutex::new(HashMap::new()))
+}
 
 #[derive(Debug, Error)]
 pub enum StoreError {
@@ -163,7 +174,7 @@ pub struct RuntimeStore {
     _runtime_lock: RuntimeLock,
     writer: Mutex<Connection>,
     version_reader: Mutex<Connection>,
-    local_server_id: Mutex<Option<String>>,
+    identity_registry_path: PathBuf,
     commit_notifier: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
 }
 
@@ -189,23 +200,27 @@ impl RuntimeStore {
         let writer = open_database(&canvas_path, OpenFlags::SQLITE_OPEN_READ_WRITE)?;
         writer.pragma_update(None, "synchronous", "FULL")?;
         schema::register_python_trigger_functions(&writer)?;
-        writer.execute_batch(
-            "CREATE TEMP TABLE runtime_local_server_identity (server_id TEXT NOT NULL)",
-        )?;
-        if let Some(server_id) = &local_server_id {
-            writer.execute(
-                "INSERT INTO temp.runtime_local_server_identity(server_id) VALUES(?1)",
-                [server_id],
-            )?;
-        }
         let version_reader = open_database(&canvas_path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
         version_reader.pragma_update(None, "query_only", "ON")?;
+        let identity_registry_path = canvas_path.clone();
+        {
+            let mut registry = identity_registry()
+                .lock()
+                .map_err(|_| StoreError::WriterPoisoned)?;
+            let entry = registry
+                .entry(identity_registry_path.clone())
+                .or_insert_with(|| IdentityEntry {
+                    server_id: local_server_id.clone(),
+                    stores: 0,
+                });
+            entry.stores += 1;
+        }
         let store = Self {
             root,
             _runtime_lock: runtime_lock,
             writer: Mutex::new(writer),
             version_reader: Mutex::new(version_reader),
-            local_server_id: Mutex::new(local_server_id),
+            identity_registry_path,
             commit_notifier: Mutex::new(None),
         };
         store.transaction(|transaction| {
@@ -227,8 +242,7 @@ impl RuntimeStore {
         &self.root
     }
 
-    /// Update the cached server identity before requests begin and expose it to
-    /// transaction callers through the writer connection's temporary table.
+    /// Update the process-local server identity before requests begin.
     pub fn set_local_server_id(&self, server_id: Option<String>) -> StoreResult<()> {
         if server_id.as_deref().is_some_and(str::is_empty) {
             return Err(StoreError::InvalidSyncObject {
@@ -236,46 +250,41 @@ impl RuntimeStore {
                 id: "identity.json".to_owned(),
             });
         }
-        let writer = self.writer.lock().map_err(|_| StoreError::WriterPoisoned)?;
-        writer.execute("DELETE FROM temp.runtime_local_server_identity", [])?;
-        if let Some(server_id) = &server_id {
-            writer.execute(
-                "INSERT INTO temp.runtime_local_server_identity(server_id) VALUES(?1)",
-                [server_id],
-            )?;
-        }
-        *self
-            .local_server_id
+        let mut registry = identity_registry()
             .lock()
-            .map_err(|_| StoreError::WriterPoisoned)? = server_id;
+            .map_err(|_| StoreError::WriterPoisoned)?;
+        let entry =
+            registry
+                .get_mut(&self.identity_registry_path)
+                .ok_or(StoreError::RecordContract(
+                    "runtime identity registry entry missing",
+                ))?;
+        entry.server_id = server_id;
         Ok(())
     }
 
     pub fn local_server_id(&self) -> StoreResult<Option<String>> {
-        Ok(self
-            .local_server_id
+        identity_registry()
             .lock()
             .map_err(|_| StoreError::WriterPoisoned)?
-            .clone())
+            .get(&self.identity_registry_path)
+            .map(|entry| entry.server_id.clone())
+            .ok_or(StoreError::RecordContract(
+                "runtime identity registry entry missing",
+            ))
     }
 
     pub fn transaction_local_server_id(
         transaction: &Transaction<'_>,
     ) -> StoreResult<Option<String>> {
-        match transaction.query_row(
-            "SELECT server_id FROM temp.runtime_local_server_identity LIMIT 1",
-            [],
-            |row| row.get::<_, String>(0),
-        ) {
-            Ok(server_id) => Ok(Some(server_id)),
-            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
-            Err(rusqlite::Error::SqliteFailure(_, Some(message)))
-                if message.contains("no such table: temp.runtime_local_server_identity") =>
-            {
-                Ok(None)
-            }
-            Err(error) => Err(error.into()),
-        }
+        let Some(path) = transaction.path() else {
+            return Ok(None);
+        };
+        Ok(identity_registry()
+            .lock()
+            .map_err(|_| StoreError::WriterPoisoned)?
+            .get(Path::new(path))
+            .and_then(|entry| entry.server_id.clone()))
     }
 
     /// Install the process-local notification fired after each successful write commit.
@@ -400,6 +409,20 @@ impl RuntimeStore {
             &self.root.join("canvas.sqlite3"),
             &self.root.join("analytics.sqlite3"),
         )
+    }
+}
+
+impl Drop for RuntimeStore {
+    fn drop(&mut self) {
+        let Ok(mut registry) = identity_registry().lock() else {
+            return;
+        };
+        if let Some(entry) = registry.get_mut(&self.identity_registry_path) {
+            entry.stores = entry.stores.saturating_sub(1);
+            if entry.stores == 0 {
+                registry.remove(&self.identity_registry_path);
+            }
+        }
     }
 }
 

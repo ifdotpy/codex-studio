@@ -103,8 +103,10 @@ pub fn execute(
     now: f64,
     ports: &dyn LifecyclePorts,
 ) -> Result<Value, ManagementError> {
-    let result =
-        store.transaction_with_error(|tx| execute_in_transaction(tx, action, now, ports))?;
+    let reader = store.read()?;
+    let rooms = crate::sync_entity_context::RoomDirectory::prepare(&reader)?;
+    let result = store
+        .transaction_with_error(|tx| execute_in_transaction(tx, action, now, ports, &rooms))?;
     // A lost wake cannot roll back the committed intent. Restart drains the same
     // effect; report an internal failure, never a no-write capability refusal.
     ports.committed().map_err(|_| {
@@ -122,6 +124,7 @@ pub fn execute_in_transaction(
     action: &Action,
     now: f64,
     ports: &dyn LifecyclePorts,
+    rooms: &crate::sync_entity_context::RoomDirectory,
 ) -> Result<Value, ManagementError> {
-    crate::agent_management_store::execute_with_ports(tx, action, now, ports)
+    crate::agent_management_store::execute_with_ports(tx, action, now, rooms, ports)
 }

@@ -82,7 +82,7 @@ fn exists_for_agent(
 }
 
 /// Schema-validated snapshot; only the database loader can construct its contents.
-pub(crate) struct RoomDirectory {
+pub struct RoomDirectory {
     agents: Vec<Value>,
     projects: Vec<Value>,
     peers: Vec<Value>,
@@ -95,9 +95,7 @@ impl RoomDirectory {
         )
     }
     /// Read checked database snapshots, then resolve paths with no transaction held.
-    pub(crate) fn prepare(
-        connection: &Connection,
-    ) -> Result<Self, studio_runtime_store::StoreError> {
+    pub fn prepare(connection: &Connection) -> Result<Self, studio_runtime_store::StoreError> {
         if !connection.is_autocommit() {
             return Err(records::invalid(
                 "runtime_projects",
@@ -154,7 +152,7 @@ impl RoomDirectory {
         })
     }
     /// Recheck persisted inputs in the consumer's snapshot without resolving paths again.
-    pub(crate) fn matches(&self, connection: &Connection) -> StoreResult<bool> {
+    pub fn matches(&self, connection: &Connection) -> StoreResult<bool> {
         Ok(self.agents == records::all(connection, "runtime_agents")?
             && self.projects == records::all(connection, "runtime_projects")?)
     }

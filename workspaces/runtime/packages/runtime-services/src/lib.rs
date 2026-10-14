@@ -116,7 +116,7 @@ pub mod safety_buffering;
 pub mod scheduler;
 pub mod submit_gates;
 pub mod sync_documents;
-pub(crate) mod sync_entity_context;
+pub mod sync_entity_context;
 pub mod sync_policy;
 pub mod sync_views;
 pub mod system_reads;
