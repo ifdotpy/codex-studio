@@ -45,6 +45,7 @@ AGENT_CREATE_WRITE_TABLES = frozenset({
     "runtime_lead_requests",
     "runtime_operation_receipts",
     "runtime_projects",
+    "runtime_tasks",
     "sync_entities",
 })
 
@@ -55,6 +56,51 @@ def no_write_snapshot(
     return _no_write_snapshot(
         state, include_tables=AGENT_CREATE_WRITE_TABLES, baseline_snapshot=before,
     )
+
+
+def describe_snapshot_delta(before, after):
+    old_databases = dict(before)
+    changes = []
+    for database, tables in after:
+        old_tables = {table: (columns, rows) for table, columns, rows in old_databases.get(database, ())}
+        for table, columns, rows in tables:
+            old_columns, old_rows = old_tables.get(table, (columns, ()))
+            key_columns = tuple(column for column in ("collection", "id") if column in columns)
+            if not key_columns and "id" in columns:
+                key_columns = ("id",)
+            key_indexes = tuple(columns.index(column) for column in key_columns)
+            old_by_key = {
+                tuple(row[old_columns.index(column)] for column in key_columns): row
+                for row in old_rows
+            } if key_columns else {row: row for row in old_rows}
+            for row in rows:
+                key = tuple(row[index] for index in key_indexes) if key_columns else row
+                prior = old_by_key.pop(key, None)
+                if prior is None:
+                    changes.append(f"{database}/{table} added {key!r}")
+                    continue
+                for index, column in enumerate(columns):
+                    if index >= len(old_columns) or column not in old_columns:
+                        continue
+                    old_value = prior[old_columns.index(column)]
+                    if old_value == row[index]:
+                        continue
+                    if column in {"record", "payload"}:
+                        try:
+                            old_json, new_json = json.loads(old_value), json.loads(row[index])
+                        except (TypeError, ValueError):
+                            changes.append(f"{database}/{table}/{key}/{column} changed")
+                            continue
+                        old_fields = old_json.get("value", old_json) if isinstance(old_json, dict) else old_json
+                        new_fields = new_json.get("value", new_json) if isinstance(new_json, dict) else new_json
+                        field_names = set(old_fields) | set(new_fields) if isinstance(old_fields, dict) and isinstance(new_fields, dict) else {"<json>"}
+                        changed = [name for name in sorted(field_names) if old_fields.get(name) != new_fields.get(name)] if isinstance(old_fields, dict) and isinstance(new_fields, dict) else ["<json>"]
+                        changes.append(f"{database}/{table}/{key}/{column} fields={changed[:20]!r}")
+                    else:
+                        changes.append(f"{database}/{table}/{key}/{column}: {old_value!r} -> {row[index]!r}")
+                if len(changes) >= 30:
+                    return changes
+    return changes
 
 _fixture_spec = importlib.util.spec_from_file_location(
     "agents_create_runtime_fixture", HERE / "runtime-contract.py"
@@ -134,6 +180,21 @@ def agent_delta(actual, expected):
     }
 
 
+BACKGROUND_CHILD_COMPLETION_FIELDS = frozenset({
+    "status", "inFlight", "startAttempt", "turnId", "turnEpoch",
+    "workspaceOperation", "workspaceReservationId", "worktreePreparation",
+    "activeTools", "activity", "checkpointError", "checkpointHistoryHead",
+    "complaintMisses", "complaintsPresented", "events", "lastAnswer",
+    "lastCompletedTurn", "lastCompletedTurnError", "lastCompletedTurnStatus",
+    "lastEvent", "nativeRoleGuidance", "nativeTeleportTool", "nativeToolCatalog",
+    "nativeToolSource", "prepareAttempt", "preparedContext", "tail",
+    "threadId", "worktreeReady", "branch", "cwd",
+    # Python's successful thread preparation callback records these even when
+    # the provider reply omits them (codex_runtime.py:6477-6478).
+    "approvalPolicy", "profile", "sandbox",
+})
+
+
 def python_draft(backend, request, draft=True):
     """Create a draft through the Python runtime so Rust can prove migration replay."""
     backend.stop()
@@ -196,6 +257,62 @@ class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             "X-Canvas-Token": self.backend.session["token"],
             "X-Studio-API-Schema": self.backend.schema_hash,
         }
+
+    def background_work_pending(self):
+        with database_connection(self.backend.state / "canvas.sqlite3") as database:
+            if database.execute(
+                "SELECT 1 FROM runtime_events e JOIN runtime_agents a ON a.id=e.agent "
+                "WHERE e.status IN ('pending','reserved','dispatching') "
+                "AND e.kind!='child_result' "
+                "AND json_extract(a.record,'$.autoWake')=1 "
+                "AND json_extract(a.record,'$.status') NOT IN ('failed','interrupted','paused') LIMIT 1"
+            ).fetchone():
+                return True
+            for agent_id, encoded in database.execute("SELECT id,record FROM runtime_agents"):
+                agent = json.loads(encoded)
+                if agent.get("workspaceOperation") or agent.get("worktreePreparation") in {"waiting", "preparing"}:
+                    return True
+            for (encoded,) in database.execute("SELECT record FROM runtime_tasks"):
+                if json.loads(encoded).get("status") == "running":
+                    return True
+        return False
+
+    def await_background_quiescence(self):
+        """Wait for scheduler, task, and workspace preparation work to settle."""
+        deadline = time.monotonic() + HTTP_WAIT_GUARD_SECONDS
+        if not self.background_work_pending():
+            return
+        query = urlencode({
+            "protocol": "3",
+            "apiSchema": self.backend.schema_hash,
+            "resources": json.dumps([{"kind": "state"}], separators=(",", ":")),
+        })
+        request = Request(
+            f"{self.backend.origin}/api/sync/stream?{query}", headers=self.headers(),
+        )
+        with urlopen(request, timeout=HTTP_WAIT_GUARD_SECONDS) as response:
+            raw_socket = response.fp.raw._sock
+            while time.monotonic() < deadline:
+                if not self.background_work_pending():
+                    return
+                raw_socket.settimeout(max(0.01, deadline - time.monotonic()))
+                event = None
+                while time.monotonic() < deadline:
+                    line = response.readline().decode("utf-8").rstrip("\r\n")
+                    if line.startswith("event: "):
+                        event = line.removeprefix("event: ")
+                    elif not line and event is not None:
+                        if event == "resources":
+                            break
+                        event = None
+            self.fail("Background scheduler/workspace work did not become quiescent")
+
+    def snapshot_no_write(self, *, before=None):
+        self.await_background_quiescence()
+        snapshot = no_write_snapshot(self.backend.state, before=before)
+        if before is not None and snapshot != before:
+            self.fail(f"No-write snapshot changed: {describe_snapshot_delta(before, snapshot)!r}")
+        return snapshot
 
     def await_model_catalog(self, account_key):
         backend = self.backend
@@ -556,10 +673,10 @@ class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         self.assertIsInstance(account_row.get("home"), str)
         self.assertIsNone(account_row.get("provider"))
         self.await_model_catalog(account_key)
-        before = no_write_snapshot(self.backend.state)
+        before = self.snapshot_no_write()
         first = self.backend.request("POST", "/api/agents", body=request, headers=self.headers())
         self.assertEqual(first.status, 200, first.body[:1000])
-        self.assertNotEqual(no_write_snapshot(self.backend.state), before)
+        self.assertNotEqual(self.snapshot_no_write(), before)
         self.assertEqual(first.json()["id"], request["id"])
         self.backend.stop()
         self.backend.start()
@@ -579,6 +696,11 @@ class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         self.assertEqual(saved["workerBaseRef"], "HEAD")
         self.assertEqual(saved["workerBaseCommit"], base_commit)
         self.assertTrue(saved["worktree"])
+        self.assertEqual(saved["branch"], "codex-agent/" + request["id"])
+        self.assertEqual(
+            Path(saved["cwd"]),
+            self.backend.cwd / ".worktrees" / "codex-agents" / request["id"],
+        )
         self.assertEqual(saved["parentId"], parent["record"]["id"])
         self.assertEqual(saved["rootId"], parent["record"]["rootId"])
         expected_fields = REVIEW_CORPUS["childStoredFields"]
@@ -588,19 +710,16 @@ class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         # backend has already scheduled the child. Python Runtime.schedule()
         # also reserves queued workers (codex_runtime.py around 6503/7036),
         # changing only these lifecycle fields after create.
-        scheduler_fields = {
-            "status", "inFlight", "startAttempt", "turnId", "turnEpoch",
-            "workspaceOperation", "workspaceReservationId", "worktreePreparation",
-        }
+        # The Python draft reference is captured before execution; the live
+        # fake-provider child has completed it by this point. These fields are
+        # separate from no-write refusal snapshots.
         saved_for_creation = normalized_agent(saved)
         expected_for_creation = normalized_agent(expected)
-        for field in scheduler_fields:
+        for field in BACKGROUND_CHILD_COMPLETION_FIELDS:
             saved_for_creation.pop(field, None)
             expected_for_creation.pop(field, None)
-        self.assertEqual(
-            agent_delta(saved_for_creation, expected_for_creation),
-            {},
-        )
+        creation_delta = agent_delta(saved_for_creation, expected_for_creation)
+        self.assertEqual(creation_delta, {}, f"field deltas: {creation_delta!r}")
 
         maximum_name_request = {
             **request,
@@ -624,6 +743,7 @@ class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             "POST", "/api/agents", body=maximum_name_request, headers=self.headers()
         )
         self.assertEqual(maximum_name_response.status, 200, maximum_name_response.body[:1000])
+        self.await_background_quiescence()
         with database_connection(self.backend.state / "canvas.sqlite3") as database:
             saved_maximum_name = json.loads(
                 database.execute(
@@ -631,10 +751,12 @@ class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
                     (maximum_name_request["id"],),
                 ).fetchone()[0]
             )
-        self.assertEqual(
-            agent_delta(normalized_agent(saved_maximum_name), normalized_agent(expected_maximum_name)),
-            {},
-        )
+        maximum_actual = normalized_agent(saved_maximum_name)
+        maximum_expected = normalized_agent(expected_maximum_name)
+        for field in BACKGROUND_CHILD_COMPLETION_FIELDS:
+            maximum_actual.pop(field, None)
+            maximum_expected.pop(field, None)
+        self.assertEqual(agent_delta(maximum_actual, maximum_expected), {})
 
         self.backend.stop()
         self.backend.start()
@@ -649,6 +771,8 @@ class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
                 ).fetchone()[0],
                 1,
             )
+        self.quiesce_fixture_agent(request["id"])
+        self.quiesce_fixture_agent(maximum_name_request["id"])
 
     def test_rename_reads_python_written_agent_and_projection(self):
         before = rename_state(self.backend.state, self.agent_id, "title-request-1")
@@ -823,6 +947,16 @@ class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         with database_connection(self.backend.state / "canvas.sqlite3") as db:
             db.execute("UPDATE runtime_agents SET record=? WHERE id=?", (json.dumps(record), record["id"]))
 
+    def quiesce_fixture_agent(self, agent_id):
+        """Make a test-owned queued turn inert before unrelated refusal checks."""
+        with database_connection(self.backend.state / "canvas.sqlite3") as db:
+            row = db.execute("SELECT record FROM runtime_agents WHERE id=?", (agent_id,)).fetchone()
+            if row is None:
+                return
+            record = json.loads(row[0])
+            record.update(autoWake=False, status="paused", inFlight=False, turnId=None)
+            db.execute("UPDATE runtime_agents SET record=? WHERE id=?", (json.dumps(record), agent_id))
+
     def rust_only(self):
         if not os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"):
             self.skipTest("Rust strict persisted validation or unavailable service boundary")
@@ -832,12 +966,13 @@ class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         self.rust_only()
         body = {"id": str(uuid.uuid4()), "cwd": str(self.backend.cwd), "prompt": "Task", "maxAgents": 64}
         self.post("/api/agents", body)
+        self.quiesce_fixture_agent(body["id"])
         variations = {**REVIEW_CORPUS["replayChanges"], "cwd": str(self.backend.root), "parent": self.agent_id}
         for field, value in variations.items():
             with self.subTest(field=field):
-                before = no_write_snapshot(self.backend.state)
+                before = self.snapshot_no_write()
                 self.post("/api/agents", {**body, field: value}, 400)
-                self.assertEqual(no_write_snapshot(self.backend.state, before=before), before)
+                self.assertEqual(self.snapshot_no_write(before=before), before)
         self.post("/api/rename", {"id": body["id"], "name": "Changed"})
         self.assertEqual(self.post("/api/agents", body)["name"], "Changed")
         draft = self.draft()
@@ -849,10 +984,10 @@ class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         body = {"id": str(uuid.uuid4()), "cwd": str(self.backend.cwd), "workspaceMode": "worktree"}
         with database_connection(self.backend.state / "canvas.sqlite3") as db:
             db.execute("INSERT INTO runtime_lead_requests VALUES(?,?,?)", (body["id"], str(uuid.uuid4()), "{}"))
-        before = no_write_snapshot(self.backend.state)
+        before = self.snapshot_no_write()
         result = self.post("/api/leads", body, 500)
         self.assertIn("runtime_lead_requests/" + body["id"], result["error"])
-        self.assertEqual(no_write_snapshot(self.backend.state, before=before), before)
+        self.assertEqual(self.snapshot_no_write(before=before), before)
 
     def test_probe_admission_invalid_stored_agent_is_refused_by_rename(self):
         self.rust_only()
@@ -860,10 +995,10 @@ class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         record = self.stored(body["id"])
         try:
             self.save({**record, "cwd": 42})
-            before = no_write_snapshot(self.backend.state)
+            before = self.snapshot_no_write()
             result = self.post("/api/rename", {"id": body["id"], "name": "Invalid kept"}, 500)
             self.assertIn("runtime_agents/" + body["id"], result["error"])
-            self.assertEqual(no_write_snapshot(self.backend.state, before=before), before)
+            self.assertEqual(self.snapshot_no_write(before=before), before)
         finally:
             self.save(record)
 
@@ -874,10 +1009,10 @@ class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             original = db.execute("SELECT record FROM runtime_projects WHERE id=?", (str(self.backend.cwd),)).fetchone()[0]
             db.execute("UPDATE runtime_projects SET record='{' WHERE id=?", (str(self.backend.cwd),))
         try:
-            before = no_write_snapshot(self.backend.state)
+            before = self.snapshot_no_write()
             result = self.post("/api/leads", {"id": str(uuid.uuid4()), "cwd": str(self.backend.cwd), "account_key": "default"}, 500)
             self.assertIn("runtime_projects/" + str(self.backend.cwd), result["error"])
-            self.assertEqual(no_write_snapshot(self.backend.state, before=before), before)
+            self.assertEqual(self.snapshot_no_write(before=before), before)
         finally:
             with database_connection(self.backend.state / "canvas.sqlite3") as db:
                 db.execute("UPDATE runtime_projects SET record=? WHERE id=?", (original, str(self.backend.cwd)))
@@ -907,7 +1042,7 @@ class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         self.rust_only()
         for field in REVIEW_CORPUS["catalogNulls"]:
             with self.subTest(field=field):
-                before = no_write_snapshot(self.backend.state)
+                before = self.snapshot_no_write()
                 expected = (
                     400
                     if field in {"model", "fast_mode", "worker_defaults", "review_defaults"}
@@ -921,7 +1056,7 @@ class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
                 if field == "effort":
                     self.assertEqual(self.stored(self.agent_id)["nativeEffort"], "medium")
                 else:
-                    self.assertEqual(no_write_snapshot(self.backend.state, before=before), before)
+                    self.assertEqual(self.snapshot_no_write(before=before), before)
 
     def test_probe_boundaries_explicit_nulls_are_located_schema_refusals(self):
         corpus = [("/api/leads", {"cwd": str(self.backend.cwd)}, ("reuse_empty", "yolo_mode", "cwd", "account_key", "workspaceMode")),
@@ -992,14 +1127,15 @@ class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
                 if field in REVIEW_CORPUS["creationCatalogNulls"]:
                     self.post(route, {**body, "id": agent_id, field: None}, 200)
                     self.assertIsNotNone(self.stored(agent_id))
+                    self.quiesce_fixture_agent(agent_id)
         body = self.draft()
         original = self.stored(body["id"])
         try:
             self.save({**original, "name": 42})
-            before = no_write_snapshot(self.backend.state)
+            before = self.snapshot_no_write()
             result = self.post("/api/conversation", {"id": body["id"], "excluded_account_keys": []}, 500)
             self.assertIn("runtime_agents/" + body["id"], result["error"])
-            self.assertEqual(no_write_snapshot(self.backend.state, before=before), before)
+            self.assertEqual(self.snapshot_no_write(before=before), before)
         finally:
             self.save(original)
 
@@ -1014,9 +1150,9 @@ class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         path.write_text(json.dumps(registry))
         try:
             self.backend.start()
-            before = no_write_snapshot(self.backend.state)
+            before = self.snapshot_no_write()
             self.post("/api/leads", body)
-            self.assertEqual(no_write_snapshot(self.backend.state, before=before), before)
+            self.assertEqual(self.snapshot_no_write(before=before), before)
         finally:
             self.backend.stop()
             path.write_bytes(original)
@@ -1025,14 +1161,15 @@ class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
     def test_profiles_are_loaded_validated_and_resolved_from_fresh_catalog(self):
         self.rust_only()
         body = {"id": str(uuid.uuid4()), "cwd": str(self.backend.cwd), "prompt": "Task", "profile_id": "unknown-profile"}
-        before = no_write_snapshot(self.backend.state)
+        before = self.snapshot_no_write()
         self.post("/api/agents", body, 400)
-        self.assertEqual(no_write_snapshot(self.backend.state, before=before), before)
+        self.assertEqual(self.snapshot_no_write(before=before), before)
         profile = {"id": "plain-profile", "name": "Plain", "role": "reviewer", "model": "gpt-6-astra", "effort": None, "instructions": "Follow the fixture instructions."}
         with database_connection(self.backend.state / "canvas.sqlite3") as db:
             db.execute("INSERT INTO runtime_profiles VALUES(?,?)", (profile["id"], json.dumps(profile)))
         self.post("/api/agents", {**body, "profile_id": profile["id"]}, 200)
         self.assertEqual(self.stored(body["id"])["profileId"], profile["id"])
+        self.quiesce_fixture_agent(body["id"])
         for model, status in (("gpt-6-astra", 200), (42, 500)):
             agent_id = str(uuid.uuid4())
             with database_connection(self.backend.state / "canvas.sqlite3") as db:
@@ -1040,10 +1177,11 @@ class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             if status == 200:
                 self.post("/api/agents", {**body, "id": agent_id, "profile_id": profile["id"]}, status)
                 self.assertEqual(self.stored(agent_id)["model"], model)
+                self.quiesce_fixture_agent(agent_id)
             else:
-                before = no_write_snapshot(self.backend.state)
+                before = self.snapshot_no_write()
                 self.post("/api/agents", {**body, "id": agent_id, "profile_id": profile["id"]}, status)
-                self.assertEqual(no_write_snapshot(self.backend.state, before=before), before)
+                self.assertEqual(self.snapshot_no_write(before=before), before)
 
     def test_probe_admission_completed_worker_result_file_survives_configure(self):
         self.rust_only()
@@ -1065,16 +1203,16 @@ class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
                 if preferences == {"effort": None}:
                     self.post(path, {**body, **preferences}, 200)
                 elif preferences.get("model") == "gpt-6-astra":
-                    before = no_write_snapshot(self.backend.state)
+                    before = self.snapshot_no_write()
                     self.assertEqual(
                         self.post(path, {**body, **preferences}, 501)["error"],
                         "Not implemented: requires provider-session/model-list",
                     )
-                    self.assertEqual(no_write_snapshot(self.backend.state, before=before), before)
+                    self.assertEqual(self.snapshot_no_write(before=before), before)
                 else:
-                    before = no_write_snapshot(self.backend.state)
+                    before = self.snapshot_no_write()
                     self.assertEqual(self.post(path, {**body, **preferences}, 501)["error"], "Not implemented: requires " + dependency)
-                    self.assertEqual(no_write_snapshot(self.backend.state, before=before), before)
+                    self.assertEqual(self.snapshot_no_write(before=before), before)
 
     def test_probe_refusal_configure_response_failure_rolls_back_every_write(self):
         self.rust_only()
@@ -1084,10 +1222,10 @@ class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         incomplete.pop("maxAgents")
         try:
             self.save(incomplete)
-            before = no_write_snapshot(self.backend.state)
+            before = self.snapshot_no_write()
             result = self.post("/api/configure", {"id": body["id"], "tokenBudget": 13}, 500)
             self.assertIn("runtime_agents/" + body["id"], result["error"])
-            self.assertEqual(no_write_snapshot(self.backend.state, before=before), before)
+            self.assertEqual(self.snapshot_no_write(before=before), before)
         finally:
             self.save(original)
 
@@ -1098,9 +1236,9 @@ class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             for change in ({"deletedAt": 1}, {"isLead": False}):
                 with self.subTest(change=change):
                     self.save({**original, **change})
-                    before = no_write_snapshot(self.backend.state)
+                    before = self.snapshot_no_write()
                     self.post("/api/leads", {"id": str(uuid.uuid4()), "previous": previous["id"], "reuse_empty": False}, 400)
-                    self.assertEqual(no_write_snapshot(self.backend.state, before=before), before)
+                    self.assertEqual(self.snapshot_no_write(before=before), before)
             self.save({**original, "prompt": "This conversation has content"})
             reuse_request = {"id": str(uuid.uuid4()), "previous": previous["id"], "reuse_empty": True}
             result = self.post("/api/leads", reuse_request)
@@ -1138,10 +1276,10 @@ class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         try:
             self.save({**original, "status": "running", "inFlight": True})
             for field in ("next_turn", "request_id"):
-                before = no_write_snapshot(self.backend.state)
+                before = self.snapshot_no_write()
                 result = self.post("/api/conversation", {"id": body["id"], "excluded_account_keys": [], field: None}, 400)
                 self.assertIn("Wait for this turn", result["error"])
-                self.assertEqual(no_write_snapshot(self.backend.state, before=before), before)
+                self.assertEqual(self.snapshot_no_write(before=before), before)
         finally:
             self.save(original)
 
@@ -1149,11 +1287,11 @@ class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         self.rust_only()
         original = self.stored(self.agent_id)
         self.assertNotIn("creationIntent", original)
-        before = no_write_snapshot(self.backend.state)
+        before = self.snapshot_no_write()
         result = self.post("/api/agents", {"id": self.agent_id, "name": original["name"], "prompt": original["prompt"], "cwd": original["cwd"]}, 400)
         self.assertIn("No saved creation intent", result["error"])
         self.assertIn("inspect the existing agent", result["error"])
-        self.assertEqual(no_write_snapshot(self.backend.state, before=before), before)
+        self.assertEqual(self.snapshot_no_write(before=before), before)
 
     def test_probe_trim_creation_intent_and_rename_use_python_whitespace(self):
         self.rust_only()
@@ -1171,15 +1309,16 @@ class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         with database_connection(self.backend.state / "canvas.sqlite3") as db:
             self.assertEqual(db.execute("SELECT text FROM runtime_events WHERE agent=?", (request["id"],)).fetchall(), [("Task",)])
         self.post("/api/agents", {**request, "name": "Name", "prompt": "Task"})
+        self.quiesce_fixture_agent(request["id"])
         rename = {"id": request["id"], "request_id": "python-trim-rename", "name": "\u001cRenamed\u001f"}
         result = self.post("/api/rename", rename)
         self.assertEqual(result["name"], "Renamed")
-        before = no_write_snapshot(self.backend.state)
+        before = self.snapshot_no_write()
         self.assertEqual(self.post("/api/rename", {**rename, "name": "Renamed"})["name"], "Renamed")
-        self.assertEqual(no_write_snapshot(self.backend.state, before=before), before)
-        before = no_write_snapshot(self.backend.state)
+        self.assertEqual(self.snapshot_no_write(before=before), before)
+        before = self.snapshot_no_write()
         self.post("/api/rename", {"id": request["id"], "name": "\u001c\u001f"}, 400)
-        self.assertEqual(no_write_snapshot(self.backend.state, before=before), before)
+        self.assertEqual(self.snapshot_no_write(before=before), before)
 
     def test_shared_projection_local_server_identity(self):
         body = self.draft()

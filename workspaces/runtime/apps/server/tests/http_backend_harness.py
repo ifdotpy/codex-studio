@@ -59,40 +59,19 @@ PROVIDER_CREDENTIAL_ENVIRONMENT = frozenset({
     "CLAUDE_CODE_OAUTH_REFRESH_TOKEN",
 })
 
-# Dispatcher- and scheduler-owned fields that can change between an HTTP
-# response and the test's post-request read. Values are paths within each row's
+# Exact dispatcher- and scheduler-owned internals. Values are paths within each row's
 # JSON record (or, for plain columns, the column name). Keep this as the sole
 # authority; docs/testing.md points here.
 BACKGROUND_OWNED_FIELDS: dict[str, frozenset[str]] = {
     "runtime_agents": frozenset({
-        # Python Runtime.schedule() owns these lifecycle fields while a queued
-        # child is reserved or prepared (codex_runtime.py:6503, 7036-7042,
-        # 7351-7585). They can advance after a refusing request returns.
-        "status", "inFlight", "startAttempt", "turnId", "turnEpoch", "events", "lastEvent", "error",
-        # The execution worker fills these when a previously queued attempt
-        # begins; workspace recovery can also set checkpoint diagnostics.
-        "needsTitle", "nativeEffort", "nativeRoleGuidance", "nativeTeleportTool",
-        "nativeToolSource", "nativeToolCatalog", "prepareAttempt", "approvalPolicy", "checkpointError",
-        "checkpointHistoryHead", "workspaceRecoveryRequired", "activeTools", "activity",
-        # The asynchronous thread preparation callback persists the prepared
-        # thread's identity and permissions (codex_runtime.py:6475-6481).
-        "threadId", "sandbox", "profile", "preparedContext",
-        # Thread preparation fills native tool metadata independently of HTTP
-        # requests (codex_runtime.py:6030, 6095).
-        # Native event callbacks update these counters and turn identity
-        # and completion fields (codex_runtime.py:8105-8111, 8141, 8197, 8230,
-        # 8392-8394).
-        "lastAnswer", "lastCompletedTurn", "lastCompletedTurnStatus",
-        "lastCompletedTurnError",
-        # Dispatcher records which required complaints it presented at codex_runtime.py:7063.
-        "complaintsPresented",
-        # Dispatcher reconciles normalized settings into the active attempt at codex_runtime.py:6943.
-        "startAttempt.settingsFixed",
+        # Async workspace preparation and activity/event bookkeeping only.
+        # Request-writable settings, status, identity, and paths remain visible.
+        "lastEvent", "activity", "prepareAttempt",
         # The Rust workspace-ready owner reserves and prepares a worktree
         # asynchronously after scheduler admission (workspace_ready_git.rs and
         # account_worker/preparation/pipeline.rs); these are not HTTP writes.
         "workspaceOperation", "workspaceReservationId", "worktreePreparation",
-        "branch", "cwd", "worktreeReady",
+        "worktreeReady",
     }),
     "runtime_agent_record_generation": frozenset({
         # Scheduler roster invalidation counter is maintained by agent triggers at codex_runtime.py:1607-1620.
@@ -117,36 +96,15 @@ BACKGROUND_OWNED_FIELDS: dict[str, frozenset[str]] = {
         "timing.fastActiveScanAt", "timing.fastCandidatesAt", "timing.fastCapacityCheckedAt",
         "timing.fastBudgetCheckedAt", "timing.fastAccountCheckedAt", "timing.fastRadioCheckedAt",
         "timing.fastWorkspaceScanAt", "timing.fastToolGateAt", "timing.fastBatchLoadedAt",
-        "timing.fastActorReloadedAt", "timing.fastDispatchDoneAt", "modelEventProjection",
-        "contextManifest", "transcriptItemId",
+        "timing.fastActorReloadedAt", "timing.fastDispatchDoneAt",
     }),
-    # The dispatcher sets this in codex_runtime.py:6943; reconcile_agent copies
-    # it into this projection in codex_execution.py:255-259.
-    "runtime_execution_attempts": frozenset({"settingsFixed"}),
     "sync_entities": frozenset({
-        # Agent projections mirror scheduler-owned agent lifecycle changes.
-        "payload.value.status", "payload.value.inFlight", "payload.value.startAttempt",
-        "payload.value.turnId", "payload.value.turnEpoch", "payload.value.events",
-        "payload.value.lastEvent", "payload.value.error",
-        "payload.value.lastAnswer", "payload.value.lastCompletedTurn",
-        "payload.value.lastCompletedTurnStatus", "payload.value.lastCompletedTurnError",
-        "payload.value.needsTitle", "payload.value.nativeEffort",
-        "payload.value.nativeRoleGuidance", "payload.value.nativeTeleportTool",
-        "payload.value.nativeToolSource",
-        "payload.value.nativeToolCatalog",
-        "payload.value.prepareAttempt", "payload.value.approvalPolicy",
-        "payload.value.threadId", "payload.value.sandbox", "payload.value.profile",
-        "payload.value.preparedContext",
-        "payload.value.checkpointError",
-        "payload.value.checkpointHistoryHead", "payload.value.workspaceRecoveryRequired",
-        "payload.value.activeTools", "payload.value.activity",
-        # Same dispatcher-only field is copied into the agent entity at codex_runtime.py:3302,3372.
-        "payload.value.complaintsPresented",
-        # Agent projection carries dispatcher-normalized attempts via codex_runtime.py:3302,3372.
-        "payload.value.startAttempt.settingsFixed",
+        # Only preparation and activity bookkeeping is normalized. Settings,
+        # status, identity, and workspace paths remain observable.
+        "payload.value.lastEvent", "payload.value.activity", "payload.value.prepareAttempt",
         "payload.value.workspaceOperation", "payload.value.workspaceReservationId",
         "payload.value.worktreePreparation",
-        "payload.value.branch", "payload.value.cwd", "payload.value.worktreeReady",
+        "payload.value.worktreeReady",
     }),
     # Rule tick updates its scheduling and liveness projection in codex_rules.py:420-483.
     "runtime_rules": frozenset({
@@ -339,18 +297,20 @@ def no_write_snapshot(
                                 # stable payload fields and new projections.
                                 current_value = dict(event_value)
                                 prior_value = dict(prior_event_value)
-                                current_value.pop("status", None)
-                                prior_value.pop("status", None)
-                                current_value.pop("turnId", None)
-                                prior_value.pop("turnId", None)
+                                for field in ("status", "turnId"):
+                                    if field in prior_value:
+                                        current_value[field] = prior_value[field]
+                                    else:
+                                        current_value.pop(field, None)
                                 if prior_event.get("error") is None:
                                     if current_value.get("error") is None or (
                                         isinstance(current_value.get("error"), str)
                                         and current_value["error"].startswith("WorkspaceRecoveryRequired:")
                                     ):
-                                        current_value.pop("error", None)
-                                    if prior_value.get("error") is None:
-                                        prior_value.pop("error", None)
+                                        if "error" in prior_value:
+                                            current_value["error"] = prior_value["error"]
+                                        else:
+                                            current_value.pop("error", None)
                                 projected["value"] = current_value
                                 prior_projected["value"] = prior_value
                                 values["payload"] = json.dumps(projected, sort_keys=True, separators=(",", ":"))
