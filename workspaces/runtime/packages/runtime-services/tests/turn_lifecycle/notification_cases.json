@@ -9778,21 +9778,26 @@
     "python_writes": "sync_entities"
   },
   {
-    "id": "unhandled-command-exec-outputDelta",
+    "id": "command-exec-output-without-monitor",
     "module": "notification_dispatch",
     "steps": [
       {
         "frame": {
           "method": "command/exec/outputDelta",
           "params": {
-            "threadId": "thread"
+            "threadId": "thread",
+            "processId": "missing-monitor",
+            "deltaBase64": "aGVsbG8="
           }
-        },
-        "required_service": "monitors/output"
+        }
       }
     ],
     "tier": "fast",
-    "requires_service": "monitors/output"
+    "return": [
+      {
+        "status": "written"
+      }
+    ]
   },
   {
     "id": "unhandled-provider-generationStarted",
@@ -11141,7 +11146,6 @@
       "unhandled-account-login-completed",
       "unhandled-account-updated",
       "unhandled-account-rateLimits-updated",
-      "unhandled-command-exec-outputDelta",
       "unhandled-provider-generationStarted",
       "unhandled-thread-closed",
       "unhandled-thread-status-changed",

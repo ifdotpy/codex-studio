@@ -80,7 +80,7 @@ impl NotificationEffects for RuntimeNotificationEffects {
                 before.or(after),
             )));
         }
-        if method == "provider/generationStarted" && before.or(after).is_some() {
+        if method == "provider/generationStarted" && matches!(outcome, DispatchOutcome::Written) {
             result.push(NotificationPostCommit::TokenRateStream(observation(
                 before.or(after),
             )));

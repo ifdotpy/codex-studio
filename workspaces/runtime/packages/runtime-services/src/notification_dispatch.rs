@@ -321,7 +321,9 @@ pub fn dispatch_notification_with_effects(
                 else {
                     // Python applies generationStarted to the account/thread rate
                     // table and returns when no active rate entry exists. A
-                    // notification can therefore be valid without an agent row.
+                    // notification can therefore be valid without an agent row,
+                    // but the token-rate service is still required.
+                    effects.generation_started()?;
                     return save_outcome(
                         transaction,
                         &receipt_id,
