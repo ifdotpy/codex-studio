@@ -6,6 +6,7 @@
 //! results, so its rules are testable in seconds without a database, a
 //! provider or the server. Route modules in `studio-runtime-http` call
 //! services; services never depend on HTTP types.
+#![deny(unsafe_code)]
 
 pub mod account_driver;
 pub mod account_policy;
@@ -64,6 +65,7 @@ pub mod federation_messaging;
 pub mod historical_input_receipts;
 pub mod host_project_runtime;
 pub mod host_worker_create;
+pub mod image_workspace;
 pub mod maintenance;
 pub(crate) mod managed_host_tools;
 pub mod message_admission;

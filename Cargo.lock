@@ -312,6 +312,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "dispatch2"
+version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1e0e367e4e7da84520dedcac1901e4da967309406d1e51017ae1abfb97adbd38"
+dependencies = [
+ "bitflags",
+]
+
+[[package]]
 name = "displaydoc"
 version = "0.2.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1255,6 +1264,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "objc2-core-services"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "583300ad934cba24ff5292aee751ecc070f7ca6b39a574cc21b7b5e588e06a0b"
+dependencies = [
+ "dispatch2",
+ "objc2-core-foundation",
+]
+
+[[package]]
 name = "objc2-io-kit"
 version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2148,6 +2167,7 @@ dependencies = [
  "bytes",
  "chrono",
  "data-encoding",
+ "dispatch2",
  "futures-util",
  "getrandom 0.3.4",
  "http-body-util",
@@ -2157,6 +2177,8 @@ dependencies = [
  "mime_guess",
  "nix 0.31.3",
  "notify",
+ "objc2-core-foundation",
+ "objc2-core-services",
  "process-wrap",
  "regex",
  "ring",
