@@ -321,6 +321,7 @@ impl NativeActionPreparationRun {
         &self,
         request: &native_actions::Request,
     ) -> native_actions::Result<()> {
+        self.reject_cross_server_review(request)?;
         let provider_home = self.provider_home(request)?;
         self.repair.repair_idle(
             self.store.clone(),
@@ -329,6 +330,24 @@ impl NativeActionPreparationRun {
             self.provider.clone(),
             std::time::Instant::now() + std::time::Duration::from_secs(20),
         )?;
+        Ok(())
+    }
+
+    fn reject_cross_server_review(
+        &self,
+        request: &native_actions::Request,
+    ) -> native_actions::Result<()> {
+        if request.action != native_actions::Action::Review {
+            return Ok(());
+        }
+        let connection = self.store.read()?;
+        let agent = AgentRepository::get(&connection, &AgentId::from(request.agent.as_str()))?
+            .ok_or(NativeError::Changed)?;
+        if agent.extra.get("executionMode").and_then(Value::as_str) == Some("vm")
+            || agent.extra.get("remoteOrigin") == Some(&Value::Bool(true))
+        {
+            return Err(NativeError::Unavailable("cross-server/native-review"));
+        }
         Ok(())
     }
 }
@@ -654,5 +673,150 @@ inventory::submit! {
             "account-worker/deleted-settlement", "usage-policy/agent-stop", "voice-driver/agent-stop", "work-driver/deletion-release",
             "workspace-state/agent-lifecycle", "cross-server/native-review",
         ],
+    }
+}
+
+#[cfg(test)]
+mod native_review_preflight_tests {
+    use super::*;
+    use serde_json::json;
+    use std::{
+        path::Path,
+        sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        },
+    };
+    use studio_runtime_services::{
+        account_session_runtime::{
+            AccountSessionError, AccountSessionPort, ConnectionScope, ProviderRequest,
+            SessionReceipt,
+        },
+        account_worker::preparation::PreparationResources,
+        model_catalog::ModelCatalogService,
+    };
+    struct ProviderSpy(AtomicUsize);
+    impl AccountSessionPort for ProviderSpy {
+        fn provider_request(
+            &self,
+            _request: ProviderRequest,
+        ) -> Result<SessionReceipt, AccountSessionError> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Err(AccountSessionError::Requires("test/provider"))
+        }
+    }
+
+    struct RepairSpy(AtomicUsize);
+    impl NativeContextRepairPort for RepairSpy {
+        fn repair_idle(
+            &self,
+            _store: Arc<RuntimeStore>,
+            _agent_id: String,
+            _provider_home: std::path::PathBuf,
+            _broker: Arc<dyn AccountSessionPort>,
+            _deadline: std::time::Instant,
+        ) -> native_actions::Result<Value> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Ok(Value::Null)
+        }
+    }
+
+    #[test]
+    fn cross_server_review_refuses_before_repair_or_receipt_writes() {
+        let directory = tempfile::tempdir().expect("isolated store directory");
+        let store = Arc::new(RuntimeStore::open(Some(directory.path())).expect("open store"));
+        let original = AgentRecord::from_value(json!({
+            "id":"remote",
+            "rootId":"remote",
+            "epoch":7,
+            "status":"running",
+            "provider":"codex",
+            "executionMode":"vm",
+            "threadId":"thread-1",
+            "accountKey":"default",
+            "startAttempt":{"submitted":true}
+        }))
+        .expect("valid agent record");
+        store
+            .transaction(|tx| AgentRepository::put(tx, &original))
+            .expect("save agent");
+        let before_agent = {
+            let connection = store.read().expect("read store");
+            AgentRepository::get(&connection, &original.id)
+                .expect("read agent")
+                .expect("agent exists")
+                .value()
+        };
+        let before_receipts: i64 = {
+            let connection = store.read().expect("read store");
+            connection
+                .query_row(
+                    "SELECT COUNT(*) FROM runtime_native_action_receipts",
+                    [],
+                    |row| row.get(0),
+                )
+                .expect("count receipts")
+        };
+
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../..")
+            .canonicalize()
+            .expect("repository root");
+        let resources = PreparationResources::bundled_at(
+            String::new(),
+            ModelCatalogService::new(None),
+            std::env::current_exe().expect("absolute test executable"),
+            root.clone(),
+            root.join("workspaces/runtime/apps/server/src"),
+        )
+        .expect("preparation resources");
+        let provider = Arc::new(ProviderSpy(AtomicUsize::new(0)));
+        let repair = Arc::new(RepairSpy(AtomicUsize::new(0)));
+        let preparation = NativeActionPreparationRun {
+            store: store.clone(),
+            provider: provider.clone(),
+            account_driver: None,
+            repair: repair.clone(),
+            preparation: Arc::new(resources),
+        };
+        let request = native_actions::Request {
+            request_id: "review-request".into(),
+            agent: "remote".into(),
+            action: native_actions::Action::Review,
+            context: Value::Null,
+        };
+        let scope = ConnectionScope {
+            account: "default".into(),
+            connection: "connection-1".into(),
+            generation: 3,
+        };
+        let result = native_actions::Preparation::before_reserve(
+            &preparation,
+            store.as_ref(),
+            provider.as_ref(),
+            &request,
+            &scope,
+        );
+
+        assert!(matches!(
+            result,
+            Err(NativeError::Unavailable("cross-server/native-review"))
+        ));
+        assert_eq!(repair.0.load(Ordering::SeqCst), 0);
+        assert_eq!(provider.0.load(Ordering::SeqCst), 0);
+        let connection = store.read().expect("read unchanged store");
+        let after_agent = AgentRepository::get(&connection, &original.id)
+            .expect("read unchanged agent")
+            .expect("agent remains")
+            .value();
+        let after_receipts: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM runtime_native_action_receipts",
+                [],
+                |row| row.get(0),
+            )
+            .expect("count unchanged receipts");
+        assert_eq!(after_agent, before_agent);
+        assert_eq!(after_receipts, before_receipts);
     }
 }
