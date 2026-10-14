@@ -14,7 +14,7 @@ use futures_util::Stream;
 use futures_util::stream;
 use serde_json::{Value, json};
 use studio_runtime_schema::shared_values::{
-    MAX_SYNC_RESOURCE_COUNT, MAX_SYNC_RESOURCE_QUERY_BYTES,
+    MAX_SYNC_RESOURCE_COUNT, MAX_SYNC_RESOURCE_QUERY_BYTES, SYNC_RESOURCE_HEARTBEAT_SECONDS,
 };
 use studio_runtime_schema::{SYNC_PROTOCOL_VERSION, SYNC_PROTOCOL_VERSION_TEXT};
 use studio_runtime_services::change_notifications::{ChangeSnapshot, MAX_SAFE_REVISION};
@@ -28,7 +28,6 @@ use crate::error::ApiError;
 use crate::router::HttpState;
 use crate::schema::{API_SCHEMA_HASH_HEADER, api_schema_hash};
 
-const RESOURCE_HEARTBEAT_SECONDS: u64 = 15;
 static STREAM_DEPENDENCIES: &[Dependency] = &[
     Dependency::new("provider-session/app-server"),
     Dependency::new("usage-policy/token-rates"),
@@ -165,8 +164,8 @@ async fn sync_stream(
         token_rates,
         _progress_watch: progress_watch,
         heartbeat: interval_at(
-            Instant::now() + Duration::from_secs(RESOURCE_HEARTBEAT_SECONDS),
-            Duration::from_secs(RESOURCE_HEARTBEAT_SECONDS),
+            Instant::now() + Duration::from_secs(SYNC_RESOURCE_HEARTBEAT_SECONDS),
+            Duration::from_secs(SYNC_RESOURCE_HEARTBEAT_SECONDS),
         ),
     };
     event_response(stream::unfold(stream_state, next_frame))
@@ -456,8 +455,8 @@ mod tests {
             token_rates: studio_runtime_services::token_rate::TokenRateHub::new().subscribe(),
             _progress_watch: None,
             heartbeat: interval_at(
-                Instant::now() + Duration::from_secs(RESOURCE_HEARTBEAT_SECONDS),
-                Duration::from_secs(RESOURCE_HEARTBEAT_SECONDS),
+                Instant::now() + Duration::from_secs(SYNC_RESOURCE_HEARTBEAT_SECONDS),
+                Duration::from_secs(SYNC_RESOURCE_HEARTBEAT_SECONDS),
             ),
         };
         hub.notify_one();
@@ -493,8 +492,8 @@ mod tests {
             token_rates: studio_runtime_services::token_rate::TokenRateHub::new().subscribe(),
             _progress_watch: None,
             heartbeat: interval_at(
-                Instant::now() + Duration::from_secs(RESOURCE_HEARTBEAT_SECONDS),
-                Duration::from_secs(RESOURCE_HEARTBEAT_SECONDS),
+                Instant::now() + Duration::from_secs(SYNC_RESOURCE_HEARTBEAT_SECONDS),
+                Duration::from_secs(SYNC_RESOURCE_HEARTBEAT_SECONDS),
             ),
         };
         let pending = next_frame(state);

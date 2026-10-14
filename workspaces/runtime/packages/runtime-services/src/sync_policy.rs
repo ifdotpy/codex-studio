@@ -11,11 +11,12 @@ use serde_json::{Map, Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Component, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
+pub use studio_runtime_schema::shared_values::{SYNC_BATCH_LIMIT, SYNC_ENTITY_PAGE_LIMIT};
 use studio_runtime_store::{RuntimeStore, StoreError, StoreResult, SyncDocumentsRepository};
 use thiserror::Error;
 
-pub const ENTITY_PAGE_LIMIT: i64 = 500;
-pub const OTHER_PAGE_LIMIT: i64 = 100;
+pub const ENTITY_PAGE_LIMIT: i64 = SYNC_ENTITY_PAGE_LIMIT;
+pub const OTHER_PAGE_LIMIT: i64 = SYNC_BATCH_LIMIT;
 const PREFERENCE_FIELD_CAP: usize = 3000;
 const MAX_CLOCK_SKEW_MS: i64 = 5 * 60 * 1000;
 const MONITOR_TERMINAL_WINDOW: usize = 100;

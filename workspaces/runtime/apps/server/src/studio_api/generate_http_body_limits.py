@@ -9,6 +9,7 @@ from codex_http_body_limits import (
     DEFAULT_BODY_LIMIT,
     PROJECTS_BODY_LIMIT,
     PROJECTS_PATHS,
+    REQUEST_BODY_READ_TIMEOUT_SECONDS,
     VOICE_AUDIO_BODY_LIMIT,
     VOICE_AUDIO_PATHS,
 )
@@ -29,6 +30,8 @@ def render_rust_http_body_limits() -> str:
         f"pub(crate) const ASSET_BODY_LIMIT: usize = {ASSET_BODY_LIMIT:_};",
         f"pub(crate) const VOICE_AUDIO_BODY_LIMIT: usize = {VOICE_AUDIO_BODY_LIMIT:_};",
         f"pub(crate) const PROJECTS_BODY_LIMIT: usize = {PROJECTS_BODY_LIMIT:_};",
+        "pub(crate) const REQUEST_BODY_READ_TIMEOUT_SECONDS: u64 = "
+        f"{REQUEST_BODY_READ_TIMEOUT_SECONDS};",
         "",
         "pub(crate) fn request_limit(path: &str) -> usize {",
         "    if studio_runtime_services::federation_limits::FEDERATION_PATHS.contains(&path) {",

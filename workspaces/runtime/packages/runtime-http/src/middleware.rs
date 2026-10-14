@@ -13,12 +13,10 @@ use studio_runtime_services::federation_limits::FEDERATION_PATHS;
 use subtle::ConstantTimeEq;
 
 use crate::error::{ApiError, error_response, with_api_headers};
-use crate::http_body_limits_generated::request_limit;
+use crate::http_body_limits_generated::{REQUEST_BODY_READ_TIMEOUT_SECONDS, request_limit};
 use crate::router::HttpState;
 use crate::schema::{API_SCHEMA_HASH_HEADER, API_SCHEMA_MISMATCH_HEADER, api_schema_hash};
 use crate::validation::RawRequest;
-
-const REQUEST_READ_TIMEOUT: Duration = Duration::from_secs(10);
 
 pub(crate) async fn boundary(
     State(state): State<HttpState>,
@@ -167,7 +165,12 @@ pub(crate) async fn boundary(
             return error_response(StatusCode::PAYLOAD_TOO_LARGE, "Invalid request size");
         }
         let (parts, body) = request.into_parts();
-        let bytes = match tokio::time::timeout(REQUEST_READ_TIMEOUT, to_bytes(body, limit)).await {
+        let bytes = match tokio::time::timeout(
+            Duration::from_secs(REQUEST_BODY_READ_TIMEOUT_SECONDS),
+            to_bytes(body, limit),
+        )
+        .await
+        {
             Err(_) => {
                 return error_response(StatusCode::REQUEST_TIMEOUT, "Request body timed out");
             }

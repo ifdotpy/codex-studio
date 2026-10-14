@@ -16,7 +16,7 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from studio_api.context import ApiContext
 from codex_federation_limits import FEDERATION_PATHS
-from codex_http_body_limits import request_body_limit
+from codex_http_body_limits import REQUEST_BODY_READ_TIMEOUT_SECONDS, request_body_limit
 from studio_api.models import JsonValue
 from studio_api.schema import (
     API_SCHEMA_HASH_HEADER,
@@ -33,7 +33,7 @@ FRAME_ACCOUNT_MUTATION_PATHS = frozenset({
     "/api/accounts/claude/login/code",
     "/api/accounts/claude/login/cancel",
 })
-REQUEST_READ_TIMEOUT_SECONDS = 10.0
+REQUEST_READ_TIMEOUT_SECONDS = float(REQUEST_BODY_READ_TIMEOUT_SECONDS)
 API_SCHEMA_HASH_WAIT_TIMEOUT_SECONDS = 10.0
 OPTIONAL_JSON_BODY_PATHS = frozenset({"/api/accounts/discover"})
 

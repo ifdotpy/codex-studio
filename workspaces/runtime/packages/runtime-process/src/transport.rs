@@ -3,8 +3,9 @@ use std::io::{BufRead, Read, Write};
 use serde_json::Value;
 
 use crate::protocol::SupervisorError;
+use crate::shared_values_generated::MAX_SUPERVISOR_FRAME_BYTES;
 
-pub(crate) const MAX_FRAME_BYTES: usize = 1024 * 1024;
+pub(crate) const MAX_FRAME_BYTES: usize = MAX_SUPERVISOR_FRAME_BYTES;
 
 /// Any synchronous byte stream with a bounded frame reader can back this
 /// client. Production currently supplies a Unix domain socket.

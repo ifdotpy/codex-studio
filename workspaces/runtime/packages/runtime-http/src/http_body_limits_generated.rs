@@ -4,6 +4,7 @@ pub(crate) const DEFAULT_BODY_LIMIT: usize = 262_144;
 pub(crate) const ASSET_BODY_LIMIT: usize = 29_360_128;
 pub(crate) const VOICE_AUDIO_BODY_LIMIT: usize = 6_291_456;
 pub(crate) const PROJECTS_BODY_LIMIT: usize = 6_291_456;
+pub(crate) const REQUEST_BODY_READ_TIMEOUT_SECONDS: u64 = 10;
 
 pub(crate) fn request_limit(path: &str) -> usize {
     if studio_runtime_services::federation_limits::FEDERATION_PATHS.contains(&path) {

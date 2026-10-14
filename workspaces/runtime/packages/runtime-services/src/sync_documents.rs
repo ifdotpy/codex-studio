@@ -102,7 +102,7 @@ pub fn with_entity_delta(
     after: i64,
     mut result: Value,
 ) -> Result<Value, StoreError> {
-    const LIMIT: usize = 500;
+    const LIMIT: usize = studio_runtime_schema::shared_values::SYNC_ENTITY_PAGE_LIMIT as usize;
     let rows = SyncDocumentsRepository::entities_after(connection, after, (LIMIT + 1) as i64)?;
     if !rows.is_empty() {
         result["_syncEntities"] = Value::Array(

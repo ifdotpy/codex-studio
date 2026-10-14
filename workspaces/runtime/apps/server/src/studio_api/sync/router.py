@@ -55,15 +55,19 @@ from studio_api.sync.resources.models import (
     ResourceTokenRatesEvent,
     TranscriptResource,
 )
-from codex_shared_values import MAX_SYNC_RESOURCE_COUNT, MAX_SYNC_RESOURCE_QUERY_BYTES
+from codex_shared_values import (
+    MAX_SYNC_RESOURCE_COUNT,
+    MAX_SYNC_RESOURCE_QUERY_BYTES,
+    SYNC_BATCH_LIMIT,
+    SYNC_ENTITY_PAGE_LIMIT,
+    SYNC_RESOURCE_HEARTBEAT_SECONDS,
+    SYNC_STREAM_BYTE_LIMIT,
+)
 
 if TYPE_CHECKING:
     from studio_api.context import ApiContext
 
-SYNC_BATCH_LIMIT = 100
-SYNC_ENTITY_PAGE_LIMIT = 500
-SYNC_STREAM_BYTE_LIMIT = 1_048_576
-RESOURCE_HEARTBEAT_SECONDS = 15.0
+RESOURCE_HEARTBEAT_SECONDS = float(SYNC_RESOURCE_HEARTBEAT_SECONDS)
 MAX_RESOURCE_QUERY_BYTES = MAX_SYNC_RESOURCE_QUERY_BYTES
 MAX_RESOURCE_COUNT = MAX_SYNC_RESOURCE_COUNT
 RESOURCE_REFS_ADAPTER: TypeAdapter[list[ResourceRef]] = TypeAdapter(list[ResourceRef])
@@ -95,7 +99,7 @@ class SyncPullProjection(TypedDict):
 class SyncStoreContract(Protocol):
     def identity(self) -> dict[str, object]: ...
     def pull(
-        self, scope: str, after: int = 0, limit: int = 100, fresh: bool = False,
+        self, scope: str, after: int = 0, limit: int = SYNC_BATCH_LIMIT, fresh: bool = False,
         initial_high: int = 0, reset_support: bool = False, priority_id: str | None = None,
     ) -> SyncPullProjection: ...
     def generation(self) -> int: ...
