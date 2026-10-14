@@ -413,19 +413,42 @@ class SystemApiTests(unittest.TestCase):
             "analyticsCapture": {
                 "limit": 64, "byteLimit": 8388608, "queued": 0, "active": 0,
                 "bytes": 0, "completed": 0, "failed": 0, "overflow": 0,
-                "pendingErrors": 0, "lastError": None,
+                "pendingErrors": 0, "lastError": "diagnostics-private-request-marker",
             },
             "migrations": {"payloads": {}},
-            "searchMigrationError": None,
+            "searchMigrationError": "diagnostics-private-request-marker",
         }
         with patch("codex_diagnostics.snapshot", return_value=fixture):
-            response = self.client.get("/api/diagnostics")
+            response = self.client.get("/api/diagnostics?prompt=diagnostics-private-request-marker")
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["nativeAccounts"]["account1"]["liveQueries"], 1)
         self.assertEqual(response.json()["supervisor"]["mode"], False)
+        self.assertNotIn("diagnostics-private-request-marker", response.text)
+
+    def test_diagnostics_redaction_removes_nested_request_values_and_errors(self) -> None:
+        from studio_api.system.router import _redact_diagnostic_values
+
+        marker = "diagnostics-private-request-marker"
+        result = _redact_diagnostic_values({
+            "executions": {"runs": [{"id": "run-1", "error": marker,
+                "claudeInputRequest": {"input": marker},
+                "claudeInputRejection": {"outcome": "not_applied"}}]},
+            "migrations": {"stateReadError": marker},
+            "searchMigrationError": marker,
+        })
+        self.assertNotIn(marker, json.dumps(result))
+        redacted_result = cast(dict[str, JsonValue], result)
+        executions = cast(dict[str, JsonValue], redacted_result["executions"])
+        run = cast(list[dict[str, JsonValue]], executions["runs"])[0]
+        rejection = cast(dict[str, JsonValue], run["claudeInputRejection"])
+        self.assertEqual(run["id"], "run-1")
+        self.assertEqual(run["error"], "Details redacted")
+        self.assertIsNone(redacted_result["searchMigrationError"])
+        self.assertEqual(rejection["outcome"], "not_applied")
 
     def test_diagnostics_models_accept_actual_snapshot_producer_shape(self) -> None:
+        from studio_api.system.router import _redact_diagnostic_values
         from codex_claude_input_recovery import capture_input as untyped_capture_input
         from codex_diagnostics import snapshot as untyped_snapshot
         from codex_execution import ensure_tables as untyped_ensure_tables
@@ -590,7 +613,10 @@ class SystemApiTests(unittest.TestCase):
             self.context.canvas.runtime = runtime
             response = self.client.get("/api/diagnostics")
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()["executions"], result["executions"])
+        self.assertEqual(
+            response.json()["executions"],
+            _redact_diagnostic_values(result["executions"]),
+        )
 
     def test_system_models_keep_new_fields_strict(self) -> None:
         health = supervisor_health()

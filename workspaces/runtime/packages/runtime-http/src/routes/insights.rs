@@ -12,7 +12,7 @@ use studio_runtime_services::analytics::{self, AnalyticsOptions};
 use studio_runtime_services::costs::{self, CostsError};
 
 use super::extractors::QueryParams;
-use super::manifest::{Dependency, OperationStatus, RouteGroup, dependency_unavailable, get};
+use super::manifest::{Dependency, OperationStatus, RouteGroup, get};
 use crate::error::ApiError;
 use crate::router::HttpState;
 
@@ -31,7 +31,7 @@ pub(crate) fn routes() -> RouteGroup {
         ),
         get(
             "/api/session-cost",
-            OperationStatus::partial(&SESSION_COST_DEPENDENCIES),
+            OperationStatus::Implemented,
             session_cost,
         ),
     ])
@@ -141,8 +141,10 @@ fn cost_dependency(dependency: &'static str) -> ApiError {
             .iter()
             .any(|candidate| candidate.name() == dependency)
     );
-    dependency_unavailable("GET", "/api/session-cost", &SESSION_COST_DEPENDENCIES)
-        .unwrap_or_else(|_| ApiError::internal())
+    ApiError::new(
+        StatusCode::NOT_IMPLEMENTED,
+        format!("Not implemented: requires {dependency}"),
+    )
 }
 
 fn map_costs_error(error: CostsError) -> ApiError {
@@ -150,8 +152,7 @@ fn map_costs_error(error: CostsError) -> ApiError {
         CostsError::Dependency(dependency) => cost_dependency(dependency),
         CostsError::Analytics(error) => map_analytics_error(error),
         CostsError::Usage(studio_runtime_store::CostUsageRepositoryError::MissingFamily) => {
-            dependency_unavailable("GET", "/api/session-cost", &SESSION_COST_DEPENDENCIES)
-                .unwrap_or_else(|_| ApiError::internal())
+            cost_dependency("store-bootstrap/analytics-usage-schema")
         }
         CostsError::Usage(studio_runtime_store::CostUsageRepositoryError::InvalidStoredRow(id)) => {
             ApiError::new(

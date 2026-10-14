@@ -30,7 +30,7 @@ pub(crate) fn routes() -> RouteGroup {
         ),
         get(
             "/api/diagnostics",
-            OperationStatus::partial(&DIAGNOSTICS_DEPENDENCIES),
+            OperationStatus::Implemented,
             diagnostics,
         ),
         get("/api/ui-summary", OperationStatus::Implemented, ui_summary),
@@ -132,17 +132,13 @@ async fn diagnostics(State(state): State<HttpState>) -> Result<Json<Value>, ApiE
         missing_ports.push(DIAGNOSTICS_DEPENDENCIES[1]);
     }
     if !missing_ports.is_empty() {
-        return Err(dependency_error(
-            "GET",
-            "/api/diagnostics",
-            &DIAGNOSTICS_DEPENDENCIES,
-        ));
+        return Err(named_dependency_error(&missing_ports));
     }
     let (provider_port, supervisor_port) =
         match (state.diagnostics_provider, state.diagnostics_supervisor) {
             (Some(provider), Some(supervisor)) => (provider, supervisor),
             _ => {
-                return Err(dependency_error("GET", "/api/diagnostics", &missing_ports));
+                return Err(named_dependency_error(&missing_ports));
             }
         };
     let store = state.store.ok_or_else(ApiError::internal)?;
@@ -161,11 +157,7 @@ async fn diagnostics(State(state): State<HttpState>) -> Result<Json<Value>, ApiE
             studio_runtime_services::diagnostics::current_process_id(),
         );
         let Some(process_tree) = process_tree else {
-            return Err(dependency_error(
-                "GET",
-                "/api/diagnostics",
-                &DIAGNOSTICS_DEPENDENCIES[2..3],
-            ));
+            return Err(named_dependency_error(&DIAGNOSTICS_DEPENDENCIES[2..3]));
         };
         let connection = store.read().map_err(|_| ApiError::internal())?;
         let pending = studio_runtime_services::diagnostics::durable_input_pending(&connection)
@@ -231,6 +223,8 @@ async fn diagnostics(State(state): State<HttpState>) -> Result<Json<Value>, ApiE
         "runtimeLockOperations": studio_runtime_services::diagnostics::runtime_lock_operations(),
         "supervisor": supervisor,
     });
+    let mut value = value;
+    redact_untrusted_diagnostic_text(&mut value);
     if !state
         .validators
         .validate_stored("DiagnosticsResponse", &value)
@@ -272,9 +266,83 @@ fn dependency_error(method: &str, path: &str, deps: &[Dependency]) -> ApiError {
     dependency_unavailable(method, path, deps).unwrap_or_else(|_| ApiError::internal())
 }
 
+fn named_dependency_error(deps: &[Dependency]) -> ApiError {
+    ApiError::new(
+        StatusCode::NOT_IMPLEMENTED,
+        format!(
+            "Not implemented: requires {}",
+            deps.iter()
+                .map(|dependency| dependency.name())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    )
+}
+
+fn redact_untrusted_diagnostic_text(value: &mut Value) {
+    fn redact_fields(value: &mut Value, fields: &[&str]) {
+        match value {
+            Value::Object(object) => {
+                for field in fields {
+                    if *field == "outcome"
+                        && object.get(*field).and_then(Value::as_str) == Some("not_applied")
+                    {
+                        continue;
+                    }
+                    if *field == "searchMigrationError" && object.contains_key(*field) {
+                        object.insert((*field).to_owned(), Value::Null);
+                    } else if *field == "error" && object.contains_key(*field) {
+                        object.insert(
+                            (*field).to_owned(),
+                            Value::String("Details redacted".to_owned()),
+                        );
+                    } else {
+                        object.remove(*field);
+                    }
+                }
+                for child in object.values_mut() {
+                    redact_fields(child, fields);
+                }
+            }
+            Value::Array(values) => {
+                for child in values {
+                    redact_fields(child, fields);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    redact_fields(
+        value,
+        &[
+            "error",
+            "previousError",
+            "detail",
+            "reason",
+            "result",
+            "outcome",
+            "notSubmittedReason",
+            "prepareError",
+            "responseError",
+            "stdoutReaderError",
+            "persistenceErrors",
+            "stateReadError",
+            "lastError",
+            "claudeInputRequest",
+            "input",
+            "source",
+            "configuration",
+            "reviewTarget",
+            "modelSettings",
+            "searchMigrationError",
+        ],
+    );
+}
+
 #[cfg(test)]
 mod diagnostics_http_tests {
-    use super::DIAGNOSTICS_DEPENDENCIES;
+    use super::redact_untrusted_diagnostic_text;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -295,6 +363,36 @@ mod diagnostics_http_tests {
 
     use crate::router::{HttpState, router};
     use crate::validation::Registry;
+
+    #[test]
+    fn diagnostics_redacts_free_form_errors_and_results_without_dropping_ids() {
+        let secret = "diagnostics-private-request-marker";
+        let mut value = json!({
+            "executions": {"runs": [{"id": "run-1", "error": secret,
+                "attempts": [{"claudeInputRequest": {"input": secret}}],
+                "claudeInputRejection": {"outcome": "not_applied"},
+                "nodes": [{"id": "node-1", "result": secret}]}]},
+            "migrations": {"payloads": {"tasks": {"error": secret}}},
+            "analyticsCapture": {"lastError": secret},
+            "searchMigrationError": secret,
+            "supervisor": {"health": {"handles": [{"id": "handle-1",
+                "stdoutReaderError": secret, "persistenceErrors": {"write": secret}}]}}
+        });
+        redact_untrusted_diagnostic_text(&mut value);
+        assert!(!value.to_string().contains(secret));
+        assert_eq!(value["executions"]["runs"][0]["id"], "run-1");
+        assert_eq!(value["executions"]["runs"][0]["error"], "Details redacted");
+        assert_eq!(value["searchMigrationError"], Value::Null);
+        assert_eq!(value["executions"]["runs"][0]["nodes"][0]["id"], "node-1");
+        assert_eq!(
+            value["executions"]["runs"][0]["claudeInputRejection"]["outcome"],
+            "not_applied"
+        );
+        assert_eq!(
+            value["supervisor"]["health"]["handles"][0]["id"],
+            "handle-1"
+        );
+    }
 
     #[derive(Default)]
     struct ProviderDouble(AtomicUsize);
@@ -442,7 +540,7 @@ mod diagnostics_http_tests {
     }
 
     #[tokio::test]
-    async fn partial_route_lists_dependencies_with_schema_valid_error_and_no_writes() {
+    async fn missing_diagnostics_ports_are_named_and_leave_no_writes() {
         let directory = tempfile::tempdir().expect("tmpfs test state");
         create_python_schema_fixture(directory.path());
         let store = Arc::new(
@@ -497,23 +595,21 @@ mod diagnostics_http_tests {
             .iter()
             .find(|operation| operation.key() == ("GET".to_owned(), "/api/diagnostics".to_owned()))
             .expect("diagnostics manifest entry");
-        assert!(matches!(
+        assert_eq!(
             operation.status(),
-            crate::routes::manifest::OperationStatus::Partial { dependencies }
-                if dependencies.contains(&DIAGNOSTICS_DEPENDENCIES[0])
-                    && dependencies.contains(&DIAGNOSTICS_DEPENDENCIES[1])
-        ));
+            crate::routes::manifest::OperationStatus::Implemented
+        );
         let version_after: i64 = proof_connection
             .query_row("PRAGMA data_version", [], |row| row.get(0))
             .expect("final database version");
         assert_eq!(
             version_before, version_after,
-            "501 route does not write rows"
+            "diagnostics refusal does not write rows"
         );
         assert_eq!(
             files_before,
             state_directory_snapshot(directory.path()),
-            "501 route does not change state directory names, sizes, or mtimes"
+            "diagnostics refusal does not change state directory names, sizes, or mtimes"
         );
     }
 
