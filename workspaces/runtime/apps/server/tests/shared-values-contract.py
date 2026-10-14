@@ -42,12 +42,20 @@ class SharedValuesContract(unittest.TestCase):
     def test_generated_cross_language_values_match_the_authority(self):
         self.assertEqual(main(["--check"]), 0)
 
-    def test_javascript_safe_integer_ceiling_has_one_generated_rust_consumer(self):
+    def test_javascript_safe_integer_ceiling_has_generated_rust_and_web_consumers(self):
         self.assertEqual(MAX_SAFE_INTEGER, 9_007_199_254_740_991)
         rust_values = (
             REPOSITORY_ROOT / "workspaces/runtime/packages/runtime-schema/src/shared_values.rs"
         ).read_text(encoding="utf-8")
+        web_values = (
+            REPOSITORY_ROOT / "workspaces/client/apps/web/src/generated/sharedValues.ts"
+        ).read_text(encoding="utf-8")
+        web_sync = (
+            REPOSITORY_ROOT / "workspaces/client/apps/web/src/sync/client.ts"
+        ).read_text(encoding="utf-8")
         self.assertIn(f"pub const MAX_SAFE_INTEGER: i64 = {MAX_SAFE_INTEGER};", rust_values)
+        self.assertIn(f"export const MAX_SAFE_INTEGER = {MAX_SAFE_INTEGER};", web_values)
+        self.assertIn("maximum: MAX_SAFE_INTEGER", web_sync)
         for relative in (
             "workspaces/runtime/packages/runtime-http/src/validation.rs",
             "workspaces/runtime/packages/runtime-services/src/change_notifications.rs",

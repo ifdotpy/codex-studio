@@ -1,4 +1,5 @@
 import { serverDatabaseSuffix } from "../servers/environment";
+import { MAX_SAFE_INTEGER } from "../generated/sharedValues";
 import { createRxDatabase, addRxPlugin } from "rxdb";
 import { getRxStorageDexie } from "rxdb/plugins/storage-dexie";
 import { RxDBLeaderElectionPlugin } from "rxdb/plugins/leader-election";
@@ -101,7 +102,7 @@ const schema = {
     seq: {
       type: "integer",
       minimum: 0,
-      maximum: 9007199254740991,
+      maximum: MAX_SAFE_INTEGER,
       multipleOf: 1,
     },
   },
