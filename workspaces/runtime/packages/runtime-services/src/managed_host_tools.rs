@@ -22,14 +22,17 @@
 //! The descendant input uses `coordination::send_followup`, which writes its
 //! durable queue event through `event_write::enqueue_event`.
 //!
-//! Named dependency refusals in the production adapter: Spawn creation and
-//! Review child creation require `agent-create/worker-driver` (P02); Interrupt
-//! requires `account-worker/agent-interrupt` (P10); Status requires
-//! `model-directory/status-and-dispatch-capacity`; Watch requires
-//! `rules/runtime-driver`; Monitor create requires
-//! `workspace-state/monitor-admission`; Monitor input requires
-//! `monitor-input-request-identity`; unsupported Context topics require
-//! `model-context/requested-topic`. Refused operations write nothing.
+//! Spawn and Review use the P02 child-creation services after a durable callback
+//! claim. Interrupt uses P10 `stop_by_agent` and the shared `LifecyclePorts`;
+//! Status and Watch use the model-directory and rules-management services;
+//! Monitor create uses workspace admission and persists its start intent before
+//! waking the retained monitor runtime. Managed MonitorInput uses the callback
+//! request id as its durable provider ticket and callback replay identity.
+//!
+//! Registered owner decision: "monitor input has no request identity; pending owner decision".
+//! A lost HTTP response cannot be distinguished from a new
+//! input. Provider writes still persist their own ticket first and never resend
+//! Unknown.
 //!
 //! Remote-origin routing follows Python `Runtime.dynamic` (codex_runtime.py
 //! 8969–8997, 9004–9049): Search and local Context topics remain local, while
@@ -224,6 +227,22 @@ pub(crate) trait SendPort {
 /// P10 lifecycle writes are staged in the callback transaction. The caller
 /// drains the committed lifecycle effects only after that outer transaction.
 pub(crate) trait InterruptPort {
+    /// Resolve a user-supplied visible agent ID or prefix before the descendant
+    /// scope check. Implementations must reject short and ambiguous prefixes.
+    fn resolve_target(
+        &self,
+        _: &Transaction<'_>,
+        _: &Actor,
+        supplied: &str,
+    ) -> Result<String, Error> {
+        if supplied.chars().count() < 8 {
+            return Err(Error::Invalid(
+                "Too short agent ID; use at least 8 characters",
+            ));
+        }
+        Ok(supplied.to_owned())
+    }
+
     fn interrupt_in_transaction(
         &self,
         tx: &Transaction<'_>,
@@ -331,6 +350,22 @@ pub(crate) struct OperationResult {
     pub(crate) signals: Vec<WakeSignal>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum DeliveryCertainty {
+    Written,
+    NotSent,
+    Unknown,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct DispatchedOperation {
+    pub(crate) result: OperationResult,
+    pub(crate) certainty: DeliveryCertainty,
+    /// `Some(true/false)` is a provider's committed application/rejection
+    /// receipt; `None` preserves an unresolved outcome.
+    pub(crate) applied: Option<bool>,
+}
+
 /// The transaction caller persists `value` and the durable intent before
 /// returning this object. Its `signals` are released only after commit.
 #[derive(Clone, Debug, PartialEq)]
@@ -368,6 +403,21 @@ impl<T> Ports for T where
 }
 
 pub(crate) trait PostCommitPort {
+    /// Execute an operation after its callback claim has committed. `None`
+    /// selects the leaf's transaction-local adapter; implementations return a
+    /// certainty receipt for provider/process effects and preserve the exact id.
+    fn dispatch_managed(
+        &self,
+        _store: &studio_runtime_store::RuntimeStore,
+        _actor: &Actor,
+        _tool: &str,
+        _args: &Value,
+        _request_id: &str,
+        _now: f64,
+    ) -> Result<Option<DispatchedOperation>, Error> {
+        Ok(None)
+    }
+
     /// Wake only. The owner must independently reconcile the durable intent.
     fn release(&self, signals: &[WakeSignal]) -> Result<(), Error>;
 }
@@ -543,8 +593,9 @@ pub(crate) fn execute(
         ManagedHostTool::Spawn => spawn(tx, actor, &call, now, ports)?,
         ManagedHostTool::Send => ports.send(tx, actor, &call.args, &call.request_id, now)?,
         ManagedHostTool::Interrupt => {
-            let target = required_text(&call.args, "agent_id")?;
-            if !is_descendant(tx, actor, target)? {
+            let supplied = required_text(&call.args, "agent_id")?;
+            let target = ports.resolve_target(tx, actor, supplied)?;
+            if !is_descendant(tx, actor, &target)? {
                 return Err(Error::Invalid("You can interrupt only your descendants"));
             }
             let reason = format!(
@@ -556,7 +607,7 @@ pub(crate) fn execute(
                     .unwrap_or(&actor.id)
             );
             let reason = reason.chars().take(160).collect::<String>();
-            ports.interrupt_in_transaction(tx, actor, target, &reason, &call.request_id, now)?
+            ports.interrupt_in_transaction(tx, actor, &target, &reason, &call.request_id, now)?
         }
         ManagedHostTool::Status => ports.status(tx, actor, &call.args)?,
         ManagedHostTool::Search => ports.search(tx, actor, &call.args)?,

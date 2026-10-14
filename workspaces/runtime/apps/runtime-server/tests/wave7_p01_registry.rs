@@ -610,6 +610,7 @@ async fn concurrent_ensure_session_starts_one_cold_account_worker() {
         launcher.clone(),
         Arc::new(Notify::new()),
         broker.clone(),
+        None,
     )
     .await
     .unwrap();

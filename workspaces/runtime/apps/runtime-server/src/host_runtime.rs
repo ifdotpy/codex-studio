@@ -142,6 +142,7 @@ impl HostRuntime {
             session_broker,
             None,
             Arc::new(Mutex::new(BTreeMap::new())),
+            None,
         )
         .await
     }
@@ -156,6 +157,9 @@ impl HostRuntime {
         session_broker: AccountSessionBroker,
         native_runtime: Option<Arc<NativeRuntime>>,
         session_binaries: Arc<Mutex<BTreeMap<String, crate::provider_ports::SessionExecutables>>>,
+        managed_tool_runtime: Option<
+            Arc<studio_runtime_services::provider_callbacks::ManagedToolRuntime>,
+        >,
     ) -> Result<Self, WorkerError> {
         let mut nonce = [0_u8; 16];
         getrandom::fill(&mut nonce).map_err(|_| WorkerError::TaskFailed)?;
@@ -240,6 +244,7 @@ impl HostRuntime {
             monitor_dispatch_wake,
             session_broker,
             Some(Arc::clone(&preparation_resources)),
+            managed_tool_runtime,
         )
         .await?;
         runtime.preparation_resources = Some(preparation_resources);
@@ -276,6 +281,7 @@ impl HostRuntime {
             monitor_dispatch_wake,
             AccountSessionBroker::new(),
             None,
+            None,
         )
         .await
     }
@@ -287,12 +293,16 @@ impl HostRuntime {
         monitor_dispatch_wake: Arc<tokio::sync::Notify>,
         session_broker: AccountSessionBroker,
         preparation_resources: Option<Arc<PreparationResources>>,
+        managed_tool_runtime: Option<
+            Arc<studio_runtime_services::provider_callbacks::ManagedToolRuntime>,
+        >,
     ) -> Result<Self, WorkerError> {
         let registry = AccountRegistry::new_with_broker(
             store,
             launcher,
             monitor_dispatch_wake,
             session_broker,
+            managed_tool_runtime,
         )
         .await?;
         let shutdown = Shutdown::default();

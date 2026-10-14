@@ -467,14 +467,25 @@ pub(super) fn resolve_agent(
     snapshot: &CallbackSnapshot,
     supplied: &str,
 ) -> Result<String, CallbackError> {
+    resolve_visible_agent_prefix(
+        visible_agents(tx, snapshot)?
+            .into_iter()
+            .filter_map(|agent| agent["id"].as_str().map(str::to_owned)),
+        supplied,
+    )
+}
+
+fn resolve_visible_agent_prefix(
+    visible_ids: impl IntoIterator<Item = String>,
+    supplied: &str,
+) -> Result<String, CallbackError> {
     if supplied.chars().count() < 8 {
         return Err(CallbackError::Invalid(
             "Too short agent ID; use at least 8 characters",
         ));
     }
-    let mut matches = visible_agents(tx, snapshot)?
+    let mut matches = visible_ids
         .into_iter()
-        .filter_map(|agent| agent["id"].as_str().map(str::to_owned))
         .filter(|id| id.starts_with(supplied));
     let first = matches.next().ok_or(CallbackError::Invalid(
         "Unknown agent ID in this caller's scope",
@@ -485,4 +496,42 @@ pub(super) fn resolve_agent(
         ));
     }
     Ok(first)
+}
+
+#[cfg(test)]
+mod prefix_tests {
+    use super::{CallbackError, resolve_visible_agent_prefix};
+
+    #[test]
+    fn visible_agent_prefix_requires_eight_characters_and_unique_match() {
+        let ids = || {
+            ["12345678-alpha", "87654321-beta"]
+                .into_iter()
+                .map(str::to_owned)
+        };
+        assert_eq!(
+            resolve_visible_agent_prefix(ids(), "12345678")
+                .expect("unique eight-character prefix resolves"),
+            "12345678-alpha"
+        );
+        assert!(matches!(
+            resolve_visible_agent_prefix(ids(), "1234567"),
+            Err(CallbackError::Invalid(
+                "Too short agent ID; use at least 8 characters"
+            ))
+        ));
+    }
+
+    #[test]
+    fn visible_agent_prefix_refuses_ambiguous_match() {
+        let ids = ["12345678-alpha", "12345678-beta"]
+            .into_iter()
+            .map(str::to_owned);
+        assert!(matches!(
+            resolve_visible_agent_prefix(ids, "12345678"),
+            Err(CallbackError::Invalid(
+                "Ambiguous agent ID; use a full ID from orchestration_peers"
+            ))
+        ));
+    }
 }

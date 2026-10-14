@@ -157,6 +157,11 @@ impl MonitorRuntime {
         Ok(submitted)
     }
 
+    /// Wake the monitor tick after a managed creation transaction commits.
+    pub fn wake_tick(&self) {
+        self.dispatch_wake.notify_one();
+    }
+
     /// Last timer failure, cleared after a successful tick. The host can inspect
     /// this while the consumer retries transient transport and storage failures.
     pub fn last_tick_error(&self) -> Option<String> {
@@ -507,6 +512,51 @@ impl MonitorRuntime {
         };
         monitor_runtime::settle_input(&self.store, id, operation, ticket, outcome, now)?;
         response
+    }
+
+    /// Submit managed input only when the authenticated caller still owns the
+    /// active monitor at the same actor epoch.
+    pub fn input_for_owner(
+        &self,
+        caller_id: &str,
+        caller_epoch: i64,
+        id: &str,
+        ticket: &str,
+        input: &Input,
+        now: f64,
+    ) -> Result<Value, MonitorError> {
+        self.store.read_transaction_with_error(|connection| {
+            let caller =
+                studio_runtime_store::system_reads::get(connection, "runtime_agents", caller_id)?
+                    .ok_or(studio_runtime_store::StoreError::RecordContract(
+                    "Monitor input caller is no longer active",
+                ))?;
+            if caller.get("epoch").and_then(Value::as_i64) != Some(caller_epoch)
+                || caller.get("autoWake") != Some(&Value::Bool(true))
+                || studio_runtime_store::truthy(caller.get("deletedAt"))
+            {
+                return Err(studio_runtime_store::StoreError::RecordContract(
+                    "Monitor input caller is no longer active",
+                ));
+            }
+            let (snapshot, owner) =
+                monitor_runtime::snapshot(connection, id).map_err(|error| match error {
+                    MonitorError::Store(error) => error,
+                    _ => studio_runtime_store::StoreError::RecordContract(
+                        "Unknown monitor in this caller's scope",
+                    ),
+                })?;
+            if snapshot.agent() != caller_id
+                || snapshot.record().get("epoch").and_then(Value::as_i64) != Some(caller_epoch)
+                || owner.epoch != caller_epoch
+            {
+                return Err(studio_runtime_store::StoreError::RecordContract(
+                    "You can input only to your own active monitor",
+                ));
+            }
+            Ok(())
+        })?;
+        self.input(id, ticket, input, now)
     }
 }
 

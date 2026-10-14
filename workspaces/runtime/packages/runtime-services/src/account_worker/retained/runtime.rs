@@ -256,17 +256,54 @@ impl Worker {
         if self.retained_requests.is_empty() && self.retained_barriers.is_empty() {
             return Ok(());
         }
-        // Called only after the containing journal has committed. Keep Unknown
-        // correlations for a late positive response; terminal replies retire.
+        // Only a live managed callback can make the checkpoint wait cyclically:
+        // its provider reply is later in the journal, while the earlier callback
+        // cursor cannot be acknowledged until the callback writes its response.
+        // Verify each candidate reply event was committed before returning it.
+        // Keep its correlation until checkpoint; after a crash, replay still
+        // reports Unknown for this beyond-checkpoint result and never resends.
         let account = self.account.clone();
         let generation = self.generation.0;
-        let checkpoint = self
+        let candidates: BTreeSet<u64> = self
+            .retained_requests
+            .values()
+            .filter(|pending| {
+                pending.result_cursor > 0
+                    && self
+                        .managed_callback_cursors
+                        .iter()
+                        .any(|callback_cursor| *callback_cursor < pending.result_cursor)
+            })
+            .map(|pending| pending.result_cursor)
+            .collect();
+        let (checkpoint, committed_replies) = self
             .db("retained_barrier", move |s| {
-                s.transaction_with(|tx| store::checkpoint(tx, &account, generation))
+                s.transaction_with(|tx| {
+                    let checkpoint = store::checkpoint(tx, &account, generation)?;
+                    let committed = candidates
+                        .into_iter()
+                        .filter_map(|cursor| {
+                            match store::journal_committed(tx, &account, generation, cursor) {
+                                Ok(true) => Some(Ok(cursor)),
+                                Ok(false) => None,
+                                Err(error) => Some(Err(error)),
+                            }
+                        })
+                        .collect::<Result<BTreeSet<_>, _>>()?;
+                    Ok((checkpoint, committed))
+                })
             })
             .await?;
         self.retained_requests.retain(|_, pending| {
             if pending.result_cursor > checkpoint {
+                if let Some(result @ (RequestResult::Reply(_) | RequestResult::Rejected(_))) =
+                    pending.result.clone()
+                    && committed_replies.contains(&pending.result_cursor)
+                    && let Some(reply) = pending.reply.take()
+                {
+                    let _ignored =
+                        reply.send(Ok(pending.call.receipt(pending.ticket.clone(), result)));
+                }
                 return true;
             }
             if let Some(result) = pending.result.take() {

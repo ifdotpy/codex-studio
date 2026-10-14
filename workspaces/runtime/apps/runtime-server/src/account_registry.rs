@@ -599,6 +599,7 @@ impl AccountRegistry {
             launcher,
             Arc::new(Notify::new()),
             AccountSessionBroker::new(),
+            None,
         )
         .await
     }
@@ -608,6 +609,9 @@ impl AccountRegistry {
         launcher: Arc<dyn AccountLauncher>,
         monitor_dispatch_wake: Arc<Notify>,
         session_broker: AccountSessionBroker,
+        managed_tool_runtime: Option<
+            Arc<studio_runtime_services::provider_callbacks::ManagedToolRuntime>,
+        >,
     ) -> Result<Self, WorkerError> {
         let bridge = StoreBridge::new(store.clone()).await?;
         bridge.set_monitor_dispatch_wake(monitor_dispatch_wake);
@@ -616,6 +620,9 @@ impl AccountRegistry {
         let accepted_archive_tick_enabled =
             std::env::var_os("STUDIO_TEST_DISABLE_ACCEPTED_ARCHIVE_TICK").is_none();
         let ensure_requests = session_broker.take_ensure_receiver()?;
+        if let Some(runtime) = managed_tool_runtime {
+            bridge.set_managed_tool_runtime(runtime);
+        }
         Ok(Self {
             store,
             bridge,
