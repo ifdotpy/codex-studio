@@ -134,11 +134,11 @@ async fn branch(
                             }
                             Some("failed") => {
                                 prior["phase"] = json!("provider_pending");
-                                prior.as_object_mut().map(|value| {
+                                if let Some(value) = prior.as_object_mut() {
                                     value.remove("provider");
                                     value.remove("result");
                                     value.remove("error");
-                                });
+                                }
                                 tx.execute(
                                     "UPDATE runtime_workspace_operations SET record=?2 WHERE id=?1",
                                     params![operation_id, prior.to_string()],
@@ -440,14 +440,16 @@ async fn branch(
         .to_owned();
     let branch_result = copy_branch_history(
         &store,
-        &body.agent,
-        &child_id,
-        &selected,
-        &body.message_id,
-        fork_turn.as_deref(),
-        before,
-        &provider,
-        &operation_id,
+        BranchCopy {
+            source: &body.agent,
+            target: &child_id,
+            selected: &selected,
+            message_id: &body.message_id,
+            fork_turn: fork_turn.as_deref(),
+            before,
+            provider: &provider,
+            operation_id: &operation_id,
+        },
     )?;
     state.event_wake.notify_one();
     Ok(Json(super::generated_json::<
@@ -555,17 +557,28 @@ fn persist_fork_turn(
         .map_err(ApiError::stored)
 }
 
-fn copy_branch_history(
-    store: &RuntimeStore,
-    source: &str,
-    target: &str,
-    selected: &studio_runtime_store::TranscriptItem,
-    message_id: &str,
-    fork_turn: Option<&str>,
+struct BranchCopy<'a> {
+    source: &'a str,
+    target: &'a str,
+    selected: &'a studio_runtime_store::TranscriptItem,
+    message_id: &'a str,
+    fork_turn: Option<&'a str>,
     before: bool,
-    provider: &Value,
-    operation_id: &str,
-) -> Result<Value, ApiError> {
+    provider: &'a Value,
+    operation_id: &'a str,
+}
+
+fn copy_branch_history(store: &RuntimeStore, copy: BranchCopy<'_>) -> Result<Value, ApiError> {
+    let BranchCopy {
+        source,
+        target,
+        selected,
+        message_id,
+        fork_turn,
+        before,
+        provider,
+        operation_id,
+    } = copy;
     store.transaction_with(|tx|{
         let raw:String=tx.query_row("SELECT record FROM runtime_workspace_operations WHERE id=?1",[operation_id],|r|r.get(0))?;
         let mut operation:Value=serde_json::from_str(&raw)?;

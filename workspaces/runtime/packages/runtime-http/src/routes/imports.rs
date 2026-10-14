@@ -37,7 +37,7 @@ async fn import_list(
         .unwrap_or("default")
         .to_owned();
     let cursor = query.nonempty_str("cursor").map(str::to_owned);
-    let port = state.account_session.clone().ok_or_else(|| unavailable())?;
+    let port = state.account_session.clone().ok_or_else(unavailable)?;
     let result = tokio::task::spawn_blocking(move || {
         let scope = port.current_scope(&account).ok_or_else(unavailable)?;
         provider_request(
@@ -86,7 +86,7 @@ async fn import_thread(
             >(value)?));
         }
     }
-    let port = state.account_session.clone().ok_or_else(|| unavailable())?;
+    let port = state.account_session.clone().ok_or_else(unavailable)?;
     let operation_id = body.id.clone().flatten().unwrap_or_else(operation_nonce);
     let (thread, turns) = tokio::task::spawn_blocking({
         let account = account.clone();
