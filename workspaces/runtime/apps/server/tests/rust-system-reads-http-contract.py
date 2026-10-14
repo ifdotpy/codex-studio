@@ -209,39 +209,41 @@ class SystemReadsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         state_before = (
             state_directory_snapshot(self.backend.state) if self.rust_backend else None
         )
-        response = self.backend.request("GET", "/api/diagnostics", headers=self.headers())
+        secret = "diagnostics-request-secret-marker"
+        response = self.backend.request(
+            "GET",
+            "/api/diagnostics",
+            headers={**self.headers(), "X-Test-Request-Value": secret},
+        )
+        self.assertEqual(response.status, 200, response.body[:1000])
+        self.assertNotIn(secret.encode(), response.body)
+        self.assertNotIn(self.backend.session["token"].encode(), response.body)
+        self.assertNotIn(secret, self.backend.stderr)
         if self.rust_backend:
-            self.assertEqual(response.status, 501, response.body[:1000])
-            self.assertEqual(
-                response.json(),
-                {"error": "Not implemented: requires runtime-process/studio-loaded-threads, runtime-process/supervisor-status"},
-            )
             self.assertEqual(
                 state_directory_snapshot(self.backend.state),
                 state_before,
-                "diagnostics refusal must not change state directory names, sizes, or mtimes",
+                "diagnostics must not change state directory names, sizes, or mtimes",
             )
-        else:
-            self.assertEqual(response.status, 200, response.body[:1000])
-            expected_fields = {
-                "at",
-                "processTree",
-                "hostResources",
-                "resourceAttribution",
-                "nativeAccounts",
-                "studioLoadedThreads",
-                "queues",
-                "runtimeLockSamples",
-                "executions",
-                "sqliteContention",
-                "httpRequestMetrics",
-                "analyticsCapture",
-                "migrations",
-                "searchMigrationError",
-                "runtimeLockOperations",
-                "supervisor",
-            }
-            self.assertEqual(set(response.json()), expected_fields)
+        expected_fields = {
+            "at",
+            "processTree",
+            "hostResources",
+            "resourceAttribution",
+            "nativeAccounts",
+            "studioLoadedThreads",
+            "queues",
+            "runtimeLockSamples",
+            "executions",
+            "sqliteContention",
+            "httpRequestMetrics",
+            "analyticsCapture",
+            "migrations",
+            "searchMigrationError",
+            "runtimeLockOperations",
+            "supervisor",
+        }
+        self.assertEqual(set(response.json()), expected_fields, response.body[:2000])
         self.assertEqual(
             database_snapshot(self.backend.state / "canvas.sqlite3"),
             before,

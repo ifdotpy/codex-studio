@@ -39,7 +39,7 @@ pub(crate) fn routes() -> RouteGroup {
         get("/api/search", OperationStatus::Implemented, search),
         get(
             "/api/transcript",
-            OperationStatus::partial(CANVAS_DEPENDENCIES),
+            OperationStatus::Implemented,
             canvas_transcript,
         ),
     ])
@@ -82,7 +82,7 @@ async fn read_page(
     let value = tokio::task::spawn_blocking(move || {
         match transcript_runtime::page(&store, &agent, &request) {
             Err(TranscriptError::UnknownMessage) if native_fallback => Err(
-                TranscriptError::RequiresDependency("transcript/workspace-state"),
+                TranscriptError::RequiresDependency(CANVAS_DEPENDENCIES[0].name()),
             ),
             result => result,
         }
@@ -261,8 +261,13 @@ inventory::submit! {
 mod tests {
     use super::*;
     #[test]
-    fn transcript_partial_manifest_accepts_every_remaining_refusal() {
-        use super::super::manifest::dependency_unavailable;
-        assert!(dependency_unavailable("GET", "/api/transcript", CANVAS_DEPENDENCIES).is_ok());
+    fn transcript_route_is_implemented_with_only_a_conditional_workspace_refusal() {
+        let operations =
+            super::super::manifest::operation_manifest().expect("registered operation manifest");
+        let operation = operations
+            .iter()
+            .find(|operation| operation.key() == ("GET".to_owned(), "/api/transcript".to_owned()))
+            .expect("transcript operation");
+        assert_eq!(operation.status(), OperationStatus::Implemented);
     }
 }
