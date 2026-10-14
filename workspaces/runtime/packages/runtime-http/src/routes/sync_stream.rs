@@ -187,7 +187,7 @@ async fn sync_stream(
         changes,
         notifications: state.resource_notifications,
         token_rates,
-        prefer_resource_next: true,
+        consecutive_token_frames: 0,
         _progress_watch: progress_watch,
         heartbeat: interval_at(
             Instant::now() + Duration::from_secs(SYNC_RESOURCE_HEARTBEAT_SECONDS),
@@ -304,7 +304,7 @@ struct ResourceStream {
     changes: tokio::sync::watch::Receiver<ChangeSnapshot>,
     notifications: Arc<ResourceNotifications>,
     token_rates: tokio::sync::watch::Receiver<TokenRates>,
-    prefer_resource_next: bool,
+    consecutive_token_frames: usize,
     _progress_watch: Option<ProgressFileWatch>,
     heartbeat: Interval,
 }
@@ -317,8 +317,9 @@ async fn next_frame(
     }
 
     loop {
-        let prefer_resource = state.prefer_resource_next;
-        state.prefer_resource_next = !state.prefer_resource_next;
+        // Match Python's token-first behavior when both lanes are pending,
+        // while bounding token bursts so resource invalidations still progress.
+        let prefer_resource = state.consecutive_token_frames >= 8;
         let heartbeat = if prefer_resource {
             tokio::select! {
                 biased;
@@ -329,6 +330,7 @@ async fn next_frame(
                 },
                 changed = state.token_rates.changed() => {
                     if changed.is_err() { return None; }
+                    state.consecutive_token_frames = state.consecutive_token_frames.saturating_add(1);
                     let frame = token_rate_sse_frame(&mut state)?;
                     return Some((Ok(frame), state));
                 },
@@ -339,6 +341,7 @@ async fn next_frame(
                 biased;
                 changed = state.token_rates.changed() => {
                     if changed.is_err() { return None; }
+                    state.consecutive_token_frames = state.consecutive_token_frames.saturating_add(1);
                     let frame = token_rate_sse_frame(&mut state)?;
                     return Some((Ok(frame), state));
                 },
@@ -360,6 +363,7 @@ async fn next_frame(
         let previous = state.last_revision;
         state.last_revision = view.cursor.revision;
         if !view.resources.is_empty() {
+            state.consecutive_token_frames = 0;
             state.entity_sequence =
                 match read_entity_sequence(state.store.clone(), &state.resources).await {
                     Ok(sequence) => sequence,
@@ -627,7 +631,7 @@ mod tests {
             changes,
             notifications: Arc::new(ResourceNotifications::new(Arc::new(hub.clone()))),
             token_rates: tokens.subscribe(),
-            prefer_resource_next: true,
+            consecutive_token_frames: 0,
             _progress_watch: None,
             heartbeat: interval_at(
                 Instant::now() + Duration::from_secs(SYNC_RESOURCE_HEARTBEAT_SECONDS),
@@ -668,7 +672,7 @@ mod tests {
             changes,
             notifications: notifications.clone(),
             token_rates: token_hub.subscribe(),
-            prefer_resource_next: true,
+            consecutive_token_frames: 0,
             _progress_watch: None,
             heartbeat: interval_at(
                 Instant::now() + Duration::from_secs(SYNC_RESOURCE_HEARTBEAT_SECONDS),
@@ -768,7 +772,7 @@ mod tests {
             changes,
             notifications,
             token_rates: tokens.subscribe(),
-            prefer_resource_next: true,
+            consecutive_token_frames: 0,
             _progress_watch: None,
             heartbeat: interval_at(
                 Instant::now() + Duration::from_secs(15),
@@ -1002,7 +1006,7 @@ mod tests {
             changes,
             notifications: Arc::new(ResourceNotifications::new(Arc::new(hub.clone()))),
             token_rates: TokenRateHub::new().subscribe(),
-            prefer_resource_next: true,
+            consecutive_token_frames: 0,
             _progress_watch: None,
             heartbeat: interval_at(
                 Instant::now() + Duration::from_secs(SYNC_RESOURCE_HEARTBEAT_SECONDS),
