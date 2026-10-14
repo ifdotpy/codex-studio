@@ -992,30 +992,6 @@ fn write_text_notification(
         .map(|(record, _)| saved_text(transaction, &id, record))
         .transpose()?
         .unwrap_or_default();
-    if matches!(update, TextUpdate::Started(..)) {
-        for existing in streams.selected(Some(&key)) {
-            let snapshot = match update {
-                TextUpdate::Started(Some(text), _) => Some(text),
-                _ => None,
-            };
-            let replaced = if let Some(snapshot) = snapshot {
-                streams.set_snapshot_base(&existing, sha256_hex(snapshot.as_bytes()))
-            } else {
-                streams.preserve_base(&existing, sha256_hex(previous.as_bytes()))
-            };
-            if replaced {
-                NotificationDispatchRepository::put_stream_base(
-                    transaction,
-                    &stream_base_id(&existing),
-                    Some(snapshot.unwrap_or(&previous)),
-                )?;
-            } else if snapshot.is_some() {
-                // An unflushed provider snapshot supersedes the buffered text
-                // that preceded it; later deltas append to the snapshot.
-                streams.replace_unflushed_with_snapshot(&existing);
-            }
-        }
-    }
     let (text, streaming, phase, index_search, completed) = match update {
         TextUpdate::Started(snapshot, phase) => (
             snapshot.unwrap_or_default().to_owned(),
@@ -1373,7 +1349,12 @@ fn flush_text_stream(
     let previous = durable_stream_base(transaction, streams, key)?.unwrap_or(previous);
     streams.flush_analytics(key, agent);
     if let Some((text, count, params)) = streams.flush_with_delta(key, &previous, delta) {
-        NotificationDispatchRepository::put_stream_base(transaction, &stream_base_id(key), None)?;
+        NotificationDispatchRepository::put_stream_base(
+            transaction,
+            &stream_base_id(key),
+            Some(&text),
+        )?;
+        streams.set_flushed_base(key, sha256_hex(text.as_bytes()));
         let phase = old
             .as_ref()
             .and_then(|(record, _)| record.get("phase"))
@@ -2008,44 +1989,128 @@ mod tests {
 
     #[test]
     fn snapshot_and_late_delta_order_matches_stream_buffer_completion_rules() {
-        let mut connection = database();
-        let mut streams = NotificationStreamBuffer::default();
-        let transaction = connection.transaction().expect("transaction begins");
-        dispatch(&transaction, &mut streams, 1, &json!({"method":"item/agentMessage/delta","params":{"threadId":"thread","turnId":"turn","itemId":"answer","delta":"before"}}), 1.0).expect("early delta writes");
-        dispatch(&transaction, &mut streams, 2, &json!({"method":"item/started","params":{"threadId":"thread","turnId":"turn","item":{"id":"answer","type":"agentMessage","text":"snapshot"}}}), 2.0).expect("snapshot replaces flushed text");
-        dispatch(&transaction, &mut streams, 3, &json!({"method":"item/completed","params":{"threadId":"thread","turnId":"turn","item":{"id":"answer","type":"agentMessage","text":""}}}), 3.0).expect("empty completion flushes text");
-        dispatch(&transaction, &mut streams, 4, &json!({"method":"item/completed","params":{"threadId":"thread","turnId":"turn","item":{"id":"late","type":"agentMessage","text":"final"}}}), 4.0).expect("completion without a pending stream writes");
-        dispatch(&transaction, &mut streams, 5, &json!({"method":"item/agentMessage/delta","params":{"threadId":"thread","turnId":"turn","itemId":"late","delta":"late"}}), 5.0).expect("first late delta starts an open stream");
-        let new_generation = ProviderDeliveryIdentity {
-            provider_handle: "account:default".to_owned(),
-            generation: 8,
-            cursor: 6,
-        };
-        assert_eq!(
-            dispatch_notification(
-                &transaction,
-                "agent",
-                ".",
-                &mut streams,
-                &new_generation,
-                &frame(&json!({"method":"item/agentMessage/delta","params":{"threadId":"thread","turnId":"turn","itemId":"answer","delta":"late"}})),
-                6.0,
-            )
-            .expect("new generation is not blocked by the old closed stream"),
-            DispatchOutcome::Written
-        );
-        transaction.commit().expect("notification sequence commits");
+        use studio_runtime_store::NotificationDispatchRepository;
 
-        let answer = TranscriptRepository::item(&connection, "agent", "agent:answer")
+        macro_rules! send {
+            ($transaction:expr, $streams:expr, $cursor:expr, $value:expr, $at:expr) => {{
+                let result = super::dispatch_notification(
+                    $transaction,
+                    "agent",
+                    &PublicationContext::default(),
+                    $streams,
+                    &identity($cursor),
+                    &frame($value),
+                    $at,
+                )
+                .expect("notification dispatch succeeds");
+                assert_eq!(result.outcome, DispatchOutcome::Written);
+                if let Some(update) = result.stream_update {
+                    *$streams = update;
+                }
+            }};
+        }
+        fn flush(
+            transaction: &rusqlite::Transaction<'_>,
+            streams: &mut NotificationStreamBuffer,
+            at: f64,
+        ) {
+            if let Some(update) = super::flush_notification_streams(
+                transaction,
+                "agent",
+                &PublicationContext::default(),
+                streams,
+                at,
+            )
+            .expect("stream flush succeeds")
+            {
+                *streams = update;
+            }
+        }
+
+        // A recovered stream can carry a durable base plus queued deltas. A
+        // started snapshot writes its transcript row and leaves that state intact.
+        let mut connection = database();
+        let transaction = connection.transaction().expect("transaction begins");
+        let mut streams = NotificationStreamBuffer::default();
+        send!(
+            &transaction,
+            &mut streams,
+            1,
+            &json!({"method":"item/agentMessage/delta","params":{"threadId":"thread","turnId":"turn","itemId":"answer","delta":"pending"}}),
+            1.0
+        );
+        let key = super::stream::StreamKey {
+            agent_id: "agent".to_owned(),
+            account: "default".to_owned(),
+            generation: 7,
+            thread: "thread".to_owned(),
+            turn: Some("turn".to_owned()),
+            item: "answer".to_owned(),
+            method: "item/agentMessage/delta".to_owned(),
+        };
+        let mut saved_streams = serde_json::to_value(&streams).expect("stream serializes");
+        saved_streams["entries"][0]["base"] = Value::String(super::sha256_hex(b"base"));
+        saved_streams["entries"][0]["flushed"] = Value::Bool(true);
+        streams = serde_json::from_value(saved_streams).expect("persisted stream restores");
+        NotificationDispatchRepository::put_stream_base(
+            &transaction,
+            &super::stream_base_id(&key),
+            Some("base"),
+        )
+        .expect("durable stream base writes");
+        send!(
+            &transaction,
+            &mut streams,
+            2,
+            &json!({"method":"item/started","params":{"threadId":"thread","turnId":"turn","item":{"id":"answer","type":"agentMessage","text":"snapshot"}}}),
+            2.0
+        );
+        send!(
+            &transaction,
+            &mut streams,
+            3,
+            &json!({"method":"item/agentMessage/delta","params":{"threadId":"thread","turnId":"turn","itemId":"answer","delta":"late"}}),
+            3.0
+        );
+        flush(&transaction, &mut streams, 4.0);
+        let answer = TranscriptRepository::item(&transaction, "agent", "agent:answer")
             .expect("answer reads")
             .expect("answer exists");
-        assert_eq!(answer.record["text"], "snapshotlate");
-        assert_eq!(answer.record["streaming"], true);
-        let late = TranscriptRepository::item(&connection, "agent", "agent:late")
-            .expect("late row reads")
-            .expect("late row exists");
-        assert_eq!(late.record["text"], "finallate");
-        assert_eq!(late.record["streaming"], true);
+        assert_eq!(answer.record["text"], "basependinglate");
+        transaction.commit().expect("persisted-base case commits");
+
+        // Without a persisted base, the flush uses the current snapshot row and
+        // appends both deltas that were queued before and after item/started.
+        let mut connection = database();
+        let transaction = connection.transaction().expect("transaction begins");
+        let mut streams = NotificationStreamBuffer::default();
+        send!(
+            &transaction,
+            &mut streams,
+            1,
+            &json!({"method":"item/agentMessage/delta","params":{"threadId":"thread","turnId":"turn","itemId":"answer","delta":"pending"}}),
+            1.0
+        );
+        send!(
+            &transaction,
+            &mut streams,
+            2,
+            &json!({"method":"item/started","params":{"threadId":"thread","turnId":"turn","item":{"id":"answer","type":"agentMessage","text":"snapshot"}}}),
+            2.0
+        );
+        send!(
+            &transaction,
+            &mut streams,
+            3,
+            &json!({"method":"item/agentMessage/delta","params":{"threadId":"thread","turnId":"turn","itemId":"answer","delta":"late"}}),
+            3.0
+        );
+        flush(&transaction, &mut streams, 4.0);
+        let answer = TranscriptRepository::item(&transaction, "agent", "agent:answer")
+            .expect("answer reads")
+            .expect("answer exists");
+        assert_eq!(answer.record["text"], "snapshotpendinglate");
+        transaction.commit().expect("snapshot-base case commits");
     }
 
     #[test]

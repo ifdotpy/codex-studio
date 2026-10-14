@@ -33,8 +33,7 @@ def snapshot(root):
     tables = TABLES + ('runtime_budget', 'runtime_budget_usage', 'runtime_agent_moves') if _real_effects else TABLES
     result = oracle.snapshot(root, tables=tables)
     if _runtime is not None and pathlib.Path(root) != _runtime.root:
-        # Rust durably stores only a base obscured by a later item/started.
-        # Compare it to Python's live buffer before removing this exact internal
+        # Compare Rust's durable stream bases with Python's live buffer before removing this exact internal
         # receipt kind from relational parity; missing/extra/wrong bases fail.
         expected_bases = {}
         with _runtime.read_db() as db:
@@ -46,19 +45,7 @@ def snapshot(root):
                 agent = db.execute("SELECT id FROM runtime_agents WHERE json_extract(record,'$.threadId')=?", (thread,)).fetchone()
                 if agent is None:
                     continue
-                item_id = agent[0] + ':' + item
-                saved = db.execute('SELECT record FROM runtime_items WHERE id=?', (item_id,)).fetchone()
-                record = json.loads(saved[0]) if saved else {}
-                full = db.execute('SELECT body FROM runtime_item_fulltext WHERE id=?', (item_id,)).fetchone()
-                visible = full[0] if record.get('truncated') and full else record.get('text', '')
-                if method == 'item/commandExecution/outputDelta':
-                    try:
-                        visible = (json.loads(visible).get('aggregatedOutput') or '')[-12000:]
-                    except (ValueError, TypeError, AttributeError):
-                        visible = ''
-                if base == visible:
-                    continue
-                stream_key = dict(account=account, generation=int(connection.split('-')[-1]), thread=thread, turn=turn, item=item, method=method)
+                stream_key = dict(agent_id=agent[0], account=account, generation=int(connection.split('-')[-1]), thread=thread, turn=turn, item=item, method=method)
                 encoded = json.dumps(stream_key, ensure_ascii=False, separators=(',', ':'))
                 identity = 'account-worker:stream-base:' + hashlib.sha256(encoded.encode()).hexdigest()
                 expected_bases[identity] = base

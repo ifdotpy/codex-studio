@@ -1043,6 +1043,17 @@ async fn host_start_reattaches_python_launch_and_delivers_http_input() {
     use std::os::unix::fs::PermissionsExt;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tower::ServiceExt;
+    let source = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../server/src");
+    let python = prepared_python::prepared_python(&source);
+    let import = std::process::Command::new(&python)
+        .args(["-c", "import studio_operations_native"])
+        .output()
+        .expect("prepared Python interpreter runs");
+    assert!(
+        import.status.success(),
+        "Python supervisor requires the native module studio_operations_native. Prepare the isolated interpreter with `python3 workspaces/runtime/apps/server/src/codex_python.py --prepare`, build it with `cargo build --release -p studio-operations-python`, and install the resulting module into that interpreter. Import error: {}",
+        String::from_utf8_lossy(&import.stderr)
+    );
     // Isolate the supervisor-mode environment without mutating process globals.
     if std::env::var_os("STUDIO_W7_P01_HOST_CHILD").is_none() {
         let output = tokio::process::Command::new(std::env::current_exe().unwrap())
