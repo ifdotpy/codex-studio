@@ -833,6 +833,68 @@ impl SchedulerRepository {
         Self::apply_acceptance(transaction, validated, epoch, attempt_id, turn_id)
     }
 
+    /// Accept a submitted attempt retained only in the durable restart marker.
+    /// Recheck the exact held snapshot and uncertain event rows before the
+    /// ordinary acceptance path writes any agent or event state.
+    pub fn settle_restart_started(
+        transaction: &Transaction<'_>,
+        agent_id: &str,
+        epoch: i64,
+        expected_attempt: &Value,
+        expected_wait: &Value,
+        turn_id: &str,
+    ) -> StoreResult<bool> {
+        let Some(mut agent) = load_agent(transaction, agent_id)? else {
+            return Ok(false);
+        };
+        let marker = agent.extra.get("restartRecovery").unwrap_or(&Value::Null);
+        let attempt_id = expected_attempt["id"]
+            .as_str()
+            .ok_or_else(|| invalid_agent(agent_id))?;
+        if agent.epoch != epoch
+            || agent.extra.get("contextRepairWait") != Some(expected_wait)
+            || marker["stage"] != "held"
+            || marker["startAttempt"] != *expected_attempt
+            || agent
+                .extra
+                .get("startAttempt")
+                .is_some_and(|attempt| attempt != expected_attempt)
+            || expected_attempt["id"] != attempt_id
+            || expected_attempt["epoch"] != epoch
+            || expected_attempt["submitted"] != true
+            || expected_attempt["executionOutcome"] != "unknown"
+            || expected_attempt["accountKey"]
+                != agent
+                    .extra
+                    .get("accountKey")
+                    .cloned()
+                    .unwrap_or(json!("default"))
+            || expected_attempt["threadId"]
+                != agent.extra.get("threadId").cloned().unwrap_or(Value::Null)
+        {
+            return Ok(false);
+        }
+        let event_ids = validated_events(transaction, &agent, expected_attempt)?;
+        let expected_count = expected_attempt["events"].as_array().map_or(0, Vec::len);
+        let uncertain_count: i64 = transaction.query_row(
+            "SELECT COUNT(*) FROM runtime_events WHERE agent=?1 AND epoch=?2 AND id IN (SELECT value FROM json_each(?3)) AND status='uncertain' AND turn_id IS NULL",
+            params![agent_id, epoch, event_ids],
+            |row| row.get(0),
+        )?;
+        if usize::try_from(uncertain_count).ok() != Some(expected_count) {
+            return Ok(false);
+        }
+        agent
+            .extra
+            .insert("startAttempt".into(), expected_attempt.clone());
+        let validated = ValidatedAttempt {
+            authority: attempt_authority(&agent, epoch),
+            agent,
+            event_ids: (event_ids, expected_count),
+        };
+        Self::apply_acceptance(transaction, validated, epoch, attempt_id, turn_id)
+    }
+
     fn apply_acceptance(
         transaction: &Transaction<'_>,
         validated: ValidatedAttempt,
