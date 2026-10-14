@@ -529,8 +529,12 @@ mod tests {
 
     use super::{HttpState, router};
 
-    fn probe_app() -> Router {
-        super::validation_probe_router(state()).expect("probe router starts")
+    fn probe_app() -> (Router, tempfile::TempDir) {
+        let (state, directory) = state();
+        (
+            super::validation_probe_router(state).expect("probe router starts"),
+            directory,
+        )
     }
 
     async fn value_handler(
@@ -539,22 +543,27 @@ mod tests {
         Json(value)
     }
 
-    fn state() -> HttpState {
-        HttpState::new(
-            "token".to_owned(),
-            "workspace".to_owned(),
-            None,
-            "state".to_owned(),
-            4620,
-            None,
-            None,
-            None,
+    fn state() -> (HttpState, tempfile::TempDir) {
+        let directory = tempfile::tempdir().expect("isolated state directory");
+        (
+            HttpState::new(
+                "token".to_owned(),
+                "workspace".to_owned(),
+                None,
+                directory.path().to_string_lossy().into_owned(),
+                4620,
+                None,
+                None,
+                None,
+            ),
+            directory,
         )
     }
 
     #[tokio::test]
     async fn startup_compiles_registered_validators_and_matches_python_methods() {
-        let app = router(state()).expect("router and registered OpenAPI validators start");
+        let (state, _directory) = state();
+        let app = router(state).expect("router and registered OpenAPI validators start");
         let peer = ConnectInfo(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 12345));
         let request = Request::builder()
             .method("GET")
@@ -579,7 +588,8 @@ mod tests {
 
     #[tokio::test]
     async fn boundary_early_returns_include_api_headers() {
-        let app = router(state()).expect("router starts");
+        let (state, _directory) = state();
+        let app = router(state).expect("router starts");
         let request = Request::builder()
             .method("GET")
             .uri("/api/session")
@@ -629,7 +639,7 @@ mod tests {
 
     #[tokio::test]
     async fn huge_integer_body_and_query_return_located_client_errors() {
-        let app = probe_app();
+        let (app, _directory) = probe_app();
         let peer = ConnectInfo(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 12345));
         let huge = "9".repeat(401);
         let body = format!("{{\"prompt\":\"x\",\"concurrency\":{huge}}}");
@@ -679,7 +689,7 @@ mod tests {
     #[tokio::test]
     async fn deeply_nested_registered_json_body_is_rejected_before_value_extraction() {
         let authority = crate::schema::operations().expect("schema parses");
-        let mut app_state = state();
+        let (mut app_state, _directory) = state();
         app_state.validators =
             crate::validation::Registry::compile(&authority.iter().cloned().collect::<Vec<_>>())
                 .expect("registered schema validators compile");
@@ -723,7 +733,7 @@ mod tests {
 
     #[tokio::test]
     async fn optional_required_and_chunked_json_bodies_follow_openapi_contract() {
-        let app = probe_app();
+        let (app, _directory) = probe_app();
         let peer = ConnectInfo(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 12345));
         let build = |method: &str, uri: &str, body: Body, content_type: Option<&str>| {
             let mut request = Request::builder()
@@ -793,7 +803,7 @@ mod tests {
 
     #[tokio::test]
     async fn encoded_repeated_scalar_query_parameter_is_refused_by_router() {
-        let app = probe_app();
+        let (app, _directory) = probe_app();
         let peer = ConnectInfo(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 12345));
         let request = Request::builder()
             .method("GET")
@@ -840,7 +850,8 @@ mod tests {
         ];
         let peer = ConnectInfo(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 12345));
         for (path, valid_json, limit) in cases {
-            let app = router(state()).expect("router starts");
+            let (state, _directory) = state();
+            let app = router(state).expect("router starts");
             let at_limit_status = if path == "/api/assets" {
                 StatusCode::BAD_REQUEST
             } else if path == "/api/voice/audio" {

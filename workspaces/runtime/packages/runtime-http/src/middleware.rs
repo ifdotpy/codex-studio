@@ -417,12 +417,13 @@ mod response_safety_tests {
         Json(json!({"value": 1}))
     }
 
-    fn state() -> HttpState {
+    fn state() -> (HttpState, tempfile::TempDir) {
+        let directory = tempfile::tempdir().expect("isolated state directory");
         let mut state = HttpState::new(
             "token".to_owned(),
             "workspace".to_owned(),
             None,
-            "state".to_owned(),
+            directory.path().to_string_lossy().into_owned(),
             1,
             None,
             None,
@@ -431,12 +432,12 @@ mod response_safety_tests {
         state
             .etag_operations
             .insert(("GET".to_owned(), "/api/rules".to_owned()));
-        state
+        (state, directory)
     }
 
     #[tokio::test]
     async fn declared_read_etag_supports_weak_if_none_match_and_304() {
-        let state = state();
+        let (state, _directory) = state();
         let app = Router::new()
             .route("/api/rules", get(rules))
             .layer(from_fn_with_state(state, response_safety));
@@ -474,9 +475,10 @@ mod response_safety_tests {
 
     #[tokio::test]
     async fn unregistered_etag_route_keeps_its_regular_json_response() {
+        let (state, _directory) = state();
         let app = Router::new()
             .route("/api/session", get(untagged))
-            .layer(from_fn_with_state(state(), response_safety));
+            .layer(from_fn_with_state(state, response_safety));
         let response = app
             .oneshot(
                 Request::builder()
@@ -716,6 +718,7 @@ mod tests {
 
     #[tokio::test]
     async fn panic_is_converted_to_the_common_server_error_envelope() {
+        let directory = tempfile::tempdir().expect("isolated state directory");
         let app = Router::new()
             .route("/api/panic", get(panic_handler))
             .layer(from_fn_with_state(
@@ -723,7 +726,7 @@ mod tests {
                     "token".to_owned(),
                     "workspace".to_owned(),
                     None,
-                    "state".to_owned(),
+                    directory.path().to_string_lossy().into_owned(),
                     1,
                     None,
                     None,
