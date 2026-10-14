@@ -31,6 +31,21 @@ const SOURCE_SKIP = new Set([
   "target",
   "coverage",
 ]);
+const UNSAFE_RUST_ALLOWLIST = [
+  [
+    "workspaces/runtime/packages/runtime-priority-sys/src/lib.rs",
+    "OS priority syscall.",
+  ],
+  [
+    "workspaces/runtime/packages/operations-python/src/lib.rs",
+    "PyO3 extension.",
+  ],
+  [
+    "workspaces/runtime/packages/runtime-services/src/image_workspace_macos/fsevents_ffi.rs",
+    "FSEvents (lead's W9 decision).",
+  ],
+];
+const UNSAFE_RUST_ALLOWLIST_BY_FILE = new Map(UNSAFE_RUST_ALLOWLIST);
 const DECLARATION_SECTIONS = [
   "dependencies",
   "devDependencies",
@@ -1344,6 +1359,119 @@ function workspaceFiles(root) {
   return files;
 }
 
+function workspaceRustFiles(root) {
+  const files = [];
+  function visit(directory) {
+    for (const entry of readdirSync(directory, { withFileTypes: true })) {
+      if (entry.isDirectory() && SOURCE_SKIP.has(entry.name)) continue;
+      const full = path.join(directory, entry.name);
+      const relative = path.relative(root, full).split(path.sep).join("/");
+      if (
+        entry.isDirectory() &&
+        (relative === "workspaces/runtime/apps/layr" ||
+          relative === "workspaces/runtime/apps/layr-desk")
+      )
+        continue;
+      if (entry.isDirectory()) visit(full);
+      else if (entry.isFile() && entry.name.endsWith(".rs")) files.push(full);
+    }
+  }
+  const workspaces = path.join(root, "workspaces");
+  if (existsSync(workspaces)) visit(workspaces);
+  return files;
+}
+
+export function unsafeRustFindings(root, files = workspaceRustFiles(root)) {
+  const findings = [];
+  for (const file of files) {
+    const relativeFile = path.relative(root, file).split(path.sep).join("/");
+    if (UNSAFE_RUST_ALLOWLIST_BY_FILE.has(relativeFile)) continue;
+    const source = maskRustCommentsAndStrings(readFileSync(file, "utf8"));
+    if (/\bunsafe\b/.test(source))
+      findings.push({
+        file: relativeFile,
+        message: `unsafe code or allow(unsafe_code) is not allowlisted; see the purpose list in this check`,
+      });
+  }
+  return findings;
+}
+
+function maskRustCommentsAndStrings(source) {
+  const chars = [...source];
+  const blank = (start, end) => {
+    for (let index = start; index < end; index++)
+      if (chars[index] !== "\n") chars[index] = " ";
+  };
+  for (let index = 0; index < chars.length;) {
+    if (chars[index] === "/" && chars[index + 1] === "/") {
+      let end = index + 2;
+      while (end < chars.length && chars[end] !== "\n") end++;
+      blank(index, end);
+      index = end;
+      continue;
+    }
+    if (chars[index] === "/" && chars[index + 1] === "*") {
+      let depth = 1;
+      let end = index + 2;
+      while (end < chars.length && depth > 0) {
+        if (chars[end] === "/" && chars[end + 1] === "*") {
+          depth++;
+          end += 2;
+        } else if (chars[end] === "*" && chars[end + 1] === "/") {
+          depth--;
+          end += 2;
+        } else end++;
+      }
+      blank(index, end);
+      index = end;
+      continue;
+    }
+    const rawStart =
+      chars[index] === "r"
+        ? index
+        : chars[index] === "b" && chars[index + 1] === "r"
+          ? index + 1
+          : -1;
+    if (rawStart >= 0) {
+      let quote = rawStart + 1;
+      while (chars[quote] === "#") quote++;
+      if (chars[quote] === '"') {
+        const hashes = quote - rawStart - 1;
+        let end = quote + 1;
+        while (
+          end < chars.length &&
+          !(
+            chars[end] === '"' &&
+            chars.slice(end + 1, end + 1 + hashes).every((char) => char === "#")
+          )
+        )
+          end++;
+        end = Math.min(chars.length, end + 1 + hashes);
+        blank(index, end);
+        index = end;
+        continue;
+      }
+    }
+    const stringStart =
+      chars[index] === '"' ||
+      (chars[index] === "b" && chars[index + 1] === '"');
+    if (stringStart) {
+      const start = index;
+      if (chars[index] === "b") index++;
+      index++;
+      while (index < chars.length) {
+        if (chars[index] === "\\") index += 2;
+        else if (chars[index++] === '"') break;
+        else continue;
+      }
+      blank(start, index);
+      continue;
+    }
+    index++;
+  }
+  return chars.join("");
+}
+
 function packageImports(root, file, source) {
   try {
     const require = createRequire(import.meta.url);
@@ -1539,15 +1667,20 @@ export function boundaryFindings(root, packages, files = workspaceFiles(root)) {
 
 export function checkBoundaries(root = rootFrom(), packages = discover(root)) {
   const findings = boundaryFindings(root, packages);
-  if (findings.length) {
+  const unsafeFindings = unsafeRustFindings(root);
+  if (findings.length || unsafeFindings.length) {
     for (const finding of findings)
       process.stderr.write(
         `${finding.rule}: ${finding.file}: ${finding.message} (${finding.specifier})\n`,
       );
+    for (const finding of unsafeFindings)
+      process.stderr.write(
+        `unsafe-code-policy: ${finding.file}: ${finding.message}\n`,
+      );
     return 1;
   }
   process.stdout.write(
-    `Workspace boundaries passed (${packages.length} packages; ${BOUNDARY_ALLOWLIST.length} documented crossings allowlisted).\n`,
+    `Workspace boundaries and unsafe-code policy passed (${packages.length} packages; ${BOUNDARY_ALLOWLIST.length} documented crossings and ${UNSAFE_RUST_ALLOWLIST.length} purpose-listed unsafe modules allowlisted).\n`,
   );
   return 0;
 }
