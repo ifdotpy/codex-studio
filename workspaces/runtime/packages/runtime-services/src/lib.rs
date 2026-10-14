@@ -46,6 +46,7 @@ pub mod claude_login;
 pub mod claude_runtime;
 pub mod context_repair;
 /// Path-safe provider history lookup, ancestry verification, and immutable rewrites.
+/// The caller supplies captured provider evidence; this module performs no provider calls.
 pub mod context_repair_files;
 pub mod continuation;
 pub mod continuation_driver;
