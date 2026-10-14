@@ -1378,7 +1378,22 @@ class RuntimeContract(unittest.TestCase):
         import sqlite3
         import codex_runtime
 
-        lead = self.lead()
+        class QuietRuntime(Runtime):
+            def schedule(self):
+                pass
+
+            def schedule_fast_dispatch(self, *_args, **_kwargs):
+                pass
+
+        # Only the tested callback may contend for Runtime.lock after startup.
+        # Background scheduler lock samples cannot decide this assertion.
+        self.runtime.close()
+        self.runtime = make_runtime(QuietRuntime, self.root, FakeServer)
+        lead = self.runtime.create({'name': 'Lead', 'cwd': str(self.root), 'prompt': 'Coordinate the work'})
+        self.runtime.dispatch_all(maintenance=False)
+        eventually(lambda: self.runtime.agent(lead['id'])['status'] == 'running')
+        eventually(lambda: (self.runtime.agent(lead['id']).get('startAttempt') or {}).get('turnId'))
+        lead = self.runtime.agent(lead['id'])
         message = {'id': 101, 'method': 'item/tool/call', 'params': {
             'threadId': lead['threadId'], 'callId': 'writer-blocked-spawn', 'tool': 'orchestration_spawn',
             'arguments': {'request_id': 'writer-blocked-spawn',
