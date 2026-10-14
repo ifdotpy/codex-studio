@@ -117,6 +117,7 @@ async fn skills(
             params: json!({"cwds":[cwd],"forceReload":false}),
         }],
         DISCOVERY_TIMEOUT,
+        state.app_server_log.clone(),
     )
     .await;
     let result = match responses {
@@ -186,6 +187,7 @@ async fn capabilities(
     let mut result = capabilities_base(agent_id, &capability_agent, managed, observed, at);
     let cache = std::sync::Arc::clone(&state.capabilities_cache);
     let native_path = state.native_path.clone();
+    let app_server_log = state.app_server_log.clone();
     let home = account.home;
     let isolated = account.key != "default";
     let cwd = cwd.to_owned();
@@ -207,6 +209,7 @@ async fn capabilities(
                     },
                 ],
                 DISCOVERY_TIMEOUT,
+                app_server_log,
             )
             .await;
             match responses {

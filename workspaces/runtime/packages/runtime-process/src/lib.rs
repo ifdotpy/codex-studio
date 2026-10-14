@@ -2,6 +2,7 @@
 
 pub mod child_priority;
 mod client;
+pub mod operational_log;
 mod ports;
 mod protocol;
 mod provider_launch;
