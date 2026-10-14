@@ -387,12 +387,8 @@ class BackendProcess:
         # The backend starts Node helpers (the Ed25519 service). Name the caller's
         # Node explicitly instead of exposing the caller's PATH.
         node = os.environ.get("CODEX_NODE") or shutil.which("node")
-        if node is None:
-            raise RuntimeError(
-                "HTTP backend harness requires Node for its Ed25519 helper; "
-                "CODEX_NODE is unset and node is not available on PATH"
-            )
-        values["CODEX_NODE"] = node
+        if node:
+            values["CODEX_NODE"] = node
         environment.update(values)
         if executable is not None:
             environment["CODEX_BIN"] = str(executable)
