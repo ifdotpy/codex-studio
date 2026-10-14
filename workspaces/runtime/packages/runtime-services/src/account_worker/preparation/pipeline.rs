@@ -423,8 +423,7 @@ fn prepare_native_snapshot(
             restore_cwd
                 .as_ref()
                 .cloned()
-                .ok_or_else(|| refusal("workspace-readiness/cwd-required".into()))?;
-            cwd
+                .ok_or_else(|| refusal("workspace-readiness/cwd-required".into()))?
         };
         let mut frozen = frozen;
         frozen["cwd"] = json!(cwd);
