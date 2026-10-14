@@ -114,11 +114,20 @@ fn preconditions(
     intent: &TurnIntent,
     filesystem: &FilesystemSnapshot,
 ) -> Result<Value, WorkerError> {
+    preconditions_for_purpose(tx, intent, filesystem, false)
+}
+fn preconditions_for_purpose(
+    tx: &Transaction<'_>,
+    intent: &TurnIntent,
+    filesystem: &FilesystemSnapshot,
+    allow_paused_start: bool,
+) -> Result<Value, WorkerError> {
     let record = agent(tx, &intent.agent_id)?.value();
     if record["epoch"] != intent.epoch
-        || record["startAttempt"]["id"] != intent.attempt_id
-        || record["startAttempt"]["submitted"] != false
-        || record["autoWake"] != true
+        || (!allow_paused_start
+            && (record["startAttempt"]["id"] != intent.attempt_id
+                || record["startAttempt"]["submitted"] != false
+                || record["autoWake"] != true))
         || record["nativeFailureHold"] == true
         || native_thread_blocked(&record)
         || context_repair_blocked(&record)
@@ -179,10 +188,18 @@ pub(crate) fn admit(
     resources: &PreparationResources,
     intent: &TurnIntent,
 ) -> Result<Admission, WorkerError> {
+    admit_for_purpose(store, resources, intent, false)
+}
+fn admit_for_purpose(
+    store: &RuntimeStore,
+    resources: &PreparationResources,
+    intent: &TurnIntent,
+    allow_paused_start: bool,
+) -> Result<Admission, WorkerError> {
     let filesystem = FilesystemSnapshot::capture(store, &intent.agent_id)?;
     let (identity, observation) = catalog(resources, intent)?;
     scheduler::lifecycle_transaction_with(store, |tx| {
-        let record = preconditions(tx, intent, &filesystem)?;
+        let record = preconditions_for_purpose(tx, intent, &filesystem, allow_paused_start)?;
         let observed = gates::ExecutionSnapshot::from_record(&record, identity.clone())
             .map_err(|e| refusal(e.to_string()))?;
         let mut selected =
@@ -280,7 +297,8 @@ pub(crate) fn prepare_native_action(
     attempt_id: &str,
     generation: u64,
 ) -> Result<super::PreparedNativeAction, WorkerError> {
-    let snapshot = prepare_native_snapshot(store, resources, agent_id, attempt_id, generation)?;
+    let snapshot =
+        prepare_native_snapshot(store, resources, agent_id, attempt_id, generation, false)?;
     let settings = thread::turn_params(
         &snapshot,
         &thread::TurnInput {
@@ -309,7 +327,8 @@ pub(crate) fn prepare_native_thread(
     attempt_id: &str,
     generation: u64,
 ) -> Result<super::PreparedNativeThread, WorkerError> {
-    let mut snapshot = prepare_native_snapshot(store, resources, agent_id, attempt_id, generation)?;
+    let mut snapshot =
+        prepare_native_snapshot(store, resources, agent_id, attempt_id, generation, true)?;
     snapshot.actor.thread_id = None;
     snapshot.catalog.saved_thread_id = None;
     match thread::plan(
@@ -332,6 +351,7 @@ fn prepare_native_snapshot(
     agent_id: &str,
     attempt_id: &str,
     generation: u64,
+    allow_paused_start: bool,
 ) -> Result<thread::Snapshot, WorkerError> {
     let record = AgentRepository::get(&store.read()?, &AgentId::from(agent_id))?
         .ok_or_else(|| invalid("agent"))?
@@ -361,12 +381,12 @@ fn prepare_native_snapshot(
             .map(str::to_owned),
         events: Vec::new(),
     };
-    let admission = admit(store, resources, &intent)?;
+    let admission = admit_for_purpose(store, resources, &intent, allow_paused_start)?;
     let token = workspace(store, &intent)?;
     let filesystem = FilesystemSnapshot::capture(store, agent_id)?;
     let (identity, _) = catalog(resources, &intent)?;
     scheduler::lifecycle_transaction_with(store, |tx| {
-        let current = preconditions(tx, &intent, &filesystem)?;
+        let current = preconditions_for_purpose(tx, &intent, &filesystem, allow_paused_start)?;
         let frozen = admission
             .selection
             .freeze_record(&current, &identity, Instant::now())
