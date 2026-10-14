@@ -20,6 +20,7 @@
 use rusqlite::Transaction;
 use serde::Deserialize;
 use serde_json::{Value, json};
+use studio_runtime_store::WorkItemsRepository;
 use thiserror::Error;
 
 const MAX_CALL_BYTES: usize = 1_000_000;
@@ -561,6 +562,37 @@ pub(crate) fn execute(
         }
         ManagedHostTool::Status => ports.status(tx, actor, &call.args)?,
         ManagedHostTool::Search => ports.search(tx, actor, &call.args)?,
+        ManagedHostTool::Context if call.args["topic"] == "plan" => {
+            let plan = WorkItemsRepository::plan(tx, &actor.root_id)?
+                .and_then(|record| record.record)
+                .map(|raw| {
+                    serde_json::from_str::<Value>(&raw)
+                        .map_err(|_| Error::Invalid("Invalid stored work plan"))
+                })
+                .transpose()?
+                .filter(|record| record["native"].is_object());
+            let content = plan
+                .map(|record| {
+                    json!({
+                        "id":record["id"],
+                        "rootId":record["rootId"],
+                        "steps":record["native"].get("plan").cloned().unwrap_or(json!([])),
+                        "explanation":record["native"].get("explanation")
+                            .filter(|value| truthy(Some(value)))
+                            .cloned()
+                            .unwrap_or(json!(""))
+                    })
+                })
+                .unwrap_or(Value::Null);
+            OperationResult {
+                value: json!({
+                    "topic":"plan",
+                    "version":studio_runtime_store::sha256_hex(content.to_string().as_bytes())[..24].to_owned(),
+                    "content":content
+                }),
+                signals: Vec::new(),
+            }
+        }
         ManagedHostTool::Context => ports.context(tx, actor, &call.args)?,
         ManagedHostTool::Complaint => {
             ports.complaint(tx, actor, &call.args, &call.request_id, now)?

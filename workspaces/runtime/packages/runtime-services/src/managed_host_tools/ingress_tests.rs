@@ -361,8 +361,10 @@ fn every_managed_tool_runs_through_provider_callback_dispatch() {
         let decision = dispatch_with_managed_tools(&store, &context, &frame, 20.0, &ports).unwrap();
         assert!(matches!(decision, CallbackDecision::Answer(_)), "{tool}");
     }
-    assert_eq!(ports.staged.load(Ordering::SeqCst), 10);
-    assert_eq!(ports.released.load(Ordering::SeqCst), 10);
+    // The plan topic has a local transactional projection; the other nine
+    // operations stage through the private adapter bundle.
+    assert_eq!(ports.staged.load(Ordering::SeqCst), 9);
+    assert_eq!(ports.released.load(Ordering::SeqCst), 9);
 }
 
 #[test]
