@@ -10,6 +10,163 @@ use crate::event_write::truthy;
 use crate::sync_policy::table_exists;
 use crate::sync_views::{AgentViewContext, RoomViewContext};
 
+/// Work performed by one bulk projection-context pass, exposed for deterministic tests.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct AgentContextWork {
+    pub agents_computed: usize,
+    pub work_records_scanned: usize,
+    pub event_rows_scanned: usize,
+    pub item_agents_matched: usize,
+}
+
+/// Build all agent contexts from the already captured source rows in one pass.
+pub(crate) fn agent_view_contexts(
+    transaction: &Transaction<'_>,
+    agents: &[(String, String)],
+    work_records: &[(String, String)],
+    monitor_records: &[(String, String)],
+    project_server_id: Option<&str>,
+) -> StoreResult<(HashMap<String, AgentViewContext>, AgentContextWork)> {
+    let parsed_agents = agents
+        .iter()
+        .filter_map(|(id, raw)| {
+            serde_json::from_str::<Value>(raw)
+                .ok()
+                .map(|value| (id, value))
+        })
+        .collect::<Vec<_>>();
+    let parent_ids = parsed_agents
+        .iter()
+        .filter_map(|(_, record)| {
+            record
+                .get("parentId")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+        })
+        .collect::<std::collections::HashSet<_>>();
+    let monitor_agents = monitor_records
+        .iter()
+        .filter_map(|(_, raw)| serde_json::from_str::<Value>(raw).ok())
+        .filter_map(|record| {
+            record
+                .get("agent")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+        })
+        .collect::<std::collections::HashSet<_>>();
+
+    let lead_ids = parsed_agents
+        .iter()
+        .filter_map(|(id, record)| {
+            let eligible = truthy(record.get("isLead"))
+                && !truthy(record.get("deletedAt"))
+                && !truthy(record.get("accountTransferId"))
+                && record.get("status").and_then(Value::as_str) == Some("idle")
+                && !truthy(record.get("threadId"))
+                && !truthy(record.get("prompt"));
+            eligible.then_some(id.as_str())
+        })
+        .collect::<Vec<_>>();
+    let mut event_agents = std::collections::HashSet::new();
+    let mut event_rows_scanned = 0;
+    if !lead_ids.is_empty() && table_exists(transaction, "runtime_events")? {
+        for chunk in lead_ids.chunks(500) {
+            let placeholders = vec!["?"; chunk.len()].join(",");
+            let mut statement = transaction.prepare(&format!(
+                "SELECT agent FROM runtime_events WHERE agent IN ({placeholders})"
+            ))?;
+            let rows = statement
+                .query_map(rusqlite::params_from_iter(chunk.iter()), |row| {
+                    row.get::<_, String>(0)
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
+            event_rows_scanned += rows.len();
+            event_agents.extend(rows);
+        }
+    }
+    let mut item_agents = std::collections::HashSet::new();
+    if !lead_ids.is_empty() && table_exists(transaction, "runtime_items")? {
+        for chunk in lead_ids.chunks(500) {
+            let placeholders = vec!["?"; chunk.len()].join(",");
+            let mut statement = transaction.prepare(&format!(
+                "SELECT DISTINCT agent FROM runtime_items WHERE agent IN ({placeholders})"
+            ))?;
+            item_agents.extend(
+                statement
+                    .query_map(rusqlite::params_from_iter(chunk.iter()), |row| {
+                        row.get::<_, String>(0)
+                    })?
+                    .collect::<Result<Vec<_>, _>>()?,
+            );
+        }
+    }
+    let mut latest_work = HashMap::<String, (f64, String)>::new();
+    for (_, raw) in work_records {
+        let Ok(record) = serde_json::from_str::<Value>(raw) else {
+            continue;
+        };
+        let Some(owner) = record.get("owner").and_then(Value::as_str) else {
+            continue;
+        };
+        for result in record
+            .get("results")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            if result.get("agent").and_then(Value::as_str) != Some(owner) {
+                continue;
+            }
+            let Some(path) = result
+                .get("resultFile")
+                .and_then(Value::as_str)
+                .filter(|s| !s.is_empty())
+            else {
+                continue;
+            };
+            let created = result
+                .get("created")
+                .and_then(Value::as_f64)
+                .unwrap_or_default();
+            if latest_work
+                .get(owner)
+                .is_none_or(|(prior, _)| created > *prior)
+            {
+                latest_work.insert(owner.to_owned(), (created, path.to_owned()));
+            }
+        }
+    }
+    let mut contexts = HashMap::with_capacity(parsed_agents.len());
+    for (id, record) in parsed_agents {
+        let empty_lead = truthy(record.get("isLead"))
+            && !truthy(record.get("deletedAt"))
+            && !truthy(record.get("accountTransferId"))
+            && record.get("status").and_then(Value::as_str) == Some("idle")
+            && !truthy(record.get("threadId"))
+            && !truthy(record.get("prompt"))
+            && !event_agents.contains(id)
+            && !item_agents.contains(id)
+            && !parent_ids.contains(id.as_str())
+            && !monitor_agents.contains(id);
+        contexts.insert(
+            id.clone(),
+            AgentViewContext {
+                project_server_id: project_server_id.map(str::to_owned),
+                launcher_alive: true,
+                empty_lead,
+                latest_work_result_file: latest_work.remove(id).map(|(_, path)| path),
+            },
+        );
+    }
+    let work = AgentContextWork {
+        agents_computed: contexts.len(),
+        work_records_scanned: work_records.len(),
+        event_rows_scanned,
+        item_agents_matched: item_agents.len(),
+    };
+    Ok((contexts, work))
+}
+
 pub(crate) fn agent_view_context(
     transaction: &Transaction<'_>,
     record: &Value,
@@ -272,5 +429,98 @@ mod room_preparation_tests {
             &second.active_agent_indices
         ));
         assert_eq!(first.active_agent_indices.len(), 1);
+    }
+
+    #[test]
+    fn cold_agent_contexts_scan_work_once_for_two_thousand_agents() {
+        const AGENT_COUNT: usize = 2_000;
+        let mut connection = Connection::open_in_memory().expect("database");
+        connection
+            .execute_batch(
+                "CREATE TABLE runtime_agents(id TEXT PRIMARY KEY, record TEXT NOT NULL);
+                 CREATE TABLE runtime_monitors(id TEXT PRIMARY KEY, record TEXT NOT NULL);
+                 CREATE TABLE runtime_work(id TEXT PRIMARY KEY, record TEXT NOT NULL);
+                 CREATE TABLE runtime_events(agent TEXT NOT NULL);
+                 CREATE TABLE runtime_items(agent TEXT NOT NULL);
+                 CREATE INDEX runtime_item_agent ON runtime_items(agent);",
+            )
+            .expect("context tables");
+        let mut agents = Vec::with_capacity(AGENT_COUNT);
+        let mut work = Vec::with_capacity(AGENT_COUNT);
+        let transaction = connection.transaction().expect("seed transaction");
+        for index in 0..AGENT_COUNT {
+            let id = format!("agent-{index:04}");
+            let agent = json!({"id":id,"status":"idle"}).to_string();
+            let work_id = format!("work-{index:04}");
+            let task = json!({"id":work_id,"owner":id,"results":[]}).to_string();
+            transaction
+                .execute(
+                    "INSERT INTO runtime_agents(id,record) VALUES(?1,?2)",
+                    rusqlite::params![id, agent],
+                )
+                .expect("agent row");
+            transaction
+                .execute(
+                    "INSERT INTO runtime_work(id,record) VALUES(?1,?2)",
+                    rusqlite::params![work_id, task],
+                )
+                .expect("work row");
+            agents.push((id, agent));
+            work.push((work_id, task));
+        }
+        transaction.commit().expect("seed commit");
+        let transaction = connection.transaction().expect("read transaction");
+        let work_query_plan = transaction
+            .prepare(
+                "EXPLAIN QUERY PLAN SELECT record FROM runtime_work WHERE json_extract(record,'$.owner')=?1",
+            )
+            .expect("baseline work query plan")
+            .query_map(["agent-0000"], |row| row.get::<_, String>(3))
+            .expect("baseline plan rows")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("baseline plan reads");
+        assert!(
+            work_query_plan
+                .iter()
+                .any(|line| line.contains("SCAN runtime_work"))
+        );
+        let before_started = std::time::Instant::now();
+        let mut before = HashMap::with_capacity(AGENT_COUNT);
+        for (_, raw) in &agents {
+            let record: Value = serde_json::from_str(raw).expect("agent JSON");
+            let id = record["id"].as_str().expect("agent id");
+            let context = agent_view_context(&transaction, &record, None)
+                .expect("baseline context is computed");
+            before.insert(id.to_owned(), context);
+        }
+        let before_elapsed = before_started.elapsed();
+        let after_started = std::time::Instant::now();
+        let (after, work) = agent_view_contexts(&transaction, &agents, &work, &[], None)
+            .expect("bulk contexts are built");
+        let after_elapsed = after_started.elapsed();
+        assert_eq!(work.agents_computed, AGENT_COUNT);
+        assert_eq!(work.work_records_scanned, AGENT_COUNT);
+        assert_eq!(work.event_rows_scanned, 0);
+        assert_eq!(work.item_agents_matched, 0);
+        assert_eq!(after.len(), AGENT_COUNT);
+        let before_work_rows_scanned = AGENT_COUNT * AGENT_COUNT;
+        let after_work_rows_scanned = work.work_records_scanned;
+        assert_eq!(before_work_rows_scanned, 4_000_000);
+        assert_eq!(after_work_rows_scanned, AGENT_COUNT);
+        for (id, context) in before {
+            let actual = after.get(&id).expect("bulk context exists");
+            assert_eq!(actual.empty_lead, context.empty_lead);
+            assert_eq!(
+                actual.latest_work_result_file,
+                context.latest_work_result_file
+            );
+        }
+        eprintln!(
+            "synthetic cold-context work: before agents={AGENT_COUNT}, work_rows_scanned={before_work_rows_scanned}, context_computations={AGENT_COUNT}, per_agent_work_queries={AGENT_COUNT}, elapsed={before_elapsed:?}; after agents={}, work_rows_scanned={after_work_rows_scanned}, context_computations={}, event_rows_scanned={}, item_agents_matched={}, elapsed={after_elapsed:?}",
+            agents.len(),
+            work.agents_computed,
+            work.event_rows_scanned,
+            work.item_agents_matched,
+        );
     }
 }

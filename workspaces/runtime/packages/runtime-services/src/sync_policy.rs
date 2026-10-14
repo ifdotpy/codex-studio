@@ -6,7 +6,7 @@ pub use crate::sync_views::{
     complaint_entity_view, openapi_document, project_entity_view, project_persisted_record,
     room_entity_view,
 };
-use rusqlite::{OptionalExtension, Transaction};
+use rusqlite::{Connection, OptionalExtension, Transaction};
 use serde_json::{Map, Value, json};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Component, Path, PathBuf};
@@ -25,6 +25,70 @@ const MAX_CLOCK_SKEW_MS: i64 = 5 * 60 * 1000;
 const MONITOR_TERMINAL_WINDOW: usize = 100;
 const MONITOR_FINAL_WINDOW: usize = 100;
 const TASK_RETIRE_BATCH: usize = 100;
+const SYNC_SEEDED_MARKER: &str = "seeded";
+const AGENT_ORGANIZATION_FIELDS_MARKER: &str = "agent_organization_fields";
+const AGENT_ORGANIZATION_FIELDS_VERSION: i64 = 3;
+
+/// Whether Python's durable seed and entity-view upgrade markers prove the
+/// persisted sync projection is complete. Python owner: codex_sync_entities.seed.
+pub fn has_complete_entity_seed(connection: &Connection) -> StoreResult<bool> {
+    let seeded = connection
+        .query_row(
+            "SELECT value FROM sync_entity_meta WHERE key=?1",
+            [SYNC_SEEDED_MARKER],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?;
+    let version = connection
+        .query_row(
+            "SELECT value FROM sync_entity_meta WHERE key=?1",
+            [AGENT_ORGANIZATION_FIELDS_MARKER],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?;
+    let mut complete = seeded.as_deref() == Some("1")
+        && version
+            .and_then(|value| value.parse::<i64>().ok())
+            .is_some_and(|value| value >= AGENT_ORGANIZATION_FIELDS_VERSION);
+    if !complete {
+        return Ok(false);
+    }
+    let table_exists = |name: &str| {
+        connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)",
+            [name],
+            |row| row.get::<_, bool>(0),
+        )
+    };
+    if table_exists("runtime_tasks")? && table_exists("runtime_agents")? {
+        let task_window = connection
+            .query_row(
+                "SELECT value FROM sync_entity_meta WHERE key='task_window_migrated'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        complete &= task_window.as_deref() == Some("1");
+    }
+    if table_exists("runtime_events")? {
+        let event_window = connection
+            .query_row(
+                "SELECT value FROM sync_entity_meta WHERE key='event_window_seq'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        let projected_sequence = connection.query_row(
+            "SELECT COALESCE(MAX(seq),0) FROM sync_entities WHERE collection='event'",
+            [],
+            |row| row.get::<_, i64>(0),
+        )?;
+        complete &= event_window
+            .and_then(|value| value.parse::<i64>().ok())
+            .is_some_and(|sequence| sequence == projected_sequence);
+    }
+    Ok(complete)
+}
 
 /// Filesystem vault views captured before opening a projection write transaction.
 #[derive(Clone, Debug, Default)]
@@ -62,6 +126,33 @@ impl ProjectVaultSnapshot {
         let serialized = serde_json::to_vec(&self.views)
             .expect("project vault views serialize as JSON values and error tuples");
         studio_runtime_store::sha256_hex(&serialized)
+    }
+
+    /// Check the small persisted project set before deciding whether a full
+    /// cold projection rebuild is needed after process restart.
+    pub fn matches_entity_projections(&self, connection: &Connection) -> StoreResult<bool> {
+        for (id, project) in &self.projects {
+            let payload = connection
+                .query_row(
+                    "SELECT payload FROM sync_entities WHERE collection='project' AND id=?1 AND deleted=0",
+                    [id],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()?;
+            let Some(payload) = payload else {
+                return Ok(false);
+            };
+            let payload: Value = serde_json::from_str(&payload)?;
+            let ready = payload
+                .pointer("/value/layrReadiness/state")
+                .and_then(Value::as_str)
+                == Some("ready");
+            let expected_vault = if ready { self.view(id, project)? } else { None };
+            if payload.pointer("/value/vault") != expected_vault.as_ref() {
+                return Ok(false);
+            }
+        }
+        Ok(true)
     }
 
     fn recheck(&self, transaction: &Transaction<'_>) -> StoreResult<()> {
@@ -154,6 +245,22 @@ pub fn maintain_entity_projections_with_server_id(
             .ok_or(StoreError::RecordContract(
                 "entity projection source snapshot is incomplete",
             ))?;
+    let agent_contexts = crate::sync_entity_context::agent_view_contexts(
+        transaction,
+        peer_agents,
+        source_records
+            .get("runtime_work")
+            .ok_or(StoreError::RecordContract(
+                "entity projection source snapshot is incomplete",
+            ))?,
+        source_records
+            .get("runtime_monitors")
+            .ok_or(StoreError::RecordContract(
+                "entity projection source snapshot is incomplete",
+            ))?,
+        project_server_id,
+    )?
+    .0;
     maintain_peer_team_entities(
         transaction,
         peer_agents,
@@ -188,11 +295,9 @@ pub fn maintain_entity_projections_with_server_id(
             let projected = match collection {
                 "agent" => agent_entity_view(
                     &record,
-                    &crate::sync_entity_context::agent_view_context(
-                        transaction,
-                        &record,
-                        project_server_id,
-                    )?,
+                    agent_contexts.get(id).ok_or(StoreError::RecordContract(
+                        "agent projection context snapshot is incomplete",
+                    ))?,
                 ),
                 "room" => {
                     let context = rooms.for_room(transaction, &record, true)?;

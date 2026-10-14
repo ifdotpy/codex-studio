@@ -19,7 +19,12 @@ fn rust_fresh_state_matches_python_and_python_opens_it_without_schema_migration(
     fs::remove_dir_all(&rust_state).expect("Python oracle state removes");
     fs::create_dir_all(&rust_state).expect("Rust state directory recreates");
 
+    let open_started = std::time::Instant::now();
     let store = RuntimeStore::open(Some(&rust_state)).expect("Rust creates an empty state");
+    eprintln!(
+        "empty synthetic RuntimeStore::open: {:?}",
+        open_started.elapsed()
+    );
     let rust_catalog = catalog_snapshot(&rust_state);
     assert_valid_markers(&expected["markers"]);
     assert_eq!(
@@ -99,6 +104,35 @@ fn foreign_files_are_refused_without_creating_any_state_files() {
         if message.contains("unrecognized entry") && message.contains("notes.txt")));
     assert_eq!(filesystem_snapshot(&state), before);
     assert!(!state.join("runtime.lock").exists());
+    cleanup(state);
+}
+
+#[test]
+fn desktop_rust_state_owner_marker_is_accepted_before_database_creation() {
+    let state = temporary_state("desktop-rust-owner");
+    let owner = state.join("rust-state-owner.json");
+    fs::write(
+        &owner,
+        br#"{"runtime":"rust","formatVersion":1,"backendBuild":"0123456789abcdef"}"#,
+    )
+    .expect("desktop owner marker writes");
+    let canvas_log = state.join("canvas.log");
+    fs::write(&canvas_log, b"desktop startup log\n").expect("desktop log opens before spawn");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        for file in [&owner, &canvas_log] {
+            fs::set_permissions(file, fs::Permissions::from_mode(0o600))
+                .expect("desktop startup files are private");
+        }
+    }
+
+    let store = RuntimeStore::open(Some(&state))
+        .expect("desktop's preclaimed fresh state opens in the Rust server");
+    drop(store);
+    assert!(state.join("canvas.sqlite3").is_file());
+    assert!(owner.is_file());
+    assert!(canvas_log.is_file());
     cleanup(state);
 }
 

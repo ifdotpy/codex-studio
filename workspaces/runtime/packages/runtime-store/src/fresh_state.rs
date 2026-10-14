@@ -63,6 +63,9 @@ pub(crate) fn validate(root: &Path) -> StoreResult<()> {
         let accepted = match name.to_str() {
             // Python creates this lease before its databases.
             Some("runtime.lock") => matches!(entry_kind(&path), EntryKind::File),
+            // The desktop launcher claims the canonical state before the Rust
+            // server creates its databases, and opens its log before spawn.
+            Some("rust-state-owner.json" | "canvas.log") => accepted_private_file(&path),
             // Runtime.__init__ creates these private directories and their
             // registry/identity files before it opens the SQLite databases.
             Some("accounts") => accepted_python_directory(&path, "registry.json"),
@@ -122,6 +125,13 @@ fn accepted_python_directory(path: &Path, accepted_file: &str) -> bool {
     }
     // Python can resume after creating the directory but before its file.
     true
+}
+
+fn accepted_private_file(path: &Path) -> bool {
+    let Ok(metadata) = fs::symlink_metadata(path) else {
+        return false;
+    };
+    metadata.file_type().is_file() && private_permissions(&metadata)
 }
 
 #[cfg(unix)]
@@ -263,9 +273,10 @@ fn seed_python_lazy_markers(
 }
 
 fn create_database(path: &Path, snapshot: &Value, schema_name: &str) -> StoreResult<()> {
-    let connection = Connection::open(path)?;
+    let mut connection = Connection::open(path)?;
     connection.pragma_update(None, "journal_mode", "WAL")?;
     connection.pragma_update(None, "synchronous", "FULL")?;
+    let transaction = connection.transaction()?;
 
     let catalog =
         snapshot[schema_name]["sqlite_master"]
@@ -303,14 +314,15 @@ fn create_database(path: &Path, snapshot: &Value, schema_name: &str) -> StoreRes
         let sql = entry["sql"]
             .as_str()
             .ok_or(StoreError::RecordContract("fresh schema object has no DDL"))?;
-        connection.execute_batch(sql)?;
+        transaction.execute_batch(sql)?;
     }
     let version = snapshot[schema_name]["pragma_user_version"]
         .as_i64()
         .ok_or(StoreError::RecordContract(
             "fresh schema user_version is missing",
         ))?;
-    connection.pragma_update(None, "user_version", version)?;
+    transaction.pragma_update(None, "user_version", version)?;
+    transaction.commit()?;
     Ok(())
 }
 
