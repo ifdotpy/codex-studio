@@ -343,6 +343,77 @@ class VmAgents(unittest.TestCase):
         self.assertEqual(self.guest.saves, 0)
         self.assertEqual(self.guest.exec_argv, [['layr', 'op', 'log', '-n', '500'], ['layr', 'rev-parse', '97c6946']])
 
+    def test_a_vm_chat_changes_its_claude_account_and_keeps_its_thread(self):
+        from codex_account_transfer import transfer_store
+        from codex_linux_vm_credentials import profile_path
+        lead = self.runtime.prepare(self.lead())
+        before = self.runtime.agent(lead['id'])
+        stops = []
+        real = self.guest.request
+
+        def request(method, params=None, **options):
+            if method == 'provider.stop':
+                stops.append(params['handle'])
+                return {'state': 'stopped'}
+            return real(method, params, **options)
+        accounts = {'default': {'provider': 'claude'}, 'second': {'provider': 'claude'}}
+        request_id = str(uuid.uuid4())
+        with patch.object(self.guest, 'request', side_effect=request), \
+                patch.object(self.runtime.accounts, 'get', side_effect=lambda key='default': accounts[key]), \
+                patch.object(self.runtime.accounts, 'home', return_value=str(self.root)):
+            op = transfer_store(self.runtime).request(lead['id'], 'second', request_id)
+            # A repeated request returns the same completed record and does nothing again.
+            self.assertEqual(transfer_store(self.runtime).request(lead['id'], 'second', request_id)['id'], request_id)
+        self.assertEqual((op['status'], op['vm']), ('completed', True))
+        after = self.runtime.agent(lead['id'])
+        self.assertEqual(after['accountKey'], 'second')
+        self.assertEqual(after['threadId'], before['threadId'])
+        self.assertNotIn('vmAccountSwitch', after)
+        self.assertEqual(after['workerDefaults']['accountKey'], 'second')
+        self.assertEqual(stops, ['linux-worker:' + lead['id']])
+        copy_argv = self.guest.exec_argv[-1]
+        self.assertEqual(copy_argv[:2], ['python3', '-c'])
+        self.assertEqual(copy_argv[3:], [lead['id'], profile_path('default', 'claude'), profile_path('second', 'claude')])
+        self.assertEqual(after['accountHistory'][-1]['targetThreadId'], before['threadId'])
+
+    def test_a_vm_account_switch_leaves_a_codex_worker_on_its_account(self):
+        from codex_account_transfer import transfer_store
+        lead = self.runtime.prepare(self.lead())
+        worker = self.runtime.prepare(self.worker(lead))
+        with self.runtime.lock, self.runtime.db() as db:
+            current = self.runtime.agent(worker['id'], db)
+            current.update(accountKey='codex-account', status='completed')
+            self.runtime.put(db, 'agents', current)
+        accounts = {'default': {'provider': 'claude'}, 'second': {'provider': 'claude'},
+                    'codex-account': {'provider': 'codex'}}
+        real = self.guest.request
+
+        def request(method, params=None, **options):
+            return {'state': 'stopped'} if method == 'provider.stop' else real(method, params, **options)
+        with patch.object(self.guest, 'request', side_effect=request), \
+                patch.object(self.runtime.accounts, 'get', side_effect=lambda key='default': accounts[key]), \
+                patch.object(self.runtime.accounts, 'home', return_value=str(self.root)):
+            op = transfer_store(self.runtime).request(lead['id'], 'second', str(uuid.uuid4()))
+        self.assertEqual(op['members'][lead['id']]['phase'], 'completed')
+        self.assertEqual(op['members'][worker['id']]['phase'], 'left')
+        self.assertEqual(self.runtime.agent(worker['id'])['accountKey'], 'codex-account')
+        self.assertEqual(self.runtime.agent(lead['id'])['accountKey'], 'second')
+
+    def test_a_vm_account_switch_waits_for_the_current_turn(self):
+        from codex_account_transfer import transfer_store
+        lead = self.runtime.prepare(self.lead())
+        with self.runtime.lock, self.runtime.db() as db:
+            current = self.runtime.agent(lead['id'], db)
+            current['status'] = 'running'
+            self.runtime.put(db, 'agents', current)
+        accounts = {'default': {'provider': 'claude'}, 'second': {'provider': 'claude'}}
+        with patch.object(self.runtime.accounts, 'get', side_effect=lambda key='default': accounts[key]), \
+                patch.object(self.runtime.accounts, 'home', return_value=str(self.root)):
+            with self.assertRaisesRegex(ValueError, 'finish their turns'):
+                transfer_store(self.runtime).request(lead['id'], 'second', str(uuid.uuid4()))
+        self.assertEqual(self.runtime.agent(lead['id']).get('accountKey', 'default'), 'default')
+        self.assertEqual(self.guest.exec_argv, [])
+
     def test_vm_restart_ends_providers_shows_a_notice_and_reconnects_without_resending(self):
         # docs/linux-vm-workspaces.md, "Guest crash watchdog": the watchdog stopped a dead guest.
         from codex_linux_vm_watchdog import drop_providers, post_notices

@@ -1971,6 +1971,10 @@
             "default": null,
             "title": "Transferid",
             "type": "string"
+          },
+          "vmSessionCopy": {
+            "$ref": "#/components/schemas/JsonObjectResponse",
+            "default": null
           }
         },
         "title": "AccountHistoryRecordResponse",
@@ -7129,6 +7133,10 @@
             "default": null,
             "title": "Usageresumeenabled",
             "type": "boolean"
+          },
+          "vmAccountSwitch": {
+            "$ref": "#/components/schemas/JsonObjectResponse",
+            "default": null
           },
           "workerBaseBehindMain": {
             "anyOf": [
@@ -20771,6 +20779,17 @@
               }
             ],
             "title": "Title"
+          },
+          "updated": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "number"
+              }
+            ],
+            "title": "Updated"
           },
           "version": {
             "anyOf": [

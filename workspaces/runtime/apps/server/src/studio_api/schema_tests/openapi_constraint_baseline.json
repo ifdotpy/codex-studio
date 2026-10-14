@@ -1,4 +1,6 @@
 {
+  "sourceCommit": "27317107",
+  "sourcePath": "workspaces/runtime/packages/runtime-http/openapi.json",
   "document": {
     "components": {
       "headers": {
@@ -1934,6 +1936,10 @@
               "default": null,
               "title": "Transferid",
               "type": "string"
+            },
+            "vmSessionCopy": {
+              "$ref": "#/components/schemas/JsonObjectResponse",
+              "default": null
             }
           },
           "title": "AccountHistoryRecordResponse",
@@ -6972,6 +6978,10 @@
               "default": null,
               "title": "Usageresumeenabled",
               "type": "boolean"
+            },
+            "vmAccountSwitch": {
+              "$ref": "#/components/schemas/JsonObjectResponse",
+              "default": null
             },
             "workerBaseBehindMain": {
               "anyOf": [
@@ -20242,6 +20252,17 @@
                 }
               ],
               "title": "Title"
+            },
+            "updated": {
+              "anyOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "type": "number"
+                }
+              ],
+              "title": "Updated"
             },
             "version": {
               "anyOf": [
@@ -76787,7 +76808,5 @@
       "repeatedScalar": "reject",
       "unknown": "reject"
     }
-  },
-  "sourceCommit": "f06f2cb7",
-  "sourcePath": "workspaces/runtime/packages/runtime-http/openapi.json"
+  }
 }

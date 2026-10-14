@@ -168,6 +168,8 @@ class WatchdogTests(unittest.TestCase):
         patch('codex_linux_vm.platform.system', return_value='Darwin').start()
         patch('codex_linux_vm.platform.machine', return_value='arm64').start()
         patch.object(vm, '_require_space').start()
+        # Every intent of a test is from the current Mac boot unless a test says otherwise.
+        patch.object(watchdog, 'host_boot_time', return_value=0.0).start()
         self.ensure_service = patch('codex_host_exec.ensure_service').start()
         self.configure_guest = patch('codex_host_exec.configure_guest').start()
         patch('codex_linux_vm_share.remount_registered').start()
@@ -391,6 +393,33 @@ class WatchdogTests(unittest.TestCase):
         for intent in (None, ('stopped', 'stop'), ('running', 'start')):
             if intent is not None:
                 self.client._write_intent(*intent)
+            self.assertEqual(self.watchdog.check(), 'stopped')
+        self.assertEqual(self.helper.launches, 0)
+
+    def test_a_vm_that_the_mac_restart_stopped_starts_again(self) -> None:
+        self.helper.state = 'stopped'
+        # The VM started an hour ago; the Mac booted a minute ago.
+        (self.directory / 'intent.json').write_text(json.dumps({'state': 'running', 'by': 'start', 'at': time.time() - 3600}))
+        with patch.object(watchdog, 'host_boot_time', return_value=time.time() - 60):
+            self.assertEqual(self.watchdog.check(), 'restarted')
+            self.assertEqual(self.helper.launches, 1)
+            self.assertEqual(self.records()[0]['kind'], 'host_restart')
+            self.assertEqual(self.finished[0]['chats'], ['chat-1'])
+            self.assertNotIn('restart', self.client.intent())
+            # Its new intent is from this boot: a later stop in this boot keeps it stopped.
+            self.helper.state = 'stopped'
+            self.clock.now += 3600
+            self.assertEqual(self.watchdog.check(), 'stopped')
+            self.assertEqual(self.helper.launches, 1)
+
+    def test_a_vm_stopped_on_purpose_before_the_mac_restart_stays_stopped(self) -> None:
+        self.helper.state = 'stopped'
+        self.client._write_intent('stopped', 'stop')
+        stopped = self.client.intent()['at']
+        with patch.object(watchdog, 'host_boot_time', return_value=stopped + 60):
+            self.assertEqual(self.watchdog.check(), 'stopped')
+        with patch.object(watchdog, 'host_boot_time', return_value=None):
+            self.client._write_intent('running', 'start')
             self.assertEqual(self.watchdog.check(), 'stopped')
         self.assertEqual(self.helper.launches, 0)
 

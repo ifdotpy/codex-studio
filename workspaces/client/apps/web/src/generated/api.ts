@@ -2943,6 +2943,8 @@ export interface components {
        * @default null
        */
       transferId?: string;
+      /** @default null */
+      vmSessionCopy?: components["schemas"]["JsonObjectResponse"];
     } & {
       [key: string]: components["schemas"]["JsonValue"];
     };
@@ -5046,6 +5048,8 @@ export interface components {
        * @default null
        */
       usageResumeEnabled?: boolean;
+      /** @default null */
+      vmAccountSwitch?: components["schemas"]["JsonObjectResponse"];
       /**
        * Workerbasebehindmain
        * @default null
@@ -10156,6 +10160,8 @@ export interface components {
       status?: components["schemas"]["ComplaintStatus"] | null;
       /** Title */
       title?: null | string;
+      /** Updated */
+      updated?: null | number;
       /** Version */
       version?: number | null;
     };
