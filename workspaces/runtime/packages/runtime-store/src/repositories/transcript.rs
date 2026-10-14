@@ -1389,7 +1389,7 @@ mod tests {
                     .iter()
                     .filter(|sql| sql.starts_with("SELECT EXISTS(SELECT 1 FROM sqlite_master"))
                     .count(),
-                5,
+                4,
                 "the row-table presence result removes two catalog queries"
             );
         });
