@@ -356,6 +356,31 @@ async fn voice_monitor_approval_uses_monitor_transaction_and_dispatch_wake() {
         })
         .expect("seed voice monitor approval");
 
+    let approval_body = json!({
+        "agent":agent,"session_id":"voice-monitor-session",
+        "speech_id":"voice-monitor-speech","transcript_id":"voice-monitor-transcript"
+    });
+    let app_without_runtime = router(HttpState::new(
+        "token".into(),
+        "workspace".into(),
+        None,
+        root.path().to_string_lossy().into_owned(),
+        4620,
+        None,
+        Some(store.clone()),
+        None,
+    ))
+    .expect("router without monitor runtime");
+    let before_refusal = database_snapshot(&store);
+    let (status, refused) = post(
+        &app_without_runtime,
+        "/api/voice/approve",
+        approval_body.clone(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_IMPLEMENTED, "{refused}");
+    assert_eq!(database_snapshot(&store), before_refusal);
+
     let state = HttpState::new(
         "token".into(),
         "workspace".into(),
@@ -395,21 +420,6 @@ async fn voice_monitor_approval_uses_monitor_transaction_and_dispatch_wake() {
     assert_eq!(request.value()["answerDecision"], "accept");
 
     // A saved accepted voice receipt must replay without the optional runtime.
-    let app_without_runtime = router(HttpState::new(
-        "token".into(),
-        "workspace".into(),
-        None,
-        root.path().to_string_lossy().into_owned(),
-        4620,
-        None,
-        Some(store.clone()),
-        None,
-    ))
-    .expect("router without monitor runtime");
-    let approval_body = json!({
-        "agent":agent,"session_id":"voice-monitor-session",
-        "speech_id":"voice-monitor-speech","transcript_id":"voice-monitor-transcript"
-    });
     let (status, replayed) = post(
         &app_without_runtime,
         "/api/voice/approve",
@@ -508,6 +518,43 @@ fn voice_row_counts(store: &RuntimeStore) -> Vec<i64> {
                     row.get(0)
                 })
                 .expect("count rows")
+        })
+        .collect()
+}
+
+fn database_snapshot(store: &RuntimeStore) -> Vec<(String, Vec<Vec<rusqlite::types::Value>>)> {
+    let connection = store.read().expect("read database snapshot");
+    let tables = {
+        let mut statement = connection
+            .prepare(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name",
+            )
+            .expect("prepare table list");
+        statement
+            .query_map([], |row| row.get::<_, String>(0))
+            .expect("query table list")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("collect table list")
+    };
+    tables
+        .into_iter()
+        .map(|table| {
+            let quoted_table = table.replace('"', "\"\"");
+            let mut statement = connection
+                .prepare(&format!("SELECT * FROM \"{quoted_table}\""))
+                .expect("prepare snapshot table");
+            let column_count = statement.column_count();
+            let mut rows = statement.query([]).expect("query snapshot table");
+            let mut values = Vec::new();
+            while let Some(row) = rows.next().expect("read snapshot row") {
+                values.push(
+                    (0..column_count)
+                        .map(|column| row.get(column).expect("read snapshot value"))
+                        .collect::<Vec<rusqlite::types::Value>>(),
+                );
+            }
+            values.sort_by_key(|row| format!("{row:?}"));
+            (table, values)
         })
         .collect()
 }

@@ -1206,6 +1206,7 @@ pub async fn speech(
 
 enum ApprovalDispatch {
     Replay(Value),
+    MonitorUnavailable,
     Monitor {
         request_id: String,
     },
@@ -1270,8 +1271,12 @@ pub async fn approve_monitor(
             &session_id,
             &speech_id,
             &transcript_id,
+            start_dispatch_available,
         )? {
             ApprovalDispatch::Replay(value) => Ok((String::new(), Some(value))),
+            ApprovalDispatch::MonitorUnavailable => Err(VoiceProviderError::RequiresDependency(
+                "monitor-driver/start-dispatch",
+            )),
             ApprovalDispatch::Monitor { request_id } => Ok((request_id, None)),
             ApprovalDispatch::Send { .. } => Err(VoiceProviderError::Operation),
         }
@@ -1280,12 +1285,6 @@ pub async fn approve_monitor(
     .map_err(|_| VoiceProviderError::Operation)??;
     if let Some(value) = replay {
         return Ok(value);
-    }
-    if !start_dispatch_available {
-        release_monitor_approval(&store, &request_id).await?;
-        return Err(VoiceProviderError::RequiresDependency(
-            "monitor-driver/start-dispatch",
-        ));
     }
     let request_for_answer = request_id.clone();
     let data = serde_json::json!({"decision":"accept"});
@@ -1375,12 +1374,18 @@ pub async fn approve(
             &reserve_session,
             &reserve_speech,
             &reserve_transcript,
+            false,
         )
     })
     .await
     .map_err(|_| VoiceProviderError::Operation)??;
     let (request_id, context, rpc_id) = match reservation {
         ApprovalDispatch::Replay(value) => return Ok(value),
+        ApprovalDispatch::MonitorUnavailable => {
+            return Err(VoiceProviderError::RequiresDependency(
+                "monitor-approval/voice",
+            ));
+        }
         ApprovalDispatch::Monitor { .. } => {
             return Err(VoiceProviderError::RequiresDependency(
                 "monitor-approval/voice",
@@ -1442,6 +1447,7 @@ fn reserve_approval(
     session_id: &str,
     speech_id: &str,
     transcript_id: &str,
+    monitor_runtime_available: bool,
 ) -> Result<ApprovalDispatch, VoiceProviderError> {
     store.transaction_with_error(|transaction| -> Result<_, VoiceProviderError> {
         let actor = super::checked_agent(transaction, agent_id)
@@ -1546,6 +1552,9 @@ fn reserve_approval(
             return Err(VoiceProviderError::ContextChanged);
         }
         if method == Some("monitor/approve") {
+            if !monitor_runtime_available {
+                return Ok(ApprovalDispatch::MonitorUnavailable);
+            }
             let has_native_session: bool = transaction.query_row(
                 "SELECT EXISTS(SELECT 1 FROM voice_sessions WHERE id=?1 AND native_thread IS NOT NULL)",
                 [session_id],
