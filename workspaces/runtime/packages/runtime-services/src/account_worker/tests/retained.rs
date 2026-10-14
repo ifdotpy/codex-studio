@@ -91,6 +91,40 @@ async fn retained_request_rejects_a_stale_expected_connection_before_dispatch() 
     worker.shutdown().await.unwrap();
 }
 
+#[tokio::test]
+async fn actorless_account_read_only_allows_non_refreshing_voice_shape() {
+    let state = State::new().await;
+    let mut peer = Peer::new();
+    let mut worker = peer.worker(state.bridge.clone()).await;
+    let port = worker.retained_session();
+    let mut call = request(&state, &port, "voice-account-read");
+    call.actor = None;
+    call.expected_scope = Some(port.scope().clone());
+    call.method = Method::AccountRead;
+    call.params = json!({"refreshToken":false});
+
+    let sender = port.clone();
+    let task = tokio::spawn(async move { sender.request(call.clone()).await });
+    let wire = peer.write("account/read").await;
+    peer.reply(&wire, json!({"account":{"id":"fixture"}})).await;
+    assert_eq!(
+        task.await.unwrap().unwrap().result,
+        RequestResult::Reply(json!({"account":{"id":"fixture"}}))
+    );
+
+    let mut refresh = request(&state, &port, "voice-account-refresh");
+    refresh.actor = None;
+    refresh.expected_scope = Some(port.scope().clone());
+    refresh.method = Method::AccountRead;
+    refresh.params = json!({"refreshToken":true});
+    assert_eq!(
+        port.request(refresh).await.unwrap_err(),
+        PortError::Invalid
+    );
+    assert!(peer.writes.try_recv().is_err());
+    worker.shutdown().await.unwrap();
+}
+
 async fn restart_history_case(outcome: &str) {
     let state = State::new().await;
     let agent_id = state.agent.clone();

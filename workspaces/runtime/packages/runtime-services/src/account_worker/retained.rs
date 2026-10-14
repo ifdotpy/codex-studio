@@ -159,10 +159,13 @@ fn validate(request: &SessionRequest) -> Result<(), PortError> {
                 | Method::ModelList
                 | Method::ClaudeDiagnostics
                 | Method::OperationStatus
+                | Method::AccountRead
                 | Method::ThreadRead
                 | Method::ThreadTurnsList
         )
-        && (request.method != Method::ThreadList || request.params.get("threadId").is_none());
+        && (request.method != Method::ThreadList || request.params.get("threadId").is_none())
+        && (request.method != Method::AccountRead
+            || request.params == json!({"refreshToken": false}));
     let deleted_voice_stop = request
         .deleted_actor_session
         .as_ref()
