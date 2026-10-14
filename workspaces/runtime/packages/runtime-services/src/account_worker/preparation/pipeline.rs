@@ -15,6 +15,7 @@ pub(crate) struct CommitGuard {
     compiler_snapshot: Option<turn::PreparationSnapshot>,
     state_root: std::path::PathBuf,
     filesystem: FilesystemSnapshot,
+    prepared_host: Option<crate::host_project_runtime::PreparedHost>,
 }
 pub(crate) struct Admission {
     selection: gates::ExecutionSelection,
@@ -124,14 +125,16 @@ fn preconditions(
     tx: &Transaction<'_>,
     intent: &TurnIntent,
     filesystem: &FilesystemSnapshot,
+    prepared_host: Option<&crate::host_project_runtime::PreparedHost>,
 ) -> Result<Value, WorkerError> {
-    preconditions_for_purpose(tx, intent, filesystem, false)
+    preconditions_for_purpose(tx, intent, filesystem, false, prepared_host)
 }
 fn preconditions_for_purpose(
     tx: &Transaction<'_>,
     intent: &TurnIntent,
     filesystem: &FilesystemSnapshot,
     allow_paused_start: bool,
+    prepared_host: Option<&crate::host_project_runtime::PreparedHost>,
 ) -> Result<Value, WorkerError> {
     let record = agent(tx, &intent.agent_id)?.value();
     if record["epoch"] != intent.epoch
@@ -155,7 +158,7 @@ fn preconditions_for_purpose(
         ));
     }
     gates::budget_admission(record.get("tokenBudget")).map_err(|e| refusal(e.to_string()))?;
-    authorize(tx, intent, filesystem)?;
+    authorize(tx, intent, filesystem, prepared_host)?;
     for selected in &intent.events {
         let current = studio_runtime_store::QueueEventRepository::get(
             tx,
@@ -316,9 +319,25 @@ fn admit_for_purpose(
     allow_paused_start: bool,
 ) -> Result<Admission, WorkerError> {
     let filesystem = FilesystemSnapshot::capture(store, &intent.agent_id)?;
+    let prepared_host = if intent.radio_authorized {
+        let prepared = crate::host_project_runtime::PreparedHost::load(store)
+            .map_err(|error| refusal(error.to_string()))?;
+        prepared
+            .recheck_paths()
+            .map_err(|error| refusal(error.to_string()))?;
+        Some(prepared)
+    } else {
+        None
+    };
     let (identity, observation) = catalog(resources, intent)?;
     scheduler::lifecycle_transaction_with(store, |tx| {
-        let record = preconditions_for_purpose(tx, intent, &filesystem, allow_paused_start)?;
+        let record = preconditions_for_purpose(
+            tx,
+            intent,
+            &filesystem,
+            allow_paused_start,
+            prepared_host.as_ref(),
+        )?;
         let observed = gates::ExecutionSnapshot::from_record(&record, identity.clone())
             .map_err(|e| refusal(e.to_string()))?;
         let mut selected =
@@ -738,7 +757,8 @@ fn prepare_native_snapshot(
     let filesystem = FilesystemSnapshot::capture(store, agent_id)?;
     let (identity, _) = catalog(resources, &intent)?;
     scheduler::lifecycle_transaction_with(store, |tx| {
-        let current = preconditions_for_purpose(tx, &intent, &filesystem, allow_paused_start)?;
+        let current =
+            preconditions_for_purpose(tx, &intent, &filesystem, allow_paused_start, None)?;
         let frozen = admission
             .selection
             .freeze_record(&current, &identity, Instant::now())
@@ -900,10 +920,20 @@ pub(crate) fn prepare_ready(
     // create the progress directory. Capture all filesystem observations after
     // that work, before the transaction rechecks the current records.
     let filesystem = FilesystemSnapshot::capture(store, &intent.agent_id)?;
+    let prepared_host = if intent.radio_authorized {
+        let prepared = crate::host_project_runtime::PreparedHost::load(store)
+            .map_err(|error| refusal(error.to_string()))?;
+        prepared
+            .recheck_paths()
+            .map_err(|error| refusal(error.to_string()))?;
+        Some(prepared)
+    } else {
+        None
+    };
     let (identity, _) = catalog(resources, intent)?;
     let (mut snapshot, mut turn_snapshot, events, mut prepared_intent) =
         scheduler::lifecycle_transaction_with(store, |tx| {
-            let record = preconditions(tx, intent, &filesystem)?;
+            let record = preconditions(tx, intent, &filesystem, prepared_host.as_ref())?;
             let mut frozen = selection
                 .freeze_record(&record, &identity, Instant::now())
                 .map_err(|e| refusal(e.to_string()))?;
@@ -940,6 +970,7 @@ pub(crate) fn prepare_ready(
         compiler_snapshot: None,
         state_root: store.root().to_path_buf(),
         filesystem,
+        prepared_host,
     };
     if method == Method::ThreadResume {
         let method = if snapshot.actor.thread_id.is_some() {
@@ -1039,7 +1070,7 @@ pub(crate) fn prepare_ready(
             })
             .collect(),
         assets: json!(compiled.transcript.assets),
-        radio_authorized: false,
+        radio_authorized: intent.radio_authorized,
     };
     if intent.provider == "claude" {
         let prepared = scheduler::lifecycle_transaction_with(store, |tx| {
@@ -1084,7 +1115,12 @@ pub(crate) fn commit(
     context: &Pending,
     guard: &CommitGuard,
 ) -> Result<(), WorkerError> {
-    let record = preconditions(tx, &context.intent, &guard.filesystem)?;
+    let record = preconditions(
+        tx,
+        &context.intent,
+        &guard.filesystem,
+        guard.prepared_host.as_ref(),
+    )?;
     let (identity, _) = catalog(&guard.resources, &context.intent)?;
     let mut frozen = guard
         .selection

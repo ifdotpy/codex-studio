@@ -494,3 +494,39 @@ async fn continuation_gate_refuses_a_preexisting_admission_hold() {
         .await
         .unwrap();
 }
+
+#[tokio::test]
+async fn radio_authorized_preparation_uses_the_radio_receipt_gate() {
+    let state = State::new().await;
+    let agent_id = state.agent.clone();
+    let epoch = state.epoch;
+    state
+        .bridge
+        .run(move |store| {
+            let mut intent = store::claim(store, "default", &agent_id, epoch)?.unwrap();
+            store.transaction(|tx| {
+                tx.execute(
+                    "UPDATE runtime_events SET kind='radio_turn' WHERE id='annotation:input'",
+                    [],
+                )?;
+                Ok(())
+            })?;
+            intent.events[0].kind = "radio_turn".into();
+            intent.radio_authorized = true;
+            let error =
+                preparation::prepare(store, &test_resources()?, &intent, Method::TurnStart, 1)
+                    .err()
+                    .expect("radio turns require a current active room receipt");
+            assert!(
+                error.to_string().contains("radio/turn-selection-changed"),
+                "radio-specific authorization should reject the missing receipt: {error}"
+            );
+            assert!(
+                !error.to_string().contains("RadioUnsupported"),
+                "radio-authorized turns must bypass the generic radio refusal"
+            );
+            Ok(())
+        })
+        .await
+        .unwrap();
+}
