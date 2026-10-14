@@ -873,6 +873,7 @@ async fn concurrent_ensure_session_starts_one_cold_account_worker() {
         Arc::new(Notify::new()),
         broker.clone(),
         test_registry_config(),
+        None,
     )
     .await
     .unwrap();

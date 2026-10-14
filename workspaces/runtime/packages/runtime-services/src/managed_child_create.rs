@@ -17,9 +17,15 @@ const MAX_CHILDREN: usize = 64;
 const MAX_NAME_CHARS: usize = 100;
 const MAX_PROMPT_CHARS: usize = 32_000;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ManagedCreationEnvironmentError {
+    Invalid(&'static str),
+    Unavailable(&'static str),
+}
+
 /// Host account facts and model admission. Production implementations resolve
 /// model settings through the retained `AccountSessionPort` broker.
-pub(crate) trait ManagedCreationEnvironment {
+pub trait ManagedCreationEnvironment: Send + Sync {
     /// Resolve the account and model as `codex_worker_accounts.resolve` does.
     /// `requested_account_key` is the per-worker `account_key`; the default is
     /// kept separate so an explicit value can be checked against chat settings.
@@ -36,19 +42,25 @@ pub(crate) trait ManagedCreationEnvironment {
         model: &str,
         excluded_account_keys: &[String],
         project_account_keys: Option<&[String]>,
-    ) -> Result<
-        (String, crate::host_worker_create::AccountIdentity),
-        crate::managed_host_tools::Error,
-    >;
+    ) -> Result<(String, crate::host_worker_create::AccountIdentity), ManagedCreationEnvironmentError>;
+    fn validate_worker_choice(
+        &self,
+        store: &RuntimeStore,
+        account_key: &str,
+        account: &crate::host_worker_create::AccountIdentity,
+        requested: &str,
+        default: &str,
+    ) -> Result<(), ManagedCreationEnvironmentError>;
     fn catalog(&self) -> &dyn crate::host_worker_create::CreationCatalog;
     fn prepare_workspace(
         &self,
-        actor: &crate::managed_host_tools::Actor,
+        store: &RuntimeStore,
+        actor: &AgentRecord,
         args: &Value,
         request_id: &str,
     ) -> Result<
         Box<dyn crate::monitor_runtime::WorkspaceAdmission + Send + Sync>,
-        crate::managed_host_tools::Error,
+        ManagedCreationEnvironmentError,
     >;
 }
 
@@ -76,6 +88,17 @@ pub(crate) enum Error {
     Refused,
     #[error("Not implemented: requires {0}")]
     Unavailable(&'static str),
+}
+
+impl From<ManagedCreationEnvironmentError> for Error {
+    fn from(error: ManagedCreationEnvironmentError) -> Self {
+        match error {
+            ManagedCreationEnvironmentError::Invalid(message) => {
+                crate::managed_host_tools::Error::Invalid(message).into()
+            }
+            ManagedCreationEnvironmentError::Unavailable(name) => Error::Unavailable(name),
+        }
+    }
 }
 
 struct Draft {
@@ -312,7 +335,8 @@ pub(crate) fn spawn_agents(
         let id = child_id(request_id, index);
         let requested_account_key = spec.get("account_key").and_then(Value::as_str);
         let default_account_key = defaults.get("accountKey").and_then(Value::as_str);
-        let workspace_admission = environment.prepare_workspace(actor, spec, request_id)?;
+        let workspace_admission =
+            environment.prepare_workspace(store, actor_record, spec, request_id)?;
         let profile_model = profile.as_ref().map(|profile| profile.model.as_str());
         let requested_model = spec
             .get("model")
@@ -360,6 +384,21 @@ pub(crate) fn spawn_agents(
             &excluded_account_keys,
             project_account_keys.as_deref(),
         )?;
+        if spec.get("model").and_then(Value::as_str).is_some() || profile_model.is_some() {
+            let default_model = defaults
+                .get("model")
+                .and_then(Value::as_str)
+                .filter(|model| !model.is_empty())
+                .or_else(|| root_value.get("model").and_then(Value::as_str))
+                .unwrap_or(requested_model);
+            environment.validate_worker_choice(
+                store,
+                &account_key,
+                &account,
+                requested_model,
+                default_model,
+            )?;
+        }
         let provider = account.provider.as_deref().unwrap_or("codex");
         let model = if requested_model == "gpt-6-astra"
             && root_value.get("model").is_none()
@@ -422,7 +461,10 @@ pub(crate) fn spawn_agents(
             (String::new(), String::new(), None, None)
         };
         let body = json!({"account_key":account_key,"name":name,"model":model,"effort":effort,
-            "prompt":prompt,"workspace_explicit":spec.get("workspace").is_some()});
+            "prompt":prompt,"workspace_explicit":spec.get("workspace").is_some(),
+            "_workspaceInGit":parent_value.get("workspaceInGit").and_then(Value::as_bool).unwrap_or(false),
+            "_imageWorkspaceHasGit":parent_value.get("workspaceInGit").and_then(Value::as_bool).unwrap_or(false)
+                || parent_value.get("imageWorkspaceHasGit").and_then(Value::as_bool).unwrap_or(false)});
         let draft = crate::host_worker_create::prepare_work_item(
             &body,
             Path::new(parent_cwd),
@@ -1021,8 +1063,12 @@ pub(crate) fn request_review(
     )?;
     // Review is read-only in the parent's managed workspace. Its requested
     // repository is validated separately and may differ from the actor's cwd.
-    let workspace_admission =
-        environment.prepare_workspace(actor, &json!({"workspace":"shared"}), request_id)?;
+    let workspace_admission = environment.prepare_workspace(
+        store,
+        actor_record,
+        &json!({"workspace":"shared"}),
+        request_id,
+    )?;
     let effort = spec.get("effort").and_then(Value::as_str);
     let fast_mode = spec
         .get("fast_mode")
@@ -1044,7 +1090,10 @@ pub(crate) fn request_review(
             .map(|(_, project)| project)
     };
     let body = json!({"account_key":account_key,"name":"Review","model":model,
-        "effort":effort,"prompt":spec.get("prompt").and_then(Value::as_str).unwrap_or("")});
+        "effort":effort,"prompt":spec.get("prompt").and_then(Value::as_str).unwrap_or(""),
+        "_workspaceInGit":parent_value.get("workspaceInGit").and_then(Value::as_bool).unwrap_or(false),
+        "_imageWorkspaceHasGit":parent_value.get("workspaceInGit").and_then(Value::as_bool).unwrap_or(false)
+            || parent_value.get("imageWorkspaceHasGit").and_then(Value::as_bool).unwrap_or(false)});
     let prepared = crate::host_worker_create::prepare_work_item(
         &body,
         Path::new(&directory),

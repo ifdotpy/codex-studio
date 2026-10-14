@@ -2,21 +2,350 @@
 use super::extractors::ApiJson;
 use super::manifest::{Dependency, OperationStatus, RouteGroup, post};
 use crate::{error::ApiError, generated, router::HttpState};
-use axum::{Json, extract::State, http::StatusCode};
-use serde_json::{Value, json};
+use axum::{Json, extract::State, http::StatusCode, response::IntoResponse};
+use serde_json::Value;
 use studio_runtime_services::agents_create::{
     self, Context, CreateError, Creation, OperationError,
 };
 use studio_runtime_services::host_worker_create::{
     AccountIdentity, CreationCatalog, ExecutionSettings,
 };
-use studio_runtime_services::model_catalog::ModelListPort;
 
-struct RouteCreationCatalog<'a> {
-    service: &'a studio_runtime_services::model_catalog::ModelCatalogService,
+/// Compose the same fresh model admission and P02 host snapshot used by agent
+/// creation for managed Spawn, Review, and monitor admission.
+pub fn managed_creation_environment(
+    accounts: std::sync::Arc<studio_runtime_services::account_driver::AccountDriver>,
+    catalog: studio_runtime_services::model_catalog::ModelCatalogService,
+) -> std::sync::Arc<dyn studio_runtime_services::provider_callbacks::ManagedCreationEnvironment> {
+    std::sync::Arc::new(ManagedCreationEnvironment {
+        accounts,
+        catalog: RouteCreationCatalog { service: catalog },
+    })
 }
 
-impl CreationCatalog for RouteCreationCatalog<'_> {
+struct ManagedCreationEnvironment {
+    accounts: std::sync::Arc<studio_runtime_services::account_driver::AccountDriver>,
+    catalog: RouteCreationCatalog,
+}
+
+impl studio_runtime_services::provider_callbacks::ManagedCreationEnvironment
+    for ManagedCreationEnvironment
+{
+    fn select_worker_account(
+        &self,
+        parent_account_key: &str,
+        requested_account_key: Option<&str>,
+        default_account_key: Option<&str>,
+        model: &str,
+        excluded_account_keys: &[String],
+        project_account_keys: Option<&[String]>,
+    ) -> Result<
+        (
+            String,
+            studio_runtime_services::host_worker_create::AccountIdentity,
+        ),
+        studio_runtime_services::provider_callbacks::ManagedCreationEnvironmentError,
+    > {
+        use studio_runtime_services::provider_callbacks::{
+            ManagedAccountIdentity, WorkerAccountSelection, select_worker_account,
+        };
+        let accounts = DriverManagedAccountRead(self.accounts.as_ref());
+        let mut model_available = |key: &str, identity: &ManagedAccountIdentity, model: &str| {
+            let account = host_account_identity(identity);
+            match self
+                .catalog
+                .resolve(key, &account, model, None, false, false)
+            {
+                Ok(_) => Ok(true),
+                Err(
+                    studio_runtime_services::agents_create::CreateError::CapabilityUnavailable(
+                        name,
+                    ),
+                ) => Err(studio_runtime_services::provider_callbacks::ManagedCreationEnvironmentError::Unavailable(name)),
+                Err(studio_runtime_services::agents_create::CreateError::InvalidCreation(_)) => {
+                    Ok(false)
+                }
+                Err(_) => Err(studio_runtime_services::provider_callbacks::ManagedCreationEnvironmentError::Invalid(
+                    "Worker account admission was refused",
+                )),
+            }
+        };
+        let (key, identity) = select_worker_account(WorkerAccountSelection {
+            accounts: &accounts,
+            parent_account_key,
+            requested_account_key,
+            default_account_key,
+            model,
+            excluded_account_keys,
+            project_account_keys,
+            model_available: &mut model_available,
+        })?;
+        Ok((key, host_account_identity(&identity)))
+    }
+
+    fn catalog(&self) -> &dyn CreationCatalog {
+        &self.catalog
+    }
+
+    fn validate_worker_choice(
+        &self,
+        store: &studio_runtime_store::RuntimeStore,
+        account_key: &str,
+        account: &AccountIdentity,
+        requested: &str,
+        default: &str,
+    ) -> Result<(), studio_runtime_services::provider_callbacks::ManagedCreationEnvironmentError>
+    {
+        use studio_runtime_services::provider_callbacks::ManagedCreationEnvironmentError as E;
+        studio_runtime_services::provider_callbacks::validate_worker_model_choice(
+            requested, default, None,
+        )
+        .map_err(|_| E::Invalid("Choose a model from the provider selected in chat settings"))?;
+        if requested == default {
+            return Ok(());
+        }
+        let path = store.root().join("model-pricing/models-dev-v1.json");
+        let artifact = match std::fs::read(path)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+        {
+            Some(value) if value.get("version").and_then(Value::as_u64) == Some(1) => value,
+            _ => return Ok(()),
+        };
+        let Some(catalog) = artifact.get("catalog").and_then(|value| {
+            studio_runtime_services::pricing::PricingCatalog::from_value(value).ok()
+        }) else {
+            return Ok(());
+        };
+        let requested_name = self.catalog.pricing_name(account_key, account, requested)?;
+        let default_name = self.catalog.pricing_name(account_key, account, default)?;
+        let provider_for = |model: &str| {
+            if model.starts_with("gpt-") {
+                "openai"
+            } else if model.starts_with("claude-")
+                || model == "default"
+                || model == "sonnet"
+                || model == "opus"
+                || model == "haiku"
+            {
+                "anthropic"
+            } else if account.provider.as_deref() == Some("claude") {
+                "anthropic"
+            } else {
+                "openai"
+            }
+        };
+        let prices = Some((
+            catalog.worker_choice_rates(provider_for(requested), &requested_name),
+            catalog.worker_choice_rates(provider_for(default), &default_name),
+        ));
+        studio_runtime_services::provider_callbacks::validate_worker_model_choice(
+            requested, default, prices,
+        )
+        .map_err(|_| {
+            E::Invalid("Choose a model that costs no more than the default subagent model")
+        })
+    }
+
+    fn prepare_workspace(
+        &self,
+        store: &studio_runtime_store::RuntimeStore,
+        actor: &studio_runtime_store::AgentRecord,
+        args: &Value,
+        _request_id: &str,
+    ) -> Result<
+        Box<dyn studio_runtime_services::monitor_runtime::WorkspaceAdmission + Send + Sync>,
+        studio_runtime_services::provider_callbacks::ManagedCreationEnvironmentError,
+    > {
+        let id = actor.id.0.clone();
+        let epoch = actor.epoch;
+        let cwd = actor.extra.get("cwd").and_then(Value::as_str).ok_or(
+            studio_runtime_services::provider_callbacks::ManagedCreationEnvironmentError::Invalid(
+                "Select a project directory",
+            ),
+        )?;
+        let mode = args
+            .get("workspace")
+            .and_then(Value::as_str)
+            .or_else(|| actor.extra.get("workspaceMode").and_then(Value::as_str))
+            .unwrap_or("shared");
+        if !matches!(mode, "shared" | "worktree") {
+            return Err(studio_runtime_services::provider_callbacks::ManagedCreationEnvironmentError::Unavailable(if mode == "image" {
+                "workspace-state/image-workspace"
+            } else {
+                "workspace-state/vm-workspace"
+            }));
+        }
+        let prepared = studio_runtime_services::host_project_runtime::PreparedHost::load(store)
+            .map_err(|_| studio_runtime_services::provider_callbacks::ManagedCreationEnvironmentError::Unavailable("workspace-state/host-preparation"))?;
+        prepared
+            .recheck_paths()
+            .map_err(|_| studio_runtime_services::provider_callbacks::ManagedCreationEnvironmentError::Unavailable("workspace-state/host-preparation"))?;
+        Ok(Box::new(PreparedManagedWorkspace {
+            id,
+            epoch,
+            cwd: cwd.to_owned(),
+            prepared,
+        }))
+    }
+}
+
+struct DriverManagedAccountRead<'a>(&'a studio_runtime_services::account_driver::AccountDriver);
+
+impl studio_runtime_services::provider_callbacks::ManagedCreationAccountRead
+    for DriverManagedAccountRead<'_>
+{
+    fn worker_accounts(
+        &self,
+    ) -> Result<
+        studio_runtime_services::provider_callbacks::ManagedCreationAccountListing,
+        studio_runtime_services::provider_callbacks::ManagedCreationAccountError,
+    > {
+        use studio_runtime_services::provider_callbacks::{
+            ManagedAccountIdentity, ManagedCreationAccountCandidate as Candidate,
+            ManagedCreationAccountListing,
+        };
+        let snapshot = self.0.listing_snapshot().map_err(account_read_error)?;
+        let accounts = snapshot
+            .accounts
+            .iter()
+            .filter_map(|row| {
+                let key = row.get("id")?.as_str()?.to_owned();
+                Some(Candidate {
+                    account_key: key,
+                    identity: ManagedAccountIdentity {
+                        provider: row
+                            .get("provider")
+                            .and_then(Value::as_str)
+                            .map(str::to_owned),
+                        home: row.get("home").and_then(Value::as_str).map(str::to_owned),
+                        account_id: row
+                            .get("accountId")
+                            .and_then(Value::as_str)
+                            .map(str::to_owned),
+                        email: row.get("email").and_then(Value::as_str).map(str::to_owned),
+                    },
+                    ready: row.get("status").and_then(Value::as_str) == Some("ready"),
+                    can_attempt_native_proof: row
+                        .get("canAttemptNativeProof")
+                        .and_then(Value::as_bool)
+                        == Some(true),
+                    disconnected: row.get("disconnected").and_then(Value::as_bool) == Some(true),
+                    deleted: row.get("deleted").and_then(Value::as_bool) == Some(true),
+                    duplicate: row.get("duplicateOf").and_then(Value::as_str).is_some(),
+                })
+            })
+            .collect();
+        let default = snapshot.default_account_key.as_str().map(str::to_owned);
+        Ok(ManagedCreationAccountListing {
+            default_account_key: default,
+            accounts,
+        })
+    }
+
+    fn resolve_identity(
+        &self,
+        account_key: &str,
+        _parent_account_key: &str,
+    ) -> Result<
+        studio_runtime_services::provider_callbacks::ManagedAccountIdentity,
+        studio_runtime_services::provider_callbacks::ManagedCreationAccountError,
+    > {
+        let snapshot = self.0.listing_snapshot().map_err(account_read_error)?;
+        let row = snapshot
+            .accounts
+            .iter()
+            .find(|row| row.get("id").and_then(Value::as_str) == Some(account_key))
+            .ok_or(
+                studio_runtime_services::provider_callbacks::ManagedCreationAccountError::Unknown,
+            )?;
+        if row.get("deleted").and_then(Value::as_bool) == Some(true) {
+            return Err(
+                studio_runtime_services::provider_callbacks::ManagedCreationAccountError::Deleted,
+            );
+        }
+        if row.get("disconnected").and_then(Value::as_bool) == Some(true) {
+            return Err(studio_runtime_services::provider_callbacks::ManagedCreationAccountError::Disconnected);
+        }
+        Ok(
+            studio_runtime_services::provider_callbacks::ManagedAccountIdentity {
+                provider: row
+                    .get("provider")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned),
+                home: row.get("home").and_then(Value::as_str).map(str::to_owned),
+                account_id: row
+                    .get("accountId")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned),
+                email: row.get("email").and_then(Value::as_str).map(str::to_owned),
+            },
+        )
+    }
+}
+
+fn account_read_error(
+    error: studio_runtime_services::account_driver::AccountDriverError,
+) -> studio_runtime_services::provider_callbacks::ManagedCreationAccountError {
+    use studio_runtime_services::{
+        account_driver::AccountDriverError as E,
+        provider_callbacks::ManagedCreationAccountError as M,
+    };
+    match error {
+        E::UnknownAccount => M::Unknown,
+        E::DeletedAccount => M::Deleted,
+        E::SignInRequired => M::SignInRequired,
+        _ => M::Unavailable,
+    }
+}
+
+fn host_account_identity(
+    identity: &studio_runtime_services::provider_callbacks::ManagedAccountIdentity,
+) -> studio_runtime_services::host_worker_create::AccountIdentity {
+    studio_runtime_services::host_worker_create::AccountIdentity {
+        provider: identity.provider.clone(),
+        home: identity.home.clone(),
+        account_id: identity.account_id.clone(),
+        email: identity.email.clone(),
+    }
+}
+
+struct PreparedManagedWorkspace {
+    id: String,
+    epoch: i64,
+    cwd: String,
+    prepared: studio_runtime_services::host_project_runtime::PreparedHost,
+}
+
+impl studio_runtime_services::monitor_runtime::WorkspaceAdmission for PreparedManagedWorkspace {
+    fn check(
+        &self,
+        tx: &studio_runtime_store::Transaction<'_>,
+        actor: &studio_runtime_store::AgentRecord,
+    ) -> Result<(), studio_runtime_services::monitor_policy::MonitorError> {
+        if actor.id.0 != self.id
+            || actor.epoch != self.epoch
+            || actor.extra.get("cwd").and_then(Value::as_str) != Some(self.cwd.as_str())
+        {
+            return Err(
+                studio_runtime_services::monitor_policy::MonitorError::Refused(
+                    "Workspace changed during preparation",
+                ),
+            );
+        }
+        self.prepared.recheck(tx).map_err(|_| {
+            studio_runtime_services::monitor_policy::MonitorError::Refused(
+                "Workspace changed during preparation",
+            )
+        })
+    }
+}
+
+struct RouteCreationCatalog {
+    service: studio_runtime_services::model_catalog::ModelCatalogService,
+}
+
+impl CreationCatalog for RouteCreationCatalog {
     fn resolve(
         &self,
         account_key: &str,
@@ -135,6 +464,59 @@ impl CreationCatalog for RouteCreationCatalog<'_> {
     }
 }
 
+impl RouteCreationCatalog {
+    fn pricing_name(
+        &self,
+        account_key: &str,
+        account: &AccountIdentity,
+        model: &str,
+    ) -> Result<String, studio_runtime_services::provider_callbacks::ManagedCreationEnvironmentError>
+    {
+        use studio_runtime_services::provider_callbacks::ManagedCreationEnvironmentError as E;
+        let (Some(home), Some(provider)) = (account.home.as_deref(), account.provider.as_deref())
+        else {
+            return Err(E::Unavailable("provider-session/model-list"));
+        };
+        let catalog = match self.service.read_for_admission(account_key, home, provider) {
+            studio_runtime_services::model_catalog::AdmissionCatalogRead::Fresh {
+                value,
+                account_key: key,
+                home: fresh_home,
+                provider: fresh_provider,
+                expires_at,
+                ..
+            } if key == account_key
+                && fresh_home == home
+                && fresh_provider == provider
+                && expires_at > std::time::Instant::now() =>
+            {
+                value
+            }
+            _ => return Err(E::Unavailable("provider-session/model-list")),
+        };
+        catalog
+            .get("data")
+            .and_then(Value::as_array)
+            .and_then(|rows| {
+                rows.iter().find(|row| {
+                    !row.get("hidden").and_then(Value::as_bool).unwrap_or(false)
+                        && (row.get("model").and_then(Value::as_str) == Some(model)
+                            || row.get("resolvedModel").and_then(Value::as_str) == Some(model))
+                })
+            })
+            .map(|row| {
+                row.get("resolvedModel")
+                    .and_then(Value::as_str)
+                    .or_else(|| row.get("model").and_then(Value::as_str))
+                    .unwrap_or(model)
+                    .to_owned()
+            })
+            .ok_or(E::Invalid(
+                "This model is not available for the selected worker accounts",
+            ))
+    }
+}
+
 pub(crate) fn routes() -> RouteGroup {
     const LEAD_DEPENDENCIES: [Dependency; 8] = [
         Dependency::new("account-driver/unavailable"),
@@ -194,7 +576,7 @@ async fn dispatch<T: serde::de::DeserializeOwned + serde::Serialize + Send + 'st
         move || {
             let store = state.store.as_deref().ok_or_else(ApiError::internal)?;
             let catalog = RouteCreationCatalog {
-                service: &state.model_catalog,
+                service: state.model_catalog.clone(),
             };
             let context = Context {
                 store,
@@ -222,11 +604,17 @@ async fn create_lead(
     State(state): State<HttpState>,
     ApiJson(body): ApiJson<generated::CreateLeadRequest>,
 ) -> Result<Json<generated::AgentResponse>, ApiError> {
+    if body.model.as_ref().is_some_and(Option::is_some) {
+        return Err(ApiError::new(
+            StatusCode::NOT_IMPLEMENTED,
+            "Not implemented: requires provider-session/model-list",
+        ));
+    }
     let request = Creation {
         intent: serde_json::to_value(&body).map_err(|_| ApiError::internal())?,
-        catalog: body.effort.is_some()
-            || body.fast_mode.is_some()
-            || body.daybreak_enabled.is_some()
+        catalog: body.effort.as_ref().is_some_and(Option::is_some)
+            || body.fast_mode.as_ref().is_some_and(Option::is_some)
+            || body.daybreak_enabled.as_ref().is_some_and(Option::is_some)
             || body.model.as_ref().is_some_and(Option::is_some),
         worker_catalog: body.worker_defaults.is_some() || body.review_defaults.is_some(),
         project_binding: body.project_id.flatten().is_some()
@@ -265,10 +653,10 @@ async fn create_agent_with_import(
     }
     let request = Creation {
         intent: serde_json::to_value(&body).map_err(|_| ApiError::internal())?,
-        catalog: body.model.is_some()
-            || body.effort.is_some()
-            || body.fast_mode.is_some()
-            || body.daybreak_enabled.is_some(),
+        catalog: body.model.as_ref().is_some_and(Option::is_some)
+            || body.effort.as_ref().is_some_and(Option::is_some)
+            || body.fast_mode.as_ref().is_some_and(Option::is_some)
+            || body.daybreak_enabled.as_ref().is_some_and(Option::is_some),
         worker_catalog: body.worker_defaults.is_some(),
         id: body.id.flatten(),
         cwd: body.cwd,
@@ -331,8 +719,18 @@ async fn configure(
 }
 async fn conversation(
     State(state): State<HttpState>,
-    ApiJson(body): ApiJson<generated::ConversationRequest>,
+    ApiJson(value): ApiJson<Value>,
 ) -> Result<Json<generated::AgentResponse>, ApiError> {
+    for field in ["model", "fast_mode", "worker_defaults", "review_defaults"] {
+        if value.get(field).is_some_and(Value::is_null) {
+            return Err(ApiError::validation(vec![
+                Value::String("body".to_owned()),
+                Value::String(field.to_owned()),
+            ]));
+        }
+    }
+    let body: generated::ConversationRequest = serde_json::from_value(value)
+        .map_err(|_| ApiError::validation(vec![Value::String("body".to_owned())]))?;
     let request = agents_create::Conversation {
         non_defaults: body.next_turn.is_some() || body.request_id.is_some(),
         model_present: body.model.is_some(),
@@ -394,150 +792,62 @@ async fn conversation(
 async fn rename(
     State(state): State<HttpState>,
     ApiJson(body): ApiJson<generated::RenameRequest>,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<axum::response::Response, ApiError> {
     let name = body.name.flatten();
     if name.is_none() {
-        let Some(port) = state.title_request.clone() else {
-            return Err(ApiError::new(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "Title generation is unavailable",
-            ));
-        };
-        let request_id = body
+        let _request_id = body
             .request_id
             .flatten()
             .filter(|id| !id.is_empty())
             .ok_or_else(|| ApiError::validation(vec![Value::String("body".to_owned())]))?;
-        let store = state.store.clone().ok_or_else(ApiError::internal)?;
-        let agent_id = body.id.clone();
-        let agent = studio_runtime_process::blocking_pool::spawn_blocking(
-            "runtime-http/routes/agents_create",
-            {
-                let store = store.clone();
-                let agent_id = agent_id.clone();
-                move || {
-                    let connection = store.read().map_err(|_| ApiError::internal())?;
-                    studio_runtime_store::AgentRepository::get(
-                        &connection,
-                        &studio_runtime_store::AgentId::from(agent_id),
-                    )
-                    .map_err(|_| ApiError::internal())?
-                    .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "Unknown managed agent"))
-                }
-            },
-        )
-        .await
-        .map_err(|_| ApiError::internal())??;
-        let account_key = agent
-            .extra
-            .get("accountKey")
-            .and_then(Value::as_str)
-            .unwrap_or("default")
-            .to_owned();
-        let driver = state.account_driver.as_ref().ok_or_else(|| {
-            ApiError::new(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "Account metadata is unavailable",
-            )
-        })?;
-        let snapshot = driver.snapshot().map_err(|_| ApiError::internal())?;
-        let account = snapshot
-            .accounts
-            .iter()
-            .find(|row| row.get("id").and_then(Value::as_str) == Some(&account_key))
-            .cloned()
-            .ok_or_else(|| {
-                ApiError::new(StatusCode::BAD_REQUEST, "Unknown account for managed agent")
-            })?;
-        let _home = account.get("home").and_then(Value::as_str).ok_or_else(|| {
-            ApiError::new(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "Provider account home is unavailable",
-            )
-        })?;
-        let provider = account
-            .get("provider")
-            .and_then(Value::as_str)
-            .unwrap_or("codex");
-        state
-            .model_catalog
-            .set_account_session(state.account_session.clone());
-        state.model_catalog.retain_accounts(&snapshot.accounts);
-        let catalog = state
-            .model_catalog
-            .list(
-                &account_key,
-                provider,
-                json!({
-                    "limit": studio_runtime_schema::shared_values::MODEL_CATALOG_ITEMS_PER_PAGE
-                }),
-            )
-            .await
-            .map_err(|error| match error {
-                studio_runtime_services::model_catalog::ModelListError::Pending => {
-                    ApiError::new(StatusCode::CONFLICT, "Model catalog is pending")
-                }
-                studio_runtime_services::model_catalog::ModelListError::UnknownAccount
-                | studio_runtime_services::model_catalog::ModelListError::ProviderMismatch => {
-                    ApiError::new(StatusCode::BAD_REQUEST, "Account model catalog changed")
-                }
-                studio_runtime_services::model_catalog::ModelListError::InvalidParams => {
-                    ApiError::internal()
-                }
-                studio_runtime_services::model_catalog::ModelListError::Unavailable => {
-                    ApiError::new(
-                        StatusCode::SERVICE_UNAVAILABLE,
-                        "Provider model catalog is unavailable",
-                    )
-                }
-            })?;
-        let deadline = std::time::SystemTime::now() + std::time::Duration::from_secs(30);
-        let generated = studio_runtime_services::title_generation::generate(
-            &store,
-            port.as_ref(),
-            &body.id,
-            &catalog,
-            &request_id,
-            deadline,
-        )
-        .await
-        .map_err(|_| {
-            ApiError::new(
-                StatusCode::CONFLICT,
-                "Title generation could not be completed",
-            )
-        })?;
-        let result = match generated {
-            studio_runtime_services::title_generation::TitleResult::Applied { title } => {
-                json!({"id":body.id,"name":title,"request_id":request_id,"status":"applied"})
-            }
-            studio_runtime_services::title_generation::TitleResult::Skipped => {
-                json!({"id":body.id,"status":"skipped"})
-            }
-            studio_runtime_services::title_generation::TitleResult::Discarded => {
-                json!({"id":body.id,"status":"discarded"})
-            }
-            studio_runtime_services::title_generation::TitleResult::RetryableNotSent => {
-                json!({"id":body.id,"request_id":request_id,"status":"not_sent"})
-            }
-            studio_runtime_services::title_generation::TitleResult::HeldUnknown => {
-                json!({"id":body.id,"request_id":request_id,"status":"unknown"})
-            }
-        };
-        return Ok(Json(result));
+        return Err(ApiError::new(
+            StatusCode::NOT_IMPLEMENTED,
+            "Not implemented: requires provider-session/title-generation",
+        ));
     }
-    let Json(result) = dispatch::<generated::RenameResponse>(state, move |context| {
-        agents_create::rename_operation(
-            context,
-            &body.id,
-            name.as_deref(),
-            body.request_id.flatten().as_deref(),
-        )
-    })
-    .await?;
-    Ok(Json(
-        serde_json::to_value(result).map_err(|_| ApiError::internal())?,
-    ))
+    studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-http/routes/agents_create/rename",
+        move || {
+            let store = state.store.as_deref().ok_or_else(ApiError::internal)?;
+            let catalog = RouteCreationCatalog {
+                service: state.model_catalog.clone(),
+            };
+            let context = Context {
+                store,
+                accounts: state.account_policy.as_deref(),
+                driver: state.account_driver.as_deref(),
+                catalog: Some(&catalog),
+                validate: &|schema, value| match schema {
+                    "PersistedAgentRecord" => state
+                        .validators
+                        .validate_table_record("runtime_agents", value),
+                    _ => state.validators.validate_stored(schema, value),
+                },
+            };
+            let result = agents_create::rename_operation(
+                &context,
+                &body.id,
+                name.as_deref(),
+                body.request_id.flatten().as_deref(),
+            )
+            .map_err(operation_error)?;
+            if !result.replayed {
+                state.event_wake.notify_one();
+            }
+            let mut response = super::generated_json::<generated::RenameResponse>(result.response)
+                .map(Json)
+                .map_err(|_| ApiError::internal())?
+                .into_response();
+            if result.replayed {
+                response
+                    .extensions_mut()
+                    .insert(crate::mutation_sync::SkipMutationSyncEnvelope);
+            }
+            Ok(response)
+        },
+    )
+    .await
+    .map_err(|_| ApiError::internal())?
 }
 fn operation_error(error: OperationError) -> ApiError {
     use agents_create::MutationError;
@@ -551,9 +861,7 @@ fn operation_error(error: OperationError) -> ApiError {
         &error,
         OperationError::Create(
             MutationError::CapabilityUnavailable(
-                "account-driver/unavailable"
-                    | "provider-session/model-list"
-                    | "provider-session/title-generation"
+                "account-driver/unavailable" | "provider-session/title-generation"
             ) | MutationError::TitleGenerationUnavailable
         )
     );

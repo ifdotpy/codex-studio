@@ -614,6 +614,7 @@ impl AccountRegistry {
             Arc::new(Notify::new()),
             AccountSessionBroker::new(),
             config,
+            None,
         )
         .await
     }
@@ -624,10 +625,16 @@ impl AccountRegistry {
         monitor_dispatch_wake: Arc<Notify>,
         session_broker: AccountSessionBroker,
         config: AccountRegistryConfig,
+        managed_tool_runtime: Option<
+            Arc<studio_runtime_services::provider_callbacks::ManagedToolRuntime>,
+        >,
     ) -> Result<Self, WorkerError> {
         let bridge = StoreBridge::new(store.clone()).await?;
         bridge.set_monitor_dispatch_wake(monitor_dispatch_wake);
         let ensure_requests = session_broker.take_ensure_receiver()?;
+        if let Some(runtime) = managed_tool_runtime {
+            bridge.set_managed_tool_runtime(runtime);
+        }
         Ok(Self {
             store,
             bridge,

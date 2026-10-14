@@ -28,7 +28,7 @@ use studio_runtime_store::{
 };
 use tokio::{
     sync::{Notify, Semaphore, mpsc, watch},
-    task::JoinHandle,
+    task::{JoinHandle, JoinSet},
 };
 pub mod callback;
 mod connection_recovery;
@@ -94,6 +94,8 @@ pub struct StoreBridge {
     accounts: Arc<std::sync::Mutex<BTreeSet<String>>>,
     event_wake: Arc<std::sync::RwLock<Arc<Notify>>>,
     monitor_dispatch_wake: Arc<std::sync::RwLock<Arc<Notify>>>,
+    managed_tool_runtime:
+        Arc<std::sync::RwLock<Option<Arc<crate::provider_callbacks::ManagedToolRuntime>>>>,
     #[cfg(test)]
     faults: Arc<tests::Faults>,
     #[cfg(test)]
@@ -108,6 +110,7 @@ impl StoreBridge {
             accounts: Arc::default(),
             event_wake: Arc::new(std::sync::RwLock::new(Arc::new(Notify::new()))),
             monitor_dispatch_wake: Arc::new(std::sync::RwLock::new(Arc::new(Notify::new()))),
+            managed_tool_runtime: Arc::new(std::sync::RwLock::new(None)),
             #[cfg(test)]
             faults: Arc::default(),
             #[cfg(test)]
@@ -135,6 +138,23 @@ impl StoreBridge {
             .monitor_dispatch_wake
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = wake;
+    }
+    pub fn set_managed_tool_runtime(
+        &self,
+        runtime: Arc<crate::provider_callbacks::ManagedToolRuntime>,
+    ) {
+        *self
+            .managed_tool_runtime
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(runtime);
+    }
+    pub(crate) fn managed_tool_runtime(
+        &self,
+    ) -> Option<Arc<crate::provider_callbacks::ManagedToolRuntime>> {
+        self.managed_tool_runtime
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
     pub(crate) fn monitor_dispatch_wake(&self) -> Arc<Notify> {
         self.monitor_dispatch_wake
@@ -471,6 +491,7 @@ pub async fn start_account_worker_with_publication_sink(
         streams,
         deferred: VecDeque::new(),
         callbacks: BTreeMap::new(),
+        managed_callback_cursors: BTreeSet::new(),
         retained_requests: retained
             .into_iter()
             .map(|(pending, request)| (request.ticket.id, pending))
@@ -485,6 +506,7 @@ pub async fn start_account_worker_with_publication_sink(
         restart_recovery: None,
         connection_recovery: tokio::task::JoinSet::new(),
         connection_recovery_active: false,
+        managed_callbacks: JoinSet::new(),
     };
     let mut cancelled_owner = stop.subscribe();
     #[cfg(test)]
@@ -575,14 +597,18 @@ struct Worker {
     publication_retry_at: Option<tokio::time::Instant>,
     closing: bool,
     callbacks: BTreeMap<String, studio_runtime_process::EventCursor>,
+    managed_callback_cursors: BTreeSet<u64>,
     restart_recovery_started: bool,
     restart_recovery: Option<JoinHandle<()>>,
     connection_recovery: tokio::task::JoinSet<()>,
     connection_recovery_active: bool,
+    managed_callbacks: JoinSet<(studio_runtime_process::EventCursor, Option<Frame>)>,
 }
 impl Worker {
     async fn run(mut self) -> Result<(), WorkerError> {
         let result = self.serve().await;
+        let drain_result = self.drain_managed_callbacks().await;
+        let result = result.and(drain_result);
         if let Some(recovery) = self.restart_recovery.take() {
             recovery.abort();
             let _joined = recovery.await;
@@ -657,7 +683,7 @@ impl Worker {
             self.bridge.faults.cycle();
             tokio::select! {
                 biased;
-                _ = Shutdown::cancelled(&mut self.stop) => { self.closing = true; self.control.cancel(); },
+                _ = Shutdown::cancelled(&mut self.stop) => { self.closing = true; },
                 _ = tokio::time::sleep_until(self.flush_at.unwrap_or_else(||tokio::time::Instant::now()+STREAM_CADENCE)), if self.flush_at.is_some() => self.flush().await?,
                 _ = tokio::time::sleep_until(self.publication_retry_at.unwrap_or_else(||tokio::time::Instant::now()+STREAM_CADENCE)), if self.publication_retry_at.is_some() => self.drain_publications().await?,
                 _ = tokio::time::sleep_until(self.retry_at.unwrap_or_else(|| tokio::time::Instant::now() + PREPARATION_RETRY)), if self.retry_at.is_some() => self.retry_preparations().await?,
@@ -737,6 +763,14 @@ impl Worker {
                 event = self.events.recv() => match event { Some(event) => self.event(event).await?, None => return Ok(()) },
                 _ = self.connection_recovery.join_next(), if !self.connection_recovery.is_empty() => {
                     self.connection_recovery_active = false;
+                },
+                callback = self.managed_callbacks.join_next(), if !self.managed_callbacks.is_empty() => {
+                    let (cursor, response) = callback
+                        .ok_or(WorkerError::TaskFailed)?
+                        .map_err(|_| WorkerError::TaskFailed)?;
+                    if let Some(response) = response {
+                        self.push(Effect::Callback(cursor, response))?;
+                    }
                 },
                 changed = self.session.status.changed() => { if changed.is_err() { return Ok(()); } },
             }
@@ -1285,6 +1319,7 @@ impl Worker {
                     store::callback_settled(store, &account, generation, cursor.0)
                 })
                 .await?;
+                self.managed_callback_cursors.remove(&cursor.0);
                 if !self.closing {
                     self.control.settled(cursor).await?;
                 }
@@ -1390,22 +1425,25 @@ impl Worker {
             let frame = frame.clone();
             let wake = self.bridge.event_wake();
             let monitor_dispatch_wake = self.bridge.monitor_dispatch_wake();
-            if let Some(response) = self
-                .db("managed_tool_callback", move |store| {
-                    Ok(callback::managed_response(
-                        store,
-                        &account,
-                        generation,
-                        &frame,
-                        now,
-                        wake,
-                        monitor_dispatch_wake,
-                    ))
-                })
-                .await?
-            {
-                self.push(Effect::Callback(cursor, response))?;
+            if self.callbacks.len() + self.managed_callbacks.len() >= MAX_PENDING_RESPONSES {
+                return Err(WorkerError::Capacity);
             }
+            let store = Arc::clone(&self.bridge.store);
+            let managed_tool_runtime = self.bridge.managed_tool_runtime();
+            self.managed_callback_cursors.insert(cursor.0);
+            self.managed_callbacks.spawn_blocking(move || {
+                let response = callback::managed_response(
+                    &store,
+                    &account,
+                    generation,
+                    &frame,
+                    now,
+                    wake,
+                    monitor_dispatch_wake,
+                    managed_tool_runtime,
+                );
+                (cursor, response)
+            });
         } else if let JournalPayload::Frame(frame) = &entry.payload
             && let Some(response) = callback::response(frame)
         {
@@ -1448,6 +1486,7 @@ impl Worker {
             .await?;
         if admission {
             self.control.settled(cursor).await?;
+            self.managed_callback_cursors.remove(&cursor.0);
             return Ok(());
         }
         if self.callbacks.len() >= MAX_PENDING_RESPONSES {
@@ -1527,6 +1566,69 @@ impl Worker {
             }
             Err(error) => Err(error),
         }
+    }
+    async fn drain_managed_callbacks(&mut self) -> Result<(), WorkerError> {
+        #[cfg(test)]
+        self.bridge.faults.shutdown_callbacks_draining.notify_one();
+        let deadline = tokio::time::Instant::now() + SHUTDOWN_GRACE;
+        let completed = tokio::time::timeout_at(deadline, async {
+            while let Some(callback) = self.managed_callbacks.join_next().await {
+                match callback {
+                    Ok((cursor, Some(response))) => {
+                        self.push(Effect::Callback(cursor, response))?;
+                    }
+                    Ok((_, None)) => {}
+                    Err(error) => {
+                        eprintln!(
+                            "managed account callback task failed during shutdown; account={} generation={} cursors={:?}: {error}",
+                            self.account, self.generation.0, self.managed_callback_cursors
+                        );
+                    }
+                }
+            }
+            Ok::<(), WorkerError>(())
+        })
+        .await;
+        match completed {
+            Ok(result) => result?,
+            Err(_) => {
+                eprintln!(
+                    "managed account callbacks did not finish before shutdown; account={} generation={} cursors={:?}",
+                    self.account, self.generation.0, self.managed_callback_cursors
+                );
+            }
+        }
+
+        // Use the same callback admission and write path as normal serving.
+        let mut remaining = VecDeque::new();
+        while let Some(effect) = self.effects.pop_front() {
+            match effect {
+                Effect::Callback(cursor, response) => {
+                    self.answer_callback(cursor, response).await?;
+                }
+                effect => remaining.push_back(effect),
+            }
+        }
+        self.effects = remaining;
+
+        let written = tokio::time::timeout_at(deadline, async {
+            while !self.callbacks.is_empty() {
+                let event = self.events.recv().await.ok_or(WorkerError::Closed)?;
+                self.event(event).await?;
+            }
+            Ok::<(), WorkerError>(())
+        })
+        .await;
+        match written {
+            Ok(result) => result?,
+            Err(_) => eprintln!(
+                "managed callback responses were not confirmed written before shutdown; account={} generation={} cursors={:?}",
+                self.account,
+                self.generation.0,
+                self.callbacks.values().collect::<Vec<_>>()
+            ),
+        }
+        Ok(())
     }
     async fn finish(&mut self, exit: SessionExit) -> Result<(), WorkerError> {
         self.closing = true;

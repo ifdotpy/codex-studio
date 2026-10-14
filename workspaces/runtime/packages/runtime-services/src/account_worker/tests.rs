@@ -85,6 +85,7 @@ pub(super) struct Faults {
     pub(super) shutdown_wait: tokio::sync::Notify,
     pub(super) startup_recovery_done: std::sync::atomic::AtomicBool,
     pub(super) startup_recovery: tokio::sync::Notify,
+    pub(super) shutdown_callbacks_draining: tokio::sync::Notify,
 }
 type Boundary = (String, usize, Option<String>);
 type NamedBoundary = (String, usize, Option<String>, bool);
@@ -1114,6 +1115,319 @@ async fn scenario_unsupported_dynamic_tool_is_answered_after_commit() {
 }
 async fn scenario_unknown_provider_method_is_answered_after_commit() {
     unsupported_callback("unknown/providerMethod").await;
+}
+
+struct SameAccountProviderStatus {
+    session: super::retained::RetainedSessionPort,
+    actor: String,
+    epoch: i64,
+    runtime: tokio::runtime::Handle,
+    started: tokio::sync::mpsc::UnboundedSender<()>,
+    release: std::sync::Mutex<std::sync::mpsc::Receiver<()>>,
+}
+
+struct GatedShutdownStatus {
+    started: tokio::sync::mpsc::UnboundedSender<()>,
+    release: std::sync::Mutex<std::sync::mpsc::Receiver<()>>,
+}
+
+impl crate::provider_callbacks::tools::StatusWatchPort for GatedShutdownStatus {
+    fn status(
+        &self,
+        _store: &RuntimeStore,
+        _actor: &crate::managed_host_tools::Actor,
+        _args: &Value,
+        _now: f64,
+    ) -> Result<Value, crate::managed_host_tools::Error> {
+        self.started
+            .send(())
+            .map_err(|_| crate::managed_host_tools::Error::Unavailable("test/shutdown-gate"))?;
+        self.release
+            .lock()
+            .map_err(|_| crate::managed_host_tools::Error::Unavailable("test/shutdown-gate"))?
+            .recv()
+            .map_err(|_| crate::managed_host_tools::Error::Unavailable("test/shutdown-gate"))?;
+        Ok(json!({"shutdownResponse":"written"}))
+    }
+
+    fn rules(
+        &self,
+        _store: &RuntimeStore,
+        _actor: &crate::managed_host_tools::Actor,
+        _args: &Value,
+        _request_id: &str,
+        _now: f64,
+    ) -> Result<crate::provider_callbacks::tools::RulesActionResult, crate::managed_host_tools::Error>
+    {
+        Ok(crate::provider_callbacks::tools::RulesActionResult {
+            value: Value::Null,
+            cancel_monitor_ids: Vec::new(),
+        })
+    }
+}
+
+impl crate::provider_callbacks::tools::StatusWatchPort for SameAccountProviderStatus {
+    fn status(
+        &self,
+        _store: &RuntimeStore,
+        _actor: &crate::managed_host_tools::Actor,
+        _args: &Value,
+        _now: f64,
+    ) -> Result<Value, crate::managed_host_tools::Error> {
+        self.started
+            .send(())
+            .map_err(|_| crate::managed_host_tools::Error::Unavailable("test/gate"))?;
+        self.release
+            .lock()
+            .map_err(|_| crate::managed_host_tools::Error::Unavailable("test/gate"))?
+            .recv()
+            .map_err(|_| crate::managed_host_tools::Error::Unavailable("test/gate"))?;
+
+        let scope = self.session.scope().clone();
+        let request = super::retained::SessionRequest {
+            scope: scope.clone(),
+            expected_scope: Some(scope),
+            operation: "managed-callback-same-account-provider-request".into(),
+            actor: Some(super::retained::RequestActor {
+                agent: self.actor.clone(),
+                epoch: self.epoch,
+            }),
+            transfer: None,
+            deleted_actor_session: None,
+            method: Method::ThreadRead,
+            params: json!({"threadId":"fake-thread-0"}),
+            deadline: std::time::Instant::now() + std::time::Duration::from_secs(60),
+        };
+        let receipt = self
+            .runtime
+            .block_on(self.session.request(request))
+            .map_err(|_| crate::managed_host_tools::Error::Unavailable("test/provider-request"))?;
+        match receipt.result {
+            super::retained::RequestResult::Reply(_) => Ok(json!({"providerRequest":"written"})),
+            super::retained::RequestResult::Rejected(_) => Err(
+                crate::managed_host_tools::Error::Unavailable("test/provider-rejected"),
+            ),
+            super::retained::RequestResult::NotSent => Err(
+                crate::managed_host_tools::Error::Unavailable("test/provider-not-sent"),
+            ),
+            super::retained::RequestResult::Unknown => Err(
+                crate::managed_host_tools::Error::Unavailable("test/provider-unknown"),
+            ),
+        }
+    }
+
+    fn rules(
+        &self,
+        _store: &RuntimeStore,
+        _actor: &crate::managed_host_tools::Actor,
+        _args: &Value,
+        _request_id: &str,
+        _now: f64,
+    ) -> Result<crate::provider_callbacks::tools::RulesActionResult, crate::managed_host_tools::Error>
+    {
+        Ok(crate::provider_callbacks::tools::RulesActionResult {
+            value: Value::Null,
+            cancel_monitor_ids: Vec::new(),
+        })
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn managed_callback_same_account_provider_request_is_written_without_blocking_worker() {
+    let state = State::new().await;
+    let mut peer = Peer::new();
+    let mut worker = peer.worker(state.bridge.clone()).await;
+    let start = state.start(&mut peer, &worker).await;
+    peer.accepted(&start).await;
+    let agent = state.agent.clone();
+    state
+        .bridge
+        .run(move |store| {
+            store.transaction_with::<_, StoreError>(|tx| {
+                tx.execute(
+                    "UPDATE runtime_agents SET record=json_set(record,'$.startAttempt.connectionId','1') WHERE id=?1",
+                    [agent],
+                )?;
+                Ok(())
+            })?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+
+    let (started, mut callback_started) = tokio::sync::mpsc::unbounded_channel();
+    let (release, callback_release) = std::sync::mpsc::channel();
+    state.bridge.set_managed_tool_runtime(
+        crate::provider_callbacks::ManagedToolRuntime::from_ports_for_test(
+            crate::provider_callbacks::ManagedToolRuntimePorts {
+                status_watch: Some(Arc::new(SameAccountProviderStatus {
+                    session: worker.retained_session(),
+                    actor: state.agent.clone(),
+                    epoch: state.epoch,
+                    runtime: tokio::runtime::Handle::current(),
+                    started,
+                    release: std::sync::Mutex::new(callback_release),
+                })),
+                child_creation: None,
+                monitor_create: None,
+                interrupt: None,
+                monitor_input: None,
+                monitor_cancel: None,
+            },
+        ),
+    );
+
+    let cursor = peer
+        .frame(json!({
+            "id":"managed-same-account-callback",
+            "method":"item/tool/call",
+            "params":{
+                "threadId":"fake-thread-0",
+                "turnId":"turn",
+                "callId":"same-account-provider-request",
+                "tool":"orchestration_status",
+                "arguments":{}
+            }
+        }))
+        .await;
+    callback_started
+        .recv()
+        .await
+        .expect("managed callback reaches its gated provider effect");
+    release.send(()).expect("release provider effect gate");
+
+    let provider = peer.write("thread/read").await;
+    let provider_reply_cursor = peer
+        .frame(json!({
+            "id":provider["id"],
+            "result":{"thread":{"id":"fake-thread-0"}}
+        }))
+        .await;
+    assert!(provider_reply_cursor > cursor);
+    let callback = peer.next_write().await;
+    assert_eq!(callback.value["id"], "managed-same-account-callback");
+    let tool_result: Value = serde_json::from_str(
+        callback.value["result"]["contentItems"][0]["text"]
+            .as_str()
+            .expect("managed tool result text"),
+    )
+    .expect("managed tool result JSON");
+    assert_eq!(tool_result["providerRequest"], "written");
+    let (reply_journal_committed, checkpoint) = state
+        .bridge
+        .run(move |runtime_store| {
+            let state = runtime_store.transaction_with::<_, WorkerError>(|tx| {
+                Ok((
+                    store::journal_committed(tx, "default", 1, provider_reply_cursor)?,
+                    store::checkpoint(tx, "default", 1)?,
+                ))
+            })?;
+            Ok(state)
+        })
+        .await
+        .expect("read provider reply durability state");
+    assert!(
+        reply_journal_committed || checkpoint >= provider_reply_cursor,
+        "live callback reply follows a committed provider reply journal; cursor={provider_reply_cursor}, committed={reply_journal_committed}, checkpoint={checkpoint}"
+    );
+    callback
+        .receipt
+        .send(CommandReceipt::Written {
+            remote_id: None,
+            duplicate: false,
+        })
+        .ok()
+        .expect("callback write receipt receiver");
+    worker.shutdown().await.unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn shutdown_drains_completed_managed_callback_and_writes_response() {
+    let state = State::new().await;
+    let mut peer = Peer::new();
+    let mut worker = peer.worker(state.bridge.clone()).await;
+    let start = state.start(&mut peer, &worker).await;
+    peer.accepted(&start).await;
+    let agent = state.agent.clone();
+    state
+        .bridge
+        .run(move |store| {
+            store.transaction_with::<_, StoreError>(|tx| {
+                tx.execute(
+                    "UPDATE runtime_agents SET record=json_set(record,'$.startAttempt.connectionId','1') WHERE id=?1",
+                    [agent],
+                )?;
+                Ok(())
+            })?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+
+    let (started, mut callback_started) = tokio::sync::mpsc::unbounded_channel();
+    let (release, callback_release) = std::sync::mpsc::channel();
+    state.bridge.set_managed_tool_runtime(
+        crate::provider_callbacks::ManagedToolRuntime::from_ports_for_test(
+            crate::provider_callbacks::ManagedToolRuntimePorts {
+                status_watch: Some(Arc::new(GatedShutdownStatus {
+                    started,
+                    release: std::sync::Mutex::new(callback_release),
+                })),
+                child_creation: None,
+                monitor_create: None,
+                interrupt: None,
+                monitor_input: None,
+                monitor_cancel: None,
+            },
+        ),
+    );
+
+    peer.frame(json!({
+        "id":"managed-callback-during-shutdown",
+        "method":"item/tool/call",
+        "params":{
+            "threadId":"fake-thread-0",
+            "turnId":"turn",
+            "callId":"callback-shutdown",
+            "tool":"orchestration_status",
+            "arguments":{}
+        }
+    }))
+    .await;
+    callback_started
+        .recv()
+        .await
+        .expect("managed callback is held at the channel gate");
+
+    worker.cancel();
+    state
+        .bridge
+        .faults
+        .shutdown_callbacks_draining
+        .notified()
+        .await;
+    release
+        .send(())
+        .expect("release callback while shutdown drains");
+
+    let callback = peer.next_write().await;
+    assert_eq!(callback.value["id"], "managed-callback-during-shutdown");
+    let result: Value = serde_json::from_str(
+        callback.value["result"]["contentItems"][0]["text"]
+            .as_str()
+            .expect("managed tool result text"),
+    )
+    .expect("managed tool result JSON");
+    assert_eq!(result["shutdownResponse"], "written");
+    callback
+        .receipt
+        .send(CommandReceipt::Written {
+            remote_id: None,
+            duplicate: false,
+        })
+        .ok()
+        .expect("shutdown callback write receipt receiver");
+    worker.completion().await.unwrap();
 }
 
 async fn scenario_foreign_account_stop_cannot_revoke_agent() {

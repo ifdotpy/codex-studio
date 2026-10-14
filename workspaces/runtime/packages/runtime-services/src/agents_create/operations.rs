@@ -1045,8 +1045,12 @@ pub fn conversation(context: &Context<'_>, request: Conversation) -> Result<Valu
         || request.effort_present
         || request.fast_mode.is_some()
         || request.fast_mode_present
+        || request.daybreak_enabled.is_some()
+        || request.daybreak_present;
+    let catalog_requested = request.model.is_some()
+        || request.effort.as_ref().is_some_and(Option::is_some)
+        || request.fast_mode.is_some()
         || request.daybreak_enabled.is_some();
-    let execution_requested = execution_requested || request.daybreak_present;
     let base_pending = initial
         .get("pendingSettings")
         .filter(|_| {
@@ -1076,20 +1080,18 @@ pub fn conversation(context: &Context<'_>, request: Conversation) -> Result<Valu
         } else {
             DEFAULT_LEAD_MODEL
         });
-    let effort = request
-        .effort
-        .as_ref()
-        .and_then(Option::as_deref)
-        .or_else(|| {
-            (!provider_changed)
-                .then(|| base_pending.get("effort").and_then(Value::as_str))
-                .flatten()
-        })
-        .or_else(|| {
-            (!provider_changed)
-                .then(|| initial.get("effort").and_then(Value::as_str))
-                .flatten()
-        });
+    let effort = if request.effort_present {
+        request.effort.as_ref().and_then(Option::as_deref)
+    } else {
+        (!provider_changed)
+            .then(|| base_pending.get("effort").and_then(Value::as_str))
+            .flatten()
+            .or_else(|| {
+                (!provider_changed)
+                    .then(|| initial.get("effort").and_then(Value::as_str))
+                    .flatten()
+            })
+    };
     let fast_mode = request
         .fast_mode
         .or_else(|| {
@@ -1116,13 +1118,30 @@ pub fn conversation(context: &Context<'_>, request: Conversation) -> Result<Valu
                 .flatten()
         })
         .unwrap_or(false);
-    let settings = if execution_requested {
+    let settings = if catalog_requested {
         Some(
             context
                 .catalog
                 .ok_or(OperationError::Unavailable("provider-session/model-list"))?
                 .resolve(&account, &identity, model, effort, fast_mode, daybreak)?,
         )
+    } else if request.effort_present {
+        Some(ExecutionSettings {
+            model: model.to_owned(),
+            effort: None,
+            native_effort: initial
+                .get("nativeEffort")
+                .and_then(Value::as_str)
+                .unwrap_or("medium")
+                .to_owned(),
+            fast_mode,
+            daybreak_enabled: daybreak,
+            cyber_access_program: initial
+                .get("cyberAccessProgram")
+                .and_then(Value::as_str)
+                .unwrap_or("standard")
+                .to_owned(),
+        })
     } else {
         None
     };
@@ -1233,6 +1252,13 @@ pub fn conversation(context: &Context<'_>, request: Conversation) -> Result<Valu
                 ))
         {
             return Err(MutationError::InFlight.into());
+        }
+        if settings.is_none()
+            && request.cwd.is_none()
+            && request.yolo_mode.is_none()
+            && request.excluded.is_none()
+        {
+            return Ok(sync_projection(tx, &target)?);
         }
         if let Some(excluded) = request.excluded.as_ref() {
             if target.get("isLead").and_then(Value::as_bool) != Some(true) {
@@ -1381,12 +1407,17 @@ fn update_team_yolo(
     }
     Ok(())
 }
+pub struct RenameOperationResult {
+    pub response: Value,
+    pub replayed: bool,
+}
+
 pub fn rename_operation(
     context: &Context<'_>,
     id: &str,
     name: Option<&str>,
     request_id: Option<&str>,
-) -> Result<Value, OperationError> {
+) -> Result<RenameOperationResult, OperationError> {
     let name = name.map(python_strip);
     if name.is_some_and(str::is_empty) {
         return Err(OperationError::Invalid(
@@ -1394,7 +1425,27 @@ pub fn rename_operation(
         ));
     }
     let signature = rename_signature(id, name);
-    mutate(context, |tx| {
+    if let Some(request_id) = request_id {
+        let validate = |schema: &str, value: &Value| (context.validate)(schema, value);
+        let read = context.store.read()?;
+        load_agent_value(&read, id, &validate)?.ok_or(MutationError::UnknownAgent)?;
+        if let Some(receipt) = EventWriteRepository::receipt(&read, request_id)? {
+            if receipt.signature != signature {
+                return Err(MutationError::Conflict.into());
+            }
+            let response = serde_json::from_str(&receipt.result).map_err(|_| {
+                OperationError::Create(MutationError::InvalidStoredObject {
+                    table: "runtime_operation_receipts",
+                    id: request_id.to_owned(),
+                })
+            })?;
+            return Ok(RenameOperationResult {
+                response,
+                replayed: true,
+            });
+        }
+    }
+    let response = mutate(context, |tx| {
         Ok(rename(
             tx,
             id,
@@ -1403,6 +1454,10 @@ pub fn rename_operation(
             &signature,
             |schema, value| (context.validate)(schema, value),
         )?)
+    })?;
+    Ok(RenameOperationResult {
+        response,
+        replayed: false,
     })
 }
 fn rename_signature(id: &str, name: Option<&str>) -> String {
