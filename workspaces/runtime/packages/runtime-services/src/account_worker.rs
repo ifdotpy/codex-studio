@@ -46,6 +46,7 @@ impl From<rusqlite::Error> for WorkerError {
 pub const COMMAND_CAPACITY: usize = 16;
 const STREAM_CADENCE: std::time::Duration = std::time::Duration::from_millis(750);
 const PREPARATION_RETRY: std::time::Duration = std::time::Duration::from_secs(1);
+const PUBLICATION_RETRY_DELAY: std::time::Duration = std::time::Duration::from_secs(1);
 const SHUTDOWN_GRACE: std::time::Duration = std::time::Duration::from_secs(1);
 
 #[derive(Debug, thiserror::Error)]
@@ -290,8 +291,29 @@ pub async fn start_account_worker_with_preparation(
     account: String,
     factory: Arc<dyn ProviderTaskFactory>,
     options: OpenOptions,
+    config: SessionTaskConfig,
+    resources: preparation::PreparationResources,
+) -> Result<AccountHandle, WorkerError> {
+    start_account_worker_with_publication_sink(
+        bridge,
+        account,
+        factory,
+        options,
+        config,
+        resources,
+        Arc::new(crate::notification_runtime_effects::UnavailablePostCommitSink),
+    )
+    .await
+}
+
+pub async fn start_account_worker_with_publication_sink(
+    bridge: StoreBridge,
+    account: String,
+    factory: Arc<dyn ProviderTaskFactory>,
+    options: OpenOptions,
     mut config: SessionTaskConfig,
     resources: preparation::PreparationResources,
+    publication_sink: Arc<dyn crate::notification_runtime_effects::NotificationPostCommitSink>,
 ) -> Result<AccountHandle, WorkerError> {
     let lease = AccountLease::acquire(&bridge, &account)?;
     let recovery_account = account.clone();
@@ -363,6 +385,8 @@ pub async fn start_account_worker_with_preparation(
         retained_barriers: Vec::new(),
         retained_frames: BTreeMap::new(),
         effects,
+        publication_sink,
+        publication_retry_at: Some(tokio::time::Instant::now()),
         closing: false,
     };
     let mut cancelled_owner = stop.subscribe();
@@ -448,6 +472,8 @@ struct Worker {
     flush_at: Option<tokio::time::Instant>,
     deferred: VecDeque<JournalEntry>,
     effects: VecDeque<Effect>,
+    publication_sink: Arc<dyn crate::notification_runtime_effects::NotificationPostCommitSink>,
+    publication_retry_at: Option<tokio::time::Instant>,
     closing: bool,
     callbacks: BTreeMap<String, studio_runtime_process::EventCursor>,
 }
@@ -468,6 +494,12 @@ impl Worker {
         loop {
             if self.closing || *self.stop.borrow() {
                 return Ok(());
+            }
+            if self
+                .publication_retry_at
+                .is_some_and(|at| at <= tokio::time::Instant::now())
+            {
+                self.drain_publications().await?;
             }
             if self
                 .flush_at
@@ -505,6 +537,7 @@ impl Worker {
                 biased;
                 _ = Shutdown::cancelled(&mut self.stop) => { self.closing = true; self.control.cancel(); },
                 _ = tokio::time::sleep_until(self.flush_at.unwrap_or_else(||tokio::time::Instant::now()+STREAM_CADENCE)), if self.flush_at.is_some() => self.flush().await?,
+                _ = tokio::time::sleep_until(self.publication_retry_at.unwrap_or_else(||tokio::time::Instant::now()+STREAM_CADENCE)), if self.publication_retry_at.is_some() => self.drain_publications().await?,
                 _ = tokio::time::sleep_until(self.retry_at.unwrap_or_else(|| tokio::time::Instant::now() + PREPARATION_RETRY)), if self.retry_at.is_some() => self.retry_preparations().await?,
                 command = async { match self.queued_commands.pop_front() { Some(command) => Some(command), None => self.inbox.recv().await } }, if self.session.status.borrow().initialization == InitializationStatus::Ready => match command {
                     #[cfg(test)]
@@ -997,6 +1030,8 @@ impl Worker {
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         self.streams = streams; // commit precedes buffer replacement and ACK
         self.arm_flush();
+        self.schedule_publication_drain();
+        self.drain_publications().await?;
         if let Some(effect) = effect {
             self.push(effect)?;
         }
@@ -1083,7 +1118,44 @@ impl Worker {
             .await?;
         self.flush_at = None;
         self.arm_flush();
+        self.schedule_publication_drain();
+        self.drain_publications().await?;
         Ok(())
+    }
+    fn schedule_publication_drain(&mut self) {
+        if self.publication_retry_at.is_none() {
+            self.publication_retry_at = Some(tokio::time::Instant::now());
+        }
+    }
+    async fn drain_publications(&mut self) -> Result<(), WorkerError> {
+        if self
+            .publication_retry_at
+            .is_some_and(|at| at > tokio::time::Instant::now())
+        {
+            return Ok(());
+        }
+        let account = self.account.clone();
+        let sink = Arc::clone(&self.publication_sink);
+        match self
+            .db("drain_publications", move |store| {
+                store::drain_publications(store, &account, sink.as_ref())
+            })
+            .await
+        {
+            Ok(count) => {
+                self.publication_retry_at =
+                    (count == store::PUBLICATION_DRAIN_LIMIT).then(tokio::time::Instant::now);
+                Ok(())
+            }
+            Err(WorkerError::Notification(_)) => {
+                // A failed sink leaves its receipt in place. Retry on a fixed
+                // cadence so a broken consumer cannot spin the account worker.
+                self.publication_retry_at =
+                    Some(tokio::time::Instant::now() + PUBLICATION_RETRY_DELAY);
+                Ok(())
+            }
+            Err(error) => Err(error),
+        }
     }
     async fn finish(&mut self, exit: SessionExit) -> Result<(), WorkerError> {
         self.closing = true;

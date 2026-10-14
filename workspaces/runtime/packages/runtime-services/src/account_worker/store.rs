@@ -4,8 +4,11 @@ use crate::notification_dispatch::{
     NotificationPublicationBatch, PreparedSubmission, ProviderDeliveryIdentity,
     dispatch_notification_with_effects, flush_notification_streams,
 };
-use rusqlite::params;
+use rusqlite::{OptionalExtension, params};
 use studio_runtime_store::EventWriteRepository;
+
+pub(super) const PUBLICATION_DRAIN_LIMIT: usize = 64;
+pub(super) const MAX_PENDING_PUBLICATION_RECEIPTS: usize = 256;
 
 fn invalid(id: &str) -> WorkerError {
     StoreError::InvalidSyncObject {
@@ -1091,13 +1094,24 @@ fn settle_callback_in_transaction(
 // Python codex_streaming.FLUSH_SECONDS is .75. The additional byte threshold
 // bounds a durable batch when producers outpace that timer; answers are uncut.
 pub(super) const STREAM_FLUSH_BYTES: usize = 64 * 1024;
-fn persist_publication_batch(
+pub(super) fn persist_publication_batch(
     tx: &studio_runtime_store::Transaction<'_>,
     account: &str,
     batch: &NotificationPublicationBatch,
 ) -> Result<(), WorkerError> {
     if batch.is_empty() {
         return Ok(());
+    }
+    let prefix = format!("account-worker:notification-publication:{account}:");
+    let pending: i64 = tx.query_row(
+        "SELECT count(*) FROM runtime_operation_receipts WHERE id>=?1 AND id<?2",
+        params![prefix, format!("{prefix}~")],
+        |row| row.get(0),
+    )?;
+    let additions = batch.effects.len() + usize::from(batch.analytics_overflow > 0);
+    let pending = usize::try_from(pending).map_err(|_| WorkerError::Capacity)?;
+    if pending.saturating_add(additions) > MAX_PENDING_PUBLICATION_RECEIPTS {
+        return Err(WorkerError::Capacity);
     }
     for (index, effect) in batch.effects.iter().enumerate() {
         let operation = format!(
@@ -1125,6 +1139,68 @@ fn persist_publication_batch(
         )?;
     }
     Ok(())
+}
+
+/// Drain in sequence/index order. Publication is outside SQLite; deleting each
+/// row happens only after the sink accepts it, in its own short transaction.
+pub(super) fn drain_publications(
+    store: &RuntimeStore,
+    account: &str,
+    sink: &dyn crate::notification_runtime_effects::NotificationPostCommitSink,
+) -> Result<usize, WorkerError> {
+    drain_publications_with_hook(store, account, sink, || Ok(()))
+}
+
+pub(super) fn drain_publications_with_hook(
+    store: &RuntimeStore,
+    account: &str,
+    sink: &dyn crate::notification_runtime_effects::NotificationPostCommitSink,
+    mut before_delete: impl FnMut() -> Result<(), WorkerError>,
+) -> Result<usize, WorkerError> {
+    let prefix = format!("account-worker:notification-publication:{account}:");
+    let pending = {
+        let connection = store.read()?;
+        let mut statement = connection.prepare(
+            "SELECT id,result FROM runtime_operation_receipts WHERE id>=?1 AND id<?2 ORDER BY json_extract(result,'$.sequence'),json_extract(result,'$.index'),rowid LIMIT ?3",
+        )?;
+        statement
+            .query_map(
+                params![prefix, format!("{prefix}~"), PUBLICATION_DRAIN_LIMIT as i64],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+            )?
+            .collect::<Result<Vec<_>, _>>()?
+    };
+    let mut delivered = 0;
+    for (id, result) in pending {
+        let value: Value = serde_json::from_str(&result).map_err(|_| invalid(&id))?;
+        if let Some(effect) = value.get("effect") {
+            let effect: crate::notification_dispatch::NotificationPostCommit =
+                serde_json::from_value(effect.clone()).map_err(|_| invalid(&id))?;
+            // The sink's delivery identity is the effect's provider identity.
+            // It must make a replay after a crash between publish and delete safe.
+            sink.publish(&effect)?;
+        } else if value.get("analyticsOverflow").is_none() {
+            return Err(invalid(&id));
+        }
+        before_delete()?;
+        // Analytics overflow currently has no Rust consumer. Treating it as a
+        // successful no-op prevents a permanently unconsumable receipt.
+        store.transaction_with(|tx| {
+            let current: Option<String> = tx
+                .query_row(
+                    "SELECT result FROM runtime_operation_receipts WHERE id=?1",
+                    [&id],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            if current.as_deref() == Some(result.as_str()) {
+                tx.execute("DELETE FROM runtime_operation_receipts WHERE id=?1", [&id])?;
+            }
+            Ok::<(), WorkerError>(())
+        })?;
+        delivered += 1;
+    }
+    Ok(delivered)
 }
 
 fn persist_streams(

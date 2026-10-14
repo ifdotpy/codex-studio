@@ -1,5 +1,6 @@
 #![allow(clippy::unwrap_used)]
 mod claude_preparation;
+mod publication_drain;
 mod retained;
 use super::*;
 use crate::event_write::{AnnotationWrite, annotate};

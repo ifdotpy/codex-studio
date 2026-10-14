@@ -1,9 +1,13 @@
 //! Bounded, latest-value token-rate publication for resource streams.
 
 use std::collections::BTreeMap;
-use std::sync::Arc;
+use std::collections::VecDeque;
+use std::sync::{Arc, Mutex};
 
 use crate::change_notifications::ChangeNotificationHub;
+use crate::notification_dispatch::NotificationPostCommit;
+
+const MAX_OBSERVATION_RECEIPTS: usize = 256;
 use serde::{Deserialize, Serialize};
 use studio_runtime_schema::{
     TOKEN_RATE_IDENTIFIER_MAX_CODEPOINTS, TOKEN_RATE_MAX_ENTRIES, TOKEN_RATE_MAX_TOTAL_ENTRIES,
@@ -60,12 +64,16 @@ pub struct TokenRateSnapshot {
 pub enum TokenRateError {
     #[error("token-rate snapshot is invalid")]
     InvalidSnapshot,
+    #[error("token-rate publication is unavailable")]
+    Unavailable,
 }
 
 /// A bounded watch channel; slow subscribers always receive the newest snapshot.
 #[derive(Clone)]
 pub struct TokenRateHub {
     sender: watch::Sender<TokenRateSnapshot>,
+    observations: watch::Sender<Option<NotificationPostCommit>>,
+    observation_ids: Arc<Mutex<VecDeque<(String, u64, u64)>>>,
     changes: Option<Arc<ChangeNotificationHub>>,
 }
 
@@ -116,6 +124,8 @@ impl TokenRateHub {
     pub fn new() -> Self {
         Self {
             sender: watch::channel(TokenRateSnapshot::empty()).0,
+            observations: watch::channel(None).0,
+            observation_ids: Arc::default(),
             changes: None,
         }
     }
@@ -137,6 +147,53 @@ impl TokenRateHub {
     #[must_use]
     pub fn subscribe(&self) -> watch::Receiver<TokenRateSnapshot> {
         self.sender.subscribe()
+    }
+
+    /// Retain the latest committed provider observation for the rate projector.
+    /// The projector is not implemented in Rust yet; the durable worker receipt
+    /// is still acknowledged only after this bounded hub accepts the observation.
+    pub fn publish_observation(
+        &self,
+        effect: NotificationPostCommit,
+    ) -> Result<bool, TokenRateError> {
+        let observation = match &effect {
+            NotificationPostCommit::Analytics { observation, .. }
+            | NotificationPostCommit::AnalyticsStream { observation, .. }
+            | NotificationPostCommit::TokenRateStream(observation)
+            | NotificationPostCommit::TokenRateAssociation(observation) => observation,
+        };
+        let identity = (
+            observation.delivery.provider_handle.clone(),
+            observation.delivery.generation,
+            observation.delivery.cursor,
+        );
+        let mut ids = self
+            .observation_ids
+            .lock()
+            .map_err(|_| TokenRateError::Unavailable)?;
+        if ids.contains(&identity) {
+            return Ok(false);
+        }
+        if ids.len() == MAX_OBSERVATION_RECEIPTS {
+            ids.pop_front();
+        }
+        ids.push_back(identity);
+        let changed = self.observations.send_if_modified(|current| {
+            if current.as_ref() == Some(&effect) {
+                false
+            } else {
+                *current = Some(effect);
+                true
+            }
+        });
+        if changed && let Some(changes) = &self.changes {
+            changes.try_publish(1, false, |_| {});
+        }
+        Ok(changed)
+    }
+
+    pub fn subscribe_observations(&self) -> watch::Receiver<Option<NotificationPostCommit>> {
+        self.observations.subscribe()
     }
 
     /// Publish one already validated producer snapshot; identical updates are coalesced.

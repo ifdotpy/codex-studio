@@ -131,8 +131,65 @@ impl NotificationEffects for RuntimeNotificationEffects {
 /// The B7 consumer implements this port outside the SQLite transaction. It must
 /// deduplicate observations by delivery identity before publishing or capturing.
 /// The worker never calls it for an uncommitted result or a receipt replay.
-pub trait NotificationPostCommitSink {
+/// Implementations deduplicate by the effect's `observation.delivery`; a
+/// process may crash after publication and before the durable row is deleted.
+pub trait NotificationPostCommitSink: Send + Sync {
     fn publish(&self, effect: &NotificationPostCommit) -> Result<(), NotificationDispatchError>;
+}
+
+pub struct UnavailablePostCommitSink;
+
+impl NotificationPostCommitSink for UnavailablePostCommitSink {
+    fn publish(&self, _effect: &NotificationPostCommit) -> Result<(), NotificationDispatchError> {
+        // Non-host/test callers have no HTTP publication hubs attached.
+        Ok(())
+    }
+}
+
+/// Publishes committed notification effects to the process-local sync hubs.
+/// Analytics persistence has no Rust consumer yet, so those variants are an
+/// explicit successful no-op; the receipt is nevertheless drained.
+pub struct RuntimeNotificationPostCommitSink {
+    pub token_rates: std::sync::Arc<crate::token_rate::TokenRateHub>,
+    pub resources: std::sync::Arc<crate::resource_notify::ResourceNotifications>,
+}
+
+impl NotificationPostCommitSink for RuntimeNotificationPostCommitSink {
+    fn publish(&self, effect: &NotificationPostCommit) -> Result<(), NotificationDispatchError> {
+        match effect {
+            NotificationPostCommit::TokenRateStream(_) => {
+                self.token_rates
+                    .publish_observation(effect.clone())
+                    .map_err(|_| {
+                        NotificationDispatchError::Dependency("sync/token-rates/publication")
+                    })?;
+            }
+            NotificationPostCommit::TokenRateAssociation(_) => {
+                // Python associates rollout response usage with a live rate
+                // sample; Rust has no response-rate association cache yet.
+            }
+            NotificationPostCommit::Analytics { .. }
+            | NotificationPostCommit::AnalyticsStream { .. } => {
+                // Python schedules analytics capture after commit. Rust has no
+                // analytics stream writer; keep this a named no-op until it lands.
+            }
+        }
+        let observation = match effect {
+            NotificationPostCommit::Analytics { observation, .. }
+            | NotificationPostCommit::AnalyticsStream { observation, .. }
+            | NotificationPostCommit::TokenRateStream(observation)
+            | NotificationPostCommit::TokenRateAssociation(observation) => observation,
+        };
+        let delivery = &observation.delivery;
+        let request = serde_json::json!({
+            "requestId": format!("provider-publication:{}:{}:{}", delivery.provider_handle, delivery.generation, delivery.cursor),
+            "resources": [{"kind":"state"}],
+        });
+        self.resources
+            .publish_once(&request)
+            .map_err(|_| NotificationDispatchError::Dependency("sync/resources/publication"))?;
+        Ok(())
+    }
 }
 
 /// Match the provider's event-time precedence; clocks are supplied, never read.
