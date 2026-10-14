@@ -288,6 +288,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         ),
     );
     state = state.open_app_server_log();
+    let lifecycle_ports: Arc<dyn studio_runtime_services::agent_lifecycle_runtime::LifecyclePorts> =
+        Arc::new(
+            studio_runtime_services::lifecycle_effects::ProductionLifecyclePorts::new(
+                Arc::clone(&store),
+                monitor_runtime.dispatch_wake_handle(),
+                Arc::clone(&monitor_wake),
+                Arc::clone(&account_session),
+            ),
+        );
+    let managed_tool_runtime = studio_runtime_services::provider_callbacks::ManagedToolRuntime::new(
+        Arc::clone(&monitor_runtime),
+        Arc::clone(&lifecycle_ports),
+    );
     #[cfg(unix)]
     let runtime = match host_runtime::HostRuntime::start_with_monitor_wake_and_native_runtime(
         &mut state,
@@ -298,6 +311,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         account_session_broker.clone(),
         Some(Arc::clone(&native_runtime)),
         Arc::clone(&session_binaries),
+        Some(managed_tool_runtime),
     )
     .await
     {
