@@ -89,6 +89,13 @@ Codex uses the existing external-auth bootstrap and host refresh path.
 Claude uses an access-only guest profile. Guest profiles contain no refresh credentials.
 Each account profile stays private to the Linux user who runs the provider.
 
+A VM chat can change to another Claude account with the normal account transfer
+(`codex_vm_account_switch.py`). Every chat of the team must be idle. Studio saves the
+pending turn states, stops the chat's provider and copies its native session files, as the
+line owner, from the source profile into the target profile. The source files stay. The chat
+keeps its thread ID, so the next turn resumes the same session with the target account. A
+team with Mac chats and VM chats changes each part on its own.
+
 Providers use the existing durable native supervisor transport.
 A guest service or Studio restart can attach to the same live provider.
 A VM reboot ends the process. An unproven result remains unknown.

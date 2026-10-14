@@ -277,25 +277,28 @@ class AccountTransfers:
             if target_account.get("disconnected"):
                 raise ValueError("Reconnect this account before transferring a team to it")
             members = rt.team_agents(db, key, include_id=key)
-            if any(agent.get('environment') == 'linux' and not agent.get('deletedAt')
-                   and agent.get('accountKey', 'default') != target for agent in members):
-                raise ValueError('Archive the Linux VM workers before changing the team account. Their native account identity stays fixed.')
-            target_provider = rt.accounts.get(target).get('provider', 'codex')
-            op = {'id': request_id, 'leadId': key, 'targetAccountKey': target,
-                  'status': 'pending', 'scope': scope, 'created': time.time(), 'members': {},
-                  'requests': {request_id: {'leadId': key, 'targetAccountKey': target, 'scope': scope}}}
-            # Subagent-only changes take effect now; team transfers set this as the lead moves.
-            root = rt.agent(key, db)
-            op['targetProvider'] = target_provider
-            self.adopt(db, op, members)
-            if scope == 'subagents' or root.get('accountKey', 'default') == target:
-                defaults = copy.deepcopy(root.get('workerDefaults') or rt.worker_defaults(root))
-                defaults['accountKey'] = target
-                root['workerDefaults'] = defaults
-                rt.put(db, 'agents', root)
-            if all(m['phase'] in MEMBER_TERMINAL for m in op['members'].values()):
-                op["status"] = "completed"
-            self.save(db, op)
+            from codex_vm_account_switch import needs_switch
+            vm_switch = bool(needs_switch([a for a in members if scope == 'team' or a['id'] != key], target))
+            if not vm_switch:
+                target_provider = rt.accounts.get(target).get('provider', 'codex')
+                op = {'id': request_id, 'leadId': key, 'targetAccountKey': target,
+                      'status': 'pending', 'scope': scope, 'created': time.time(), 'members': {},
+                      'requests': {request_id: {'leadId': key, 'targetAccountKey': target, 'scope': scope}}}
+                # Subagent-only changes take effect now; team transfers set this as the lead moves.
+                root = rt.agent(key, db)
+                op['targetProvider'] = target_provider
+                self.adopt(db, op, members)
+                if scope == 'subagents' or root.get('accountKey', 'default') == target:
+                    defaults = copy.deepcopy(root.get('workerDefaults') or rt.worker_defaults(root))
+                    defaults['accountKey'] = target
+                    root['workerDefaults'] = defaults
+                    rt.put(db, 'agents', root)
+                if all(m['phase'] in MEMBER_TERMINAL for m in op['members'].values()):
+                    op["status"] = "completed"
+                self.save(db, op)
+        if vm_switch:
+            from codex_vm_account_switch import switch
+            return switch(self, key, target, request_id, scope)
         rt.changed.set()
         return op
 
