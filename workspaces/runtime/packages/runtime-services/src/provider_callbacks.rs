@@ -31,10 +31,21 @@ pub enum ManagedCreationAccountError {
     Unavailable,
 }
 
+/// Minimal account identity needed for managed child planning. This deliberately
+/// stays independent of the P02 host creation module; the composition adapter
+/// converts it at the final integration boundary.
+#[derive(Clone, Debug)]
+pub struct ManagedAccountIdentity {
+    pub provider: Option<String>,
+    pub home: Option<String>,
+    pub account_id: Option<String>,
+    pub email: Option<String>,
+}
+
 #[derive(Clone, Debug)]
 pub struct ManagedCreationAccountCandidate {
     pub account_key: String,
-    pub identity: crate::host_worker_create::AccountIdentity,
+    pub identity: ManagedAccountIdentity,
     pub ready: bool,
     pub can_attempt_native_proof: bool,
     pub disconnected: bool,
@@ -59,20 +70,37 @@ pub trait ManagedCreationAccountRead: Send + Sync {
         &self,
         account_key: &str,
         parent_account_key: &str,
-    ) -> Result<crate::host_worker_create::AccountIdentity, ManagedCreationAccountError>;
+    ) -> Result<ManagedAccountIdentity, ManagedCreationAccountError>;
 }
 
-/// Runtime-owned capabilities injected into managed tool callback services.
+/// One managed-tool operation port. Production adapters implement this in the
+/// final composition commit; tests can supply deterministic receipts.
+pub(crate) trait ManagedToolRuntimePort: Send + Sync {
+    fn dispatch(
+        &self,
+        store: &RuntimeStore,
+        actor: &crate::managed_host_tools::Actor,
+        tool: &str,
+        args: &Value,
+        request_id: &str,
+        now: f64,
+    ) -> Result<crate::managed_host_tools::DispatchedOperation, crate::managed_host_tools::Error>;
+}
+
+/// Explicit runtime capabilities for tools whose work must happen after the
+/// callback claim commits. An absent port is reported by its operation name.
 #[derive(Clone)]
 pub(crate) struct ManagedToolRuntimePorts {
+    pub(crate) status_watch: Option<std::sync::Arc<dyn ManagedToolRuntimePort>>,
+    pub(crate) child_creation: Option<std::sync::Arc<dyn ManagedToolRuntimePort>>,
+    pub(crate) interrupt: Option<std::sync::Arc<dyn ManagedToolRuntimePort>>,
+    pub(crate) monitor: Option<std::sync::Arc<dyn ManagedToolRuntimePort>>,
+}
+
+pub(crate) struct ManagedToolPortsConfig {
+    pub(crate) wake: std::sync::Arc<tokio::sync::Notify>,
     pub(crate) monitor_dispatch_wake: std::sync::Arc<tokio::sync::Notify>,
-    pub(crate) monitor_runtime:
-        Option<std::sync::Arc<crate::monitor_runtime_wiring::MonitorRuntime>>,
-    pub(crate) account_session:
-        Option<std::sync::Arc<dyn crate::account_session_runtime::AccountSessionPort>>,
-    pub(crate) account_identity_read: Option<std::sync::Arc<dyn ManagedCreationAccountRead>>,
-    pub(crate) lifecycle_ports:
-        Option<std::sync::Arc<dyn crate::agent_lifecycle_runtime::LifecyclePorts>>,
+    pub(crate) runtime_ports: ManagedToolRuntimePorts,
 }
 
 /// This is deliberately pure: journal bookkeeping may call it repeatedly.
@@ -101,7 +129,7 @@ pub fn dispatch(
 /// Callback entry for a retained host worker that owns the local service
 /// bundle. The account worker constructs this path after binding the callback
 /// to its live connection, thread and turn context.
-pub fn dispatch_with_managed_services(
+pub(crate) fn dispatch_with_managed_services(
     store: &RuntimeStore,
     context: &CallbackContext,
     frame: &Frame,
@@ -135,7 +163,6 @@ pub(crate) fn managed_tool_ports(
     )
 }
 
-#[cfg(test)]
 pub(crate) fn managed_tool_ports_with_monitor_wake(
     store: &RuntimeStore,
     context: &CallbackContext,
@@ -147,13 +174,15 @@ pub(crate) fn managed_tool_ports_with_monitor_wake(
         store,
         context,
         frame,
-        wake,
-        ManagedToolRuntimePorts {
+        ManagedToolPortsConfig {
+            wake,
             monitor_dispatch_wake,
-            monitor_runtime: None,
-            account_session: None,
-            account_identity_read: None,
-            lifecycle_ports: None,
+            runtime_ports: ManagedToolRuntimePorts {
+                status_watch: None,
+                child_creation: None,
+                interrupt: None,
+                monitor: None,
+            },
         },
     )
 }
@@ -162,8 +191,7 @@ pub(crate) fn managed_tool_ports_with_runtime(
     store: &RuntimeStore,
     context: &CallbackContext,
     frame: &Frame,
-    wake: std::sync::Arc<tokio::sync::Notify>,
-    runtime_ports: ManagedToolRuntimePorts,
+    config: ManagedToolPortsConfig,
 ) -> Result<impl crate::managed_host_tools::Ports, CallbackError> {
     let Some(request) = model::Input::from_frame(frame)? else {
         return Err(CallbackError::Invalid("Expected a managed tool callback"));
@@ -171,7 +199,7 @@ pub(crate) fn managed_tool_ports_with_runtime(
     if request.method != "item/tool/call" {
         return Err(CallbackError::Invalid("Expected a managed tool callback"));
     }
-    tools::production_ports(store, context, &request, wake, runtime_ports)
+    tools::production_ports(store, context, &request, config)
 }
 
 /// Account workers with a retained host runtime pass its explicit staged-effect

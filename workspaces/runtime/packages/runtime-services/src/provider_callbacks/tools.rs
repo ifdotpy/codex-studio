@@ -395,8 +395,11 @@ pub(super) fn dispatch_with_production_ports(
         store,
         context,
         input,
-        std::sync::Arc::new(tokio::sync::Notify::new()),
-        runtime_ports,
+        crate::provider_callbacks::ManagedToolPortsConfig {
+            wake: std::sync::Arc::new(tokio::sync::Notify::new()),
+            monitor_dispatch_wake: std::sync::Arc::new(tokio::sync::Notify::new()),
+            runtime_ports,
+        },
     )?;
     dispatch_with_ports(store, context, input, now, &ports)
 }
@@ -405,8 +408,7 @@ pub(super) fn production_ports(
     store: &RuntimeStore,
     context: &CallbackContext,
     input: &Input,
-    wake: std::sync::Arc<tokio::sync::Notify>,
-    runtime_ports: crate::provider_callbacks::ManagedToolRuntimePorts,
+    config: crate::provider_callbacks::ManagedToolPortsConfig,
 ) -> Result<services::ProductionPorts, CallbackError> {
     let reader = store.read()?;
     let admission = crate::message_admission::PreparedAdmission::load(&reader, &context.agent)
@@ -417,11 +419,14 @@ pub(super) fn production_ports(
         None
     };
     Ok(services::ProductionPorts::new(
-        context.clone(),
-        room_directory,
-        admission,
-        wake,
-        runtime_ports,
+        services::ProductionPortsConfig {
+            context: context.clone(),
+            room_directory,
+            admission,
+            event_wake: config.wake,
+            monitor_dispatch_wake: config.monitor_dispatch_wake,
+            runtime_ports: config.runtime_ports,
+        },
     ))
 }
 

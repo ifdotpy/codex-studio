@@ -57,19 +57,14 @@ fn send(sender_index: usize, target: &str, id: &str) -> (tempfile::TempDir, Runt
     let admission =
         crate::message_admission::PreparedAdmission::load(&reader, &context.agent).unwrap();
     drop(reader);
-    let ports = ProductionPorts::new(
-        context.clone(),
-        None,
+    let ports = ProductionPorts::new(ProductionPortsConfig {
+        context: context.clone(),
+        room_directory: None,
         admission,
-        std::sync::Arc::new(tokio::sync::Notify::new()),
-        crate::provider_callbacks::ManagedToolRuntimePorts {
-            monitor_dispatch_wake: std::sync::Arc::new(tokio::sync::Notify::new()),
-            monitor_runtime: None,
-            account_session: None,
-            account_identity_read: None,
-            lifecycle_ports: None,
-        },
-    );
+        event_wake: std::sync::Arc::new(tokio::sync::Notify::new()),
+        monitor_dispatch_wake: std::sync::Arc::new(tokio::sync::Notify::new()),
+        runtime_ports: empty_runtime_ports(),
+    });
     let raw: String = store
         .read()
         .unwrap()
@@ -119,19 +114,14 @@ async fn production_release_notifies_the_registry_after_a_committed_send() {
         crate::message_admission::PreparedAdmission::load(&reader, &context.agent).unwrap();
     drop(reader);
     let wake = std::sync::Arc::new(tokio::sync::Notify::new());
-    let ports = ProductionPorts::new(
+    let ports = ProductionPorts::new(ProductionPortsConfig {
         context,
-        None,
+        room_directory: None,
         admission,
-        wake.clone(),
-        crate::provider_callbacks::ManagedToolRuntimePorts {
-            monitor_dispatch_wake: std::sync::Arc::new(tokio::sync::Notify::new()),
-            monitor_runtime: None,
-            account_session: None,
-            account_identity_read: None,
-            lifecycle_ports: None,
-        },
-    );
+        event_wake: wake.clone(),
+        monitor_dispatch_wake: std::sync::Arc::new(tokio::sync::Notify::new()),
+        runtime_ports: empty_runtime_ports(),
+    });
     let mut notified = Box::pin(wake.notified());
     assert!(futures_util::FutureExt::now_or_never(notified.as_mut()).is_none());
     let actor = crate::managed_host_tools::Actor::from_record(
@@ -195,19 +185,14 @@ fn monitor_cancel_release_notifies_only_the_monitor_dispatcher() {
     drop(reader);
     let event_wake = std::sync::Arc::new(tokio::sync::Notify::new());
     let monitor_wake = std::sync::Arc::new(tokio::sync::Notify::new());
-    let ports = ProductionPorts::new(
+    let ports = ProductionPorts::new(ProductionPortsConfig {
         context,
-        None,
+        room_directory: None,
         admission,
-        event_wake.clone(),
-        crate::provider_callbacks::ManagedToolRuntimePorts {
-            monitor_dispatch_wake: monitor_wake.clone(),
-            monitor_runtime: None,
-            account_session: None,
-            account_identity_read: None,
-            lifecycle_ports: None,
-        },
-    );
+        event_wake: event_wake.clone(),
+        monitor_dispatch_wake: monitor_wake.clone(),
+        runtime_ports: empty_runtime_ports(),
+    });
     let mut event_notified = Box::pin(event_wake.notified());
     let mut monitor_notified = Box::pin(monitor_wake.notified());
     assert!(futures_util::FutureExt::now_or_never(event_notified.as_mut()).is_none());
@@ -342,4 +327,13 @@ fn send_to_descendant_is_followup_input_while_parent_and_broadcast_are_chat() {
         )
         .unwrap();
     assert_eq!(chat_count, 1);
+}
+
+fn empty_runtime_ports() -> crate::provider_callbacks::ManagedToolRuntimePorts {
+    crate::provider_callbacks::ManagedToolRuntimePorts {
+        status_watch: None,
+        child_creation: None,
+        interrupt: None,
+        monitor: None,
+    }
 }

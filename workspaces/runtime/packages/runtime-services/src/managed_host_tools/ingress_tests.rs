@@ -8,7 +8,8 @@ use crate::managed_host_tools::{
     PostCommitPort, ReviewPort, SearchPort, SendPort, StatusPort, WakeSignal, WatchMonitorPort,
 };
 use crate::provider_callbacks::{
-    CallbackContext, CallbackDecision, CallbackError, dispatch_with_managed_tools,
+    CallbackContext, CallbackDecision, CallbackError, ManagedToolPortsConfig,
+    ManagedToolRuntimePort, ManagedToolRuntimePorts, dispatch_with_managed_tools,
 };
 use rusqlite::types::ValueRef;
 use rusqlite::{Transaction, params};
@@ -17,7 +18,7 @@ use std::{
     path::PathBuf,
     process::Command,
     sync::{
-        OnceLock,
+        Arc, Mutex, OnceLock,
         atomic::{AtomicBool, AtomicUsize, Ordering},
     },
 };
@@ -338,6 +339,156 @@ fn post_commit_dispatch_saves_receipt_before_reply_and_replay_does_not_dispatch_
     assert_eq!(ports.dispatched.load(Ordering::SeqCst), 1);
 }
 
+struct ScriptedManagedPort {
+    certainty: crate::managed_host_tools::DeliveryCertainty,
+    calls: AtomicUsize,
+    request_ids: Mutex<Vec<String>>,
+}
+
+impl ManagedToolRuntimePort for ScriptedManagedPort {
+    fn dispatch(
+        &self,
+        _: &RuntimeStore,
+        _: &Actor,
+        _: &str,
+        _: &Value,
+        request_id: &str,
+        _: f64,
+    ) -> Result<crate::managed_host_tools::DispatchedOperation, Error> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        self.request_ids.lock().unwrap().push(request_id.to_owned());
+        Ok(crate::managed_host_tools::DispatchedOperation {
+            result: OperationResult {
+                value: json!({"requestId":request_id}),
+                signals: Vec::new(),
+            },
+            certainty: self.certainty,
+            applied: match self.certainty {
+                crate::managed_host_tools::DeliveryCertainty::Written => Some(true),
+                crate::managed_host_tools::DeliveryCertainty::NotSent => Some(false),
+                crate::managed_host_tools::DeliveryCertainty::Unknown => None,
+            },
+        })
+    }
+}
+
+fn managed_ports(
+    status_watch: Option<Arc<dyn ManagedToolRuntimePort>>,
+    child_creation: Option<Arc<dyn ManagedToolRuntimePort>>,
+    interrupt: Option<Arc<dyn ManagedToolRuntimePort>>,
+    monitor: Option<Arc<dyn ManagedToolRuntimePort>>,
+) -> ManagedToolPortsConfig {
+    ManagedToolPortsConfig {
+        wake: Arc::new(tokio::sync::Notify::new()),
+        monitor_dispatch_wake: Arc::new(tokio::sync::Notify::new()),
+        runtime_ports: ManagedToolRuntimePorts {
+            status_watch,
+            child_creation,
+            interrupt,
+            monitor,
+        },
+    }
+}
+
+#[test]
+fn managed_runtime_ports_preserve_delivery_certainty_identity_and_unknown_replay() {
+    for certainty in [
+        crate::managed_host_tools::DeliveryCertainty::Written,
+        crate::managed_host_tools::DeliveryCertainty::NotSent,
+        crate::managed_host_tools::DeliveryCertainty::Unknown,
+    ] {
+        let (_root, store, context) = fixture();
+        let fake = Arc::new(ScriptedManagedPort {
+            certainty,
+            calls: AtomicUsize::new(0),
+            request_ids: Mutex::new(Vec::new()),
+        });
+        let config = managed_ports(Some(fake.clone()), None, None, None);
+        let frame = call(
+            &context,
+            "stable-dispatch-id",
+            "orchestration_status",
+            json!({}),
+        );
+        let ports = crate::provider_callbacks::managed_tool_ports_with_runtime(
+            &store, &context, &frame, config,
+        )
+        .unwrap();
+        let first = dispatch_with_managed_tools(&store, &context, &frame, 20.0, &ports).unwrap();
+        assert!(matches!(first, CallbackDecision::Answer(_)));
+        let replay = dispatch_with_managed_tools(&store, &context, &frame, 21.0, &ports).unwrap();
+        assert!(matches!(replay, CallbackDecision::Answer(_)));
+        assert_eq!(fake.calls.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            *fake.request_ids.lock().unwrap(),
+            ["thread-0:stable-dispatch-id"]
+        );
+        let receipt = studio_runtime_store::system_reads::all(
+            &store.read().unwrap(),
+            "runtime_tool_requests",
+        )
+        .unwrap()
+        .into_iter()
+        .find(|row| row["callId"] == "stable-dispatch-id")
+        .unwrap();
+        let expected = match certainty {
+            crate::managed_host_tools::DeliveryCertainty::Written => "written",
+            crate::managed_host_tools::DeliveryCertainty::NotSent => "not_sent",
+            crate::managed_host_tools::DeliveryCertainty::Unknown => "unknown",
+        };
+        assert_eq!(receipt["deliveryCertainty"], expected);
+    }
+}
+
+#[test]
+fn each_missing_managed_runtime_port_refuses_without_domain_writes() {
+    let cases = [
+        (
+            "orchestration_status",
+            json!({}),
+            "model-directory/status-and-dispatch-capacity",
+        ),
+        (
+            "orchestration_spawn",
+            json!({"agents":[{"name":"W","prompt":"p"}]}),
+            "agent-create/worker-driver",
+        ),
+        (
+            "orchestration_interrupt",
+            json!({"agent_id":"worker"}),
+            "agent-lifecycle/production-ports",
+        ),
+        (
+            "orchestration_monitor",
+            json!({"command":"true"}),
+            "monitor-runtime/managed-tools",
+        ),
+        (
+            "orchestration_monitor_input",
+            json!({"monitor_id":"m","text":"x"}),
+            "monitor-runtime/managed-input",
+        ),
+    ];
+    for (index, (tool, args, refusal)) in cases.into_iter().enumerate() {
+        let (_root, store, context) = fixture();
+        let before = application_table_snapshot(&store);
+        let frame = call(&context, &format!("missing-port-{index}"), tool, args);
+        let ports = crate::provider_callbacks::managed_tool_ports_with_runtime(
+            &store,
+            &context,
+            &frame,
+            managed_ports(None, None, None, None),
+        )
+        .unwrap();
+        let decision = dispatch_with_managed_tools(&store, &context, &frame, 20.0, &ports).unwrap();
+        assert!(
+            format!("{decision:?}").contains(refusal),
+            "{tool}: {decision:?}"
+        );
+        assert_eq!(application_table_snapshot(&store), before, "{tool}");
+    }
+}
+
 fn call(context: &CallbackContext, rpc: &str, tool: &str, args: Value) -> Frame {
     Frame::Request(RequestFrame {
         id: RequestId::String(format!("rpc-{rpc}")),
@@ -564,6 +715,22 @@ fn named_refusals_leave_all_application_tables_unchanged() {
             "orchestration_interrupt",
             json!({"agent_id":descendant}),
             "agent-lifecycle/production-ports",
+        ),
+        (
+            "orchestration_status",
+            json!({}),
+            "model-directory/status-and-dispatch-capacity",
+        ),
+        (
+            "orchestration_watch",
+            json!({"action":"list"}),
+            "model-directory/status-and-dispatch-capacity",
+        ),
+        (
+            "orchestration_monitor",
+            json!({"command":"true"}),
+            "workspace-state/monitor-admission",
+
         ),
         (
             "orchestration_monitor_input",
@@ -1123,6 +1290,7 @@ fn startup_reconciles_reserved_callback_once() {
         .unwrap()
         .query_row(
             "SELECT count(*) FROM runtime_tool_requests WHERE json_extract(record,'$.callId')='managed-0' AND json_extract(record,'$.tool')='orchestration_send' AND json_extract(record,'$.stage')='running' AND json_extract(record,'$.outcome')='pending'",
+
             [],
             |row| row.get(0),
         )
