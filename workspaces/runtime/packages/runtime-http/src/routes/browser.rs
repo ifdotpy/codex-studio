@@ -174,7 +174,7 @@ mod tests {
     fn forwarded_and_non_loopback_callers_are_not_local_windows() {
         let headers = HeaderMap::from_iter([(
             axum::http::HeaderName::from_static("host"),
-            "127.0.0.1:12345".parse().unwrap(),
+            "127.0.0.1:12345".parse().expect("host header"),
         )]);
         assert!(!local_window(
             &headers,
@@ -183,11 +183,11 @@ mod tests {
         let forwarded = HeaderMap::from_iter([
             (
                 axum::http::HeaderName::from_static("host"),
-                "127.0.0.1:12345".parse().unwrap(),
+                "127.0.0.1:12345".parse().expect("host header"),
             ),
             (
                 axum::http::HeaderName::from_static("x-forwarded-for"),
-                "127.0.0.1".parse().unwrap(),
+                "127.0.0.1".parse().expect("forwarded address"),
             ),
         ]);
         assert!(!local_window(

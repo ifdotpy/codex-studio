@@ -1,3 +1,5 @@
+#![allow(clippy::unwrap_used)]
+
 #[path = "multi_server/common.rs"]
 mod common;
 use common::*;
@@ -145,6 +147,11 @@ fn received_remote_event_replays_cached_receipt_after_restart_without_duplicate_
         extra: Default::default(),
     };
     parent.extra.insert("autoWake".into(), json!(true));
+    parent.extra.insert(
+        "cwd".into(),
+        json!(std::env::current_dir().unwrap().display().to_string()),
+    );
+    parent.extra.insert("concurrency".into(), json!(32));
     parent.extra.insert("moveImportPending".into(), json!(true));
     let link = json!({"id":"test-link","side":"home","server":"peer-server","home":"local-server","parent":"test-parent","parentEpoch":3,"workers":[]});
     store
@@ -224,6 +231,11 @@ fn moved_worker_send_reaches_a_local_descendant_once() {
         extra: Default::default(),
     };
     parent.extra.insert("autoWake".into(), json!(true));
+    parent.extra.insert(
+        "cwd".into(),
+        json!(std::env::current_dir().unwrap().display().to_string()),
+    );
+    parent.extra.insert("concurrency".into(), json!(32));
     let mut worker = AgentRecord {
         id: AgentId::from("remote-worker"),
         root_id: AgentId::from("move-parent"),
@@ -232,6 +244,10 @@ fn moved_worker_send_reaches_a_local_descendant_once() {
         extra: Default::default(),
     };
     worker.extra.insert("autoWake".into(), json!(true));
+    worker.extra.insert(
+        "cwd".into(),
+        json!(std::env::current_dir().unwrap().display().to_string()),
+    );
     worker.extra.insert("movedTo".into(), json!("server-two"));
     worker.extra.insert(
         "remoteWorker".into(),
@@ -245,6 +261,10 @@ fn moved_worker_send_reaches_a_local_descendant_once() {
         extra: Default::default(),
     };
     child.extra.insert("autoWake".into(), json!(true));
+    child.extra.insert(
+        "cwd".into(),
+        json!(std::env::current_dir().unwrap().display().to_string()),
+    );
     child
         .extra
         .insert("parentId".into(), json!("remote-worker"));
@@ -295,6 +315,232 @@ fn moved_worker_send_reaches_a_local_descendant_once() {
         )
         .unwrap();
     assert_eq!(count, 1);
+}
+
+#[test]
+fn remote_worker_call_refuses_stopped_parent_without_writes() {
+    use std::sync::Arc;
+    use studio_runtime_services::multi_server_orchestration::{
+        OrchestrationEffects, RuntimeOrchestrationEffects,
+    };
+    use studio_runtime_store::{AgentId, AgentRecord, AgentRepository, AgentStatus};
+
+    let (_root, store) = store();
+    let mut parent = AgentRecord {
+        id: AgentId::from("stopped-parent"),
+        root_id: AgentId::from("stopped-parent"),
+        epoch: 4,
+        status: AgentStatus::Idle,
+        extra: Default::default(),
+    };
+    parent.extra.insert("autoWake".into(), json!(false));
+    let mut worker = AgentRecord {
+        id: AgentId::from("stopped-worker"),
+        root_id: AgentId::from("stopped-parent"),
+        epoch: 2,
+        status: AgentStatus::Idle,
+        extra: Default::default(),
+    };
+    worker.extra.insert("autoWake".into(), json!(true));
+    worker.extra.insert("movedTo".into(), json!("server-two"));
+    worker.extra.insert(
+        "remoteWorker".into(),
+        json!({"server":"peer-server","link":"stopped-link"}),
+    );
+    store.transaction(|tx| {
+        tx.execute("INSERT INTO runtime_server_links(id,record) VALUES('stopped-link',?1)", [json!({"side":"home","server":"peer-server","parent":"stopped-parent","parentEpoch":3,"workers":["stopped-worker"]}).to_string()])?;
+        AgentRepository::put(tx, &parent)?;
+        AgentRepository::put(tx, &worker)?;
+        Ok::<_, studio_runtime_store::StoreError>(())
+    }).expect("stopped parent fixture");
+    let effects = RuntimeOrchestrationEffects::new(Arc::clone(&store));
+    let request = json!({"requestId":"stopped-call","action":"message","payload":{"link":"stopped-link","worker":"stopped-worker","epoch":2,"parentEpoch":3,"args":{}}});
+    let before = rows(&store);
+    assert_eq!(
+        effects
+            .execute("peer-server", &request)
+            .expect_err("parent stopped")
+            .status(),
+        409
+    );
+    assert_eq!(
+        rows(&store),
+        before,
+        "stale or stopped parent causes no writes"
+    );
+}
+
+#[test]
+fn child_result_requires_link_membership_and_updates_proxy() {
+    use std::sync::Arc;
+    use studio_runtime_services::multi_server_orchestration::{
+        OrchestrationEffects, RuntimeOrchestrationEffects,
+    };
+    use studio_runtime_store::{AgentId, AgentRecord, AgentRepository, AgentStatus};
+
+    let (_root, store) = store();
+    let mut parent = AgentRecord {
+        id: AgentId::from("result-parent"),
+        root_id: AgentId::from("result-parent"),
+        epoch: 3,
+        status: AgentStatus::Idle,
+        extra: Default::default(),
+    };
+    parent.extra.insert("autoWake".into(), json!(true));
+    let mut child = AgentRecord {
+        id: AgentId::from("result-child"),
+        root_id: AgentId::from("result-parent"),
+        epoch: 2,
+        status: AgentStatus::Idle,
+        extra: Default::default(),
+    };
+    child.extra.insert("lastAnswer".into(), json!("old"));
+    store.transaction(|tx| {
+        tx.execute("INSERT INTO runtime_server_links(id,record) VALUES('result-link',?1)", [json!({"side":"home","server":"peer-server","parent":"result-parent","parentEpoch":3,"workers":["result-child"]}).to_string()])?;
+        AgentRepository::put(tx, &parent)?;
+        AgentRepository::put(tx, &child)?;
+        Ok::<_, studio_runtime_store::StoreError>(())
+    }).expect("result link and proxy");
+    let effects = RuntimeOrchestrationEffects::new(Arc::clone(&store));
+    let request = |id: &str, result: &str| json!({"requestId":id,"action":"event","payload":{"link":"result-link","parentEpoch":3,"kind":"child_result","text":json!({"agent_id":"result-child","result":result}).to_string()}});
+    effects
+        .execute("peer-server", &request("child-result-1", "done"))
+        .expect("linked child result");
+    let connection = store.read().expect("stored result");
+    let proxy = AgentRepository::get(&connection, &AgentId::from("result-child"))
+        .unwrap()
+        .unwrap();
+    assert_eq!(proxy.extra.get("lastAnswer"), Some(&json!("done")));
+    assert_eq!(
+        proxy.extra.get("lastCompletedTurn"),
+        Some(&json!("child-result-1"))
+    );
+    drop(connection);
+    store.transaction(|tx| {
+        tx.execute("UPDATE runtime_server_links SET record=?1 WHERE id='result-link'", [json!({"side":"home","server":"peer-server","parent":"result-parent","parentEpoch":3,"workers":[]}).to_string()])?;
+        Ok::<_, studio_runtime_store::StoreError>(())
+    }).expect("unlink child");
+    let before = rows(&store);
+    assert_eq!(
+        effects
+            .execute("peer-server", &request("child-result-2", "bad"))
+            .expect_err("unlinked child")
+            .status(),
+        403
+    );
+    assert_eq!(
+        rows(&store),
+        before,
+        "unlinked result refuses without writes"
+    );
+}
+
+#[test]
+fn browser_callback_matches_python_and_replays_without_second_loopback_relay() {
+    use sha2::Digest;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::sync::Arc;
+    use std::time::Duration;
+    use studio_runtime_services::multi_server_auth::{AccessError, refused};
+    use studio_runtime_services::multi_server_orchestration::{
+        OrchestrationDriver, PairedTransport, RuntimeOrchestrationEffects,
+    };
+    struct NoTransport;
+    impl PairedTransport for NoTransport {
+        fn exchange(&self, _: &str, _: &Value, _: Duration) -> Result<Value, AccessError> {
+            Err(refused(503, "unused", "transport unused in receive test"))
+        }
+    }
+    let expected = &fixture().data["browserCallback"];
+    let bridge_id = "0123456789abcdef0123456789abcdef";
+    let token = "generated-browser-forward-token";
+    let request_id = uuid::Uuid::new_v5(
+        &uuid::Uuid::NAMESPACE_URL,
+        format!("studio-browser-open:{bridge_id}").as_bytes(),
+    )
+    .to_string();
+    let listener = TcpListener::bind("127.0.0.1:0").expect("loopback callback fixture");
+    let port = listener.local_addr().unwrap().port();
+    let relay = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("one callback relay");
+        let mut request = [0; 1024];
+        let count = stream.read(&mut request).expect("callback request");
+        assert!(
+            String::from_utf8_lossy(&request[..count])
+                .starts_with("GET /callback?code=ok HTTP/1.1")
+        );
+        stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 9\r\nConnection: close\r\n\r\nsigned in").expect("callback response");
+    });
+    let (_root, store) = store();
+    let mut record = json!({"id":request_id,"method":"browser/open","status":"answered","params":{"bridgeId":bridge_id,"forward":{"tokenHash":""},"redirect":{"host":"127.0.0.1","port":port}}});
+    let digest = sha2::Sha256::digest(token.as_bytes());
+    let digest = digest
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    record["params"]["forward"]["tokenHash"] = json!(digest);
+    store
+        .transaction(|tx| {
+        tx.execute(
+            "INSERT INTO runtime_requests(id,record) VALUES(?1,?2) ON CONFLICT(id) DO UPDATE SET record=excluded.record",
+                rusqlite::params![request_id, record.to_string()],
+            )?;
+            Ok::<_, studio_runtime_store::StoreError>(())
+        })
+        .expect("saved browser callback request");
+    let driver = OrchestrationDriver::new(
+        Arc::clone(&store),
+        Arc::new(NoTransport),
+        Arc::new(RuntimeOrchestrationEffects::new(Arc::clone(&store))),
+    );
+    let envelope = json!({"requestId":"browser-callback:stable-1","action":"browser_callback","payload":{"bridgeId":bridge_id,"token":token,"target":"/callback?code=ok","headers":{"accept":"text/plain"}}});
+    let first = driver
+        .receive("peer-server", &envelope, 100)
+        .expect("valid callback relayed");
+    let expected_result = expected["valid"].clone();
+    assert_eq!(
+        first.to_value("browser-callback:stable-1")["value"],
+        expected_result
+    );
+    let replay = driver
+        .receive("peer-server", &envelope, 101)
+        .expect("cached callback receipt");
+    assert_eq!(first, replay);
+    relay.join().expect("local relay server");
+
+    use studio_runtime_services::multi_server_orchestration::{
+        OrchestrationEffects, RuntimeOrchestrationEffects as Effects,
+    };
+    let effects = Effects::new(Arc::clone(&store));
+    for (label, payload, status) in [
+        (
+            "wrongToken",
+            json!({"bridgeId":bridge_id,"token":"wrong","target":"/callback","headers":{}}),
+            403,
+        ),
+        (
+            "unknownBridge",
+            json!({"bridgeId":"fedcba9876543210fedcba9876543210","token":token,"target":"/callback","headers":{}}),
+            404,
+        ),
+    ] {
+        let request = json!({"requestId":format!("browser-{label}"),"action":"browser_callback","payload":payload});
+        let before = rows(&store);
+        let error = effects
+            .execute("peer-server", &request)
+            .expect_err("callback refused");
+        assert_eq!(error.status(), status);
+        assert_eq!(rows(&store), before, "{label} refusal has no writes");
+        assert_eq!(
+            expected[label]["refused"],
+            if status == 403 {
+                "PermissionError"
+            } else {
+                "ValueError"
+            }
+        );
+    }
 }
 
 #[test]

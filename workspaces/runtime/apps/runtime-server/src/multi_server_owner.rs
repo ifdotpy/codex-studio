@@ -72,15 +72,15 @@ fn tailscale_json(args: &[&str]) -> Result<Value, AccessError> {
                 );
             }
             Ok(None) | Err(_) => {
-                let _ = child.kill();
-                let _ = child.wait();
+                drop(child.kill());
+                drop(child.wait());
                 drop(reader);
                 return Err(unavailable());
             }
         }
     };
     if !status.success() {
-        let _ = reader.join();
+        drop(reader.join());
         return Err(unavailable());
     }
     let (bytes, too_large) = receiver

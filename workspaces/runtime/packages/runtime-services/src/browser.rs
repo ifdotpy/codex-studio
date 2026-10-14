@@ -13,7 +13,9 @@ use hyper::header::{CONNECTION, CONTENT_LENGTH, CONTENT_TYPE, HeaderName, Header
 use hyper::service::service_fn;
 use hyper::{Method, Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
+use rusqlite::OptionalExtension;
 use serde_json::{Map, Value, json};
+use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, TcpListener};
@@ -22,6 +24,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use studio_runtime_store::RuntimeStore;
 use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::net::TcpListener as TokioTcpListener;
@@ -162,6 +165,224 @@ impl ActiveForward {
 pub struct BrowserForwarder {
     exchange: Arc<dyn PairedExchange>,
     forwards: Mutex<HashMap<String, ActiveForward>>,
+}
+
+/// Receives a redirect relayed by a paired server and forwards it to the
+/// loopback callback recorded with the original browser request.
+pub struct BrowserCallbackReceiver {
+    store: Arc<RuntimeStore>,
+}
+
+impl BrowserCallbackReceiver {
+    pub fn new(store: Arc<RuntimeStore>) -> Self {
+        Self { store }
+    }
+
+    pub fn receive(&self, payload: &Value) -> Result<Value, crate::multi_server_auth::AccessError> {
+        use crate::multi_server_auth::refused;
+        let bridge_id = payload
+            .get("bridgeId")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let token = payload
+            .get("token")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let target = payload
+            .get("target")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        if bridge_id.len() != 32
+            || !bridge_id
+                .bytes()
+                .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+            || token.is_empty()
+            || !target.starts_with('/')
+            || target.starts_with("//")
+            || target.len() > 2048
+            || target.bytes().any(|b| b.is_ascii_control() || b == b'#')
+        {
+            return Err(refused(
+                400,
+                "invalid_browser_callback",
+                "The browser callback is invalid",
+            ));
+        }
+        let request_id = uuid::Uuid::new_v5(
+            &uuid::Uuid::NAMESPACE_URL,
+            format!("studio-browser-open:{bridge_id}").as_bytes(),
+        )
+        .to_string();
+        let connection = self.store.read().map_err(|_| {
+            refused(
+                503,
+                "browser_request_unavailable",
+                "The sign-in request is unavailable",
+            )
+        })?;
+        let raw: Option<String> = connection
+            .query_row(
+                "SELECT record FROM runtime_requests WHERE id=?1",
+                [request_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|_| {
+                refused(
+                    503,
+                    "browser_request_unavailable",
+                    "The sign-in request is unavailable",
+                )
+            })?;
+        drop(connection);
+        let raw = raw.ok_or_else(|| {
+            refused(
+                404,
+                "browser_request_unknown",
+                "The sign-in request is unknown",
+            )
+        })?;
+        let record: Value = serde_json::from_str(&raw).map_err(|_| {
+            refused(
+                503,
+                "browser_request_invalid",
+                "The sign-in request is invalid",
+            )
+        })?;
+        let params = record.get("params").ok_or_else(|| {
+            refused(
+                503,
+                "browser_request_invalid",
+                "The sign-in request is invalid",
+            )
+        })?;
+        if record.get("method").and_then(Value::as_str) != Some("browser/open")
+            || params.get("bridgeId").and_then(Value::as_str) != Some(bridge_id)
+        {
+            return Err(refused(
+                404,
+                "browser_request_unknown",
+                "The sign-in request is unknown",
+            ));
+        }
+        let expected = params
+            .pointer("/forward/tokenHash")
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                refused(
+                    403,
+                    "browser_token_invalid",
+                    "The sign-in forward token is not valid",
+                )
+            })?;
+        let actual = Sha256::digest(token.as_bytes())
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        if expected.len() != actual.len()
+            || expected
+                .bytes()
+                .zip(actual.bytes())
+                .fold(0u8, |diff, (a, b)| diff | (a ^ b))
+                != 0
+        {
+            return Err(refused(
+                403,
+                "browser_token_invalid",
+                "The sign-in forward token is not valid",
+            ));
+        }
+        let redirect = params.get("redirect").ok_or_else(|| {
+            refused(
+                404,
+                "browser_redirect_missing",
+                "The sign-in redirect is unavailable",
+            )
+        })?;
+        let host = redirect
+            .get("host")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let port = redirect
+            .get("port")
+            .and_then(Value::as_u64)
+            .filter(|p| (1024..=65535).contains(p))
+            .ok_or_else(|| {
+                refused(
+                    503,
+                    "browser_redirect_invalid",
+                    "The sign-in redirect is invalid",
+                )
+            })?;
+        if !matches!(host, "127.0.0.1" | "localhost" | "::1") {
+            return Err(refused(
+                403,
+                "browser_redirect_forbidden",
+                "The sign-in redirect is not local",
+            ));
+        }
+        let headers = payload.get("headers").and_then(Value::as_object);
+        let url_host = if host == "::1" { "[::1]" } else { host };
+        let url = format!("http://{url_host}:{port}{target}");
+        let config = ureq::Agent::config_builder()
+            .http_status_as_error(false)
+            .max_redirects(0)
+            .timeout_global(Some(Duration::from_secs(20)))
+            .build();
+        let agent = ureq::Agent::new_with_config(config);
+        let mut request = agent.get(&url);
+        if let Some(headers) = headers {
+            for name in SENT_HEADERS {
+                if let Some(value) = headers
+                    .get(name)
+                    .and_then(Value::as_str)
+                    .filter(|v| v.len() <= HEADER_LIMIT && !v.bytes().any(|b| b.is_ascii_control()))
+                {
+                    request = request.header(name, value);
+                }
+            }
+        }
+        let response = request.call().map_err(|_| {
+            refused(
+                503,
+                "browser_callback_unknown",
+                "The browser callback outcome is unknown",
+            )
+        })?;
+        let status = response.status().as_u16();
+        let content_type = response
+            .headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("text/html; charset=utf-8")
+            .to_owned();
+        let body = response
+            .into_body()
+            .into_with_config()
+            .limit(BODY_LIMIT as u64)
+            .read_to_vec()
+            .map_err(|_| {
+                refused(
+                    503,
+                    "browser_callback_unknown",
+                    "The browser callback outcome is unknown",
+                )
+            })?;
+        let body = String::from_utf8(body).map_err(|_| {
+            refused(
+                502,
+                "browser_callback_invalid",
+                "The browser callback response is invalid",
+            )
+        })?;
+        Ok(json!({"status":status,"contentType":content_type,"body":body,"done":true}))
+    }
+}
+
+impl crate::multi_server_orchestration::BrowserCallbackEffect for BrowserCallbackReceiver {
+    fn receive(&self, envelope: &Value) -> Result<Value, crate::multi_server_auth::AccessError> {
+        self.receive(&envelope["payload"])
+    }
 }
 
 impl BrowserForwarder {

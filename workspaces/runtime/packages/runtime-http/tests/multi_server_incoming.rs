@@ -1,3 +1,5 @@
+#![allow(clippy::unwrap_used)]
+
 #[path = "../../runtime-services/tests/multi_server/common.rs"]
 mod common;
 use axum::body::{Body, to_bytes};
@@ -225,11 +227,11 @@ async fn browser_forward_opens_local_window_without_database_writes() {
     let app = router(state).expect("router");
     let listener = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
         .expect("free loopback port");
-    let port = listener.local_addr().unwrap().port();
+    let port = listener.local_addr().expect("listener address").port();
     drop(listener);
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
+        .expect("system clock")
         .as_secs_f64();
     let body = serde_json::json!({
         "server":"paired-test-peer",
@@ -251,7 +253,7 @@ async fn browser_forward_opens_local_window_without_database_writes() {
             studio_runtime_http::schema::api_schema_hash(),
         )
         .body(Body::from(body.to_string()))
-        .unwrap();
+        .expect("browser request");
     request.extensions_mut().insert(ConnectInfo(
         "127.0.0.1:4321".parse::<std::net::SocketAddr>().unwrap(),
     ));

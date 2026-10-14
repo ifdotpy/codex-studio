@@ -209,16 +209,37 @@ pub trait OrchestrationEffects: Send + Sync {
     fn execute(&self, principal: &str, envelope: &Value) -> Result<ExchangeOutcome, AccessError>;
 }
 
+pub trait BrowserCallbackEffect: Send + Sync {
+    fn receive(&self, envelope: &Value) -> Result<Value, AccessError>;
+}
+
 /// Idempotent receiver effects shared by the signed HTTP route and tests.
 /// Additional actions are enabled only when their production adapters are
 /// installed; unsupported actions remain a no-write refusal.
 pub struct RuntimeOrchestrationEffects {
     store: Arc<RuntimeStore>,
+    browser_callback: Arc<dyn BrowserCallbackEffect>,
 }
 
 impl RuntimeOrchestrationEffects {
     pub fn new(store: Arc<RuntimeStore>) -> Self {
-        Self { store }
+        let browser_callback = Arc::new(crate::browser::BrowserCallbackReceiver::new(Arc::clone(
+            &store,
+        )));
+        Self {
+            store,
+            browser_callback,
+        }
+    }
+
+    pub fn with_browser_callback(
+        store: Arc<RuntimeStore>,
+        browser_callback: Arc<dyn BrowserCallbackEffect>,
+    ) -> Self {
+        Self {
+            store,
+            browser_callback,
+        }
     }
 
     fn worker_call(
@@ -244,6 +265,24 @@ impl RuntimeOrchestrationEffects {
             .duration_since(std::time::UNIX_EPOCH)
             .map_err(|_| refused(503, "clock_unavailable", "The system clock is unavailable"))?
             .as_secs_f64();
+        let move_admission = if action == "move_send" {
+            let target_id = args
+                .get("agent_id")
+                .and_then(Value::as_str)
+                .filter(|id| !id.is_empty())
+                .ok_or_else(|| refused(400, "invalid_request", "Invalid move-send request"))?;
+            let connection = self.store.read()?;
+            Some(
+                crate::message_admission::MessageIngressAdmission::load(
+                    &self.store,
+                    &connection,
+                    target_id,
+                )
+                .map_err(|_| refused(503, "send_admission", "The message could not be admitted"))?,
+            )
+        } else {
+            None
+        };
         self.store.transaction_with(|tx| {
             let link_raw: Option<String> = tx
                 .query_row(
@@ -253,25 +292,55 @@ impl RuntimeOrchestrationEffects {
                 )
                 .optional()?;
             let link: Value = serde_json::from_str(link_raw.as_deref().ok_or_else(|| {
-                refused(404, "link_unavailable", "The remote-parent link is unavailable")
+                refused(
+                    404,
+                    "link_unavailable",
+                    "The remote-parent link is unavailable",
+                )
             })?)
             .map_err(|_| refused(503, "invalid_record", "The remote-parent link is invalid"))?;
             if link["side"] != "home"
                 || link["server"] != principal
                 || link["parentEpoch"].as_i64() != Some(parent_epoch)
                 || !link["workers"].as_array().is_some_and(|workers| {
-                    workers.iter().any(|worker| worker.as_str() == Some(worker_id))
+                    workers
+                        .iter()
+                        .any(|worker| worker.as_str() == Some(worker_id))
                 })
             {
-                return Err(refused(403, "link_owner", "The remote-parent link is invalid"));
+                return Err(refused(
+                    403,
+                    "link_owner",
+                    "The remote-parent link is invalid",
+                ));
+            }
+            let parent_id = link.get("parent").and_then(Value::as_str).ok_or_else(|| {
+                refused(503, "invalid_record", "The remote-parent link is invalid")
+            })?;
+            let parent = studio_runtime_store::AgentRepository::get(
+                tx,
+                &studio_runtime_store::AgentId::from(parent_id),
+            )?
+            .ok_or_else(|| refused(404, "parent_unavailable", "The parent agent is unavailable"))?;
+            if parent.epoch as i64 != parent_epoch
+                || parent.extra.get("autoWake") != Some(&Value::Bool(true))
+                || studio_runtime_store::truthy(parent.extra.get("deletedAt"))
+            {
+                return Err(refused(409, "parent_stopped", "The home team was stopped"));
             }
             let worker = studio_runtime_store::AgentRepository::get(
                 tx,
                 &studio_runtime_store::AgentId::from(worker_id),
             )?
-            .ok_or_else(|| refused(404, "worker_unavailable", "The remote worker is unavailable"))?;
+            .ok_or_else(|| {
+                refused(
+                    404,
+                    "worker_unavailable",
+                    "The remote worker is unavailable",
+                )
+            })?;
             let expected_remote = json!({"server":principal,"link":link_id});
-            if worker.epoch as i64 != epoch
+            if worker.epoch != epoch
                 || worker.extra.get("remoteWorker") != Some(&expected_remote)
                 || !studio_runtime_store::truthy(worker.extra.get("movedTo"))
                 || worker.extra.get("autoWake") != Some(&Value::Bool(true))
@@ -280,57 +349,76 @@ impl RuntimeOrchestrationEffects {
                 return Err(refused(409, "worker_stopped", "The worker was stopped"));
             }
             match action {
-                "message" => crate::provider_callbacks::tools::services::messages::send_remote_worker(
-                    tx, worker_id, args, key, now,
-                )
-                .map(ExchangeOutcome::Applied)
-                .map_err(callback_error),
+                "message" => {
+                    crate::provider_callbacks::tools::services::messages::send_remote_worker(
+                        tx, worker_id, args, key, now,
+                    )
+                    .map(ExchangeOutcome::Applied)
+                    .map_err(callback_error)
+                }
                 "move_send" => {
                     let target_id = args
                         .get("agent_id")
                         .and_then(Value::as_str)
                         .filter(|id| !id.is_empty())
-                        .ok_or_else(|| refused(400, "invalid_request", "Invalid move-send request"))?;
+                        .ok_or_else(|| {
+                            refused(400, "invalid_request", "Invalid move-send request")
+                        })?;
                     let message = args
                         .get("text")
                         .and_then(Value::as_str)
                         .map(crate::event_write::python_strip)
                         .filter(|text| !text.is_empty() && text.chars().count() <= 32000)
-                        .ok_or_else(|| refused(400, "invalid_request", "Invalid move-send request"))?;
+                        .ok_or_else(|| {
+                            refused(400, "invalid_request", "Invalid move-send request")
+                        })?;
                     let delivery = args
                         .get("delivery")
                         .and_then(Value::as_str)
                         .unwrap_or("queue");
                     if !matches!(delivery, "queue" | "steer" | "after_tool" | "after_turn") {
-                        return Err(refused(400, "invalid_request", "Invalid move-send delivery mode"));
+                        return Err(refused(
+                            400,
+                            "invalid_request",
+                            "Invalid move-send delivery mode",
+                        ));
                     }
-                    let target = crate::event_write::checked_agent(tx, target_id)
-                        .map_err(|_| refused(404, "target_unavailable", "The target agent is unavailable"))?;
+                    let target =
+                        crate::event_write::checked_agent(tx, target_id).map_err(|_| {
+                            refused(404, "target_unavailable", "The target agent is unavailable")
+                        })?;
                     if target.root_id != worker.root_id
                         || target.id == worker.id
                         || !is_descendant_of(tx, target_id, worker_id)?
                         || target.extra.get("autoWake") != Some(&Value::Bool(true))
                     {
-                        return Err(refused(403, "target_forbidden", "The worker cannot message this agent"));
+                        return Err(refused(
+                            403,
+                            "target_forbidden",
+                            "The worker cannot message this agent",
+                        ));
                     }
-                    let event_id = key.to_owned();
-                    let metadata = json!({"assets":[],"acceptedAt":now,"delivery":delivery,"senderId":worker_id});
-                    tx.execute(
-                        "INSERT OR IGNORE INTO runtime_event_meta(id,record) VALUES(?1,?2)",
-                        params![event_id, metadata.to_string()],
-                    )?;
-                    crate::event_write::enqueue_event(
+                    crate::coordination::send_followup(
                         tx,
-                        &target,
-                        event_id.clone(),
-                        "followup",
-                        message.to_owned(),
+                        target_id,
+                        worker_id,
+                        epoch,
+                        key,
+                        message,
+                        delivery,
                         now,
+                        move_admission.as_ref().ok_or_else(|| {
+                            refused(503, "send_admission", "The message could not be admitted")
+                        })?,
                     )
-                    .map_err(|_| refused(503, "event_unavailable", "The message could not be queued"))?;
-                    Ok(ExchangeOutcome::Applied(json!({"id":event_id,"status":"queued"})))
+                    .map(ExchangeOutcome::Applied)
+                    .map_err(|_| refused(403, "send_refused", "The message was refused"))
                 }
-                _ => Err(refused(501, "orchestration_effect", "The cross-server action is unavailable")),
+                _ => Err(refused(
+                    501,
+                    "orchestration_effect",
+                    "The cross-server action is unavailable",
+                )),
             }
         })
     }
@@ -385,11 +473,20 @@ fn is_descendant_of(
 
 impl OrchestrationEffects for RuntimeOrchestrationEffects {
     fn supports(&self, action: &str) -> bool {
-        matches!(action, "event" | "message" | "move_send")
+        matches!(
+            action,
+            "event" | "message" | "move_send" | "browser_callback"
+        )
     }
 
     fn execute(&self, principal: &str, envelope: &Value) -> Result<ExchangeOutcome, AccessError> {
         let action = text(envelope, "action");
+        if action == "browser_callback" {
+            return self
+                .browser_callback
+                .receive(envelope)
+                .map(ExchangeOutcome::Applied);
+        }
         if matches!(action, "message" | "move_send") {
             return self.worker_call(principal, envelope);
         }
@@ -476,6 +573,48 @@ impl OrchestrationEffects for RuntimeOrchestrationEffects {
                 return Ok(ExchangeOutcome::Applied(
                     json!({"stored":false,"reason":"The parent was stopped"}),
                 ));
+            }
+            if kind == "child_result" {
+                let details: Value = serde_json::from_str(event_text)
+                    .map_err(|_| refused(400, "invalid_request", "Invalid child result event"))?;
+                let child_id = details
+                    .get("agent_id")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| refused(400, "invalid_request", "Invalid child result event"))?;
+                if !link["workers"].as_array().is_some_and(|workers| {
+                    workers
+                        .iter()
+                        .any(|worker| worker.as_str() == Some(child_id))
+                }) {
+                    return Err(refused(
+                        403,
+                        "child_unlinked",
+                        "The result is outside this remote-parent link",
+                    ));
+                }
+                let mut proxy = studio_runtime_store::AgentRepository::get(
+                    tx,
+                    &studio_runtime_store::AgentId::from(child_id),
+                )?
+                .ok_or_else(|| {
+                    refused(
+                        404,
+                        "worker_unavailable",
+                        "The result worker is unavailable",
+                    )
+                })?;
+                proxy.extra.insert(
+                    "lastAnswer".to_owned(),
+                    details
+                        .get("result")
+                        .or_else(|| details.get("reason"))
+                        .cloned()
+                        .unwrap_or_else(|| json!("")),
+                );
+                proxy
+                    .extra
+                    .insert("lastCompletedTurn".to_owned(), json!(key));
+                studio_runtime_store::AgentRepository::put(tx, &proxy)?;
             }
             let existing: Option<(String, String, String, f64, i64)> = tx
                 .query_row(
@@ -648,7 +787,7 @@ fn peer_replay_safe(action: &str) -> bool {
 
 fn peer_retry_delay(attempts: i64) -> i64 {
     (5_u64
-        .saturating_mul(1_u64 << attempts.max(0).min(6) as u32)
+        .saturating_mul(1_u64 << attempts.clamp(0, 6) as u32)
         .min(300)) as i64
 }
 
@@ -919,6 +1058,7 @@ impl OrchestrationDriver {
         }
         Ok(count)
     }
+    #[allow(clippy::too_many_arguments)]
     fn finish(
         &self,
         table: &str,

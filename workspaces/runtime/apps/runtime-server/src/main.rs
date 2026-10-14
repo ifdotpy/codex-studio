@@ -267,7 +267,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             .duration_since(std::time::UNIX_EPOCH)
                             .map(|value| value.as_secs() as i64)
                             .unwrap_or_default();
-                        let _ = tokio::task::spawn_blocking(move || driver.pump_due(now)).await;
+                        drop(tokio::task::spawn_blocking(move || driver.pump_due(now)).await);
                     }
                 }
             }
@@ -288,7 +288,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 _ = tick.tick() => {
                     let store = Arc::clone(&federation_store);
                     let cancelled = Arc::clone(&federation_stop);
-                    let _ = tokio::task::spawn_blocking(move || {
+                    if let Err(error) = tokio::task::spawn_blocking(move || {
                         let Ok(snapshot) = studio_runtime_services::federation::snapshot(&store) else { return };
                         let now = std::time::SystemTime::now()
                             .duration_since(std::time::UNIX_EPOCH)
@@ -298,12 +298,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             if peer["status"] != "approved" { continue; }
                             let Some(id) = peer["id"].as_str() else { continue };
                             let mut transport = studio_runtime_services::federation_delivery::HttpsFederationTransport;
-                            let _ = studio_runtime_services::federation_delivery::pump_peer(
+                            if let Err(error) = studio_runtime_services::federation_delivery::pump_peer(
                                 &store, id, now, &mut transport, &cancelled,
-                            );
+                            ) {
+                                eprintln!("federation delivery failed: {error}");
+                            }
                             if cancelled.load(std::sync::atomic::Ordering::Acquire) { break; }
                         }
-                    }).await;
+                    }).await {
+                        eprintln!("federation delivery worker failed: {error}");
+                    }
                 }
             }
         }
