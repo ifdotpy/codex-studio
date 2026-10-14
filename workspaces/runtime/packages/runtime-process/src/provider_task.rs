@@ -6,7 +6,7 @@ use serde_json::Value;
 use std::{collections::BTreeMap, future::Future, path::PathBuf, time::Duration};
 #[cfg(target_os = "linux")]
 use std::{io, sync::Arc};
-use studio_runtime_providers::{DecodedJournalPayload, decode_journal_entry};
+use studio_runtime_providers::{DecodedJournalPayload, decode_journal_entry, decode_journal_value};
 #[cfg(target_os = "linux")]
 use tokio::sync::Semaphore;
 use tokio::{
@@ -771,11 +771,20 @@ impl AdapterTask {
                     };
                     self.publish();
                 }
-                let bytes = match event.payload.get("supervisorRaw").and_then(Value::as_str) {
-                    Some(raw) => raw.as_bytes().to_vec(),
-                    None => serde_json::to_vec(&event.payload).map_err(SupervisorError::from)?,
+                let raw = event
+                    .payload
+                    .get("supervisorRaw")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned);
+                let decoded = match raw {
+                    Some(raw) => {
+                        decode_journal_entry(event.sequence.0, event.generation.0, raw.into_bytes())
+                    }
+                    None => {
+                        decode_journal_value(event.sequence.0, event.generation.0, event.payload)
+                    }
                 };
-                match decode_journal_entry(event.sequence.0, event.generation.0, bytes).payload {
+                match decoded.payload {
                     DecodedJournalPayload::Frame(frame) => JournalPayload::Frame(frame),
                     DecodedJournalPayload::RawStdout { bytes, error } => {
                         JournalPayload::RawStdout { bytes, error }

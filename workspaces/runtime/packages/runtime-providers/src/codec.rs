@@ -320,17 +320,31 @@ impl LineDecoder {
 }
 
 fn decode_frame(line: &[u8]) -> Result<Frame, CodecError> {
-    let mut object: Map<String, Value> = serde_json::from_slice(line)
+    let object: Map<String, Value> = serde_json::from_slice(line)
         .map_err(|error| CodecError::MalformedJson(error.to_string()))?;
+    decode_object(object).map_err(|(error, _object)| error)
+}
+
+fn decode_object(
+    mut object: Map<String, Value>,
+) -> Result<Frame, (CodecError, Map<String, Value>)> {
     let Some(object_method) = object.get("method") else {
-        let Some(id_value) = object.remove("id") else {
-            return Err(CodecError::MalformedFrame(
-                "expected a method or response id",
+        let Some(id_value) = object.get("id") else {
+            return Err((
+                CodecError::MalformedFrame("expected a method or response id"),
+                object,
             ));
         };
-        let id = serde_json::from_value(id_value).map_err(|_| {
-            CodecError::MalformedFrame("response id must be a string or unsigned integer")
-        })?;
+        let id = match serde_json::from_value(id_value.clone()) {
+            Ok(id) => id,
+            Err(_) => {
+                return Err((
+                    CodecError::MalformedFrame("response id must be a string or unsigned integer"),
+                    object,
+                ));
+            }
+        };
+        object.remove("id");
         let result = object.remove("result");
         let error = object.remove("error");
         let body = if let Some(value) = error {
@@ -345,17 +359,31 @@ fn decode_frame(line: &[u8]) -> Result<Frame, CodecError> {
         });
     };
     let Some(method_name) = object_method.as_str() else {
-        return Err(CodecError::MalformedFrame("method must be a string"));
+        return Err((
+            CodecError::MalformedFrame("method must be a string"),
+            object,
+        ));
     };
     let method_name = method_name.to_owned();
     if let Some(method) = Method::from_str(&method_name) {
-        let id = object.remove("id");
+        let id = match object.get("id") {
+            Some(value) => match serde_json::from_value(value.clone()) {
+                Ok(id) => Some(id),
+                Err(_) => {
+                    return Err((
+                        CodecError::MalformedFrame(
+                            "request id must be a string or unsigned integer",
+                        ),
+                        object,
+                    ));
+                }
+            },
+            None => None,
+        };
+        object.remove("id");
         let params = object.remove("params");
         object.remove("method");
         return if let Some(id) = id {
-            let id = serde_json::from_value(id).map_err(|_| {
-                CodecError::MalformedFrame("request id must be a string or unsigned integer")
-            })?;
             Ok(Frame::Request(RequestFrame {
                 id,
                 method,
@@ -374,6 +402,97 @@ fn decode_frame(line: &[u8]) -> Result<Frame, CodecError> {
         method: method_name,
         fields: object,
     }))
+}
+
+struct JsonByteCounter(usize);
+
+impl std::io::Write for JsonByteCounter {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.0 = self
+            .0
+            .checked_add(bytes.len())
+            .ok_or_else(|| std::io::Error::other("JSON frame size overflow"))?;
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// Decode a supervisor event payload directly from the already parsed JSON
+/// value. Only malformed or oversized payloads are serialized to retain their
+/// raw stdout bytes beside the journal cursor.
+pub fn decode_journal_value(cursor: u64, generation: u64, payload: Value) -> DecodedJournalEntry {
+    let mut byte_count = JsonByteCounter(0);
+    if serde_json::to_writer(&mut byte_count, &payload).is_err() {
+        return raw_value_entry(
+            cursor,
+            generation,
+            payload,
+            CodecError::Serialization("cannot measure JSON payload".to_owned()),
+        );
+    }
+    if byte_count.0 > MAX_FRAME_BYTES {
+        return raw_value_entry(
+            cursor,
+            generation,
+            payload,
+            CodecError::FrameTooLarge {
+                limit: MAX_FRAME_BYTES,
+            },
+        );
+    }
+    let Value::Object(object) = payload else {
+        let error = match serde_json::from_value::<Map<String, Value>>(payload.clone()) {
+            Ok(_) => CodecError::MalformedFrame("expected a protocol object"),
+            Err(error) => CodecError::MalformedJson(error.to_string()),
+        };
+        return raw_value_entry(cursor, generation, payload, error);
+    };
+    match decode_object(object) {
+        Ok(frame) => DecodedJournalEntry {
+            cursor,
+            generation,
+            payload: DecodedJournalPayload::Frame(frame),
+        },
+        Err((error, object)) => raw_object_entry(cursor, generation, object, error),
+    }
+}
+
+fn raw_value_entry(
+    cursor: u64,
+    generation: u64,
+    payload: Value,
+    error: CodecError,
+) -> DecodedJournalEntry {
+    let bytes = match serde_json::to_vec(&payload) {
+        Ok(bytes) => bytes,
+        Err(serialization) => {
+            return DecodedJournalEntry {
+                cursor,
+                generation,
+                payload: DecodedJournalPayload::RawStdout {
+                    bytes: Vec::new(),
+                    error: CodecError::Serialization(serialization.to_string()),
+                },
+            };
+        }
+    };
+    DecodedJournalEntry {
+        cursor,
+        generation,
+        payload: DecodedJournalPayload::RawStdout { bytes, error },
+    }
+}
+
+fn raw_object_entry(
+    cursor: u64,
+    generation: u64,
+    object: Map<String, Value>,
+    error: CodecError,
+) -> DecodedJournalEntry {
+    raw_value_entry(cursor, generation, Value::Object(object), error)
 }
 
 /// Decode a complete supervisor stdout journal record without losing its
