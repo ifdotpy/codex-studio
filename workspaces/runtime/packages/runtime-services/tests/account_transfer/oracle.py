@@ -14,7 +14,7 @@ install_guard(block_processes=True)
 ROOT = Path(__file__).resolve().parents[6]
 sys.path.insert(0, str(ROOT / 'workspaces/runtime/apps/server/src'))
 from codex_account_transfer import AccountTransfers
-from studio_api.agents.router import _public_transfer
+from studio_api.agents.transfer_projection import public_transfer_data
 
 
 class RuntimePort:
@@ -72,7 +72,7 @@ def run(name, command, op, agents):
                 error = str(exc)
     saved = transfers.get(rt.connection, op['id'])
     result = dict(operation=saved, agents={a['id']:rt.agent(a['id']) for a in agents}, followups=rt.followups,
-                  public=_public_transfer(saved).model_dump(mode='json', exclude_unset=True), error=error)
+                  public=public_transfer_data(saved), error=error)
     rt.connection.close()
     return dict(name=name,command=command,**before,expected=result)
 
