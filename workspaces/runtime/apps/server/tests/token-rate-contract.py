@@ -48,6 +48,60 @@ spec.loader.exec_module(fixture)
 
 
 class RateContract(unittest.TestCase):
+    def test_request_cleanup_is_scoped_to_entry_and_turn(self):
+        class NoGlobalIterationDict(dict):
+            def items(self):
+                raise AssertionError('request cleanup must not scan every request')
+
+        rates = TokenRates(lambda: 0)
+        rates.requests = NoGlobalIterationDict()
+        agents = {
+            'a': {'id': 'a', 'threadId': 'thread-a'},
+            'b': {'id': 'b', 'threadId': 'thread-b'},
+        }
+        for agent in agents.values():
+            thread = agent['threadId']
+            rates.observe(agent, 'turn/started', {'turn': {'id': 'turn-1'}}, 'account', thread, 0)
+            rates.request_started('account', thread, agent['threadId'], f'{agent["id"]}-request', 1)
+
+        rates.observe(agents['a'], 'turn/started', {'turn': {'id': 'turn-2'}}, 'account', 'thread-a', 2)
+        self.assertEqual(set(rates.requests), {('account', 'thread-b', 'b-request')})
+        self.assertEqual(rates.request_keys_by_entry, {
+            ('account', 'thread-b', 'thread-b'): {('account', 'thread-b', 'b-request')},
+        })
+
+        rates.request_started('account', 'thread-a', 'thread-a', 'a-new', 3)
+        rates.observe(agents['a'], 'turn/completed', {'turnId': 'turn-2'}, 'account', 'thread-a', 4)
+        self.assertEqual(set(rates.requests), {('account', 'thread-b', 'b-request')})
+        self.assertNotIn(('account', 'thread-a', 'thread-a'), rates.request_keys_by_entry)
+        rates.request_finished('account', 'thread-b', 'b-request', 5)
+        self.assertEqual(rates.requests, {})
+        self.assertEqual(rates.request_keys_by_entry, {})
+
+    def test_request_index_preserves_exact_id_overwrite_and_entry_eviction(self):
+        class NoGlobalIterationDict(dict):
+            def items(self):
+                raise AssertionError('request cleanup must not scan every request')
+
+        rates = TokenRates(lambda: 0)
+        rates.requests = NoGlobalIterationDict()
+        with patch.object(codex_token_rate, 'MAX_RATE_ENTRIES', 1):
+            first = {'id': 'first', 'threadId': 'thread-first'}
+            second = {'id': 'second', 'threadId': 'thread-second'}
+            rates.observe(first, 'turn/started', {'turn': {'id': 'turn-1'}}, 'account', 'connection', 0)
+            rates.request_started('account', 'connection', 'thread-first', 'same-id', 1)
+            rates.observe(second, 'turn/started', {'turn': {'id': 'turn-2'}}, 'account', 'connection', 2)
+            self.assertEqual(rates.requests, {})
+            self.assertEqual(rates.request_keys_by_entry, {})
+
+            rates.request_started('account', 'connection', 'thread-second', 'same-id', 3)
+            rates.request_started('account', 'connection', 'thread-second', 'same-id', 4)
+            request_key = ('account', 'connection', 'same-id')
+            entry_key = ('account', 'connection', 'thread-second')
+            self.assertEqual(rates.requests[request_key][:2], (entry_key, 'turn-2'))
+            self.assertEqual(rates.request_keys_by_entry, {entry_key: {request_key}})
+
+
     def test_pydantic_token_rate_contract_owns_all_per_map_bounds(self):
         self.assertGreaterEqual(MAX_TOKEN_RATE_ENTRIES, MAX_SUBAGENT_CONCURRENCY + 1)
         self.assertGreaterEqual(

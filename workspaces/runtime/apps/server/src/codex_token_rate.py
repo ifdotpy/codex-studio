@@ -196,6 +196,9 @@ class TokenRates:
         self.entries = OrderedDict()
         self.agents = {}
         self.requests = {}
+        # Outstanding request IDs grouped by the entry that owns their turn.
+        # Both maps are updated under self.lock.
+        self.request_keys_by_entry = {}
         self.response_rates = OrderedDict()
         self.pending_response_rates = OrderedDict()
         # Inverted exact-match index; pending-map changes update it under self.lock.
@@ -326,13 +329,34 @@ class TokenRates:
             if rate and rate.active:
                 span = 'request:' + str(request_id)
                 rate.start_tool(span, now)
-                self.requests[(account, connection, str(request_id))] = (key, rate.turn, span)
+                request_key = (account, connection, str(request_id))
+                self._forget_request_locked(request_key)
+                self.requests[request_key] = (key, rate.turn, span)
+                self.request_keys_by_entry.setdefault(key, set()).add(request_key)
         self._publish_if_changed()
+
+    def _forget_request_locked(self, request_key):
+        request = self.requests.pop(request_key, None)
+        if request is None:
+            return None
+        entry_key = request[0]
+        request_keys = self.request_keys_by_entry.get(entry_key)
+        if request_keys is not None:
+            request_keys.discard(request_key)
+            if not request_keys:
+                self.request_keys_by_entry.pop(entry_key, None)
+        return request
+
+    def _prune_entry_requests_locked(self, entry_key, keep):
+        for request_key in tuple(self.request_keys_by_entry.get(entry_key, ())):
+            request = self.requests.get(request_key)
+            if request is None or not keep(request):
+                self._forget_request_locked(request_key)
 
     def request_finished(self, account, connection, request_id, at=None):
         now = at if count(at) is not None else self.clock()
         with self.lock:
-            request = self.requests.pop((account, connection, str(request_id)), None)
+            request = self._forget_request_locked((account, connection, str(request_id)))
             if request:
                 key, turn, span = request
                 entry = self.entries.get(key)
@@ -353,15 +377,14 @@ class TokenRates:
                 old_key, old = self.entries.popitem(last=False)
                 if self.agents.get(old['agent']) == old_key:
                     self.agents.pop(old['agent'], None)
-                self.requests = {key: value for key, value in self.requests.items() if value[0] != old_key}
+                self._prune_entry_requests_locked(old_key, lambda _request: False)
             turn = params.get('turnId') or (params.get('turn') or {}).get('id')
             rate = entry['rate']
             if method == 'turn/started' or (method == 'item/started' and agent.get('inFlight') and turn == agent.get('turnId')):
                 if turn and (rate is None or turn != rate.turn):
                     rate = entry['rate'] = TurnRate(turn, now, timing_valid=method == 'turn/started')
                     rate.baseline = entry['lifetime']
-                    self.requests = {request_id: value for request_id, value in self.requests.items()
-                                     if value[0] != key or value[1] == turn}
+                    self._prune_entry_requests_locked(key, lambda request: request[1] == turn)
             item = params.get('item') or {}
             if method in {'item/started', 'item/completed'} and rate and rate.active and turn == rate.turn:
                 item_id = item.get('id') or params.get('itemId')
@@ -414,8 +437,7 @@ class TokenRates:
                     entry['lifetime'] = total
             if method == 'turn/completed' and rate and rate.active and turn == rate.turn:
                 rate.finish(now)
-                self.requests = {request_id: value for request_id, value in self.requests.items()
-                                 if value[0] != key or value[1] != turn}
+                self._prune_entry_requests_locked(key, lambda request: request[1] != turn)
         self._publish_if_changed()
         if method == 'turn/completed' and rate and rate.turn == turn:
             self._schedule_expiry(key, agent['id'], turn)
