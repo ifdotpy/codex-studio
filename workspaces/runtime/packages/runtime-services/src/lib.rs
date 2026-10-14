@@ -58,6 +58,7 @@ pub mod federation_effects;
 pub mod federation_messaging;
 pub mod historical_input_receipts;
 pub mod message_admission;
+pub mod host_project_runtime;
 pub mod model_catalog;
 pub mod monitor_driver;
 pub mod monitor_output;
@@ -77,6 +78,7 @@ pub mod panels;
 pub mod payload_blobs;
 pub mod payload_store;
 pub mod portable_history;
+pub mod peer_conversion;
 pub mod pricing;
 pub mod progress_panel;
 pub mod progress_watch;
@@ -90,6 +92,11 @@ pub mod questions_reads;
 pub mod questions_write;
 pub mod queue_write;
 pub mod radio;
+pub mod radio_runtime;
+pub use radio_runtime::{
+    Interrupt, InterruptOutcome, InterruptReceipt, InterruptTransport, NativeAcceptanceReceipt,
+    RadioCreation, handoff_interrupt,
+};
 pub mod recovery;
 pub mod recovery_absence;
 pub mod recovery_history;

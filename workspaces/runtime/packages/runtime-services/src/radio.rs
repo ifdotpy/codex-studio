@@ -450,7 +450,7 @@ impl RadioAuthorizationSnapshot {
             return RadioTurnDecision::Deny(RadioDenial::AmbiguousRoomReceipt);
         }
 
-        if let Some(denial) = self.room_denial(room) {
+        if let Some(denial) = self.room_denial(room, true) {
             return RadioTurnDecision::Deny(denial);
         }
         let Some(agent) = self.agents.get(&self.recipient_id) else {
@@ -471,7 +471,17 @@ impl RadioAuthorizationSnapshot {
         RadioTurnDecision::Allow { binding }
     }
 
-    fn room_denial(&self, room: &Room) -> Option<RadioDenial> {
+    /// Validate current participants without inventing an active turn receipt.
+    pub fn validate_room(&self, id: &str, ready: bool) -> Option<RadioDenial> {
+        self.rooms
+            .iter()
+            .find(|room| room.id == id)
+            .map_or(Some(RadioDenial::NoActiveRoomReceipt), |room| {
+                self.room_denial(room, ready)
+            })
+    }
+
+    fn room_denial(&self, room: &Room, ready: bool) -> Option<RadioDenial> {
         if room.direct {
             if room.members.len() != 2
                 || room.members.iter().collect::<BTreeSet<_>>().len() != 2
@@ -510,7 +520,7 @@ impl RadioAuthorizationSnapshot {
             {
                 return Some(RadioDenial::ParticipantUnavailable);
             }
-            if !agent.auto_wake || agent.native_failure_held {
+            if ready && (!agent.auto_wake || agent.native_failure_held) {
                 return Some(RadioDenial::ParticipantStopped);
             }
         }
