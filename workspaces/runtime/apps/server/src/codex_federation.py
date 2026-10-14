@@ -171,6 +171,16 @@ def _observed_whois(headers: Mapping[str, str], remote_address: str) -> str | No
     return None
 
 
+def _queued_outbox_size(db: sqlite3.Connection, peer_id: str) -> tuple[int, int]:
+    row = db.execute(
+        "SELECT count(*),COALESCE(sum(length(CAST(record AS BLOB))),0) "
+        "FROM runtime_federation_outbox "
+        "WHERE peer_id=? AND json_extract(record,'$.status')='queued'",
+        (peer_id,),
+    ).fetchone()
+    return int(row[0]), int(row[1])
+
+
 class FederationService:
     """Durable state and a restartable HTTP delivery pump for one server identity."""
 
@@ -789,15 +799,12 @@ class FederationService:
             if existing.get("kind") != kind or existing.get("payload") != payload:
                 raise ValueError("Federation message ID already has different content")
             return message_id
-        pending = db.execute("SELECT count(*),COALESCE(sum(length(record)),0) FROM runtime_federation_outbox "
-                             "WHERE peer_id=? AND json_extract(record,'$.status')='queued'",
-                             (peer["stateId"],)).fetchone()
+        pending = _queued_outbox_size(db, peer["stateId"])
         if pending[0] >= MAX_QUEUE_ROWS or pending[1] + len(_json(value).encode()) > MAX_QUEUE_BYTES:
             raise ValueError("Federation queue is full. Retry after earlier messages are delivered.")
         db.execute("INSERT INTO runtime_federation_outbox(id,peer_id,record) VALUES(?,?,?)",
                    (message_id, peer["stateId"], _json(value)))
         return message_id
-
     def send_message(self, sender_id: str, room_id: str, text: str, key: str) -> JsonObject:
         if not isinstance(text, str) or not 1 <= len(text.strip()) <= MAX_MESSAGE:
             raise ValueError(f"Message must have 1 to {MAX_MESSAGE} characters")

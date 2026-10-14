@@ -13,6 +13,9 @@ use axum::response::{IntoResponse, Response};
 use futures_util::Stream;
 use futures_util::stream;
 use serde_json::{Value, json};
+use studio_runtime_schema::shared_values::{
+    MAX_SYNC_RESOURCE_COUNT, MAX_SYNC_RESOURCE_QUERY_BYTES,
+};
 use studio_runtime_schema::{SYNC_PROTOCOL_VERSION, SYNC_PROTOCOL_VERSION_TEXT};
 use studio_runtime_services::change_notifications::{ChangeSnapshot, MAX_SAFE_REVISION};
 use studio_runtime_services::progress_watch::{ProgressFileWatch, watch_progress_files};
@@ -25,8 +28,6 @@ use crate::error::ApiError;
 use crate::router::HttpState;
 use crate::schema::{API_SCHEMA_HASH_HEADER, api_schema_hash};
 
-const MAX_RESOURCE_QUERY_BYTES: usize = 65_536;
-const MAX_RESOURCE_COUNT: usize = 256;
 const RESOURCE_HEARTBEAT_SECONDS: u64 = 15;
 static STREAM_DEPENDENCIES: &[Dependency] = &[
     Dependency::new("provider-session/app-server"),
@@ -222,13 +223,13 @@ fn parse_resources(query: &QueryParams, state: &HttpState) -> Result<Vec<Value>,
         .typed_value("resources")
         .and_then(Value::as_str)
         .ok_or_else(invalid)?;
-    if raw.len() > MAX_RESOURCE_QUERY_BYTES {
+    if raw.len() > MAX_SYNC_RESOURCE_QUERY_BYTES {
         return Err(invalid());
     }
     let parsed: Value = serde_json::from_str(raw).map_err(|_| invalid())?;
     let values = parsed.as_array().ok_or_else(invalid)?;
     if values.is_empty()
-        || values.len() > MAX_RESOURCE_COUNT
+        || values.len() > MAX_SYNC_RESOURCE_COUNT
         || values
             .iter()
             .any(|resource| !state.validators.validate_component("ResourceRef", resource))

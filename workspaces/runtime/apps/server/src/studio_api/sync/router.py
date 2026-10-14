@@ -55,6 +55,7 @@ from studio_api.sync.resources.models import (
     ResourceTokenRatesEvent,
     TranscriptResource,
 )
+from codex_shared_values import MAX_SYNC_RESOURCE_COUNT, MAX_SYNC_RESOURCE_QUERY_BYTES
 
 if TYPE_CHECKING:
     from studio_api.context import ApiContext
@@ -63,8 +64,8 @@ SYNC_BATCH_LIMIT = 100
 SYNC_ENTITY_PAGE_LIMIT = 500
 SYNC_STREAM_BYTE_LIMIT = 1_048_576
 RESOURCE_HEARTBEAT_SECONDS = 15.0
-MAX_RESOURCE_QUERY_BYTES = 65_536
-MAX_RESOURCE_COUNT = 256
+MAX_RESOURCE_QUERY_BYTES = MAX_SYNC_RESOURCE_QUERY_BYTES
+MAX_RESOURCE_COUNT = MAX_SYNC_RESOURCE_COUNT
 RESOURCE_REFS_ADAPTER: TypeAdapter[list[ResourceRef]] = TypeAdapter(list[ResourceRef])
 SYNC_READ_RESPONSES = {
     200: {"headers": {**API_CONTEXT_RESPONSE_HEADERS, **API_BOUNDARY_RESPONSE_HEADERS}},

@@ -1,5 +1,6 @@
 //! Compiled persisted-state validators and generated shared runtime values.
 
+pub mod federation_limits_generated;
 pub mod shared_values;
 
 use std::collections::BTreeMap;

@@ -2,6 +2,7 @@
 """Parity and boundary contract for federation message and batch limits."""
 
 import sys
+import sqlite3
 from pathlib import Path
 import unittest
 
@@ -20,7 +21,7 @@ from codex_federation_limits import (
     MAX_ROOM_RATE,
     PROTOCOL_VERSION,
 )
-from codex_federation import MAX_BODY, MAX_BATCH, MAX_MESSAGE, PROTOCOL
+from codex_federation import MAX_BODY, MAX_BATCH, MAX_MESSAGE, PROTOCOL, _queued_outbox_size
 from studio_api.federation.models import (
     CreateRoomRequest,
     PROTOCOL_VERSION as MODEL_PROTOCOL_VERSION,
@@ -39,6 +40,22 @@ from studio_api.generate_federation_limits import OUTPUTS
 
 
 class FederationLimitsContract(unittest.TestCase):
+    def test_queued_outbox_accounting_uses_utf8_bytes(self):
+        with sqlite3.connect(":memory:") as db:
+            db.execute("CREATE TABLE runtime_federation_outbox(peer_id TEXT, record TEXT)")
+            db.execute(
+                "INSERT INTO runtime_federation_outbox VALUES(?,?)",
+                ("peer", '{"status":"queued","text":"é😀"}'),
+            )
+            db.execute(
+                "INSERT INTO runtime_federation_outbox VALUES(?,?)",
+                ("peer", '{"status":"delivered","text":"ignored"}'),
+            )
+            self.assertEqual(
+                _queued_outbox_size(db, "peer"),
+                (1, len('{"status":"queued","text":"é😀"}'.encode("utf-8"))),
+            )
+
     def test_protocol_limits_keep_their_existing_values(self):
         self.assertEqual(MAX_MESSAGE_CODEPOINTS, MAX_AGENT_MESSAGE_CODEPOINTS)
         self.assertEqual(MAX_MESSAGE_CODEPOINTS, 12_000)

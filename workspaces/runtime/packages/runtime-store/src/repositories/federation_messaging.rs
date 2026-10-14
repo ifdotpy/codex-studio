@@ -164,7 +164,45 @@ impl FederationMessagingRepository {
         Ok(db.query_row("SELECT count(*) FROM runtime_federation_inbox WHERE peer_id=?1 AND json_extract(record,'$.room')=?2 AND json_extract(record,'$.kind')='chat-message' AND json_extract(record,'$.created')>=?3",params![peer,room,now-60.0],|r|r.get::<_,u32>(0))? as u64)
     }
     pub fn queue_size(db: &Connection, peer: &str) -> StoreResult<(u64, u64)> {
-        Ok(db.query_row("SELECT count(*),COALESCE(sum(length(record)),0) FROM runtime_federation_outbox WHERE peer_id=?1 AND json_extract(record,'$.status')='queued'",[peer],|r| Ok((u64::from(r.get::<_,u32>(0)?),u64::from(r.get::<_,u32>(1)?))))?)
+        queued_outbox_size(db, peer)
+    }
+}
+
+pub(crate) fn queued_outbox_size(db: &Connection, peer: &str) -> StoreResult<(u64, u64)> {
+    Ok(db.query_row(
+        "SELECT count(*),COALESCE(sum(length(CAST(record AS BLOB))),0) FROM runtime_federation_outbox WHERE peer_id=?1 AND json_extract(record,'$.status')='queued'",
+        [peer],
+        |row| Ok((row.get::<_, u64>(0)?, row.get::<_, u64>(1)?)),
+    )?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::FederationMessagingRepository;
+    use rusqlite::Connection;
+
+    #[test]
+    fn queued_outbox_size_counts_utf8_bytes() {
+        let db = Connection::open_in_memory().expect("open in-memory database");
+        db.execute_batch("CREATE TABLE runtime_federation_outbox(peer_id TEXT, record TEXT);")
+            .expect("create outbox table");
+        let queued = r#"{"status":"queued","text":"é😀"}"#;
+        db.execute(
+            "INSERT INTO runtime_federation_outbox VALUES(?1,?2)",
+            rusqlite::params!["peer", queued],
+        )
+        .expect("insert queued record");
+        db.execute(
+            "INSERT INTO runtime_federation_outbox VALUES(?1,?2)",
+            rusqlite::params!["peer", r#"{"status":"delivered"}"#],
+        )
+        .expect("insert delivered record");
+
+        assert_eq!(
+            FederationMessagingRepository::queue_size(&db, "peer").unwrap(),
+            (1, queued.len() as u64),
+        );
+        assert!(queued.len() > queued.chars().count());
     }
 }
 
