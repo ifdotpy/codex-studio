@@ -1,8 +1,8 @@
 //! Canonical renderer entity views built from records and explicit context.
 
 use serde_json::{Map, Value, json};
-use std::collections::BTreeMap;
-use std::sync::OnceLock;
+use std::collections::{BTreeMap, HashMap};
+use std::sync::{Arc, OnceLock};
 
 use crate::event_write::truthy;
 
@@ -316,22 +316,46 @@ pub fn native_thread_block(record: &Value) -> Option<Value> {
 
 #[derive(Clone, Debug, Default)]
 pub struct RoomViewContext {
-    pub agents: Vec<Value>,
-    pub peer_teams: Vec<Value>,
+    pub agents: Arc<Vec<Value>>,
+    pub peer_teams: Arc<Vec<Value>>,
+    pub active_agent_indices: Arc<HashMap<String, usize>>,
     pub last_message: Option<Value>,
     pub federation: Option<Value>,
+}
+
+impl RoomViewContext {
+    pub(crate) fn new(agents: Vec<Value>, peer_teams: Vec<Value>) -> Self {
+        let active_agent_indices = agents
+            .iter()
+            .enumerate()
+            .filter(|(_, agent)| !truthy(agent.get("deletedAt")))
+            .filter_map(|(index, agent)| {
+                agent
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .map(|id| (id.to_owned(), index))
+            })
+            .collect();
+        Self {
+            agents: Arc::new(agents),
+            peer_teams: Arc::new(peer_teams),
+            active_agent_indices: Arc::new(active_agent_indices),
+            last_message: None,
+            federation: None,
+        }
+    }
+}
+
+fn active_agent<'a>(context: &'a RoomViewContext, id: &str) -> Option<&'a Value> {
+    context
+        .active_agent_indices
+        .get(id)
+        .and_then(|index| context.agents.get(*index))
 }
 
 /// Build the viewer-independent renderer view for one persisted room.
 pub fn room_entity_view(record: &Value, context: &RoomViewContext) -> Option<Value> {
     let kind = record.get("kind").and_then(Value::as_str)?;
-    let active = context
-        .agents
-        .iter()
-        .filter(|agent| !truthy(agent.get("deletedAt")));
-    let agents = active
-        .filter_map(|agent| Some((agent.get("id")?.as_str()?.to_owned(), agent)))
-        .collect::<BTreeMap<_, _>>();
     let mut view = record.as_object()?.clone();
     let members: Vec<String>;
     if kind == "federated" {
@@ -346,7 +370,11 @@ pub fn room_entity_view(record: &Value, context: &RoomViewContext) -> Option<Val
         let mut selected = local.iter().filter_map(Value::as_str).collect::<Vec<_>>();
         selected.sort_unstable();
         selected.dedup();
-        if selected.is_empty() || selected.iter().any(|id| !agents.contains_key(*id)) {
+        if selected.is_empty()
+            || selected
+                .iter()
+                .any(|id| active_agent(context, id).is_none())
+        {
             return None;
         }
         members = selected.into_iter().map(str::to_owned).collect();
@@ -375,13 +403,16 @@ pub fn room_entity_view(record: &Value, context: &RoomViewContext) -> Option<Val
             })
             .filter_map(|agent| agent.get("id").and_then(Value::as_str).map(str::to_owned))
             .collect();
-        if root != "all" && !agents.contains_key(root) {
+        if root != "all" && active_agent(context, root).is_none() {
             return None;
         }
         let name = if root == "all" {
             "All agents".to_owned()
         } else {
-            format!("{} · Broadcast", agents.get(root)?.get("name")?.as_str()?)
+            format!(
+                "{} · Broadcast",
+                active_agent(context, root)?.get("name")?.as_str()?
+            )
         };
         view.insert(
             "name".to_owned(),
@@ -400,12 +431,12 @@ pub fn room_entity_view(record: &Value, context: &RoomViewContext) -> Option<Val
             .into_iter()
             .map(str::to_owned)
             .collect();
-        if members.is_empty() || members.iter().any(|id| !agents.contains_key(id)) {
+        if members.is_empty() || members.iter().any(|id| active_agent(context, id).is_none()) {
             return None;
         }
         let name = members
             .iter()
-            .filter_map(|id| agents.get(id))
+            .filter_map(|id| active_agent(context, id))
             .filter_map(|agent| agent.get("name").and_then(Value::as_str))
             .collect::<Vec<_>>()
             .join(" ↔ ");
