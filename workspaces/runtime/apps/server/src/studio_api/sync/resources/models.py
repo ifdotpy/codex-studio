@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Annotated, Literal
 
 from pydantic import Field, RootModel, StrictBool, StrictFloat, StrictStr, model_validator
@@ -11,10 +12,21 @@ from studio_api.schema import API_SCHEMA_MISMATCH_FIELD
 from studio_api.sync.protocol_type_generated import SyncProtocolVersion
 
 MAX_SAFE_REVISION = MAX_SAFE_INTEGER
+MAX_TOKEN_RATE_ENTRIES = 4096
+# Upstream agent, thread, and turn IDs are opaque Unicode strings. The schema's
+# maxLength and every consumer count Unicode code points, not bytes or graphemes.
+MAX_TOKEN_RATE_IDENTIFIER_CODEPOINTS = 200
+# Workspace rates and team rates are two views of the same agents. Bound their
+# combined leaf values to the maximum retained rate entries in both views.
+MAX_TOKEN_RATE_TOTAL_ENTRIES = MAX_TOKEN_RATE_ENTRIES * 2
 MAX_ENTITY_CHANGE_DOCUMENTS = 512
 MAX_ENTITY_CHANGE_BYTES = 262_144
 ResourceRevision = Annotated[SafeInt, Field(ge=0, le=MAX_SAFE_REVISION)]
 NonEmptyIdentifier = Annotated[StrictStr, Field(min_length=1)]
+TokenRateIdentifier = Annotated[
+    StrictStr,
+    Field(min_length=1, max_length=MAX_TOKEN_RATE_IDENTIFIER_CODEPOINTS),
+]
 NonNegativeFiniteNumber = SafeInt | Annotated[
     StrictFloat, Field(ge=0, allow_inf_nan=False)
 ]
@@ -211,11 +223,37 @@ class ResourceHeartbeatEvent(ContractModel):
 class TokenRateValue(ContractModel):
     """One active or completed agent turn's volatile token-rate snapshot."""
 
-    turnId: NonEmptyIdentifier
+    turnId: TokenRateIdentifier
     active: StrictBool
     estimated: StrictBool
     rate: NonNegativeFiniteNumber
     outputTokens: NonNegativeFiniteNumber
+
+
+TokenRateMap = Annotated[
+    dict[TokenRateIdentifier, TokenRateValue],
+    Field(max_length=MAX_TOKEN_RATE_ENTRIES),
+]
+TokenRateTeamsMap = Annotated[
+    dict[TokenRateIdentifier, TokenRateMap],
+    Field(max_length=MAX_TOKEN_RATE_ENTRIES),
+]
+
+
+def _token_rate_total_exceeded(value: object) -> bool:
+    if not isinstance(value, Mapping):
+        return False
+    rates = value.get("rates")
+    teams = value.get("teams")
+    if not isinstance(rates, Mapping) or not isinstance(teams, Mapping):
+        return False
+    total = len(rates)
+    for team_rates in teams.values():
+        if isinstance(team_rates, Mapping):
+            total += len(team_rates)
+            if total > MAX_TOKEN_RATE_TOTAL_ENTRIES:
+                return True
+    return total > MAX_TOKEN_RATE_TOTAL_ENTRIES
 
 
 class ResourceTokenRatesEvent(ContractModel):
@@ -225,8 +263,15 @@ class ResourceTokenRatesEvent(ContractModel):
     workspaceId: NonEmptyIdentifier
     epoch: NonEmptyIdentifier
     revision: ResourceRevision
-    rates: dict[NonEmptyIdentifier, TokenRateValue]
-    teams: dict[NonEmptyIdentifier, dict[NonEmptyIdentifier, TokenRateValue]]
+    rates: TokenRateMap
+    teams: TokenRateTeamsMap
+
+    @model_validator(mode="before")
+    @classmethod
+    def validate_total_entries(cls, value: object) -> object:
+        if _token_rate_total_exceeded(value):
+            raise ValueError("Token rate event exceeds total entry limit")
+        return value
 
 
 class ApiSchemaEvent(ContractModel):
@@ -239,5 +284,12 @@ class ApiSchemaEvent(ContractModel):
 class TokenRateSnapshot(ContractModel):
     """Typed payload accepted from the token-rate producer boundary."""
 
-    rates: dict[NonEmptyIdentifier, TokenRateValue]
-    teams: dict[NonEmptyIdentifier, dict[NonEmptyIdentifier, TokenRateValue]]
+    rates: TokenRateMap
+    teams: TokenRateTeamsMap
+
+    @model_validator(mode="before")
+    @classmethod
+    def validate_total_entries(cls, value: object) -> object:
+        if _token_rate_total_exceeded(value):
+            raise ValueError("Token rate snapshot exceeds total entry limit")
+        return value

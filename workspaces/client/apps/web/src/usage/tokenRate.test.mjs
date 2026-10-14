@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import { it as test, vi } from "vitest";
 import {
+  TOKEN_RATE_IDENTIFIER_MAX_CODEPOINTS,
+  TOKEN_RATE_MAX_ENTRIES,
+  TOKEN_RATE_MAX_TOTAL_ENTRIES,
+} from "../generated/api.ts";
+import {
   formatTokenRate,
   getTokenRate,
   getWorkspaceTeamTokenRate,
@@ -141,6 +146,31 @@ test("shared workspace batches reach open teams and footers without sync writes"
   stopFooter();
 });
 
+test("workspace token rates reject aggregate maps beyond the shared bound", () => {
+  const rates = Object.fromEntries(
+    Array.from({ length: TOKEN_RATE_MAX_ENTRIES }, (_, index) => [
+      `agent-${index}`,
+      null,
+    ]),
+  );
+  const teamRates = { ...rates };
+  assert.equal(TOKEN_RATE_MAX_TOTAL_ENTRIES, TOKEN_RATE_MAX_ENTRIES * 2);
+  assert.equal(
+    receiveWorkspaceTokenRates({ rates, teams: { team: teamRates } }),
+    true,
+    "the full duplicated workspace/team view remains accepted",
+  );
+  assert.equal(
+    receiveWorkspaceTokenRates({
+      rates,
+      teams: { team: teamRates, other: { extra: null } },
+    }),
+    false,
+  );
+  assert.equal(getTokenRate("agent-0"), null);
+  clearWorkspaceTokenRates();
+});
+
 test("a newly opened team reads the current inactive worker sample immediately", () => {
   const agent = "remembered-worker";
   const key = workerRateKey("remembered-team", agent);
@@ -200,20 +230,27 @@ test("chat samples accept stream values without a duplicate field-shape walk", (
 });
 
 test("publishing token rates refreshes their LRU position and evicts old samples", () => {
-  const samples = Array.from({ length: 2050 }, (_, index) => ({
-    turnId: String(index),
-    active: false,
-    estimated: false,
-    rate: index,
-    outputTokens: index,
-  }));
+  const samples = Array.from(
+    { length: TOKEN_RATE_MAX_TOTAL_ENTRIES + 2 },
+    (_, index) => ({
+      turnId: String(index),
+      active: false,
+      estimated: false,
+      rate: index,
+      outputTokens: index,
+    }),
+  );
   for (let index = 0; index < samples.length; index++)
     receiveTokenRate(`cache-sample-${index}`, {
       data: JSON.stringify(samples[index]),
     });
   assert.equal(getTokenRate("cache-sample-0"), null);
+  assert.equal(getTokenRate("cache-sample-1"), null);
   assert.deepEqual(getTokenRate("cache-sample-2"), samples[2]);
-  assert.deepEqual(getTokenRate("cache-sample-2049"), samples[2049]);
+  assert.deepEqual(
+    getTokenRate(`cache-sample-${samples.length - 1}`),
+    samples.at(-1),
+  );
 });
 
 test("an updated sample moves to the newest cache position", () => {
@@ -225,13 +262,40 @@ test("an updated sample moves to the newest cache position", () => {
     outputTokens: 1,
   };
   receiveTokenRate("lru-first", { data: JSON.stringify(first) });
-  for (let index = 0; index < 2047; index++)
+  for (let index = 0; index < TOKEN_RATE_MAX_ENTRIES - 1; index++)
     receiveTokenRate(`lru-fill-${index}`, { data: JSON.stringify(first) });
   const refreshed = { ...first, turnId: "refreshed", rate: 2 };
   receiveTokenRate("lru-first", { data: JSON.stringify(refreshed) });
   receiveTokenRate("lru-newest", { data: JSON.stringify(first) });
   assert.deepEqual(getTokenRate("lru-first"), refreshed);
   assert.deepEqual(getTokenRate("lru-newest"), first);
+});
+
+test("a full visible team batch remains available in the token-rate cache", () => {
+  const teamId = "full-visible-team";
+  const firstId = "worker-0";
+  const lastId = `worker-${TOKEN_RATE_MAX_ENTRIES - 1}`;
+  const valid = {
+    turnId: "turn",
+    active: true,
+    estimated: false,
+    rate: 1,
+    outputTokens: 2,
+  };
+  const rates = Object.fromEntries(
+    Array.from({ length: TOKEN_RATE_MAX_ENTRIES }, (_, index) => [
+      `worker-${index}`,
+      { ...valid, turnId: String(index) },
+    ]),
+  );
+  receiveTeamTokenRates(teamId, {
+    data: JSON.stringify({ teamId, rates }),
+  });
+  assert.deepEqual(
+    getTokenRate(workerRateKey(teamId, firstId)),
+    rates[firstId],
+  );
+  assert.deepEqual(getTokenRate(workerRateKey(teamId, lastId)), rates[lastId]);
 });
 
 test("team events retain container and key limits without walking each rate shape", () => {
@@ -257,7 +321,10 @@ test("team events retain container and key limits without walking each rate shap
     {
       teamId: "guarded-team",
       rates: Object.fromEntries(
-        Array.from({ length: 1025 }, (_, index) => [`worker-${index}`, valid]),
+        Array.from({ length: TOKEN_RATE_MAX_ENTRIES + 1 }, (_, index) => [
+          `worker-${index}`,
+          valid,
+        ]),
       ),
     },
   ])
@@ -290,7 +357,10 @@ test("team batches accept exact member-count and identifier limits", () => {
     outputTokens: 1,
   };
   const rates = Object.fromEntries(
-    Array.from({ length: 1023 }, (_, index) => [`member-${index}`, valid]),
+    Array.from({ length: TOKEN_RATE_MAX_ENTRIES - 1 }, (_, index) => [
+      `member-${index}`,
+      valid,
+    ]),
   );
   rates[id] = valid;
   receiveTeamTokenRates("bounded-team", {
@@ -301,6 +371,43 @@ test("team batches accept exact member-count and identifier limits", () => {
   stop();
 });
 
+test("token-rate identifiers preserve opaque Unicode within the generated codepoint bound", () => {
+  const unicodeId = "💠".repeat(TOKEN_RATE_IDENTIFIER_MAX_CODEPOINTS);
+  const tooLong = `${unicodeId}💠`;
+  const valid = {
+    turnId: unicodeId,
+    active: true,
+    estimated: false,
+    rate: 1,
+    outputTokens: 1,
+  };
+  assert.equal(
+    receiveWorkspaceTokenRates({ rates: { [unicodeId]: valid }, teams: {} }),
+    true,
+  );
+  assert.deepEqual(getTokenRate(unicodeId), valid);
+
+  assert.equal(
+    receiveWorkspaceTokenRates({
+      rates: { [tooLong]: valid },
+      teams: {},
+    }),
+    false,
+  );
+  assert.equal(
+    receiveWorkspaceTokenRates({
+      rates: { agent: { ...valid, turnId: tooLong } },
+      teams: {},
+    }),
+    false,
+  );
+
+  receiveTokenRate("direct-id", {
+    data: JSON.stringify({ ...valid, turnId: tooLong }),
+  });
+  assert.equal(getTokenRate("direct-id"), null);
+});
+
 test("clearing a team removes its inactive cache entry", () => {
   const sample = {
     turnId: "cached",
@@ -309,7 +416,7 @@ test("clearing a team removes its inactive cache entry", () => {
     rate: 1,
     outputTokens: 1,
   };
-  for (let index = 0; index < 2048; index++)
+  for (let index = 0; index < TOKEN_RATE_MAX_ENTRIES; index++)
     receiveTokenRate(`clear-cache-fill-${index}`, {
       data: JSON.stringify(sample),
     });
@@ -320,7 +427,7 @@ test("clearing a team removes its inactive cache entry", () => {
     data: JSON.stringify({ teamId: team, rates: { worker: sample } }),
   });
   clearTeamTokenRates(team);
-  for (let index = 0; index < 2047; index++)
+  for (let index = 0; index < TOKEN_RATE_MAX_ENTRIES - 1; index++)
     receiveTokenRate(`clear-cache-after-${index}`, {
       data: JSON.stringify(sample),
     });
@@ -363,14 +470,17 @@ test("workspace snapshots validate shape and limits atomically", () => {
     {
       rates: {},
       teams: Object.fromEntries(
-        Array.from({ length: 1025 }, (_, index) => [`team-${index}`, {}]),
+        Array.from({ length: TOKEN_RATE_MAX_ENTRIES + 1 }, (_, index) => [
+          `team-${index}`,
+          {},
+        ]),
       ),
     },
     {
       rates: {},
       teams: {
         oversized: Object.fromEntries(
-          Array.from({ length: 1025 }, (_, index) => [
+          Array.from({ length: TOKEN_RATE_MAX_ENTRIES + 1 }, (_, index) => [
             `worker-${index}`,
             valid,
           ]),
@@ -392,7 +502,10 @@ test("workspace snapshots validate shape and limits atomically", () => {
   assert.equal(
     receiveWorkspaceTokenRates({
       rates: Object.fromEntries(
-        Array.from({ length: 1024 }, (_, index) => [`rate-${index}`, valid]),
+        Array.from({ length: TOKEN_RATE_MAX_ENTRIES }, (_, index) => [
+          `rate-${index}`,
+          valid,
+        ]),
       ),
       teams: {},
     }),
@@ -402,7 +515,10 @@ test("workspace snapshots validate shape and limits atomically", () => {
     receiveWorkspaceTokenRates({
       rates: {},
       teams: Object.fromEntries(
-        Array.from({ length: 1024 }, (_, index) => [`team-${index}`, {}]),
+        Array.from({ length: TOKEN_RATE_MAX_ENTRIES }, (_, index) => [
+          `team-${index}`,
+          {},
+        ]),
       ),
     }),
     true,

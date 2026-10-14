@@ -6,14 +6,21 @@ import threading
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING
+from studio_api.sync.resources.models import MAX_TOKEN_RATE_ENTRIES
 
 if TYPE_CHECKING:
     from codex_runtime import Runtime
 
 MIN_DURATION = .25
 MAX_RATE = 1000.0
-MAX_RATE_ENTRIES = 1024
+MAX_RATE_ENTRIES = MAX_TOKEN_RATE_ENTRIES
+MAX_RESPONSE_RATE_CACHE_ENTRIES = 4096
+# Per-turn identities needed for correcting provider output. This is a separate
+# bound from the cross-turn response-rate cache, despite sharing its current size.
+MAX_TURN_RESPONSE_HISTORY_ENTRIES = 4096
 TOKEN_RATE_EXPIRY_SECONDS = 90
+TOKEN_RATE_PUBLICATION_DELAY_SECONDS = .05
+TOKEN_RATE_PUBLICATION_RETRY_SECONDS = 1.0
 _logged_implausible_correction = False
 NON_TOOLS = {'userMessage', 'agentMessage', 'reasoning', 'plan', 'contextCompaction', 'compactionSnapshot'}
 
@@ -57,6 +64,8 @@ class TurnRate:
         self.estimated = False
         self.baseline = None
         self.messages = {}
+        self.message_history_saturated = False
+        self.message_history_saturation_logged = False
         self.timing_valid = timing_valid
         self.generation_started = now if timing_valid else None
         self.generation_elapsed = 0.0
@@ -120,6 +129,18 @@ class TurnRate:
         if not self.active or output is None:
             return False
         prior = self.messages.get(identity) if identity is not None else None
+        if (identity is not None and prior is None and
+                (self.message_history_saturated or
+                 len(self.messages) >= MAX_TURN_RESPONSE_HISTORY_ENTRIES)):
+            self.message_history_saturated = True
+            if not self.message_history_saturation_logged:
+                logging.getLogger(__name__).warning(
+                    'Token-rate correction history reached its %d identity limit; '
+                    'ignoring new response identities for turn %s',
+                    MAX_TURN_RESPONSE_HISTORY_ENTRIES, self.turn,
+                )
+                self.message_history_saturation_logged = True
+            return False
         if prior and output <= prior[0]:
             return False
         queued = bool(self.response_durations) and not prior
@@ -192,43 +213,105 @@ class TokenRates:
         self.entries = OrderedDict()
         self.agents = {}
         self.requests = {}
+        # Outstanding request IDs grouped by the entry that owns their turn.
+        # Both maps are updated under self.lock.
+        self.request_keys_by_entry = {}
         self.response_rates = OrderedDict()
         self.pending_response_rates = OrderedDict()
+        # Inverted exact-match index; pending-map changes update it under self.lock.
+        self.pending_response_rate_index = {}
         self.expiry_lock = threading.Lock()
         self.expiry_timers = OrderedDict()
         self._publication_lock = threading.Lock()
         self._last_published_snapshot = None
+        self._publication_timer = None
+        self._publication_dirty = False
+        self._publication_scheduled = False
+        self._publication_failure_logged = False
 
-    def _publish_if_changed(self, previous):
+    def _publish_if_changed(self):
         if self.state_dir is None:
             return
-        # Mutators release self.lock before calling this method. The serializer
-        # then takes a coherent state snapshot briefly and releases self.lock
-        # before synchronous hub publication. Hub code must never call back into
-        # TokenRates or acquire this publication lock.
+        # Coalesce the latest volatile values. The entry map is already bounded;
+        # one timer replaces a per-event full snapshot/serialization. Intermediate
+        # samples are intentionally skipped, while the next publication contains
+        # the current complete snapshot.
+        schedule = False
         with self._publication_lock:
+            self._publication_dirty = True
+            if not self._publication_scheduled:
+                self._publication_scheduled = True
+                schedule = True
+        if schedule:
+            self._schedule_publication(TOKEN_RATE_PUBLICATION_DELAY_SECONDS)
+
+    def _schedule_publication(self, delay):
+        timer = threading.Timer(delay, self._flush_publication)
+        timer.daemon = True
+        with self._publication_lock:
+            self._publication_timer = timer
+        try:
+            timer.start()
+        except Exception:
+            with self._publication_lock:
+                self._publication_timer = None
+                self._publication_scheduled = False
+            logging.getLogger(__name__).exception('Unable to schedule token-rate publication')
+
+    def _flush_publication(self):
+        with self._publication_lock:
+            self._publication_timer = None
+            if not self._publication_dirty:
+                self._publication_scheduled = False
+                return
+            self._publication_dirty = False
+        # Keep the scheduling lock out of snapshotting, serialization and hub
+        # publication so event producers can mark a newer snapshot dirty.
+        published = False
+        failure_message = None
+        try:
             with self.lock:
                 current = self.workspace_snapshot()
-            if current == previous or current == self._last_published_snapshot:
+            if current == self._last_published_snapshot:
+                published = True
+            else:
+                from studio_api.sync.resources.models import TokenRateSnapshot, TokenRateValue
+
+                rates = {agent_id: TokenRateValue(**value)
+                         for agent_id, value in current['rates'].items()}
+                teams = {root_id: {agent_id: TokenRateValue(**value)
+                                   for agent_id, value in team.items()}
+                         for root_id, team in current['teams'].items()}
+                snapshot = TokenRateSnapshot(rates=rates, teams=teams)
+                from studio_api.sync.resources.hub import publish_token_rates
+
+                result = publish_token_rates(self.state_dir, snapshot)
+                if result is True:
+                    self._last_published_snapshot = current
+                    published = True
+                elif result is False:
+                    failure_message = 'resource hub rejected the snapshot'
+        except Exception as error:
+            failure_message = str(error)
+
+        with self._publication_lock:
+            should_log_failure = bool(failure_message) and not self._publication_failure_logged
+            if should_log_failure:
+                self._publication_failure_logged = True
+            if published:
+                self._publication_failure_logged = False
+            if not published:
+                self._publication_dirty = True
+            if not self._publication_dirty:
+                self._publication_scheduled = False
                 return
-            from studio_api.sync.resources.models import TokenRateSnapshot, TokenRateValue
-
-            rates = {
-                agent_id: TokenRateValue(**value)
-                for agent_id, value in current['rates'].items()
-            }
-            teams = {
-                root_id: {
-                    agent_id: TokenRateValue(**value)
-                    for agent_id, value in team.items()
-                }
-                for root_id, team in current['teams'].items()
-            }
-            snapshot = TokenRateSnapshot(rates=rates, teams=teams)
-            from studio_api.sync.resources.hub import publish_token_rates
-
-            publish_token_rates(self.state_dir, snapshot)
-            self._last_published_snapshot = current
+        if should_log_failure:
+            logging.getLogger(__name__).error('Unable to publish token-rate snapshot: %s', failure_message)
+        # Retain one scheduled worker while new events arrive. A failed publish
+        # retries at a fixed interval, bounding both memory and retry frequency.
+        delay = (TOKEN_RATE_PUBLICATION_DELAY_SECONDS if published
+                 else TOKEN_RATE_PUBLICATION_RETRY_SECONDS)
+        self._schedule_publication(delay)
 
     def _schedule_expiry(self, key, agent_id, turn):
         timer = threading.Timer(TOKEN_RATE_EXPIRY_SECONDS, self._expire, (key, agent_id, turn))
@@ -244,7 +327,6 @@ class TokenRates:
         timer.start()
 
     def _expire(self, key, agent_id, turn):
-        previous = self.workspace_snapshot()
         with self.lock:
             entry = self.entries.get(key)
             rate = entry.get('rate') if entry else None
@@ -253,11 +335,10 @@ class TokenRates:
             entry['rate'] = None
         with self.expiry_lock:
             self.expiry_timers.pop(key, None)
-        self._publish_if_changed(previous)
+        self._publish_if_changed()
 
     def request_started(self, account, connection, thread, request_id, at=None):
         now = at if count(at) is not None else self.clock()
-        previous = self.workspace_snapshot()
         key = (account, connection, thread)
         with self.lock:
             entry = self.entries.get(key)
@@ -265,26 +346,45 @@ class TokenRates:
             if rate and rate.active:
                 span = 'request:' + str(request_id)
                 rate.start_tool(span, now)
-                self.requests[(account, connection, str(request_id))] = (key, rate.turn, span)
-        self._publish_if_changed(previous)
+                request_key = (account, connection, str(request_id))
+                self._forget_request_locked(request_key)
+                self.requests[request_key] = (key, rate.turn, span)
+                self.request_keys_by_entry.setdefault(key, set()).add(request_key)
+        self._publish_if_changed()
+
+    def _forget_request_locked(self, request_key):
+        request = self.requests.pop(request_key, None)
+        if request is None:
+            return None
+        entry_key = request[0]
+        request_keys = self.request_keys_by_entry.get(entry_key)
+        if request_keys is not None:
+            request_keys.discard(request_key)
+            if not request_keys:
+                self.request_keys_by_entry.pop(entry_key, None)
+        return request
+
+    def _prune_entry_requests_locked(self, entry_key, keep):
+        for request_key in tuple(self.request_keys_by_entry.get(entry_key, ())):
+            request = self.requests.get(request_key)
+            if request is None or not keep(request):
+                self._forget_request_locked(request_key)
 
     def request_finished(self, account, connection, request_id, at=None):
         now = at if count(at) is not None else self.clock()
-        previous = self.workspace_snapshot()
         with self.lock:
-            request = self.requests.pop((account, connection, str(request_id)), None)
+            request = self._forget_request_locked((account, connection, str(request_id)))
             if request:
                 key, turn, span = request
                 entry = self.entries.get(key)
                 rate = entry.get('rate') if entry else None
                 if rate and rate.active and rate.turn == turn:
                     rate.finish_tool(span, now)
-        self._publish_if_changed(previous)
+        self._publish_if_changed()
 
     def observe(self, agent, method, params, account, connection, at=None):
         key = (account, connection, agent.get('threadId'))
         now = at if count(at) is not None else self.clock()
-        previous = self.workspace_snapshot()
         with self.lock:
             entry = self.entries.setdefault(key, {'agent': agent['id'], 'rate': None, 'lifetime': None})
             entry['root'] = agent.get('rootId') or agent['id']
@@ -294,15 +394,14 @@ class TokenRates:
                 old_key, old = self.entries.popitem(last=False)
                 if self.agents.get(old['agent']) == old_key:
                     self.agents.pop(old['agent'], None)
-                self.requests = {key: value for key, value in self.requests.items() if value[0] != old_key}
+                self._prune_entry_requests_locked(old_key, lambda _request: False)
             turn = params.get('turnId') or (params.get('turn') or {}).get('id')
             rate = entry['rate']
             if method == 'turn/started' or (method == 'item/started' and agent.get('inFlight') and turn == agent.get('turnId')):
                 if turn and (rate is None or turn != rate.turn):
                     rate = entry['rate'] = TurnRate(turn, now, timing_valid=method == 'turn/started')
                     rate.baseline = entry['lifetime']
-                    self.requests = {request_id: value for request_id, value in self.requests.items()
-                                     if value[0] != key or value[1] == turn}
+                    self._prune_entry_requests_locked(key, lambda request: request[1] == turn)
             item = params.get('item') or {}
             if method in {'item/started', 'item/completed'} and rate and rate.active and turn == rate.turn:
                 item_id = item.get('id') or params.get('itemId')
@@ -345,9 +444,12 @@ class TokenRates:
                         turn_output = (getattr(rate, 'segment_turn_base', 0)
                                        + max(0, total - rate.baseline))
                         delta = turn_output - rate.actual
-                        identity = response_id or ('total', total)
                         if delta > 0:
+                            identity = response_id or ('total', total)
                             self._response(rate, delta, now, identity, agent['id'], agent.get('threadId'))
+                        # The cumulative usage is authoritative even when a
+                        # saturated correction history cannot retain its identity.
+                        rate.reconcile(turn_output)
                     elif last is not None:
                         identity = response_id or ('last', (usage.get('last') or {}).get('totalTokens'), last)
                         self._response(rate, last, now, identity, agent['id'], agent.get('threadId'))
@@ -355,9 +457,8 @@ class TokenRates:
                     entry['lifetime'] = total
             if method == 'turn/completed' and rate and rate.active and turn == rate.turn:
                 rate.finish(now)
-                self.requests = {request_id: value for request_id, value in self.requests.items()
-                                 if value[0] != key or value[1] != turn}
-        self._publish_if_changed(previous)
+                self._prune_entry_requests_locked(key, lambda request: request[1] != turn)
+        self._publish_if_changed()
         if method == 'turn/completed' and rate and rate.turn == turn:
             self._schedule_expiry(key, agent['id'], turn)
 
@@ -370,35 +471,60 @@ class TokenRates:
             key = (agent_id, thread, rate.turn, identity)
             self.response_rates[key] = {'rate': sample[2], 'outputTokens': sample[0], 'durationSeconds': sample[1]}
             self.response_rates.move_to_end(key)
-            while len(self.response_rates) > 4096:
+            while len(self.response_rates) > MAX_RESPONSE_RATE_CACHE_ENTRIES:
                 self.response_rates.popitem(last=False)
         elif isinstance(identity, tuple) and sample and sample[1] is not None:
             key = (agent_id, thread, rate.turn, identity)
-            self.pending_response_rates[key] = {'rate': sample[2], 'outputTokens': sample[0],
-                                                'durationSeconds': sample[1], 'responseId': None}
+            response_sample = {'rate': sample[2], 'outputTokens': sample[0],
+                               'durationSeconds': sample[1], 'responseId': None}
+            prior = self.pending_response_rates.get(key)
+            if prior is not None:
+                self._unindex_pending_response_rate(key, prior)
+            self.pending_response_rates[key] = response_sample
             self.pending_response_rates.move_to_end(key)
-            while len(self.pending_response_rates) > 4096:
-                self.pending_response_rates.popitem(last=False)
+            self._index_pending_response_rate(key, response_sample)
+            while len(self.pending_response_rates) > MAX_RESPONSE_RATE_CACHE_ENTRIES:
+                expired_key, expired_sample = self.pending_response_rates.popitem(last=False)
+                self._unindex_pending_response_rate(expired_key, expired_sample)
+
+    def _pending_response_rate_signature(self, key, sample):
+        return (*key[:3], sample['outputTokens'])
+
+    def _index_pending_response_rate(self, key, sample):
+        signature = self._pending_response_rate_signature(key, sample)
+        self.pending_response_rate_index.setdefault(signature, set()).add(key)
+
+    def _unindex_pending_response_rate(self, key, sample):
+        signature = self._pending_response_rate_signature(key, sample)
+        candidates = self.pending_response_rate_index.get(signature)
+        if candidates is None:
+            return
+        candidates.discard(key)
+        if not candidates:
+            self.pending_response_rate_index.pop(signature, None)
 
     def associate_response_rate(self, agent_id, thread, turn, response_id, output_tokens):
         output_tokens = count(output_tokens)
         if not isinstance(response_id, str) or not response_id or output_tokens is None:
             return False
         with self.lock:
-            matches = [(key, sample) for key, sample in self.pending_response_rates.items()
-                       if key[:3] == (agent_id, thread, turn) and sample['outputTokens'] == output_tokens
-                       and sample['responseId'] is None]
-            if len(matches) != 1:
+            signature = (agent_id, thread, turn, output_tokens)
+            candidates = self.pending_response_rate_index.get(signature, ())
+            if len(candidates) != 1:
                 return False
-            key, sample = matches[0]
-            sample['responseId'] = response_id
+            key = next(iter(candidates))
+            sample = self.pending_response_rates.get(key)
+            if (sample is None or sample['outputTokens'] != output_tokens
+                    or sample['responseId'] is not None):
+                return False
             self.response_rates[(agent_id, thread, turn, response_id)] = {
                 'rate': sample['rate'], 'outputTokens': sample['outputTokens'],
                 'durationSeconds': sample['durationSeconds']}
             self.response_rates.move_to_end((agent_id, thread, turn, response_id))
-            while len(self.response_rates) > 4096:
+            while len(self.response_rates) > MAX_RESPONSE_RATE_CACHE_ENTRIES:
                 self.response_rates.popitem(last=False)
             del self.pending_response_rates[key]
+            self._unindex_pending_response_rate(key, sample)
             return True
 
     def response_rate(self, agent_id, thread, turn, response_id):
@@ -409,7 +535,6 @@ class TokenRates:
             return dict(sample) if sample else None
 
     def stream(self, method, params, account, connection, at=None):
-        previous = self.workspace_snapshot()
         with self.lock:
             entry = self.entries.get((account, connection, params.get('threadId')))
             rate = entry['rate'] if entry else None
@@ -428,7 +553,7 @@ class TokenRates:
                 if output is not None:
                     identity = params.get('responseId') or (('turn', turn_output) if turn_output is not None else None)
                     self._response(rate, output, now, identity, entry['agent'], params.get('threadId'))
-        self._publish_if_changed(previous)
+        self._publish_if_changed()
 
     def team_snapshot(self, root_id):
         with self.lock:

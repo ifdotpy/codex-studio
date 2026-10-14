@@ -1,4 +1,9 @@
 import type { components } from "../generated/api";
+import {
+  TOKEN_RATE_MAX_ENTRIES,
+  TOKEN_RATE_MAX_TOTAL_ENTRIES,
+  TOKEN_RATE_IDENTIFIER_MAX_CODEPOINTS,
+} from "../generated/api";
 
 // This cache receives volatile SSE events. It never enters the sync database.
 export type TokenRate = components["schemas"]["TokenRateValue"];
@@ -23,10 +28,26 @@ const teamMembers = new Map<string, Set<string>>();
 function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value);
 }
+function validTokenRateIdentifier(value: unknown): value is string {
+  if (typeof value !== "string" || value.length === 0) return false;
+  let codepoints = 0;
+  for (const _character of value) {
+    codepoints += 1;
+    if (codepoints > TOKEN_RATE_IDENTIFIER_MAX_CODEPOINTS) return false;
+  }
+  return true;
+}
+function validRateIdentifier(value: unknown): boolean {
+  return (
+    value === null ||
+    (isRecord(value) && validTokenRateIdentifier(value.turnId))
+  );
+}
 function publishRate(id: string, value: TokenRate | null) {
   values.delete(id);
   values.set(id, value);
-  if (values.size > 2048) values.delete(values.keys().next().value!);
+  if (values.size > TOKEN_RATE_MAX_TOTAL_ENTRIES)
+    values.delete(values.keys().next().value!);
   for (const listener of listeners.get(id) || []) listener(value);
 }
 export const workerRateKey = (teamId: string, agentId: string) =>
@@ -47,7 +68,14 @@ export function receiveTeamTokenRates(teamId: string, event: MessageEvent) {
     if (!isRecord(batch) || batch.teamId !== teamId || !isRecord(batch.rates))
       return;
     const entries = Object.entries(batch.rates);
-    if (entries.length > 1024 || entries.some(([id]) => id.length > 200))
+    if (
+      entries.length > TOKEN_RATE_MAX_ENTRIES ||
+      !validTokenRateIdentifier(teamId) ||
+      entries.some(
+        ([id, rate]) =>
+          !validTokenRateIdentifier(id) || !validRateIdentifier(rate),
+      )
+    )
       return;
     const next = new Set(entries.map(([id]) => id));
     const previous = teamMembers.get(teamId);
@@ -64,6 +92,11 @@ export function receiveTeamTokenRates(teamId: string, event: MessageEvent) {
 export function receiveTokenRate(id: string, event: MessageEvent) {
   try {
     const value: unknown = JSON.parse(event.data);
+    if (
+      !validTokenRateIdentifier(id) ||
+      (value !== null && !validRateIdentifier(value))
+    )
+      return;
     publishRate(id, value as TokenRate | null);
   } catch {
     /* A malformed telemetry event does not affect the transcript. */
@@ -80,8 +113,10 @@ function validRates(value: unknown): value is Record<string, TokenRate | null> {
     value &&
     typeof value === "object" &&
     !Array.isArray(value) &&
-    Object.keys(value).length <= 1024 &&
-    Object.entries(value).every(([id]) => id.length <= 200),
+    Object.keys(value).length <= TOKEN_RATE_MAX_ENTRIES &&
+    Object.entries(value).every(
+      ([id, rate]) => validTokenRateIdentifier(id) && validRateIdentifier(rate),
+    ),
   );
 }
 function publishTeam(teamId: string) {
@@ -115,12 +150,17 @@ export function receiveWorkspaceTokenRates(value: WorkspaceRates) {
     !value.teams ||
     typeof value.teams !== "object" ||
     Array.isArray(value.teams) ||
-    Object.keys(value.teams).length > 1024 ||
-    Object.entries(value.teams).some(
-      ([id, rates]) => id.length > 200 || !validRates(rates),
-    )
+    Object.keys(value.teams).length > TOKEN_RATE_MAX_ENTRIES ||
+    Object.keys(value.teams).some((id) => !validTokenRateIdentifier(id))
   )
     return false;
+  let totalEntries = Object.keys(value.rates).length;
+  if (totalEntries > TOKEN_RATE_MAX_TOTAL_ENTRIES) return false;
+  for (const [id, rates] of Object.entries(value.teams)) {
+    if (id.length > 200 || !validRates(rates)) return false;
+    totalEntries += Object.keys(rates).length;
+    if (totalEntries > TOKEN_RATE_MAX_TOTAL_ENTRIES) return false;
+  }
   for (const id of Object.keys(workspaceRates.rates))
     if (!(id in value.rates)) publishRate(id, null);
   workspaceRates = value;

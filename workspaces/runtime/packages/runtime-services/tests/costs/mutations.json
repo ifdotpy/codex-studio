@@ -41,8 +41,8 @@
     "file": "workspaces/runtime/packages/runtime-services/src/token_rate.rs",
     "edits": [
       {
-        "before": "rates.len() > MAX_AGENTS",
-        "after": "rates.len() > MAX_AGENTS + 1"
+        "before": "rates.len() > TOKEN_RATE_MAX_ENTRIES",
+        "after": "rates.len() > TOKEN_RATE_MAX_ENTRIES + 1"
       }
     ]
   }

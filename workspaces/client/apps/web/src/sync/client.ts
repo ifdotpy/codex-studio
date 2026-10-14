@@ -939,7 +939,6 @@ async function acquireProjection(
           return await request();
         } catch (error) {
           const canRetry =
-            attempt < 2 &&
             retryStartedLive &&
             isTransientSyncReadFailure(error) &&
             connectionStatus === "live" &&
@@ -947,7 +946,8 @@ async function acquireProjection(
             navigator.onLine !== false &&
             !signal?.aborted;
           if (!canRetry) throw error;
-          const delay = 200 * 2 ** attempt + Math.random() * 150;
+          // Keep the pull on the shared bounded backoff while the stream stays live.
+          const delay = readRetryDelay(attempt);
           await new Promise<void>((resolve, reject) => {
             const timer = setTimeout(() => {
               signal?.removeEventListener("abort", abort);
