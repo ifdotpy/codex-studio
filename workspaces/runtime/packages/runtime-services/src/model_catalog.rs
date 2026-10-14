@@ -365,6 +365,13 @@ impl ModelCatalogService {
             }
             drop(task);
         }
+        // Acquire the task registry before reserving the cache entry. Once
+        // Pending is published below, task registration is synchronous while
+        // this guard is held, so cancellation cannot strand an unowned refresh.
+        let mut tasks = self.0.tasks.lock().await;
+        if *self.0.stop.subscribe().borrow() {
+            return CatalogRead::Unavailable;
+        }
         // Registry acquisition and completed-task cleanup can suspend. Sample
         // freshness only after those waits so an entry cannot expire while this
         // read is queued and still be returned as fresh.
@@ -435,7 +442,7 @@ impl ModelCatalogService {
             .lock()
             .expect("fixture factory")
             .clone();
-        self.0.tasks.lock().await.push(tokio::spawn(async move {
+        tasks.push(tokio::spawn(async move {
             #[cfg(test)]
             if let Some(factory) = refresh_factory {
                 let _permit = permit;
@@ -1100,8 +1107,19 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
-    async fn cancelled_read_waiting_for_task_registry_does_not_reserve_cache_entry() {
+    async fn cancelled_read_waiting_for_task_registry_does_not_leave_pending_entry() {
         let service = ModelCatalogService::new(None);
+        let key = ("account".to_owned(), "/home".to_owned(), "codex".to_owned());
+        service.0.cache.lock().expect("cache").insert(
+            key.clone(),
+            CacheEntry {
+                generation: 7,
+                value: Some(json!({"models":[{"model":"stale"}]})),
+                expires_at: Some(Instant::now()),
+                error: false,
+                pending: false,
+            },
+        );
         let task_guard = service.0.tasks.lock().await;
         {
             let read = service.read("account", "/home", "codex", false);
@@ -1114,13 +1132,11 @@ pub(crate) mod tests {
         }
         drop(task_guard);
 
-        assert!(
-            !service
-                .0
-                .cache
-                .lock()
-                .expect("catalog cache")
-                .contains_key(&("account".to_owned(), "/home".to_owned(), "codex".to_owned(),))
+        let cache = service.0.cache.lock().expect("catalog cache");
+        assert!(!cache[&key].pending);
+        assert_eq!(
+            cache[&key].value,
+            Some(json!({"models":[{"model":"stale"}]}))
         );
     }
 

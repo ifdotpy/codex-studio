@@ -290,8 +290,8 @@ the account worker's native command port and sandbox policy.
 Measurements are disabled unless `CODEX_RUNTIME_BLOCKING_POOL_DIAGNOSTICS=1` is
 set before server startup. With it enabled, read `blockingPoolMetrics` from
 `GET /api/diagnostics`; it reports queued jobs, running wrapped closures, peak
-running occupancy, and per-call-group queue-wait and closure-duration averages
-and maxima. To measure the fixture without a backend, run
+in-flight occupancy (queued plus running), and per-call-group queue-wait and
+closure-duration averages and maxima. To measure the fixture without a backend, run
 `cargo test -p studio-runtime-process fixture_reports_pool_wait_duration_and_occupancy -- --nocapture`.
 The fixture holds one worker at a channel gate, queues one closure, releases it,
 and prints its snapshot. Compare queue wait and occupancy across representative

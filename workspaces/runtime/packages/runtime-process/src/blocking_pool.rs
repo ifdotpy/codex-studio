@@ -12,10 +12,9 @@
 //! `blockingPoolMetrics`. No live backend is used by the fixture test.
 
 use std::{
-    collections::BTreeMap,
     sync::{
-        Mutex, OnceLock,
-        atomic::{AtomicUsize, Ordering},
+        OnceLock,
+        atomic::{AtomicU64, AtomicUsize, Ordering},
     },
     time::Instant,
 };
@@ -26,20 +25,130 @@ const NANOS_PER_MILLISECOND: f64 = 1_000_000.0;
 static ENABLED: OnceLock<bool> = OnceLock::new();
 static METRICS: OnceLock<Metrics> = OnceLock::new();
 
+#[derive(Clone, Copy)]
+#[repr(usize)]
+enum CallSiteGroup {
+    RuntimeHttpBranches,
+    RuntimeHttpHostSecrets,
+    RuntimeHttpImports,
+    RuntimeHttpSyncDocuments,
+    RuntimeProcessOperationalLog,
+    RuntimeProcessProviderTask,
+    RuntimeServerAccountRegistry,
+    RuntimeServerMain,
+    RuntimeServicesBrowser,
+    RuntimeServicesMonitorRuntimeWiring,
+    RuntimeServicesVoiceProvider,
+    FixtureHeld,
+    FixtureQueued,
+    FixtureAborted,
+    Other,
+}
+
+const CALL_SITE_GROUPS: [CallSiteGroup; 15] = [
+    CallSiteGroup::RuntimeHttpBranches,
+    CallSiteGroup::RuntimeHttpHostSecrets,
+    CallSiteGroup::RuntimeHttpImports,
+    CallSiteGroup::RuntimeHttpSyncDocuments,
+    CallSiteGroup::RuntimeProcessOperationalLog,
+    CallSiteGroup::RuntimeProcessProviderTask,
+    CallSiteGroup::RuntimeServerAccountRegistry,
+    CallSiteGroup::RuntimeServerMain,
+    CallSiteGroup::RuntimeServicesBrowser,
+    CallSiteGroup::RuntimeServicesMonitorRuntimeWiring,
+    CallSiteGroup::RuntimeServicesVoiceProvider,
+    CallSiteGroup::FixtureHeld,
+    CallSiteGroup::FixtureQueued,
+    CallSiteGroup::FixtureAborted,
+    CallSiteGroup::Other,
+];
+
+impl CallSiteGroup {
+    fn from_label(label: &'static str) -> Self {
+        match label {
+            "runtime-http/routes/branches" => Self::RuntimeHttpBranches,
+            "runtime-http/routes/host_secrets" => Self::RuntimeHttpHostSecrets,
+            "runtime-http/routes/imports" => Self::RuntimeHttpImports,
+            "runtime-http/routes/sync_documents" => Self::RuntimeHttpSyncDocuments,
+            "runtime-process/operational_log" => Self::RuntimeProcessOperationalLog,
+            "runtime-process/provider_task" => Self::RuntimeProcessProviderTask,
+            "runtime-server/account_registry" => Self::RuntimeServerAccountRegistry,
+            "runtime-server/main" => Self::RuntimeServerMain,
+            "runtime-services/browser" => Self::RuntimeServicesBrowser,
+            "runtime-services/monitor_runtime_wiring" => Self::RuntimeServicesMonitorRuntimeWiring,
+            "runtime-services/voice/provider" => Self::RuntimeServicesVoiceProvider,
+            "fixture/held" => Self::FixtureHeld,
+            "fixture/queued" => Self::FixtureQueued,
+            "fixture/aborted" => Self::FixtureAborted,
+            _ => Self::Other,
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::RuntimeHttpBranches => "runtime-http/routes/branches",
+            Self::RuntimeHttpHostSecrets => "runtime-http/routes/host_secrets",
+            Self::RuntimeHttpImports => "runtime-http/routes/imports",
+            Self::RuntimeHttpSyncDocuments => "runtime-http/routes/sync_documents",
+            Self::RuntimeProcessOperationalLog => "runtime-process/operational_log",
+            Self::RuntimeProcessProviderTask => "runtime-process/provider_task",
+            Self::RuntimeServerAccountRegistry => "runtime-server/account_registry",
+            Self::RuntimeServerMain => "runtime-server/main",
+            Self::RuntimeServicesBrowser => "runtime-services/browser",
+            Self::RuntimeServicesMonitorRuntimeWiring => "runtime-services/monitor_runtime_wiring",
+            Self::RuntimeServicesVoiceProvider => "runtime-services/voice/provider",
+            Self::FixtureHeld => "fixture/held",
+            Self::FixtureQueued => "fixture/queued",
+            Self::FixtureAborted => "fixture/aborted",
+            Self::Other => "other",
+        }
+    }
+}
+
 struct Metrics {
     queued: AtomicUsize,
     running: AtomicUsize,
     peak_occupancy: AtomicUsize,
-    groups: Mutex<BTreeMap<&'static str, GroupMetrics>>,
+    groups: [GroupMetrics; CALL_SITE_GROUPS.len()],
 }
 
-#[derive(Clone, Copy, Default)]
+#[derive(Default)]
 struct GroupMetrics {
-    count: u64,
-    queue_wait_total_ns: u128,
-    queue_wait_max_ns: u128,
-    duration_total_ns: u128,
-    duration_max_ns: u128,
+    count: AtomicU64,
+    queue_wait_total_ns: AtomicU64,
+    queue_wait_max_ns: AtomicU64,
+    duration_total_ns: AtomicU64,
+    duration_max_ns: AtomicU64,
+}
+
+struct QueuedGuard {
+    metrics: &'static Metrics,
+    queued: bool,
+}
+
+impl QueuedGuard {
+    fn started(&mut self) {
+        if self.queued {
+            self.metrics.queued.fetch_sub(1, Ordering::Relaxed);
+            self.queued = false;
+        }
+    }
+}
+
+impl Drop for QueuedGuard {
+    fn drop(&mut self) {
+        if self.queued {
+            self.metrics.queued.fetch_sub(1, Ordering::Relaxed);
+        }
+    }
+}
+
+fn record_max(target: &AtomicU64, sample: u64) {
+    target.fetch_max(sample, Ordering::Relaxed);
+}
+
+fn nanos(duration: std::time::Duration) -> u64 {
+    duration.as_nanos().min(u64::MAX as u128) as u64
 }
 
 /// A bounded diagnostic snapshot. Durations are in milliseconds.
@@ -71,7 +180,7 @@ fn metrics() -> &'static Metrics {
         queued: AtomicUsize::new(0),
         running: AtomicUsize::new(0),
         peak_occupancy: AtomicUsize::new(0),
-        groups: Mutex::new(BTreeMap::new()),
+        groups: std::array::from_fn(|_| GroupMetrics::default()),
     })
 }
 
@@ -109,11 +218,17 @@ where
     }
 
     let metrics = metrics();
+    let group = CallSiteGroup::from_label(group);
     let submitted_at = Instant::now();
-    metrics.queued.fetch_add(1, Ordering::Relaxed);
+    let queued = metrics.queued.fetch_add(1, Ordering::Relaxed) + 1;
+    update_peak(metrics, metrics.running.load(Ordering::Relaxed) + queued);
+    let mut queued_guard = QueuedGuard {
+        metrics,
+        queued: true,
+    };
     tokio::task::spawn_blocking(move || {
         let queue_wait = submitted_at.elapsed();
-        metrics.queued.fetch_sub(1, Ordering::Relaxed);
+        queued_guard.started();
         let running = metrics.running.fetch_add(1, Ordering::Relaxed) + 1;
         update_peak(metrics, running + metrics.queued.load(Ordering::Relaxed));
         let started_at = Instant::now();
@@ -121,17 +236,18 @@ where
         let duration = started_at.elapsed();
         metrics.running.fetch_sub(1, Ordering::Relaxed);
 
-        let mut groups = metrics
-            .groups
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let entry = groups.entry(group).or_default();
-        entry.count += 1;
-        entry.queue_wait_total_ns += queue_wait.as_nanos();
-        entry.queue_wait_max_ns = entry.queue_wait_max_ns.max(queue_wait.as_nanos());
-        entry.duration_total_ns += duration.as_nanos();
-        entry.duration_max_ns = entry.duration_max_ns.max(duration.as_nanos());
-        drop(groups);
+        let entry = &metrics.groups[group as usize];
+        let queue_wait_ns = nanos(queue_wait);
+        let duration_ns = nanos(duration);
+        entry
+            .queue_wait_total_ns
+            .fetch_add(queue_wait_ns, Ordering::Relaxed);
+        record_max(&entry.queue_wait_max_ns, queue_wait_ns);
+        entry
+            .duration_total_ns
+            .fetch_add(duration_ns, Ordering::Relaxed);
+        record_max(&entry.duration_max_ns, duration_ns);
+        entry.count.fetch_add(1, Ordering::Relaxed);
         match result {
             Ok(value) => value,
             Err(payload) => std::panic::resume_unwind(payload),
@@ -156,22 +272,29 @@ fn snapshot_with_collection(collect: bool) -> BlockingPoolSnapshot {
     }
 
     let metrics = metrics();
-    let groups = metrics
-        .groups
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let groups = groups
+    let groups = CALL_SITE_GROUPS
         .iter()
-        .map(|(group, value)| {
-            let count = value.count.max(1) as f64;
-            BlockingPoolGroupSnapshot {
-                group,
-                count: value.count,
-                queue_wait_avg_ms: value.queue_wait_total_ns as f64 / count / NANOS_PER_MILLISECOND,
-                queue_wait_max_ms: value.queue_wait_max_ns as f64 / NANOS_PER_MILLISECOND,
-                closure_avg_ms: value.duration_total_ns as f64 / count / NANOS_PER_MILLISECOND,
-                closure_max_ms: value.duration_max_ns as f64 / NANOS_PER_MILLISECOND,
+        .filter_map(|group| {
+            let value = &metrics.groups[*group as usize];
+            let count = value.count.load(Ordering::Relaxed);
+            if count == 0 {
+                return None;
             }
+            let divisor = count as f64;
+            Some(BlockingPoolGroupSnapshot {
+                group: group.label(),
+                count,
+                queue_wait_avg_ms: value.queue_wait_total_ns.load(Ordering::Relaxed) as f64
+                    / divisor
+                    / NANOS_PER_MILLISECOND,
+                queue_wait_max_ms: value.queue_wait_max_ns.load(Ordering::Relaxed) as f64
+                    / NANOS_PER_MILLISECOND,
+                closure_avg_ms: value.duration_total_ns.load(Ordering::Relaxed) as f64
+                    / divisor
+                    / NANOS_PER_MILLISECOND,
+                closure_max_ms: value.duration_max_ns.load(Ordering::Relaxed) as f64
+                    / NANOS_PER_MILLISECOND,
+            })
         })
         .collect();
     BlockingPoolSnapshot {
@@ -212,12 +335,16 @@ mod tests {
             );
             entered_rx.recv().unwrap();
             let second = submit("fixture/queued", || 17usize, true);
+            let aborted = submit("fixture/aborted", || (), true);
+            aborted.abort();
             // The only blocking worker is held at a channel gate, so the
-            // second closure queues without sleeps or synthetic load.
+            // second and third closures queue without sleeps or synthetic
+            // load. Tokio drops an aborted queued closure when a worker can
+            // take it, so release the held worker before awaiting cancellation.
             let occupied = snapshot_with_collection(true);
-            assert_eq!(occupied.queued, 1);
+            assert_eq!(occupied.queued, 2);
             assert_eq!(occupied.running, 1);
-            assert_eq!(occupied.peak_occupancy, 1);
+            assert_eq!(occupied.peak_occupancy, 3);
             assert!(
                 occupied
                     .groups
@@ -228,11 +355,18 @@ mod tests {
             release_tx.send(()).unwrap();
             first.await.unwrap();
             assert_eq!(second.await.unwrap(), 17);
+            assert!(
+                aborted
+                    .await
+                    .expect_err("queued task was aborted")
+                    .is_cancelled()
+            );
         });
         let snapshot = snapshot_with_collection(true);
         println!("blocking-pool fixture snapshot: {snapshot:?}");
         assert!(snapshot.enabled);
-        assert_eq!(snapshot.peak_occupancy, 1);
+        assert_eq!(snapshot.queued, 0);
+        assert_eq!(snapshot.peak_occupancy, 3);
         let queued = snapshot
             .groups
             .iter()
@@ -241,5 +375,11 @@ mod tests {
         assert_eq!(queued.count, 1);
         assert!(queued.queue_wait_max_ms > 0.0);
         assert!(queued.closure_max_ms >= 0.0);
+        assert!(
+            snapshot
+                .groups
+                .iter()
+                .all(|group| group.group != "fixture/aborted")
+        );
     }
 }
