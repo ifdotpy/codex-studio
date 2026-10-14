@@ -1,6 +1,11 @@
 //! Retained monitor consumer. The account/session owner supplies the transport;
 //! this task owns no provider connection and never repeats an uncertain command.
 //! Result recovery precedes stall decisions. Publication and transport ACK follow commit.
+//!
+//! Registered HTTP contract gap: `MonitorInput` has no request identity, pending owner decision.
+//! HTTP retries after a lost response cannot be distinguished from new input. Each provider write
+//! still has a durable ticketed intent; an unknown provider outcome remains latched and is never
+//! resent. Managed-tool input uses its callback request identity for durable replay instead.
 
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -398,10 +403,19 @@ impl MonitorRuntime {
         Ok(result)
     }
 
-    /// MonitorInput lacks a caller identity, so fail closed until its schema carries
-    /// a stable request_id that can key a saved replay receipt.
-    pub fn input_http(&self, _id: &str, _input: &Input, _now: f64) -> Result<Value, MonitorError> {
-        Err(MonitorError::Unavailable("monitor-input-request-identity"))
+    /// Submit HTTP input with a fresh server ticket. The HTTP schema currently has
+    /// no caller request identity, so a lost HTTP response cannot be distinguished
+    /// from a new identical request; that retry gap is registered in this module's
+    /// documentation. Provider writes still commit an intent first, and an
+    /// uncertain provider outcome is retained and never resent.
+    pub fn input_http(&self, id: &str, input: &Input, now: f64) -> Result<Value, MonitorError> {
+        let mut bytes = [0_u8; 16];
+        getrandom::fill(&mut bytes)
+            .map_err(|_| MonitorError::Refused("Could not allocate monitor input ticket"))?;
+        bytes[6] = (bytes[6] & 0x0f) | 0x40;
+        bytes[8] = (bytes[8] & 0x3f) | 0x80;
+        let ticket = uuid::Uuid::from_bytes(bytes).to_string();
+        self.input(id, &ticket, input, now)
     }
 
     pub fn input(
