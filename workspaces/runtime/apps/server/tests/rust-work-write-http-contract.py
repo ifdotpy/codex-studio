@@ -874,8 +874,9 @@ class WorkWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
 
         accept = {"action": "accept", "task_id": task["id"], "version": actual_submit.json()["version"],
                   "result": "verified on VM", "id": "vm-merge-accept"}
+        expected_guest = FakeLayrGuest()
         expected_accept, expected_state = reference_action(
-            self.backend, self.agent_id, accept, guest=FakeLayrGuest())
+            self.backend, self.agent_id, accept, guest=expected_guest)
         actual_accept = self.post(accept)
         self.assertEqual(actual_accept.status, 200, actual_accept.body[:1000])
         actual_state = snapshot(self.backend.state)
@@ -886,7 +887,7 @@ class WorkWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             ).fetchone()[0])
         self.assertEqual(intent["status"], "completed")
         self.assertEqual(intent["requestId"],
-                         "layr-accept:" + expected_submit["results"][-1]["id"])
+                         "layr-accept:" + actual_accept.json()["results"][-1]["id"])
         aliases = result_id_aliases(expected_state, actual_state)
         self.assertEqual(normal_result(actual_accept.json(), aliases),
                          normal_result(expected_accept, aliases))
@@ -895,7 +896,9 @@ class WorkWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         self.assertEqual([call["intentStatus"] for call in guest.calls], ["pending", "pending"])
         self.assertEqual([call["method"] for call in guest.calls], ["line.evidence", "line.merge"])
         self.assertEqual(guest.calls[0]["id"], "layr-evidence:" + self.worker_id + ":vm-state-1")
-        self.assertEqual(guest.calls[1]["id"], "layr-accept:" + expected_submit["results"][-1]["id"])
+        self.assertEqual(guest.calls[1]["id"], intent["requestId"])
+        self.assertEqual(expected_guest.calls[1][2],
+                         "layr-accept:" + expected_accept["results"][-1]["id"])
         completed_call_count = len(guest.calls)
         replay_submit = self.post_as(self.worker_id, submit)
         replay_accept = self.post(accept)
