@@ -35,6 +35,7 @@ impl Worker {
             scope: request.scope,
             operation: request.operation,
             actor: request.actor,
+            transfer: request.transfer,
             method: request.method.as_str().into(),
             params: request.params,
         };
