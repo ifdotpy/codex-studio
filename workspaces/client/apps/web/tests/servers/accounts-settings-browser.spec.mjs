@@ -481,10 +481,12 @@ test("accounts settings show per-server state and provider choices", async ({
   ).toBeVisible();
   expect(addStarts[3]?.loginId).not.toBe(addStarts[2]?.loginId);
   expect(addStarts[3]?.requestId).not.toBe(addStarts[2]?.requestId);
+  const activeClaudeLoginId = addStarts[3]?.loginId;
+  expect(activeClaudeLoginId).toEqual(expect.any(String));
   const claudeCancelResponse = waitForPost(
     page,
     "/api/accounts/claude/login/cancel",
-    (body) => body.login_id === secondClaudeLoginId,
+    (body) => body.login_id === activeClaudeLoginId,
   );
   await secondClaudeSignIn
     .getByRole("button", { name: "Cancel", exact: true })
