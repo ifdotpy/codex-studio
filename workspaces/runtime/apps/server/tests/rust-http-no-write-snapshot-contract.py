@@ -16,10 +16,52 @@ from contextlib import closing
 isolate_supervisor_environment()
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-from http_backend_harness import BACKGROUND_OWNED_FIELDS, no_write_snapshot
+from http_backend_harness import (
+    BACKGROUND_OWNED_FIELDS,
+    BACKGROUND_OWNED_ROW_JSON_FIELDS,
+    no_write_snapshot,
+)
 
 
 class NoWriteSnapshotContract(unittest.TestCase):
+    def test_ignores_only_accepted_archive_tick_receipt_metadata(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="no-write-archive-receipt-") as directory:
+            state = Path(directory)
+            with closing(sqlite3.connect(state / "canvas.sqlite3")) as database, database:
+                database.execute(
+                    "CREATE TABLE runtime_operation_receipts (id TEXT, signature TEXT, result TEXT)"
+                )
+                fields = BACKGROUND_OWNED_ROW_JSON_FIELDS[
+                    "runtime_operation_receipts"
+                ]["work-archive:"]["result"]
+                result = {field: "before" for field in fields} | {"status": "pending"}
+                database.execute(
+                    "INSERT INTO runtime_operation_receipts VALUES(?,?,?)",
+                    ("work-archive:task:result", "accepted-archive-v1", json.dumps(result)),
+                )
+            before = no_write_snapshot(state)
+            with closing(sqlite3.connect(state / "canvas.sqlite3")) as database, database:
+                row = database.execute(
+                    "SELECT result FROM runtime_operation_receipts WHERE id=?",
+                    ("work-archive:task:result",),
+                ).fetchone()
+                result = json.loads(row[0])
+                for field in fields:
+                    result[field] = "after"
+                database.execute(
+                    "UPDATE runtime_operation_receipts SET result=? WHERE id=?",
+                    (json.dumps(result), "work-archive:task:result"),
+                )
+            self.assertEqual(no_write_snapshot(state), before)
+
+            with closing(sqlite3.connect(state / "canvas.sqlite3")) as database, database:
+                result["status"] = "completed"
+                database.execute(
+                    "UPDATE runtime_operation_receipts SET result=? WHERE id=?",
+                    (json.dumps(result), "work-archive:task:result"),
+                )
+            self.assertNotEqual(no_write_snapshot(state), before)
+
     def test_ignores_each_background_field_but_detects_business_changes(self) -> None:
         with tempfile.TemporaryDirectory(prefix="no-write-snapshot-") as directory:
             state = Path(directory)
@@ -34,6 +76,8 @@ class NoWriteSnapshotContract(unittest.TestCase):
                     record: dict[str, object] = {"business": "unchanged"}
                     payload: dict[str, object] = {"value": {"business": "unchanged"}}
                     for field in fields:
+                        if "." not in field:
+                            continue
                         if field.startswith("payload."):
                             parts = field[len("payload."):].split(".")
                             current = payload
@@ -42,7 +86,13 @@ class NoWriteSnapshotContract(unittest.TestCase):
                             current = record
                         for part in parts[:-1]:
                             current = current.setdefault(part, {})  # type: ignore[assignment]
-                        current[parts[-1]] = "before"
+                        is_parent = any(
+                            other.startswith(f"{field}.") for other in fields
+                        )
+                        if is_parent:
+                            current.setdefault(parts[-1], {})
+                        else:
+                            current[parts[-1]] = "before"
                     values = [table, json.dumps(record), json.dumps(payload), "unchanged"] + ["before"] * len(columns)
                     database.execute(
                         f'INSERT INTO "{table}" VALUES ({", ".join("?" for _ in values)})',
@@ -60,6 +110,13 @@ class NoWriteSnapshotContract(unittest.TestCase):
                     record = json.loads(row[0])
                     payload = json.loads(row[1])
                     for field in fields:
+                        if "." not in field:
+                            database.execute(
+                                f'UPDATE "{table}" SET "{field}"=?', ("after",)
+                            )
+                            continue
+                        if any(other.startswith(f"{field}.") for other in fields):
+                            continue
                         if field.startswith("payload."):
                             parts = field[len("payload."):].split(".")
                             current = payload
@@ -69,10 +126,6 @@ class NoWriteSnapshotContract(unittest.TestCase):
                         for part in parts[:-1]:
                             current = current[part]
                         current[parts[-1]] = "after"
-                        if "." not in field:
-                            database.execute(
-                                f'UPDATE "{table}" SET "{field}"=?', ("after",)
-                            )
                     database.execute(
                         f'UPDATE "{table}" SET record=?,payload=?', (json.dumps(record), json.dumps(payload))
                     )

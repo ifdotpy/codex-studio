@@ -302,6 +302,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         account_session_broker.clone(),
         Some(Arc::clone(&native_runtime)),
         Arc::clone(&session_binaries),
+        account_registry::AccountRegistryConfig::default(),
     )
     .await
     {

@@ -137,6 +137,18 @@ BACKGROUND_OWNED_ROW_PREFIXES: dict[str, tuple[str, ...]] = {
     "runtime_operation_receipts": ("account-worker:",),
 }
 
+# The accepted-archive tick owns retry metadata on its durable operation
+# receipts; retain the row and every field outside this exact set.
+BACKGROUND_OWNED_ROW_JSON_FIELDS: dict[str, dict[str, dict[str, frozenset[str]]]] = {
+    "runtime_operation_receipts": {
+        "work-archive:": {
+            "result": frozenset({
+                "attemptStartedAt", "attempts", "lastOutcome", "nextAttemptAt",
+            }),
+        },
+    },
+}
+
 
 def no_write_snapshot(state: Path) -> tuple[object, ...]:
     """Snapshot request-visible databases, omitting only named background fields.
@@ -186,7 +198,14 @@ def no_write_snapshot(state: Path) -> tuple[object, ...]:
                 retained_rows = []
                 for row in rows:
                     values = dict(zip(columns, row, strict=True))
-                    for json_column in ("record", "payload"):
+                    row_json_fields = {}
+                    if table in BACKGROUND_OWNED_ROW_JSON_FIELDS and "id" in columns:
+                        row_json_fields = next((
+                            fields
+                            for prefix, fields in BACKGROUND_OWNED_ROW_JSON_FIELDS[table].items()
+                            if isinstance(values.get("id"), str) and values["id"].startswith(prefix)
+                        ), {})
+                    for json_column in ("record", "payload", "result"):
                         encoded = values.get(json_column)
                         if not isinstance(encoded, (str, bytes, bytearray)):
                             continue
@@ -196,9 +215,11 @@ def no_write_snapshot(state: Path) -> tuple[object, ...]:
                             continue
                         if not isinstance(parsed, dict):
                             continue
-                        for field in excluded:
+                        for field in excluded | row_json_fields.get(json_column, frozenset()):
                             prefix = f"{json_column}."
-                            if json_column == "record" and not field.startswith(("record.", "payload.")):
+                            if field in row_json_fields.get(json_column, frozenset()):
+                                path = field
+                            elif json_column == "record" and not field.startswith(("record.", "payload.")):
                                 path = field
                             elif field.startswith(prefix):
                                 path = field[len(prefix):]
@@ -370,15 +391,9 @@ class BackendProcess:
                        "LC_CTYPE",
                        # setup-python needs its shared-library directory on Linux.
                        "LD_LIBRARY_PATH",
-                       # Work-write's Rust HTTP contract mirrors its quiet Python oracle.
-                       "STUDIO_TEST_DISABLE_ACCEPTED_ARCHIVE_TICK",
                        "STUDIO_TEST_FORBIDDEN_ROOTS", "STUDIO_TEST_GUARD_REPORT"}
             or key.startswith("GIT_CONFIG_")
         }
-        if os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"):
-            # The Rust differential contract compares the immediate work-write
-            # boundary; retry scheduling is covered by the archive maintenance tests.
-            environment["STUDIO_TEST_DISABLE_ACCEPTED_ARCHIVE_TICK"] = "1"
         # These settings select the Python test default. Never leak them to a
         # caller-supplied backend command.
         environment.pop("CODEX_AGENTS_PYTHON", None)
