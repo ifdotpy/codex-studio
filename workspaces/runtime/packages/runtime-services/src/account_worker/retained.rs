@@ -171,6 +171,11 @@ fn validate(request: &SessionRequest) -> Result<(), PortError> {
             | Method::ThreadRollback
             | Method::ThreadQueueList
             | Method::TurnInterrupt
+            | Method::ConfigRead
+            | Method::CommandExec
+            | Method::CommandExecWrite
+            | Method::CommandExecResize
+            | Method::CommandExecTerminate
     );
     if !(actorless_read || (request.actor.is_some() && actor_method))
         || request.operation.is_empty()
@@ -199,6 +204,24 @@ fn validate(request: &SessionRequest) -> Result<(), PortError> {
                 .get("operationId")
                 .and_then(Value::as_str)
                 .is_some_and(|id| id.starts_with("monitor:") && id.len() > "monitor:".len()))
+        || (request.method == Method::ConfigRead
+            && (request.params.get("includeLayers") != Some(&json!(false))
+                || request.params.as_object().is_none_or(|params| {
+                    params
+                        .keys()
+                        .any(|key| !matches!(key.as_str(), "cwd" | "includeLayers"))
+                })))
+        || (matches!(
+            request.method,
+            Method::CommandExec
+                | Method::CommandExecWrite
+                | Method::CommandExecResize
+                | Method::CommandExecTerminate
+        ) && request
+            .params
+            .get("processId")
+            .and_then(Value::as_str)
+            .is_none_or(str::is_empty))
     {
         return Err(PortError::Invalid);
     }
@@ -292,5 +315,29 @@ mod validation_tests {
             validate(&turns_request("full", 21, false)),
             Err(PortError::Invalid)
         );
+    }
+
+    #[test]
+    fn monitor_requests_require_actor_and_narrow_config_shape() {
+        let mut request = turns_request("full", 1, true);
+        request.method = Method::ConfigRead;
+        request.params = json!({"cwd":"/fixture/workspace", "includeLayers":false});
+        assert!(validate(&request).is_ok());
+        request.params["includeLayers"] = json!(true);
+        assert_eq!(validate(&request), Err(PortError::Invalid));
+        request.params = json!({"cwd":"/fixture/workspace", "includeLayers":false, "other":true});
+        assert_eq!(validate(&request), Err(PortError::Invalid));
+
+        request.method = Method::CommandExec;
+        request.params = json!({"processId":"monitor-fixture"});
+        request.actor = None;
+        assert_eq!(validate(&request), Err(PortError::Invalid));
+        request.actor = Some(RequestActor {
+            agent: "fixture-agent".into(),
+            epoch: 1,
+        });
+        assert!(validate(&request).is_ok());
+        request.params = json!({});
+        assert_eq!(validate(&request), Err(PortError::Invalid));
     }
 }
