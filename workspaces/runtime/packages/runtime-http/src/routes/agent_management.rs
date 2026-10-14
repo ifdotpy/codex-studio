@@ -1,4 +1,4 @@
-//! Thin HTTP lifecycle edge. Native actions require the account worker.
+//! Thin HTTP lifecycle edge.
 use super::{
     extractors::ApiJson,
     manifest::{Dependency, OperationStatus, RouteGroup, post},
@@ -11,7 +11,10 @@ use studio_runtime_services::{
     agent_lifecycle_runtime::{self, LifecyclePorts},
     agent_management::{Action, ManagementError},
     agent_management_store,
+    message_admission::MessageAdmission,
+    native_actions::{self, Acceptance, Admission, Delivery, NativeError, NativeRequest},
 };
+use studio_runtime_store::{AgentId, AgentRecord, AgentRepository, RuntimeStore, Transaction};
 
 const LIFECYCLE: &[Dependency] = &[
     Dependency::new("account-worker/agent-interrupt"),
@@ -25,7 +28,11 @@ const LIFECYCLE: &[Dependency] = &[
     Dependency::new("work-driver/deletion-release"),
     Dependency::new("workspace-state/agent-lifecycle"),
 ];
-const NATIVE: &[Dependency] = &[Dependency::new("account-worker/native-action")];
+const NATIVE: &[Dependency] = &[
+    Dependency::new("native-action/preparation-and-settings"),
+    Dependency::new("context-repair/repair-idle-broker"),
+    Dependency::new("native-safety/retry-driver"),
+];
 
 pub(crate) fn routes() -> RouteGroup {
     RouteGroup::new(vec![
@@ -71,21 +78,392 @@ async fn delete(
     .await
 }
 async fn native_action(
+    State(state): State<HttpState>,
+    safety: Option<Extension<Arc<dyn NativeSafetyActionPort>>>,
+    preparation: Option<
+        Extension<Arc<studio_runtime_services::account_worker::preparation::PreparationResources>>,
+    >,
+    repair: Option<Extension<Arc<dyn NativeContextRepairPort>>>,
     ApiJson(body): ApiJson<generated::NativeActionRequest>,
 ) -> Result<Json<Value>, ApiError> {
     let value = serde_json::to_value(body).map_err(|_| ApiError::internal())?;
-    if value.get("action").is_some_and(Value::is_string)
-        && !value.get("request_id").is_some_and(Value::is_string)
-    {
-        return Err(ApiError::validation(vec![
-            Value::String("body".to_owned()),
-            Value::String("request_id".to_owned()),
-        ]));
+    let Some(action) = value.get("action").and_then(Value::as_str) else {
+        let safety = safety.map(|Extension(port)| port).ok_or_else(|| {
+            ApiError::new(
+                StatusCode::NOT_IMPLEMENTED,
+                "Not implemented: requires native-safety/retry-driver",
+            )
+        })?;
+        let port = state.account_session.clone().ok_or_else(|| {
+            ApiError::new(
+                StatusCode::NOT_IMPLEMENTED,
+                "Not implemented: requires provider-session/native-request",
+            )
+        })?;
+        let store = state.store.clone().ok_or_else(ApiError::internal)?;
+        let resources = preparation
+            .clone()
+            .map(|Extension(resources)| resources)
+            .ok_or_else(|| {
+                ApiError::new(
+                    StatusCode::NOT_IMPLEMENTED,
+                    "Not implemented: requires native-action/preparation-and-settings",
+                )
+            })?;
+        let agent = value["id"].as_str().unwrap_or_default().to_owned();
+        let data = value.get("action").cloned().unwrap_or(Value::Null);
+        let safety_action = data["safety"]
+            .as_str()
+            .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "Choose retry or cancel"))?
+            .to_owned();
+        if !matches!(safety_action.as_str(), "retry" | "cancel") {
+            return Err(ApiError::new(
+                StatusCode::BAD_REQUEST,
+                "Choose retry or cancel",
+            ));
+        }
+        let turn_id = data["turnId"]
+            .as_str()
+            .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "A turn ID is required"))?
+            .to_owned();
+        let result = tokio::task::spawn_blocking(move || {
+            let connection = store.read().map_err(|_| ApiError::internal())?;
+            let record = AgentRepository::get(&connection, &AgentId::from(agent.as_str()))
+                .map_err(|_| ApiError::internal())?
+                .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "Agent not found"))?;
+            let epoch = record.value()["epoch"]
+                .as_i64()
+                .ok_or_else(ApiError::internal)?;
+            let actor = studio_runtime_services::account_worker::retained::RequestActor {
+                agent: agent.clone(),
+                epoch,
+            };
+            drop(connection);
+            safety
+                .execute_action(store, port, resources, agent, actor, turn_id, safety_action)
+                .map_err(native_error)
+        })
+        .await
+        .map_err(|_| ApiError::internal())??;
+        return Ok(Json(result));
+    };
+    let action = match action {
+        "compact" => native_actions::Action::Compact,
+        "review" => native_actions::Action::Review,
+        _ => {
+            return Err(ApiError::new(
+                StatusCode::BAD_REQUEST,
+                "Choose compact or review",
+            ));
+        }
+    };
+    let Some(request_id) = value.get("request_id").and_then(Value::as_str) else {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "Reload Studio before Review or Compact. This client has no durable action request ID.",
+        ));
+    };
+    let context = value
+        .get("context")
+        .filter(|value| !value.is_null())
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!({}));
+    let request = native_actions::Request {
+        request_id: request_id.to_owned(),
+        agent: value["id"].as_str().unwrap_or_default().to_owned(),
+        action,
+        context,
+    };
+    let repair = repair.map(|Extension(port)| port).ok_or_else(|| {
+        ApiError::new(
+            StatusCode::NOT_IMPLEMENTED,
+            "Not implemented: requires context-repair/repair-idle-broker",
+        )
+    })?;
+    let resources = preparation
+        .map(|Extension(resources)| resources)
+        .ok_or_else(|| {
+            ApiError::new(
+                StatusCode::NOT_IMPLEMENTED,
+                "Not implemented: requires native-action/preparation-and-settings",
+            )
+        })?;
+    let port = state.account_session.clone().ok_or_else(|| {
+        ApiError::new(
+            StatusCode::NOT_IMPLEMENTED,
+            "Not implemented: requires provider-session/native-request",
+        )
+    })?;
+    let store = state.store.clone().ok_or_else(ApiError::internal)?;
+    let account_driver = state.account_driver.clone();
+    let admission_override = state.message_admission.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        let connection = store.read().map_err(|_| ApiError::internal())?;
+        let prepared: Box<dyn MessageAdmission> = if admission_override.is_some() {
+            Box::new(
+                studio_runtime_services::message_admission::PreparedAdmission::load(
+                    &connection,
+                    &request.agent,
+                )
+                .map_err(|_| ApiError::internal())?,
+            )
+        } else {
+            Box::new(
+                studio_runtime_services::message_admission::MessageIngressAdmission::load(
+                    &store,
+                    &connection,
+                    &request.agent,
+                )
+                .map_err(|_| ApiError::internal())?,
+            )
+        };
+        let admission = admission_override.as_deref().unwrap_or(prepared.as_ref());
+        let bridge = NativeAdmission(admission);
+        let preparation_run = NativeActionPreparationRun {
+            store: store.clone(),
+            provider: port.clone(),
+            account_driver,
+            repair,
+            preparation: resources,
+        };
+        let now = unix_time();
+        native_actions::execute_provider_prepared(
+            &store,
+            port.as_ref(),
+            &request,
+            now,
+            &bridge,
+            &NativeActionAcceptance,
+            &preparation_run,
+        )
+        .map_err(native_error)
+    })
+    .await
+    .map_err(|_| ApiError::internal())??;
+    Ok(Json(result))
+}
+
+/// Adapter owned by the native-safety slice; keeps its executor out of this
+/// route package until its implementation and receipt contract are integrated.
+pub(crate) trait NativeSafetyActionPort: Send + Sync {
+    fn execute_action(
+        &self,
+        store: Arc<RuntimeStore>,
+        account_session: Arc<
+            dyn studio_runtime_services::account_session_runtime::AccountSessionPort,
+        >,
+        resources: Arc<studio_runtime_services::account_worker::preparation::PreparationResources>,
+        agent_id: String,
+        actor: studio_runtime_services::account_worker::retained::RequestActor,
+        turn_id: String,
+        choice: String,
+    ) -> native_actions::Result<Value>;
+}
+
+pub(crate) trait NativeContextRepairPort: Send + Sync {
+    fn repair_idle(
+        &self,
+        store: Arc<RuntimeStore>,
+        agent_id: String,
+        provider_home: std::path::PathBuf,
+        broker: Arc<dyn studio_runtime_services::account_session_runtime::AccountSessionPort>,
+        deadline: std::time::Instant,
+    ) -> native_actions::Result<Value>;
+}
+
+struct NativeActionPreparationRun {
+    store: Arc<RuntimeStore>,
+    provider: Arc<dyn studio_runtime_services::account_session_runtime::AccountSessionPort>,
+    account_driver: Option<Arc<studio_runtime_services::account_driver::AccountDriver>>,
+    repair: Arc<dyn NativeContextRepairPort>,
+    preparation: Arc<studio_runtime_services::account_worker::preparation::PreparationResources>,
+}
+impl NativeActionPreparationRun {
+    fn repair_before_reserve(
+        &self,
+        request: &native_actions::Request,
+    ) -> native_actions::Result<()> {
+        let account = {
+            let connection = self.store.read()?;
+            let agent = AgentRepository::get(&connection, &AgentId::from(request.agent.as_str()))?
+                .ok_or(NativeError::Changed)?;
+            agent
+                .extra
+                .get("accountKey")
+                .and_then(Value::as_str)
+                .unwrap_or("default")
+                .to_owned()
+        };
+        let account_driver = self
+            .account_driver
+            .as_ref()
+            .ok_or(NativeError::Unavailable("account-driver/provider-home"))?;
+        let accounts = account_driver
+            .snapshot()
+            .map_err(|_| NativeError::Unavailable("account-driver/provider-home"))?;
+        let provider_home = accounts
+            .accounts
+            .iter()
+            .find(|row| row["id"] == account)
+            .and_then(|row| row["home"].as_str())
+            .map(std::path::PathBuf::from)
+            .ok_or(NativeError::Unavailable("account-driver/provider-home"))?;
+        self.repair.repair_idle(
+            self.store.clone(),
+            request.agent.clone(),
+            provider_home,
+            self.provider.clone(),
+            std::time::Instant::now() + std::time::Duration::from_secs(20),
+        )?;
+        Ok(())
     }
-    Err(ApiError::new(
-        StatusCode::NOT_IMPLEMENTED,
-        "Not implemented: requires account-worker/native-action",
-    ))
+}
+impl native_actions::Preparation for NativeActionPreparationRun {
+    fn before_reserve(
+        &self,
+        _store: &RuntimeStore,
+        _provider: &dyn studio_runtime_services::account_session_runtime::AccountSessionPort,
+        request: &native_actions::Request,
+        _scope: &studio_runtime_services::account_session_runtime::ConnectionScope,
+    ) -> native_actions::Result<()> {
+        self.repair_before_reserve(request)
+    }
+
+    fn prepare(
+        &self,
+        _store: &RuntimeStore,
+        _provider: &dyn studio_runtime_services::account_session_runtime::AccountSessionPort,
+        request: &native_actions::Request,
+        ticket: &studio_runtime_services::workspace_operations::ProviderTicket,
+        scope: &studio_runtime_services::account_session_runtime::ConnectionScope,
+    ) -> native_actions::Result<()> {
+        let prepared = studio_runtime_services::account_worker::preparation::prepare_native_action(
+            &self.store,
+            &self.preparation,
+            &request.agent,
+            &ticket.operation,
+            ticket.generation,
+        )
+        .map_err(|_| NativeError::Unavailable("thread-preparation/native-action"))?;
+        if Some(prepared.thread_id.as_str()) != ticket.thread.as_deref() {
+            return Err(NativeError::Changed);
+        }
+        let mut params = prepared.settings;
+        if let Some(params) = params.as_object_mut() {
+            params.remove("cwd");
+            params.remove("cyberAccessProgram");
+        }
+        native_actions::update_action_settings(
+            &self.store,
+            self.provider.as_ref(),
+            request,
+            ticket,
+            scope,
+            params,
+        )
+    }
+}
+
+struct NativeAdmission<'a>(&'a dyn MessageAdmission);
+impl Admission for NativeAdmission<'_> {
+    fn check(
+        &self,
+        tx: &Transaction<'_>,
+        value: &Value,
+        _action: native_actions::Action,
+    ) -> native_actions::Result<()> {
+        let actor =
+            AgentRecord::from_value(value.clone()).map_err(|_| NativeError::Invalid("agent"))?;
+        let root = AgentRepository::get(tx, &actor.root_id)
+            .map_err(|_| NativeError::Unavailable("budget-policy/native-action"))?
+            .ok_or(NativeError::Changed)?;
+        let blockers = self.0.workspace(tx, &actor).map_err(admission_error)?;
+        if !blockers.is_empty() {
+            return Err(NativeError::Invalid("workspace"));
+        }
+        self.0.budget(tx, &actor, &root).map_err(admission_error)
+    }
+}
+
+struct NativeActionAcceptance;
+impl Acceptance for NativeActionAcceptance {
+    fn apply(
+        &self,
+        tx: &Transaction<'_>,
+        request: &NativeRequest,
+        delivery: &Delivery,
+    ) -> native_actions::Result<()> {
+        let Some(agent) = AgentRepository::get(tx, &AgentId::from(request.ticket.agent.as_str()))
+            .map_err(|_| NativeError::Changed)?
+        else {
+            return Err(NativeError::Changed);
+        };
+        let mut value = agent.value();
+        if value["startAttempt"]["id"] != request.ticket.operation
+            || value["startAttempt"]["actionRequestId"] != request.ticket.request
+            || value["epoch"].as_u64() != Some(request.ticket.epoch)
+        {
+            return Err(NativeError::Changed);
+        }
+        match delivery {
+            Delivery::Written(result) if request.method == "review/start" => {
+                let turn = result["turn"]["id"]
+                    .as_str()
+                    .filter(|turn| !turn.is_empty())
+                    .ok_or(NativeError::Unknown)?;
+                value["turnId"] = serde_json::json!(turn);
+                value["inFlight"] = serde_json::json!(true);
+                value["status"] = serde_json::json!("running");
+                value["error"] = Value::Null;
+            }
+            Delivery::Written(_) if request.method == "thread/compact/start" => {
+                if value
+                    .get("error")
+                    .is_some_and(|error| error == &value["startAttempt"]["responseError"])
+                {
+                    value["error"] = Value::Null;
+                }
+            }
+            Delivery::Rejected(_) => {
+                value["status"] = serde_json::json!("failed");
+                value["inFlight"] = serde_json::json!(false);
+                value["error"] = serde_json::json!("The provider rejected the native action.");
+            }
+            Delivery::NotSent | Delivery::Unknown | Delivery::Written(_) => return Ok(()),
+        }
+        AgentRepository::put(tx, &AgentRecord::from_value(value)?).map_err(|_| NativeError::Changed)
+    }
+}
+
+fn admission_error(error: studio_runtime_services::coordination::CoordinationError) -> NativeError {
+    use studio_runtime_services::coordination::CoordinationError;
+    match error {
+        CoordinationError::RequiresDependency(name) => NativeError::Unavailable(name),
+        CoordinationError::AdmissionDenied(_) => NativeError::Invalid("budget"),
+        _ => NativeError::Invalid("admission"),
+    }
+}
+
+fn native_error(error: NativeError) -> ApiError {
+    match error {
+        NativeError::Unavailable(_) => {
+            ApiError::new(StatusCode::NOT_IMPLEMENTED, error.to_string())
+        }
+        NativeError::Conflict | NativeError::Invalid(_) | NativeError::Changed => {
+            ApiError::new(StatusCode::BAD_REQUEST, error.to_string())
+        }
+        NativeError::Unknown => ApiError::new(StatusCode::CONFLICT, error.to_string()),
+        NativeError::InvalidStored { .. }
+        | NativeError::Store(_)
+        | NativeError::Json(_)
+        | NativeError::Sql(_) => ApiError::internal(),
+    }
+}
+
+fn unix_time() -> f64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0.0, |duration| duration.as_secs_f64())
 }
 async fn dispatch<T: serde::de::DeserializeOwned + serde::Serialize>(
     state: HttpState,
@@ -123,7 +501,7 @@ async fn dispatch<T: serde::de::DeserializeOwned + serde::Serialize>(
 inventory::submit! {
     crate::routes::manifest::RouteModuleRegistration {
         name: "agent_management", routes: Some(routes), dependencies: &[
-            "account-worker/agent-interrupt", "account-worker/native-action",
+            "account-worker/agent-interrupt", "native-safety/retry-driver",
             "agent-management/snapshot-limit", "cross-server/agent-management",
             "event-driver/child-stop-notification", "monitor-driver/agent-stop",
             "account-worker/deleted-settlement", "usage-policy/agent-stop", "voice-driver/agent-stop", "work-driver/deletion-release",

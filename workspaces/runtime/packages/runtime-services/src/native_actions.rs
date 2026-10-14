@@ -1,10 +1,21 @@
 //! Native maintenance intents. Admission, hand-off and settlement each commit
 //! separately; a committed hand-off is never automatically resent after restart.
+use crate::account_session_runtime::{
+    AccountSessionError, AccountSessionPort, ProviderRequest, ProviderResponse, RequestCertainty,
+    SessionReceipt,
+};
+use crate::account_worker::retained::RequestActor;
 use crate::workspace_operations::ProviderTicket;
 use rusqlite::{OptionalExtension, Transaction, params};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::{future::Future, pin::Pin, sync::Arc};
+use std::{
+    future::Future,
+    pin::Pin,
+    sync::Arc,
+    time::{Duration, Instant},
+};
+use studio_runtime_providers::{Method, RequestId};
 use studio_runtime_store::{
     AgentRecord, AgentRepository, ContextRepairRepository, RuntimeStore, StoreError,
     python_json_with_separators,
@@ -13,6 +24,8 @@ use thiserror::Error;
 
 const MAX_ID: usize = 200;
 const MAX_BYTES: usize = 1024 * 1024;
+const NATIVE_ACTION_TIMEOUT: Duration = Duration::from_secs(20);
+const MAX_NOT_SENT_RETRIES: usize = 1;
 pub type Result<T> = std::result::Result<T, NativeError>;
 pub type NativeFuture<'a> = Pin<Box<dyn Future<Output = Result<TransportReceipt>> + Send + 'a>>;
 
@@ -231,6 +244,37 @@ pub fn reserve(
         "attemptId":attempt,"acceptedAt":now,"status":"accepted"});
     let checked =
         Snapshot::from_records(agent.clone(), receipt.clone(), json!({"status":"pending"}))?;
+    let account = agent
+        .get("accountKey")
+        .and_then(Value::as_str)
+        .unwrap_or("default");
+    if let Some(pending) = agent.get("pendingSettings") {
+        let pending_settings = pending
+            .as_object()
+            .map(|pending| {
+                pending
+                    .iter()
+                    .map(|(key, value)| (key.clone(), value.clone()))
+                    .collect::<Vec<_>>()
+            })
+            .ok_or(NativeError::Invalid("agent.pendingSettings"))?;
+        if !pending.is_object()
+            || agent
+                .get("pendingSettingsAccountKey")
+                .and_then(Value::as_str)
+                .unwrap_or(account)
+                != account
+        {
+            return Err(NativeError::Invalid("agent.pendingSettingsAccountKey"));
+        }
+        for (key, value) in pending_settings {
+            agent[key] = value;
+        }
+        agent.as_object_mut().map(|record| {
+            record.remove("pendingSettings");
+            record.remove("pendingSettingsAccountKey");
+        });
+    }
     gate.check(tx, &agent, request.action)?;
     agent["status"] = json!("starting");
     agent["inFlight"] = json!(true);
@@ -257,6 +301,7 @@ pub struct NativeRequest {
 #[derive(Clone, Debug, PartialEq)]
 pub enum Delivery {
     Written(Value),
+    Rejected(Value),
     NotSent,
     Unknown,
 }
@@ -335,6 +380,46 @@ pub trait Acceptance {
         delivery: &Delivery,
     ) -> Result<()>;
 }
+/// Runtime preparation and settings updates run after admission commits and
+/// before the compact/review hand-off is claimed. Implementations may perform
+/// filesystem work and their own separately receipted provider request here.
+pub trait Preparation {
+    /// Cross-owner repair must finish before the action receipt captures its
+    /// account/thread identity. The default is suitable for already prepared
+    /// native callers; HTTP adapters may repair through a durable private port.
+    fn before_reserve(
+        &self,
+        _store: &RuntimeStore,
+        _provider: &dyn AccountSessionPort,
+        _request: &Request,
+        _scope: &crate::account_session_runtime::ConnectionScope,
+    ) -> Result<()> {
+        Ok(())
+    }
+
+    fn prepare(
+        &self,
+        store: &RuntimeStore,
+        provider: &dyn AccountSessionPort,
+        request: &Request,
+        ticket: &ProviderTicket,
+        scope: &crate::account_session_runtime::ConnectionScope,
+    ) -> Result<()>;
+}
+
+struct NoopPreparation;
+impl Preparation for NoopPreparation {
+    fn prepare(
+        &self,
+        _store: &RuntimeStore,
+        _provider: &dyn AccountSessionPort,
+        _request: &Request,
+        _ticket: &ProviderTicket,
+        _scope: &crate::account_session_runtime::ConnectionScope,
+    ) -> Result<()> {
+        Ok(())
+    }
+}
 pub fn settle(
     tx: &Transaction<'_>,
     id: &str,
@@ -357,6 +442,10 @@ pub fn settle(
                 result: Some(result.clone()),
             }
         }
+        Delivery::Rejected(result) => {
+            bounded(result, "response")?;
+            Outcome::Failed { error: None }
+        }
         Delivery::NotSent => Outcome::Failed { error: None },
         Delivery::Unknown => Outcome::Unknown { error: None },
     };
@@ -369,8 +458,359 @@ pub fn settle(
     if !matches!(receipt.delivery, Delivery::Unknown) {
         effects.apply(tx, &expected, &receipt.delivery)?;
     }
+    if matches!(receipt.delivery, Delivery::NotSent) {
+        let mut agent = snapshot.agent;
+        agent["startAttempt"]["submitted"] = json!(false);
+        agent["startAttempt"]
+            .as_object_mut()
+            .map(|attempt| attempt.remove("nativeRequest"));
+        AgentRepository::put(tx, &AgentRecord::from_value(agent)?)?;
+        write_outcome(tx, id, &Outcome::Pending { error: None })?;
+        return Ok(Outcome::Pending { error: None });
+    }
     write_outcome(tx, id, &outcome)?;
     Ok(outcome)
+}
+
+fn validate_provider_receipt(expected: &NativeRequest, receipt: &SessionReceipt) -> Result<()> {
+    let ticket = &expected.ticket;
+    if receipt.scope.account != ticket.account
+        || receipt.scope.connection != ticket.connection
+        || receipt.scope.generation != ticket.generation
+        || receipt.operation != ticket.operation
+    {
+        return Err(NativeError::Changed);
+    }
+    let method = Method::from_wire(&expected.method).ok_or(NativeError::Invalid("method"))?;
+    match receipt.certainty {
+        RequestCertainty::NotSent => {
+            if receipt.ticket.is_some()
+                || receipt.result.is_some()
+                || receipt.not_sent_reason.is_none()
+            {
+                return Err(NativeError::Changed);
+            }
+        }
+        RequestCertainty::Written | RequestCertainty::Unknown => {
+            let provider_ticket = receipt.ticket.as_ref().ok_or(NativeError::Changed)?;
+            let expected_id = format!(
+                "retained:{}:{}",
+                ticket.account,
+                studio_runtime_store::sha256_hex(ticket.operation.as_bytes())
+            );
+            if provider_ticket.generation != ticket.generation
+                || provider_ticket.method != method
+                || provider_ticket.id != RequestId::String(expected_id)
+                || (receipt.certainty == RequestCertainty::Written) != receipt.result.is_some()
+            {
+                return Err(NativeError::Changed);
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Execute one admitted action through the retained account broker. Every
+/// provider call follows a committed claim and is bound to the scope observed
+/// before that claim; only a broker-proven NotSent can claim again.
+pub fn execute_provider(
+    store: &RuntimeStore,
+    port: &dyn AccountSessionPort,
+    request: &Request,
+    now: f64,
+    gate: &impl Admission,
+    effects: &impl Acceptance,
+) -> Result<Value> {
+    execute_provider_prepared(store, port, request, now, gate, effects, &NoopPreparation)
+}
+
+pub fn execute_provider_prepared(
+    store: &RuntimeStore,
+    port: &dyn AccountSessionPort,
+    request: &Request,
+    now: f64,
+    gate: &impl Admission,
+    effects: &impl Acceptance,
+    preparation: &impl Preparation,
+) -> Result<Value> {
+    if let Some(snapshot) = store.read_transaction_with_error(|tx| replay(tx, request))? {
+        if !matches!(snapshot.outcome, Outcome::Pending { .. })
+            || snapshot.agent["startAttempt"]["submitted"] == true
+        {
+            return Ok(response(&snapshot, true));
+        }
+    }
+    let agent_snapshot = store.read_transaction_with_error(|tx| agent(tx, &request.agent))?;
+    let account = agent_snapshot
+        .get("accountKey")
+        .and_then(Value::as_str)
+        .unwrap_or("default")
+        .to_owned();
+    let attempt = uuid::Uuid::new_v5(
+        &uuid::Uuid::NAMESPACE_URL,
+        format!("native-action:{}", request.request_id).as_bytes(),
+    )
+    .to_string();
+    for retry in 0..=MAX_NOT_SENT_RETRIES {
+        let scope = port
+            .current_scope(&account)
+            .ok_or(NativeError::Unavailable("provider-session/native-request"))?;
+        if scope.account != account {
+            return Err(NativeError::Changed);
+        }
+        preparation.before_reserve(store, port, request, &scope)?;
+        if port.current_scope(&account).as_ref() != Some(&scope) {
+            return Err(NativeError::Changed);
+        }
+        let claim_store = store;
+        let action = request.clone();
+        let attempt_id = attempt.clone();
+        let scope_for_claim = scope.clone();
+        let reserved = claim_store.transaction_with(|tx| {
+            let snapshot = reserve(tx, &action, &attempt_id, now, gate)?;
+            let receipt = snapshot.receipt();
+            if receipt.account_key != scope_for_claim.account {
+                return Err(NativeError::Changed);
+            }
+            let ticket = ProviderTicket {
+                operation: receipt.attempt_id.clone(),
+                agent: receipt.agent_id.clone(),
+                epoch: u64::try_from(receipt.epoch).map_err(|_| NativeError::Changed)?,
+                account: receipt.account_key.clone(),
+                thread: Some(receipt.thread_id.clone()),
+                connection: scope_for_claim.connection.clone(),
+                generation: scope_for_claim.generation,
+                request: receipt.request_id.clone(),
+            };
+            Ok((receipt.clone(), ticket))
+        })?;
+        let (receipt, ticket) = reserved;
+        preparation.prepare(store, port, request, &ticket, &scope)?;
+        if port.current_scope(&account).as_ref() != Some(&scope) {
+            return Err(NativeError::Changed);
+        }
+        let native_request =
+            store.transaction_with(|tx| claim(tx, &receipt.request_id, &ticket))?;
+        let method =
+            Method::from_wire(&native_request.method).ok_or(NativeError::Invalid("method"))?;
+        let provider = port.provider_request(ProviderRequest {
+            account: account.clone(),
+            operation: ticket.operation.clone(),
+            actor: Some(RequestActor {
+                agent: ticket.agent.clone(),
+                epoch: i64::try_from(ticket.epoch).map_err(|_| NativeError::Changed)?,
+            }),
+            expected_scope: Some(scope.clone()),
+            method,
+            params: native_request.params.clone(),
+            deadline: Instant::now() + NATIVE_ACTION_TIMEOUT,
+        });
+        let retryable = matches!(
+            provider,
+            Ok(SessionReceipt {
+                certainty: RequestCertainty::NotSent,
+                ..
+            })
+        );
+        let id = request.request_id.clone();
+        let settled =
+            store.transaction_with(|tx| settle_provider(tx, &id, ticket, provider, effects))?;
+        let snapshot = store.read_transaction_with_error(|tx| load(tx, &request.request_id))?;
+        if retryable && retry < MAX_NOT_SENT_RETRIES {
+            continue;
+        }
+        let mut value = response(&snapshot, false);
+        value["outcome"] =
+            serde_json::to_value(settled).map_err(|_| NativeError::Invalid("outcome"))?;
+        return Ok(value);
+    }
+    Err(NativeError::Unknown)
+}
+
+/// Validate and settle the exact receipt returned by the retained account broker.
+pub fn settle_provider(
+    tx: &Transaction<'_>,
+    id: &str,
+    ticket: ProviderTicket,
+    provider: std::result::Result<SessionReceipt, AccountSessionError>,
+    effects: &impl Acceptance,
+) -> Result<Outcome> {
+    let delivery = match &provider {
+        Ok(receipt) => {
+            let expected = NativeRequest {
+                ticket: ticket.clone(),
+                method: match load(tx, id)?.receipt.action {
+                    Action::Compact => "thread/compact/start".into(),
+                    Action::Review => "review/start".into(),
+                },
+                params: Value::Null,
+            };
+            validate_provider_receipt(&expected, receipt)?;
+            match (&receipt.certainty, &receipt.result) {
+                (RequestCertainty::Written, Some(ProviderResponse::Reply(value))) => {
+                    Delivery::Written(value.clone())
+                }
+                (RequestCertainty::Written, Some(ProviderResponse::Rejected(value))) => {
+                    Delivery::Rejected(value.clone())
+                }
+                (RequestCertainty::NotSent, None) => Delivery::NotSent,
+                _ => Delivery::Unknown,
+            }
+        }
+        Err(_) => Delivery::Unknown,
+    };
+    settle(tx, id, &TransportReceipt { ticket, delivery }, effects)
+}
+
+/// Apply native-action model settings through a separately persisted provider
+/// intent. A restart can retry only an exact broker receipt proving NotSent.
+pub fn update_action_settings(
+    store: &RuntimeStore,
+    port: &dyn AccountSessionPort,
+    request: &Request,
+    ticket: &ProviderTicket,
+    scope: &crate::account_session_runtime::ConnectionScope,
+    params: Value,
+) -> Result<()> {
+    let operation = format!("{}:settings", ticket.operation);
+    let settings_ticket = ProviderTicket {
+        operation: operation.clone(),
+        ..ticket.clone()
+    };
+    for retry in 0..=MAX_NOT_SENT_RETRIES {
+        let action_id = request.request_id.clone();
+        let scope_snapshot = scope.clone();
+        let params_snapshot = params.clone();
+        let should_send = store.transaction_with(|tx| {
+            let mut agent = agent(tx, &request.agent)?;
+            if agent["startAttempt"]["id"] != ticket.operation
+                || agent["startAttempt"]["actionRequestId"] != request.request_id
+                || agent["epoch"].as_u64() != Some(ticket.epoch)
+                || agent
+                    .get("accountKey")
+                    .and_then(Value::as_str)
+                    .unwrap_or("default")
+                    != ticket.account
+                || agent["threadId"].as_str() != ticket.thread.as_deref()
+            {
+                return Err(NativeError::Changed);
+            }
+            let saved = agent["startAttempt"].get("modelSettings").cloned();
+            if let Some(saved) = saved {
+                if saved["operation"] != operation
+                    || saved["requestId"] != action_id
+                    || saved["scope"] != json!(scope_snapshot)
+                    || saved["params"] != params_snapshot
+                {
+                    return Err(NativeError::Conflict);
+                }
+                match saved["status"].as_str() {
+                    Some("acknowledged") => return Ok(false),
+                    Some("not_sent") => {}
+                    Some("submitted" | "unknown") => return Err(NativeError::Unknown),
+                    Some("rejected") => return Err(NativeError::Invalid("settings/rejected")),
+                    _ => {
+                        return Err(NativeError::InvalidStored {
+                            table: "runtime_agents",
+                            id: request.agent.clone(),
+                            location: "startAttempt.modelSettings.status".into(),
+                        });
+                    }
+                }
+            }
+            agent["startAttempt"]["modelSettings"] = json!({
+                "operation": operation,
+                "requestId": action_id,
+                "scope": scope_snapshot,
+                "method": "thread/settings/update",
+                "params": params_snapshot,
+                "status": "submitted",
+            });
+            AgentRepository::put(tx, &AgentRecord::from_value(agent)?)?;
+            Ok(true)
+        })?;
+        if !should_send {
+            return Ok(());
+        }
+
+        let method =
+            Method::from_wire("thread/settings/update").ok_or(NativeError::Invalid("method"))?;
+        let provider = port.provider_request(ProviderRequest {
+            account: settings_ticket.account.clone(),
+            operation: operation.clone(),
+            actor: Some(RequestActor {
+                agent: settings_ticket.agent.clone(),
+                epoch: i64::try_from(settings_ticket.epoch).map_err(|_| NativeError::Changed)?,
+            }),
+            expected_scope: Some(scope.clone()),
+            method,
+            params: params.clone(),
+            deadline: Instant::now() + NATIVE_ACTION_TIMEOUT,
+        });
+        let expected = NativeRequest {
+            ticket: settings_ticket.clone(),
+            method: "thread/settings/update".into(),
+            params: params.clone(),
+        };
+        let status = match &provider {
+            Ok(receipt) => {
+                validate_provider_receipt(&expected, receipt)?;
+                match (&receipt.certainty, &receipt.result) {
+                    (RequestCertainty::Written, Some(ProviderResponse::Reply(_))) => "acknowledged",
+                    (RequestCertainty::Written, Some(ProviderResponse::Rejected(_))) => "rejected",
+                    (RequestCertainty::NotSent, None) => "not_sent",
+                    _ => "unknown",
+                }
+            }
+            Err(_) => "unknown",
+        };
+        let action_id = request.request_id.clone();
+        store.transaction_with(|tx| {
+            let mut agent = agent(tx, &request.agent)?;
+            if agent["startAttempt"]["modelSettings"]["operation"] != operation
+                || agent["startAttempt"]["modelSettings"]["requestId"] != action_id
+                || agent["startAttempt"]["modelSettings"]["status"] != "submitted"
+            {
+                return Err(NativeError::Changed);
+            }
+            agent["startAttempt"]["modelSettings"]["status"] = json!(status);
+            AgentRepository::put(tx, &AgentRecord::from_value(agent)?)?;
+            Ok(())
+        })?;
+        match status {
+            "acknowledged" => return Ok(()),
+            "not_sent" if retry < MAX_NOT_SENT_RETRIES => continue,
+            "not_sent" => return Err(NativeError::Unknown),
+            "rejected" => return Err(NativeError::Invalid("settings/rejected")),
+            _ => return Err(NativeError::Unknown),
+        }
+    }
+    Err(NativeError::Unknown)
+}
+
+fn replay(tx: &Transaction<'_>, request: &Request) -> Result<Option<Snapshot>> {
+    let Some((signature, receipt, outcome)) = row(tx, &request.request_id)? else {
+        return Ok(None);
+    };
+    if signature != request.signature()? {
+        return Err(NativeError::Conflict);
+    }
+    Snapshot::from_records(agent(tx, &request.agent)?, receipt, outcome).map(Some)
+}
+
+fn response(snapshot: &Snapshot, replayed: bool) -> Value {
+    let mut value = json!({
+        "receipt": snapshot.receipt,
+        "outcome": snapshot.outcome,
+        "replayed": replayed,
+    });
+    if let Outcome::Acknowledged {
+        result: Some(result),
+    } = snapshot.outcome()
+    {
+        value["result"] = result.clone();
+    }
+    value
 }
 
 /// Calls only an already committed intent. On timeout/error/cancellation its
