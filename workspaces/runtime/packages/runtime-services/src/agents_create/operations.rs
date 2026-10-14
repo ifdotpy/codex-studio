@@ -695,7 +695,40 @@ fn create_child(
                 .map_err(|_| OperationError::Invalid("Work item assignment was rejected"))?;
         }
         Ok(result)
-    })
+    })?;
+    #[cfg(target_os = "macos")]
+    if workspace == "image" {
+        provision_image_workspace(&result, id)?;
+    }
+    Ok(result)
+}
+
+/// Record image intent so readiness can remount the durable ASIF state. On macOS,
+/// `provision_image_workspace` mirrors Python's `codex_runtime.py:5878` call to
+/// `codex_workspace_images.create_workspace`, after its base-build start path.
+fn set_image_workspace_fields(record: &mut Value, root: &str) {
+    record["workspaceMode"] = json!("image");
+    record["imageWorkspace"] = json!(true);
+    record["imageWorkspaceReady"] = json!(false);
+    record["imageWorkspacePhase"] = json!("creating");
+    record["imageWorkspaceRepo"] = json!(root);
+    record["workspaceBackend"] = json!("asif");
+}
+
+#[cfg(target_os = "macos")]
+fn provision_image_workspace(result: &Value, fallback_id: &str) -> Result<(), OperationError> {
+    let id = result
+        .get("id")
+        .and_then(Value::as_str)
+        .unwrap_or(fallback_id);
+    let root = result
+        .get("imageWorkspaceRepo")
+        .or_else(|| result.get("cwd"))
+        .and_then(Value::as_str)
+        .ok_or(OperationError::Internal)?;
+    crate::image_workspace::create_workspace(PathBuf::from(root).as_path(), id)
+        .map(|_| ())
+        .map_err(|error| OperationError::Workspace(error.to_string()))
 }
 
 pub fn configure(context: &Context<'_>, request: Configuration) -> Result<Value, OperationError> {

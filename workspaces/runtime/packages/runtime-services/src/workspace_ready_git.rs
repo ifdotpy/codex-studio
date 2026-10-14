@@ -79,6 +79,30 @@ fn prepare_attempt(
 ) -> Result<WorkspaceDecision, WorkspaceError> {
     let initial = snapshot(store, agent_id)?;
     let actor = actor(&initial)?;
+    if actor.image_workspace
+        || actor.image_workspace_ready
+        || actor.image_workspace_phase.is_some()
+        || actor.workspace_mode.as_deref() == Some("image")
+    {
+        #[cfg(not(target_os = "macos"))]
+        return Ok(image_workspace_refusal_decision());
+        #[cfg(target_os = "macos")]
+        {
+            if actor.deleted_at.is_some() || !actor.auto_wake {
+                return Ok(WorkspaceDecision::Defer { reservation: None });
+            }
+            let mounted = crate::image_workspace::ensure_mounted(agent_id)
+                .map_err(|_| WorkspaceError::Git)?;
+            let path = mounted
+                .get("path")
+                .and_then(Value::as_str)
+                .map(PathBuf::from)
+                .ok_or(WorkspaceError::InvalidRecord)?;
+            return Ok(WorkspaceDecision::Ready {
+                token: ReadyToken::new(&initial.agent.record, path),
+            });
+        }
+    }
     if let Some(refusal) = unsupported(&actor) {
         return Ok(WorkspaceDecision::Refuse(refusal));
     }
@@ -109,6 +133,11 @@ fn prepare_attempt(
         return Ok(context.decide());
     };
     provision(store, &context, plan, &git)
+}
+
+#[cfg(not(target_os = "macos"))]
+pub(crate) fn image_workspace_refusal_decision() -> WorkspaceDecision {
+    WorkspaceDecision::Refuse(crate::workspace_ready::WorkspaceRefusal::ImageWorkspaceUnsupported)
 }
 
 fn provision(
