@@ -588,7 +588,8 @@ class MultiServerService:
                 invites.append({key: record.get(key) for key in ("inviteId", "expires", "created", "status")})
         return {"protocol": PROTOCOL, "identity": self.identity(), "clients": clients,
                 "servers": self.servers(), "invites": invites,
-                "settings": {"autoPair": self.discovery().enabled(), "aliases": aliases}}
+                "settings": {"autoPair": self.discovery().enabled(),
+                             "autoUpdate": self.discovery().auto_update_enabled(), "aliases": aliases}}
 
     def create_invite(self, body: dict[str, Any], actor: str = "local") -> dict[str, Any]:
         request_id = _id(body.get("requestId"), "request ID")

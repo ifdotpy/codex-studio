@@ -64,6 +64,7 @@ class InviteSummary(ContractModel):
 
 class AccessSettings(ContractModel):
     autoPair: bool
+    autoUpdate: bool = Field(default=True, description="Install a newer build that a paired server runs (docs/peer-updates.md).")
     aliases: dict[str, str] = Field(default_factory=dict)
 
 
@@ -124,7 +125,8 @@ class UiInvite(ContractModel):
 
 class SetAccessSettings(ContractModel):
     action: Literal["settings"]
-    autoPair: bool
+    autoPair: bool | None = None
+    autoUpdate: bool | None = None
     requestId: str | None = Field(default=None, min_length=1, max_length=128)
 
 

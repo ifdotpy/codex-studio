@@ -240,6 +240,37 @@ class RestartEnvironmentKey(ContractStrEnum):
     CODEX_AGENTS_SUPERVISOR_MODE = "CODEX_AGENTS_SUPERVISOR_MODE"
 
 
+class PeerUpdateBuild(ContractModel):
+    """The build stamp in Contents/Resources/studio-build.json (docs/peer-updates.md)."""
+
+    version: Literal[1]
+    builtAt: float = Field(description="Packaging time on the build Mac, in seconds since the epoch.")
+    commit: str
+    commitTime: int = Field(description="Commit time, in seconds since the epoch.")
+    branch: str
+
+
+class PeerUpdateEvent(ContractModel):
+    at: float | None = Field(description="Time of the pull or install attempt, in seconds since the epoch.")
+    server: str | None = Field(description="The paired server that offered the build.")
+    build: PeerUpdateBuild | None
+    outcome: str | None
+    reason: str | None
+
+
+class PeerUpdatePending(ContractModel):
+    build: PeerUpdateBuild
+    server: str
+
+
+class PeerUpdateStatus(ContractModel):
+    build: PeerUpdateBuild | None = Field(description="The build of the installed app; null for a source checkout.")
+    checkedAt: float | None
+    lastPull: PeerUpdateEvent | None
+    pending: PeerUpdatePending | None
+    lastInstall: PeerUpdateEvent | None
+
+
 class DesktopResponse(ResponseModel):
     application: str
     protocol: int
@@ -260,6 +291,7 @@ class DesktopResponse(ResponseModel):
     supervisorNotice: str | None
     stateDir: str
     linuxVm: dict[str, JsonValue] | None = None
+    peerUpdate: PeerUpdateStatus | None = None
 
 
 class HostResources(ContractModel):

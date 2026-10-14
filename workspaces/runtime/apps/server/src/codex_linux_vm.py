@@ -613,10 +613,19 @@ WantedBy=multi-user.target
                 ['timeout', '--kill-after=5', '2510', 'systemctl', 'restart', 'codex-studio-provision.service']]}
 
 
+# Held for a whole VM upgrade or automatic restart (Client.maintenance). The app installer of
+# docs/peer-updates.md waits while it is held.
+MAINTENANCE_LOCK = 'maintenance.lock'
+
+
+def vm_state_dir(state: Path) -> Path:
+    """The VM state directory of a Studio state directory."""
+    return Path(os.environ.get('CODEX_LINUX_VM_STATE_DIR') or state / 'linux-vm').expanduser().resolve()
+
+
 class Client:
     def __init__(self, state_dir: str | Path | None = None, *, helper: str | Path | None = None):
-        state = studio_state_dir()
-        self.state_dir = Path(state_dir or os.environ.get('CODEX_LINUX_VM_STATE_DIR') or state / 'linux-vm').expanduser().resolve()
+        self.state_dir = Path(state_dir).expanduser().resolve() if state_dir else vm_state_dir(studio_state_dir())
         packaged = REPOSITORY_ROOT.parent / 'studio-linux-vm'
         self.helper = Path(helper or os.environ.get('CODEX_LINUX_VM_HELPER') or
                            (packaged if packaged.is_file() else
@@ -649,7 +658,7 @@ class Client:
     def maintenance(self) -> Iterator[None]:
         """Held for a whole VM upgrade or automatic restart. Neither starts while the other runs."""
         self.state_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
-        with (self.state_dir / 'maintenance.lock').open('a') as lease:
+        with (self.state_dir / MAINTENANCE_LOCK).open('a') as lease:
             try:
                 fcntl.flock(lease, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError:

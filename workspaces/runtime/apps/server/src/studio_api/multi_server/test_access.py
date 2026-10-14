@@ -318,6 +318,24 @@ class AccessTests(unittest.TestCase):
         self.assertIsNotNone(snapshot["clients"][0]["lastAccess"])
         self.assertEqual(snapshot["clients"][0]["status"], "paired")
 
+    def test_auto_update_setting_is_on_by_default_and_separate_from_auto_pair(self) -> None:
+        self.assertTrue(self.client.get("/api/multi-server").json()["settings"]["autoUpdate"])
+        response = self.client.post(
+            "/api/multi-server",
+            json={"action": "settings", "autoUpdate": False, "requestId": "settings-update"},
+            headers={"X-Canvas-Token": "local-token"},
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["settings"]["autoUpdate"], False)
+        self.assertEqual(response.json()["settings"]["autoPair"], True)
+        self.assertFalse(self.runtime.service.discovery().auto_update_enabled())
+        empty = self.client.post(
+            "/api/multi-server",
+            json={"action": "settings", "requestId": "settings-empty"},
+            headers={"X-Canvas-Token": "local-token"},
+        )
+        self.assertEqual(empty.status_code, 400, empty.text)
+
     def test_remote_invitation_receipt_does_not_store_the_secret(self) -> None:
         self.assertEqual(self.pair().status_code, 200)
         raw = b'{"action":"create_invite","requestId":"remote-invite"}'
