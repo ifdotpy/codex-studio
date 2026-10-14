@@ -701,6 +701,16 @@ impl AccountSessionPort for AccountSessionRuntime {
             serde_json::json!({"loginId":receipt["loginId"]}),
             CANCEL_TIMEOUT,
         );
+        if response
+            .as_ref()
+            .is_ok_and(|receipt| receipt.certainty == RequestCertainty::NotSent)
+        {
+            return self
+                .driver
+                .finish_codex_cancel_not_sent(request, account)
+                .map(public_login)
+                .map_err(mutation_error);
+        }
         let confirmed = response.ok().is_some_and(|receipt| {
             receipt.certainty == RequestCertainty::Written
                 && matches!(
