@@ -187,6 +187,20 @@ fn validate(request: &SessionRequest) -> Result<(), PortError> {
                             .is_some_and(|id| !id.is_empty())
                 })
         });
+    // These are the exact actor-bound calls issued by codex_native_voice.py:
+    // _submit_start (lines 107-111), _stop_native (418), and speech (455).
+    // Require the connection snapshot so a delayed voice operation cannot
+    // cross a provider reconnect.
+    let voice_request = request.transfer.is_none()
+        && request.deleted_actor_session.is_none()
+        && request.actor.is_some()
+        && request.expected_scope.as_ref() == Some(&request.scope)
+        && match request.method {
+            Method::ThreadRealtimeStart => valid_voice_start(request),
+            Method::ThreadRealtimeStop => valid_voice_stop(request, "voice:stop:"),
+            Method::ThreadRealtimeAppendSpeech => valid_voice_speech(request),
+            _ => false,
+        };
     let actor_method = request.transfer.is_none()
         && request.actor.is_some()
         && matches!(
@@ -214,6 +228,7 @@ fn validate(request: &SessionRequest) -> Result<(), PortError> {
                 | Method::CommandExecResize
                 | Method::CommandExecTerminate
         )
+        || voice_request
         || deleted_voice_stop;
     let transfer_method = request.transfer.as_ref().is_some_and(|transfer| {
         matches!(
@@ -349,6 +364,68 @@ fn valid_settings_update(request: &SessionRequest) -> bool {
         }
     })
 }
+
+fn valid_voice_start(request: &SessionRequest) -> bool {
+    let Some(session_id) = request.operation.strip_prefix("voice:start:") else {
+        return false;
+    };
+    if session_id.is_empty() || session_id.len() > 120 {
+        return false;
+    }
+    let Some(params) = request.params.as_object() else {
+        return false;
+    };
+    let Some(transport) = params.get("transport").and_then(Value::as_object) else {
+        return false;
+    };
+    params.len() == 7
+        && params
+            .get("threadId")
+            .and_then(Value::as_str)
+            .is_some_and(|id| !id.is_empty())
+        && params.get("version") == Some(&json!("v3"))
+        && params.get("outputModality") == Some(&json!("audio"))
+        && params.get("realtimeSessionId").and_then(Value::as_str) == Some(session_id)
+        && params.get("clientManagedHandoffs") == Some(&json!(false))
+        && params.get("flushTranscriptTailOnSessionEnd") == Some(&json!(false))
+        && transport.len() == 2
+        && transport.get("type") == Some(&json!("webrtc"))
+        && transport
+            .get("sdp")
+            .and_then(Value::as_str)
+            .is_some_and(|sdp| sdp.starts_with("v=0") && sdp.len() <= 100_000)
+}
+
+fn valid_voice_stop(request: &SessionRequest, operation_prefix: &str) -> bool {
+    let Some(session_id) = request.operation.strip_prefix(operation_prefix) else {
+        return false;
+    };
+    !session_id.is_empty()
+        && session_id.len() <= 120
+        && request.params.as_object().is_some_and(|params| {
+            params.len() == 1
+                && params
+                    .get("threadId")
+                    .and_then(Value::as_str)
+                    .is_some_and(|thread_id| !thread_id.is_empty())
+        })
+}
+
+fn valid_voice_speech(request: &SessionRequest) -> bool {
+    let Some(receipt_id) = request.operation.strip_prefix("voice:speech:") else {
+        return false;
+    };
+    !receipt_id.is_empty()
+        && receipt_id.len() <= 480
+        && request.params.as_object().is_some_and(|params| {
+            params.len() == 2
+                && params
+                    .get("threadId")
+                    .and_then(Value::as_str)
+                    .is_some_and(|thread_id| !thread_id.is_empty())
+                && params.get("text").and_then(Value::as_str).is_some()
+        })
+}
 #[derive(Clone, serde::Serialize, serde::Deserialize, PartialEq)]
 pub(super) struct Call {
     scope: ConnectionScope,
@@ -467,6 +544,56 @@ mod validation_tests {
         assert_eq!(validate(&request), Err(PortError::Invalid));
         request.params.as_object_mut().unwrap().remove("unexpected");
         request.operation = "native-action".into();
+        assert_eq!(validate(&request), Err(PortError::Invalid));
+    }
+
+    #[test]
+    fn voice_calls_require_exact_actor_scope_and_provider_shapes() {
+        let mut request = turns_request("full", 1, true);
+        request.expected_scope = Some(request.scope.clone());
+        request.operation = "voice:start:session-1".into();
+        request.method = Method::ThreadRealtimeStart;
+        request.params = json!({
+            "threadId":"fixture-thread",
+            "version":"v3",
+            "outputModality":"audio",
+            "realtimeSessionId":"session-1",
+            "clientManagedHandoffs":false,
+            "flushTranscriptTailOnSessionEnd":false,
+            "transport":{"type":"webrtc","sdp":"v=0 fixture-offer"}
+        });
+        assert!(validate(&request).is_ok());
+
+        request.params["unexpected"] = json!(true);
+        assert_eq!(validate(&request), Err(PortError::Invalid));
+        request.params = json!({
+            "threadId":"fixture-thread",
+            "version":"v3",
+            "outputModality":"audio",
+            "realtimeSessionId":"other-session",
+            "clientManagedHandoffs":false,
+            "flushTranscriptTailOnSessionEnd":false,
+            "transport":{"type":"webrtc","sdp":"v=0 fixture-offer"}
+        });
+        request.params["realtimeSessionId"] = json!("other-session");
+        assert_eq!(validate(&request), Err(PortError::Invalid));
+        request.params["realtimeSessionId"] = json!("session-1");
+        request.expected_scope = None;
+        assert_eq!(validate(&request), Err(PortError::Invalid));
+
+        request.expected_scope = Some(request.scope.clone());
+        request.method = Method::ThreadRealtimeStop;
+        request.operation = "voice:stop:session-1".into();
+        request.params = json!({"threadId":"fixture-thread"});
+        assert!(validate(&request).is_ok());
+        request.operation = "voice:other:session-1".into();
+        assert_eq!(validate(&request), Err(PortError::Invalid));
+
+        request.method = Method::ThreadRealtimeAppendSpeech;
+        request.operation = "voice:speech:receipt-1".into();
+        request.params = json!({"threadId":"fixture-thread","text":"hello"});
+        assert!(validate(&request).is_ok());
+        request.params["extra"] = json!(1);
         assert_eq!(validate(&request), Err(PortError::Invalid));
     }
 
