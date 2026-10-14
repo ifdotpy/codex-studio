@@ -384,13 +384,14 @@ fn prepare_native_snapshot(
             .and_then(Value::as_str)
             .map(str::to_owned),
         events: Vec::new(),
+        radio_authorized: false,
     };
     let admission = admit(store, resources, &intent)?;
     let token = workspace(store, &intent)?;
     let filesystem = FilesystemSnapshot::capture(store, agent_id)?;
     let (identity, _) = catalog(resources, &intent)?;
     scheduler::lifecycle_transaction_with(store, |tx| {
-        let current = preconditions(tx, &intent, &filesystem)?;
+        let current = preconditions(tx, &intent, &filesystem, None)?;
         let frozen = admission
             .selection
             .freeze_record(&current, &identity, Instant::now())
