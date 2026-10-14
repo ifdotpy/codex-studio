@@ -15,6 +15,7 @@ const mocks = vi.hoisted(() => ({
         entitySequenceReset?: boolean;
       }) => void)
     | undefined,
+  connectionListener: undefined as ((status: string) => void) | undefined,
   pullResponse: undefined as
     | ((
         after: number,
@@ -46,7 +47,13 @@ vi.mock("rxdb/plugins/replication", () => ({
 vi.mock("./resourceEvents", () => ({
   acknowledgeEntitySequences: vi.fn(),
   watchResourceChanges: mocks.watchResourceChanges,
-  watchResourceConnection: vi.fn(() => () => {}),
+  watchResourceConnection: vi.fn((listener: (status: string) => void) => {
+    mocks.connectionListener = listener;
+    return () => {
+      if (mocks.connectionListener === listener)
+        mocks.connectionListener = undefined;
+    };
+  }),
 }));
 vi.mock("./resume", () => ({ onResume: vi.fn(() => () => {}) }));
 
@@ -177,8 +184,9 @@ async function setup({ ready = true } = {}) {
   const api = await import("../api");
   const entitySequence = await import("./entitySequence");
   const failures: unknown[] = [];
+  const accepted = vi.fn();
   const failureWaiters = new Set<(error: unknown) => void>();
-  const stop = client.subscribeStateProjection(vi.fn(), (error) => {
+  const stop = client.subscribeStateProjection(accepted, (error) => {
     failures.push(error);
     if (error !== null) {
       failureWaiters.forEach((resolve) => resolve(error));
@@ -194,6 +202,7 @@ async function setup({ ready = true } = {}) {
     });
   return {
     api,
+    accepted,
     client,
     entitySequence,
     failures,
@@ -218,6 +227,7 @@ describe("entity pull dispatch gate", () => {
     mocks.mutationResponse = null;
     mocks.invalidate = undefined;
     mocks.accountsBaseline = undefined;
+    mocks.connectionListener = undefined;
   });
 
   const installMutationResponse = () => {
@@ -704,6 +714,37 @@ describe("entity pull dispatch gate", () => {
       await client.refreshProjection();
       expect(pulls).toHaveLength(beforeDirectRefresh + 1);
       expect(pulls).toEqual([100, 100, 100]);
+    } finally {
+      stop();
+      vi.useRealTimers();
+    }
+  });
+
+  it("retries a failed live read after the stream stays healthy and quiet", async () => {
+    vi.useFakeTimers();
+    vi.spyOn(Math, "random").mockReturnValue(0.5);
+    const pulls: number[] = [];
+    const { accepted, failures, stop } = await setup();
+    try {
+      await vi.waitFor(() => expect(accepted).toHaveBeenCalled());
+      mocks.connectionListener?.("live");
+      mocks.pulls = pulls;
+      mocks.pullResponse = (after) => {
+        if (pulls.length <= 3) throw new TypeError("temporary read failure");
+        return {
+          workspaceId: "e".repeat(32),
+          documents: [],
+          checkpoint: { seq: 101 },
+          maxSeq: 101,
+          initialHigh: 100,
+          after,
+        };
+      };
+
+      mocks.invalidate?.({ epoch: "epoch", entitySequence: 101 });
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(pulls).toHaveLength(4);
+      expect(failures.at(-1)).toBeNull();
     } finally {
       stop();
       vi.useRealTimers();
