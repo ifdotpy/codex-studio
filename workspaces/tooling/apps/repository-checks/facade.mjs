@@ -759,6 +759,12 @@ function fastTierRestCommands(root) {
     .filter(({ label }) => label !== "browser smoke subset");
 }
 
+function fastTierRestNonRustCommands(root) {
+  return fastTierRestCommands(root).filter(
+    ({ label }) => label !== "Rust nextest",
+  );
+}
+
 function heavyTierCommands(root) {
   const server = serverPackage();
   return [
@@ -781,19 +787,26 @@ function recipePlan(root, name) {
       ? fastTierCommands(root)
       : name === "test-fast-rest"
         ? fastTierRestCommands(root)
-        : heavyTierCommands(root);
+        : name === "test-fast-rest-non-rust"
+          ? fastTierRestNonRustCommands(root)
+          : heavyTierCommands(root);
   const commandLists = commands.map(
     ({ item, options = {}, commands: override }) =>
       override ?? commandFor(root, item, "test", "", options),
   );
-  const fast = name === "test-fast" || name === "test-fast-rest";
+  const fast =
+    name === "test-fast" ||
+    name === "test-fast-rest" ||
+    name === "test-fast-rest-non-rust";
   return {
     package: name,
     case: null,
     target: fast
       ? name === "test-fast"
         ? "repository fast tier"
-        : "fast tier excluding the server suites"
+        : name === "test-fast-rest"
+          ? "fast tier excluding the default server suites"
+          : "non-Rust fast-tier remainder"
       : "server heavy suites followed by full browser project",
     workingDirectory: root,
     invocationDirectory: root,
@@ -801,7 +814,9 @@ function recipePlan(root, name) {
     selector: fast
       ? name === "test-fast"
         ? "default server run, server bridge, Rust workspace nextest, web type checks and unit tests, tooling tests"
-        : "server bridge, Rust workspace nextest, web type checks and unit tests, tooling tests"
+        : name === "test-fast-rest"
+          ? "server bridge, Rust workspace nextest, web type checks and unit tests, tooling tests"
+          : "server bridge, web type checks and unit tests, tooling tests"
       : "server --only heavy, then codex-agents-web test:browser",
     requiredSetup:
       "Frozen pnpm dependencies, managed Python runtime and development dependencies, Rust toolchain and cargo-nextest, browser binaries",
@@ -1326,7 +1341,7 @@ function formatServerRunDiagnostics(output) {
 
 function usage() {
   process.stdout.write(
-    "Usage: facade.mjs packages | test <package> [file-or-case] [--name <pattern>] [-- <cargo args>] [--json] | test-plan <package> [file-or-case] [--name <pattern>] [-- <cargo args>] [--json] | test-fast | test-fast-rest | test-server-shard <index> <count> | test-heavy | test-browser | test-browser-smoke | test-server-category <category> | test-server-load <suite-path> | check <package> [--dry-run] [--json] | contracts-check | boundaries-check | check-affected <base> [--dry-run]\n",
+    "Usage: facade.mjs packages | test <package> [file-or-case] [--name <pattern>] [-- <cargo args>] [--json] | test-plan <package> [file-or-case] [--name <pattern>] [-- <cargo args>] [--json] | test-fast | test-fast-rest | test-fast-rest-non-rust | test-server-shard <index> <count> | test-heavy | test-browser | test-browser-smoke | test-server-category <category> | test-server-load <suite-path> | check <package> [--dry-run] [--json] | contracts-check | boundaries-check | check-affected <base> [--dry-run]\n",
   );
 }
 
@@ -1788,6 +1803,14 @@ export async function main(argv = process.argv.slice(2)) {
     );
     return result.exitCode;
   }
+  if (action === "test-fast-rest-non-rust") {
+    const result = await executeRecipe(
+      root,
+      "test-fast-rest-non-rust",
+      fastTierRestNonRustCommands(root),
+    );
+    return result.exitCode;
+  }
   if (action === "test-server-shard") {
     const options = serverShardOptions(packageName || "", requestedCase || "");
     return (await execute(root, serverPackage(), "", json, options)).exitCode;
@@ -1828,7 +1851,10 @@ export async function main(argv = process.argv.slice(2)) {
       reportPlan(recipePlan(root, packageName), json);
       return 0;
     }
-    if (packageName === "test-fast-rest") {
+    if (
+      packageName === "test-fast-rest" ||
+      packageName === "test-fast-rest-non-rust"
+    ) {
       reportPlan(recipePlan(root, packageName), json);
       return 0;
     }
