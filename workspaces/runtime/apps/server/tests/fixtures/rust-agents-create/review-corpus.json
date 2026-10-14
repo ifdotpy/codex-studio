@@ -19,45 +19,19 @@
     ["/api/leads", { "model": "gpt-6-astra" }, "provider-session/model-list"],
     [
       "/api/leads",
-      { "worker_defaults": null },
-      "worker-driver/settings-catalog"
-    ],
-    [
-      "/api/leads",
-      { "review_defaults": null },
-      "worker-driver/settings-catalog"
-    ],
-    [
-      "/api/leads",
       { "workspaceMode": "image" },
-      "workspace-state/lead-workspace"
+      "workspace-state/image-workspace"
     ],
-    ["/api/leads", { "project_id": "project" }, "project-driver/chat-binding"],
     [
-      "/api/agents",
-      { "parent": "parent" },
-      "worker-driver/workspace-preparation"
+      "/api/leads",
+      { "project_id": "project", "project_server_id": "remote" },
+      "cross-server-driver/project-binding"
     ],
     ["/api/agents", { "effort": null }, "provider-session/model-list"],
     [
       "/api/agents",
-      { "worker_defaults": null },
-      "worker-driver/settings-catalog"
-    ],
-    [
-      "/api/agents",
       { "workspaceMode": "image" },
-      "workspace-state/lead-workspace"
-    ],
-    [
-      "/api/configure",
-      { "concurrency": 0 },
-      "agent-management/agent-mode-settings"
-    ],
-    [
-      "/api/conversation",
-      { "agent_mode": "single" },
-      "agent-management/conversation-settings"
+      "workspace-state/image-workspace"
     ]
   ]
 }

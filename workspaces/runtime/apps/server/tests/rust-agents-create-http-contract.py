@@ -10,6 +10,7 @@ import importlib.util
 import json
 import os
 import sqlite3
+import subprocess
 import sys
 import unittest
 import uuid
@@ -92,6 +93,14 @@ def normalized_agent(value):
     if "serverId" in result:
         result["serverId"] = "<server>"
     return result
+
+
+def agent_delta(actual, expected):
+    return {
+        key: (actual.get(key, "<missing>"), expected.get(key, "<missing>"))
+        for key in sorted(actual.keys() | expected.keys())
+        if actual.get(key, "<missing>") != expected.get(key, "<missing>")
+    }
 
 
 def python_draft(backend, request, draft=True):
@@ -194,7 +203,9 @@ class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         self.assertTrue(stored_record["quickCreate"])
         self.assertTrue(stored_record["needsTitle"])
         self.assertEqual(stored_record["cwd"], str(self.backend.cwd))
-        self.assertEqual(normalized_agent(stored_record), normalized_agent(reference["record"]))
+        actual_record = normalized_agent(stored_record)
+        expected_record = normalized_agent(reference["record"])
+        self.assertEqual(actual_record, expected_record, agent_delta(actual_record, expected_record))
         self.assertEqual(events, 0)
         self.assertIsNotNone(projection)
         self.assertEqual(normalized_agent(json.loads(projection[0])["value"]), normalized_agent(reference["projection"]))
@@ -298,17 +309,6 @@ class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             response.json(),
             {"error": "Not implemented: requires work-driver/deletion-release"},
         )
-        reuse = self.backend.request(
-            "POST",
-            "/api/leads",
-            body={"reuse_empty": True, "previous": previous["id"]},
-            headers=self.headers(),
-        )
-        self.assertEqual(reuse.status, 501, reuse.body[:1000])
-        self.assertEqual(
-            reuse.json(),
-            {"error": "Not implemented: requires agent-management/empty-chat-reuse"},
-        )
         with database_connection(self.backend.state / "canvas.sqlite3") as database:
             after = database.execute(
                 "SELECT name FROM sqlite_master WHERE type='table' "
@@ -357,7 +357,9 @@ class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
                 "SELECT payload FROM sync_entities WHERE collection='agent' AND id=?",
                 (request["id"],),
             ).fetchone()
-        self.assertEqual(normalized_agent(json.loads(agent[0])), normalized_agent(reference["record"]))
+        actual_record = normalized_agent(json.loads(agent[0]))
+        expected_record = normalized_agent(reference["record"])
+        self.assertEqual(actual_record, expected_record, agent_delta(actual_record, expected_record))
         self.assertEqual(normalized_agent(json.loads(projection[0])["value"]), normalized_agent(reference["projection"]))
         self.assertEqual(
             event,
@@ -397,6 +399,68 @@ class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
                 ).fetchone(),
             )
         self.assertEqual(after, before)
+
+    def test_child_creation_freezes_git_base_and_replays_one_agent_and_event(self):
+        self.rust_only()
+        subprocess.run(["git", "config", "user.name", "P02 contract"], cwd=self.backend.cwd, check=True)
+        subprocess.run(["git", "config", "user.email", "p02@example.test"], cwd=self.backend.cwd, check=True)
+        (self.backend.cwd / "README.md").write_text("frozen base\n")
+        subprocess.run(["git", "add", "README.md"], cwd=self.backend.cwd, check=True)
+        subprocess.run(["git", "commit", "-m", "fixture base"], cwd=self.backend.cwd, check=True, capture_output=True)
+        base_commit = subprocess.check_output(
+            ["git", "rev-parse", "HEAD^{commit}"], cwd=self.backend.cwd, text=True
+        ).strip()
+        parent_request = {
+            "id": str(uuid.uuid4()),
+            "cwd": str(self.backend.cwd),
+            "workspaceMode": "worktree",
+        }
+        parent = python_draft(self.backend, parent_request)
+        self.backend.start()
+        models = self.backend.request("GET", "/api/models", headers=self.headers())
+        if models.status != 200:
+            models = self.backend.wait_until(
+                lambda: (response if (response := self.backend.request(
+                    "GET", "/api/models", headers=self.headers()
+                )).status == 200 else None),
+                "fresh model catalog for child creation",
+            )
+        self.assertEqual(models.status, 200, models.body[:1000])
+        request = {
+            "id": str(uuid.uuid4()),
+            "parent": parent_request["id"],
+            "cwd": str(self.backend.cwd),
+            "name": "P02 child",
+            "prompt": "Use the frozen base.",
+            "workspaceMode": "worktree",
+        }
+        before = no_write_snapshot(self.backend.state)
+        first = self.backend.request("POST", "/api/agents", body=request, headers=self.headers())
+        if first.status == 501:
+            self.assertIn("provider-session/model-list", first.json()["error"])
+            self.assertEqual(no_write_snapshot(self.backend.state), before)
+            return
+        self.assertEqual(first.status, 200, first.body[:1000])
+        self.assertEqual(first.json()["workerBaseCommit"], base_commit)
+        self.assertTrue(first.json()["worktree"])
+        self.backend.stop()
+        self.backend.start()
+        replay = self.backend.request("POST", "/api/agents", body=request, headers=self.headers())
+        self.assertEqual(replay.status, 200, replay.body[:1000])
+        self.assertEqual(replay.json()["id"], request["id"])
+        with database_connection(self.backend.state / "canvas.sqlite3") as database:
+            self.assertEqual(
+                database.execute("SELECT COUNT(*) FROM runtime_agents WHERE id=?", (request["id"],)).fetchone()[0],
+                1,
+            )
+            self.assertEqual(
+                database.execute("SELECT COUNT(*) FROM runtime_events WHERE id=?", (request["id"] + ":initial",)).fetchone()[0],
+                1,
+            )
+            saved = json.loads(database.execute("SELECT record FROM runtime_agents WHERE id=?", (request["id"],)).fetchone()[0])
+        self.assertEqual(saved["workerBaseRef"], "HEAD")
+        self.assertEqual(saved["workerBaseCommit"], base_commit)
+        self.assertEqual(saved["parentId"], parent["record"]["id"])
 
     def test_rename_reads_python_written_agent_and_projection(self):
         before = rename_state(self.backend.state, self.agent_id, "title-request-1")
@@ -658,8 +722,16 @@ class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         for field in REVIEW_CORPUS["catalogNulls"]:
             with self.subTest(field=field):
                 before = no_write_snapshot(self.backend.state)
-                result = self.post("/api/conversation", {"id": self.agent_id, field: None}, 501)
-                self.assertIn("agent-management/conversation-settings", result["error"])
+                expected = (
+                    400
+                    if field in {"model", "fast_mode", "worker_defaults", "review_defaults"}
+                    else 200
+                    if field == "daybreak_enabled"
+                    else 501
+                )
+                result = self.post("/api/conversation", {"id": self.agent_id, field: None}, expected)
+                if expected == 501:
+                    self.assertIn("provider-session/model-list", result["error"])
                 self.assertEqual(no_write_snapshot(self.backend.state), before)
 
     def test_probe_boundaries_explicit_nulls_are_located_schema_refusals(self):
@@ -820,7 +892,8 @@ class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
                     self.post("/api/leads", {"id": str(uuid.uuid4()), "previous": previous["id"], "reuse_empty": False}, 400)
                     self.assertEqual(no_write_snapshot(self.backend.state), before)
             self.save({**original, "prompt": "This conversation has content"})
-            result = self.post("/api/leads", {"id": str(uuid.uuid4()), "previous": previous["id"], "reuse_empty": True})
+            reuse_request = {"id": str(uuid.uuid4()), "previous": previous["id"], "reuse_empty": True}
+            result = self.post("/api/leads", reuse_request)
             self.assertNotEqual(result["id"], previous["id"])
             self.assertEqual(result["cwd"], original["cwd"])
             self.assertFalse(result["yoloMode"])
@@ -833,10 +906,14 @@ class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         previous = self.draft()
         original = self.stored(previous["id"])
         try:
-            before = no_write_snapshot(self.backend.state)
-            result = self.post("/api/leads", {"id": str(uuid.uuid4()), "previous": previous["id"], "reuse_empty": True}, 501)
-            self.assertIn("agent-management/empty-chat-reuse", result["error"])
-            self.assertEqual(no_write_snapshot(self.backend.state), before)
+            reuse_request = {"id": str(uuid.uuid4()), "previous": previous["id"], "reuse_empty": True}
+            result = self.post("/api/leads", reuse_request)
+            self.assertEqual(result["id"], previous["id"])
+            with database_connection(self.backend.state / "canvas.sqlite3") as database:
+                aliases = database.execute(
+                    "SELECT agent FROM runtime_lead_requests WHERE id=?", (reuse_request["id"],)
+                ).fetchone()
+            self.assertEqual(aliases, (previous["id"],))
             for change in ({"layrReady": True}, {"workspaceMode": "image"}, {"provider": "claude"}, {"threadId": "existing-thread"}):
                 with self.subTest(change=change):
                     self.save({**original, **change})
@@ -875,7 +952,9 @@ class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         self.backend.start()
         self.post("/api/agents", request)
         record = self.stored(request["id"])
-        self.assertEqual(normalized_agent(record), normalized_agent(reference["record"]))
+        actual_record = normalized_agent(record)
+        expected_record = normalized_agent(reference["record"])
+        self.assertEqual(actual_record, expected_record, agent_delta(actual_record, expected_record))
         self.assertEqual(normalized_agent(self.projection(request["id"])), normalized_agent(reference["projection"]))
         self.assertEqual(record["creationIntent"]["name"], "Name")
         self.assertEqual(record["creationIntent"]["prompt"], "Task")

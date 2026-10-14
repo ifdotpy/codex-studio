@@ -24,6 +24,14 @@ pub enum MutationError {
     LeadRequired,
     #[error("A rename request id is required")]
     RequestIdRequired,
+    #[error("Invalid host agent creation field: {0}")]
+    InvalidCreation(&'static str),
+    #[error("Not implemented: requires {0}")]
+    CapabilityUnavailable(&'static str),
+    #[error("The account or project changed; reload before creating the agent")]
+    IdentityChanged,
+    #[error("Internal server error")]
+    Internal,
     #[error("Not implemented: requires provider-session/title-generation")]
     TitleGenerationUnavailable,
     #[error("The team changed. Reload before saving")]
@@ -354,7 +362,14 @@ fn create_agent(
     } else {
         AgentStatus::Queued
     };
-    if agent.id.0 != id || agent.root_id.0 != id || agent.status != expected_status {
+    let valid_root = if record.get("isLead").and_then(Value::as_bool) == Some(true)
+        || record.get("parentId").is_none_or(Value::is_null)
+    {
+        agent.root_id.0 == id
+    } else {
+        !agent.root_id.0.is_empty()
+    };
+    if agent.id.0 != id || !valid_root || agent.status != expected_status {
         return Err(CreateError::InvalidStoredObject {
             table: "runtime_agents",
             id: id.to_owned(),
