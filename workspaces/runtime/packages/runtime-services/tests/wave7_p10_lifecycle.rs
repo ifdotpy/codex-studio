@@ -23,6 +23,7 @@ use studio_runtime_services::{
         self, LifecycleEffect, LifecycleEffectKind, LifecyclePorts, UnavailableLifecyclePorts,
     },
     agent_management::{Action, ManagementError, Records},
+    workspace_cleanup_runtime::{self, CleanupEffect, CleanupPorts, EffectFailure},
 };
 use studio_runtime_store::{RuntimeStore, Transaction, agent_management};
 use tokio::sync::Notify;
@@ -116,6 +117,18 @@ fn state(store: &RuntimeStore) -> Value {
     json!({"tables":records,"sync":sync})
 }
 
+struct FakeWorkspaceCleanup;
+impl CleanupPorts for FakeWorkspaceCleanup {
+    fn perform(
+        &self,
+        _agent: &Value,
+        _effect: &CleanupEffect,
+        _request_id: &str,
+    ) -> Result<Value, EffectFailure> {
+        Ok(json!({"state":"done"}))
+    }
+}
+
 // A fixture for the transaction boundary only. Provider transport is owned by
 // account_worker, whose direct Stop receipt tests run in the crate suite.
 struct InterruptFixture {
@@ -194,6 +207,35 @@ impl InterruptFixture {
                 Ok(())
             })
             .expect("post-commit delete reconciliation");
+        let db = store.read().expect("read queued workspace cleanups");
+        let records = agent_management::read(&db).expect("read cleanup records");
+        drop(db);
+        for agent in records
+            .get("runtime_agents")
+            .into_iter()
+            .flatten()
+            .filter(|agent| {
+                agent
+                    .pointer("/workspaceCleanupIntent/phase")
+                    .and_then(Value::as_str)
+                    == Some("queued")
+            })
+        {
+            let action = serde_json::from_value(
+                agent
+                    .pointer("/workspaceCleanupIntent/action")
+                    .cloned()
+                    .expect("queued cleanup action"),
+            )
+            .expect("valid cleanup action");
+            workspace_cleanup_runtime::cleanup_agent_workspace_with_ports(
+                store,
+                agent["id"].as_str().expect("cleanup agent id"),
+                action,
+                &FakeWorkspaceCleanup,
+            )
+            .expect("post-commit workspace cleanup");
+        }
     }
 }
 impl LifecyclePorts for InterruptFixture {

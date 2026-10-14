@@ -158,7 +158,7 @@ pub mod wakeups;
 pub mod work_assignment_runtime;
 pub mod work_policy;
 pub mod work_write;
-pub(crate) mod workspace_cleanup_runtime;
+pub mod workspace_cleanup_runtime;
 pub mod workspace_files;
 pub mod workspace_operations;
 pub mod workspace_operations_effects;

@@ -311,6 +311,7 @@ fn request_interrupt(
             epoch: request.epoch,
         }),
         expected_scope: Some(expected.clone()),
+        deleted_actor_session: None,
         method: studio_runtime_providers::Method::TurnInterrupt,
         params: json!({"threadId":request.thread,"turnId":request.turn}),
         deadline: Instant::now() + INTERRUPT_TIMEOUT,
