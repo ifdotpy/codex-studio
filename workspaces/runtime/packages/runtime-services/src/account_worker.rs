@@ -716,6 +716,23 @@ impl Worker {
         if self.closing {
             return Ok(());
         }
+        if method == Method::TurnStart {
+            let agent_id = intent.agent_id.clone();
+            let account_session = self.resources.account_session.clone();
+            let catalog = self.resources.model_catalog.clone();
+            self.prepare("account_transfer_before_start", move |store| {
+                crate::account_transfer_executor::before_start(
+                    store,
+                    account_session,
+                    &catalog,
+                    &agent_id,
+                    now(),
+                )
+                .map(|_| ())
+                .map_err(|error| WorkerError::PreparationRefused(error.to_string()))
+            })
+            .await?;
+        }
         // A recovered durable effect may outlive its submitted request. Check
         // that receipt before preparation, which requires an unsubmitted owner.
         if method == Method::TurnStart {
