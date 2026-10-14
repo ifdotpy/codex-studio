@@ -46,7 +46,7 @@ async fn analytics_read(
     State(state): State<HttpState>,
     query: QueryParams,
 ) -> Result<Response, ApiError> {
-    let options: AnalyticsOptions = serde_json::from_value(Value::Object(query.into_typed()))
+    let options: AnalyticsOptions = serde_json::from_value(Value::Object((*query.into_typed()).clone()))
         .map_err(|_| ApiError::internal())?;
     let export = options.export;
     let timing = options.timing.as_deref() == Some("1") && !export;

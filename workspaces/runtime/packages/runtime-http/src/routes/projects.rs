@@ -289,7 +289,7 @@ async fn project_locations(
     query: QueryParams,
 ) -> Result<Json<Value>, ApiError> {
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
-    let query = Value::Object(query.into_typed());
+    let query = Value::Object((*query.into_typed()).clone());
     let value = tokio::task::spawn_blocking(move || {
         projects::location_query(&store, &query).map_err(projects_error)
     })

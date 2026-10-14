@@ -36,9 +36,9 @@ pub(crate) struct ValidatedRequest {
         dead_code,
         reason = "shared QueryParams retains the original ordered wire values"
     )]
-    pub query: Map<String, Value>,
+    pub query: Arc<Map<String, Value>>,
     #[allow(dead_code, reason = "shared header validation feeds route handlers")]
-    pub headers: Map<String, Value>,
+    pub headers: Arc<Map<String, Value>>,
 }
 
 #[derive(Clone)]
@@ -323,8 +323,8 @@ impl Registry {
         }
         Ok(ValidatedRequest {
             body,
-            query: query.as_object().cloned().unwrap_or_default(),
-            headers: headers.as_object().cloned().unwrap_or_default(),
+            query: Arc::new(query.as_object().cloned().unwrap_or_default()),
+            headers: Arc::new(headers.as_object().cloned().unwrap_or_default()),
         })
     }
 
