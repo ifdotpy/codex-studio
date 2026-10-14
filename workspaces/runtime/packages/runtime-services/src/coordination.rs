@@ -1129,6 +1129,32 @@ mod tests {
         connection
     }
 
+    fn database_at(path: &std::path::Path) -> Connection {
+        let connection = Connection::open(path).expect("durable test database opens");
+        connection.execute_batch(
+            "CREATE TABLE IF NOT EXISTS groups(id TEXT PRIMARY KEY,name TEXT NOT NULL,members TEXT NOT NULL);
+             CREATE TABLE IF NOT EXISTS graph_edges(id TEXT PRIMARY KEY,source TEXT NOT NULL,target TEXT NOT NULL,kind TEXT NOT NULL,UNIQUE(source,target,kind));
+             CREATE TABLE IF NOT EXISTS messages(id TEXT PRIMARY KEY,room TEXT NOT NULL,author TEXT NOT NULL,text TEXT NOT NULL,at REAL NOT NULL,deliveries TEXT NOT NULL);
+             CREATE TABLE IF NOT EXISTS runtime_agents(id TEXT PRIMARY KEY,record TEXT NOT NULL);
+             CREATE TABLE IF NOT EXISTS runtime_events(id TEXT PRIMARY KEY,agent TEXT,kind TEXT,text TEXT,status TEXT,created REAL,epoch INTEGER,turn_id TEXT,error TEXT);
+             CREATE TABLE IF NOT EXISTS runtime_event_meta(id TEXT PRIMARY KEY,record TEXT NOT NULL);
+             CREATE TABLE IF NOT EXISTS graph_agents(id TEXT PRIMARY KEY,record TEXT NOT NULL);
+             CREATE TABLE IF NOT EXISTS sync_entities(collection TEXT NOT NULL,id TEXT NOT NULL,seq INTEGER NOT NULL,hash TEXT NOT NULL,payload TEXT,deleted INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(collection,id));
+             CREATE TABLE IF NOT EXISTS sync_documents(seq INTEGER PRIMARY KEY,scope TEXT NOT NULL,id TEXT NOT NULL,payload TEXT NOT NULL,deleted INTEGER NOT NULL DEFAULT 0);
+             CREATE TABLE IF NOT EXISTS sync_versions(seq INTEGER PRIMARY KEY,scope TEXT NOT NULL,hash TEXT NOT NULL,deleted INTEGER NOT NULL,updated REAL NOT NULL);"
+        ).expect("durable test schema creates");
+        for (id, root) in [("lead", "lead"), ("worker", "lead")] {
+            let record = json!({"id":id,"rootId":root,"epoch":0,"status":if id == "lead" {"running"} else {"idle"},"autoWake":id == "lead","inFlight":id == "lead"}).to_string();
+            connection
+                .execute(
+                    "INSERT OR IGNORE INTO runtime_agents(id,record) VALUES(?1,?2)",
+                    [id, record.as_str()],
+                )
+                .expect("durable test agent inserts");
+        }
+        connection
+    }
+
     fn count(connection: &Connection, table: &str) -> i64 {
         connection
             .query_row(&format!("SELECT count(*) FROM {table}"), [], |row| {
@@ -1238,6 +1264,141 @@ mod tests {
         assert_eq!(metadata["assets"], json!([]));
         assert!(metadata.get("senderId").is_none());
         assert_eq!(count(&connection, "runtime_events"), 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn mac_handoff_survives_p03_precommit_and_postcommit_restarts() {
+        use super::{SystemFollowup, send_system_followup};
+        use crate::linux_vm_guest::{GuestError, GuestRpc};
+        use serde_json::Value;
+        use std::time::Duration;
+
+        struct Guest(std::sync::Mutex<usize>);
+        impl GuestRpc for Guest {
+            fn stream(
+                &self,
+                method: &str,
+                _params: &Value,
+                _request_id: Option<&str>,
+                _timeout: Duration,
+                _on_frame: &mut dyn FnMut(Value) -> Result<(), GuestError>,
+            ) -> Result<Value, GuestError> {
+                if method == "sync.mac.handoff" {
+                    *self.0.lock().expect("guest count lock") += 1;
+                }
+                Ok(match method {
+                    "sync.mac.head" => json!({"mainStateId":"main-1"}),
+                    "sync.mac.read" => {
+                        json!({"kind":"file","mode":420,"data":"Z3Vlc3QgdmVyc2lvbg==","eof":true})
+                    }
+                    "sync.mac.handoff" => {
+                        json!({"line":"mac-conflict","stateId":"handoff-1","mainStateId":"main-1"})
+                    }
+                    _ => json!({"ok":true}),
+                })
+            }
+        }
+
+        let root = tempfile::tempdir().expect("temporary state");
+        let state_dir = root.path().join("state");
+        let project = state_dir.join("layr-projects/p1");
+        let folder = state_dir.join("mac-folder");
+        std::fs::create_dir_all(project.join("sync")).expect("project fixture");
+        std::fs::create_dir_all(&folder).expect("Mac folder fixture");
+        std::fs::write(
+            project.join("project.json"),
+            json!({"projectId":"p1","source":folder}).to_string(),
+        )
+        .expect("project record");
+        std::fs::write(folder.join("file.txt"), b"mac version").expect("Mac version");
+        std::fs::write(
+            project.join("sync/held.json"),
+            json!({"file.txt":{"h":"old","why":"conflict"}}).to_string(),
+        )
+        .expect("held conflict");
+        std::fs::write(project.join("sync/status.json"), json!({"state":"conflict","conflicts":["file.txt"],"choices":[],"withAgent":[],"deletes":0}).to_string()).expect("sync status");
+        let guest = Guest(std::sync::Mutex::new(0));
+        let first = crate::mac_sync::resolve(&state_dir, "p1", "file.txt", "agent", &guest)
+            .expect("guest handoff succeeds");
+        let identity = first.handoff_id.expect("handoff identity");
+        let text = first.handoff_text.expect("handoff text");
+        assert_eq!(*guest.0.lock().expect("guest count lock"), 1);
+
+        let database_path = root.path().join("runtime.sqlite");
+        {
+            let mut connection = database_at(&database_path);
+            // Fail point before the P03 transaction: dropping it simulates process loss.
+            let tx = connection.transaction().expect("P03 transaction starts");
+            send_system_followup(
+                &tx,
+                SystemFollowup {
+                    recipient_id: "lead",
+                    id: &identity,
+                    text: &text,
+                    delivery: "after_turn",
+                    now: 123.0,
+                },
+                &AllowAdmission,
+            )
+            .expect("P03 row stages before commit");
+            drop(tx);
+            drop(connection);
+        }
+        {
+            let mut connection = database_at(&database_path);
+            assert_eq!(count(&connection, "runtime_events"), 0);
+            let restarted_guest = Guest(std::sync::Mutex::new(0));
+            let replay =
+                crate::mac_sync::resolve(&state_dir, "p1", "file.txt", "agent", &restarted_guest)
+                    .expect("restart resolves saved guest receipt");
+            assert_eq!(replay.handoff_id.as_deref(), Some(identity.as_str()));
+            assert_eq!(*restarted_guest.0.lock().expect("guest count lock"), 0);
+            let tx = connection
+                .transaction()
+                .expect("P03 transaction starts after restart");
+            send_system_followup(
+                &tx,
+                SystemFollowup {
+                    recipient_id: "lead",
+                    id: &identity,
+                    text: &text,
+                    delivery: "after_turn",
+                    now: 124.0,
+                },
+                &AllowAdmission,
+            )
+            .expect("P03 row commits after restart");
+            tx.commit().expect("P03 transaction commits");
+        }
+        {
+            let mut connection = database_at(&database_path);
+            // Fail point after the P03 commit: replay after restart returns the same receipt.
+            let restarted_guest = Guest(std::sync::Mutex::new(0));
+            let replay =
+                crate::mac_sync::resolve(&state_dir, "p1", "file.txt", "agent", &restarted_guest)
+                    .expect("postcommit restart resolves");
+            assert_eq!(replay.handoff_id.as_deref(), Some(identity.as_str()));
+            let tx = connection
+                .transaction()
+                .expect("P03 replay transaction starts");
+            let receipt = send_system_followup(
+                &tx,
+                SystemFollowup {
+                    recipient_id: "lead",
+                    id: &identity,
+                    text: &text,
+                    delivery: "after_turn",
+                    now: 125.0,
+                },
+                &AllowAdmission,
+            )
+            .expect("same-identity replay gets receipt");
+            assert!(!receipt.event_inserted);
+            tx.commit().expect("idempotent replay transaction commits");
+            assert_eq!(count(&connection, "runtime_events"), 1);
+            assert_eq!(*restarted_guest.0.lock().expect("guest count lock"), 0);
+        }
     }
 
     #[test]

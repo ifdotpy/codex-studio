@@ -61,6 +61,7 @@ pub fn configure(
         .as_str()
         .ok_or(MacSyncError::NoProject)?
         .to_owned();
+    let enabled_changed = enabled.is_some();
     let directory = project.join("sync");
     fs::create_dir_all(&directory).map_err(MacSyncError::Io)?;
     let config_path = directory.join("config.json");
@@ -81,6 +82,7 @@ pub fn configure(
         )?;
         status["state"] = json!("syncing");
         status["reason"] = Value::Null;
+        status["at"] = json!(now_seconds());
     }
     if let Some(enabled) = enabled {
         if enabled {
@@ -94,6 +96,12 @@ pub fn configure(
     let enabled = read_json(&config_path, json!({}))?["enabled"]
         .as_bool()
         .unwrap_or(true);
+    if enabled_changed {
+        status["at"] = json!(now_seconds());
+    }
+    if enabled_changed || allow_deletes {
+        save_json(&directory.join("status.json"), &status)?;
+    }
     status["enabled"] = json!(enabled);
     status["folder"] = json!(source);
     status["conflicts"] = status.get("conflicts").cloned().unwrap_or(json!([]));
@@ -102,8 +110,7 @@ pub fn configure(
     status["deletes"] = status.get("deletes").cloned().unwrap_or(json!(0));
     status["state"] = status.get("state").cloned().unwrap_or(json!("syncing"));
     status["reason"] = status.get("reason").cloned().unwrap_or(Value::Null);
-    status["at"] = json!(now_seconds());
-    save_json(&directory.join("status.json"), &status)?;
+    status["at"] = status.get("at").cloned().unwrap_or(Value::Null);
     Ok(status_view(&status, &source, enabled))
 }
 
@@ -185,7 +192,10 @@ pub fn resolve(
                     .ok_or(MacSyncError::Invalid)?
                     .remove(rel);
             } else {
-                manifest[rel] = json!({"k":kind,"s":data.len(),"m":0,"x":mode,"h":hex_sha(&data),"b":main_state});
+                let mut entry =
+                    describe(&contained_path(&root, rel)?)?.ok_or(MacSyncError::Invalid)?;
+                entry["b"] = json!(main_state);
+                manifest[rel] = entry;
             }
             held.as_object_mut()
                 .ok_or(MacSyncError::Invalid)?
@@ -316,7 +326,7 @@ pub fn resolve(
                     .as_str()
                     .ok_or(MacSyncError::Invalid)?
                     .to_owned();
-                held[rel] = json!({"h":content_hash,"why":"agent","base":result["mainStateId"],"stateId":state_id,"line":line});
+                held[rel] = json!({"h":content_hash,"why":"agent","base":result["mainStateId"],"stateId":state_id});
                 response["line"] = json!(line);
                 response["stateId"] = json!(state_id);
                 response["kind"] = json!(kind);
