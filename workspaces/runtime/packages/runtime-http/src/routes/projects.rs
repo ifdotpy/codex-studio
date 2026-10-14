@@ -5,7 +5,7 @@ use super::manifest::{Dependency, OperationStatus, RouteGroup, get, post};
 use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
-use serde_json::Value;
+use serde_json::{Value, json};
 use std::path::Path;
 use studio_runtime_services::agents_create::CreateError;
 use studio_runtime_services::host_worker_create::{
@@ -18,6 +18,7 @@ use crate::router::HttpState;
 
 struct RadioCreationAdapter {
     service: studio_runtime_services::model_catalog::ModelCatalogService,
+    runtime: tokio::runtime::Handle,
     rows: Vec<Value>,
     identities: Option<[AccountIdentity; 2]>,
 }
@@ -32,43 +33,19 @@ impl CreationCatalog for RadioCreationAdapter {
         fast_mode: bool,
         daybreak_enabled: bool,
     ) -> Result<ExecutionSettings, CreateError> {
-        let home = account
-            .home
-            .as_deref()
-            .ok_or(CreateError::CapabilityUnavailable(
-                "provider-session/model-list",
-            ))?;
         let provider = account
             .provider
             .as_deref()
-            .ok_or(CreateError::CapabilityUnavailable(
-                "provider-session/model-list",
-            ))?;
-        let (value, key, fresh_home, fresh_provider, expires_at) =
-            match self.service.read_for_admission(account_key, home, provider) {
-                studio_runtime_services::model_catalog::AdmissionCatalogRead::Fresh {
-                    value,
-                    account_key,
-                    home,
-                    provider,
-                    expires_at,
-                    ..
-                } => (value, account_key, home, provider, expires_at),
-                _ => {
-                    return Err(CreateError::CapabilityUnavailable(
-                        "provider-session/model-list",
-                    ));
-                }
-            };
-        if key != account_key
-            || fresh_home != home
-            || fresh_provider != provider
-            || expires_at <= std::time::Instant::now()
-        {
-            return Err(CreateError::CapabilityUnavailable(
-                "provider-session/model-list",
-            ));
-        }
+            .ok_or(CreateError::InvalidCreation("provider"))?;
+        let value = self
+            .runtime
+            .block_on(studio_runtime_services::model_catalog::ModelListPort::list(
+                &self.service,
+                account_key,
+                provider,
+                json!({"limit": studio_runtime_schema::shared_values::MODEL_CATALOG_ITEMS_PER_PAGE}),
+            ))
+            .map_err(|_| CreateError::Internal)?;
         let row = value
             .get("data")
             .and_then(Value::as_array)
@@ -164,7 +141,9 @@ impl studio_runtime_services::radio_runtime::RadioCreation for RadioCreationAdap
                 if row.get("deleted").and_then(Value::as_bool) == Some(true)
                     || row.get("disconnected").and_then(Value::as_bool) == Some(true)
                 {
-                    return Err(ProjectsError::Requires("account-driver/unavailable"));
+                    return Err(ProjectsError::Invalid(
+                        "radio participant account is unavailable",
+                    ));
                 }
                 Ok(AccountIdentity {
                     provider: Some(
@@ -203,7 +182,7 @@ impl studio_runtime_services::radio_runtime::RadioCreation for RadioCreationAdap
         let accounts = self
             .identities
             .as_ref()
-            .ok_or(ProjectsError::Requires("account-driver/unavailable"))?;
+            .ok_or(ProjectsError::Invalid("radio participant creation failed"))?;
         studio_runtime_services::host_worker_create::recheck(tx, drafts, accounts)
             .map_err(radio_create_error)
     }
@@ -224,19 +203,15 @@ fn radio_create_error(error: CreateError) -> ProjectsError {
     }
 }
 
-const PROJECT_WRITE_DEPENDENCIES: [Dependency; 4] = [
+const PROJECT_WRITE_DEPENDENCIES: [Dependency; 3] = [
     Dependency::new("cross-server-driver/local-identity"),
     Dependency::new("cross-server-driver/project-location-write"),
     Dependency::new("cross-server-driver/project-registration"),
-    Dependency::new("workspace-state/worker-environment"),
 ];
 const LOCATION_READ_DEPENDENCIES: [Dependency; 1] =
     [Dependency::new("cross-server-driver/project-location-read")];
-const PEER_TEAM_DEPENDENCIES: [Dependency; 3] = [
-    Dependency::new("cross-server-driver/peer-team-transport"),
-    Dependency::new("host-project/radio-create"),
-    Dependency::new("workspace-state/peer-radio"),
-];
+const PEER_TEAM_DEPENDENCIES: [Dependency; 1] =
+    [Dependency::new("cross-server-driver/peer-team-transport")];
 
 pub(crate) fn routes() -> RouteGroup {
     RouteGroup::new(vec![
@@ -310,13 +285,17 @@ async fn write_project(
 }
 
 async fn project_locations(
-    State(_state): State<HttpState>,
-    _query: QueryParams,
+    State(state): State<HttpState>,
+    query: QueryParams,
 ) -> Result<Json<Value>, ApiError> {
-    Err(ApiError::new(
-        StatusCode::NOT_IMPLEMENTED,
-        "Not implemented: requires cross-server-driver/project-location-read",
-    ))
+    let store = state.store.clone().ok_or_else(ApiError::internal)?;
+    let query = Value::Object(query.into_typed());
+    let value = tokio::task::spawn_blocking(move || {
+        projects::location_query(&store, &query).map_err(projects_error)
+    })
+    .await
+    .map_err(|_| ApiError::internal())??;
+    super::generated_json::<crate::generated::ProjectLocationQueryResponse>(value).map(Json)
 }
 
 async fn peer_teams(
@@ -341,17 +320,13 @@ async fn peer_teams(
         let rows = state
             .account_driver
             .as_ref()
-            .ok_or_else(|| {
-                ApiError::new(
-                    StatusCode::NOT_IMPLEMENTED,
-                    "Not implemented: requires account-driver/unavailable",
-                )
-            })?
+            .ok_or_else(ApiError::internal)?
             .snapshot()
             .map_err(|_| ApiError::internal())?
             .accounts;
         let mut creation = RadioCreationAdapter {
             service: state.model_catalog.clone(),
+            runtime: tokio::runtime::Handle::current(),
             rows,
             identities: None,
         };
@@ -361,8 +336,10 @@ async fn peer_teams(
         })
         .await
         .map_err(|_| ApiError::internal())??;
+        state.event_wake.notify_one();
         return Ok(Json(value));
     }
+    let is_radio = body.get("action").and_then(Value::as_str) == Some("radio");
     let result = tokio::task::spawn_blocking(move || {
         let value = projects::peer_team_write(&store, &body, &default_account, &known)
             .map_err(projects_error)?;
@@ -376,12 +353,16 @@ async fn peer_teams(
     })
     .await
     .map_err(|_| ApiError::internal())??;
+    if is_radio {
+        state.event_wake.notify_one();
+    }
     Ok(Json(result))
 }
 
 fn projects_error(error: ProjectsError) -> ApiError {
     match error {
         ProjectsError::Invalid(_) => ApiError::validation(vec![Value::String("body".to_owned())]),
+        ProjectsError::BadRequest(message) => ApiError::new(StatusCode::BAD_REQUEST, message),
         ProjectsError::Conflict(message) => ApiError::new(StatusCode::CONFLICT, message),
         ProjectsError::Requires(dependency) => ApiError::new(
             StatusCode::NOT_IMPLEMENTED,
@@ -413,9 +394,7 @@ inventory::submit! {
             "cross-server-driver/project-location-read",
             "cross-server-driver/project-location-write",
             "cross-server-driver/project-registration",
-            "host-project/radio-create",
-            "workspace-state/peer-radio",
-            "workspace-state/worker-environment",
+            "provider-session/model-list",
         ],
     }
 }

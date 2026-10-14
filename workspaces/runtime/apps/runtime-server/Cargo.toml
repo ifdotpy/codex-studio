@@ -15,6 +15,7 @@ studio-runtime-http = { path = "../../packages/runtime-http" }
 studio-runtime-services = { path = "../../packages/runtime-services" }
 studio-runtime-store = { path = "../../packages/runtime-store" }
 serde_json = { workspace = true }
+rusqlite = { workspace = true }
 tokio = { workspace = true }
 
 [dev-dependencies]

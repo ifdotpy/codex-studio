@@ -2129,6 +2129,7 @@ dependencies = [
  "data-encoding",
  "futures-util",
  "getrandom 0.3.4",
+ "rusqlite",
  "serde_json",
  "studio-runtime-http",
  "studio-runtime-process",

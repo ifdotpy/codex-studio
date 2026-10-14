@@ -13,11 +13,12 @@ import sys
 import unittest
 from contextlib import closing
 from pathlib import Path
+from urllib.parse import urlencode
 
 SERVER_SRC = Path(__file__).resolve().parents[1] / "src"
 sys.path.insert(0, str(SERVER_SRC))
 
-from http_backend_harness import TimedHTTPContractTest, start_contract_backend
+from http_backend_harness import TimedHTTPContractTest, no_write_snapshot, start_contract_backend
 
 isolate_supervisor_environment()
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -74,6 +75,24 @@ class ProjectsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         self.assertEqual(project["name"], "Python written project")
         self.assertEqual(project["accountKey"], "default")
         self.assertEqual(project["accountRevision"], 1)
+
+    def test_local_project_location_info_uses_local_git_metadata(self) -> None:
+        query = urlencode({"project": str(self.backend.cwd), "server": "local", "path": str(self.backend.cwd)})
+        response = self.backend.request("GET", f"/api/project-locations?{query}", headers=self.headers())
+        self.assertEqual(response.status, 200, response.body[:1000])
+        self.assertEqual(response.json()["matches"], [])
+        self.assertIn("gitHead", response.json())
+        self.assertIn("gitOrigin", response.json())
+
+    def test_remote_project_location_query_refuses_without_writing(self) -> None:
+        before = no_write_snapshot(self.backend.state)
+        query = urlencode({"project": str(self.backend.cwd), "server": "remote-server"})
+        response = self.backend.request("GET", f"/api/project-locations?{query}", headers=self.headers())
+        expected = 501 if os.environ.get("STUDIO_HTTP_BACKEND_COMMAND") else 403
+        self.assertEqual(response.status, expected, response.body[:1000])
+        if expected == 501:
+            self.assertIn("cross-server-driver/project-location-read", response.json()["error"])
+        self.assertEqual(no_write_snapshot(self.backend.state), before)
 
     def test_register_and_remove_project_updates_storage_and_sync_projection(self) -> None:
         folder = self.backend.root / "project-register"
@@ -165,6 +184,26 @@ class ProjectsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         self.assertEqual(project["workerEnvironment"], "host")
         self.assertEqual(project["workerEnvironmentRevision"], 1)
         self.assertEqual(self._project_record(project["id"])["workerEnvironment"], "host")
+
+    def test_linux_worker_environment_refuses_without_writing(self) -> None:
+        before = no_write_snapshot(self.backend.state)
+        response = self.backend.request(
+            "POST",
+            "/api/projects",
+            body={
+                "action": "set_worker_environment",
+                "path": str(self.backend.cwd),
+                "environment": "linux",
+                "expected_revision": 0,
+            },
+            headers=self.headers(),
+        )
+        self.assertEqual(response.status, 400, response.body[:1000])
+        self.assertEqual(
+            response.json()["error"],
+            "Choose a layr chat to run agents in the VM",
+        )
+        self.assertEqual(no_write_snapshot(self.backend.state), before)
 
     def test_set_account_adds_default_to_existing_project_account_keys(self) -> None:
         from codex_runtime import Runtime

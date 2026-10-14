@@ -85,9 +85,8 @@ class HostProjectsRadio(TimedHTTPContractTest, unittest.TestCase):
         self.assertEqual(no_write_snapshot(self.backend.state), before)
         before = no_write_snapshot(self.backend.state)
         send = self.post(base | dict(radio_action="send", request_id="p19-http-send", expected_revision=1, text="message", target="missing"))
-        self.assertEqual(send.status, 501 if os.environ.get("STUDIO_HTTP_BACKEND_COMMAND") else 400, send.body[:1000])
-        if send.status == 501:
-            self.assertIn("workspace-state/peer-radio", send.json()["error"])
+        self.assertEqual(send.status, 400, send.body[:1000])
+        self.assertNotIn("Not implemented", send.json()["error"])
         self.assertEqual(no_write_snapshot(self.backend.state), before)
 
     def test_02_convert_idle_tree_survives_restart(self):

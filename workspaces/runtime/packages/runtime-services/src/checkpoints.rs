@@ -35,8 +35,6 @@ pub enum CheckpointsError {
     WrongAgent,
     #[error("This agent was deleted")]
     DeletedAgent,
-    #[error("Workspace checkpoint state is not initialized")]
-    MissingSchema,
     #[error("Studio Git checkpoints are unavailable for image workspaces")]
     ExecutionWorkspace,
     #[error("Workspace activity changed before checkpoint capture")]
@@ -80,9 +78,6 @@ pub fn capture_context(
     agent_id: &str,
 ) -> Result<WorkspaceSnapshot, CheckpointsError> {
     let connection = store.read()?;
-    if !CheckpointsRepository::tables_available(&connection)? {
-        return Err(CheckpointsError::MissingSchema);
-    }
     CheckpointsRepository::workspace_snapshot(&connection, agent_id)?
         .ok_or(CheckpointsError::UnknownAgent)
 }
@@ -93,9 +88,6 @@ pub fn preview_context(
     checkpoint_id: &str,
 ) -> Result<PreviewContext, CheckpointsError> {
     let connection = store.read()?;
-    if !CheckpointsRepository::checkpoint_table_available(&connection)? {
-        return Err(CheckpointsError::MissingSchema);
-    }
     let agent = CheckpointsRepository::agent(&connection, agent_id)?
         .ok_or(CheckpointsError::UnknownAgent)?;
     let checkpoint = CheckpointsRepository::checkpoint(&connection, checkpoint_id)?

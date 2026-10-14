@@ -13,7 +13,6 @@ use crate::error::ApiError;
 use crate::router::HttpState;
 
 const IMAGE_EXECUTION_DEPENDENCY: &str = "workspace-state/image-execution";
-const CHECKPOINT_SCHEMA_DEPENDENCY: &str = "store-bootstrap/checkpoints-schema";
 const THREAD_FORK_DEPENDENCY: &str = "provider-session/thread-fork";
 const IMAGE_DEPENDENCIES: [Dependency; 1] = [Dependency::new(IMAGE_EXECUTION_DEPENDENCY)];
 const THREAD_FORK_DEPENDENCIES: [Dependency; 1] = [Dependency::new(THREAD_FORK_DEPENDENCY)];
@@ -111,10 +110,6 @@ fn map_error(error: CheckpointsError, path: &'static str) -> ApiError {
         CheckpointsError::DeletedAgent => {
             ApiError::new(StatusCode::BAD_REQUEST, "This agent was deleted")
         }
-        CheckpointsError::MissingSchema => ApiError::new(
-            StatusCode::NOT_IMPLEMENTED,
-            format!("Not implemented: requires {CHECKPOINT_SCHEMA_DEPENDENCY}"),
-        ),
         CheckpointsError::ExecutionWorkspace => {
             dependency_unavailable("POST", path, &IMAGE_DEPENDENCIES)
                 .unwrap_or_else(|_| ApiError::internal())
@@ -169,7 +164,6 @@ inventory::submit! {
         dependencies: &[
         "provider-session/thread-fork",
         "workspace-state/image-execution",
-        "store-bootstrap/checkpoints-schema",
         ],
     }
 }

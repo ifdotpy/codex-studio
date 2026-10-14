@@ -255,6 +255,12 @@ pub enum AccountCommand {
     Stop {
         agent_id: String,
     },
+    /// Interrupt a radio turn after its scheduler has committed the one-shot intent.
+    RadioInterrupt {
+        agent_id: String,
+        thread_id: String,
+        turn_id: String,
+    },
     RestartRecoveryDone,
     RestartStreams(Box<NotificationStreamBuffer>),
 }
@@ -272,6 +278,21 @@ impl AccountHandle {
             commands: self.commands.clone(),
             stop: self.stop.clone(),
         }
+    }
+    pub fn try_radio_interrupt(
+        &self,
+        agent_id: String,
+        thread_id: String,
+        turn_id: String,
+    ) -> Result<(), mpsc::error::TrySendError<AccountCommand>> {
+        self.commands.try_send(AccountCommand::RadioInterrupt {
+            agent_id,
+            thread_id,
+            turn_id,
+        })
+    }
+    pub fn radio_interrupt_sender(&self) -> mpsc::Sender<AccountCommand> {
+        self.commands.clone()
     }
     pub async fn send(&self, command: AccountCommand) -> Result<(), WorkerError> {
         let mut stop = self.stop.subscribe();
@@ -579,6 +600,9 @@ impl Worker {
                     Some(AccountCommand::JournalBarrier(command)) => self.retained_barrier(command).await?,
                     Some(AccountCommand::Wake { agent_id, epoch }) => self.wake(agent_id, epoch).await?,
                     Some(AccountCommand::Stop { agent_id }) => self.stop_agent(agent_id).await?,
+                    Some(AccountCommand::RadioInterrupt { agent_id, thread_id, turn_id }) => {
+                        self.interrupt(agent_id, thread_id, turn_id).await?
+                    },
                     Some(AccountCommand::RestartRecoveryDone) => { self.restart_recovery.take(); },
                     Some(AccountCommand::RestartStreams(streams)) => { self.streams = *streams; },
                     None => return Ok(()),
