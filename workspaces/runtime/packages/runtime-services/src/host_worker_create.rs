@@ -674,6 +674,17 @@ mod tests {
     }
 
     fn worker_draft_fixture(name: &str, prompt: &str) -> WorkerDraftFixture {
+        worker_draft_fixture_with_options(name, prompt, "implementer", true, false, false)
+    }
+
+    fn worker_draft_fixture_with_options(
+        name: &str,
+        prompt: &str,
+        role: &str,
+        worktree: bool,
+        fast_mode: bool,
+        daybreak_enabled: bool,
+    ) -> WorkerDraftFixture {
         let directory = tempdir().expect("temporary worker project");
         let cwd = directory.path().canonicalize().expect("canonical project");
         let cwd = cwd.to_str().expect("UTF-8 test path").to_owned();
@@ -744,10 +755,10 @@ mod tests {
             Some(&project),
             &account,
             &Catalog,
-            "implementer",
-            true,
-            false,
-            false,
+            role,
+            worktree,
+            fast_mode,
+            daybreak_enabled,
         )
         .expect("typed worker draft");
         WorkerDraftFixture {
@@ -757,6 +768,19 @@ mod tests {
             parent_id,
             cwd,
         }
+    }
+
+    #[test]
+    fn work_item_options_set_role_workspace_and_execution_settings() {
+        let fixture = worker_draft_fixture_with_options(
+            "Review", "Inspect the change", "reviewer", false, true, false,
+        );
+        assert_eq!(field(&fixture.draft, "role").and_then(Value::as_str), Some("reviewer"));
+        assert_eq!(field(&fixture.draft, "worktree").and_then(Value::as_bool), Some(false));
+        assert_eq!(field(&fixture.draft, "workspaceMode").and_then(Value::as_str), Some("shared"));
+        assert_eq!(field(&fixture.draft, "workerBaseRef"), Some(&Value::Null));
+        assert_eq!(field(&fixture.draft, "fastMode").and_then(Value::as_bool), Some(true));
+        assert_eq!(field(&fixture.draft, "daybreakEnabled").and_then(Value::as_bool), Some(false));
     }
 
     #[test]
