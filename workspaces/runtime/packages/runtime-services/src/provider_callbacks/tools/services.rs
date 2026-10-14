@@ -44,6 +44,7 @@ pub(super) fn read_only(name: &str, args: &Value) -> bool {
         || name == "orchestration_request"
             && matches!(args["action"].as_str().unwrap_or("list"), "list" | "get")
 }
+#[allow(clippy::too_many_arguments)]
 pub(super) fn execute(
     tx: &Transaction<'_>,
     snapshot: &CallbackSnapshot,
@@ -52,7 +53,8 @@ pub(super) fn execute(
     args: &Value,
     id: &str,
     now: f64,
-) -> Result<Value, CallbackError> {
+    ports: &impl crate::managed_host_tools::Ports,
+) -> Result<crate::managed_host_tools::Staged, CallbackError> {
     let actor = snapshot.actor();
     if studio_runtime_store::truthy(actor.get("executionMove"))
         && !matches!(
@@ -64,7 +66,23 @@ pub(super) fn execute(
             "The move is accepted. Finish this turn before the next task",
         ));
     }
-    if studio_runtime_store::truthy(actor.get("remoteOrigin")) && name != "orchestration_request" {
+    let managed_host_tool = matches!(
+        kind,
+        ToolKind::Spawn
+            | ToolKind::Send
+            | ToolKind::Interrupt
+            | ToolKind::Status
+            | ToolKind::Search
+            | ToolKind::Context
+            | ToolKind::Complaint
+            | ToolKind::Watch
+            | ToolKind::Monitor
+            | ToolKind::Review
+    );
+    if studio_runtime_store::truthy(actor.get("remoteOrigin"))
+        && name != "orchestration_request"
+        && !managed_host_tool
+    {
         return Err(CallbackError::Dependency("multi-server/worker-call"));
     }
     let mut resolved_args = args.clone();
@@ -88,6 +106,30 @@ pub(super) fn execute(
     }
     let args = &resolved_args;
     match kind {
+        ToolKind::Spawn
+        | ToolKind::Send
+        | ToolKind::Interrupt
+        | ToolKind::Status
+        | ToolKind::Search
+        | ToolKind::Context
+        | ToolKind::Review
+        | ToolKind::Monitor
+        | ToolKind::Watch
+        | ToolKind::Complaint => {
+            let managed_actor = crate::managed_host_tools::Actor::from_record(
+                actor,
+                &snapshot.context().agent,
+                snapshot.context().epoch,
+            )
+            .map_err(managed_error)?;
+            let result =
+                crate::managed_host_tools::execute(tx, &managed_actor, name, args, id, now, ports)
+                    .map_err(managed_error)?;
+            return Ok(result);
+        }
+        _ => {}
+    }
+    let value = match kind {
         ToolKind::Request => Ok(tool_requests::execute(
             tx,
             &snapshot.context().agent,
@@ -102,46 +144,28 @@ pub(super) fn execute(
         ToolKind::Task => work::execute(tx, snapshot, args, id),
         ToolKind::Message => messages::send(tx, snapshot, args, id, now),
         ToolKind::ChatRead => reads::chat(tx, snapshot, args),
-        ToolKind::Context if args["topic"] == "plan" => {
-            let plan = WorkItemsRepository::plan(tx, text(actor, "rootId")?)?
-                .and_then(|r| r.record)
-                .map(|raw| serde_json::from_str::<Value>(&raw))
-                .transpose()?;
-            let content = plan.filter(|p| p["native"].is_object()).map(|p| json!({
-                "id":p["id"], "rootId":p["rootId"],
-                "steps":p["native"].get("plan").cloned().unwrap_or(json!([])),
-                "explanation":p["native"].get("explanation").filter(|v| studio_runtime_store::truthy(Some(v))).cloned().unwrap_or(json!(""))
-            })).unwrap_or(Value::Null);
-            let version =
-                studio_runtime_store::sha256_hex(content.to_string().as_bytes())[..24].to_owned();
-            Ok(json!({"topic":"plan","version":version,"content":content}))
-        }
         ToolKind::Peers => messages::peers(tx, snapshot, args),
-        ToolKind::Status => Err(CallbackError::Dependency(
-            "model-directory/status-and-dispatch-capacity",
-        )),
         ToolKind::Read => reads::read(tx, snapshot, args, now),
-        ToolKind::Search => Err(CallbackError::Dependency(
-            "model-search/authorized-cross-source-search",
+        ToolKind::Status
+        | ToolKind::Search
+        | ToolKind::Context
+        | ToolKind::Send
+        | ToolKind::Spawn
+        | ToolKind::Review
+        | ToolKind::Monitor
+        | ToolKind::Interrupt
+        | ToolKind::Watch
+        | ToolKind::Complaint => Err(CallbackError::Invalid(
+            "Managed tool dispatcher missed a tool",
         )),
-        ToolKind::Context => Err(CallbackError::Dependency("model-context/requested-topic")),
-        ToolKind::Send => Err(CallbackError::Dependency(
-            "agent-management/resume-and-stop-revocation",
-        )),
-        ToolKind::Spawn => Err(CallbackError::Dependency("agent-create/worker-driver")),
-        ToolKind::Review => Err(CallbackError::Dependency("native-review/worker-driver")),
-        ToolKind::Monitor | ToolKind::MonitorInput | ToolKind::CancelMonitor => {
+        ToolKind::MonitorInput | ToolKind::CancelMonitor => {
             Err(CallbackError::Dependency("monitors/runtime-driver"))
         }
         ToolKind::Move | ToolKind::Teleport => Err(CallbackError::Dependency(
             "agent-move/exact-native-history-and-paired-driver",
         )),
         ToolKind::Servers => Err(CallbackError::Dependency("multi-server/tool-coordinator")),
-        ToolKind::Interrupt | ToolKind::AgentManage => {
-            Err(CallbackError::Dependency("agent-management/runtime-driver"))
-        }
-        ToolKind::Watch => Err(CallbackError::Dependency("rules/runtime-driver")),
-        ToolKind::Complaint => Err(CallbackError::Dependency("complaints/agent-authority")),
+        ToolKind::AgentManage => Err(CallbackError::Dependency("agent-management/runtime-driver")),
         ToolKind::Speak => Err(CallbackError::Dependency("voice/provider-session")),
         ToolKind::HostExec => Err(CallbackError::Dependency("host-exec/layr-bridge")),
         ToolKind::Title => {
@@ -167,6 +191,22 @@ pub(super) fn execute(
         ToolKind::Unknown => Err(CallbackError::Invalid(
             "Unknown orchestration tool; use a tool from the session catalog",
         )),
+    }?;
+    Ok(crate::managed_host_tools::Staged {
+        value,
+        signals: Vec::new(),
+    })
+}
+
+fn managed_error(error: crate::managed_host_tools::Error) -> CallbackError {
+    use crate::managed_host_tools::Error as E;
+    match error {
+        E::Invalid(message) => CallbackError::Invalid(message),
+        E::Stale => CallbackError::Stale,
+        E::CrossTeam => CallbackError::Invalid("Communication is limited to your team"),
+        E::Unavailable(name) => CallbackError::Dependency(name),
+        E::Store(error) => CallbackError::Store(error),
+        E::Sqlite(error) => CallbackError::Store(error.into()),
     }
 }
 fn text<'a>(v: &'a Value, key: &str) -> Result<&'a str, CallbackError> {
