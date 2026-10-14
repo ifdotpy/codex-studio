@@ -347,6 +347,46 @@ async fn claude_profile(
     State(state): State<HttpState>,
     ApiJson(body): ApiJson<ProfileRequest>,
 ) -> Result<Json<crate::generated::AccountsResponse>, ApiError> {
+    if let Some(account) = body.account_key.as_deref() {
+        let driver = state
+            .account_driver
+            .as_ref()
+            .ok_or_else(|| unavailable(CLAUDE_PROFILE[0]))?;
+        let current = driver
+            .claude_profile(account)
+            .map_err(|error| match error {
+                studio_runtime_services::account_driver::claude::ClaudeAccountError::Account(
+                    error,
+                ) => account_error(error),
+                error => ApiError::new(StatusCode::BAD_REQUEST, error.to_string()),
+            })?;
+        let home = current
+            .get("home")
+            .and_then(serde_json::Value::as_str)
+            .map(std::path::PathBuf::from)
+            .unwrap_or_default();
+        let normalize = |options| {
+            studio_runtime_services::account_session_runtime::normalize_profile(options, &home)
+                .map_err(session_error)
+        };
+        let previous = normalize(
+            current
+                .get("claudeOptions")
+                .and_then(serde_json::Value::as_object)
+                .cloned()
+                .unwrap_or_default(),
+        )?;
+        let requested = normalize(body.options.clone().unwrap_or_default())?;
+        if ["binaryPath", "configDir"]
+            .iter()
+            .any(|field| previous.get(*field) != requested.get(*field))
+        {
+            return Err(ApiError::new(
+                StatusCode::BAD_REQUEST,
+                "Add a separate Claude profile to change the executable or config directory",
+            ));
+        }
+    }
     let port = state
         .account_session
         .clone()
