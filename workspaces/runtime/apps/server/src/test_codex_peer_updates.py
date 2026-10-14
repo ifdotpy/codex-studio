@@ -142,7 +142,9 @@ def fake_run(argv: list[str], timeout: float) -> subprocess.CompletedProcess[str
     elif tool == 'ditto':
         shutil.copytree(args[0], args[1], symlinks=True)
     elif tool == 'codesign' and args[0] == '--verify':
-        code = 1 if (Path(args[-1]) / 'Contents' / 'BAD_SIGNATURE').exists() else 0
+        # Bytecode outside the seal fails the strict check, as with a real app.
+        code = 1 if ((Path(args[-1]) / 'Contents' / 'BAD_SIGNATURE').exists()
+                     or any(Path(args[-1]).rglob('*.pyc'))) else 0
     elif tool == 'codesign' and args[:2] == ['-d', '-r-']:
         certificate = (Path(args[2]) / 'Contents' / 'CERTIFICATE').read_text()
         out = f'designated => identifier "{updates.BUNDLE_ID}" and certificate leaf = H"{certificate}"\n'
@@ -230,6 +232,20 @@ class PeerUpdates(unittest.TestCase):
         self.assertEqual((Path(pending['app']) / 'Contents/Resources/payload.bin').read_bytes(),
                          (self.peer_app / 'Contents/Resources/payload.bin').read_bytes())
 
+    def test_bytecode_in_the_offering_app_is_removed_before_the_export(self) -> None:
+        cache = self.peer_app / 'Contents/Resources/workspace/vm/guest/__pycache__'
+        cache.mkdir(parents=True)
+        (cache / 'host_exec_protocol.cpython-314.pyc').write_bytes(b'cache')
+        self.assertEqual(self.puller.pull()['outcome'], 'staged')
+        self.assertEqual(list(cache.iterdir()), [])
+
+    def test_an_offering_app_with_changed_files_exports_nothing(self) -> None:
+        (self.peer_app / 'Contents' / 'BAD_SIGNATURE').write_text('')
+        result = self.puller.pull()
+        self.assertEqual(result['outcome'], 'failed')
+        self.assertIn('The installed app fails its signature check', result['reason'])
+        self.assertEqual(self.actions('update.chunk'), [])
+
     def test_same_or_older_build_is_not_pulled(self) -> None:
         for build in (OLD, {**OLD, 'builtAt': OLD['builtAt'] - 1, 'commit': 'c' * 40}):
             (self.peer_app / updates.BUILD_STAMP).write_text(json.dumps(build))
@@ -279,8 +295,21 @@ class PeerUpdates(unittest.TestCase):
         self.assertFalse((self.state / 'updates' / str(NEW['builtAt'])).exists())
 
     def test_broken_signature_is_refused(self) -> None:
-        (self.peer_app / 'Contents' / 'BAD_SIGNATURE').write_text('')
-        result = self.puller.pull()
+        # The offering app passes its own check; the archive breaks the seal on the way.
+        original = updates._make_export
+
+        def broken_export(root: Path, app: Path, build: dict[str, Any], export: str, run: Any) -> None:
+            def run_and_break(argv: list[str], timeout: float) -> subprocess.CompletedProcess[str]:
+                if Path(argv[0]).name == 'ditto' and argv[1:2] == ['-c']:
+                    (app / 'Contents' / 'BAD_SIGNATURE').write_text('')
+                return run(argv, timeout)
+            try:
+                original(root, app, build, export, run_and_break)
+            finally:
+                (app / 'Contents' / 'BAD_SIGNATURE').unlink(missing_ok=True)
+
+        with patch.object(updates, '_make_export', broken_export):
+            result = self.puller.pull()
         self.assertEqual(result['outcome'], 'failed')
         self.assertTrue(result['reason'].startswith('The signature check failed'))
         self.assertIsNone(updates.read_pending(self.state))

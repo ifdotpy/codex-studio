@@ -242,6 +242,21 @@ def file_digest(path: Path) -> str:
     return digest.hexdigest()
 
 
+def remove_bytecode(app: Path) -> None:
+    """Remove Python bytecode that a process without -B wrote into the installed app. The files
+    are caches outside the signature seal; the package makes each cache folder read-only, so
+    only an app from before that guard has them."""
+    workspace = app / 'Contents' / 'Resources' / 'workspace'
+    if not workspace.is_dir():
+        return
+    for cache in workspace.rglob('__pycache__'):
+        if cache.is_symlink() or not cache.is_dir():
+            continue
+        for path in cache.iterdir():
+            if path.suffix == '.pyc' and path.is_file() and not path.is_symlink():
+                path.unlink(missing_ok=True)
+
+
 def _make_export(root: Path, app: Path, build: Build, export: str, run: Runner) -> None:
     archive, metadata, partial = _export_paths(root, export)
     try:
@@ -249,6 +264,11 @@ def _make_export(root: Path, app: Path, build: Build, export: str, run: Runner) 
         if shutil.disk_usage(archive.parent).free < MAX_ARCHIVE_BYTES:
             raise UpdateError('Not enough free disk space for the app archive')
         partial.unlink(missing_ok=True)
+        remove_bytecode(app)
+        # A paired Mac verifies the same seal; an app with changed files cannot pass it on.
+        result = run([CODESIGN, '--verify', '--deep', '--strict', str(app)], CODESIGN_SECONDS)
+        if result.returncode != 0:
+            raise UpdateError('The installed app fails its signature check: ' + _tail(result))
         result = run([DITTO, '-c', '-k', '--keepParent', str(app), str(partial)], DITTO_SECONDS)
         if result.returncode != 0:
             raise UpdateError('ditto could not archive the app: ' + _tail(result))
