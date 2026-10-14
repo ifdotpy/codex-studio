@@ -184,11 +184,12 @@ mod tests {
 
     #[tokio::test]
     async fn desktop_http_keeps_empty_provider_versions_without_monitor_handle() {
+        let state_dir = tempfile::tempdir().expect("isolated state directory");
         let state = crate::router::HttpState::new(
             "fixture-token".into(),
             "fixture".into(),
             None,
-            "/fixture/state".into(),
+            state_dir.path().to_string_lossy().into_owned(),
             49171,
             None,
             None,
@@ -253,11 +254,12 @@ mod tests {
         .expect("monitor starts without real probes or network");
         assert!(monitor.wait_until_checked(std::time::Duration::from_secs(5)));
 
+        let state_dir = tempfile::tempdir().expect("isolated state directory");
         let state = crate::router::HttpState::new(
             "fixture-token".into(),
             "fixture".into(),
             None,
-            "/fixture/state".into(),
+            state_dir.path().to_string_lossy().into_owned(),
             49171,
             None,
             None,

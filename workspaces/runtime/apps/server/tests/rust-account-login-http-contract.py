@@ -243,16 +243,19 @@ class AccountLoginHTTPContract(unittest.TestCase):
         )
 
     @unittest.skipUnless(os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"), "Rust backend only")
-    def test_discovery_claude_dependency_refusal_does_not_write_registry(self) -> None:
+    def test_discovery_registers_claude_auth_from_scripted_cli(self) -> None:
         executable = self.backend.home / ".local" / "bin" / "claude"
         executable.parent.mkdir(parents=True)
-        executable.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        executable.write_text(
+            "#!/bin/sh\nprintf '%s\\n' '{\"loggedIn\":true,\"authMethod\":\"claude.ai\",\"email\":\"fixture@example.invalid\",\"subscriptionType\":\"max\"}'\n",
+            encoding="utf-8",
+        )
         executable.chmod(0o700)
-        before = self.registry_path.read_bytes()
         response = self.request("POST", "/api/accounts/discover", {})
-        assert_status(self, response, 501)
-        self.assertEqual(response.json()["error"], "Not implemented: requires provider-session/claude-discovery")
-        self.assertEqual(self.registry_path.read_bytes(), before)
+        assert_status(self, response, 200)
+        local = next(row for row in response.json()["accounts"] if row["id"] == "claude-local")
+        self.assertEqual(local["email"], "fixture@example.invalid")
+        self.assertEqual(local["plan"], "max")
 
     def test_discovery_follows_disposable_symlink_and_respects_candidate_cap(self) -> None:
         linked_home = self.backend.root / "linked-profile"
@@ -421,15 +424,31 @@ class AccountLoginHTTPContract(unittest.TestCase):
         self.assertNotIn("fixture-api-key", serialized)
 
     @unittest.skipUnless(os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"), "Rust backend only")
-    def test_interactive_login_routes_remain_explicitly_unavailable(self) -> None:
+    def test_login_and_cancel_without_live_worker_return_python_receipts(self) -> None:
+        starts_before = self.backend.provider_start_times()
         response = self.request("POST", "/api/accounts/login", {"login_id": str(uuid.uuid4())})
-        assert_status(self, response, 501)
-        self.assertEqual(response.json()["error"], "Not implemented: requires provider-session/codex-login")
+        assert_status(self, response, 200)
+        self.assertEqual(response.json()["status"], "error")
+        self.assertEqual(response.json()["error"], "Could not start sign-in. Try again.")
         cancel = self.request(
             "POST", "/api/accounts/login/cancel", {"login_id": self.live_login_id}
         )
-        assert_status(self, cancel, 501)
-        self.assertEqual(cancel.json()["error"], "Not implemented: requires provider-session/codex-login")
+        assert_status(self, cancel, 200)
+        self.assertEqual(cancel.json()["status"], "pending")
+        self.assertEqual(
+            cancel.json()["error"],
+            "Cancellation is unconfirmed. Check status or retry cancellation.",
+        )
+        retried_cancel = self.request(
+            "POST", "/api/accounts/login/cancel", {"login_id": self.live_login_id}
+        )
+        assert_status(self, retried_cancel, 200)
+        self.assertEqual(retried_cancel.json()["status"], "pending")
+        self.assertEqual(
+            retried_cancel.json()["error"],
+            "Cancellation is unconfirmed. Check status or retry cancellation.",
+        )
+        self.assertEqual(self.backend.provider_start_times(), starts_before)
 
 
 if __name__ == "__main__":

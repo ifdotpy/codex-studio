@@ -44,7 +44,7 @@ async fn signed_requests_cross_the_http_boundary_and_missing_owner_is_no_write()
         "token".into(),
         "workspace".into(),
         None,
-        "fixture".into(),
+        _root.path().to_string_lossy().into_owned(),
         4000,
         Some("https://local.fixture.ts.net".into()),
         Some(store.clone()),

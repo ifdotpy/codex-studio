@@ -926,6 +926,44 @@ impl<R: ProviderAuthReader> AccountDriver<R> {
         Ok(result)
     }
 
+    /// Restore a cancellation whose retained-session request is known not to
+    /// have been sent. The pending receipt may safely be retried; Unknown stays
+    /// latched by `finish_codex_cancel` and is never dispatched again.
+    pub(crate) fn finish_codex_cancel_not_sent(
+        &self,
+        request: &str,
+        account: &str,
+    ) -> Result<Value, AccountMutationError> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| AccountDriverError::Poisoned)?;
+        let mut value = state.value.clone();
+        let receipt = value
+            .get_mut("logins")
+            .and_then(|logins| logins.get_mut(request))
+            .ok_or(AccountDriverError::UnknownLogin)?;
+        if receipt["accountKey"] != account {
+            return Err(AccountMutationError::Refused(
+                "The sign-in receipt belongs to another account",
+            ));
+        }
+        if login_terminal(receipt) {
+            return Ok(receipt.clone());
+        }
+        if receipt["status"] == "uncertain" {
+            receipt["status"] = serde_json::json!("pending");
+            receipt["error"] = serde_json::json!(
+                "Cancellation is unconfirmed. Check status or retry cancellation."
+            );
+        }
+        let result = receipt.clone();
+        if value != state.value {
+            self.persist(&mut state, value)?;
+        }
+        Ok(result)
+    }
+
     pub fn recover_codex_logins(&self) -> Result<(), AccountMutationError> {
         let mut state = self
             .state

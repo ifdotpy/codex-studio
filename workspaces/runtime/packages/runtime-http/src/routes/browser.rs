@@ -168,7 +168,9 @@ inventory::submit! {
 mod tests {
     use super::*;
     use axum::http::HeaderMap;
+    use serde_json::{Value, json};
     use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+    use tower::ServiceExt;
 
     #[test]
     fn forwarded_and_non_loopback_callers_are_not_local_windows() {
@@ -194,5 +196,59 @@ mod tests {
             &forwarded,
             SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 1)
         ));
+    }
+
+    #[tokio::test]
+    async fn forward_refuses_without_the_orchestration_consumer() {
+        let state_dir = tempfile::tempdir().expect("isolated state directory");
+        let state = crate::router::HttpState::new(
+            "token".into(),
+            "workspace".into(),
+            None,
+            state_dir.path().to_string_lossy().into_owned(),
+            12345,
+            None,
+            None,
+            None,
+        );
+        let app = crate::router::router(state).expect("HTTP router composes the route");
+        let body = json!({
+            "server":"peer",
+            "bridgeId":"0123456789abcdef0123456789abcdef",
+            "host":"127.0.0.1",
+            "port":1024,
+            "path":"/callback",
+            "expiresAt":2000000000,
+            "token":"abcdefghijklmnop"
+        });
+        let request = axum::http::Request::builder()
+            .method("POST")
+            .uri("/api/browser/forward")
+            .header("host", "127.0.0.1:12345")
+            .header("content-type", "application/json")
+            .header("x-canvas-token", "token")
+            .header(
+                crate::schema::API_SCHEMA_HASH_HEADER,
+                crate::schema::api_schema_hash(),
+            )
+            .body(axum::body::Body::from(body.to_string()))
+            .expect("HTTP request builds");
+        let mut request = request;
+        request
+            .extensions_mut()
+            .insert(axum::extract::ConnectInfo(std::net::SocketAddr::from((
+                [127, 0, 0, 1],
+                54321,
+            ))));
+        let response = app.oneshot(request).await.expect("HTTP response");
+        assert_eq!(response.status(), axum::http::StatusCode::NOT_IMPLEMENTED);
+        let bytes = axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .expect("error body reads");
+        let body: Value = serde_json::from_slice(&bytes).expect("error envelope parses");
+        assert_eq!(
+            body,
+            json!({"error":"Not implemented: requires multi-server-runtime/orchestration"})
+        );
     }
 }
