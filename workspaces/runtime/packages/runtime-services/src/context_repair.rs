@@ -76,7 +76,11 @@ fn register_source_terminal_receipt(
     let thread = source["threadId"]
         .as_str()
         .ok_or(RepairError::ReceiptHold)?;
-    let turn = proof["turnId"].as_str().ok_or(RepairError::ReceiptHold)?;
+    let Some(turn) = proof["turnId"].as_str() else {
+        // An inherited-empty repair has no source native turn callback to
+        // reconcile; its terminal proof belongs entirely to the JSONL ancestry.
+        return Ok(());
+    };
     let record = json!({
         "operationId":repair["id"],
         "source":source,
