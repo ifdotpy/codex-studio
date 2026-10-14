@@ -1,0 +1,2571 @@
+{
+  "blockers_ordered_by_operations_unblocked": [
+    {
+      "closures": [
+        {
+          "closes": "origin/feat/wave7-p01-runtime-composition",
+          "kind": "accepted_branch",
+          "owner": "P01"
+        },
+        {
+          "closes": "origin/feat/wave7-p14-sync-resources",
+          "kind": "accepted_branch",
+          "owner": "P14"
+        },
+        {
+          "closes": "origin/feat/wave7-p17-terminals",
+          "kind": "accepted_branch",
+          "owner": "P17"
+        }
+      ],
+      "dependency": "provider-session/app-server",
+      "operation_count": 6,
+      "operations": [
+        "GET /api/sync/stream",
+        "POST /api/terminals/close",
+        "POST /api/terminals/create",
+        "POST /api/terminals/input",
+        "POST /api/terminals/rename",
+        "POST /api/terminals/resize"
+      ]
+    },
+    {
+      "closures": [
+        {
+          "closes": "NEW vault/runtime-service (out of scope)",
+          "kind": "external_or_scope",
+          "owner": "NEW vault/runtime-service (out of scope)"
+        }
+      ],
+      "dependency": "NEW vault/runtime-service (out of scope)",
+      "operation_count": 5,
+      "operations": [
+        "POST /api/vault/aws-login",
+        "POST /api/vault/pull",
+        "POST /api/vault/setup",
+        "POST /api/vault/setup/facts",
+        "POST /api/vault/unlock"
+      ]
+    },
+    {
+      "closures": [
+        {
+          "closes": "R1",
+          "kind": "external_or_scope",
+          "owner": "R1"
+        }
+      ],
+      "dependency": "remote-transport/signed-server-requests",
+      "operation_count": 5,
+      "operations": [
+        "GET /api/multi-server/v1/status",
+        "POST /api/multi-server",
+        "POST /api/multi-server/v1/name",
+        "POST /api/multi-server/v1/pair",
+        "POST /api/servers/orchestration"
+      ]
+    },
+    {
+      "closures": [
+        {
+          "closes": "first-cutover refusal: image excluded",
+          "kind": "external_or_scope",
+          "owner": "first-cutover refusal: image excluded"
+        }
+      ],
+      "dependency": "workspace-state/image-execution",
+      "operation_count": 5,
+      "operations": [
+        "GET /api/changes",
+        "GET /api/file",
+        "GET /api/file-info",
+        "POST /api/checkpoint",
+        "POST /api/checkpoint/preview"
+      ]
+    },
+    {
+      "closures": [
+        {
+          "closes": "R2",
+          "kind": "external_or_scope",
+          "owner": "R2"
+        }
+      ],
+      "dependency": "account-worker/voice-session",
+      "operation_count": 4,
+      "operations": [
+        "POST /api/voice/approve",
+        "POST /api/voice/end",
+        "POST /api/voice/speech",
+        "POST /api/voice/start"
+      ]
+    },
+    {
+      "closures": [
+        {
+          "closes": "NEW project-secrets/runtime-service (out of scope)",
+          "kind": "external_or_scope",
+          "owner": "NEW project-secrets/runtime-service (out of scope)"
+        }
+      ],
+      "dependency": "NEW project-secrets/runtime-service (out of scope)",
+      "operation_count": 3,
+      "operations": [
+        "POST /api/project-secrets/list",
+        "POST /api/project-secrets/remove",
+        "POST /api/project-secrets/set"
+      ]
+    },
+    {
+      "closures": [
+        {
+          "closes": "origin/feat/wave7-p01-runtime-composition",
+          "kind": "accepted_branch",
+          "owner": "P01"
+        },
+        {
+          "closes": "Wave 7 P02 Host creation/configuration",
+          "kind": "open_task",
+          "owner": "P02"
+        },
+        {
+          "closes": "origin/feat/wave7-p18-account-catalog",
+          "kind": "accepted_branch",
+          "owner": "P18"
+        }
+      ],
+      "dependency": "account-driver/unavailable",
+      "operation_count": 3,
+      "operations": [
+        "POST /api/agents",
+        "POST /api/agents/account",
+        "POST /api/leads"
+      ]
+    },
+    {
+      "closures": [
+        {
+          "closes": "R1",
+          "kind": "external_or_scope",
+          "owner": "R1"
+        }
+      ],
+      "dependency": "federation/trusted-origin-observation",
+      "operation_count": 3,
+      "operations": [
+        "POST /api/federation/v1/message",
+        "POST /api/federation/v1/pull",
+        "POST /api/federation/v1/status"
+      ]
+    },
+    {
+      "closures": [
+        {
+          "closes": "R1",
+          "kind": "external_or_scope",
+          "owner": "R1"
+        }
+      ],
+      "dependency": "remote-transport/owner-lookup",
+      "operation_count": 3,
+      "operations": [
+        "GET /api/multi-server/v1/identity",
+        "POST /api/multi-server",
+        "POST /api/multi-server/v1/auto-pair"
+      ]
+    },
+    {
+      "closures": [
+        {
+          "closes": "origin/feat/wave7-p13-transcript-delivery",
+          "kind": "accepted_branch",
+          "owner": "P13"
+        }
+      ],
+      "dependency": "transcript/payload-store",
+      "operation_count": 3,
+      "operations": [
+        "GET /api/sync/pull",
+        "GET /api/transcript",
+        "GET /api/transcript/page"
+      ]
+    },
+    {
+      "closures": [
+        {
+          "closes": "origin/feat/wave7-p13-transcript-delivery",
+          "kind": "accepted_branch",
+          "owner": "P13"
+        }
+      ],
+      "dependency": "transcript/reasoning-page",
+      "operation_count": 3,
+      "operations": [
+        "GET /api/sync/pull",
+        "GET /api/transcript",
+        "GET /api/transcript/page"
+      ]
+    },
+    {
+      "closures": [
+        {
+          "closes": "origin/feat/wave7-p13-transcript-delivery",
+          "kind": "accepted_branch",
+          "owner": "P13"
+        }
+      ],
+      "dependency": "transcript/receipt-page",
+      "operation_count": 3,
+      "operations": [
+        "GET /api/sync/pull",
+        "GET /api/transcript",
+        "GET /api/transcript/page"
+      ]
+    },
+    {
+      "closures": [
+        {
+          "closes": "NEW linux-vm/settings-service (out of scope)",
+          "kind": "external_or_scope",
+          "owner": "NEW linux-vm/settings-service (out of scope)"
+        }
+      ],
+      "dependency": "NEW linux-vm/settings-service (out of scope)",
+      "operation_count": 2,
+      "operations": [
+        "GET /api/linux-vm/settings",
+        "POST /api/linux-vm/settings"
+      ]
+    },
+    {
+      "closures": [
+        {
+          "closes": "NEW mac-sync/runtime-service (out of scope)",
+          "kind": "external_or_scope",
+          "owner": "NEW mac-sync/runtime-service (out of scope)"
+        }
+      ],
+      "dependency": "NEW mac-sync/runtime-service (out of scope)",
+      "operation_count": 2,
+      "operations": ["POST /api/mac-sync/config", "POST /api/mac-sync/resolve"]
+    },
+    {
+      "closures": [
+        {
+          "closes": "origin/feat/wave7-p10-stop-delete",
+          "kind": "accepted_branch",
+          "owner": "P10"
+        }
+      ],
+      "dependency": "account-worker/agent-interrupt",
+      "operation_count": 2,
+      "operations": ["POST /api/conversation/delete", "POST /api/stop"]
+    },
+    {
+      "closures": [
+        {
+          "closes": "origin/feat/wave7-p10-stop-delete",
+          "kind": "accepted_branch",
+          "owner": "P10"
+        }
+      ],
+      "dependency": "agent-management/snapshot-limit",
+      "operation_count": 2,
+      "operations": ["POST /api/conversation/delete", "POST /api/stop"]
+    },
+    {
+      "closures": [
+        {
+          "closes": "R1",
+          "kind": "external_or_scope",
+          "owner": "R1"
+        },
+        {
+          "closes": "origin/feat/wave7-p10-stop-delete",
+          "kind": "accepted_branch",
+          "owner": "P10"
+        }
+      ],
+      "dependency": "cross-server/agent-management",
+      "operation_count": 2,
+      "operations": ["POST /api/conversation/delete", "POST /api/stop"]
+    },
+    {
+      "closures": [
+        {
+          "closes": "R1",
+          "kind": "external_or_scope",
+          "owner": "R1"
+        }
+      ],
+      "dependency": "cross-server/remote-events",
+      "operation_count": 2,
+      "operations": ["POST /api/messages", "POST /api/monitor/cancel"]
+    },
+    {
+      "closures": [
+        {
+          "closes": "origin/feat/wave7-p06-notification-effects",
+          "kind": "accepted_branch",
+          "owner": "P06"
+        },
+        {
+          "closes": "origin/feat/wave7-p10-stop-delete",
+          "kind": "accepted_branch",
+          "owner": "P10"
+        }
+      ],
+      "dependency": "event-driver/child-stop-notification",
+      "operation_count": 2,
+      "operations": ["POST /api/conversation/delete", "POST /api/stop"]
+    },
+    {
+      "closures": [
+        {
+          "closes": "R1",
+          "kind": "external_or_scope",
+          "owner": "R1"
+        }
+      ],
+      "dependency": "federation-credentials/private-key",
+      "operation_count": 2,
+      "operations": ["POST /api/federation", "POST /api/federation/v1/pair"]
+    },
+    {
+      "closures": [
+        {
+          "closes": "origin/feat/wave7-p10-stop-delete",
+          "kind": "accepted_branch",
+          "owner": "P10"
+        },
+        {
+          "closes": "Wave 7 P15 Monitors/rules",
+          "kind": "open_task",
+          "owner": "P15"
+        }
+      ],
+      "dependency": "monitor-driver/agent-stop",
+      "operation_count": 2,
+      "operations": ["POST /api/conversation/delete", "POST /api/stop"]
+    },
+    {
+      "closures": [
+        {
+          "closes": "R1",
+          "kind": "external_or_scope",
+          "owner": "R1"
+        }
+      ],
+      "dependency": "multi-server-runtime/orchestration",
+      "operation_count": 2,
+      "operations": [
+        "POST /api/multi-server",
+        "POST /api/servers/orchestration"
+      ]
+    },
+    {
+      "closures": [
+        {
+          "closes": "R1",
+          "kind": "external_or_scope",
+          "owner": "R1"
+        }
+      ],
+      "dependency": "multi-server/move-receipt",
+      "operation_count": 2,
+      "operations": ["GET /api/tool-requests", "POST /api/tool-requests/cancel"]
+    },
+    {
+      "closures": [
+        {
+          "closes": "R1",
+          "kind": "external_or_scope",
+          "owner": "R1"
+        }
+      ],
+      "dependency": "multi-server/project-location-receipt",
+      "operation_count": 2,
+      "operations": ["GET /api/tool-requests", "POST /api/tool-requests/cancel"]
+    },
+    {
+      "closures": [
+        {
+          "closes": "origin/feat/wave7-p04-callback-runtime",
+          "kind": "accepted_branch",
+          "owner": "P04"
+        },
+        {
+          "closes": "Wave 7 P05 Managed host tools",
+          "kind": "open_task",
+          "owner": "P05"
+        }
+      ],
+      "dependency": "payload-store/tool-request-recovery",
+      "operation_count": 2,
+      "operations": ["GET /api/tool-requests", "POST /api/tool-requests/cancel"]
+    },
+    {
+      "closures": [
+        {
+          "closes": "origin/feat/wave7-p18-account-catalog",
+          "kind": "accepted_branch",
+          "owner": "P18"
+        }
+      ],
+      "dependency": "provider-service/claude-discovery",
+      "operation_count": 2,
+      "operations": ["GET /api/capabilities", "GET /api/skills"]
+    },
+    {
+      "closures": [
+        {
+          "closes": "origin/feat/wave7-p18-account-catalog",
+          "kind": "accepted_branch",
+          "owner": "P18"
+        }
+      ],
+      "dependency": "provider-session/codex-login",
+      "operation_count": 2,
+      "operations": [
+        "POST /api/accounts/login",
+        "POST /api/accounts/login/cancel"
+      ]
+    },
+    {
+      "closures": [
+        {
+          "closes": "origin/feat/wave7-p18-account-catalog",
+          "kind": "accepted_branch",
+          "owner": "P18"
+        },
+        {
+          "closes": "Wave 7 P02 Host creation/configuration",
+          "kind": "open_task",
+          "owner": "P02"
+        }
+      ],
+      "dependency": "provider-session/model-list",
+      "operation_count": 2,
+      "operations": ["POST /api/agents", "POST /api/leads"]
+    },
+    {
+      "closures": [
+        {
+          "closes": "Wave 7 P15 Monitors/rules",
+          "kind": "open_task",
+          "owner": "P15"
+        }
+      ],
+      "dependency": "provider-session/monitor-commands",
+      "operation_count": 2,
+      "operations": ["POST /api/monitor/cancel", "POST /api/monitor/input"]
+    },
+    {
+      "closures": [
+        {
+          "closes": "origin/feat/wave7-p04-callback-runtime",
+          "kind": "accepted_branch",
+          "owner": "P04"
+        }
+      ],
+      "dependency": "provider-session/question-answer",
+      "operation_count": 2,
+      "operations": ["POST /api/answer", "POST /api/questions/delete"]
+    },
+    {
+      "closures": [
+        {
+          "closes": "origin/feat/wave7-p11-native-actions",
+          "kind": "accepted_branch",
+          "owner": "P11"
+        }
+      ],
+      "dependency": "provider-session/thread-fork",
+      "operation_count": 2,
+      "operations": ["POST /api/branch", "POST /api/checkpoint/restore"]
+    },
+    {
+      "closures": [
+        {
+          "closes": "first-cutover refusal",
+          "kind": "external_or_scope",
+          "owner": "first-cutover refusal"
+        }
+      ],
+      "dependency": "provider-session/thread-import",
+      "operation_count": 2,
+      "operations": ["GET /api/import", "POST /api/import"]
+    },
+    {
+      "closures": [
+        {
+          "closes": "R1",
+          "kind": "external_or_scope",
+          "owner": "R1"
+        }
+      ],
+      "dependency": "remote-transport/tailscale-discovery",
+      "operation_count": 2,
+      "operations": [
+        "POST /api/multi-server",
+        "POST /api/multi-server/v1/auto-pair"
+      ]
+    },
+    {
+      "closures": [
+        {
+          "closes": "origin/feat/wave7-p04-callback-runtime",
+          "kind": "accepted_branch",
+          "owner": "P04"
+        },
+        {
+          "closes": "Wave 7 P05 Managed host tools",
+          "kind": "open_task",
+          "owner": "P05"
+        }
+      ],
+      "dependency": "store-bootstrap/tool-request-schema",
+      "operation_count": 2,
+      "operations": ["GET /api/tool-requests", "POST /api/tool-requests/cancel"]
+    },
+    {
+      "closures": [
+        {
+          "closes": "origin/feat/wave7-p09-budget-runtime",
+          "kind": "accepted_branch",
+          "owner": "P09"
+        },
+        {
+          "closes": "origin/feat/wave7-p10-stop-delete",
+          "kind": "accepted_branch",
+          "owner": "P10"
+        }
+      ],
+      "dependency": "usage-policy/agent-stop",
+      "operation_count": 2,
+      "operations": ["POST /api/conversation/delete", "POST /api/stop"]
+    },
+    {
+      "closures": [
+        {
+          "closes": "R2",
+          "kind": "external_or_scope",
+          "owner": "R2"
+        },
+        {
+          "closes": "origin/feat/wave7-p10-stop-delete",
+          "kind": "accepted_branch",
+          "owner": "P10"
+        }
+      ],
+      "dependency": "voice-driver/agent-stop",
+      "operation_count": 2,
+      "operations": ["POST /api/conversation/delete", "POST /api/stop"]
+    },
+    {
+      "closures": [
+        {
+          "closes": "origin/feat/wave7-p10-stop-delete",
+          "kind": "accepted_branch",
+          "owner": "P10"
+        },
+        {
+          "closes": "Wave 7 P16 Work board",
+          "kind": "open_task",
+          "owner": "P16"
+        }
+      ],
+      "dependency": "work-driver/deletion-release",
+      "operation_count": 2,
+      "operations": ["POST /api/conversation/delete", "POST /api/stop"]
+    },
+    {
+      "closures": [
+        {
+          "closes": "origin/feat/wave7-p18-account-catalog",
+          "kind": "accepted_branch",
+          "owner": "P18"
+        },
+        {
+          "closes": "Wave 7 P02 Host creation/configuration",
+          "kind": "open_task",
+          "owner": "P02"
+        }
+      ],
+      "dependency": "worker-driver/settings-catalog",
+      "operation_count": 2,
+      "operations": ["POST /api/agents", "POST /api/leads"]
+    },
+    {
+      "closures": [
+        {
+          "closes": "origin/feat/wave7-p10-stop-delete",
+          "kind": "accepted_branch",
+          "owner": "P10"
+        }
+      ],
+      "dependency": "workspace-state/agent-lifecycle",
+      "operation_count": 2,
+      "operations": ["POST /api/conversation/delete", "POST /api/stop"]
+    },
+    {
+      "closures": [
+        {
+          "closes": "Wave 7 P02 Host creation/configuration",
+          "kind": "open_task",
+          "owner": "P02"
+        }
+      ],
+      "dependency": "workspace-state/lead-workspace",
+      "operation_count": 2,
+      "operations": ["POST /api/agents", "POST /api/leads"]
+    },
+    {
+      "closures": [
+        {
+          "closes": "R3",
+          "kind": "external_or_scope",
+          "owner": "R3"
+        }
+      ],
+      "dependency": "account-driver/reset-credit-redemption",
+      "operation_count": 1,
+      "operations": ["POST /api/limits/reset"]
+    },
+    {
+      "closures": [
+        {
+          "closes": "origin/feat/wave7-p18-account-catalog",
+          "kind": "accepted_branch",
+          "owner": "P18"
+        }
+      ],
+      "dependency": "account-transfer/destination-settings",
+      "operation_count": 1,
+      "operations": ["POST /api/agents/account-transfer"]
+    },
+    {
+      "closures": [
+        {
+          "closes": "origin/feat/wave7-p07-recovery-runtime",
+          "kind": "accepted_branch",
+          "owner": "P07"
+        },
+        {
+          "closes": "origin/feat/wave7-p18-account-catalog",
+          "kind": "accepted_branch",
+          "owner": "P18"
+        }
+      ],
+      "dependency": "account-transfer/provider-history-executor",
+      "operation_count": 1,
+      "operations": ["POST /api/agents/account-transfer"]
+    },
+    {
+      "closures": [
+        {
+          "closes": "Wave 7 P12 Completion/continuations",
+          "kind": "open_task",
+          "owner": "P12"
+        },
+        {
+          "closes": "origin/feat/wave7-p18-account-catalog",
+          "kind": "accepted_branch",
+          "owner": "P18"
+        }
+      ],
+      "dependency": "account-transfer/usage-resume-cancellation",
+      "operation_count": 1,
+      "operations": ["POST /api/agents/account"]
+    },
+    {
+      "closures": [
+        {
+          "closes": "origin/feat/wave7-p11-native-actions",
+          "kind": "accepted_branch",
+          "owner": "P11"
+        }
+      ],
+      "dependency": "account-worker/native-action",
+      "operation_count": 1,
+      "operations": ["POST /api/action"]
+    },
+    {
+      "closures": [
+        {
+          "closes": "origin/feat/wave7-p07-recovery-runtime",
+          "kind": "accepted_branch",
+          "owner": "P07"
+        }
+      ],
+      "dependency": "account-worker/recovery-history",
+      "operation_count": 1,
+      "operations": ["POST /api/connection-recovery"]
+    },
+    {
+      "closures": [
+        {
+          "closes": "Wave 7 P02 Host creation/configuration",
+          "kind": "open_task",
+          "owner": "P02"
+        }
+      ],
+      "dependency": "agent-management/agent-mode-settings",
+      "operation_count": 1,
+      "operations": ["POST /api/configure"]
+    },
+    {
+      "closures": [
+        {
+          "closes": "Wave 7 P02 Host creation/configuration",
+          "kind": "open_task",
+          "owner": "P02"
+        }
+      ],
+      "dependency": "agent-management/conversation-settings",
+      "operation_count": 1,
+      "operations": ["POST /api/conversation"]
+    },
+    {
+      "closures": [
+        {
+          "closes": "Wave 7 P02 Host creation/configuration",
+          "kind": "open_task",
+          "owner": "P02"
+        }
+      ],
+      "dependency": "agent-management/empty-chat-reuse",
+      "operation_count": 1,
+      "operations": ["POST /api/leads"]
+    },
+    {
+      "closures": [
+        {
+          "closes": "origin/feat/wave7-p03-message-ingress",
+          "kind": "accepted_branch",
+          "owner": "P03"
+        },
+        {
+          "closes": "origin/feat/wave7-p09-budget-runtime",
+          "kind": "accepted_branch",
+          "owner": "P09"
+        }
+      ],
+      "dependency": "budget-policy/message-admission",
+      "operation_count": 1,
+      "operations": ["POST /api/messages"]
+    },
+    {
+      "closures": [
+        {
+          "closes": "origin/feat/wave7-p03-message-ingress",
+          "kind": "accepted_branch",
+          "owner": "P03"
+        },
+        {
+          "closes": "Wave 7 P12 Completion/continuations",
+          "kind": "open_task",
+          "owner": "P12"
+        }
+      ],
+      "dependency": "capacity-retry/store",
+      "operation_count": 1,
+      "operations": ["POST /api/messages"]
+    },
+    {
+      "closures": [
+        {
+          "closes": "origin/feat/wave7-p11-native-actions",
+          "kind": "accepted_branch",
+          "owner": "P11"
+        }
+      ],
+      "dependency": "context-repair/native-history-rewrite",
+      "operation_count": 1,
+      "operations": ["POST /api/context-repair"]
+    },
+    {
+      "closures": [
+        {
+          "closes": "origin/feat/wave7-p09-budget-runtime",
+          "kind": "accepted_branch",
+          "owner": "P09"
+        },
+        {
+          "closes": "R5",
+          "kind": "external_or_scope",
+          "owner": "R5"
+        }
+      ],
+      "dependency": "costs/claude-local-usage",
+      "operation_count": 1,
+      "operations": ["GET /api/session-cost"]
+    },
+    {
+      "closures": [
+        {
+          "closes": "R5",
+          "kind": "external_or_scope",
+          "owner": "R5"
+        }
+      ],
+      "dependency": "costs/local-scanner",
+      "operation_count": 1,
+      "operations": ["GET /api/costs"]
+    },
+    {
+      "closures": [
+        {
+          "closes": "origin/feat/wave7-p09-budget-runtime",
+          "kind": "accepted_branch",
+          "owner": "P09"
+        },
+        {
+          "closes": "R5",
+          "kind": "external_or_scope",
+          "owner": "R5"
+        }
+      ],
+      "dependency": "costs/pricing-refresh",
+      "operation_count": 1,
+      "operations": ["GET /api/session-cost"]
+    },
+    {
+      "closures": [
+        {
+          "closes": "origin/feat/wave7-p19-projects-radio",
+          "kind": "accepted_branch",
+          "owner": "P19"
+        },
+        {
+          "closes": "R1",
+          "kind": "external_or_scope",
+          "owner": "R1"
+        }
+      ],
+      "dependency": "cross-server-driver/local-identity",
+      "operation_count": 1,
+      "operations": ["POST /api/projects"]
+    },
+    {
+      "closures": [
+        {
+          "closes": "R1",
+          "kind": "external_or_scope",
+          "owner": "R1"
+        },
+        {
+          "closes": "origin/feat/wave7-p19-projects-radio",
+          "kind": "accepted_branch",
+          "owner": "P19"
+        }
+      ],
+      "dependency": "cross-server-driver/peer-team-transport",
+      "operation_count": 1,
+      "operations": ["POST /api/peer-teams"]
+    },
+    {
+      "closures": [
+        {
+          "closes": "origin/feat/wave7-p19-projects-radio",
+          "kind": "accepted_branch",
+          "owner": "P19"
+        },
+        {
+          "closes": "R1",
+          "kind": "external_or_scope",
+          "owner": "R1"
+        }
+      ],
+      "dependency": "cross-server-driver/project-location-read",
+      "operation_count": 1,
+      "operations": ["GET /api/project-locations"]
+    },
+    {
+      "closures": [
+        {
+          "closes": "origin/feat/wave7-p19-projects-radio",
+          "kind": "accepted_branch",
+          "owner": "P19"
+        },
+        {
+          "closes": "R1",
+          "kind": "external_or_scope",
+          "owner": "R1"
+        }
+      ],
+      "dependency": "cross-server-driver/project-location-write",
+      "operation_count": 1,
+      "operations": ["POST /api/projects"]
+    },
+    {
+      "closures": [
+        {
+          "closes": "origin/feat/wave7-p19-projects-radio",
+          "kind": "accepted_branch",
+          "owner": "P19"
+        }
+      ],
+      "dependency": "cross-server-driver/project-registration",
+      "operation_count": 1,
+      "operations": ["POST /api/projects"]
+    },
+    {
+      "closures": [
+        {
+          "closes": "Wave 7 P12 Completion/continuations",
+          "kind": "open_task",
+          "owner": "P12"
+        }
+      ],
+      "dependency": "event-driver/queue-mutations",
+      "operation_count": 1,
+      "operations": ["POST /api/capacity-retry"]
+    },
+    {
+      "closures": [
+        {
+          "closes": "R1",
+          "kind": "external_or_scope",
+          "owner": "R1"
+        }
+      ],
+      "dependency": "federation-credentials/invitation",
+      "operation_count": 1,
+      "operations": ["POST /api/federation"]
+    },
+    {
+      "closures": [
+        {
+          "closes": "R1",
+          "kind": "external_or_scope",
+          "owner": "R1"
+        }
+      ],
+      "dependency": "federation-credentials/key-generation",
+      "operation_count": 1,
+      "operations": ["POST /api/federation"]
+    },
+    {
+      "closures": [
+        {
+          "closes": "R1",
+          "kind": "external_or_scope",
+          "owner": "R1"
+        },
+        {
+          "closes": "origin/feat/wave7-p03-message-ingress",
+          "kind": "accepted_branch",
+          "owner": "P03"
+        }
+      ],
+      "dependency": "federation-driver/rooms",
+      "operation_count": 1,
+      "operations": ["POST /api/messages"]
+    },
+    {
+      "closures": [
+        {
+          "closes": "Wave 7 P15 Monitors/rules",
+          "kind": "open_task",
+          "owner": "P15"
+        }
+      ],
+      "dependency": "monitor-driver/active-checks",
+      "operation_count": 1,
+      "operations": ["POST /api/rules"]
+    },
+    {
+      "closures": [
+        {
+          "closes": "R1",
+          "kind": "external_or_scope",
+          "owner": "R1"
+        }
+      ],
+      "dependency": "multi-server-runtime/pairing",
+      "operation_count": 1,
+      "operations": ["POST /api/multi-server"]
+    },
+    {
+      "closures": [
+        {
+          "closes": "R1",
+          "kind": "external_or_scope",
+          "owner": "R1"
+        }
+      ],
+      "dependency": "multi-server/discovery-pairing",
+      "operation_count": 1,
+      "operations": ["GET /api/directories"]
+    },
+    {
+      "closures": [
+        {
+          "closes": "R1",
+          "kind": "external_or_scope",
+          "owner": "R1"
+        }
+      ],
+      "dependency": "multi-server/folder-browse",
+      "operation_count": 1,
+      "operations": ["GET /api/directories"]
+    },
+    {
+      "closures": [
+        {
+          "closes": "origin/feat/wave7-p03-message-ingress",
+          "kind": "accepted_branch",
+          "owner": "P03"
+        }
+      ],
+      "dependency": "payload-store/uploads",
+      "operation_count": 1,
+      "operations": ["POST /api/messages"]
+    },
+    {
+      "closures": [
+        {
+          "closes": "origin/feat/wave7-p19-projects-radio",
+          "kind": "accepted_branch",
+          "owner": "P19"
+        },
+        {
+          "closes": "Wave 7 P02 Host creation/configuration",
+          "kind": "open_task",
+          "owner": "P02"
+        }
+      ],
+      "dependency": "project-driver/chat-binding",
+      "operation_count": 1,
+      "operations": ["POST /api/leads"]
+    },
+    {
+      "closures": [
+        {
+          "closes": "origin/feat/wave7-p18-account-catalog",
+          "kind": "accepted_branch",
+          "owner": "P18"
+        }
+      ],
+      "dependency": "provider-service/claude-model-catalog",
+      "operation_count": 1,
+      "operations": ["GET /api/models"]
+    },
+    {
+      "closures": [
+        {
+          "closes": "origin/feat/wave7-p18-account-catalog",
+          "kind": "accepted_branch",
+          "owner": "P18"
+        }
+      ],
+      "dependency": "provider-session/account-rate-limits",
+      "operation_count": 1,
+      "operations": ["GET /api/limits"]
+    },
+    {
+      "closures": [
+        {
+          "closes": "origin/feat/wave7-p08-claude-runtime",
+          "kind": "accepted_branch",
+          "owner": "P08"
+        }
+      ],
+      "dependency": "provider-session/claude-controls",
+      "operation_count": 1,
+      "operations": ["POST /api/claude/session"]
+    },
+    {
+      "closures": [
+        {
+          "closes": "origin/feat/wave7-p18-account-catalog",
+          "kind": "accepted_branch",
+          "owner": "P18"
+        }
+      ],
+      "dependency": "provider-session/claude-discovery",
+      "operation_count": 1,
+      "operations": ["POST /api/accounts/discover"]
+    },
+    {
+      "closures": [
+        {
+          "closes": "origin/feat/wave7-p18-account-catalog",
+          "kind": "accepted_branch",
+          "owner": "P18"
+        }
+      ],
+      "dependency": "provider-session/claude-profile-auth",
+      "operation_count": 1,
+      "operations": ["POST /api/claude/profiles"]
+    },
+    {
+      "closures": [
+        {
+          "closes": "origin/feat/wave7-p18-account-catalog",
+          "kind": "accepted_branch",
+          "owner": "P18"
+        },
+        {
+          "closes": "R5",
+          "kind": "external_or_scope",
+          "owner": "R5"
+        }
+      ],
+      "dependency": "provider-session/native-accounts",
+      "operation_count": 1,
+      "operations": ["GET /api/diagnostics"]
+    },
+    {
+      "closures": [
+        {
+          "closes": "R4",
+          "kind": "external_or_scope",
+          "owner": "R4"
+        }
+      ],
+      "dependency": "provider-session/title-generation",
+      "operation_count": 1,
+      "operations": ["POST /api/rename"]
+    },
+    {
+      "closures": [
+        {
+          "closes": "origin/feat/wave7-p04-callback-runtime",
+          "kind": "accepted_branch",
+          "owner": "P04"
+        },
+        {
+          "closes": "Wave 7 P05 Managed host tools",
+          "kind": "open_task",
+          "owner": "P05"
+        }
+      ],
+      "dependency": "question-answer/async-question",
+      "operation_count": 1,
+      "operations": ["POST /api/answer"]
+    },
+    {
+      "closures": [
+        {
+          "closes": "origin/feat/wave7-p04-callback-runtime",
+          "kind": "accepted_branch",
+          "owner": "P04"
+        },
+        {
+          "closes": "Wave 7 P05 Managed host tools",
+          "kind": "open_task",
+          "owner": "P05"
+        },
+        {
+          "closes": "R1",
+          "kind": "external_or_scope",
+          "owner": "R1"
+        }
+      ],
+      "dependency": "question-answer/browser-open",
+      "operation_count": 1,
+      "operations": ["POST /api/answer"]
+    },
+    {
+      "closures": [
+        {
+          "closes": "origin/feat/wave7-p04-callback-runtime",
+          "kind": "accepted_branch",
+          "owner": "P04"
+        },
+        {
+          "closes": "Wave 7 P15 Monitors/rules",
+          "kind": "open_task",
+          "owner": "P15"
+        }
+      ],
+      "dependency": "question-answer/monitor-approval",
+      "operation_count": 1,
+      "operations": ["POST /api/answer"]
+    },
+    {
+      "closures": [
+        {
+          "closes": "origin/feat/wave7-p17-terminals",
+          "kind": "accepted_branch",
+          "owner": "P17"
+        },
+        {
+          "closes": "R1",
+          "kind": "external_or_scope",
+          "owner": "R1"
+        }
+      ],
+      "dependency": "remote-transport/browser-forward",
+      "operation_count": 1,
+      "operations": ["POST /api/browser/forward"]
+    },
+    {
+      "closures": [
+        {
+          "closes": "R1",
+          "kind": "external_or_scope",
+          "owner": "R1"
+        }
+      ],
+      "dependency": "remote-transport/signed-federation-exchange",
+      "operation_count": 1,
+      "operations": ["POST /api/federation"]
+    },
+    {
+      "closures": [
+        {
+          "closes": "R1",
+          "kind": "external_or_scope",
+          "owner": "R1"
+        }
+      ],
+      "dependency": "remote-transport/tailscale-identity",
+      "operation_count": 1,
+      "operations": ["POST /api/federation"]
+    },
+    {
+      "closures": [
+        {
+          "closes": "Wave 7 P15 Monitors/rules",
+          "kind": "open_task",
+          "owner": "P15"
+        }
+      ],
+      "dependency": "rule-driver/monitor-finish",
+      "operation_count": 1,
+      "operations": ["POST /api/monitor/cancel"]
+    },
+    {
+      "closures": [
+        {
+          "closes": "R5",
+          "kind": "external_or_scope",
+          "owner": "R5"
+        }
+      ],
+      "dependency": "runtime-http/request-metrics",
+      "operation_count": 1,
+      "operations": ["GET /api/diagnostics"]
+    },
+    {
+      "closures": [
+        {
+          "closes": "R5",
+          "kind": "external_or_scope",
+          "owner": "R5"
+        }
+      ],
+      "dependency": "runtime-process/analytics-capture",
+      "operation_count": 1,
+      "operations": ["GET /api/diagnostics"]
+    },
+    {
+      "closures": [
+        {
+          "closes": "R5",
+          "kind": "external_or_scope",
+          "owner": "R5"
+        }
+      ],
+      "dependency": "runtime-process/host-resources",
+      "operation_count": 1,
+      "operations": ["GET /api/diagnostics"]
+    },
+    {
+      "closures": [
+        {
+          "closes": "R5",
+          "kind": "external_or_scope",
+          "owner": "R5"
+        }
+      ],
+      "dependency": "runtime-process/live-queues",
+      "operation_count": 1,
+      "operations": ["GET /api/diagnostics"]
+    },
+    {
+      "closures": [
+        {
+          "closes": "R5",
+          "kind": "external_or_scope",
+          "owner": "R5"
+        }
+      ],
+      "dependency": "runtime-process/lock-samples",
+      "operation_count": 1,
+      "operations": ["GET /api/diagnostics"]
+    },
+    {
+      "closures": [
+        {
+          "closes": "R5",
+          "kind": "external_or_scope",
+          "owner": "R5"
+        }
+      ],
+      "dependency": "runtime-process/process-tree",
+      "operation_count": 1,
+      "operations": ["GET /api/diagnostics"]
+    },
+    {
+      "closures": [
+        {
+          "closes": "R5",
+          "kind": "external_or_scope",
+          "owner": "R5"
+        }
+      ],
+      "dependency": "runtime-process/resource-attribution",
+      "operation_count": 1,
+      "operations": ["GET /api/diagnostics"]
+    },
+    {
+      "closures": [
+        {
+          "closes": "R5",
+          "kind": "external_or_scope",
+          "owner": "R5"
+        }
+      ],
+      "dependency": "runtime-process/studio-loaded-threads",
+      "operation_count": 1,
+      "operations": ["GET /api/diagnostics"]
+    },
+    {
+      "closures": [
+        {
+          "closes": "origin/feat/wave7-p01-runtime-composition",
+          "kind": "accepted_branch",
+          "owner": "P01"
+        },
+        {
+          "closes": "R5",
+          "kind": "external_or_scope",
+          "owner": "R5"
+        }
+      ],
+      "dependency": "runtime-process/supervisor-status",
+      "operation_count": 1,
+      "operations": ["GET /api/diagnostics"]
+    },
+    {
+      "closures": [
+        {
+          "closes": "R5",
+          "kind": "external_or_scope",
+          "owner": "R5"
+        }
+      ],
+      "dependency": "runtime-store/sqlite-contention",
+      "operation_count": 1,
+      "operations": ["GET /api/diagnostics"]
+    },
+    {
+      "closures": [
+        {
+          "closes": "origin/feat/wave7-p18-account-catalog",
+          "kind": "accepted_branch",
+          "owner": "P18"
+        }
+      ],
+      "dependency": "store-bootstrap/account-transfer-schema",
+      "operation_count": 1,
+      "operations": ["POST /api/agents/account-transfer"]
+    },
+    {
+      "closures": [
+        {
+          "closes": "origin/feat/wave7-p09-budget-runtime",
+          "kind": "accepted_branch",
+          "owner": "P09"
+        },
+        {
+          "closes": "R5",
+          "kind": "external_or_scope",
+          "owner": "R5"
+        }
+      ],
+      "dependency": "store-bootstrap/analytics-usage-schema",
+      "operation_count": 1,
+      "operations": ["GET /api/session-cost"]
+    },
+    {
+      "closures": [
+        {
+          "closes": "Wave 7 P12 Completion/continuations",
+          "kind": "open_task",
+          "owner": "P12"
+        }
+      ],
+      "dependency": "store-bootstrap/capacity-retry-schema",
+      "operation_count": 1,
+      "operations": ["POST /api/capacity-retry"]
+    },
+    {
+      "closures": [
+        {
+          "closes": "origin/feat/wave7-p11-native-actions",
+          "kind": "accepted_branch",
+          "owner": "P11"
+        }
+      ],
+      "dependency": "store-bootstrap/context-repair-schema",
+      "operation_count": 1,
+      "operations": ["POST /api/context-repair"]
+    },
+    {
+      "closures": [
+        {
+          "closes": "Wave 7 P12 Completion/continuations",
+          "kind": "open_task",
+          "owner": "P12"
+        }
+      ],
+      "dependency": "store-bootstrap/usage-resume-schema",
+      "operation_count": 1,
+      "operations": ["POST /api/usage-resume"]
+    },
+    {
+      "closures": [
+        {
+          "closes": "Wave 7 P02 Host creation/configuration",
+          "kind": "open_task",
+          "owner": "P02"
+        },
+        {
+          "closes": "origin/feat/wave7-p18-account-catalog",
+          "kind": "accepted_branch",
+          "owner": "P18"
+        }
+      ],
+      "dependency": "thread-preparation/tool-catalog",
+      "operation_count": 1,
+      "operations": ["GET /api/capabilities"]
+    },
+    {
+      "closures": [
+        {
+          "closes": "origin/feat/wave7-p13-transcript-delivery",
+          "kind": "accepted_branch",
+          "owner": "P13"
+        }
+      ],
+      "dependency": "transcript/workspace-state",
+      "operation_count": 1,
+      "operations": ["GET /api/transcript"]
+    },
+    {
+      "closures": [
+        {
+          "closes": "Wave 7 P12 Completion/continuations",
+          "kind": "open_task",
+          "owner": "P12"
+        }
+      ],
+      "dependency": "turn-driver/capacity-retry",
+      "operation_count": 1,
+      "operations": ["POST /api/capacity-retry"]
+    },
+    {
+      "closures": [
+        {
+          "closes": "Wave 7 P12 Completion/continuations",
+          "kind": "open_task",
+          "owner": "P12"
+        }
+      ],
+      "dependency": "turn-driver/usage-resume",
+      "operation_count": 1,
+      "operations": ["POST /api/usage-resume"]
+    },
+    {
+      "closures": [
+        {
+          "closes": "origin/feat/wave7-p11-native-actions",
+          "kind": "accepted_branch",
+          "owner": "P11"
+        },
+        {
+          "closes": "origin/feat/wave7-p18-account-catalog",
+          "kind": "accepted_branch",
+          "owner": "P18"
+        }
+      ],
+      "dependency": "turn-path/native-command-input",
+      "operation_count": 1,
+      "operations": ["POST /api/native-command"]
+    },
+    {
+      "closures": [
+        {
+          "closes": "origin/feat/wave7-p06-notification-effects",
+          "kind": "accepted_branch",
+          "owner": "P06"
+        },
+        {
+          "closes": "origin/feat/wave7-p14-sync-resources",
+          "kind": "accepted_branch",
+          "owner": "P14"
+        }
+      ],
+      "dependency": "usage-policy/token-rates",
+      "operation_count": 1,
+      "operations": ["GET /api/sync/stream"]
+    },
+    {
+      "closures": [
+        {
+          "closes": "first-cutover refusal: VM excluded",
+          "kind": "external_or_scope",
+          "owner": "first-cutover refusal: VM excluded"
+        }
+      ],
+      "dependency": "vm-agents/finder-view",
+      "operation_count": 1,
+      "operations": ["GET /api/agents/finder-view"]
+    },
+    {
+      "closures": [
+        {
+          "closes": "Wave 7 P16 Work board",
+          "kind": "open_task",
+          "owner": "P16"
+        },
+        {
+          "closes": "Wave 7 P02 Host creation/configuration",
+          "kind": "open_task",
+          "owner": "P02"
+        }
+      ],
+      "dependency": "worker-driver/work-assignment",
+      "operation_count": 1,
+      "operations": ["POST /api/agents"]
+    },
+    {
+      "closures": [
+        {
+          "closes": "Wave 7 P02 Host creation/configuration",
+          "kind": "open_task",
+          "owner": "P02"
+        }
+      ],
+      "dependency": "worker-driver/workspace-preparation",
+      "operation_count": 1,
+      "operations": ["POST /api/agents"]
+    },
+    {
+      "closures": [
+        {
+          "closes": "origin/feat/wave7-p03-message-ingress",
+          "kind": "accepted_branch",
+          "owner": "P03"
+        }
+      ],
+      "dependency": "workspace-policy/message-admission",
+      "operation_count": 1,
+      "operations": ["POST /api/messages"]
+    },
+    {
+      "closures": [
+        {
+          "closes": "Wave 7 P16 Work board",
+          "kind": "open_task",
+          "owner": "P16"
+        }
+      ],
+      "dependency": "workspace-state/organization-effects",
+      "operation_count": 1,
+      "operations": ["POST /api/organization"]
+    },
+    {
+      "closures": [
+        {
+          "closes": "origin/feat/wave7-p19-projects-radio",
+          "kind": "accepted_branch",
+          "owner": "P19"
+        }
+      ],
+      "dependency": "workspace-state/peer-radio",
+      "operation_count": 1,
+      "operations": ["POST /api/peer-teams"]
+    },
+    {
+      "closures": [
+        {
+          "closes": "origin/feat/wave7-p19-projects-radio",
+          "kind": "accepted_branch",
+          "owner": "P19"
+        }
+      ],
+      "dependency": "workspace-state/worker-environment",
+      "operation_count": 1,
+      "operations": ["POST /api/projects"]
+    }
+  ],
+  "counts": {
+    "implemented": 71,
+    "named_dependencies": 112,
+    "not_registered": 13,
+    "partial": 76,
+    "total": 160
+  },
+  "lifecycle_dependencies": {
+    "direct provider launch": {
+      "closes": "Direct provider launch runtime composition",
+      "kind": "open_task",
+      "owner": "direct provider launch"
+    }
+  },
+  "operations": [
+    {
+      "dependencies": [],
+      "operation": "GET /api/accounts",
+      "status": "implemented"
+    },
+    {
+      "dependencies": [],
+      "operation": "GET /api/accounts/claude/login",
+      "status": "implemented"
+    },
+    {
+      "dependencies": [],
+      "operation": "GET /api/agent-chat",
+      "status": "implemented"
+    },
+    {
+      "dependencies": ["vm-agents/finder-view"],
+      "operation": "GET /api/agents/finder-view",
+      "status": "partial"
+    },
+    {
+      "dependencies": [],
+      "operation": "GET /api/analytics",
+      "status": "implemented"
+    },
+    {
+      "dependencies": [
+        "provider-service/claude-discovery",
+        "thread-preparation/tool-catalog"
+      ],
+      "operation": "GET /api/capabilities",
+      "status": "partial"
+    },
+    {
+      "dependencies": ["workspace-state/image-execution"],
+      "operation": "GET /api/changes",
+      "status": "partial"
+    },
+    {
+      "dependencies": [],
+      "operation": "GET /api/checkpoints",
+      "status": "implemented"
+    },
+    {
+      "dependencies": [],
+      "operation": "GET /api/complaint",
+      "status": "implemented"
+    },
+    {
+      "dependencies": ["costs/local-scanner"],
+      "operation": "GET /api/costs",
+      "status": "partial"
+    },
+    {
+      "dependencies": [],
+      "operation": "GET /api/desktop",
+      "status": "implemented"
+    },
+    {
+      "dependencies": [
+        "provider-session/native-accounts",
+        "runtime-http/request-metrics",
+        "runtime-process/analytics-capture",
+        "runtime-process/host-resources",
+        "runtime-process/live-queues",
+        "runtime-process/lock-samples",
+        "runtime-process/process-tree",
+        "runtime-process/resource-attribution",
+        "runtime-process/studio-loaded-threads",
+        "runtime-process/supervisor-status",
+        "runtime-store/sqlite-contention"
+      ],
+      "operation": "GET /api/diagnostics",
+      "status": "partial"
+    },
+    {
+      "dependencies": [
+        "multi-server/discovery-pairing",
+        "multi-server/folder-browse"
+      ],
+      "operation": "GET /api/directories",
+      "status": "partial"
+    },
+    {
+      "dependencies": [],
+      "operation": "GET /api/federation",
+      "status": "implemented"
+    },
+    {
+      "dependencies": [],
+      "operation": "GET /api/federation/v1/message",
+      "status": "implemented"
+    },
+    {
+      "dependencies": [],
+      "operation": "GET /api/federation/v1/pair",
+      "status": "implemented"
+    },
+    {
+      "dependencies": [],
+      "operation": "GET /api/federation/v1/pull",
+      "status": "implemented"
+    },
+    {
+      "dependencies": [],
+      "operation": "GET /api/federation/v1/status",
+      "status": "implemented"
+    },
+    {
+      "dependencies": ["workspace-state/image-execution"],
+      "operation": "GET /api/file",
+      "status": "partial"
+    },
+    {
+      "dependencies": ["workspace-state/image-execution"],
+      "operation": "GET /api/file-info",
+      "status": "partial"
+    },
+    {
+      "dependencies": ["provider-session/thread-import"],
+      "operation": "GET /api/import",
+      "status": "partial"
+    },
+    {
+      "dependencies": ["provider-session/account-rate-limits"],
+      "operation": "GET /api/limits",
+      "status": "partial"
+    },
+    {
+      "dependencies": ["NEW linux-vm/settings-service (out of scope)"],
+      "operation": "GET /api/linux-vm/settings",
+      "status": "not_registered"
+    },
+    {
+      "dependencies": [],
+      "operation": "GET /api/messages",
+      "status": "implemented"
+    },
+    {
+      "dependencies": [],
+      "operation": "GET /api/messages/receipts",
+      "status": "implemented"
+    },
+    {
+      "dependencies": ["provider-service/claude-model-catalog"],
+      "operation": "GET /api/models",
+      "status": "partial"
+    },
+    {
+      "dependencies": [],
+      "operation": "GET /api/monitor/log",
+      "status": "implemented"
+    },
+    {
+      "dependencies": [],
+      "operation": "GET /api/multi-server",
+      "status": "implemented"
+    },
+    {
+      "dependencies": [],
+      "operation": "GET /api/multi-server/audit",
+      "status": "implemented"
+    },
+    {
+      "dependencies": ["remote-transport/owner-lookup"],
+      "operation": "GET /api/multi-server/v1/identity",
+      "status": "partial"
+    },
+    {
+      "dependencies": [],
+      "operation": "GET /api/multi-server/v1/pair",
+      "status": "implemented"
+    },
+    {
+      "dependencies": ["remote-transport/signed-server-requests"],
+      "operation": "GET /api/multi-server/v1/status",
+      "status": "partial"
+    },
+    {
+      "dependencies": [],
+      "operation": "GET /api/panel",
+      "status": "implemented"
+    },
+    {
+      "dependencies": [],
+      "operation": "GET /api/plan",
+      "status": "implemented"
+    },
+    {
+      "dependencies": [],
+      "operation": "GET /api/profiles",
+      "status": "implemented"
+    },
+    {
+      "dependencies": ["cross-server-driver/project-location-read"],
+      "operation": "GET /api/project-locations",
+      "status": "partial"
+    },
+    {
+      "dependencies": [],
+      "operation": "GET /api/projects",
+      "status": "implemented"
+    },
+    {
+      "dependencies": [],
+      "operation": "GET /api/questions",
+      "status": "implemented"
+    },
+    {
+      "dependencies": [],
+      "operation": "GET /api/queue",
+      "status": "implemented"
+    },
+    {
+      "dependencies": [],
+      "operation": "GET /api/rules",
+      "status": "implemented"
+    },
+    {
+      "dependencies": [],
+      "operation": "GET /api/search",
+      "status": "implemented"
+    },
+    {
+      "dependencies": [],
+      "operation": "GET /api/search/item",
+      "status": "implemented"
+    },
+    {
+      "dependencies": [],
+      "operation": "GET /api/session",
+      "status": "implemented"
+    },
+    {
+      "dependencies": [
+        "costs/claude-local-usage",
+        "costs/pricing-refresh",
+        "store-bootstrap/analytics-usage-schema"
+      ],
+      "operation": "GET /api/session-cost",
+      "status": "partial"
+    },
+    {
+      "dependencies": ["provider-service/claude-discovery"],
+      "operation": "GET /api/skills",
+      "status": "partial"
+    },
+    {
+      "dependencies": [],
+      "operation": "GET /api/sync/identity",
+      "status": "implemented"
+    },
+    {
+      "dependencies": [],
+      "operation": "GET /api/sync/protocol",
+      "status": "implemented"
+    },
+    {
+      "dependencies": [
+        "transcript/payload-store",
+        "transcript/reasoning-page",
+        "transcript/receipt-page"
+      ],
+      "operation": "GET /api/sync/pull",
+      "status": "partial"
+    },
+    {
+      "dependencies": [
+        "provider-session/app-server",
+        "usage-policy/token-rates"
+      ],
+      "operation": "GET /api/sync/stream",
+      "status": "partial"
+    },
+    {
+      "dependencies": [],
+      "operation": "GET /api/task",
+      "status": "implemented"
+    },
+    {
+      "dependencies": [],
+      "operation": "GET /api/terminals",
+      "status": "implemented"
+    },
+    {
+      "dependencies": [],
+      "operation": "GET /api/terminals/output",
+      "status": "implemented"
+    },
+    {
+      "dependencies": [
+        "multi-server/move-receipt",
+        "multi-server/project-location-receipt",
+        "payload-store/tool-request-recovery",
+        "store-bootstrap/tool-request-schema"
+      ],
+      "operation": "GET /api/tool-requests",
+      "status": "partial"
+    },
+    {
+      "dependencies": [
+        "transcript/payload-store",
+        "transcript/reasoning-page",
+        "transcript/receipt-page",
+        "transcript/workspace-state"
+      ],
+      "operation": "GET /api/transcript",
+      "status": "partial"
+    },
+    {
+      "dependencies": [],
+      "operation": "GET /api/transcript/item",
+      "status": "implemented"
+    },
+    {
+      "dependencies": [
+        "transcript/payload-store",
+        "transcript/reasoning-page",
+        "transcript/receipt-page"
+      ],
+      "operation": "GET /api/transcript/page",
+      "status": "partial"
+    },
+    {
+      "dependencies": [],
+      "operation": "GET /api/transcript/search",
+      "status": "implemented"
+    },
+    {
+      "dependencies": [],
+      "operation": "GET /api/ui-summary",
+      "status": "implemented"
+    },
+    {
+      "dependencies": [],
+      "operation": "GET /api/work",
+      "status": "implemented"
+    },
+    {
+      "dependencies": [],
+      "operation": "GET /api/workspace",
+      "status": "implemented"
+    },
+    {
+      "dependencies": [],
+      "operation": "GET /api/workspace/tasks",
+      "status": "implemented"
+    },
+    {
+      "dependencies": [],
+      "operation": "POST /api/accounts/claude/add",
+      "status": "implemented"
+    },
+    {
+      "dependencies": [],
+      "operation": "POST /api/accounts/claude/login",
+      "status": "implemented"
+    },
+    {
+      "dependencies": [],
+      "operation": "POST /api/accounts/claude/login/cancel",
+      "status": "implemented"
+    },
+    {
+      "dependencies": [],
+      "operation": "POST /api/accounts/claude/login/code",
+      "status": "implemented"
+    },
+    {
+      "dependencies": [],
+      "operation": "POST /api/accounts/default",
+      "status": "implemented"
+    },
+    {
+      "dependencies": [],
+      "operation": "POST /api/accounts/delete",
+      "status": "implemented"
+    },
+    {
+      "dependencies": [],
+      "operation": "POST /api/accounts/disconnect",
+      "status": "implemented"
+    },
+    {
+      "dependencies": ["provider-session/claude-discovery"],
+      "operation": "POST /api/accounts/discover",
+      "status": "partial"
+    },
+    {
+      "dependencies": ["provider-session/codex-login"],
+      "operation": "POST /api/accounts/login",
+      "status": "partial"
+    },
+    {
+      "dependencies": ["provider-session/codex-login"],
+      "operation": "POST /api/accounts/login/cancel",
+      "status": "partial"
+    },
+    {
+      "dependencies": [],
+      "operation": "POST /api/accounts/name",
+      "status": "implemented"
+    },
+    {
+      "dependencies": [],
+      "operation": "POST /api/accounts/reconnect",
+      "status": "implemented"
+    },
+    {
+      "dependencies": [],
+      "operation": "POST /api/accounts/register",
+      "status": "implemented"
+    },
+    {
+      "dependencies": ["account-worker/native-action"],
+      "operation": "POST /api/action",
+      "status": "partial"
+    },
+    {
+      "dependencies": [
+        "account-driver/unavailable",
+        "provider-session/model-list",
+        "worker-driver/settings-catalog",
+        "worker-driver/work-assignment",
+        "worker-driver/workspace-preparation",
+        "workspace-state/lead-workspace"
+      ],
+      "operation": "POST /api/agents",
+      "status": "partial"
+    },
+    {
+      "dependencies": [
+        "account-driver/unavailable",
+        "account-transfer/usage-resume-cancellation"
+      ],
+      "operation": "POST /api/agents/account",
+      "status": "partial"
+    },
+    {
+      "dependencies": [
+        "account-transfer/destination-settings",
+        "account-transfer/provider-history-executor",
+        "store-bootstrap/account-transfer-schema"
+      ],
+      "operation": "POST /api/agents/account-transfer",
+      "status": "partial"
+    },
+    {
+      "dependencies": [],
+      "operation": "POST /api/annotation",
+      "status": "implemented"
+    },
+    {
+      "dependencies": [
+        "provider-session/question-answer",
+        "question-answer/async-question",
+        "question-answer/browser-open",
+        "question-answer/monitor-approval"
+      ],
+      "operation": "POST /api/answer",
+      "status": "partial"
+    },
+    {
+      "dependencies": [],
+      "operation": "POST /api/assets",
+      "status": "implemented"
+    },
+    {
+      "dependencies": ["provider-session/thread-fork"],
+      "operation": "POST /api/branch",
+      "status": "partial"
+    },
+    {
+      "dependencies": ["remote-transport/browser-forward"],
+      "operation": "POST /api/browser/forward",
+      "status": "not_registered"
+    },
+    {
+      "dependencies": [
+        "event-driver/queue-mutations",
+        "store-bootstrap/capacity-retry-schema",
+        "turn-driver/capacity-retry"
+      ],
+      "operation": "POST /api/capacity-retry",
+      "status": "partial"
+    },
+    {
+      "dependencies": [],
+      "operation": "POST /api/chats",
+      "status": "implemented"
+    },
+    {
+      "dependencies": ["workspace-state/image-execution"],
+      "operation": "POST /api/checkpoint",
+      "status": "partial"
+    },
+    {
+      "dependencies": ["workspace-state/image-execution"],
+      "operation": "POST /api/checkpoint/preview",
+      "status": "partial"
+    },
+    {
+      "dependencies": ["provider-session/thread-fork"],
+      "operation": "POST /api/checkpoint/restore",
+      "status": "partial"
+    },
+    {
+      "dependencies": ["provider-session/claude-profile-auth"],
+      "operation": "POST /api/claude/profiles",
+      "status": "partial"
+    },
+    {
+      "dependencies": ["provider-session/claude-controls"],
+      "operation": "POST /api/claude/session",
+      "status": "partial"
+    },
+    {
+      "dependencies": [],
+      "operation": "POST /api/complaints",
+      "status": "implemented"
+    },
+    {
+      "dependencies": ["agent-management/agent-mode-settings"],
+      "operation": "POST /api/configure",
+      "status": "partial"
+    },
+    {
+      "dependencies": ["account-worker/recovery-history"],
+      "operation": "POST /api/connection-recovery",
+      "status": "partial"
+    },
+    {
+      "dependencies": [],
+      "operation": "POST /api/connections",
+      "status": "implemented"
+    },
+    {
+      "dependencies": [
+        "context-repair/native-history-rewrite",
+        "store-bootstrap/context-repair-schema"
+      ],
+      "operation": "POST /api/context-repair",
+      "status": "partial"
+    },
+    {
+      "dependencies": ["agent-management/conversation-settings"],
+      "operation": "POST /api/conversation",
+      "status": "partial"
+    },
+    {
+      "dependencies": [
+        "account-worker/agent-interrupt",
+        "agent-management/snapshot-limit",
+        "cross-server/agent-management",
+        "event-driver/child-stop-notification",
+        "monitor-driver/agent-stop",
+        "usage-policy/agent-stop",
+        "voice-driver/agent-stop",
+        "work-driver/deletion-release",
+        "workspace-state/agent-lifecycle"
+      ],
+      "operation": "POST /api/conversation/delete",
+      "status": "partial"
+    },
+    {
+      "dependencies": [
+        "federation-credentials/invitation",
+        "federation-credentials/key-generation",
+        "federation-credentials/private-key",
+        "remote-transport/signed-federation-exchange",
+        "remote-transport/tailscale-identity"
+      ],
+      "operation": "POST /api/federation",
+      "status": "partial"
+    },
+    {
+      "dependencies": ["federation/trusted-origin-observation"],
+      "operation": "POST /api/federation/v1/message",
+      "status": "partial"
+    },
+    {
+      "dependencies": ["federation-credentials/private-key"],
+      "operation": "POST /api/federation/v1/pair",
+      "status": "partial"
+    },
+    {
+      "dependencies": ["federation/trusted-origin-observation"],
+      "operation": "POST /api/federation/v1/pull",
+      "status": "partial"
+    },
+    {
+      "dependencies": ["federation/trusted-origin-observation"],
+      "operation": "POST /api/federation/v1/status",
+      "status": "partial"
+    },
+    {
+      "dependencies": ["provider-session/thread-import"],
+      "operation": "POST /api/import",
+      "status": "partial"
+    },
+    {
+      "dependencies": [
+        "account-driver/unavailable",
+        "agent-management/empty-chat-reuse",
+        "project-driver/chat-binding",
+        "provider-session/model-list",
+        "worker-driver/settings-catalog",
+        "workspace-state/lead-workspace"
+      ],
+      "operation": "POST /api/leads",
+      "status": "partial"
+    },
+    {
+      "dependencies": ["account-driver/reset-credit-redemption"],
+      "operation": "POST /api/limits/reset",
+      "status": "partial"
+    },
+    {
+      "dependencies": ["NEW linux-vm/settings-service (out of scope)"],
+      "operation": "POST /api/linux-vm/settings",
+      "status": "not_registered"
+    },
+    {
+      "dependencies": ["NEW mac-sync/runtime-service (out of scope)"],
+      "operation": "POST /api/mac-sync/config",
+      "status": "not_registered"
+    },
+    {
+      "dependencies": ["NEW mac-sync/runtime-service (out of scope)"],
+      "operation": "POST /api/mac-sync/resolve",
+      "status": "not_registered"
+    },
+    {
+      "dependencies": [
+        "budget-policy/message-admission",
+        "capacity-retry/store",
+        "cross-server/remote-events",
+        "federation-driver/rooms",
+        "payload-store/uploads",
+        "workspace-policy/message-admission"
+      ],
+      "operation": "POST /api/messages",
+      "status": "partial"
+    },
+    {
+      "dependencies": [
+        "cross-server/remote-events",
+        "provider-session/monitor-commands",
+        "rule-driver/monitor-finish"
+      ],
+      "operation": "POST /api/monitor/cancel",
+      "status": "partial"
+    },
+    {
+      "dependencies": ["provider-session/monitor-commands"],
+      "operation": "POST /api/monitor/input",
+      "status": "partial"
+    },
+    {
+      "dependencies": [
+        "multi-server-runtime/orchestration",
+        "multi-server-runtime/pairing",
+        "remote-transport/owner-lookup",
+        "remote-transport/signed-server-requests",
+        "remote-transport/tailscale-discovery"
+      ],
+      "operation": "POST /api/multi-server",
+      "status": "partial"
+    },
+    {
+      "dependencies": [
+        "remote-transport/owner-lookup",
+        "remote-transport/tailscale-discovery"
+      ],
+      "operation": "POST /api/multi-server/v1/auto-pair",
+      "status": "partial"
+    },
+    {
+      "dependencies": ["remote-transport/signed-server-requests"],
+      "operation": "POST /api/multi-server/v1/name",
+      "status": "partial"
+    },
+    {
+      "dependencies": ["remote-transport/signed-server-requests"],
+      "operation": "POST /api/multi-server/v1/pair",
+      "status": "partial"
+    },
+    {
+      "dependencies": ["turn-path/native-command-input"],
+      "operation": "POST /api/native-command",
+      "status": "partial"
+    },
+    {
+      "dependencies": ["workspace-state/organization-effects"],
+      "operation": "POST /api/organization",
+      "status": "partial"
+    },
+    {
+      "dependencies": [],
+      "operation": "POST /api/panel/layout",
+      "status": "implemented"
+    },
+    {
+      "dependencies": [
+        "cross-server-driver/peer-team-transport",
+        "workspace-state/peer-radio"
+      ],
+      "operation": "POST /api/peer-teams",
+      "status": "partial"
+    },
+    {
+      "dependencies": [],
+      "operation": "POST /api/plan",
+      "status": "implemented"
+    },
+    {
+      "dependencies": [],
+      "operation": "POST /api/profiles",
+      "status": "implemented"
+    },
+    {
+      "dependencies": ["NEW project-secrets/runtime-service (out of scope)"],
+      "operation": "POST /api/project-secrets/list",
+      "status": "not_registered"
+    },
+    {
+      "dependencies": ["NEW project-secrets/runtime-service (out of scope)"],
+      "operation": "POST /api/project-secrets/remove",
+      "status": "not_registered"
+    },
+    {
+      "dependencies": ["NEW project-secrets/runtime-service (out of scope)"],
+      "operation": "POST /api/project-secrets/set",
+      "status": "not_registered"
+    },
+    {
+      "dependencies": [
+        "cross-server-driver/local-identity",
+        "cross-server-driver/project-location-write",
+        "cross-server-driver/project-registration",
+        "workspace-state/worker-environment"
+      ],
+      "operation": "POST /api/projects",
+      "status": "partial"
+    },
+    {
+      "dependencies": [],
+      "operation": "POST /api/questions/defer",
+      "status": "implemented"
+    },
+    {
+      "dependencies": ["provider-session/question-answer"],
+      "operation": "POST /api/questions/delete",
+      "status": "partial"
+    },
+    {
+      "dependencies": [],
+      "operation": "POST /api/queue",
+      "status": "implemented"
+    },
+    {
+      "dependencies": ["provider-session/title-generation"],
+      "operation": "POST /api/rename",
+      "status": "partial"
+    },
+    {
+      "dependencies": [],
+      "operation": "POST /api/room/delete",
+      "status": "implemented"
+    },
+    {
+      "dependencies": ["monitor-driver/active-checks"],
+      "operation": "POST /api/rules",
+      "status": "partial"
+    },
+    {
+      "dependencies": [
+        "multi-server-runtime/orchestration",
+        "remote-transport/signed-server-requests"
+      ],
+      "operation": "POST /api/servers/orchestration",
+      "status": "partial"
+    },
+    {
+      "dependencies": [
+        "account-worker/agent-interrupt",
+        "agent-management/snapshot-limit",
+        "cross-server/agent-management",
+        "event-driver/child-stop-notification",
+        "monitor-driver/agent-stop",
+        "usage-policy/agent-stop",
+        "voice-driver/agent-stop",
+        "work-driver/deletion-release",
+        "workspace-state/agent-lifecycle"
+      ],
+      "operation": "POST /api/stop",
+      "status": "partial"
+    },
+    {
+      "dependencies": [],
+      "operation": "POST /api/sync/drafts",
+      "status": "implemented"
+    },
+    {
+      "dependencies": [],
+      "operation": "POST /api/sync/notify",
+      "status": "implemented"
+    },
+    {
+      "dependencies": [],
+      "operation": "POST /api/sync/preferences",
+      "status": "implemented"
+    },
+    {
+      "dependencies": ["provider-session/app-server"],
+      "operation": "POST /api/terminals/close",
+      "status": "partial"
+    },
+    {
+      "dependencies": ["provider-session/app-server"],
+      "operation": "POST /api/terminals/create",
+      "status": "partial"
+    },
+    {
+      "dependencies": ["provider-session/app-server"],
+      "operation": "POST /api/terminals/input",
+      "status": "partial"
+    },
+    {
+      "dependencies": ["provider-session/app-server"],
+      "operation": "POST /api/terminals/rename",
+      "status": "partial"
+    },
+    {
+      "dependencies": ["provider-session/app-server"],
+      "operation": "POST /api/terminals/resize",
+      "status": "partial"
+    },
+    {
+      "dependencies": [
+        "multi-server/move-receipt",
+        "multi-server/project-location-receipt",
+        "payload-store/tool-request-recovery",
+        "store-bootstrap/tool-request-schema"
+      ],
+      "operation": "POST /api/tool-requests/cancel",
+      "status": "partial"
+    },
+    {
+      "dependencies": [
+        "store-bootstrap/usage-resume-schema",
+        "turn-driver/usage-resume"
+      ],
+      "operation": "POST /api/usage-resume",
+      "status": "partial"
+    },
+    {
+      "dependencies": ["NEW vault/runtime-service (out of scope)"],
+      "operation": "POST /api/vault/aws-login",
+      "status": "not_registered"
+    },
+    {
+      "dependencies": ["NEW vault/runtime-service (out of scope)"],
+      "operation": "POST /api/vault/pull",
+      "status": "not_registered"
+    },
+    {
+      "dependencies": ["NEW vault/runtime-service (out of scope)"],
+      "operation": "POST /api/vault/setup",
+      "status": "not_registered"
+    },
+    {
+      "dependencies": ["NEW vault/runtime-service (out of scope)"],
+      "operation": "POST /api/vault/setup/facts",
+      "status": "not_registered"
+    },
+    {
+      "dependencies": ["NEW vault/runtime-service (out of scope)"],
+      "operation": "POST /api/vault/unlock",
+      "status": "not_registered"
+    },
+    {
+      "dependencies": [],
+      "operation": "POST /api/voice/approval_speech",
+      "status": "implemented"
+    },
+    {
+      "dependencies": [],
+      "operation": "POST /api/voice/approvals",
+      "status": "implemented"
+    },
+    {
+      "dependencies": ["account-worker/voice-session"],
+      "operation": "POST /api/voice/approve",
+      "status": "partial"
+    },
+    {
+      "dependencies": [],
+      "operation": "POST /api/voice/audio",
+      "status": "implemented"
+    },
+    {
+      "dependencies": ["account-worker/voice-session"],
+      "operation": "POST /api/voice/end",
+      "status": "partial"
+    },
+    {
+      "dependencies": [],
+      "operation": "POST /api/voice/record",
+      "status": "implemented"
+    },
+    {
+      "dependencies": [],
+      "operation": "POST /api/voice/records",
+      "status": "implemented"
+    },
+    {
+      "dependencies": ["account-worker/voice-session"],
+      "operation": "POST /api/voice/speech",
+      "status": "partial"
+    },
+    {
+      "dependencies": ["account-worker/voice-session"],
+      "operation": "POST /api/voice/start",
+      "status": "partial"
+    },
+    {
+      "dependencies": [],
+      "operation": "POST /api/voice/status",
+      "status": "implemented"
+    },
+    {
+      "dependencies": [],
+      "operation": "POST /api/voice/submit",
+      "status": "implemented"
+    },
+    {
+      "dependencies": [],
+      "operation": "POST /api/work",
+      "status": "implemented"
+    }
+  ],
+  "schema": 1,
+  "source": {
+    "openapi": "workspaces/runtime/packages/runtime-http/openapi.json",
+    "plan": "/var/tmp/codex-studio-relocation/WAVE7-PLAN.md",
+    "route_manifest": "studio-runtime-http test routes::manifest::tests::print_operation_manifest"
+  }
+}
