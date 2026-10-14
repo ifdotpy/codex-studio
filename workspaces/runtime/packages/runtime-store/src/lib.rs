@@ -244,11 +244,17 @@ pub struct RuntimeStore {
     writer: Mutex<Connection>,
     version_reader: Mutex<Connection>,
     identity_registry_path: PathBuf,
-    commit_notifier: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
+    commit_notifiers: Mutex<CommitNotifiers>,
     /// Count of committed transactions that changed rows; owned and advanced by the writer.
     committed_change_generation: AtomicU64,
     last_entity_projection_state: Mutex<Option<(u64, String)>>,
     entity_projection_maintenance_lock: Mutex<()>,
+}
+
+#[derive(Default)]
+struct CommitNotifiers {
+    primary: Option<Arc<dyn Fn() + Send + Sync>>,
+    observers: Vec<Arc<dyn Fn() + Send + Sync>>,
 }
 
 impl RuntimeStore {
@@ -306,7 +312,7 @@ impl RuntimeStore {
             writer: Mutex::new(writer),
             version_reader: Mutex::new(version_reader),
             identity_registry_path,
-            commit_notifier: Mutex::new(None),
+            commit_notifiers: Mutex::new(CommitNotifiers::default()),
             committed_change_generation: AtomicU64::new(0),
             last_entity_projection_state: Mutex::new(None),
             entity_projection_maintenance_lock: Mutex::new(()),
@@ -377,11 +383,21 @@ impl RuntimeStore {
 
     /// Install the process-local notification fired after each successful write commit.
     pub fn set_commit_notifier(&self, notifier: impl Fn() + Send + Sync + 'static) {
-        let mut slot = self
-            .commit_notifier
+        let mut notifiers = self
+            .commit_notifiers
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        *slot = Some(Arc::new(notifier));
+        notifiers.primary = Some(Arc::new(notifier));
+    }
+
+    /// Add an independent observer fired after each successful write commit.
+    /// Unlike the primary notifier, observers are retained when an owner replaces it.
+    pub fn add_commit_observer(&self, observer: impl Fn() + Send + Sync + 'static) {
+        self.commit_notifiers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .observers
+            .push(Arc::new(observer));
     }
 
     /// Install or clear the optional value-free diagnostics observer.
@@ -399,14 +415,18 @@ impl RuntimeStore {
     }
 
     fn notify_commit(&self) {
-        let notifier = self
-            .commit_notifier
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .as_ref()
-            .cloned();
+        let (notifier, observers) = {
+            let notifiers = self
+                .commit_notifiers
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            (notifiers.primary.clone(), notifiers.observers.clone())
+        };
         if let Some(notifier) = notifier {
             notifier();
+        }
+        for observer in observers {
+            observer();
         }
     }
 
@@ -728,7 +748,7 @@ mod diagnostics_hook_tests {
             writer: Mutex::new(writer),
             version_reader: Mutex::new(reader),
             identity_registry_path: directory.path().join("canvas.sqlite3"),
-            commit_notifier: Mutex::new(None),
+            commit_notifiers: Mutex::new(CommitNotifiers::default()),
             committed_change_generation: AtomicU64::new(0),
             last_entity_projection_state: Mutex::new(None),
             entity_projection_maintenance_lock: Mutex::new(()),
@@ -770,7 +790,7 @@ mod commit_notification_tests {
             writer: Mutex::new(Connection::open_in_memory().expect("writer connection")),
             version_reader: Mutex::new(Connection::open_in_memory().expect("reader connection")),
             identity_registry_path: directory.path().join("canvas.sqlite3"),
-            commit_notifier: Mutex::new(None),
+            commit_notifiers: Mutex::new(CommitNotifiers::default()),
             committed_change_generation: AtomicU64::new(0),
             last_entity_projection_state: Mutex::new(None),
             entity_projection_maintenance_lock: Mutex::new(()),
@@ -779,6 +799,11 @@ mod commit_notification_tests {
         let notified = Arc::clone(&notifications);
         store.set_commit_notifier(move || {
             notified.fetch_add(1, Ordering::Relaxed);
+        });
+        let observer_notifications = Arc::new(AtomicUsize::new(0));
+        let observed = Arc::clone(&observer_notifications);
+        store.add_commit_observer(move || {
+            observed.fetch_add(1, Ordering::Relaxed);
         });
         store
             .writer
@@ -801,6 +826,21 @@ mod commit_notification_tests {
             .expect("write transaction succeeds");
         assert_eq!(notifications.load(Ordering::Relaxed), 1);
         assert_eq!(store.committed_change_generation(), 1);
+
+        let replacement_notifications = Arc::new(AtomicUsize::new(0));
+        let replacement = Arc::clone(&replacement_notifications);
+        store.set_commit_notifier(move || {
+            replacement.fetch_add(1, Ordering::Relaxed);
+        });
+        store
+            .transaction(|transaction| {
+                transaction.execute("INSERT INTO values_table(value) VALUES (2)", [])?;
+                Ok(())
+            })
+            .expect("write after notifier replacement succeeds");
+        assert_eq!(notifications.load(Ordering::Relaxed), 1);
+        assert_eq!(replacement_notifications.load(Ordering::Relaxed), 1);
+        assert_eq!(observer_notifications.load(Ordering::Relaxed), 2);
     }
 }
 

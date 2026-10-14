@@ -701,6 +701,94 @@ fn prepared_host_fences_source_rows_changed_before_the_writer() {
         store.transaction_with(|db| prepared.recheck(db)),
         Err(ProjectsError::Conflict(_))
     ));
+    store
+        .transaction(|db| {
+            db.execute(
+                "UPDATE runtime_agents SET record=json_set(record,'$.status','idle','$.startAttempt',json('{\"id\":\"same-dispatch\"}')) WHERE id='a'",
+                [],
+            )?;
+            Ok(())
+        })
+        .expect("same-dispatch identity");
+    let prepared = PreparedHost::load(&store).expect("fresh prepare");
+    store
+        .transaction(|db| {
+            db.execute(
+                "UPDATE runtime_agents SET record=json_set(record,'$.status','running') WHERE id='a'",
+                [],
+            )?;
+            Ok(())
+        })
+        .expect("same dispatch advances from idle to running");
+    store
+        .transaction_with(|db| prepared.recheck(db))
+        .expect("same dispatch status change preserves prepared paths");
+    let prepared = PreparedHost::load(&store).expect("fresh prepare for startup progression");
+    store
+        .transaction(|db| {
+            db.execute(
+                "UPDATE runtime_agents SET record=json_set(record,'$.status','starting') WHERE id='a'",
+                [],
+            )?;
+            Ok(())
+        })
+        .expect("same dispatch enters starting");
+    store
+        .transaction(|db| {
+            db.execute(
+                "UPDATE runtime_agents SET record=json_set(record,'$.status','running') WHERE id='a'",
+                [],
+            )?;
+            Ok(())
+        })
+        .expect("same dispatch progresses to running");
+    store
+        .transaction_with(|db| prepared.recheck(db))
+        .expect("same start attempt progressing to running is permitted");
+    for terminal_status in ["interrupted", "archived"] {
+        let prepared = PreparedHost::load(&store).expect("fresh prepare");
+        store
+            .transaction(|db| {
+                db.execute(
+                    "UPDATE runtime_agents SET record=json_set(record,'$.status',?1) WHERE id='a'",
+                    [terminal_status],
+                )?;
+                Ok(())
+            })
+            .expect("terminal status during preparation");
+        assert!(matches!(
+            store.transaction_with(|db| prepared.recheck(db)),
+            Err(ProjectsError::Conflict(_))
+        ));
+    }
+    let prepared = PreparedHost::load(&store).expect("fresh prepare");
+    store
+        .transaction(|db| {
+            db.execute(
+                "UPDATE runtime_agents SET record=json_set(record,'$.deletedAt',1) WHERE id='a'",
+                [],
+            )?;
+            Ok(())
+        })
+        .expect("agent deleted during preparation");
+    assert!(matches!(
+        store.transaction_with(|db| prepared.recheck(db)),
+        Err(ProjectsError::Conflict(_))
+    ));
+    let prepared = PreparedHost::load(&store).expect("fresh prepare");
+    store
+        .transaction(|db| {
+            db.execute(
+                "UPDATE runtime_agents SET record=json_set(record,'$.status','interrupted','$.autoWake',json('false'),'$.epoch',json_extract(record,'$.epoch')+1) WHERE id='a'",
+                [],
+            )?;
+            Ok(())
+        })
+        .expect("agent stop during preparation");
+    assert!(matches!(
+        store.transaction_with(|db| prepared.recheck(db)),
+        Err(ProjectsError::Conflict(_))
+    ));
     let prepared = PreparedHost::load(&store).expect("fresh prepare");
     store
         .transaction(|db| {

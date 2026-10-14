@@ -510,22 +510,22 @@ fn named_refusals_leave_all_application_tables_unchanged() {
         (
             "orchestration_interrupt",
             json!({"agent_id":descendant}),
-            "agent-lifecycle/production-ports",
+            "account-worker/agent-interrupt",
         ),
         (
             "orchestration_monitor_input",
             json!({"monitor_id":"missing-monitor","text":"input"}),
-            "monitor-runtime/managed-input",
+            "monitor-input-request-identity",
         ),
         (
             "orchestration_spawn",
             json!({"agents":[{"name":"Worker","prompt":"Task"}]}),
-            "provider-session/model-list",
+            "agent-create/worker-driver",
         ),
         (
             "orchestration_review",
             json!({"target":{"type":"uncommittedChanges"}}),
-            "provider-session/model-list",
+            "agent-create/worker-driver",
         ),
         (
             "orchestration_context",
@@ -557,7 +557,7 @@ fn named_refusals_leave_all_application_tables_unchanged() {
 }
 
 #[test]
-fn managed_monitor_create_persists_one_start_intent_and_replays_exactly() {
+fn managed_monitor_create_refuses_without_admission_and_replays_exactly() {
     let (_root, store, context) = fixture();
     let frame = call(
         &context,
@@ -577,7 +577,13 @@ fn managed_monitor_create_persists_one_start_intent_and_replays_exactly() {
         .unwrap();
 
     let first = dispatch_with_managed_tools(&store, &context, &frame, 20.0, &ports).unwrap();
-    assert!(matches!(first, CallbackDecision::Answer(_)));
+    let CallbackDecision::Answer(first) = first else {
+        panic!("managed monitor refusal must answer the callback")
+    };
+    assert!(
+        format!("{first:?}").contains("workspace-state/monitor-admission"),
+        "monitor create must name its missing admission owner: {first:?}"
+    );
     let count: i64 = store
         .read()
         .unwrap()
@@ -585,27 +591,16 @@ fn managed_monitor_create_persists_one_start_intent_and_replays_exactly() {
             row.get(0)
         })
         .unwrap();
-    assert_eq!(count, count_before + 1);
-    let saved: Value = serde_json::from_str(
-        &store
-            .read()
-            .unwrap()
-            .query_row(
-                "SELECT record FROM runtime_monitors WHERE json_extract(record, '$.command')=?1",
-                ["printf managed-monitor"],
-                |row| row.get::<_, String>(0),
-            )
-            .unwrap(),
-    )
-    .unwrap();
-    assert!(
-        matches!(saved["status"].as_str(), Some("starting" | "approval")),
-        "unexpected monitor status: {}",
-        saved["status"]
+    assert_eq!(
+        count, count_before,
+        "refused monitor create wrote no monitor"
     );
 
     let replay = dispatch_with_managed_tools(&store, &context, &frame, 21.0, &ports).unwrap();
-    assert!(matches!(replay, CallbackDecision::Answer(_)));
+    let CallbackDecision::Answer(replay) = replay else {
+        panic!("monitor refusal replay must answer the callback")
+    };
+    assert_eq!(first.body, replay.body, "replay returns the exact refusal");
     let replayed_count: i64 = store
         .read()
         .unwrap()
@@ -613,7 +608,10 @@ fn managed_monitor_create_persists_one_start_intent_and_replays_exactly() {
             row.get(0)
         })
         .unwrap();
-    assert_eq!(replayed_count, count_before + 1);
+    assert_eq!(
+        replayed_count, count_before,
+        "refusal replay remains a no-op"
+    );
 }
 
 #[test]
@@ -1074,7 +1072,20 @@ fn startup_reconciles_reserved_callback_once() {
             |row| row.get(0),
         )
         .unwrap();
-    assert_eq!(running_claim, 1, "the durable claim survives the crash");
+    assert_eq!(
+        running_claim, 0,
+        "failed execution transaction rolls the claim back to its durable queued admission"
+    );
+    let queued_admission: i64 = store
+        .read()
+        .unwrap()
+        .query_row(
+            "SELECT count(*) FROM runtime_tool_requests WHERE json_extract(record,'$.callId')='managed-0' AND json_extract(record,'$.tool')='orchestration_send' AND json_extract(record,'$.stage')='queued' AND json_extract(record,'$.outcome')='pending'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(queued_admission, 1, "the exact durable admission survives");
     drop(store);
 
     // Reopen the real store and invoke the callback owner's startup recovery.
@@ -1101,7 +1112,7 @@ fn startup_reconciles_reserved_callback_once() {
         .unwrap();
     assert_eq!(
         (stage.as_str(), outcome.as_str()),
-        ("interrupted", "unknown")
+        ("cancelled", "not_applied")
     );
 }
 

@@ -472,7 +472,20 @@ async fn restart_history_case(outcome: &str) {
         .expect("seed restart wait");
 
     let mut peer = Peer::new();
-    let mut worker = peer.worker(state.bridge.clone()).await;
+    let publication_attempted = Arc::new(tokio::sync::Notify::new());
+    let sink = Arc::new(RejectingPublicationSink {
+        attempted: publication_attempted.clone(),
+    });
+    let mut worker = if outcome == "terminal" {
+        peer.open_worker_with_resources_and_sink(
+            state.bridge.clone(),
+            test_resources().unwrap(),
+            sink,
+        )
+        .await
+    } else {
+        peer.worker(state.bridge.clone()).await
+    };
     let history = peer.write("thread/turns/list").await;
     match outcome {
         "delivered" | "terminal" | "terminal_failure" => {
@@ -490,17 +503,13 @@ async fn restart_history_case(outcome: &str) {
                     "items":items,"clientUserMessageId":"annotation:input"}]}),
             )
             .await;
+            worker_barrier(&worker).await;
             if outcome == "terminal_failure" {
-                tokio::time::timeout(std::time::Duration::from_secs(5), async {
-                    loop {
-                        if state.record().await["restartRecovery"]["stage"] == "held" {
-                            break;
-                        }
-                        tokio::task::yield_now().await;
-                    }
-                })
-                .await
-                .expect("failed settlement rolls back to held receipt");
+                assert_eq!(
+                    state.record().await["restartRecovery"]["stage"],
+                    "held",
+                    "failed settlement rolls back to held receipt"
+                );
                 assert_eq!(state.event_status("input").await, "uncertain");
                 let agent = state.agent.clone();
                 let item_id = format!("{agent}:answer");
@@ -521,25 +530,10 @@ async fn restart_history_case(outcome: &str) {
                     "failed settlement rolls back transcript writes"
                 );
             } else {
-                tokio::time::timeout(std::time::Duration::from_secs(5), async {
-                    loop {
-                        let record = state.record().await;
-                        let settled = if outcome == "terminal" {
-                            record["lastCompletedTurn"] == "old-turn"
-                        } else {
-                            record["restartRecovery"]["stage"] == "finished"
-                        };
-                        if settled {
-                            break;
-                        }
-                        tokio::task::yield_now().await;
-                    }
-                })
-                .await
-                .expect("delivered receipt committed");
                 if outcome == "terminal" {
                     assert_eq!(state.record().await["lastCompletedTurn"], "old-turn");
                     assert_eq!(state.event_status("input").await, "delivered");
+                    publication_attempted.notified().await;
                     let agent = state.agent.clone();
                     let item_id = format!("{agent}:answer");
                     let item = state
@@ -595,16 +589,8 @@ async fn restart_history_case(outcome: &str) {
         "unavailable" => {
             let cursor = peer.frame(json!({"id":history["id"],"error":{"code":-32000,"message":"history unavailable"}})).await;
             peer.acknowledged(cursor).await;
-            tokio::time::timeout(std::time::Duration::from_secs(5), async {
-                loop {
-                    if state.record().await["restartRecovery"]["stage"] == "held" {
-                        break;
-                    }
-                    tokio::task::yield_now().await;
-                }
-            })
-            .await
-            .expect("unknown remains held");
+            worker_barrier(&worker).await;
+            assert_eq!(state.record().await["restartRecovery"]["stage"], "held");
             assert_eq!(state.event_status("input").await, "uncertain");
             assert!(
                 peer.writes.try_recv().is_err(),

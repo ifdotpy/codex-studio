@@ -42,6 +42,7 @@ struct Fixture {
     _root: tempfile::TempDir,
     store: Arc<RuntimeStore>,
     agents: Value,
+    changes: watch::Receiver<u64>,
 }
 struct FixtureTemplate {
     _root: tempfile::TempDir,
@@ -171,7 +172,7 @@ impl Fixture {
                 std::fs::set_permissions(path, std::fs::Permissions::from_mode(entry.mode))
                     .unwrap();
             }
-            let store = Arc::new(RuntimeStore::open(Some(root.path())).unwrap());
+            let (store, changes) = store_with_change_signal(root.path());
             let cwd = root.path().to_string_lossy().into_owned();
             store
                 .transaction_with::<_, StoreError>(|tx| {
@@ -186,6 +187,7 @@ impl Fixture {
                 _root: root,
                 store,
                 agents: template.agents.clone(),
+                changes,
             };
         }
         if mode == "recovery" {
@@ -204,11 +206,12 @@ impl Fixture {
                 std::fs::set_permissions(path, std::fs::Permissions::from_mode(entry.mode))
                     .unwrap();
             }
-            let store = Arc::new(RuntimeStore::open(Some(root.path())).unwrap());
+            let (store, changes) = store_with_change_signal(root.path());
             return Self {
                 _root: root,
                 store,
                 agents: template.agents.clone(),
+                changes,
             };
         }
         let root = tempfile::tempdir().unwrap();
@@ -228,11 +231,12 @@ impl Fixture {
             String::from_utf8_lossy(&result.stderr)
         );
         let agents = serde_json::from_slice(&result.stdout).unwrap();
-        let store = Arc::new(RuntimeStore::open(Some(root.path())).unwrap());
+        let (store, changes) = store_with_change_signal(root.path());
         Self {
             _root: root,
             store,
             agents,
+            changes,
         }
     }
     fn enqueue(&self, index: usize, id: &str) {
@@ -268,13 +272,26 @@ impl Fixture {
     }
 }
 
+fn store_with_change_signal(root: &std::path::Path) -> (Arc<RuntimeStore>, watch::Receiver<u64>) {
+    let store = Arc::new(RuntimeStore::open(Some(root)).unwrap());
+    let (sender, changes) = watch::channel(0_u64);
+    store.add_commit_observer(move || {
+        sender.send_modify(|generation| *generation = generation.wrapping_add(1));
+    });
+    (store, changes)
+}
+
 async fn wait_for_durable_event_status(fixture: &Fixture, id: &str, expected: &str) {
     tokio::time::timeout(TEST_HANG_GUARD, async {
+        let mut changes = fixture.changes.clone();
         loop {
             if fixture.event_status(id) == expected {
                 break;
             }
-            tokio::task::yield_now().await;
+            changes
+                .changed()
+                .await
+                .expect("fixture store change notifier remains open");
         }
     })
     .await
@@ -283,6 +300,7 @@ async fn wait_for_durable_event_status(fixture: &Fixture, id: &str, expected: &s
 
 async fn wait_for_durable_agent_status(fixture: &Fixture, agent_id: &str, expected: &str) {
     tokio::time::timeout(TEST_HANG_GUARD, async {
+        let mut changes = fixture.changes.clone();
         loop {
             let status: String = fixture
                 .store
@@ -297,11 +315,57 @@ async fn wait_for_durable_agent_status(fixture: &Fixture, agent_id: &str, expect
             if status == expected {
                 break;
             }
-            tokio::task::yield_now().await;
+            changes
+                .changed()
+                .await
+                .expect("fixture store change notifier remains open");
         }
     })
     .await
     .unwrap_or_else(|_| panic!("durable agent {agent_id} status {expected:?} hang guard"));
+}
+
+fn watch_file_changes(
+    path: &std::path::Path,
+) -> (
+    notify::RecommendedWatcher,
+    tokio::sync::mpsc::UnboundedReceiver<()>,
+) {
+    use notify::Watcher;
+    let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
+    let mut watcher = notify::recommended_watcher(move |_: notify::Result<notify::Event>| {
+        let _ = sender.send(());
+    })
+    .expect("file watcher starts");
+    watcher
+        .watch(
+            path.parent().expect("watched file has a parent"),
+            notify::RecursiveMode::NonRecursive,
+        )
+        .expect("parent directory can be watched");
+    (watcher, receiver)
+}
+
+async fn wait_for_file_lines(
+    path: &std::path::Path,
+    expected_lines: usize,
+    events: &mut tokio::sync::mpsc::UnboundedReceiver<()>,
+) {
+    tokio::time::timeout(TEST_HANG_GUARD, async {
+        loop {
+            if std::fs::read_to_string(path)
+                .unwrap_or_default()
+                .lines()
+                .count()
+                >= expected_lines
+            {
+                break;
+            }
+            events.recv().await.expect("file watcher remains open");
+        }
+    })
+    .await
+    .expect("watched file update hang guard");
 }
 
 struct Scripted {
@@ -412,7 +476,7 @@ impl ProviderTaskFactory for WireFactory {
             });
             let mut stop = shutdown.subscribe();
             let task = tokio::spawn(async move {
-                let mut status = status;
+                let status = status;
                 let events = response_events;
                 let mut sequence = 0;
                 loop {
@@ -455,12 +519,10 @@ impl ProviderTaskFactory for WireFactory {
                                 }
                             };
                             let _ignored = reply.send(receipt);
-                            if record_resumes
-                                && matches!(
-                                    write.message()["method"].as_str(),
-                                    Some("thread/resume" | "thread/start")
-                                )
-                            {
+                            if matches!(
+                                write.message()["method"].as_str(),
+                                Some("thread/resume" | "thread/start")
+                            ) {
                                 let _ = observed.await;
                                 status.send_modify(|current| {
                                     current.initialization = InitializationStatus::Ready;
@@ -588,7 +650,8 @@ fn scripted_with_resume_recording(
 ) -> (Arc<Scripted>, mpsc::UnboundedReceiver<(String, Value)>) {
     scripted_with_policy(unknown_writes, record_resumes, false)
 }
-fn scripted_with_unknown_first_launch() -> (Arc<Scripted>, mpsc::UnboundedReceiver<(String, Value)>) {
+fn scripted_with_unknown_first_launch() -> (Arc<Scripted>, mpsc::UnboundedReceiver<(String, Value)>)
+{
     scripted_with_policy(true, false, true)
 }
 fn scripted_with_policy(
@@ -615,15 +678,25 @@ fn scripted_with_policy(
     )
 }
 
-fn radio_snapshot(root: &std::path::Path, mode: &str) -> Value {
+fn radio_snapshot(mode: &str) -> Value {
+    use std::sync::OnceLock;
+
+    static INTERRUPT: OnceLock<Value> = OnceLock::new();
+    static QUEUE: OnceLock<Value> = OnceLock::new();
+    let cache = match mode {
+        "interrupt" => &INTERRUPT,
+        "queue" => &QUEUE,
+        other => panic!("unknown radio fixture mode {other}"),
+    };
+    cache
+        .get_or_init(|| {
     let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let source = manifest.join("../server/src");
     let script = r#"
 import importlib.util, json, pathlib, sqlite3, sys
 from unittest.mock import patch
-root = pathlib.Path(sys.argv[1])
-mode = sys.argv[3]
-tests = pathlib.Path(sys.argv[2])
+mode = sys.argv[2]
+tests = pathlib.Path(sys.argv[1])
 sys.path.insert(0, str(tests))
 spec = importlib.util.spec_from_file_location('radio_fixture', tests / 'radio-contract.py')
 fixture = importlib.util.module_from_spec(spec); spec.loader.exec_module(fixture)
@@ -665,13 +738,12 @@ finally:
     command
         .arg("-c")
         .arg(script)
-        .arg(root)
         .arg(manifest.join("../server/tests"))
         .arg(mode);
     let output = prepared_python::output_with_timeout(
         &mut command,
         &manifest.join("tests/wave7_p01_radio_fixture.py"),
-        std::time::Duration::from_secs(30),
+        TEST_HANG_GUARD,
     )
     .unwrap();
     assert!(
@@ -680,14 +752,16 @@ finally:
         String::from_utf8_lossy(&output.stderr)
     );
     serde_json::from_slice::<Value>(&output.stdout).unwrap()
+        })
+        .clone()
 }
 
-fn radio_interrupt_snapshot(root: &std::path::Path) -> Value {
-    radio_snapshot(root, "interrupt")
+fn radio_interrupt_snapshot() -> Value {
+    radio_snapshot("interrupt")
 }
 
-fn radio_queue_snapshot(root: &std::path::Path) -> Value {
-    radio_snapshot(root, "queue")
+fn radio_queue_snapshot() -> Value {
+    radio_snapshot("queue")
 }
 
 fn seed_radio_interrupt(fixture: &Fixture, snapshot: &Value) {
@@ -805,7 +879,7 @@ async fn concurrent_ensure_session_starts_one_cold_account_worker() {
     let stop = Shutdown::default();
     let task = tokio::spawn(registry.run(Arc::new(Notify::new()), stop.clone()));
 
-    let (first, second) = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+    let (first, second) = tokio::time::timeout(TEST_HANG_GUARD, async {
         tokio::join!(
             broker.ensure_session("default".into()),
             broker.ensure_session("default".into())
@@ -827,8 +901,7 @@ async fn concurrent_ensure_session_starts_one_cold_account_worker() {
 #[tokio::test]
 async fn production_reconcile_delivers_radio_interrupt_once_with_deterministic_clock() {
     let fixture = tokio::task::spawn_blocking(Fixture::new).await.unwrap();
-    let scratch = tempfile::tempdir().unwrap();
-    let snapshot = radio_interrupt_snapshot(scratch.path());
+    let snapshot = radio_interrupt_snapshot();
     seed_radio_interrupt(&fixture, &snapshot);
     let (launcher, _writes) = scripted();
     let mut registry =
@@ -861,8 +934,7 @@ async fn production_reconcile_delivers_radio_interrupt_once_with_deterministic_c
 #[tokio::test]
 async fn production_reconcile_admits_radio_queue_event_to_retained_worker() {
     let fixture = tokio::task::spawn_blocking(Fixture::new).await.unwrap();
-    let scratch = tempfile::tempdir().unwrap();
-    let snapshot = radio_queue_snapshot(scratch.path());
+    let snapshot = radio_queue_snapshot();
     seed_radio_interrupt(&fixture, &snapshot);
     let (launcher, mut writes) = scripted_with_resume_recording(true, true);
     let mut registry = AccountRegistry::new(
@@ -875,7 +947,7 @@ async fn production_reconcile_admits_radio_queue_event_to_retained_worker() {
     registry.set_radio_clock_for_test(Arc::new(|| 2_000_000_000.0));
 
     registry.reconcile(None).await.unwrap();
-    let received = tokio::time::timeout(std::time::Duration::from_secs(10), writes.recv()).await;
+    let received = tokio::time::timeout(TEST_HANG_GUARD, writes.recv()).await;
     if received.is_err() {
         let db = fixture.store.read().unwrap();
         let event: (String, Option<String>) = db
@@ -900,7 +972,7 @@ async fn production_reconcile_admits_radio_queue_event_to_retained_worker() {
         resume["method"].as_str(),
         Some("thread/resume" | "thread/start")
     ));
-    let turn_write = tokio::time::timeout(std::time::Duration::from_secs(10), writes.recv()).await;
+    let turn_write = tokio::time::timeout(TEST_HANG_GUARD, writes.recv()).await;
     if turn_write.is_err() {
         let db = fixture.store.read().unwrap();
         let mut statement = db
@@ -936,12 +1008,37 @@ async fn production_reconcile_admits_radio_queue_event_to_retained_worker() {
         writes.try_recv().is_err(),
         "radio queue event was sent twice"
     );
+    let status_before_restart: String = fixture
+        .store
+        .read()
+        .unwrap()
+        .query_row(
+            "SELECT status FROM runtime_events WHERE id=?1",
+            [&event_id],
+            |row| row.get(0),
+        )
+        .unwrap();
     drop(registry);
     let mut restarted =
         AccountRegistry::new(fixture.store.clone(), launcher, test_registry_config())
             .await
             .unwrap();
-    restarted.reconcile(None).await.unwrap();
+    let recovery = restarted.reconcile(None).await;
+    assert!(
+        matches!(recovery, Err(WorkerError::PreparationRefused(_))),
+        "startup recovery changing an agent fence must refuse the queued radio turn"
+    );
+    let status_after_recovery: String = fixture
+        .store
+        .read()
+        .unwrap()
+        .query_row(
+            "SELECT status FROM runtime_events WHERE id=?1",
+            [&event_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(status_after_recovery, status_before_restart);
     assert!(
         writes.try_recv().is_err(),
         "unknown radio turn must not be resent after worker restart"
@@ -952,8 +1049,7 @@ async fn production_reconcile_admits_radio_queue_event_to_retained_worker() {
 #[tokio::test]
 async fn production_reconcile_keeps_closed_worker_interrupt_unknown_without_resending() {
     let fixture = tokio::task::spawn_blocking(Fixture::new).await.unwrap();
-    let scratch = tempfile::tempdir().unwrap();
-    let snapshot = radio_interrupt_snapshot(scratch.path());
+    let snapshot = radio_interrupt_snapshot();
     seed_radio_interrupt(&fixture, &snapshot);
     let (launcher, _writes) = scripted();
     let mut registry =
@@ -998,7 +1094,7 @@ async fn committed_input_reaches_one_retained_session_and_unknown_restart_does_n
     .await
     .unwrap();
     registry.reconcile(None).await.unwrap();
-    let (account, write) = tokio::time::timeout(std::time::Duration::from_secs(10), writes.recv())
+    let (account, write) = tokio::time::timeout(TEST_HANG_GUARD, writes.recv())
         .await
         .expect("provider write hang guard")
         .unwrap();
@@ -1117,12 +1213,12 @@ async fn two_accounts_are_independent_and_shutdown_joins_all_attachments() {
     .unwrap();
     registry.reconcile(None).await.unwrap();
     let mut accounts = vec![
-        tokio::time::timeout(std::time::Duration::from_secs(10), writes.recv())
+        tokio::time::timeout(TEST_HANG_GUARD, writes.recv())
             .await
             .expect("provider write hang guard")
             .unwrap()
             .0,
-        tokio::time::timeout(std::time::Duration::from_secs(10), writes.recv())
+        tokio::time::timeout(TEST_HANG_GUARD, writes.recv())
             .await
             .expect("provider write hang guard")
             .unwrap()
@@ -1361,7 +1457,7 @@ async fn runtime_shutdown_reaps_backend_owned_catalog_child() {
         .model_catalog_handle()
         .read("default", "", "codex", false)
         .await;
-    let (peer, _) = tokio::time::timeout(std::time::Duration::from_secs(10), listener.accept())
+    let (peer, _) = tokio::time::timeout(TEST_HANG_GUARD, listener.accept())
         .await
         .expect("catalog start hang guard")
         .unwrap();
@@ -1589,7 +1685,7 @@ async fn saturated_wake_lane_does_not_starve_eligible_agent_after_blocked_prefix
     .unwrap();
     let stop = Shutdown::default();
     let task = tokio::spawn(registry.run(Arc::new(Notify::new()), stop.clone()));
-    let (_, request) = tokio::time::timeout(std::time::Duration::from_secs(10), writes.recv())
+    let (_, request) = tokio::time::timeout(TEST_HANG_GUARD, writes.recv())
         .await
         .unwrap_or_else(|_| {
             let db = fixture.store.read().unwrap();
@@ -1906,13 +2002,10 @@ async fn supervised_child_observes_explicit_and_inherited_working_directories() 
             )
             .await
             .unwrap();
-        let (stream, _) = tokio::time::timeout(
-            std::time::Duration::from_secs(10),
-            observation_listener.accept(),
-        )
-        .await
-        .expect("child cwd observation hang guard")
-        .unwrap();
+        let (stream, _) = tokio::time::timeout(TEST_HANG_GUARD, observation_listener.accept())
+            .await
+            .expect("child cwd observation hang guard")
+            .unwrap();
         let mut observed = tokio::io::BufReader::new(stream);
         let mut line = String::new();
         observed.read_line(&mut line).await.unwrap();
@@ -2431,11 +2524,10 @@ async fn host_start_reattaches_python_launch_and_delivers_http_input() {
     // The provider consumes this barrier after all earlier stdin messages;
     // shutdown joined the Rust worker before the barrier was written.
     provider_input_barrier(fixture._root.path(), "verify-cutover").await;
-    let (mut barrier, _) =
-        tokio::time::timeout(std::time::Duration::from_secs(10), observer.accept())
-            .await
-            .expect("provider barrier hang guard")
-            .unwrap();
+    let (mut barrier, _) = tokio::time::timeout(TEST_HANG_GUARD, observer.accept())
+        .await
+        .expect("provider barrier hang guard")
+        .unwrap();
     let mut bytes = Vec::new();
     barrier.read_to_end(&mut bytes).await.unwrap();
     let barrier: Value = serde_json::from_slice(&bytes).unwrap();
@@ -2597,7 +2689,7 @@ async fn rust_direct_claude_launch_runs_the_scripted_bridge_turn() {
             .status(),
         200
     );
-    let completed = tokio::time::timeout(std::time::Duration::from_secs(15), async {
+    let completed = tokio::time::timeout(TEST_HANG_GUARD, async {
         loop {
             let raw = fixture
                 .store
@@ -2744,6 +2836,7 @@ async fn rust_direct_claude_launch_runs_the_scripted_bridge_turn() {
         Some("stream-blocks")
     );
     let queries = PathBuf::from(completed["cwd"].as_str().unwrap()).join(".queries");
+    let (_query_watcher, mut query_events) = watch_file_changes(&queries);
     assert_eq!(
         app.clone()
             .oneshot(direct_message_post(
@@ -2756,21 +2849,7 @@ async fn rust_direct_claude_launch_runs_the_scripted_bridge_turn() {
             .status(),
         200
     );
-    tokio::time::timeout(std::time::Duration::from_secs(15), async {
-        loop {
-            if std::fs::read_to_string(&queries)
-                .unwrap_or_default()
-                .lines()
-                .count()
-                == 2
-            {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-        }
-    })
-    .await
-    .expect("scripted Claude SDK entered the in-flight turn");
+    wait_for_file_lines(&queries, 2, &mut query_events).await;
     runtime_shutdown::close(runtime, &state).await.unwrap();
     let mut restarted_state = state.clone();
     let restarted = host_runtime::HostRuntime::start(
@@ -2783,7 +2862,7 @@ async fn rust_direct_claude_launch_runs_the_scripted_bridge_turn() {
     .await
     .unwrap();
     let mut restart_changes = restarted_state.sync_changes_handle().subscribe();
-    let held = tokio::time::timeout(std::time::Duration::from_secs(15), async {
+    let held = tokio::time::timeout(TEST_HANG_GUARD, async {
         loop {
             let raw = fixture
                 .store
@@ -2798,7 +2877,7 @@ async fn rust_direct_claude_launch_runs_the_scripted_bridge_turn() {
             let record: Value = serde_json::from_str(&raw).unwrap();
             if record["status"] == "interrupted"
                 && record["autoWake"] == false
-                && record["restartRecovery"]["stage"] == "pending"
+                && record["restartRecovery"]["stage"] == "held"
             {
                 break record;
             }
@@ -2814,16 +2893,26 @@ async fn rust_direct_claude_launch_runs_the_scripted_bridge_turn() {
     });
     assert_eq!(held["status"], "interrupted");
     assert_eq!(held["autoWake"], false);
-    assert_eq!(held["restartRecovery"]["stage"], "pending");
-    tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+    assert_eq!(held["restartRecovery"]["stage"], "held");
+    let second_event_status: String = fixture
+        .store
+        .read()
+        .unwrap()
+        .query_row(
+            "SELECT status FROM runtime_events WHERE id='a19e61c8-6156-4874-b8d8-9111b0a49fc4'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(second_event_status, "uncertain");
+    runtime_shutdown::close(restarted, &restarted_state)
+        .await
+        .unwrap();
     assert_eq!(
         std::fs::read_to_string(&queries).unwrap().lines().count(),
         2,
         "restart must not resend the turn"
     );
-    runtime_shutdown::close(restarted, &restarted_state)
-        .await
-        .unwrap();
 }
 
 #[cfg(target_os = "linux")]
@@ -2911,11 +3000,10 @@ async fn direct_launch_mode_completes_http_turn_and_reaps_child() {
             .unwrap()
     };
     assert_eq!(app.clone().oneshot(post()).await.unwrap().status(), 200);
-    let (mut reported, _) =
-        tokio::time::timeout(std::time::Duration::from_secs(15), observer.accept())
-            .await
-            .expect("direct provider receives turn/start")
-            .unwrap();
+    let (mut reported, _) = tokio::time::timeout(TEST_HANG_GUARD, observer.accept())
+        .await
+        .expect("direct provider receives turn/start")
+        .unwrap();
     let mut bytes = Vec::new();
     reported.read_to_end(&mut bytes).await.unwrap();
     let started: Value = serde_json::from_slice(&bytes).unwrap();
@@ -2942,7 +3030,7 @@ async fn direct_launch_mode_completes_http_turn_and_reaps_child() {
         Some(expected_priority),
         "account provider uses the configured child priority"
     );
-    let terminal = tokio::time::timeout(std::time::Duration::from_secs(15), async {
+    let terminal = tokio::time::timeout(TEST_HANG_GUARD, async {
         loop {
             let row = fixture
                 .store
@@ -3266,7 +3354,7 @@ async fn direct_child_crash_holds_written_turn_without_resending_after_relaunch(
         "registry replaces crashed provider"
     );
     let mut changes = state.sync_changes_handle().subscribe();
-    let held = tokio::time::timeout(std::time::Duration::from_secs(15), async {
+    let held = tokio::time::timeout(TEST_HANG_GUARD, async {
         loop {
             let raw = fixture
                 .store
@@ -3420,7 +3508,7 @@ async fn direct_child_crash_before_turn_write_retries_queued_input_once() {
     let turn = read_direct_report(&turn_observer).await;
     assert_eq!(turn["count"], 1);
     assert_eq!(turn["request"]["method"], "turn/start");
-    let terminal = tokio::time::timeout(std::time::Duration::from_secs(15), async {
+    let terminal = tokio::time::timeout(TEST_HANG_GUARD, async {
         loop {
             let raw = fixture
                 .store
@@ -3452,11 +3540,10 @@ async fn direct_child_crash_before_turn_write_retries_queued_input_once() {
 #[cfg(target_os = "linux")]
 async fn read_direct_report(listener: &tokio::net::UnixListener) -> Value {
     use tokio::io::AsyncReadExt;
-    let (mut socket, _) =
-        tokio::time::timeout(std::time::Duration::from_secs(15), listener.accept())
-            .await
-            .expect("direct child report hang guard")
-            .unwrap();
+    let (mut socket, _) = tokio::time::timeout(TEST_HANG_GUARD, listener.accept())
+        .await
+        .expect("direct child report hang guard")
+        .unwrap();
     let mut bytes = Vec::new();
     socket.read_to_end(&mut bytes).await.unwrap();
     serde_json::from_slice(&bytes).unwrap()
@@ -3580,7 +3667,7 @@ async fn wait_for_direct_journal<T: Clone + Send + Sync + 'static>(
     generation: u64,
     changes: &mut watch::Receiver<T>,
 ) {
-    tokio::time::timeout(std::time::Duration::from_secs(15), async {
+    tokio::time::timeout(TEST_HANG_GUARD, async {
         loop {
             if !direct_journal_rows(store, generation).is_empty() {
                 break;
@@ -3598,7 +3685,7 @@ async fn wait_for_direct_completion<T: Clone + Send + Sync + 'static>(
     agent_id: &str,
     changes: &mut watch::Receiver<T>,
 ) -> Value {
-    tokio::time::timeout(std::time::Duration::from_secs(15), async {
+    tokio::time::timeout(TEST_HANG_GUARD, async {
         loop {
             let raw = store
                 .read()

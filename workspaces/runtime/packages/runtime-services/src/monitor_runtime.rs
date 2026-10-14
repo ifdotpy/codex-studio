@@ -241,17 +241,13 @@ fn recover_active_monitors(tx: &Transaction<'_>, now: f64) -> Result<usize, Moni
                 || event_write::truthy(actor.extra.get("remoteAnchor"));
             if remote {
                 // Python startup marks remote-owned monitors lost and still
-                // writes the owner event; bypass the request-time remote guard.
+                // records the owner event locally as stored-only until remote
+                // event delivery is supported.
                 for effect in &decision.effects {
-                    if let Effect::ExitEvent { wake } = effect {
-                        exit_event(tx, &actor, &decision.record, *wake, now)?;
+                    if let Effect::ExitEvent { .. } = effect {
+                        store_remote_startup_exit_event(tx, &actor, &decision.record, now)?;
                     }
                 }
-                tx.execute(
-                    "UPDATE runtime_events SET status='stored_only' WHERE id=?1 AND status='pending'",
-                    [format!("monitor:{id}")],
-                )
-                .map_err(studio_runtime_store::StoreError::from)?;
                 MonitorSnapshot::checked(
                     decision.record.clone(),
                     serde_json::to_value(&actor).map_err(studio_runtime_store::StoreError::from)?,
@@ -277,6 +273,76 @@ fn recover_active_monitors(tx: &Transaction<'_>, now: f64) -> Result<usize, Moni
         recovered += 1;
     }
     Ok(recovered)
+}
+
+fn store_remote_startup_exit_event(
+    tx: &Transaction<'_>,
+    actor: &AgentRecord,
+    monitor: &Value,
+    now: f64,
+) -> Result<(), MonitorError> {
+    let id = monitor
+        .get("id")
+        .and_then(Value::as_str)
+        .ok_or_else(|| invalid("?", "id"))?;
+    let payload: serde_json::Map<String, Value> = [
+        "id", "command", "status", "exitCode", "error", "tail", "log", "bytes",
+    ]
+    .into_iter()
+    .map(|key| (key.into(), monitor.get(key).cloned().unwrap_or(Value::Null)))
+    .collect();
+    let event_id = format!("monitor:{id}");
+    let text = python_json(&Value::Object(payload));
+    let epoch = monitor
+        .get("epoch")
+        .and_then(Value::as_i64)
+        .or_else(|| monitor.pointer("/operation/epoch").and_then(Value::as_i64))
+        .unwrap_or(actor.epoch);
+
+    if let Some(existing) = repository::exit_event(tx, &event_id)? {
+        if existing.agent != actor.id || existing.kind != "monitor_exit" || existing.epoch != epoch
+        {
+            return Err(MonitorError::Refused(
+                "Conflicting remote monitor exit event identity",
+            ));
+        }
+        match existing.status.as_str() {
+            "pending" => {
+                repository::replace_pending_exit(tx, &event_id, &text)?;
+                tx.execute(
+                    "UPDATE runtime_events SET status='stored_only',error=NULL WHERE id=?1 AND agent=?2 AND kind='monitor_exit' AND status='pending'",
+                    (&event_id, actor.id.0.as_str()),
+                )
+                .map_err(studio_runtime_store::StoreError::from)?;
+            }
+            "cancelled" => {
+                repository::restore_cancelled_notice(tx, &event_id, &text, false)?;
+                tx.execute(
+                    "UPDATE runtime_events SET status='stored_only',error=NULL WHERE id=?1 AND agent=?2 AND kind='monitor_exit' AND status='cancelled'",
+                    (&event_id, actor.id.0.as_str()),
+                )
+                .map_err(studio_runtime_store::StoreError::from)?;
+            }
+            _ => {}
+        }
+        return Ok(());
+    }
+
+    EventWriteRepository::insert_event(
+        tx,
+        &QueueEvent {
+            id: QueueEventId::from(event_id.as_str()),
+            agent: actor.id.clone(),
+            kind: "monitor_exit".into(),
+            text,
+            status: "stored_only".into(),
+            created: now,
+            epoch,
+            turn_id: None,
+            error: None,
+        },
+    )?;
+    Ok(())
 }
 
 pub(crate) fn startup_store_failure(error: &MonitorError) -> bool {
