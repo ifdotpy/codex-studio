@@ -63,6 +63,9 @@ class SharedValuesContract(unittest.TestCase):
         rust_docs = (
             REPOSITORY_ROOT / "workspaces/runtime/packages/runtime-services/src/sync_documents.rs"
         ).read_text(encoding="utf-8")
+        rust_store = (
+            REPOSITORY_ROOT / "workspaces/runtime/packages/runtime-store/src/repositories/sync_documents.rs"
+        ).read_text(encoding="utf-8")
         rust_http = (
             REPOSITORY_ROOT / "workspaces/runtime/packages/runtime-http/src/routes/sync_documents.rs"
         ).read_text(encoding="utf-8")
@@ -78,6 +81,8 @@ class SharedValuesContract(unittest.TestCase):
             self.assertIn(value, python_route)
             self.assertIn(value, rust_http if value == "SYNC_STREAM_BYTE_LIMIT" else rust_policy)
         self.assertIn("SYNC_ENTITY_PAGE_LIMIT as usize", rust_docs)
+        self.assertIn("limit.clamp(1, SYNC_ENTITY_PAGE_LIMIT)", rust_store)
+        self.assertIn("limit.clamp(1, SYNC_BATCH_LIMIT)", rust_store)
         self.assertIn("SYNC_BATCH_LIMIT", python_store)
         self.assertIn("SYNC_ENTITY_PAGE_LIMIT", python_store)
         self.assertIn('query_integer(&query, "limit", sync_policy::OTHER_PAGE_LIMIT)', rust_http)
