@@ -33,20 +33,128 @@ struct Fixture {
     store: Arc<RuntimeStore>,
     agents: Value,
 }
+struct FixtureTemplate {
+    _root: tempfile::TempDir,
+    entries: Vec<FixtureEntry>,
+    agents: Value,
+}
+struct FixtureEntry {
+    path: PathBuf,
+    contents: Option<Vec<u8>>,
+    mode: u32,
+}
+
+fn snapshot_fixture(
+    path: &std::path::Path,
+    root: &std::path::Path,
+    entries: &mut Vec<FixtureEntry>,
+) {
+    use std::os::unix::fs::PermissionsExt;
+    let metadata = std::fs::metadata(path).unwrap();
+    let relative = path.strip_prefix(root).unwrap().to_path_buf();
+    let contents = if metadata.is_dir() {
+        None
+    } else {
+        Some(std::fs::read(path).unwrap())
+    };
+    entries.push(FixtureEntry {
+        path: relative,
+        contents,
+        mode: metadata.permissions().mode() & 0o777,
+    });
+    if metadata.is_dir() {
+        for child in std::fs::read_dir(path).unwrap() {
+            snapshot_fixture(&child.unwrap().path(), root, entries);
+        }
+    }
+}
+
+fn dispatch_template() -> &'static FixtureTemplate {
+    static TEMPLATE: std::sync::OnceLock<FixtureTemplate> = std::sync::OnceLock::new();
+    TEMPLATE.get_or_init(|| {
+        let root = tempfile::tempdir().unwrap();
+        let source = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../server/src");
+        let script = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/wave7_p01_fixture.py");
+        let mut command = std::process::Command::new(prepared_python::prepared_python(&source));
+        command
+            .args(["-B"])
+            .arg(&script)
+            .arg(root.path())
+            .arg("dispatch");
+        let result = prepared_python::output_with_timeout(
+            &mut command,
+            &script,
+            prepared_python::PYTHON_ORACLE_TIMEOUT,
+        )
+        .unwrap_or_else(|error| panic!("wave7_p01_fixture.py dispatch: {error}"));
+        assert!(
+            result.status.success(),
+            "wave7_p01_fixture.py dispatch: {}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        let agents = serde_json::from_slice(&result.stdout).unwrap();
+        // Run migrations once before snapshotting so each test only copies a
+        // ready-to-open SQLite image instead of starting Python and migrating.
+        drop(RuntimeStore::open(Some(root.path())).unwrap());
+        let mut entries = Vec::new();
+        snapshot_fixture(root.path(), root.path(), &mut entries);
+        FixtureTemplate {
+            _root: root,
+            entries,
+            agents,
+        }
+    })
+}
+
 impl Fixture {
     fn new() -> Self {
         Self::build("dispatch")
     }
     fn build(mode: &str) -> Self {
+        if mode == "dispatch" {
+            use std::os::unix::fs::PermissionsExt;
+
+            let template = dispatch_template();
+            let root = tempfile::tempdir().unwrap();
+            for entry in &template.entries {
+                let path = root.path().join(&entry.path);
+                if let Some(contents) = &entry.contents {
+                    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+                    std::fs::write(&path, contents).unwrap();
+                } else {
+                    std::fs::create_dir_all(&path).unwrap();
+                }
+                std::fs::set_permissions(path, std::fs::Permissions::from_mode(entry.mode))
+                    .unwrap();
+            }
+            let store = Arc::new(RuntimeStore::open(Some(root.path())).unwrap());
+            let cwd = root.path().to_string_lossy().into_owned();
+            store
+                .transaction_with::<_, StoreError>(|tx| {
+                    tx.execute(
+                        "UPDATE runtime_agents SET record=json_set(record,'$.cwd',?1)",
+                        [&cwd],
+                    )?;
+                    Ok(())
+                })
+                .unwrap();
+            return Self {
+                _root: root,
+                store,
+                agents: template.agents.clone(),
+            };
+        }
         let root = tempfile::tempdir().unwrap();
         let source = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../server/src");
-        let result = std::process::Command::new(prepared_python::prepared_python(&source))
-            .arg("-B")
-            .arg(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/wave7_p01_fixture.py"))
-            .arg(root.path())
-            .arg(mode)
-            .output()
-            .unwrap();
+        let script = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/wave7_p01_fixture.py");
+        let mut command = std::process::Command::new(prepared_python::prepared_python(&source));
+        command.args(["-B"]).arg(&script).arg(root.path()).arg(mode);
+        let result = prepared_python::output_with_timeout(
+            &mut command,
+            &script,
+            prepared_python::PYTHON_ORACLE_TIMEOUT,
+        )
+        .unwrap_or_else(|error| panic!("wave7_p01_fixture.py {mode}: {error}"));
         assert!(
             result.status.success(),
             "{}",
