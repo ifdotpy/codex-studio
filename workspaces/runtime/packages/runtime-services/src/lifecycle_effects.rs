@@ -390,20 +390,20 @@ fn cancel_resume(tx: &Transaction<'_>, effect: &LifecycleEffect) -> Result<(), M
         stored["dueAt"] = Value::Null;
         stored["reason"] = json!("The agent was stopped.");
         ContinuationRepository::put_record(tx, table, agent_id, &stored)?;
-        if projection == "usageResume" {
-            if let Some(mut current) = AgentRepository::get(tx, &AgentId::from(agent_id))? {
-                let mut updated = current
-                    .extra
-                    .get(projection)
-                    .cloned()
-                    .unwrap_or(Value::Null);
-                if updated.get("id").and_then(Value::as_str) == Some(id) {
-                    updated["status"] = json!("cancelled");
-                    updated["dueAt"] = Value::Null;
-                    updated["reason"] = stored["reason"].clone();
-                    current.extra.insert(projection.to_owned(), updated);
-                    AgentRepository::put(tx, &current)?;
-                }
+        if projection == "usageResume"
+            && let Some(mut current) = AgentRepository::get(tx, &AgentId::from(agent_id))?
+        {
+            let mut updated = current
+                .extra
+                .get(projection)
+                .cloned()
+                .unwrap_or(Value::Null);
+            if updated.get("id").and_then(Value::as_str) == Some(id) {
+                updated["status"] = json!("cancelled");
+                updated["dueAt"] = Value::Null;
+                updated["reason"] = stored["reason"].clone();
+                current.extra.insert(projection.to_owned(), updated);
+                AgentRepository::put(tx, &current)?;
             }
         }
     }
@@ -730,13 +730,19 @@ mod tests {
                 self.certainty
             };
             let receipt = SessionReceipt {
-                scope: self
-                    .scope
-                    .clone()
-                    .unwrap_or_else(|| request.expected_scope.clone().unwrap()),
+                scope: self.scope.clone().unwrap_or_else(|| {
+                    request
+                        .expected_scope
+                        .clone()
+                        .expect("test broker request expected scope")
+                }),
                 operation: request.operation.clone(),
                 ticket: Some(RequestTicket {
-                    generation: request.expected_scope.as_ref().unwrap().generation,
+                    generation: request
+                        .expected_scope
+                        .as_ref()
+                        .expect("test broker request expected scope")
+                        .generation,
                     id: RequestId::String(request.operation.clone()),
                     method: request.method,
                 }),
@@ -745,7 +751,7 @@ mod tests {
                 not_sent_reason: (certainty == RequestCertainty::NotSent)
                     .then_some(NotSentReason::WorkerNotSent),
             };
-            *self.observed.lock().unwrap() = Some(request);
+            *self.observed.lock().expect("observed request lock") = Some(request);
             Ok(receipt)
         }
     }
@@ -779,8 +785,8 @@ mod tests {
             request_interrupt(&broker, &request),
             InterruptWriteResult::Accepted
         );
-        let observed = broker.observed.lock().unwrap();
-        let observed = observed.as_ref().unwrap();
+        let observed = broker.observed.lock().expect("observed request lock");
+        let observed = observed.as_ref().expect("broker records request");
         assert_eq!(observed.expected_scope.as_ref(), Some(&request.scope));
         assert_eq!(observed.operation, request.ticket);
         assert_eq!(
@@ -811,7 +817,7 @@ mod tests {
             request_interrupt(&broker, &request),
             InterruptWriteResult::NotSent
         );
-        let observed = broker.observed.lock().unwrap();
+        let observed = broker.observed.lock().expect("observed request lock");
         assert_eq!(
             observed
                 .as_ref()

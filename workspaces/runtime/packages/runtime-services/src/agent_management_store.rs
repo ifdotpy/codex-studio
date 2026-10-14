@@ -242,8 +242,9 @@ mod lifecycle_identity_tests {
         let prepared = json!({"id":"attempt","submitted":true,"turnId":"turn","interrupt":{"requestTicket":"ticket","outcome":"unknown"}});
         assert!(same_attempt_except_interrupt(&prepared, &expected));
 
-        let interrupted = json!({"id":"attempt","submitted":true,"turnId":"turn","interrupt":{"outcome":"unknown"}});
-        assert!(!same_attempt_except_interrupt(&expected, &interrupted));
+        let updated = json!({"id":"attempt","submitted":true,"turnId":"turn","interrupt":{"requestTicket":"new-ticket","outcome":"unknown"}});
+        assert!(same_attempt_except_interrupt(&updated, &prepared));
+        assert!(!same_attempt_except_interrupt(&expected, &prepared));
 
         let modified = json!({"id":"other-attempt","submitted":true,"turnId":"turn","interrupt":{"requestTicket":"ticket","outcome":"unknown"}});
         assert!(!same_attempt_except_interrupt(&modified, &expected));
