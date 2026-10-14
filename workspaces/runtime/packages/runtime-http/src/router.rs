@@ -211,14 +211,9 @@ impl HttpState {
         self
     }
 
-    /// Attach HostRuntime's resolved Python writer and server source for vault setup.
-    pub fn with_vault_host_command(
-        mut self,
-        python: std::path::PathBuf,
-        server_source: std::path::PathBuf,
-    ) -> Self {
+    /// Attach the optional host tool location used for vault setup.
+    pub fn with_vault_host_command(mut self, server_source: std::path::PathBuf) -> Self {
         self.vault_host_command = Some(studio_runtime_services::vault::VaultHostCommand::new(
-            python,
             server_source,
         ));
         self

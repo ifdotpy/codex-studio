@@ -18,8 +18,6 @@ pub struct PreparationResources {
     pub model_catalog: ModelCatalogService,
     pub account_home: String,
     pub server_source_root: PathBuf,
-    /// Resolved interpreter used to start this runtime, also embedded in guidance.
-    pub python_executable: PathBuf,
     pub claude_account_pin: Value,
     pub account_driver: Option<Arc<crate::account_driver::AccountDriver>>,
     /// The host's registry-backed session surface for preparation calls that
@@ -30,7 +28,6 @@ impl PreparationResources {
     pub fn bundled(
         account_home: String,
         model_catalog: ModelCatalogService,
-        python_executable: PathBuf,
     ) -> Result<Self, WorkerError> {
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../../../..")
@@ -39,7 +36,6 @@ impl PreparationResources {
         Self::bundled_at(
             account_home,
             model_catalog,
-            python_executable,
             root.clone(),
             root.join("workspaces/runtime/apps/server/src"),
         )
@@ -48,13 +44,9 @@ impl PreparationResources {
     pub fn bundled_at(
         account_home: String,
         model_catalog: ModelCatalogService,
-        python_executable: PathBuf,
         root: PathBuf,
         server_source_root: PathBuf,
     ) -> Result<Self, WorkerError> {
-        if !python_executable.is_absolute() {
-            return Err(refusal("preparation/resolved-python-required".into()));
-        }
         #[derive(Deserialize)]
         struct Bundled {
             instructions: String,
@@ -98,7 +90,6 @@ impl PreparationResources {
             legacy_tools,
             skills_root,
             model_catalog,
-            python_executable,
             account_home,
             server_source_root,
             claude_account_pin: Value::Null,
@@ -272,6 +263,20 @@ pub(super) fn guidance(
     record: &Value,
     state_root: &Path,
 ) -> Result<thread::GuidanceBundle, WorkerError> {
+    guidance_with_python(
+        resources,
+        record,
+        state_root,
+        crate::python_tool::resolve_python_tool(),
+    )
+}
+
+fn guidance_with_python(
+    resources: &PreparationResources,
+    record: &Value,
+    state_root: &Path,
+    python: Option<PathBuf>,
+) -> Result<thread::GuidanceBundle, WorkerError> {
     let lead = flag(record, "isLead")?;
     let name = if lead {
         "codex-orchestrator"
@@ -327,11 +332,7 @@ pub(super) fn guidance(
             return Err(invalid("progress agent"));
         }
         let path = state_root.join("progress").join(id).join("PROGRESS.md");
-        let script = resources
-            .server_source_root
-            .join("codex_progress_layout.py");
-        let python = resources.python_executable.to_string_lossy();
-        resources
+        let progress = resources
             .progress_template
             .replace("{progress_file}", &path.to_string_lossy())
             .replace(
@@ -339,9 +340,15 @@ pub(super) fn guidance(
                 &path
                     .with_file_name("PROGRESS.layout.json")
                     .to_string_lossy(),
-            )
-            .replace("{python}", &shell_quote(&python))
-            .replace("{progress_script}", &shell_quote(&script.to_string_lossy()))
+            );
+        let layout_guidance = progress_layout_guidance(
+            python,
+            &resources
+                .server_source_root
+                .join("codex_progress_layout.py"),
+            &path,
+        );
+        progress.replace("{progress_layout_check}", &layout_guidance)
     } else {
         String::new()
     };
@@ -351,6 +358,24 @@ pub(super) fn guidance(
         progress,
         thread_config: resources.thread_config.clone(),
     })
+}
+
+fn progress_layout_guidance(
+    python: Option<PathBuf>,
+    script: &Path,
+    progress_file: &Path,
+) -> String {
+    python.map_or_else(
+            String::new,
+            |python| {
+                format!(
+                    "After editing PROGRESS.md, run {} {} {} --wait 3 once to check which top-level lines or list items are visible. Trim only when important lines are hidden. Exit 0 means the current revision is visible, including clipped content (or is empty); 1 means unsupported content or a file-read error; 2 means no current measurement exists. The hint describes the least visible current client. Exact revisions and recent clients remain separate. Do not loop or wake another agent. ",
+                    shell_quote(&python.to_string_lossy()),
+                    shell_quote(&script.to_string_lossy()),
+                    shell_quote(&progress_file.to_string_lossy()),
+                )
+            },
+        )
 }
 pub(super) fn native_thread_blocked(record: &Value) -> bool {
     let Some(thread) = record["threadId"].as_str().filter(|s| !s.is_empty()) else {
@@ -841,20 +866,18 @@ mod resource_tests {
     }
 
     #[test]
-    fn guidance_uses_the_resolved_runtime_interpreter() {
+    fn guidance_includes_the_optional_python_layout_tool() {
         let python = crate::agents_create::prepared_python(
             &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src"),
         );
-        let resources = PreparationResources::bundled(
-            String::new(),
-            ModelCatalogService::new(None),
-            python.clone(),
-        )
-        .expect("runtime resources");
-        let bundle = guidance(
+        let resources =
+            PreparationResources::bundled(String::new(), ModelCatalogService::new(None))
+                .expect("runtime resources");
+        let bundle = guidance_with_python(
             &resources,
             &json!({"id":"lead", "isLead":true}),
             Path::new("/state"),
+            Some(python.clone()),
         )
         .expect("progress guidance");
         assert!(
@@ -862,13 +885,14 @@ mod resource_tests {
                 .progress
                 .contains(&shell_quote(&python.to_string_lossy()))
         );
-        assert!(
-            PreparationResources::bundled(
-                String::new(),
-                ModelCatalogService::new(None),
-                PathBuf::from("python3"),
-            )
-            .is_err()
-        );
+        let without_python = guidance_with_python(
+            &resources,
+            &json!({"id":"lead", "isLead":true}),
+            Path::new("/state"),
+            None,
+        )
+        .expect("progress guidance without Python");
+        assert!(!without_python.progress.contains("--wait 3"));
+        assert!(without_python.progress.contains("Do not repeat rewrites"));
     }
 }

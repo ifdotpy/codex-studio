@@ -38,6 +38,8 @@ pub enum VaultError {
     InvalidSite,
     #[error("The layr-desk command is not installed (cargo install --path crates/layr-desk)")]
     DeskMissing,
+    #[error("requires python interpreter for layr-desk")]
+    PythonForDeskMissing,
     #[error("layr-desk command timed out")]
     DeskTimedOut,
     #[error("layr-desk command failed")]
@@ -61,15 +63,13 @@ pub struct DeskResult {
 /// Host-local resources already resolved by runtime-server's HostRuntime.
 #[derive(Clone, Debug)]
 pub struct VaultHostCommand {
-    python: PathBuf,
     server_source: PathBuf,
     desk_program_override: Option<PathBuf>,
 }
 
 impl VaultHostCommand {
-    pub fn new(python: PathBuf, server_source: PathBuf) -> Self {
+    pub fn new(server_source: PathBuf) -> Self {
         Self {
-            python,
             server_source,
             desk_program_override: None,
         }
@@ -81,12 +81,12 @@ impl VaultHostCommand {
         self
     }
 
-    pub fn writer(&self, source: &str) -> String {
-        writer_command(
-            &self.python,
-            &self.server_source.join("codex_vault.py"),
-            source,
-        )
+    pub fn python_tool(&self) -> Result<PathBuf, VaultError> {
+        require_python_tool(crate::python_tool::resolve_python_tool())
+    }
+
+    pub fn writer(&self, source: &str, python: &Path) -> String {
+        writer_command(python, &self.server_source.join("codex_vault.py"), source)
     }
 
     pub async fn run_desk<F>(
@@ -108,6 +108,10 @@ impl VaultHostCommand {
         )
         .await
     }
+}
+
+fn require_python_tool(python: Option<PathBuf>) -> Result<PathBuf, VaultError> {
+    python.ok_or(VaultError::PythonForDeskMissing)
 }
 
 /// Run the host's layr-desk command through runtime-process's owned, bounded child.
@@ -581,8 +585,8 @@ fn write_json(path: &Path, value: &Value) -> Result<(), VaultError> {
 #[cfg(test)]
 mod tests {
     use super::{
-        VaultError, run_desk_with_environment, setup_facts, store_site, suggested_prefix,
-        valid_prefix, valid_profile, valid_region, view, writer_command,
+        VaultError, require_python_tool, run_desk_with_environment, setup_facts, store_site,
+        suggested_prefix, valid_prefix, valid_profile, valid_region, view, writer_command,
     };
     use serde_json::{Value, json};
     use std::collections::BTreeMap;
@@ -814,6 +818,16 @@ mod tests {
         assert_eq!(
             serde_json::from_str::<Value>(&result.stdout).unwrap(),
             json!({"profiles":[]})
+        );
+    }
+
+    #[test]
+    fn missing_python_for_vault_writer_is_named() {
+        assert_eq!(
+            require_python_tool(None)
+                .expect_err("missing Python is refused")
+                .to_string(),
+            "requires python interpreter for layr-desk"
         );
     }
 }

@@ -363,7 +363,6 @@ impl AccountLauncher for Scripted {
                 resources: PreparationResources::bundled(
                     String::new(),
                     ModelCatalogService::new(None),
-                    PathBuf::from("/isolated/python"),
                 )
                 .unwrap(),
                 publication_sink: Arc::new(
@@ -588,7 +587,8 @@ fn scripted_with_resume_recording(
 ) -> (Arc<Scripted>, mpsc::UnboundedReceiver<(String, Value)>) {
     scripted_with_policy(unknown_writes, record_resumes, false)
 }
-fn scripted_with_unknown_first_launch() -> (Arc<Scripted>, mpsc::UnboundedReceiver<(String, Value)>) {
+fn scripted_with_unknown_first_launch() -> (Arc<Scripted>, mpsc::UnboundedReceiver<(String, Value)>)
+{
     scripted_with_policy(true, false, true)
 }
 fn scripted_with_policy(

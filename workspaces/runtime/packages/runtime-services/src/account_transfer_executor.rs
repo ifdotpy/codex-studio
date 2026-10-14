@@ -1306,7 +1306,6 @@ mod retained_executor_tests {
             model_catalog: catalog.clone(),
             account_home: "/tmp/target".into(),
             server_source_root: PathBuf::from("/tmp/server"),
-            python_executable: PathBuf::from("/usr/bin/python3"),
             claude_account_pin: serde_json::Value::Null,
             account_driver: None,
             account_session: Some(session.clone()),
