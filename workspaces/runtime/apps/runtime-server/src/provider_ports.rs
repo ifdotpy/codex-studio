@@ -310,13 +310,7 @@ impl ActiveProviderConnections for LiveProviderConnections {
                     .unwrap_or("codex")
                     .to_owned();
                 let configured_binary = if provider == "claude" {
-                    account
-                        .get("claudeOptions")
-                        .and_then(|options| options.get("binaryPath"))
-                        .and_then(Value::as_str)
-                        .filter(|path| !path.is_empty())
-                        .map(str::to_owned)
-                        .or_else(|| configured_claude_binary())
+                    studio_runtime_services::account_driver::claude::resolve_claude_binary(account)
                 } else {
                     leased_session_binary(
                         &self.session_binaries,
@@ -364,47 +358,6 @@ fn leased_session_binary(
         executables.claude
     } else {
         executables.codex
-    }
-}
-
-fn configured_claude_binary() -> Option<String> {
-    let configured = std::env::var_os("STUDIO_CLAUDE_BIN");
-    let candidate = configured
-        .as_ref()
-        .map(PathBuf::from)
-        .filter(|path| path.components().count() > 1 && is_executable(path))
-        .or_else(|| {
-            let command = configured
-                .as_deref()
-                .unwrap_or(std::ffi::OsStr::new("claude"));
-            std::env::var_os("PATH").and_then(|paths| {
-                std::env::split_paths(&paths)
-                    .map(|directory| directory.join(command))
-                    .find(|path| is_executable(path))
-            })
-        })
-        .or_else(|| {
-            if configured.is_some() {
-                return None;
-            }
-            let path = std::env::var_os("HOME")
-                .map(PathBuf::from)?
-                .join(".local/bin/claude");
-            is_executable(&path).then_some(path)
-        })?;
-    Some(candidate.to_string_lossy().into_owned())
-}
-
-fn is_executable(path: &std::path::Path) -> bool {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        path.metadata()
-            .is_ok_and(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
-    }
-    #[cfg(not(unix))]
-    {
-        path.is_file()
     }
 }
 
