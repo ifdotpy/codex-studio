@@ -153,6 +153,34 @@ class SharedValuesContract(unittest.TestCase):
             MAX_PROJECT_SECRET_VALUE_BYTES,
         )
 
+    def test_model_catalog_limits_have_generated_rust_and_python_consumers(self):
+        names = (
+            "MODEL_CATALOG_MAX_FRAME_BYTES",
+            "MODEL_CATALOG_MAX_RESPONSE_BYTES",
+            "MODEL_CATALOG_MAX_PAGES",
+            "MODEL_CATALOG_ITEMS_PER_PAGE",
+            "MODEL_CATALOG_OPERATION_TIMEOUT_SECONDS",
+            "MODEL_CATALOG_CACHE_TTL_SECONDS",
+        )
+        rust_schema = (
+            REPOSITORY_ROOT / "workspaces/runtime/packages/runtime-schema/src/shared_values.rs"
+        ).read_text(encoding="utf-8")
+        rust_catalog = (
+            REPOSITORY_ROOT / "workspaces/runtime/packages/runtime-services/src/model_catalog.rs"
+        ).read_text(encoding="utf-8")
+        python_reader = (
+            REPOSITORY_ROOT / "workspaces/runtime/apps/server/src/codex_model_catalog_reader.py"
+        ).read_text(encoding="utf-8")
+        python_cache = (
+            REPOSITORY_ROOT / "workspaces/runtime/apps/server/src/codex_catalog.py"
+        ).read_text(encoding="utf-8")
+        for name in names:
+            self.assertIn(name, rust_schema)
+            self.assertIn(name, rust_catalog)
+        for name in names[:5]:
+            self.assertIn(name, python_reader)
+        self.assertIn("MODEL_CATALOG_CACHE_TTL_SECONDS", python_cache)
+        self.assertIn("MODEL_CATALOG_ITEMS_PER_PAGE", python_cache)
 
 if __name__ == "__main__":
     unittest.main()

@@ -18,6 +18,14 @@ SYNC_STREAM_BYTE_LIMIT = 1_048_576
 SYNC_RESOURCE_HEARTBEAT_SECONDS = 15
 MAX_SUPERVISOR_FRAME_BYTES = 1024 * 1024
 
+# Codex model/list catalog response contract; byte values count encoded UTF-8.
+MODEL_CATALOG_MAX_FRAME_BYTES = 2 * 1024 * 1024
+MODEL_CATALOG_MAX_RESPONSE_BYTES = 16 * 1024 * 1024
+MODEL_CATALOG_MAX_PAGES = 100
+MODEL_CATALOG_ITEMS_PER_PAGE = 100
+MODEL_CATALOG_OPERATION_TIMEOUT_SECONDS = 30
+MODEL_CATALOG_CACHE_TTL_SECONDS = 300
+
 
 def user_attachment_limit_label() -> str:
     """Return the display label derived from the byte-valued attachment cap."""
