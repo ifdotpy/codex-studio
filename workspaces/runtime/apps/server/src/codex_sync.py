@@ -9,11 +9,11 @@ import zlib
 from contextlib import contextmanager
 from typing import Any, Callable, ContextManager, Iterator
 from codex_records import JsonObject
+from codex_shared_values import TRANSCRIPT_MAX_TOMBSTONES
 from codex_startup_memory import mark as startup_memory_mark
 from codex_sqlite import scope as sqlite_scope
 
 SCOPE_STRIPES = 64
-TRANSCRIPT_MAX_TOMBSTONES = 512
 TRANSCRIPT_ORDER_ID = '@order'
 TRANSCRIPT_META_ID = '@meta'
 TRANSCRIPT_FLOOR_ID = '@floor'
