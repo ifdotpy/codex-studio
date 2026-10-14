@@ -18,7 +18,7 @@ use rusqlite::OptionalExtension;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use studio_runtime_providers::Method;
-use studio_runtime_store::{AgentId, Connection, RuntimeStore, VoiceRepository};
+use studio_runtime_store::{AgentId, AgentRepository, Connection, RuntimeStore, VoiceRepository};
 use thiserror::Error;
 
 use super::policy::{
@@ -64,6 +64,20 @@ pub struct VoiceRpcCall {
     pub deadline: Instant,
 }
 
+/// Identity saved in an agent deletion intent before its voice rows are
+/// removed. Field names serialize to the lifecycle receipt's camelCase shape.
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VoiceDeleteSession {
+    pub session_id: String,
+    pub agent_id: String,
+    pub epoch: i64,
+    pub account_key: String,
+    pub thread_id: String,
+    pub connection_id: String,
+    pub generation: u64,
+}
+
 async fn request(provider: &dyn VoiceProviderPort, call: VoiceRpcCall) -> VoiceRequestReceipt {
     provider
         .request(
@@ -78,6 +92,141 @@ async fn request(provider: &dyn VoiceProviderPort, call: VoiceRpcCall) -> VoiceR
 
 fn request_deadline() -> Instant {
     Instant::now() + VOICE_REQUEST_TIMEOUT
+}
+
+/// Snapshot an agent's sessions on its current account/thread for the durable
+/// deletion intent. Call inside the deletion transaction, before voice rows
+/// are removed. This deliberately reads a tombstoned agent's persisted fields.
+pub fn capture_delete_sessions(
+    connection: &Connection,
+    agent_id: &str,
+) -> Result<Vec<VoiceDeleteSession>, VoiceProviderError> {
+    let agent = AgentRepository::get(connection, &AgentId::from(agent_id))?
+        .filter(|agent| agent.id.0 == agent_id)
+        .ok_or(VoiceProviderError::ContextUnavailable)?;
+    let thread_id = agent
+        .extra
+        .get("threadId")
+        .and_then(Value::as_str)
+        .filter(|thread| !thread.is_empty());
+    let Some(thread_id) = thread_id else {
+        return Ok(Vec::new());
+    };
+    let account_key = agent
+        .extra
+        .get("accountKey")
+        .and_then(Value::as_str)
+        .filter(|account| !account.is_empty())
+        .unwrap_or("default");
+    let mut statement = connection.prepare(
+        "SELECT id,connection_id FROM voice_sessions \
+         WHERE agent=?1 AND ended IS NULL AND account_key=?2 AND native_thread=?3 \
+         AND connection_id IS NOT NULL ORDER BY created,id",
+    )?;
+    let rows = statement.query_map(rusqlite::params![agent_id, account_key, thread_id], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+    })?;
+    rows.map(|row| {
+        let (session_id, connection_id) = row?;
+        Ok(VoiceDeleteSession {
+            session_id,
+            agent_id: agent_id.to_owned(),
+            epoch: agent.epoch,
+            account_key: account_key.to_owned(),
+            thread_id: thread_id.to_owned(),
+            generation: connection_generation(&connection_id),
+            connection_id,
+        })
+    })
+    .collect::<Result<Vec<_>, rusqlite::Error>>()
+    .map_err(VoiceProviderError::from)
+}
+
+/// Stop sessions captured by `capture_delete_sessions` after the deletion
+/// transaction commits. Stable operation identities let the broker replay a
+/// saved result and keep Unknown outcomes from being resent.
+pub async fn end_deleted_sessions(
+    provider: std::sync::Arc<dyn VoiceProviderPort>,
+    deletion_intent_id: String,
+    sessions: Vec<VoiceDeleteSession>,
+    now: f64,
+) -> Result<Vec<VoiceRequestReceipt>, VoiceProviderError> {
+    if !now.is_finite() || now < 0.0 {
+        return Err(policy::VoiceError::InvalidClock.into());
+    }
+    if sessions.is_empty() {
+        return Ok(Vec::new());
+    }
+    let first = &sessions[0];
+    if deletion_intent_id != format!("agent-delete-voice:{}:{}", first.agent_id, first.epoch)
+        || sessions.iter().any(|session| {
+            session.agent_id != first.agent_id
+                || session.epoch != first.epoch
+                || session.session_id.is_empty()
+                || session.thread_id.is_empty()
+                || session.account_key.is_empty()
+                || session.connection_id.is_empty()
+        })
+    {
+        return Err(VoiceProviderError::ContextChanged);
+    }
+    let mut receipts = Vec::with_capacity(sessions.len());
+    for session in sessions {
+        let context = VoiceProviderContext {
+            agent_id: session.agent_id,
+            epoch: session.epoch,
+            account_key: session.account_key,
+            thread_id: session.thread_id.clone(),
+            connection_id: session.connection_id,
+            generation: session.generation,
+        };
+        receipts.push(
+            request(
+                provider.as_ref(),
+                VoiceRpcCall {
+                    operation_id: format!("voice:delete-stop:{}", session.session_id),
+                    context,
+                    method: Method::ThreadRealtimeStop,
+                    params: json!({"threadId": session.thread_id}),
+                    deadline: request_deadline(),
+                },
+            )
+            .await,
+        );
+    }
+    Ok(receipts)
+}
+
+/// Stop all current account/thread voice sessions for an agent. Use this for
+/// lifecycle stops that retain the voice rows; deletions use saved intents.
+pub async fn end_active_for_agent(
+    store: std::sync::Arc<RuntimeStore>,
+    provider: std::sync::Arc<dyn VoiceProviderPort>,
+    agent_id: String,
+    now: f64,
+) -> Result<Vec<Value>, VoiceProviderError> {
+    let store_for_read = store.clone();
+    let agent_for_read = agent_id.clone();
+    let sessions = tokio::task::spawn_blocking(move || {
+        let connection = store_for_read.read()?;
+        capture_delete_sessions(&connection, &agent_for_read)
+    })
+    .await
+    .map_err(|_| VoiceProviderError::Operation)??;
+    let mut ended = Vec::with_capacity(sessions.len());
+    for session in sessions {
+        ended.push(
+            end(
+                store.clone(),
+                provider.clone(),
+                agent_id.clone(),
+                session.session_id,
+                now,
+            )
+            .await?,
+        );
+    }
+    Ok(ended)
 }
 
 fn connection_generation(connection: &str) -> u64 {
@@ -325,6 +474,8 @@ pub enum VoiceProviderError {
     Unknown,
     #[error("voice provider rejected the request")]
     Rejected,
+    #[error("voice start admission denied: {0}")]
+    AdmissionDenied(String),
     #[error("voice provider adapter is unavailable")]
     AdapterUnavailable,
     #[error("Not implemented: requires {0}")]
@@ -1352,7 +1503,7 @@ pub async fn start(
         return Ok(session_value(&session));
     }
 
-    let (account_key, thread_id, epoch) = agent_context(&store, &agent_id)?;
+    let (account_key, thread_id, epoch, root_id) = agent_context(&store, &agent_id)?;
     let context = provider
         .prepare(&agent_id, &session_id, &account_key, &thread_id, epoch)
         .await
@@ -1371,6 +1522,13 @@ pub async fn start(
     let write_session = session_id.clone();
     let write_offer = offer.clone();
     let write_context = context.clone();
+    let histories = tokio::task::spawn_blocking({
+        let store = store.clone();
+        move || crate::budget_runtime::read_histories(&store, &root_id)
+    })
+    .await
+    .map_err(|_| VoiceProviderError::Operation)?
+    .map_err(|_| VoiceProviderError::Operation)?;
     let saved = tokio::task::spawn_blocking(move || {
         create_session(
             &store_for_write,
@@ -1378,6 +1536,7 @@ pub async fn start(
             &write_session,
             &write_offer,
             &write_context,
+            &histories,
             now,
         )
     })
@@ -1406,7 +1565,7 @@ pub async fn start(
 fn agent_context(
     store: &RuntimeStore,
     agent_id: &str,
-) -> Result<(String, String, i64), VoiceProviderError> {
+) -> Result<(String, String, i64, String), VoiceProviderError> {
     let connection = store.read()?;
     let agent = super::checked_agent(&connection, agent_id)
         .map_err(|_| VoiceProviderError::ContextUnavailable)?;
@@ -1422,7 +1581,12 @@ fn agent_context(
         .and_then(Value::as_str)
         .filter(|account| !account.is_empty())
         .unwrap_or("default");
-    Ok((account_key.to_owned(), thread_id.to_owned(), agent.epoch))
+    Ok((
+        account_key.to_owned(),
+        thread_id.to_owned(),
+        agent.epoch,
+        agent.root_id.0,
+    ))
 }
 
 fn read_start_rows(
@@ -1458,6 +1622,7 @@ fn create_session(
     session_id: &str,
     offer: &str,
     context: &VoiceProviderContext,
+    histories: &std::collections::BTreeMap<String, crate::budget::HistoryObservation>,
     now: f64,
 ) -> Result<StartDecision, VoiceProviderError> {
     let request = StartRequest::new(
@@ -1474,6 +1639,8 @@ fn create_session(
             || current_account != context.account_key {
             return Err(VoiceProviderError::ContextChanged);
         }
+        crate::context_repair::assert_available(&agent.value())
+            .map_err(|_| VoiceProviderError::ContextChanged)?;
         let old = load_row_any(transaction, session_id)?
             .map(VoiceSession::from_row).transpose()?;
         let active_row = transaction.query_row(
@@ -1486,6 +1653,26 @@ fn create_session(
         match policy::decide_start(Some(now), request, old.as_ref(), active.as_ref())? {
             decision @ StartDecision::Replay(_) => Ok(decision),
             StartDecision::Create { created, .. } => {
+                let root = AgentRepository::get(transaction, &agent.root_id)?
+                    .ok_or(VoiceProviderError::ContextUnavailable)?;
+                let admission = crate::budget_runtime::admission(
+                    store,
+                    transaction,
+                    &agent.value(),
+                    &root.value(),
+                    histories,
+                    now,
+                )
+                .map_err(|_| VoiceProviderError::Operation)?;
+                if let Some(denial) = admission.denial {
+                    return Err(VoiceProviderError::AdmissionDenied(denial.message));
+                }
+                let mut agent = agent;
+                agent.extra.insert("autoWake".into(), Value::Bool(true));
+                agent
+                    .extra
+                    .insert("turnEpoch".into(), Value::from(agent.epoch));
+                AgentRepository::put(transaction, &agent)?;
                 transaction.execute(
                     "INSERT INTO voice_sessions(id,agent,created,sdp,native_thread,account_key,connection_id,state) \
                      VALUES(?1,?2,?3,?4,?5,?6,?7,'connecting')",

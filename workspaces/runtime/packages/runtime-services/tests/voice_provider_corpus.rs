@@ -1036,6 +1036,58 @@ async fn real_python_start_speech_end_rows_match_rust_with_rpc_boundary_stub() {
             .len(),
         3
     );
+    let rust_agent: serde_json::Value = connection
+        .query_row(
+            "SELECT record FROM runtime_agents WHERE id='agent'",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .map(|raw| serde_json::from_str(&raw).expect("Rust agent row JSON"))
+        .expect("Rust voice actor row");
+    assert_eq!(rust_agent["autoWake"], expected["agent"]["autoWake"]);
+    assert_eq!(rust_agent["turnEpoch"], expected["agent"]["turnEpoch"]);
+    assert_eq!(rust_agent["autoWake"], true);
+    assert_eq!(rust_agent["turnEpoch"], rust_agent["epoch"]);
+}
+
+#[tokio::test]
+async fn start_preflight_matches_python_context_repair_and_budget_denials() {
+    for (case, patch) in [
+        (
+            "context repair",
+            "UPDATE runtime_agents SET record=json_set(record,'$.contextRepair',json('{\"id\":\"repair\",\"phase\":\"unknown\"}')) WHERE id='agent'",
+        ),
+        (
+            "budget admission",
+            "UPDATE runtime_agents SET record=json_set(record,'$.tokenBudget',0) WHERE id='agent'",
+        ),
+    ] {
+        let (_root, store) = seeded_store();
+        store
+            .transaction(|tx| {
+                tx.execute(patch, [])?;
+                Ok(())
+            })
+            .expect("prepare denied Python-format actor");
+        let provider = Arc::new(ReceiptProvider {
+            certainty: VoiceWriteCertainty::Written,
+            calls: Mutex::new(Vec::new()),
+        });
+        let result = voice::provider::start(
+            Arc::new(store),
+            provider.clone(),
+            "agent".into(),
+            format!("denied-{case}"),
+            "v=0\\r\\noffer".into(),
+            100.0,
+        )
+        .await;
+        assert!(result.is_err(), "{case} must refuse voice start");
+        assert!(
+            provider.calls.lock().expect("provider calls").is_empty(),
+            "{case} must refuse before realtime start dispatch"
+        );
+    }
 }
 
 #[test]
