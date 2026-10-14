@@ -65,12 +65,55 @@ pub(super) fn now() -> Result<f64> {
 struct Supervisor {
     root: PathBuf,
     journal: Arc<SupervisorJournal>,
-    children: Mutex<BTreeMap<String, Arc<OwnedChild>>>,
+    children: Mutex<BTreeMap<String, Arc<ChildSlot>>>,
+    active_children: AtomicUsize,
     ownership: Mutex<Ownership>,
     recovery: Mutex<Value>,
     connections: AtomicUsize,
 }
+/// The map is only an index. This lock serializes lifecycle and requests for
+/// one handle while keeping that handle's blocking journal/process work away
+/// from unrelated handles.
+struct ChildSlot {
+    operation: Mutex<()>,
+    child: Mutex<Option<Arc<OwnedChild>>>,
+}
+
 impl Supervisor {
+    fn reserve_child_slot(&self) -> bool {
+        let mut active = self.active_children.load(Ordering::Acquire);
+        loop {
+            if active >= MAX_CHILDREN {
+                return false;
+            }
+            match self.active_children.compare_exchange_weak(
+                active,
+                active + 1,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => return true,
+                Err(observed) => active = observed,
+            }
+        }
+    }
+
+    fn child_slot(&self, handle: &str, create: bool) -> Result<Option<Arc<ChildSlot>>> {
+        let mut children = lock(&self.children)?;
+        if let Some(slot) = children.get(handle) {
+            return Ok(Some(slot.clone()));
+        }
+        if !create {
+            return Ok(None);
+        }
+        let slot = Arc::new(ChildSlot {
+            operation: Mutex::new(()),
+            child: Mutex::new(None),
+        });
+        children.insert(handle.to_owned(), slot.clone());
+        Ok(Some(slot))
+    }
+
     fn saved(&self, handle: &str) -> Result<StoredHandle> {
         self.journal
             .handle(handle)?
@@ -80,10 +123,12 @@ impl Supervisor {
         command.validate()?;
         match command {
             Command::Health => {
-                let children = lock(&self.children)?;
+                let children = lock(&self.children)?.clone();
                 let handles=self.journal.handles(true)?.into_iter().map(|row| {
-                    let child=children.get(&row.id);
-                    Ok(json!({"id":row.id,"pid":row.pid,"signature":row.signature,"startTime":row.start_time,"jobIdentity":null,"sequence":row.snapshot.sequence(),"acknowledged":row.snapshot.acknowledged(),"bufferedBytes":row.buffered,"backpressure":child.is_some_and(|c|c.paused.load(Ordering::Acquire)),"stdoutReaderAlive":child.is_some_and(|c|c.stdout_alive.load(Ordering::Acquire)),"stdoutReaderError":child.map(|c|lock(&c.stdout_error).map(|e|e.clone())).transpose()?.flatten(),"persistenceErrors":child.map(|c|lock(&c.errors).map(|e|e.clone())).transpose()?.unwrap_or_default()}))
+                    let child = children.get(&row.id)
+                        .map(|slot| lock(&slot.child).map(|child| child.clone()))
+                        .transpose()?.flatten();
+                    Ok(json!({"id":row.id,"pid":row.pid,"signature":row.signature,"startTime":row.start_time,"jobIdentity":null,"sequence":row.snapshot.sequence(),"acknowledged":row.snapshot.acknowledged(),"bufferedBytes":row.buffered,"backpressure":child.as_ref().is_some_and(|c|c.paused.load(Ordering::Acquire)),"stdoutReaderAlive":child.as_ref().is_some_and(|c|c.stdout_alive.load(Ordering::Acquire)),"stdoutReaderError":child.as_ref().map(|c|lock(&c.stdout_error).map(|e|e.clone())).transpose()?.flatten(),"persistenceErrors":child.as_ref().map(|c|lock(&c.errors).map(|e|e.clone())).transpose()?.unwrap_or_default()}))
                 }).collect::<Result<Vec<_>>>()?;
                 Ok(
                     json!({"protocol":PROTOCOL,"stateDir":self.root,"handles":handles,"journalLimitBytes":HANDLE_LIMIT,"outputLimitBytesPerHandle":HANDLE_LIMIT,"durability":"sqlite-full-sync-per-request","recovery":lock(&self.recovery)?.clone()}),
@@ -108,9 +153,13 @@ impl Supervisor {
                 cwd,
             } => {
                 let signature = launch_signature(&command, &env, cwd.as_deref());
-                let mut children = lock(&self.children)?;
+                let slot = self
+                    .child_slot(&handle, true)?
+                    .ok_or(Error::Refused("Missing child slot"))?;
+                let _operation = lock(&slot.operation)?;
                 let mut stopped = false;
-                if let Some(child) = children.get(&handle) {
+                let existing = lock(&slot.child)?.clone();
+                if let Some(child) = existing {
                     if child.code()?.is_none() {
                         if child.signature != signature {
                             return Err(Error::ActiveChild {
@@ -118,11 +167,12 @@ impl Supervisor {
                                 pid: child.pid,
                             });
                         }
-                        return self.open_result(&handle, child, true);
+                        return self.open_result(&handle, &child, true);
                     }
                     child.stopping.store(true, Ordering::Release);
                     self.journal.close(&handle, "Native child exited", now()?)?;
-                    children.remove(&handle);
+                    *lock(&slot.child)? = None;
+                    self.active_children.fetch_sub(1, Ordering::AcqRel);
                     stopped = true;
                 }
                 if let Some(saved) = self.journal.handle(&handle)? {
@@ -153,21 +203,30 @@ impl Supervisor {
                         }
                     }
                 }
-                if children.len() >= MAX_CHILDREN {
+                if !self.reserve_child_slot() {
                     return Err(Error::Refused("Supervisor child capacity reached"));
                 }
-                free_space(&self.root, 1024 * 1024)?;
-                self.journal.reserve(&handle, &signature, now()?)?;
-                let child = OwnedChild::spawn(
-                    self.journal.clone(),
-                    &self.root,
-                    &handle,
-                    signature,
-                    &command,
-                    &env,
-                    cwd.as_deref(),
-                )?;
-                children.insert(handle.clone(), child.clone());
+                let reserved = (|| {
+                    free_space(&self.root, 1024 * 1024)?;
+                    self.journal.reserve(&handle, &signature, now()?)?;
+                    OwnedChild::spawn(
+                        self.journal.clone(),
+                        &self.root,
+                        &handle,
+                        signature,
+                        &command,
+                        &env,
+                        cwd.as_deref(),
+                    )
+                })();
+                let child = match reserved {
+                    Ok(child) => child,
+                    Err(error) => {
+                        self.active_children.fetch_sub(1, Ordering::AcqRel);
+                        return Err(error);
+                    }
+                };
+                *lock(&slot.child)? = Some(child.clone());
                 self.open_result(&handle, &child, false)
             }
             Command::AdminCloseHandle {
@@ -181,9 +240,18 @@ impl Supervisor {
                         "adminCloseHandle is available only through the operator CLI",
                     ));
                 }
-                let mut children = lock(&self.children)?;
+                let slot = self.child_slot(&handle, false)?;
+                let _operation = slot
+                    .as_ref()
+                    .map(|slot| lock(&slot.operation))
+                    .transpose()?;
+                let active_child = slot
+                    .as_ref()
+                    .map(|slot| lock(&slot.child).map(|child| child.clone()))
+                    .transpose()?
+                    .flatten();
                 let row = self.saved(&handle)?;
-                if !children.contains_key(&handle) {
+                if active_child.is_none() {
                     if row.closed_at.is_some()
                         || row.pid != expected_pid
                         || row.signature != expected_signature
@@ -214,11 +282,17 @@ impl Supervisor {
                     }
                     // Exact operator acknowledgement clears unknown ownership without
                     // inventing a process identity or resending any accepted input.
-                    let unresolved = self
-                        .journal
-                        .handles(true)?
-                        .iter()
-                        .any(|h| h.id != handle && !children.contains_key(&h.id));
+                    let unresolved = self.journal.handles(true)?.iter().any(|h| {
+                        if h.id == handle {
+                            return false;
+                        }
+                        match self.child_slot(&h.id, false) {
+                            Ok(Some(slot)) => {
+                                lock(&slot.child).map_or(true, |child| child.is_none())
+                            }
+                            Ok(None) | Err(_) => true,
+                        }
+                    });
                     let mut recovery = lock(&self.recovery)?;
                     let mut clean = recovery.clone();
                     if !unresolved {
@@ -230,9 +304,7 @@ impl Supervisor {
                     *recovery = clean;
                     return Ok(json!({"closed":true,"handle":handle,"pid":expected_pid}));
                 }
-                let child = children
-                    .get(&handle)
-                    .ok_or(Error::Refused("Unknown supervisor handle"))?;
+                let child = active_child.ok_or(Error::Refused("Unknown supervisor handle"))?;
                 let _write = lock(&child.write_lock)?;
                 if row.closed_at.is_some()
                     || row.pid != expected_pid
@@ -256,7 +328,10 @@ impl Supervisor {
                 child.reap()?;
                 self.journal.close(&handle, OPERATOR_CLOSED, now()?)?;
                 drop(_write);
-                children.remove(&handle);
+                if let Some(slot) = slot.as_ref() {
+                    *lock(&slot.child)? = None;
+                    self.active_children.fetch_sub(1, Ordering::AcqRel);
+                }
                 Ok(json!({"closed":true,"handle":handle,"pid":expected_pid}))
             }
             other => self.child_action(other),
@@ -273,10 +348,12 @@ impl Supervisor {
             .handle()
             .ok_or(Error::Refused("Unknown supervisor action"))?
             .to_owned();
-        let mut children = lock(&self.children)?;
-        let child = children
-            .get(&handle)
-            .cloned()
+        let slot = self
+            .child_slot(&handle, false)?
+            .ok_or(Error::Refused("Unknown supervisor handle"))?;
+        let _operation = lock(&slot.operation)?;
+        let child = lock(&slot.child)?
+            .clone()
             .ok_or(Error::Refused("Unknown supervisor handle"))?;
         match command {
             Command::Write {
@@ -347,7 +424,8 @@ impl Supervisor {
                     !child.stdout_alive.load(Ordering::Acquire)
                         && !child.stderr_alive.load(Ordering::Acquire),
                 )?;
-                children.remove(&handle);
+                *lock(&slot.child)? = None;
+                self.active_children.fetch_sub(1, Ordering::AcqRel);
                 Ok(json!({"retired":true}))
             }
             _ => Err(Error::Refused("Unknown supervisor action")),
@@ -610,6 +688,7 @@ pub fn serve(root: &Path, wait_for_lease: bool) -> Result<()> {
         root: root.clone(),
         journal,
         children: Mutex::new(BTreeMap::new()),
+        active_children: AtomicUsize::new(0),
         ownership: Mutex::new(Ownership::default()),
         recovery: Mutex::new(json!({"degraded":false,"fallbackReady":false,"blocked":null})),
         connections: AtomicUsize::new(0),

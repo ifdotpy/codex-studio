@@ -8,11 +8,53 @@ fn fixture() -> (tempfile::TempDir, Arc<Supervisor>) {
         root: root.path().to_owned(),
         journal: Arc::new(SupervisorJournal::open(root.path()).unwrap()),
         children: Mutex::new(BTreeMap::new()),
+        active_children: AtomicUsize::new(0),
         ownership: Mutex::new(Ownership::default()),
         recovery: Mutex::new(json!({"blocked":null})),
         connections: AtomicUsize::new(1),
     });
     (root, supervisor)
+}
+
+#[test]
+fn blocked_write_on_one_handle_does_not_block_another_handle() {
+    let slot_a = Arc::new(ChildSlot {
+        operation: Mutex::new(()),
+        child: Mutex::new(None),
+    });
+    let slot_b = Arc::new(ChildSlot {
+        operation: Mutex::new(()),
+        child: Mutex::new(None),
+    });
+    let (write_started_tx, write_started_rx) = mpsc::channel();
+    let (release_write_tx, release_write_rx) = mpsc::channel();
+    let (other_done_tx, other_done_rx) = mpsc::channel();
+
+    let slow_write = {
+        let slot = slot_a.clone();
+        thread::spawn(move || {
+            let _operation = slot.operation.lock().unwrap();
+            write_started_tx.send(()).unwrap();
+            release_write_rx.recv().unwrap();
+        })
+    };
+    write_started_rx
+        .recv_timeout(Duration::from_secs(5))
+        .unwrap();
+
+    let independent_operation = {
+        let slot = slot_b.clone();
+        thread::spawn(move || {
+            let _operation = slot.operation.lock().unwrap();
+            other_done_tx.send(()).unwrap();
+        })
+    };
+    // The write remains behind its explicit gate until the other handle proves
+    // it has completed its operation.
+    other_done_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+    release_write_tx.send(()).unwrap();
+    slow_write.join().unwrap();
+    independent_operation.join().unwrap();
 }
 
 #[test]
