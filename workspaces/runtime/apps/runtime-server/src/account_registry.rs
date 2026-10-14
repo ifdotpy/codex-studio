@@ -3,7 +3,13 @@
 //! Registered runtime difference: `image-workspace-dependency-hold` persists
 //! an image-workspace refusal on the agent and leaves its input event pending.
 use futures_util::{StreamExt, stream::FuturesUnordered};
-use std::{collections::BTreeMap, future::Future, pin::Pin, sync::Arc, time::Duration};
+use std::{
+    collections::BTreeMap,
+    future::Future,
+    pin::Pin,
+    sync::{Arc, RwLock},
+    time::Duration,
+};
 use studio_runtime_process::provider_seam::{OpenOptions, ProviderTaskFactory, Shutdown};
 use studio_runtime_services::{
     account_worker::{
@@ -62,8 +68,249 @@ pub(crate) struct AccountRegistry {
     bridge: StoreBridge,
     launcher: Arc<dyn AccountLauncher>,
     workers: BTreeMap<String, AccountHandle>,
+    session_broker: AccountSessionBroker,
     after_account: String,
     after_agent: BTreeMap<String, String>,
+}
+
+#[derive(Clone, Default)]
+pub(crate) struct AccountSessionBroker {
+    sessions: Arc<
+        RwLock<
+            BTreeMap<
+                String,
+                studio_runtime_services::account_worker::retained::RetainedSessionPort,
+            >,
+        >,
+    >,
+}
+
+impl AccountSessionBroker {
+    pub(crate) fn new() -> Self {
+        Self::default()
+    }
+
+    pub(crate) fn callback_reply_port(
+        &self,
+        runtime: tokio::runtime::Handle,
+    ) -> Arc<dyn studio_runtime_services::callback_runtime::CallbackReplyPort> {
+        Arc::new(BrokerCallbackReplyPort {
+            broker: self.clone(),
+            runtime,
+        })
+    }
+}
+
+struct BrokerCallbackReplyPort {
+    broker: AccountSessionBroker,
+    runtime: tokio::runtime::Handle,
+}
+
+impl studio_runtime_services::callback_runtime::CallbackReplyPort for BrokerCallbackReplyPort {
+    fn deliver(
+        &self,
+        reply: &studio_runtime_services::provider_callbacks::Reply,
+        deadline: Duration,
+    ) -> Result<
+        studio_runtime_services::callback_runtime::ReplyReceipt,
+        studio_runtime_services::provider_callbacks::CallbackError,
+    > {
+        use studio_runtime_services::{
+            callback_runtime::{ReplyOutcome, ReplyReceipt},
+            provider_callbacks::CallbackError,
+            provider_session_task::WriteOutcome,
+            recovery_history::ConnectionScope,
+        };
+
+        let identity = reply.identity.clone();
+        let context = &identity.context;
+        let expected = ConnectionScope {
+            account: context.account.clone(),
+            connection: context.connection.clone(),
+            generation: context.generation,
+        };
+        let session = self
+            .broker
+            .sessions
+            .read()
+            .ok()
+            .and_then(|sessions| sessions.get(&context.account).cloned());
+        let Some(session) =
+            session.filter(|session| session.is_live() && session.scope() == &expected)
+        else {
+            return Ok(ReplyReceipt {
+                identity,
+                outcome: ReplyOutcome::NotSent,
+            });
+        };
+        let operation = identity.operation_id();
+        let frame = reply.frame();
+        let until = std::time::Instant::now() + deadline;
+        let outcome = self
+            .runtime
+            .block_on(session.submit_committed_frame(&expected, operation, frame, until));
+        let outcome = match outcome {
+            Ok(WriteOutcome::Written) => ReplyOutcome::Written,
+            Ok(WriteOutcome::NotSent) => ReplyOutcome::NotSent,
+            Ok(WriteOutcome::Unknown)
+            | Err(studio_runtime_services::account_worker::retained::PortError::Unknown) => {
+                ReplyOutcome::Unknown
+            }
+            Err(studio_runtime_services::account_worker::retained::PortError::Identity)
+            | Err(studio_runtime_services::account_worker::retained::PortError::NotSent)
+            | Err(studio_runtime_services::account_worker::retained::PortError::Deadline) => {
+                ReplyOutcome::NotSent
+            }
+            Err(studio_runtime_services::account_worker::retained::PortError::Capacity) => {
+                return Err(CallbackError::Invalid("Callback response queue is full"));
+            }
+            Err(_) => return Err(CallbackError::Unknown),
+        };
+        Ok(ReplyReceipt { identity, outcome })
+    }
+}
+
+impl studio_runtime_services::account_session_runtime::RetainedAccountSession
+    for AccountSessionBroker
+{
+    fn current_scope(
+        &self,
+        account: &str,
+    ) -> Option<studio_runtime_services::account_session_runtime::ConnectionScope> {
+        self.sessions
+            .read()
+            .ok()?
+            .get(account)
+            .filter(|session| session.is_live())
+            .map(|session| session.scope().clone())
+    }
+
+    fn request(
+        &self,
+        request: studio_runtime_services::account_session_runtime::ProviderRequest,
+    ) -> studio_runtime_services::account_session_runtime::SessionFuture {
+        let session = self
+            .sessions
+            .read()
+            .ok()
+            .and_then(|sessions| sessions.get(&request.account).cloned());
+        Box::pin(async move {
+            let Some(session) = session.filter(|session| session.is_live()) else {
+                return Ok(not_sent_receipt(request, studio_runtime_services::account_session_runtime::NotSentReason::NoLiveAccountWorker));
+            };
+            dispatch_request(session, request).await
+        })
+    }
+}
+
+fn not_sent_receipt(
+    request: studio_runtime_services::account_session_runtime::ProviderRequest,
+    reason: studio_runtime_services::account_session_runtime::NotSentReason,
+) -> studio_runtime_services::account_session_runtime::SessionReceipt {
+    studio_runtime_services::account_session_runtime::SessionReceipt {
+        scope: request.expected_scope.unwrap_or(
+            studio_runtime_services::account_session_runtime::ConnectionScope {
+                account: request.account,
+                connection: String::new(),
+                generation: 0,
+            },
+        ),
+        operation: request.operation,
+        ticket: None,
+        certainty: studio_runtime_services::account_session_runtime::RequestCertainty::NotSent,
+        result: None,
+        not_sent_reason: Some(reason),
+    }
+}
+
+async fn dispatch_request(
+    port: studio_runtime_services::account_worker::retained::RetainedSessionPort,
+    request: studio_runtime_services::account_session_runtime::ProviderRequest,
+) -> Result<
+    studio_runtime_services::account_session_runtime::SessionReceipt,
+    studio_runtime_services::account_session_runtime::AccountSessionError,
+> {
+    use studio_runtime_services::{
+        account_session_runtime::{ProviderResponse, RequestCertainty, SessionReceipt},
+        account_worker::retained::{RequestResult, SessionRequest},
+    };
+
+    let scope = port.scope().clone();
+    if request
+        .expected_scope
+        .as_ref()
+        .is_some_and(|expected| expected != &scope)
+    {
+        return Ok(not_sent_receipt(
+            request,
+            studio_runtime_services::account_session_runtime::NotSentReason::ExpectedScopeMismatch,
+        ));
+    }
+    let fallback_request = request.clone();
+    let retained_request = SessionRequest {
+        scope: scope.clone(),
+        expected_scope: request.expected_scope.clone(),
+        operation: request.operation.clone(),
+        actor: request.actor,
+        method: request.method,
+        params: request.params,
+        deadline: request.deadline,
+    };
+    let receipt = match port.request(retained_request).await {
+        Ok(receipt) => receipt,
+        Err(studio_runtime_services::account_worker::retained::PortError::NotSent)
+        | Err(studio_runtime_services::account_worker::retained::PortError::Deadline) => {
+            return Ok(not_sent_receipt(
+                fallback_request,
+                studio_runtime_services::account_session_runtime::NotSentReason::DeadlineExpired,
+            ));
+        }
+        Err(studio_runtime_services::account_worker::retained::PortError::ScopeMismatch) => {
+            return Ok(not_sent_receipt(
+                fallback_request,
+                studio_runtime_services::account_session_runtime::NotSentReason::ExpectedScopeMismatch,
+            ));
+        }
+        Err(error) => {
+            return Err(match error {
+                studio_runtime_services::account_worker::retained::PortError::Unknown => {
+                    studio_runtime_services::account_session_runtime::AccountSessionError::Unknown
+                }
+                studio_runtime_services::account_worker::retained::PortError::Identity => {
+                    studio_runtime_services::account_session_runtime::AccountSessionError::Refused(
+                        "Provider session identity changed",
+                    )
+                }
+                _ => {
+                    studio_runtime_services::account_session_runtime::AccountSessionError::Refused(
+                        "Provider request was refused",
+                    )
+                }
+            });
+        }
+    };
+    let (certainty, result) = match receipt.result {
+        RequestResult::Reply(value) => (
+            RequestCertainty::Written,
+            Some(ProviderResponse::Reply(value)),
+        ),
+        RequestResult::Rejected(value) => (
+            RequestCertainty::Written,
+            Some(ProviderResponse::Rejected(value)),
+        ),
+        RequestResult::NotSent => (RequestCertainty::NotSent, None),
+        RequestResult::Unknown => (RequestCertainty::Unknown, None),
+    };
+    Ok(SessionReceipt {
+        scope: receipt.scope,
+        operation: receipt.operation,
+        ticket: Some(receipt.ticket),
+        certainty,
+        result,
+        not_sent_reason: (certainty == RequestCertainty::NotSent).then_some(
+            studio_runtime_services::account_session_runtime::NotSentReason::WorkerNotSent,
+        ),
+    })
 }
 
 impl AccountRegistry {
@@ -81,6 +328,21 @@ impl AccountRegistry {
         launcher: Arc<dyn AccountLauncher>,
         monitor_dispatch_wake: Arc<Notify>,
     ) -> Result<Self, WorkerError> {
+        Self::new_with_broker(
+            store,
+            launcher,
+            monitor_dispatch_wake,
+            AccountSessionBroker::new(),
+        )
+        .await
+    }
+
+    pub async fn new_with_broker(
+        store: Arc<RuntimeStore>,
+        launcher: Arc<dyn AccountLauncher>,
+        monitor_dispatch_wake: Arc<Notify>,
+        session_broker: AccountSessionBroker,
+    ) -> Result<Self, WorkerError> {
         let bridge = StoreBridge::new(store.clone()).await?;
         bridge.set_monitor_dispatch_wake(monitor_dispatch_wake);
         Ok(Self {
@@ -88,6 +350,7 @@ impl AccountRegistry {
             bridge,
             launcher,
             workers: BTreeMap::new(),
+            session_broker,
             after_account: String::new(),
             after_agent: BTreeMap::new(),
         })
@@ -107,6 +370,11 @@ impl AccountRegistry {
             launch.resources,
         )
         .await?;
+        self.session_broker
+            .sessions
+            .write()
+            .map_err(|_| WorkerError::TaskFailed)?
+            .insert(account.to_owned(), worker.retained_session());
         self.workers.insert(account.to_owned(), worker);
         Ok(())
     }
@@ -210,6 +478,9 @@ impl AccountRegistry {
             match trigger {
                 Some(RegistryTrigger::WorkerExited(account, result)) => {
                     self.workers.remove(&account);
+                    if let Ok(mut sessions) = self.session_broker.sessions.write() {
+                        sessions.remove(&account);
+                    }
                     if let Err(error) = result {
                         eprintln!("account worker ended: {error}");
                     }
@@ -376,8 +647,12 @@ fn has_image_workspace_recovery(store: &RuntimeStore, account: &str) -> Result<b
 
 #[cfg(test)]
 mod tests {
-    use super::{MAX_RETRY_DELAY, RETRY_DELAY, defer_wake, next_retry_delay};
+    use super::{AccountSessionBroker, MAX_RETRY_DELAY, RETRY_DELAY, defer_wake, next_retry_delay};
     use std::time::Duration;
+    use studio_runtime_services::account_session_runtime::{
+        AccountSessionError, NotSentReason, ProviderRequest, RequestCertainty,
+        RetainedAccountSession,
+    };
 
     #[test]
     fn reconciliation_retry_delay_doubles_to_a_cap() {
@@ -407,5 +682,31 @@ mod tests {
             retry_at,
             retry_at,
         ));
+    }
+
+    #[tokio::test]
+    async fn missing_live_account_worker_is_explicitly_not_sent() {
+        let broker = AccountSessionBroker::new();
+        assert!(broker.current_scope("account-a").is_none());
+        let receipt = broker
+            .request(ProviderRequest {
+                account: "account-a".into(),
+                operation: "read-1".into(),
+                actor: None,
+                expected_scope: None,
+                method: studio_runtime_providers::Method::from_wire("thread/list").unwrap(),
+                params: serde_json::json!({"limit":1}),
+                deadline: std::time::Instant::now() + Duration::from_secs(1),
+            })
+            .await
+            .expect("absence is a known pre-handoff result");
+        assert_eq!(receipt.certainty, RequestCertainty::NotSent);
+        assert_eq!(
+            receipt.not_sent_reason,
+            Some(NotSentReason::NoLiveAccountWorker)
+        );
+        assert!(receipt.ticket.is_none());
+        assert!(receipt.result.is_none());
+        let _: Result<_, AccountSessionError> = Ok(receipt);
     }
 }
