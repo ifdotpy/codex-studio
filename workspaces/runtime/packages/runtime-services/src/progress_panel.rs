@@ -142,7 +142,60 @@ pub fn read_progress(state_dir: &Path, agent: &str) -> Result<Value, ProgressPan
     Ok(panel)
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ProgressSignature {
+    pub(crate) revision: Option<String>,
+    pub(crate) error: Option<String>,
+    pub(crate) exists: bool,
+}
+
+/// Read only the fields used to detect panel changes, without building the renderer response.
+pub(crate) fn read_progress_signature(
+    state_dir: &Path,
+    agent: &str,
+) -> Result<ProgressSignature, ProgressPanelError> {
+    let path = progress_path(state_dir, agent)?;
+    let mut signature = ProgressSignature {
+        revision: None,
+        error: None,
+        exists: false,
+    };
+    match read_file_inner(&path, false) {
+        Ok(Some((_, revision, _))) => {
+            signature.revision = Some(revision);
+            signature.exists = true;
+        }
+        Ok(None) => {}
+        Err(error @ ProgressPanelError::ProgressTooLarge(_)) => {
+            signature.exists = true;
+            signature.error = Some(format!("Cannot read PROGRESS.md: {error}"));
+        }
+        Err(ProgressPanelError::ProgressUtf8) => {
+            signature.error = Some("PROGRESS.md must contain valid UTF-8 text".to_owned());
+        }
+        Err(error) => {
+            if matches!(error, ProgressPanelError::ChangedDuringRead) {
+                signature.exists = true;
+            }
+            signature.error = Some(format!("Cannot read PROGRESS.md: {error}"));
+        }
+    }
+    Ok(signature)
+}
+
 fn read_file(path: &Path) -> Result<Option<(String, String, f64)>, ProgressPanelError> {
+    read_file_inner(path, true)?.map_or(Ok(None), |(markdown, revision, updated)| {
+        markdown
+            .map(|markdown| (markdown, revision, updated))
+            .map(Some)
+            .ok_or_else(|| std::io::Error::other("PROGRESS.md content was not returned").into())
+    })
+}
+
+fn read_file_inner(
+    path: &Path,
+    include_markdown: bool,
+) -> Result<Option<(Option<String>, String, f64)>, ProgressPanelError> {
     if let Some(agent_dir) = path.parent() {
         if let Some(progress_dir) = agent_dir.parent() {
             match fs::symlink_metadata(progress_dir) {
@@ -207,7 +260,8 @@ fn read_file(path: &Path) -> Result<Option<(String, String, f64)>, ProgressPanel
     if first_revision != final_revision {
         return Err(ProgressPanelError::ChangedDuringRead);
     }
-    let markdown = String::from_utf8(bytes).map_err(|_| ProgressPanelError::ProgressUtf8)?;
+    let markdown = std::str::from_utf8(&bytes).map_err(|_| ProgressPanelError::ProgressUtf8)?;
+    let markdown = include_markdown.then(|| markdown.to_owned());
     let updated = after
         .modified()?
         .duration_since(UNIX_EPOCH)
