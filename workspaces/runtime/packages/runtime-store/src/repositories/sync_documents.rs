@@ -289,15 +289,21 @@ impl SyncDocumentsRepository {
             "SELECT collection,id,seq,payload,deleted FROM sync_entities \
              WHERE seq>?1 AND collection NOT LIKE 'transcript:%' ORDER BY seq LIMIT ?2",
         )?;
-        let rows = statement.query_map(params![after, limit.clamp(1, 501)], |row| {
-            Ok(EntityRow {
-                collection: row.get(0)?,
-                id: row.get(1)?,
-                sequence: row.get(2)?,
-                payload: row.get(3)?,
-                deleted: row.get::<_, i64>(4)? != 0,
-            })
-        })?;
+        let rows = statement.query_map(
+            params![
+                after,
+                limit.clamp(1, SYNC_ENTITY_PAGE_LIMIT.saturating_add(1))
+            ],
+            |row| {
+                Ok(EntityRow {
+                    collection: row.get(0)?,
+                    id: row.get(1)?,
+                    sequence: row.get(2)?,
+                    payload: row.get(3)?,
+                    deleted: row.get::<_, i64>(4)? != 0,
+                })
+            },
+        )?;
         rows.collect::<Result<Vec<_>, _>>()
             .map_err(StoreError::from)
     }

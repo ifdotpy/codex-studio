@@ -6,6 +6,7 @@ from typing import Annotated, Literal
 from typing_extensions import NotRequired, TypedDict
 from pydantic import ConfigDict, Field, TypeAdapter, field_validator, model_validator
 
+from codex_shared_values import SYNC_BATCH_LIMIT
 from codex_records import NativeNoticeRecord, NativeSafetyBufferingRecord
 from codex_nested_delegation import (
     DEFAULT_DELEGATION_DEPTH, MAX_DELEGATION_DEPTH, MIN_DELEGATION_DEPTH,
@@ -1255,7 +1256,7 @@ class DraftPushRow(ContractModel):
 
 
 class DraftPushRequest(ContractModel):
-    rows: list[DraftPushRow] = Field(max_length=100)
+    rows: list[DraftPushRow] = Field(max_length=SYNC_BATCH_LIMIT)
 
     @model_validator(mode="after")
     def validate_identities(self) -> DraftPushRequest:

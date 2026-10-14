@@ -31,6 +31,7 @@ from codex_shared_values import (
 )
 from codex_sync import TRANSCRIPT_MAX_TOMBSTONES as SYNC_TRANSCRIPT_MAX_TOMBSTONES
 from studio_api.agents.models import ProjectSecretSetRequest
+from studio_api.sync.models import DraftPushRequest
 
 
 class SharedValuesContract(unittest.TestCase):
@@ -89,6 +90,33 @@ class SharedValuesContract(unittest.TestCase):
         self.assertIn("SYNC_ENTITY_PAGE_LIMIT", python_store)
         self.assertIn('query_integer(&query, "limit", sync_policy::OTHER_PAGE_LIMIT)', rust_http)
         self.assertIn("SYNC_RESOURCE_HEARTBEAT_SECONDS", rust_stream)
+
+    def test_sync_batch_and_mutation_delta_use_shared_limits(self):
+        self.assertEqual(
+            DraftPushRequest.model_json_schema()["properties"]["rows"]["maxItems"],
+            SYNC_BATCH_LIMIT,
+        )
+        route = (
+            REPOSITORY_ROOT / "workspaces/runtime/packages/runtime-http/src/routes/sync_delta.rs"
+        ).read_text(encoding="utf-8")
+        store = (
+            REPOSITORY_ROOT
+            / "workspaces/runtime/packages/runtime-store/src/repositories/sync_documents.rs"
+        ).read_text(encoding="utf-8")
+        models = (
+            Path(__file__).resolve().parents[1] / "src/studio_api/sync/models.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn("rows: list[DraftPushRow] = Field(max_length=SYNC_BATCH_LIMIT)",
+                      models)
+        self.assertIn("usize::try_from(SYNC_ENTITY_PAGE_LIMIT)", route)
+        self.assertIn("let fetch_limit = SYNC_ENTITY_PAGE_LIMIT", route)
+        self.assertIn(".checked_add(1)", route)
+        self.assertIn("rows.len() <= page_limit", route)
+        self.assertIn(".take(page_limit)", route)
+        self.assertIn(
+            "limit.clamp(1, SYNC_ENTITY_PAGE_LIMIT.saturating_add(1))",
+            store,
+        )
 
     def test_http_request_body_deadline_has_generated_rust_consumer(self):
         middleware = (
