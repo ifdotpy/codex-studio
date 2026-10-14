@@ -7,7 +7,7 @@
 //! `apps/server/src/codex_context_repair.py:704-1005`; provider source lookup
 //! follows `_repair` at `:2039-2052`.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufRead, BufReader, Write};
 use std::path::{Component, Path, PathBuf};
@@ -48,7 +48,8 @@ pub struct HistorySegment {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct HistoryTerminal {
-    pub turn_id: String,
+    /// Native terminal turn, or `None` only for a proven inherited-empty leaf.
+    pub turn_id: Option<String>,
     pub status: Option<String>,
     pub completed_at: Option<f64>,
     pub inherited_empty: bool,
@@ -374,7 +375,18 @@ fn rewrite_with_hook(
     let leaf = ancestry.last().ok_or(HistoryFileError::Ancestry)?;
     let source_hash = leaf.sha256.clone();
     let source_bytes = leaf.end_byte_offset;
-    validate_thread_id(&terminal.turn_id)?;
+    if terminal.inherited_empty {
+        if terminal.turn_id.is_some()
+            || terminal.status.is_some()
+            || terminal.completed_at.is_some()
+        {
+            return Err(HistoryFileError::Rewrite(RepairError::ReceiptHold));
+        }
+    } else if let Some(turn_id) = terminal.turn_id.as_deref() {
+        validate_thread_id(turn_id)?;
+    } else {
+        return Err(HistoryFileError::Rewrite(RepairError::ReceiptHold));
+    }
     let mut projected = projected_records(&ancestry)?;
     if terminal.inherited_empty {
         let local = projected_records(std::slice::from_ref(leaf))?;
@@ -388,8 +400,20 @@ fn rewrite_with_hook(
         }
     }
     let (latest_started, latest_terminal) = terminal_state(&projected);
-    if terminal.turn_id == latest_started.as_deref().unwrap_or_default()
-        && latest_terminal.as_deref() != Some(&terminal.turn_id)
+    if terminal.inherited_empty
+        && (latest_started.is_none()
+            || latest_terminal.is_none()
+            || latest_started != latest_terminal)
+    {
+        return Err(HistoryFileError::Rewrite(RepairError::ReceiptHold));
+    }
+    let rewrite_terminal_id = terminal
+        .turn_id
+        .as_deref()
+        .or_else(|| latest_terminal.as_deref())
+        .ok_or(HistoryFileError::Rewrite(RepairError::ReceiptHold))?;
+    if terminal.turn_id.as_deref() == latest_started.as_deref()
+        && latest_terminal.as_deref() != terminal.turn_id.as_deref()
         && (terminal.status.as_deref() == Some("interrupted")
             || (terminal.status.as_deref() == Some("completed") && terminal.completed_at.is_some()))
     {
@@ -400,7 +424,7 @@ fn rewrite_with_hook(
         };
         let mut payload = serde_json::Map::new();
         payload.insert("type".into(), json!(marker_kind));
-        payload.insert("turn_id".into(), json!(terminal.turn_id));
+        payload.insert("turn_id".into(), json!(rewrite_terminal_id));
         let mut payload_order = vec![
             ("type".to_owned(), JsonOrder::Scalar),
             ("turn_id".to_owned(), JsonOrder::Scalar),
@@ -422,18 +446,25 @@ fn rewrite_with_hook(
             projected: true,
         });
     }
-    let source_events = events.clone();
+    let (mut role_event_ids, role_saved_bytes) = strip_role_suffixes(&mut projected, &events)?;
+    let rewrite_events = events
+        .into_iter()
+        .filter(|event| event["kind"] != "studio_role")
+        .collect::<Vec<_>>();
     let core = HistoryRewrite::from_records(
         projected
             .iter()
             .map(|record| record.value.clone())
             .collect(),
-        events,
+        rewrite_events.clone(),
         thread_id.to_owned(),
-        terminal.turn_id.clone(),
+        rewrite_terminal_id.to_owned(),
     )?;
     validate_thread_id(import_thread_id)?;
-    let (rewritten, event_ids) = core.rewrite(import_thread_id, summaries)?;
+    let (rewritten, rewritten_event_ids) = core.rewrite(import_thread_id, summaries)?;
+    role_event_ids.extend(rewritten_event_ids.iter().cloned());
+    role_event_ids.sort();
+    role_event_ids.dedup();
     let terminal_turn_id = rewritten.iter().rev().find_map(|record| {
         (record["type"] == "event_msg"
             && matches!(
@@ -443,7 +474,9 @@ fn rewrite_with_hook(
         .then(|| record["payload"]["turn_id"].as_str().map(str::to_owned))
         .flatten()
     });
-    if event_ids.is_empty() {
+    let terminal_completed =
+        terminal_completed_at(&rewritten, terminal_turn_id.as_deref(), terminal);
+    if role_event_ids.is_empty() {
         return Ok(HistoryRewriteReceipt {
             source_path: source,
             source_sha256: source_hash,
@@ -453,15 +486,21 @@ fn rewrite_with_hook(
             copy_path: None,
             copy_sha256: None,
             copy_bytes: None,
-            event_ids,
+            event_ids: role_event_ids,
             terminal_turn_id,
             terminal_status: terminal.status.clone(),
-            terminal_completed_at: terminal_completed_at(&rewritten, terminal),
+            terminal_completed_at: terminal_completed,
             inherited_empty: terminal.inherited_empty,
             saved_bytes: 0,
             ancestry,
         });
     }
+
+    // Do all summary/accounting work before publishing the destination. A
+    // summary failure must not leave an unreceipted private copy behind.
+    let saved_bytes =
+        saved_event_bytes(&projected, &rewrite_events, &rewritten_event_ids, summaries)?
+            .saturating_add(role_saved_bytes);
 
     let copy_budget = ancestry
         .iter()
@@ -485,13 +524,18 @@ fn rewrite_with_hook(
     let repair_id = random_uuid()?;
     let repair_dir = copy_root.join(&repair_id);
     fs::create_dir(&repair_dir).map_err(|_| HistoryFileError::Write)?;
-    if let Err(error) = set_directory_mode(&repair_dir) {
-        drop(fs::remove_dir(&repair_dir));
-        return Err(error);
-    }
     let destination = repair_dir.join(source_name);
     let temp_path = repair_dir.join(format!(".{import_thread_id}.tmp"));
+    if let Err(error) = set_directory_mode(&repair_dir) {
+        return match cleanup_attempt(&copy_root, &repair_dir, &temp_path, &destination) {
+            Ok(()) => Err(error),
+            Err(cleanup_error) => Err(cleanup_error),
+        };
+    }
     let result = (|| {
+        // Persist the attempt directory entry before creating or publishing its
+        // contents. The private copy chain is durable from parent to leaf.
+        sync_directory(&copy_root)?;
         hook(WritePoint::BeforeCopy).map_err(|_| HistoryFileError::Write)?;
         let mut output = OpenOptions::new()
             .write(true)
@@ -507,8 +551,12 @@ fn rewrite_with_hook(
             if record["type"] == "turn_context" {
                 turn = record["payload"]["turn_id"].as_str().map(str::to_owned);
             }
-            let python_rewrites_record =
-                has_python_rewrite(record, turn.as_deref(), &source_events, &event_ids);
+            let python_rewrites_record = has_python_rewrite(
+                record,
+                turn.as_deref(),
+                &rewrite_events,
+                &rewritten_event_ids,
+            );
             let line = if let Some(original) = original {
                 if !original.projected && *record == original.value && !python_rewrites_record {
                     original.original_line.clone()
@@ -554,32 +602,28 @@ fn rewrite_with_hook(
         Ok((copy_bytes, copy_hash))
     })();
     match result {
-        Ok((copy_bytes, copy_sha256)) => {
-            let saved_bytes = saved_event_bytes(&source_events, &event_ids, summaries)?;
-            Ok(HistoryRewriteReceipt {
-                source_path: source,
-                source_sha256: source_hash,
-                source_bytes,
-                source_file_identity: identity_receipt(source_identity),
-                import_thread_id: import_thread_id.to_owned(),
-                copy_path: Some(destination),
-                copy_sha256: Some(copy_sha256),
-                copy_bytes: Some(copy_bytes),
-                event_ids,
-                terminal_turn_id,
-                terminal_status: terminal.status.clone(),
-                terminal_completed_at: terminal_completed_at(&rewritten, terminal),
-                inherited_empty: terminal.inherited_empty,
-                saved_bytes,
-                ancestry,
-            })
-        }
-        Err(error) => {
-            drop(fs::remove_file(&temp_path));
-            drop(fs::remove_file(&destination));
-            drop(fs::remove_dir(&repair_dir));
-            Err(error)
-        }
+        Ok((copy_bytes, copy_sha256)) => Ok(HistoryRewriteReceipt {
+            source_path: source,
+            source_sha256: source_hash,
+            source_bytes,
+            source_file_identity: identity_receipt(source_identity),
+            import_thread_id: import_thread_id.to_owned(),
+            copy_path: Some(destination),
+            copy_sha256: Some(copy_sha256),
+            copy_bytes: Some(copy_bytes),
+            event_ids: role_event_ids,
+            terminal_turn_id,
+            terminal_status: terminal.status.clone(),
+            terminal_completed_at: terminal_completed,
+            inherited_empty: terminal.inherited_empty,
+            saved_bytes,
+            ancestry,
+        }),
+        Err(error) => Err(
+            cleanup_attempt(&copy_root, &repair_dir, &temp_path, &destination)
+                .err()
+                .unwrap_or(error),
+        ),
     }
 }
 
@@ -669,6 +713,154 @@ fn terminal_state(records: &[HistoryRecord]) -> (Option<String>, Option<String>)
     (started, terminal)
 }
 
+/// Remove only the exact, version-matched role suffix that Python
+/// `sanitized_rollout` accepts. Role events are report metadata, not synthetic
+/// orchestration prefixes, so they are accounted for separately from the core
+/// history rewrite.
+fn strip_role_suffixes(
+    records: &mut [HistoryRecord],
+    events: &[Value],
+) -> Result<(Vec<String>, u64), HistoryFileError> {
+    let mut turn = None;
+    let mut matched = BTreeMap::<(String, String), BTreeSet<String>>::new();
+    let mut saved_bytes = 0u64;
+    for record in records {
+        let changed = match record.value["type"].as_str() {
+            Some("turn_context") => {
+                turn = record.value["payload"]["turn_id"]
+                    .as_str()
+                    .map(str::to_owned);
+                false
+            }
+            Some("response_item") => {
+                if let Some(item) = record.value.get_mut("payload") {
+                    strip_role_from_item(
+                        item,
+                        turn.as_deref(),
+                        events,
+                        &mut matched,
+                        &mut saved_bytes,
+                    )?
+                } else {
+                    false
+                }
+            }
+            Some("compacted") => {
+                let mut changed = false;
+                if let Some(items) = record.value["payload"]["replacement_history"].as_array_mut() {
+                    for item in items {
+                        changed |= strip_role_from_item(
+                            item,
+                            None,
+                            events,
+                            &mut matched,
+                            &mut saved_bytes,
+                        )?;
+                    }
+                }
+                changed
+            }
+            _ => false,
+        };
+        if changed {
+            record.projected = true;
+        }
+    }
+    if matched.values().any(|ids| ids.len() > 1) {
+        return Err(HistoryFileError::Rewrite(RepairError::Invalid(
+            "rewrite.ambiguousEvent",
+        )));
+    }
+    let mut event_ids = matched
+        .into_keys()
+        .map(|(_, event_id)| event_id)
+        .collect::<Vec<_>>();
+    event_ids.sort();
+    event_ids.dedup();
+    Ok((event_ids, saved_bytes))
+}
+
+fn strip_role_from_item(
+    item: &mut Value,
+    fallback_turn: Option<&str>,
+    events: &[Value],
+    matched: &mut BTreeMap<(String, String), BTreeSet<String>>,
+    saved_bytes: &mut u64,
+) -> Result<bool, HistoryFileError> {
+    if item["type"] != "message" || item["role"] != "user" {
+        return Ok(false);
+    }
+    let Some(item_id) = item["id"]
+        .as_str()
+        .filter(|id| !id.is_empty())
+        .map(str::to_owned)
+    else {
+        return Ok(false);
+    };
+    let turn = item["internal_chat_message_metadata_passthrough"]["turn_id"]
+        .as_str()
+        .or(fallback_turn)
+        .map(str::to_owned);
+    let Some(turn) = turn else { return Ok(false) };
+    let Some(contents) = item.get_mut("content").and_then(Value::as_array_mut) else {
+        return Ok(false);
+    };
+    let mut changed = false;
+    for content in contents {
+        if content["type"] != "input_text" {
+            continue;
+        }
+        let Some(text) = content["text"].as_str().map(str::to_owned) else {
+            continue;
+        };
+        let Some(role_start) = text.rfind("\n\n[Studio role skill: ") else {
+            continue;
+        };
+        if !text.ends_with("[End Studio role skill]") {
+            continue;
+        }
+        let role = &text[role_start + 2..];
+        let role_hash = role_digest(role)?;
+        let prefix_length = text[..role_start].chars().count();
+        let candidates = events
+            .iter()
+            .filter(|event| {
+                event["kind"] == "studio_role" && event["turn_id"].as_str() == Some(turn.as_str())
+            })
+            .filter(|event| event["roleVersion"].as_str() == Some(role_hash.as_str()))
+            .filter(|event| {
+                event["prefix"].as_str().is_some_and(|prefix| {
+                    prefix_length >= prefix.chars().count()
+                        && text.starts_with(&format!("{prefix}\n\n"))
+                })
+            })
+            .collect::<Vec<_>>();
+        if candidates.len() != 1 {
+            continue;
+        }
+        let event = candidates[0];
+        let Some(event_id) = event["id"].as_str().filter(|id| !id.is_empty()) else {
+            continue;
+        };
+        matched
+            .entry((turn.clone(), event_id.to_owned()))
+            .or_default()
+            .insert(item_id.clone());
+        *saved_bytes = (*saved_bytes).saturating_add(text[role_start..].len() as u64);
+        content["text"] = json!(&text[..role_start]);
+        changed = true;
+    }
+    Ok(changed)
+}
+
+fn role_digest(role: &str) -> Result<String, HistoryFileError> {
+    // `codex_efficiency.digest` hashes compact `json.dumps(...,
+    // ensure_ascii=False)` bytes and keeps the first 24 lowercase hex chars.
+    let packed = serde_json::to_vec(role).map_err(|_| HistoryFileError::Ancestry)?;
+    let digest = data_encoding::HEXLOWER.encode(&Sha256::digest(packed));
+    Ok(digest[..24].to_owned())
+}
+
 fn json_truthy(value: &Value) -> bool {
     match value {
         Value::Null => false,
@@ -680,14 +872,19 @@ fn json_truthy(value: &Value) -> bool {
     }
 }
 
-fn terminal_completed_at(records: &[Value], terminal: &HistoryTerminal) -> Option<f64> {
+fn terminal_completed_at(
+    records: &[Value],
+    terminal_turn_id: Option<&str>,
+    terminal: &HistoryTerminal,
+) -> Option<f64> {
+    let terminal_turn_id = terminal.turn_id.as_deref().or(terminal_turn_id)?;
     records.iter().rev().find_map(|record| {
         if record["type"] != "event_msg"
             || !matches!(
                 record["payload"]["type"].as_str(),
                 Some("task_complete" | "turn_aborted")
             )
-            || record["payload"]["turn_id"].as_str() != Some(terminal.turn_id.as_str())
+            || record["payload"]["turn_id"].as_str() != Some(terminal_turn_id)
         {
             return None;
         }
@@ -725,28 +922,113 @@ fn order_for_value(value: &Value) -> JsonOrder {
 }
 
 fn saved_event_bytes(
+    records: &[HistoryRecord],
     events: &[Value],
     matched_ids: &[String],
     summaries: &impl RepairEventSummary,
 ) -> Result<u64, HistoryFileError> {
     let mut saved = 0u64;
-    for event in events {
-        let Some(id) = event["id"].as_str() else {
-            continue;
-        };
-        if !matched_ids.iter().any(|matched| matched == id) {
+    let mut turn = None;
+    for record in records {
+        match record.value["type"].as_str() {
+            Some("turn_context") => {
+                turn = record.value["payload"]["turn_id"]
+                    .as_str()
+                    .map(str::to_owned);
+            }
+            Some("response_item") => {
+                saved = saved.saturating_add(saved_item_event_bytes(
+                    &record.value["payload"],
+                    turn.as_deref(),
+                    events,
+                    matched_ids,
+                    summaries,
+                )?);
+            }
+            Some("compacted") => {
+                if let Some(items) = record.value["payload"]["replacement_history"].as_array() {
+                    for item in items {
+                        saved = saved.saturating_add(saved_item_event_bytes(
+                            item,
+                            None,
+                            events,
+                            matched_ids,
+                            summaries,
+                        )?);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(saved)
+}
+
+fn saved_item_event_bytes(
+    item: &Value,
+    fallback_turn: Option<&str>,
+    events: &[Value],
+    matched_ids: &[String],
+    summaries: &impl RepairEventSummary,
+) -> Result<u64, HistoryFileError> {
+    if item["type"] != "message" || item["role"] != "user" {
+        return Ok(0);
+    }
+    let Some(turn) = item["internal_chat_message_metadata_passthrough"]["turn_id"]
+        .as_str()
+        .or(fallback_turn)
+    else {
+        return Ok(0);
+    };
+    let Some(contents) = item["content"].as_array() else {
+        return Ok(0);
+    };
+    let mut saved = 0u64;
+    for content in contents {
+        if content["type"] != "input_text" {
             continue;
         }
-        let kind = event["kind"]
-            .as_str()
-            .ok_or(RepairError::Invalid("rewrite.kind"))?;
-        let text = event["text"]
-            .as_str()
-            .ok_or(RepairError::Invalid("rewrite.event.text"))?;
-        let summary = summaries.summarize(event)?;
-        let full = format!("[Orchestration event: {kind}]\n{text}").len();
-        let compact = format!("[Orchestration event: {kind}]\n{summary}").len();
-        saved = saved.saturating_add(full.saturating_sub(compact) as u64);
+        let Some(text) = content["text"].as_str() else {
+            continue;
+        };
+        let mut position = 0;
+        while position < text.len() {
+            let candidates = events
+                .iter()
+                .filter(|event| {
+                    event["id"]
+                        .as_str()
+                        .is_some_and(|id| matched_ids.iter().any(|matched| matched == id))
+                        && event["turn_id"].as_str() == Some(turn)
+                })
+                .filter_map(|event| {
+                    let kind = event["kind"].as_str()?;
+                    let event_text = event["text"].as_str()?;
+                    let full = format!("[Orchestration event: {kind}]\n{event_text}");
+                    text.get(position..)?
+                        .strip_prefix(&full)
+                        .filter(|tail| tail.is_empty() || tail.starts_with("\n\n"))
+                        .map(|_| (event, full))
+                })
+                .collect::<Vec<_>>();
+            if candidates.len() != 1 {
+                break;
+            }
+            let (event, full) = candidates
+                .into_iter()
+                .next()
+                .ok_or(HistoryFileError::Ancestry)?;
+            let summary = summaries.summarize(event)?;
+            let kind = event["kind"]
+                .as_str()
+                .ok_or(RepairError::Invalid("rewrite.kind"))?;
+            let compact = format!("[Orchestration event: {kind}]\n{summary}");
+            saved = saved.saturating_add(full.len().saturating_sub(compact.len()) as u64);
+            position += full.len();
+            if text[position..].starts_with("\n\n") {
+                position += 2;
+            }
+        }
     }
     Ok(saved)
 }
@@ -1075,21 +1357,50 @@ fn validate_copy_path(home: &Path, path: &Path) -> Result<PathBuf, HistoryFileEr
 
 fn history_copy_root(home: &Path) -> Result<PathBuf, HistoryFileError> {
     let sessions = home.join("sessions");
-    let sessions_meta = fs::symlink_metadata(&sessions).map_err(|_| HistoryFileError::Write)?;
-    if sessions_meta.file_type().is_symlink() || !sessions_meta.is_dir() {
-        return Err(HistoryFileError::OutsideHome);
+    let created_sessions = match fs::symlink_metadata(&sessions) {
+        Ok(metadata) => {
+            if metadata.file_type().is_symlink() || !metadata.is_dir() {
+                return Err(HistoryFileError::OutsideHome);
+            }
+            false
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => match fs::create_dir(&sessions) {
+            Ok(()) => true,
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+                let metadata =
+                    fs::symlink_metadata(&sessions).map_err(|_| HistoryFileError::Write)?;
+                if metadata.file_type().is_symlink() || !metadata.is_dir() {
+                    return Err(HistoryFileError::OutsideHome);
+                }
+                false
+            }
+            Err(_) => return Err(HistoryFileError::Write),
+        },
+        Err(_) => return Err(HistoryFileError::Write),
+    };
+    if created_sessions {
+        if let Err(error) = set_directory_mode(&sessions) {
+            drop(fs::remove_dir(&sessions));
+            return Err(error);
+        }
+        if let Err(error) = sync_directory(home) {
+            drop(fs::remove_dir(&sessions));
+            drop(sync_directory(home));
+            return Err(error);
+        }
     }
     let sessions = fs::canonicalize(sessions).map_err(|_| HistoryFileError::Write)?;
     if !sessions.starts_with(home) {
         return Err(HistoryFileError::OutsideHome);
     }
     let root = sessions.join(COPY_DIRECTORY);
-    match fs::create_dir(&root) {
+    let created = match fs::create_dir(&root) {
         Ok(()) => {
             if let Err(error) = set_directory_mode(&root) {
                 drop(fs::remove_dir(&root));
                 return Err(error);
             }
+            true
         }
         Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
             let metadata = fs::symlink_metadata(&root).map_err(|_| HistoryFileError::Write)?;
@@ -1097,14 +1408,49 @@ fn history_copy_root(home: &Path) -> Result<PathBuf, HistoryFileError> {
                 return Err(HistoryFileError::OutsideHome);
             }
             set_directory_mode(&root)?;
+            false
         }
         Err(_) => return Err(HistoryFileError::Write),
+    };
+    if created && let Err(error) = sync_directory(&sessions) {
+        drop(fs::remove_dir(&root));
+        drop(sync_directory(&sessions));
+        return Err(error);
     }
     let canonical = fs::canonicalize(root).map_err(|_| HistoryFileError::Write)?;
     if !canonical.starts_with(home) {
         return Err(HistoryFileError::OutsideHome);
     }
     Ok(canonical)
+}
+
+fn cleanup_attempt(
+    copy_root: &Path,
+    repair_dir: &Path,
+    temp_path: &Path,
+    destination: &Path,
+) -> Result<(), HistoryFileError> {
+    let mut failed = false;
+    for path in [temp_path, destination] {
+        match fs::remove_file(path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(_) => failed = true,
+        }
+    }
+    match fs::remove_dir(repair_dir) {
+        Ok(()) => {}
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(_) => failed = true,
+    }
+    if sync_directory(copy_root).is_err() {
+        failed = true;
+    }
+    if failed {
+        Err(HistoryFileError::Write)
+    } else {
+        Ok(())
+    }
 }
 
 fn validate_thread_id(thread_id: &str) -> Result<(), HistoryFileError> {
@@ -1191,7 +1537,7 @@ mod tests {
 
     fn terminal() -> HistoryTerminal {
         HistoryTerminal {
-            turn_id: TERMINAL.into(),
+            turn_id: Some(TERMINAL.into()),
             status: Some("completed".into()),
             completed_at: Some(10.0),
             inherited_empty: false,
@@ -1205,6 +1551,19 @@ mod tests {
                 .as_str()
                 .ok_or(RepairError::Invalid("rewrite.event.text"))?
                 .to_owned())
+        }
+    }
+
+    struct FailsDuringAccounting(std::cell::Cell<usize>);
+    impl RepairEventSummary for FailsDuringAccounting {
+        fn summarize(&self, event: &Value) -> Result<String, RepairError> {
+            let calls = self.0.get();
+            self.0.set(calls + 1);
+            if calls == 0 {
+                Ok(event["text"].as_str().unwrap_or_default().to_owned())
+            } else {
+                Err(RepairError::Invalid("rewrite.summary.injected"))
+            }
         }
     }
 
@@ -1236,6 +1595,16 @@ mod tests {
         source: &Path,
         events: &[Value],
     ) -> (Value, Vec<u8>) {
+        run_python_oracle_with_terminal(root, home, source, events, &terminal())
+    }
+
+    fn run_python_oracle_with_terminal(
+        root: &Path,
+        home: &Path,
+        source: &Path,
+        events: &[Value],
+        terminal: &HistoryTerminal,
+    ) -> (Value, Vec<u8>) {
         let server_source = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src");
         let python = prepared_python_test_support::prepared_python(&server_source);
         let oracle =
@@ -1255,7 +1624,19 @@ mod tests {
             .arg(THREAD)
             .arg(IMPORT)
             .arg(events_path)
-            .arg(TERMINAL)
+            .arg(terminal.turn_id.as_deref().unwrap_or_default())
+            .arg(terminal.status.as_deref().unwrap_or_default())
+            .arg(
+                terminal
+                    .completed_at
+                    .map(|completed_at| completed_at.to_string())
+                    .unwrap_or_default(),
+            )
+            .arg(if terminal.inherited_empty {
+                "true"
+            } else {
+                "false"
+            })
             .arg(&expected_copy)
             .env_clear()
             .env("HOME", root.join("runner-home"))
@@ -1297,6 +1678,9 @@ mod tests {
             .arg(IMPORT)
             .arg(events_path)
             .arg(TERMINAL)
+            .arg("completed")
+            .arg("10.0")
+            .arg("false")
             .arg(output_path)
             .env_clear()
             .env("HOME", root.join("runner-home"))
@@ -1410,6 +1794,222 @@ mod tests {
     }
 
     #[test]
+    fn inherited_empty_leaf_uses_verified_ancestor_terminal() {
+        let root = tempfile::tempdir().expect("tmpfs fixture root");
+        let home = root.path().join("provider");
+        let sessions = home.join("sessions");
+        fs::create_dir_all(&sessions).expect("provider fixture sessions");
+        let parent_id = "22222222-2222-4222-8222-222222222222";
+        let parent_path = sessions.join(format!("rollout-parent-{parent_id}.jsonl"));
+        let text = "[Orchestration event: work_review]\nreview event";
+        let parent = format!(
+            "{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"{parent_id}\"}},\"ordinal\":0}}\n"
+        ) + "{\"type\":\"event_msg\",\"payload\":{\"type\":\"thread_settings_applied\"},\"ordinal\":1}\n"
+            + &format!(
+                "{{\"type\":\"turn_context\",\"payload\":{{\"turn_id\":\"{TERMINAL}\"}},\"ordinal\":2}}\n"
+            )
+            + &format!(
+                "{{\"type\":\"event_msg\",\"payload\":{{\"type\":\"task_started\",\"turn_id\":\"{TERMINAL}\"}},\"ordinal\":3}}\n"
+            )
+            + &format!(
+                "{{\"type\":\"response_item\",\"payload\":{{\"type\":\"message\",\"role\":\"user\",\"id\":\"item-parent\",\"internal_chat_message_metadata_passthrough\":{{\"turn_id\":\"{TERMINAL}\"}},\"content\":[{{\"type\":\"input_text\",\"text\":{}}}]}},\"ordinal\":4}}\n",
+                serde_json::to_string(text).expect("JSON text")
+            )
+            + &format!(
+                "{{\"type\":\"event_msg\",\"payload\":{{\"type\":\"task_complete\",\"turn_id\":\"{TERMINAL}\",\"completed_at\":9.0}},\"ordinal\":5}}\n"
+            );
+        fs::write(&parent_path, &parent).expect("parent history");
+        let child_path = sessions.join(format!("rollout-child-{THREAD}.jsonl"));
+        let child = format!(
+            "{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"{THREAD}\",\"history_base\":{{\"thread_id\":\"{parent_id}\",\"end_ordinal_exclusive\":6,\"end_byte_offset\":{}}}}},\"ordinal\":6}}\n",
+            parent.len()
+        ) + "{\"type\":\"event_msg\",\"payload\":{\"type\":\"thread_settings_applied\"},\"ordinal\":7}\n";
+        fs::write(&child_path, child).expect("inherited-empty child history");
+        let events = vec![json!({
+            "id": "event-parent", "turn_id": TERMINAL, "kind": "work_review", "text": "review event"
+        })];
+        let inherited_empty = HistoryTerminal {
+            turn_id: None,
+            status: None,
+            completed_at: None,
+            inherited_empty: true,
+        };
+        let (expected_report, expected_copy) = run_python_oracle_with_terminal(
+            root.path(),
+            &home,
+            &child_path,
+            &events,
+            &inherited_empty,
+        );
+        let receipt = rewrite_with_hook(
+            &home,
+            &child_path,
+            events,
+            THREAD,
+            &inherited_empty,
+            IMPORT,
+            &IdentitySummary,
+            |_| Ok(()),
+        )
+        .expect("rewrite inherited-empty history with ancestry terminal proof");
+        assert_eq!(receipt.terminal_turn_id.as_deref(), Some(TERMINAL));
+        assert_eq!(receipt.terminal_status, None);
+        assert_eq!(receipt.terminal_completed_at, Some(9.0));
+        assert_eq!(
+            receipt.terminal_turn_id.as_deref(),
+            expected_report["terminalTurnId"].as_str()
+        );
+        assert_eq!(
+            fs::read(receipt.copy_path.as_ref().expect("private copy")).expect("copy bytes"),
+            expected_copy,
+            "inherited-empty synthesis must match Python's verified ancestry projection"
+        );
+    }
+
+    #[test]
+    fn compacted_role_and_unknown_records_match_python_bytes() {
+        let (root, home, _, _) = fixture();
+        let source = home
+            .join("sessions")
+            .join(format!("rollout-record-kinds-{THREAD}.jsonl"));
+        let role = "[Studio role skill: Runtime]\nFollow règle.\n[End Studio role skill]";
+        let review_prefix = "[Orchestration event: work_review]\nreview event";
+        let response_text = format!("{review_prefix}\n\n{role}");
+        let agent_prefix = "[Orchestration event: agent_message]\nagent message";
+        let compacted_text = format!("{agent_prefix}\n\n{role}");
+        let records = [
+            json!({"type":"session_meta","payload":{"id":THREAD},"ordinal":0}),
+            json!({"type":"turn_context","payload":{"turn_id":TERMINAL},"ordinal":1}),
+            json!({"type":"event_msg","payload":{"type":"task_started","turn_id":TERMINAL},"ordinal":2}),
+            json!({"type":"response_item","payload":{"type":"message","role":"user","id":"response-item","internal_chat_message_metadata_passthrough":{"turn_id":TERMINAL},"content":[{"type":"input_text","text":response_text}]},"ordinal":3}),
+            json!({"type":"compacted","payload":{"replacement_history":[{"type":"message","role":"user","id":"compacted-item","internal_chat_message_metadata_passthrough":{"turn_id":TERMINAL},"content":[{"type":"input_text","text":compacted_text}]}]},"ordinal":4}),
+            json!({"type":"extension_future","payload":{"opaque":[true,42,"retain"]},"ordinal":5}),
+            json!({"type":"event_msg","payload":{"type":"task_complete","turn_id":TERMINAL,"completed_at":10.0},"ordinal":6}),
+        ];
+        let mut source_bytes = Vec::new();
+        for record in records {
+            serde_json::to_writer(&mut source_bytes, &record).expect("fixture record JSON");
+            source_bytes.push(b'\n');
+        }
+        fs::write(&source, source_bytes).expect("history record-kind fixture");
+        let events = vec![
+            json!({"id":"event-review","turn_id":TERMINAL,"kind":"work_review","text":"review event"}),
+            json!({"id":"studio-role:event-review","turn_id":TERMINAL,"kind":"studio_role","roleVersion":role_digest(role).expect("Python-compatible role digest"),"prefix":review_prefix,"text":"review event"}),
+            json!({"id":"event-agent","turn_id":TERMINAL,"kind":"agent_message","text":"agent message"}),
+            json!({"id":"studio-role:event-agent","turn_id":TERMINAL,"kind":"studio_role","roleVersion":role_digest(role).expect("Python-compatible role digest"),"prefix":agent_prefix,"text":"agent message"}),
+        ];
+        let (expected_report, expected_copy) =
+            run_python_oracle(root.path(), &home, &source, &events);
+        let receipt = rewrite_with_hook(
+            &home,
+            &source,
+            events,
+            THREAD,
+            &terminal(),
+            IMPORT,
+            &IdentitySummary,
+            |_| Ok(()),
+        )
+        .expect("rewrite compacted and role records");
+        assert_eq!(json!(receipt.event_ids), expected_report["eventIds"]);
+        assert_eq!(receipt.saved_bytes, expected_report["savedBytes"]);
+        assert_eq!(
+            fs::read(receipt.copy_path.as_ref().expect("private copy")).expect("copy bytes"),
+            expected_copy,
+            "compacted items, role suffixes, and unknown records must match Python byte for byte"
+        );
+    }
+
+    #[test]
+    fn archived_history_publishes_copy_under_new_sessions_chain() {
+        let root = tempfile::tempdir().expect("tmpfs fixture root");
+        let home = root.path().join("provider");
+        let archived = home.join("archived_sessions");
+        fs::create_dir_all(&archived).expect("archived fixture directory");
+        let source = archived.join(format!("rollout-archived-{THREAD}.jsonl"));
+        let text = "[Orchestration event: work_review]\nreview event";
+        let records = [
+            format!(r#"{{"type":"session_meta","payload":{{"id":"{THREAD}"}},"ordinal":0}}"#),
+            r#"{"type":"turn_context","payload":{"turn_id":"turn-1"},"ordinal":1}"#.to_owned(),
+            r#"{"type":"event_msg","payload":{"type":"task_started","turn_id":"turn-1"},"ordinal":2}"#.to_owned(),
+            format!(r#"{{"type":"response_item","payload":{{"type":"message","role":"user","id":"archived-item","internal_chat_message_metadata_passthrough":{{"turn_id":"turn-1"}},"content":[{{"type":"input_text","text":{}}}]}},"ordinal":3}}"#, serde_json::to_string(text).expect("JSON text")),
+            r#"{"type":"event_msg","payload":{"type":"task_complete","turn_id":"turn-1","completed_at":10.0},"ordinal":4}"#.to_owned(),
+        ];
+        fs::write(&source, records.join("\n") + "\n").expect("archived history");
+        let events = vec![json!({
+            "id": "event-archived", "turn_id": TERMINAL, "kind": "work_review", "text": "review event"
+        })];
+        let receipt = rewrite_with_hook(
+            &home,
+            &source,
+            events.clone(),
+            THREAD,
+            &terminal(),
+            IMPORT,
+            &IdentitySummary,
+            |_| Ok(()),
+        )
+        .expect("rewrite archived history while creating copy chain");
+        let (expected_report, expected_copy) =
+            run_python_oracle(root.path(), &home, &source, &events);
+        assert!(home.join("sessions").is_dir());
+        assert!(home.join("sessions").join(COPY_DIRECTORY).is_dir());
+        assert_eq!(receipt.source_path, source);
+        assert_eq!(receipt.source_sha256, expected_report["sourceSha256"]);
+        assert_eq!(
+            fs::read(receipt.copy_path.as_ref().expect("private copy")).expect("copy bytes"),
+            expected_copy
+        );
+    }
+
+    #[test]
+    fn terminal_marker_synthesis_matches_python_for_completed_and_interrupted() {
+        for (status, completed_at) in [("completed", Some(10.0)), ("interrupted", None)] {
+            let (root, home, source, events) = fixture();
+            let mut records = fs::read_to_string(&source)
+                .expect("source fixture")
+                .lines()
+                .map(str::to_owned)
+                .collect::<Vec<_>>();
+            records.pop(); // Simulate a terminal ThreadRead before the JSONL marker was flushed.
+            fs::write(&source, records.join("\n") + "\n").expect("truncate terminal marker");
+            let proof = HistoryTerminal {
+                turn_id: Some(TERMINAL.into()),
+                status: Some(status.into()),
+                completed_at,
+                inherited_empty: false,
+            };
+            let (expected_report, expected_copy) =
+                run_python_oracle_with_terminal(root.path(), &home, &source, &events, &proof);
+            let receipt = rewrite_with_hook(
+                &home,
+                &source,
+                events,
+                THREAD,
+                &proof,
+                IMPORT,
+                &IdentitySummary,
+                |_| Ok(()),
+            )
+            .expect("synthesize proven native terminal marker");
+            assert_eq!(
+                receipt.terminal_turn_id.as_deref(),
+                Some(TERMINAL),
+                "terminal status {status} must be reflected in the receipt"
+            );
+            assert_eq!(
+                receipt.terminal_completed_at,
+                expected_report["terminalCompletedAt"].as_f64()
+            );
+            assert_eq!(
+                fs::read(receipt.copy_path.as_ref().expect("private copy")).expect("copy bytes"),
+                expected_copy,
+                "terminal synthesis for {status} must match Python byte for byte"
+            );
+        }
+    }
+
+    #[test]
     fn history_path_and_ancestry_refusals_fail_closed() {
         let (root, home, source, _) = fixture();
         assert!(locate_provider_history(HistoryProvider::Codex, &home, "../escape").is_err());
@@ -1500,5 +2100,25 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn accounting_failure_happens_before_private_copy_publication() {
+        let (_root, home, source, events) = fixture();
+        let result = rewrite_with_hook(
+            &home,
+            &source,
+            events,
+            THREAD,
+            &terminal(),
+            IMPORT,
+            &FailsDuringAccounting(std::cell::Cell::new(0)),
+            |_| Ok(()),
+        );
+        assert!(result.is_err());
+        assert!(
+            !home.join("sessions").join(COPY_DIRECTORY).exists(),
+            "a fallible accounting step must run before copy directories exist"
+        );
     }
 }
