@@ -546,9 +546,10 @@ impl SchedulerRepository {
         request_id: &str,
         account_key: &str,
         generation: u64,
+        connection_id: &str,
         thread_id: &str,
     ) -> StoreResult<bool> {
-        let receipt_input = json!({"agent":agent_id,"epoch":epoch,"ticket":request_id,"account":account_key,"generation":generation,"thread":thread_id});
+        let receipt_input = json!({"agent":agent_id,"epoch":epoch,"ticket":request_id,"account":account_key,"generation":generation,"connection":connection_id,"thread":thread_id});
         if let Some(result) = ExecutionHistoryRepository::replay(
             transaction,
             attempt_id,
@@ -603,7 +604,7 @@ impl SchedulerRepository {
             .and_then(Value::as_object_mut)
             .ok_or_else(|| invalid_agent(agent_id))?;
         attempt.extend(
-            json!({"submitted":true,"requestTicket":request_id,"nativeOperationId":format!("turn:{agent_id}:{}:attempt:{attempt_id}",attempt["events"][0].as_str().unwrap_or(attempt_id)),"connectionId":null,"supervisorIdentity":null,"settingsFixed":true,
+            json!({"submitted":true,"requestTicket":request_id,"nativeOperationId":format!("turn:{agent_id}:{}:attempt:{attempt_id}",attempt["events"][0].as_str().unwrap_or(attempt_id)),"connectionId":connection_id,"supervisorIdentity":null,"settingsFixed":true,
             "accountKey":account_key,"connectionGeneration":generation,"threadId":thread_id})
             .as_object()
             .into_iter()

@@ -167,12 +167,14 @@ fn refresh(
     specific: bool,
 ) -> Result<(), ToolRequestError> {
     if !specific && terminal(record) {
+        populate_spawned_agent_ids(record);
         return Ok(());
     }
     if truthy(record.get("_payloadBlobs")) {
         return Err(ToolRequestError::RequiresDependency(PAYLOAD));
     }
     if terminal(record) {
+        populate_spawned_agent_ids(record);
         return Ok(());
     }
     if record["tool"] == "orchestration_servers"
@@ -246,39 +248,50 @@ fn refresh(
             text(record, "tool"),
             "orchestration_spawn" | "orchestration_review"
         ) {
-            let mut ids = Vec::new();
-            for value in record["result"]["contentItems"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .filter(|v| v["type"] == "inputText")
-                .filter_map(|v| serde_json::from_str::<Value>(v["text"].as_str()?).ok())
-            {
-                for id in value["agents"]
-                    .as_array()
-                    .into_iter()
-                    .flatten()
-                    .filter_map(|v| v["id"].as_str())
-                    .chain(["agentIds", "agent_ids"].into_iter().flat_map(|key| {
-                        value[key]
-                            .as_array()
-                            .into_iter()
-                            .flatten()
-                            .filter_map(Value::as_str)
-                    }))
-                {
-                    if !ids.iter().any(|v| v == id) {
-                        ids.push(id.to_owned());
-                    }
-                }
-            }
-            if !ids.is_empty() {
-                record["agentIds"] = json!(ids);
-            }
+            populate_spawned_agent_ids(record);
         }
         save(tx, record, actor)?;
     }
     Ok(())
+}
+
+fn populate_spawned_agent_ids(record: &mut Value) {
+    if record
+        .get("agentIds")
+        .and_then(Value::as_array)
+        .is_some_and(|ids| !ids.is_empty())
+    {
+        return;
+    }
+    let mut ids = Vec::new();
+    for value in record["result"]["contentItems"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|value| value["type"] == "inputText")
+        .filter_map(|value| serde_json::from_str::<Value>(value["text"].as_str()?).ok())
+    {
+        for id in value["agents"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|agent| agent["id"].as_str())
+            .chain(["agentIds", "agent_ids"].into_iter().flat_map(|key| {
+                value[key]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(Value::as_str)
+            }))
+        {
+            if !ids.iter().any(|existing| existing == id) {
+                ids.push(id.to_owned());
+            }
+        }
+    }
+    if !ids.is_empty() {
+        record["agentIds"] = json!(ids);
+    }
 }
 
 fn operation_result(tx: &Transaction<'_>, id: &str) -> Result<Option<Value>, ToolRequestError> {

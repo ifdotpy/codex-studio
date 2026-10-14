@@ -437,6 +437,7 @@ pub async fn start_account_worker_with_publication_sink(
         config,
     )
     .await?;
+    let connection_id = uuid::Uuid::new_v4().to_string();
     let effect_account = account.clone();
     let (effects, streams) = bridge
         .worker_run("restore_effects_streams", move |store| {
@@ -451,7 +452,7 @@ pub async fn start_account_worker_with_publication_sink(
     let stop = Shutdown::default();
     let scope = crate::recovery_history::ConnectionScope {
         account: account.clone(),
-        connection: generation.0.to_string(),
+        connection: connection_id.clone(),
         generation: generation.0,
     };
     let retained_port = retained::RetainedSessionPort {
@@ -468,6 +469,7 @@ pub async fn start_account_worker_with_publication_sink(
         account: account.clone(),
         auth_probe_at,
         generation,
+        connection_id,
         timeout_ms,
         control: session.control.clone(),
         session,
@@ -578,6 +580,7 @@ struct Worker {
     account: String,
     auth_probe_at: Option<tokio::time::Instant>,
     generation: Generation,
+    connection_id: String,
     timeout_ms: u64,
     control: SessionControl,
     session: SessionHandle,
@@ -1066,6 +1069,8 @@ impl Worker {
         }
         let turn = interrupt_turn.clone();
         let generation = self.generation.0;
+        let connection_id = self.connection_id.clone();
+        let preparation_connection_id = connection_id.clone();
         let prepared = if method == Method::TurnInterrupt {
             None
         } else {
@@ -1107,7 +1112,14 @@ impl Worker {
                 .prepare("preparation", move |s| {
                     store::preparation_step(s, &i, || {
                         preparation::prepare_ready(
-                            s, &resources, &i, method, generation, selection, token,
+                            s,
+                            &resources,
+                            &i,
+                            method,
+                            generation,
+                            &preparation_connection_id,
+                            selection,
+                            token,
                         )
                     })
                 })
@@ -1188,6 +1200,7 @@ impl Worker {
                     interrupt_turn.as_ref().map(|(turn, _)| turn.as_str()),
                     submission.as_ref(),
                     guard.as_ref(),
+                    &connection_id,
                 )
             })
             .await?;
@@ -1438,9 +1451,16 @@ impl Worker {
                     generation,
                     &frame,
                     managed_tool_runtime.as_deref(),
-                ).await {
-                    let Frame::Request(request) = &frame else { return (cursor, None); };
-                    return (cursor, Some(callback::tool_call_failure(request, dependency)));
+                )
+                .await
+                {
+                    let Frame::Request(request) = &frame else {
+                        return (cursor, None);
+                    };
+                    return (
+                        cursor,
+                        Some(callback::tool_call_failure(request, dependency)),
+                    );
                 }
                 let response = tokio::task::spawn_blocking(move || {
                     callback::managed_response(
@@ -1453,7 +1473,10 @@ impl Worker {
                         monitor_dispatch_wake,
                         managed_tool_runtime,
                     )
-                }).await.ok().flatten();
+                })
+                .await
+                .ok()
+                .flatten();
                 (cursor, response)
             });
         } else if let JournalPayload::Frame(frame) = &entry.payload
@@ -1703,6 +1726,7 @@ pub fn commit_prepared_turn(
     intent: &TurnIntent,
     request_id: &str,
     generation: u64,
+    connection_id: &str,
     submission: &crate::notification_dispatch::PreparedSubmission,
 ) -> Result<bool, WorkerError> {
     if AgentRepository::get(tx, &AgentId::from(intent.agent_id.as_str()))?.is_none_or(|agent| {
@@ -1735,6 +1759,7 @@ pub fn commit_prepared_turn(
         request_id,
         &intent.account_key,
         generation,
+        connection_id,
         intent.thread_id.as_deref().unwrap_or(""),
     )? {
         return Ok(false);

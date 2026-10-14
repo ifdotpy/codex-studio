@@ -150,7 +150,10 @@ fn pending_selection_matches_python_and_claims_rust_event_write_events() {
         intent.events.last().map(|e| e.id.as_str()),
         Some("annotation:rust-written")
     );
-    assert!(mark_submitted_for_provider(&store, &intent, "accepted-request", 1).expect("submit"));
+    assert!(
+        mark_submitted_for_provider(&store, &intent, "accepted-request", 1, "test-connection")
+            .expect("submit")
+    );
     assert_eq!(
         settle_started_provider(&store, &intent, "accepted-request", 1, "turn-1").expect("accept"),
         Some(false)
@@ -255,7 +258,10 @@ fn submitted_marker_survives_settlement_write_failure() {
     let intent = claim_intent(&store, &agent, epoch, "failure", 10.0)
         .expect("claim")
         .expect("input");
-    assert!(mark_submitted_for_provider(&store, &intent, "failure-request", 1).expect("submit"));
+    assert!(
+        mark_submitted_for_provider(&store, &intent, "failure-request", 1, "test-connection")
+            .expect("submit")
+    );
     store.transaction(|tx| {tx.execute_batch("CREATE TRIGGER reject_delivery BEFORE UPDATE OF status ON runtime_events WHEN NEW.status='delivered' BEGIN SELECT RAISE(ABORT,'injected settlement failure'); END;")?;Ok(())}).expect("failure injection");
     assert!(settle_started_provider(&store, &intent, "failure-request", 1, "accepted").is_err());
     let reader = store.read().expect("read");
@@ -287,7 +293,10 @@ fn restart_keeps_a_scoped_receipt_without_replaying_events() {
     let intent = claim_intent(&store, &agent, epoch, "restart", 10.0)
         .expect("claim")
         .expect("input");
-    assert!(mark_submitted_for_provider(&store, &intent, "restart-request", 1).expect("submit"));
+    assert!(
+        mark_submitted_for_provider(&store, &intent, "restart-request", 1, "test-connection")
+            .expect("submit")
+    );
     assert_eq!(
         settle_started_provider(&store, &intent, "restart-request", 1, "known").expect("accept"),
         Some(false)
@@ -331,7 +340,10 @@ fn late_acceptance_preserves_a_stopped_agent_and_delivers_exact_input() {
     let intent = claim_intent(&store, &agent, epoch, "stop", 10.0)
         .expect("claim")
         .expect("input");
-    assert!(mark_submitted_for_provider(&store, &intent, "stopped-request", 1).expect("submit"));
+    assert!(
+        mark_submitted_for_provider(&store, &intent, "stopped-request", 1, "test-connection")
+            .expect("submit")
+    );
     store
         .transaction(|tx| {
             let mut record =

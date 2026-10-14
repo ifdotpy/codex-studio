@@ -411,7 +411,9 @@ pub(super) fn submitted(
     turn: Option<&str>,
     submission: Option<&PreparedSubmission>,
     guard: Option<&preparation::CommitGuard>,
+    connection_id: &str,
 ) -> Result<bool, WorkerError> {
+    let connection_id = connection_id.to_owned();
     let result = scheduler::lifecycle_transaction_with(store, |tx| {
         if receipt(tx, &context.operation, "submitted")?.is_some() {
             return Ok(false);
@@ -445,6 +447,7 @@ pub(super) fn submitted(
                 i,
                 &id_string(&request.ticket.id),
                 request.ticket.generation,
+                &connection_id,
                 submission.ok_or_else(|| invalid(&i.attempt_id))?,
                 guard.ok_or_else(|| invalid("Claude commit guard"))?,
             )?,
@@ -453,6 +456,7 @@ pub(super) fn submitted(
                 i,
                 &id_string(&request.ticket.id),
                 request.ticket.generation,
+                &connection_id,
                 submission.ok_or_else(|| invalid(&i.attempt_id))?,
             )?,
             Method::TurnInterrupt => SchedulerRepository::prepare_interrupt(

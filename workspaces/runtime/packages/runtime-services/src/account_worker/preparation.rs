@@ -174,6 +174,7 @@ impl PreparedTurn {
             None,
             prepared.submission.as_ref(),
             Some(&prepared.guard),
+            &prepared.connection_id,
         )
     }
 }

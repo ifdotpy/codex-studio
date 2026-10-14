@@ -74,7 +74,7 @@ impl Worker {
         } = command;
         if scope.account != self.account
             || scope.generation != self.generation.0
-            || scope.connection != self.generation.0.to_string()
+            || scope.connection != self.connection_id
         {
             let _ignored = reply.send(Err(PortError::Identity));
             return Ok(());

@@ -321,7 +321,7 @@ fn first_submission_rejection_and_new_attempt_preserve_the_complete_original_rec
         &later.text,
     )
     .expect("freeze");
-    assert!(matches!(commit_prepared_turn(&tx,&intent(&expected_before),"request:retry",7,&later),Err(WorkerError::Notification(studio_runtime_services::notification_dispatch::NotificationDispatchError::ConflictingInput))));
+    assert!(matches!(commit_prepared_turn(&tx,&intent(&expected_before),"request:retry",7,"test-connection",&later),Err(WorkerError::Notification(studio_runtime_services::notification_dispatch::NotificationDispatchError::ConflictingInput))));
     drop(tx);
     compare(&db, &expected_before, "conflicting integration rolled back");
     let tx = db.transaction().expect("tx");
@@ -385,6 +385,7 @@ fn initial_binding_refuses_wrong_or_missing_prepared_generation_and_foreign_tran
                 &intent(&before),
                 "request:attempt",
                 7,
+                "test-connection",
                 &submission(&before, 150.0)
             )
             .expect("Submitted")

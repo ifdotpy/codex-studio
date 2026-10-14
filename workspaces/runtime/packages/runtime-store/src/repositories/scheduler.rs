@@ -272,6 +272,7 @@ mod tests {
                 "ticket-attempt",
                 "default",
                 1,
+                "test-connection",
                 "thread"
             )
             .expect("revoked claim cannot submit")
@@ -368,6 +369,7 @@ mod tests {
                 "ticket-attempt",
                 "default",
                 1,
+                "test-connection",
                 "thread"
             )
             .expect("submitted marker persists")
@@ -547,6 +549,7 @@ mod tests {
                 "ticket-held",
                 "default",
                 1,
+                "test-connection",
                 "thread"
             )
             .expect("hold refuses submission")

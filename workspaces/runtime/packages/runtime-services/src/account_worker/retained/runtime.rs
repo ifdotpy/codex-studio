@@ -4,7 +4,7 @@ impl Worker {
     fn retained_scope(&self) -> ConnectionScope {
         ConnectionScope {
             account: self.account.clone(),
-            connection: self.generation.0.to_string(),
+            connection: self.connection_id.clone(),
             generation: self.generation.0,
         }
     }

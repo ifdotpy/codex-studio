@@ -783,6 +783,23 @@ mod tests {
             .expect("persisted agent schema exists")
         );
         assert!(
+            validate(
+                "PersistedAgentRecord",
+                &json!({
+                    "id":"agent-1",
+                    "rootId":"agent-1",
+                    "epoch":0,
+                    "status":"running",
+                    "startAttempt":{
+                        "id":"attempt-1",
+                        "submitted":true,
+                        "connectionId":"fcd7c814-1048-4599-9b2d-4151fbc40b68"
+                    }
+                })
+            )
+            .expect("persisted agent schema exists")
+        );
+        assert!(
             !validate(
                 "PersistedAgentRecord",
                 &json!({"id":"agent-1","rootId":null,"epoch":0,"status":"idle"})

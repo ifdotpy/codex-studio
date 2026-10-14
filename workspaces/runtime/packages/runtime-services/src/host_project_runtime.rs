@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 use studio_runtime_store::{ProjectsRepository, RuntimeStore};
 
 /// Paths are resolved once outside the writer, then their source rows are rechecked.
-/// An intervening edit fails before any write rather than using stale membership.
+/// An intervening host-path edit fails before any write rather than using stale membership.
 pub struct PreparedHost {
     projects: Vec<(String, Value)>,
     agent_fences: Vec<AgentFence>,
@@ -16,9 +16,14 @@ pub struct PreparedHost {
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct AgentFence {
     id: String,
-    row: Value,
-    attempt_id: Option<Value>,
+    path: Option<Value>,
+    cwd: Option<Value>,
+    epoch: Option<Value>,
     status: Option<Value>,
+    auto_wake: Option<Value>,
+    deleted_at: Option<Value>,
+    archived_at: Option<Value>,
+    attempt_id: Option<Value>,
 }
 impl PreparedHost {
     pub fn load(store: &RuntimeStore) -> Result<Self, ProjectsError> {
@@ -85,7 +90,7 @@ impl PreparedHost {
             }
         }
         for agent in &self.agent_fences {
-            for path in [agent.row.get("path"), agent.row.get("cwd")]
+            for path in [agent.path.as_ref(), agent.cwd.as_ref()]
                 .into_iter()
                 .flatten()
             {
@@ -128,9 +133,14 @@ fn agent_fences(agents: &[(String, Value)]) -> Vec<AgentFence> {
         .iter()
         .map(|(id, row)| AgentFence {
             id: id.clone(),
-            row: row.clone(),
-            attempt_id: row.pointer("/startAttempt/id").cloned(),
+            path: row.get("path").cloned(),
+            cwd: row.get("cwd").cloned(),
+            epoch: row.get("epoch").cloned(),
             status: row.get("status").cloned(),
+            auto_wake: row.get("autoWake").cloned(),
+            deleted_at: row.get("deletedAt").cloned(),
+            archived_at: row.get("archivedAt").cloned(),
+            attempt_id: row.pointer("/startAttempt/id").cloned(),
         })
         .collect::<Vec<_>>();
     fences.sort_by(|left, right| left.id.cmp(&right.id));
@@ -140,46 +150,19 @@ fn agent_fences(agents: &[(String, Value)]) -> Vec<AgentFence> {
 fn agent_fences_match(before: &[AgentFence], current: &[AgentFence]) -> bool {
     before.len() == current.len()
         && before.iter().zip(current).all(|(before, current)| {
-            let mut expected = before.row.clone();
-            let mut observed = current.row.clone();
-            if let (Some(expected), Some(observed)) =
-                (expected.as_object_mut(), observed.as_object_mut())
-            {
-                expected.remove("status");
-                observed.remove("status");
-            }
-            expected == observed
-                && benign_status_transition(
-                    &before.status,
-                    &current.status,
-                    before.attempt_id.as_ref(),
-                    current.attempt_id.as_ref(),
-                )
+            before.id == current.id
+                && before.path == current.path
+                && before.cwd == current.cwd
+                && before.epoch == current.epoch
+                && before.auto_wake == current.auto_wake
+                && before.deleted_at == current.deleted_at
+                && before.archived_at == current.archived_at
+                && (before.status == current.status
+                    || (before.status.as_ref().and_then(Value::as_str) == Some("idle")
+                        && current.status.as_ref().and_then(Value::as_str) == Some("running")
+                        && before.attempt_id.is_some()
+                        && before.attempt_id == current.attempt_id))
         })
-}
-
-// Python checks epoch, deletedAt, threadId and accountKey before thread
-// preparation (codex_runtime.py:6505-6511), then attempt ID, epoch and autoWake
-// before submission (codex_runtime.py:7231-7235). Preserve every other field;
-// only the same attempt progressing idle/starting→running is benign.
-fn benign_status_transition(
-    before: &Option<Value>,
-    current: &Option<Value>,
-    before_attempt: Option<&Value>,
-    current_attempt: Option<&Value>,
-) -> bool {
-    if before == current {
-        return true;
-    }
-    before_attempt.is_some()
-        && before_attempt == current_attempt
-        && matches!(
-            (
-                before.as_ref().and_then(Value::as_str),
-                current.as_ref().and_then(Value::as_str)
-            ),
-            (Some("idle" | "starting"), Some("running"))
-        )
 }
 
 /// A checked local binding for P02's draft/commit transaction.

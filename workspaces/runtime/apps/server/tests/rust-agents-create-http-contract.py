@@ -258,29 +258,44 @@ class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             "X-Studio-API-Schema": self.backend.schema_hash,
         }
 
-    def background_work_pending(self):
+    def background_work_pending(self, agent_id=None):
         with database_connection(self.backend.state / "canvas.sqlite3") as database:
-            if database.execute(
+            active_turn = "SELECT 1 FROM runtime_agents WHERE json_extract(record,'$.autoWake')=1 " \
+                "AND json_extract(record,'$.status')='running' " \
+                "AND json_extract(record,'$.inFlight')=1 AND id=?"
+            if agent_id is not None and database.execute(active_turn, (agent_id,)).fetchone():
+                return True
+            event_scope = " AND e.agent=?" if agent_id is not None else ""
+            event_query = (
                 "SELECT 1 FROM runtime_events e JOIN runtime_agents a ON a.id=e.agent "
                 "WHERE e.status IN ('pending','reserved','dispatching') "
                 "AND e.kind!='child_result' "
                 "AND json_extract(a.record,'$.autoWake')=1 "
-                "AND json_extract(a.record,'$.status') NOT IN ('failed','interrupted','paused') LIMIT 1"
-            ).fetchone():
+                "AND json_extract(a.record,'$.status') NOT IN ('failed','interrupted','paused')"
+                + event_scope + " LIMIT 1"
+            )
+            if database.execute(event_query, (agent_id,) if agent_id is not None else ()).fetchone():
                 return True
-            for agent_id, encoded in database.execute("SELECT id,record FROM runtime_agents"):
+            if agent_id is not None:
+                return False
+            for row_agent_id, encoded in database.execute("SELECT id,record FROM runtime_agents"):
                 agent = json.loads(encoded)
                 if agent.get("workspaceOperation") or agent.get("worktreePreparation") in {"waiting", "preparing"}:
                     return True
             for (encoded,) in database.execute("SELECT record FROM runtime_tasks"):
-                if json.loads(encoded).get("status") == "running":
+                task = json.loads(encoded)
+                if (task.get("status") == "running"
+                        and (agent_id is None or task.get("agent") == agent_id)):
                     return True
         return False
 
-    def await_background_quiescence(self):
-        """Wait for scheduler, task, and workspace preparation work to settle."""
+    def await_background_quiescence(self, agent_id=None, *, settled=None):
+        """Wait for background work, or until a caller's durable state settles."""
         deadline = time.monotonic() + HTTP_WAIT_GUARD_SECONDS
-        if not self.background_work_pending():
+        def is_pending():
+            return not settled() if settled is not None else self.background_work_pending(agent_id)
+
+        if not is_pending():
             return
         query = urlencode({
             "protocol": "3",
@@ -293,7 +308,7 @@ class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         with urlopen(request, timeout=HTTP_WAIT_GUARD_SECONDS) as response:
             raw_socket = response.fp.raw._sock
             while time.monotonic() < deadline:
-                if not self.background_work_pending():
+                if not is_pending():
                     return
                 raw_socket.settimeout(max(0.01, deadline - time.monotonic()))
                 event = None
@@ -306,6 +321,25 @@ class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
                             break
                         event = None
             self.fail("Background scheduler/workspace work did not become quiescent")
+
+    def creation_preparation_settled(self, agent_id):
+        with database_connection(self.backend.state / "canvas.sqlite3") as database:
+            row = database.execute(
+                "SELECT record FROM runtime_agents WHERE id=?", (agent_id,)
+            ).fetchone()
+            event = database.execute(
+                "SELECT status FROM runtime_events WHERE id=?", (agent_id + ":initial",)
+            ).fetchone()
+        if row is None or event is None:
+            return False
+        attempt = json.loads(row[0]).get("startAttempt") or {}
+        connection_id = attempt.get("connectionId")
+        return (
+            attempt.get("submitted") is True
+            and isinstance(connection_id, str)
+            and bool(connection_id)
+            and event[0] == "delivered"
+        )
 
     def snapshot_no_write(self, *, before=None):
         self.await_background_quiescence()
@@ -610,7 +644,23 @@ class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         )
         self.assertEqual(explicit_max.status, 400, explicit_max.body[:1000])
         changed = {**request, "prompt": "Different content must not replace the task."}
-        before = (agent, event, projection)
+        self.await_background_quiescence(
+            settled=lambda: self.creation_preparation_settled(request["id"])
+        )
+        with database_connection(self.backend.state / "canvas.sqlite3") as database:
+            before = (
+                database.execute(
+                    "SELECT record FROM runtime_agents WHERE id=?", (request["id"],)
+                ).fetchone(),
+                database.execute(
+                    "SELECT kind,text,status FROM runtime_events WHERE id=?",
+                    (request["id"] + ":initial",),
+                ).fetchone(),
+                database.execute(
+                    "SELECT payload FROM sync_entities WHERE collection='agent' AND id=?",
+                    (request["id"],),
+                ).fetchone(),
+            )
         conflict = self.backend.request(
             "POST", "/api/agents", body=changed, headers=self.headers()
         )

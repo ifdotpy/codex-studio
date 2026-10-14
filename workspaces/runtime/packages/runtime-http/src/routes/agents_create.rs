@@ -36,19 +36,28 @@ impl studio_runtime_services::provider_callbacks::ManagedCreationEnvironment
         account_key: &'a str,
     ) -> std::pin::Pin<
         Box<dyn std::future::Future<Output = Result<(), studio_runtime_services::provider_callbacks::ManagedCreationEnvironmentError>> + Send + 'a>,
-    > {
+    >{
         Box::pin(async move {
-            use studio_runtime_services::provider_callbacks::ManagedCreationEnvironmentError as E;
             use studio_runtime_services::provider_callbacks::ManagedCreationAccountRead;
+            use studio_runtime_services::provider_callbacks::ManagedCreationEnvironmentError as E;
             let identity = DriverManagedAccountRead(self.accounts.as_ref())
                 .resolve_identity(account_key, account_key)
                 .map_err(|_| E::Unavailable("account-driver/managed-child-account"))?;
             let account = host_account_identity(&identity);
-            let (Some(home), Some(provider)) = (account.home.as_deref(), account.provider.as_deref()) else {
+            let (Some(home), Some(provider)) =
+                (account.home.as_deref(), account.provider.as_deref())
+            else {
                 return Err(E::Unavailable("provider-session/model-list"));
             };
-            match self.catalog.service.wait_for_admission_catalog(account_key, home, provider).await {
-                studio_runtime_services::model_catalog::AdmissionCatalogRead::Fresh { .. } => Ok(()),
+            match self
+                .catalog
+                .service
+                .wait_for_admission_catalog(account_key, home, provider)
+                .await
+            {
+                studio_runtime_services::model_catalog::AdmissionCatalogRead::Fresh { .. } => {
+                    Ok(())
+                }
                 studio_runtime_services::model_catalog::AdmissionCatalogRead::Pending
                 | studio_runtime_services::model_catalog::AdmissionCatalogRead::Unavailable => {
                     Err(E::Unavailable("provider-session/model-list"))
@@ -679,6 +688,18 @@ async fn create_agent_with_import(
             "account-driver/unavailable",
         )));
     }
+    wait_for_agent_catalog(
+        &state,
+        body.parent.as_ref().and_then(Option::as_deref),
+        body.account_key.as_deref(),
+        body.model.as_ref().and_then(Option::as_deref),
+        body.parent.as_ref().is_some_and(Option::is_some)
+            || body.model.as_ref().is_some_and(Option::is_some)
+            || body.effort.as_ref().is_some_and(Option::is_some)
+            || body.fast_mode.as_ref().is_some_and(Option::is_some)
+            || body.daybreak_enabled.as_ref().is_some_and(Option::is_some),
+    )
+    .await?;
     let request = Creation {
         intent: serde_json::to_value(&body).map_err(|_| ApiError::internal())?,
         catalog: body.model.as_ref().is_some_and(Option::is_some)
@@ -706,6 +727,179 @@ async fn create_agent_with_import(
         agents_create::agent(context, request)
     })
     .await
+}
+
+async fn wait_for_agent_catalog(
+    state: &HttpState,
+    parent_id: Option<&str>,
+    requested_account: Option<&str>,
+    requested_model: Option<&str>,
+    needs_catalog: bool,
+) -> Result<(), ApiError> {
+    if !needs_catalog {
+        return Ok(());
+    }
+    let (Some(driver), Some(session)) = (&state.account_driver, &state.account_session) else {
+        return Ok(());
+    };
+    let catalog = state.model_catalog.clone();
+    catalog.set_account_session(Some(std::sync::Arc::clone(session)));
+    let started = tokio::time::Instant::now();
+    let deadline = started
+        + std::time::Duration::from_secs(
+            studio_runtime_schema::shared_values::MODEL_CATALOG_ADMISSION_WAIT_SECONDS,
+        );
+    let driver = std::sync::Arc::clone(driver);
+    let store = state.store.clone();
+    let parent_id = parent_id.map(str::to_owned);
+    let requested_account = requested_account.map(str::to_owned);
+    let requested_model = requested_model.map(str::to_owned);
+    let candidate_data = tokio::time::timeout_at(
+        deadline,
+        tokio::task::spawn_blocking(move || {
+            let snapshot = driver.listing_snapshot().map_err(|_| ())?;
+            let mut parent_account = None;
+            let mut selected_account = None;
+            let mut root_model = None;
+            let mut worker_model = None;
+            let mut excluded = std::collections::HashSet::new();
+            if let Some(parent_id) = parent_id.as_deref() {
+                let connection = store.as_deref().ok_or(())?.read().map_err(|_| ())?;
+                let parent = studio_runtime_store::system_reads::get(
+                    &connection,
+                    "runtime_agents",
+                    parent_id,
+                )
+                .map_err(|_| ())?
+                .ok_or(())?;
+                parent_account = parent
+                    .get("accountKey")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned);
+                if let Some(root_id) = parent.get("rootId").and_then(Value::as_str) {
+                    let root = studio_runtime_store::system_reads::get(
+                        &connection,
+                        "runtime_agents",
+                        root_id,
+                    )
+                    .map_err(|_| ())?
+                    .unwrap_or(parent);
+                    selected_account = root
+                        .pointer("/workerDefaults/accountKey")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned);
+                    root_model = root.get("model").and_then(Value::as_str).map(str::to_owned);
+                    worker_model = root
+                        .pointer("/workerDefaults/model")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned);
+                    excluded.extend(
+                        root.get("excludedAccountKeys")
+                            .and_then(Value::as_array)
+                            .into_iter()
+                            .flatten()
+                            .filter_map(Value::as_str)
+                            .map(str::to_owned),
+                    );
+                }
+            }
+            let explicit = requested_account;
+            let model = requested_model
+                .or(worker_model)
+                .or(root_model)
+                .unwrap_or_else(|| "gpt-6-astra".to_owned());
+            let provider = if model.starts_with("gpt-") {
+                Some("codex")
+            } else if model.starts_with("claude-")
+                || matches!(model.as_str(), "default" | "sonnet" | "opus" | "haiku")
+            {
+                Some("claude")
+            } else {
+                None
+            };
+            let pinned = explicit.or(selected_account);
+            let mut keys = Vec::new();
+            let mut add = |key: Option<&str>| {
+                if let Some(key) = key.filter(|key| !excluded.contains(*key))
+                    && !keys.iter().any(|known| known == key)
+                {
+                    keys.push(key.to_owned());
+                }
+            };
+            if let Some(key) = pinned.as_deref() {
+                add(Some(key));
+            } else {
+                add(parent_account.as_deref());
+                add(snapshot.default_account_key.as_str());
+                for row in &snapshot.accounts {
+                    let key = row.get("id").and_then(Value::as_str);
+                    let row_provider = row
+                        .get("provider")
+                        .and_then(Value::as_str)
+                        .unwrap_or("codex");
+                    if provider.is_none_or(|wanted| wanted == row_provider) {
+                        add(key);
+                    }
+                }
+            }
+            let accounts = snapshot
+                .accounts
+                .into_iter()
+                .filter_map(|row| {
+                    let key = row.get("id")?.as_str()?.to_owned();
+                    let home = row.get("home")?.as_str()?.to_owned();
+                    let provider = row
+                        .get("provider")
+                        .and_then(Value::as_str)
+                        .unwrap_or("codex")
+                        .to_owned();
+                    keys.contains(&key).then_some((key, home, provider))
+                })
+                .collect::<Vec<_>>();
+            Ok::<_, ()>((pinned.is_some(), accounts))
+        }),
+    )
+    .await
+    .map_err(|_| operation_error(OperationError::Unavailable("provider-session/model-list")))?
+    .map_err(|_| ApiError::internal())?
+    .map_err(|_| ApiError::internal())?;
+    if candidate_data.1.is_empty() {
+        return Err(operation_error(OperationError::Unavailable(
+            "provider-session/model-list",
+        )));
+    }
+    for (account, home, provider) in candidate_data.1 {
+        let session = std::sync::Arc::clone(session);
+        let account_for_session = account.clone();
+        let ensured = tokio::time::timeout_at(
+            deadline,
+            tokio::task::spawn_blocking(move || session.ensure_session(&account_for_session)),
+        )
+        .await
+        .ok()
+        .and_then(Result::ok)
+        .is_some_and(|result| result.is_ok());
+        if !ensured {
+            continue;
+        }
+        let fresh = tokio::time::timeout_at(
+            deadline,
+            catalog.wait_for_admission_catalog(&account, &home, &provider),
+        )
+        .await
+        .is_ok_and(|result| {
+            matches!(
+                result,
+                studio_runtime_services::model_catalog::AdmissionCatalogRead::Fresh { .. }
+            )
+        });
+        if fresh {
+            return Ok(());
+        }
+    }
+    Err(operation_error(OperationError::Unavailable(
+        "provider-session/model-list",
+    )))
 }
 
 /// Import uses the same creation admission, catalog validation and durable

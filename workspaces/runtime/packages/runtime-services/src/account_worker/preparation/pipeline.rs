@@ -28,6 +28,7 @@ pub(crate) struct RequestPreparation {
     pub compiled: Option<turn::PreparedSubmission>,
     pub submission: Option<crate::notification_dispatch::PreparedSubmission>,
     pub guard: CommitGuard,
+    pub connection_id: String,
 }
 fn catalog(
     resources: &PreparationResources,
@@ -419,8 +420,16 @@ pub(crate) fn prepare(
     }
     let selection = admit(store, resources, intent)?;
     let token = workspace(store, intent)?;
+    let connection_id = uuid::Uuid::new_v4().to_string();
     prepare_ready(
-        store, resources, intent, method, generation, selection, token,
+        store,
+        resources,
+        intent,
+        method,
+        generation,
+        &connection_id,
+        selection,
+        token,
     )
 }
 
@@ -912,6 +921,7 @@ pub(crate) fn prepare_ready(
     intent: &TurnIntent,
     method: Method,
     generation: u64,
+    connection_id: &str,
     admission: Admission,
     token: crate::workspace_ready::ReadyToken,
 ) -> Result<RequestPreparation, WorkerError> {
@@ -1008,6 +1018,7 @@ pub(crate) fn prepare_ready(
             compiled: None,
             submission: None,
             guard,
+            connection_id: connection_id.to_owned(),
         });
     }
     continuation_gate(&snapshot, &intent.attempt_id)?;
@@ -1078,7 +1089,7 @@ pub(crate) fn prepare_ready(
                 tx,
                 &intent.agent_id,
                 &intent.attempt_id,
-                claude_transport(&intent.account_key, generation)?,
+                claude_transport(&intent.account_key, connection_id)?,
                 Value::Object(params.clone()),
                 submission.text.clone(),
             )?)
@@ -1100,6 +1111,7 @@ pub(crate) fn prepare_ready(
         compiled: Some(compiled),
         submission: Some(submission),
         guard,
+        connection_id: connection_id.to_owned(),
     })
 }
 fn continuation_gate(snapshot: &thread::Snapshot, attempt: &str) -> Result<(), WorkerError> {
@@ -1296,10 +1308,10 @@ pub(crate) fn persist_compilation(
 /// Binding comes from the retained account generation, never the native reply.
 pub(crate) fn claude_transport(
     account: &str,
-    generation: u64,
+    connection_id: &str,
 ) -> Result<crate::claude_input_recovery::TransportSnapshot, WorkerError> {
     decode(
-        json!({"accountKey":account,"connectionId":generation.to_string(),"supervisorIdentity":null,"closed":false}),
+        json!({"accountKey":account,"connectionId":connection_id,"supervisorIdentity":null,"closed":false}),
         "retained Claude binding",
     )
 }
@@ -1308,6 +1320,7 @@ pub(crate) fn commit_claude(
     intent: &TurnIntent,
     request_id: &str,
     generation: u64,
+    connection_id: &str,
     submission: &crate::notification_dispatch::PreparedSubmission,
     guard: &CommitGuard,
 ) -> Result<bool, WorkerError> {
@@ -1316,7 +1329,7 @@ pub(crate) fn commit_claude(
         intent,
         request_id,
         crate::claude_input_recovery::runtime::SubmittedBinding {
-            transport: claude_transport(&intent.account_key, generation)?,
+            transport: claude_transport(&intent.account_key, connection_id)?,
             generation,
         },
         guard

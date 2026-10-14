@@ -92,7 +92,12 @@ async fn limits(
         )
         .await
         .map_err(|_| ApiError::internal())?
-        .map_err(super::account_login::session_error)?;
+        .map_err(|error| match error {
+            studio_runtime_services::account_session_runtime::AccountSessionError::Requires(_) => {
+                dependency_error().unwrap_or_else(|_| ApiError::internal())
+            }
+            other => super::account_login::session_error(other),
+        })?;
         return serde_json::from_value(response)
             .map(Json)
             .map_err(|_| ApiError::internal());
