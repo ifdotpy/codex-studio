@@ -377,6 +377,7 @@ fn failed_final_transaction_rolls_back_intent_and_does_not_release() {
         json!({}),
     );
     assert!(dispatch_with_managed_tools(&store, &context, &frame, 20.0, &ports).is_err());
+    assert_eq!(ports.staged.load(Ordering::SeqCst), 1);
     assert_eq!(ports.released.load(Ordering::SeqCst), 0);
     assert_eq!(intent_count(&store, "status"), 0);
 }

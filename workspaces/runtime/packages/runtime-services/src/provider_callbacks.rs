@@ -36,6 +36,26 @@ pub fn dispatch(
     frame: &Frame,
     now: f64,
 ) -> Result<CallbackDecision, CallbackError> {
+    dispatch_with_managed_tools(
+        store,
+        context,
+        frame,
+        now,
+        &crate::managed_host_tools::UnavailablePorts,
+    )
+}
+
+/// Account workers with a retained host runtime pass its explicit staged-effect
+/// bundle here. The bundle is used inside the callback transaction only to
+/// write durable intents; managed tool dispatch releases wake signals after
+/// the final commit and before returning the decision.
+pub(crate) fn dispatch_with_managed_tools<P: crate::managed_host_tools::Ports>(
+    store: &RuntimeStore,
+    context: &CallbackContext,
+    frame: &Frame,
+    now: f64,
+    ports: &P,
+) -> Result<CallbackDecision, CallbackError> {
     let Some(request) = model::Input::from_frame(frame)? else {
         return Ok(CallbackDecision::Unsupported);
     };
@@ -43,7 +63,7 @@ pub fn dispatch(
         return Err(CallbackError::Invalid("Invalid callback clock"));
     }
     if request.method == "item/tool/call" {
-        return tools::dispatch(store, context, &request, now);
+        return tools::dispatch_with_ports(store, context, &request, now, ports);
     }
     store.transaction_with(|tx| {
         let identity = ReplyIdentity::new(context, &request.id);
