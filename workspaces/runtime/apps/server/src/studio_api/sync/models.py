@@ -826,6 +826,8 @@ class ComplaintEntityDto(ContractModel):
     status: ComplaintStatus | None = None
     needsUserResponse: bool | None = None
     created: float | None = None
+    # The time of the last change; a new version of an old complaint has a new time.
+    updated: float | None = None
     readAt: float | None = None
     recipient: Literal["user", "lead"] | None = None
     version: int | None = None

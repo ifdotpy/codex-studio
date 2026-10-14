@@ -5852,6 +5852,8 @@ export interface components {
       status?: components["schemas"]["ComplaintStatus"] | null;
       /** Title */
       title?: string | null;
+      /** Updated */
+      updated?: number | null;
       /** Version */
       version?: number | null;
     };

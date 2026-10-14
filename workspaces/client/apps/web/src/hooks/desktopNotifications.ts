@@ -1,6 +1,6 @@
 import { isServerView } from "../servers/environment";
 import { useEffect, useRef } from "react";
-import { desktopAlerts } from "../desktop/desktopAlerts";
+import { alertsSince, desktopAlerts } from "../desktop/desktopAlerts";
 import type { Snapshot } from "../types";
 
 export function useDesktopNotifications(
@@ -12,6 +12,7 @@ export function useDesktopNotifications(
     initialized: false,
     permissionReported: false,
     seen: new Set<string>(),
+    started: Date.now(),
   });
   useEffect(() => {
     if (!data || isServerView) return;
@@ -22,10 +23,13 @@ export function useDesktopNotifications(
         initialized: false,
         permissionReported: false,
         seen: new Set(),
+        started: Date.now(),
       };
     const current = state.current;
     const alerts = desktopAlerts(data);
-    const added = alerts.filter((alert) => !current.seen.has(alert.id));
+    const added = alerts
+      .filter((alert) => !current.seen.has(alert.id))
+      .filter(alertsSince(current.started));
     for (const alert of alerts) current.seen.add(alert.id);
     // The initial snapshot establishes a baseline, not an old-alert backlog.
     if (!current.initialized) {

@@ -5,7 +5,19 @@ export type DesktopAlert = {
   title: string;
   body: string;
   target: { agentId: string; section: "messages"; itemId?: string };
+  /** When the event happened (seconds), when the record says. */
+  at?: number;
 };
+
+// A window that starts or reloads takes the alerts it finds as already known. Records that
+// arrive after that first snapshot (a slow page of the sync pull) are not new events: an alert
+// whose event is older than the start of the window is never shown. The margin covers a clock
+// difference between paired Macs.
+const START_MARGIN_SECONDS = 120;
+export function alertsSince(started: number) {
+  const since = started / 1000 - START_MARGIN_SECONDS;
+  return (alert: DesktopAlert) => alert.at === undefined || alert.at >= since;
+}
 
 export function desktopAlerts(data: Snapshot): DesktopAlert[] {
   const agents = new Map(data.threads.map((agent) => [agent.id, agent]));
@@ -16,6 +28,7 @@ export function desktopAlerts(data: Snapshot): DesktopAlert[] {
     title: string,
     body: string,
     itemId?: string,
+    at?: number | null,
   ) => {
     const agent = typeof agentId === "string" ? agents.get(agentId) : undefined;
     if (!agent || agent.deletedAt) return;
@@ -28,6 +41,7 @@ export function desktopAlerts(data: Snapshot): DesktopAlert[] {
         section: "messages",
         ...(itemId ? { itemId } : {}),
       },
+      ...(typeof at === "number" ? { at } : {}),
     });
   };
   for (const agent of agents.values()) {
@@ -76,6 +90,7 @@ export function desktopAlerts(data: Snapshot): DesktopAlert[] {
       question ? "Question for you" : "Your approval is needed",
       question || "Open the request to review it.",
       request.id,
+      request.createdAt ?? request.created ?? request.at,
     );
   }
   for (const complaint of data.runtime.complaints) {
@@ -86,6 +101,7 @@ export function desktopAlerts(data: Snapshot): DesktopAlert[] {
         "Message for you",
         complaint.title || "Open the message to read it.",
         complaint.id,
+        complaint.updated ?? complaint.created,
       );
   }
   return alerts;
