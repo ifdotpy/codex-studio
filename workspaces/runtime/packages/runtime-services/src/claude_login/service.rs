@@ -2,7 +2,7 @@
 //! off the executor, and no provider I/O occurs inside an account/store lock.
 use super::{ports::*, receipts::MAX_JOBS, *};
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, HashMap, VecDeque},
     ffi::OsString,
     fs::{File, OpenOptions},
     path::PathBuf,
@@ -34,11 +34,291 @@ pub struct LoginConfig {
     pub cwd: PathBuf,
     pub environment: BTreeMap<OsString, OsString>,
 }
+#[derive(Clone)]
 struct Job {
     snapshot: LoginSnapshot,
     verified: bool,
     url: Option<String>,
     commands: Option<mpsc::Sender<Command>>,
+}
+enum RegistryCommand {
+    Acquire(String, oneshot::Sender<u64>),
+    Load(
+        String,
+        u64,
+        oneshot::Sender<Result<Option<Job>, LoginError>>,
+    ),
+    Update(String, u64, Job, oneshot::Sender<Result<(), LoginError>>),
+    Release(String, u64),
+    Reserve(
+        String,
+        Option<String>,
+        oneshot::Sender<Result<Option<Job>, LoginError>>,
+    ),
+    FinishReservation(
+        String,
+        Option<String>,
+        Job,
+        oneshot::Sender<Result<(), LoginError>>,
+    ),
+    CancelReservation(String),
+    Insert(String, Job, oneshot::Sender<()>),
+    Snapshot(oneshot::Sender<Vec<(String, Job)>>),
+}
+#[derive(Clone)]
+struct JobRegistry(mpsc::Sender<RegistryCommand>);
+struct JobLease {
+    id: String,
+    token: u64,
+    registry: mpsc::Sender<RegistryCommand>,
+}
+struct StartReservation {
+    id: String,
+    account: Option<String>,
+    registry: mpsc::Sender<RegistryCommand>,
+    active: bool,
+}
+
+impl JobRegistry {
+    fn new() -> Self {
+        let (sender, mut receiver) = mpsc::channel(256);
+        tokio::spawn(async move {
+            let mut jobs = BTreeMap::<String, Job>::new();
+            let mut active = HashMap::<String, u64>::new();
+            let mut waiters = HashMap::<String, VecDeque<(u64, oneshot::Sender<u64>)>>::new();
+            let mut starting = HashMap::<String, Option<String>>::new();
+            let mut next_token = 1_u64;
+            while let Some(command) = receiver.recv().await {
+                match command {
+                    RegistryCommand::Acquire(id, reply) => {
+                        if active.contains_key(&id) {
+                            waiters
+                                .entry(id)
+                                .or_default()
+                                .push_back((next_token, reply));
+                            next_token = next_token.wrapping_add(1).max(1);
+                        } else {
+                            let token = next_token;
+                            next_token = next_token.wrapping_add(1).max(1);
+                            active.insert(id, token);
+                            let _ = reply.send(token);
+                        }
+                    }
+                    RegistryCommand::Load(id, token, reply) => {
+                        if active.get(&id) == Some(&token) {
+                            let _ = reply.send(Ok(jobs.get(&id).cloned()));
+                        } else {
+                            let _ = reply.send(Err(LoginError::Unavailable));
+                        }
+                    }
+                    RegistryCommand::Update(id, token, job, reply) => {
+                        if active.get(&id) == Some(&token) {
+                            jobs.insert(id, job);
+                            let _ = reply.send(Ok(()));
+                        } else {
+                            let _ = reply.send(Err(LoginError::Unavailable));
+                        }
+                    }
+                    RegistryCommand::Release(id, token) => {
+                        if active.get(&id) == Some(&token) {
+                            let mut granted = false;
+                            if let Some(queue) = waiters.get_mut(&id) {
+                                while let Some((next, reply)) = queue.pop_front() {
+                                    if !reply.is_closed() {
+                                        active.insert(id.clone(), next);
+                                        let _ = reply.send(next);
+                                        granted = true;
+                                        break;
+                                    }
+                                }
+                                if queue.is_empty() {
+                                    waiters.remove(&id);
+                                }
+                            }
+                            if !granted {
+                                active.remove(&id);
+                            }
+                        }
+                    }
+                    RegistryCommand::Reserve(id, account, reply) => {
+                        let existing = jobs.get(&id).cloned();
+                        let busy = jobs.len() + starting.len() >= MAX_JOBS
+                            || jobs.values().filter(|j| j.snapshot.active()).count()
+                                + starting.len()
+                                >= MAX_ACTIVE
+                            || starting.contains_key(&id)
+                            || jobs.values().any(|j| {
+                                (j.snapshot.active() || unknown(&j.snapshot))
+                                    && account.as_deref() == Some(j.snapshot.account_key())
+                            })
+                            || (account.is_some()
+                                && starting.values().any(|reserved| reserved == &account));
+                        let result = if existing.is_some() {
+                            Ok(existing)
+                        } else if busy {
+                            Err(LoginError::Busy)
+                        } else {
+                            starting.insert(id, account);
+                            Ok(None)
+                        };
+                        let _ = reply.send(result);
+                    }
+                    RegistryCommand::FinishReservation(id, account, job, reply) => {
+                        if starting.get(&id) == Some(&account) {
+                            starting.remove(&id);
+                            jobs.insert(id, job);
+                            let _ = reply.send(Ok(()));
+                        } else {
+                            let _ = reply.send(Err(LoginError::Unavailable));
+                        }
+                    }
+                    RegistryCommand::CancelReservation(id) => {
+                        starting.remove(&id);
+                    }
+                    RegistryCommand::Insert(id, job, reply) => {
+                        jobs.insert(id, job);
+                        let _ = reply.send(());
+                    }
+                    RegistryCommand::Snapshot(reply) => {
+                        drop(
+                            reply.send(
+                                jobs.iter()
+                                    .map(|(id, job)| (id.clone(), job.clone()))
+                                    .collect(),
+                            ),
+                        );
+                    }
+                }
+            }
+        });
+        Self(sender)
+    }
+    async fn acquire(&self, id: &str) -> Result<JobLease, LoginError> {
+        let (reply, receive) = oneshot::channel();
+        self.0
+            .send(RegistryCommand::Acquire(id.to_owned(), reply))
+            .await
+            .map_err(|_| LoginError::Unavailable)?;
+        let token = receive.await.map_err(|_| LoginError::Unavailable)?;
+        Ok(JobLease {
+            id: id.to_owned(),
+            token,
+            registry: self.0.clone(),
+        })
+    }
+    async fn reserve(
+        &self,
+        id: &str,
+        account: Option<String>,
+    ) -> Result<(Option<Job>, StartReservation), LoginError> {
+        let (reply, receive) = oneshot::channel();
+        self.0
+            .send(RegistryCommand::Reserve(
+                id.to_owned(),
+                account.clone(),
+                reply,
+            ))
+            .await
+            .map_err(|_| LoginError::Unavailable)?;
+        let existing = receive.await.map_err(|_| LoginError::Unavailable)??;
+        let active = existing.is_none();
+        Ok((
+            existing,
+            StartReservation {
+                id: id.to_owned(),
+                account,
+                registry: self.0.clone(),
+                active,
+            },
+        ))
+    }
+    async fn insert(&self, id: String, job: Job) -> Result<(), LoginError> {
+        let (reply, receive) = oneshot::channel();
+        self.0
+            .send(RegistryCommand::Insert(id, job, reply))
+            .await
+            .map_err(|_| LoginError::Unavailable)?;
+        receive.await.map_err(|_| LoginError::Unavailable)
+    }
+    async fn snapshot(&self) -> Result<Vec<(String, Job)>, LoginError> {
+        let (reply, receive) = oneshot::channel();
+        self.0
+            .send(RegistryCommand::Snapshot(reply))
+            .await
+            .map_err(|_| LoginError::Unavailable)?;
+        receive.await.map_err(|_| LoginError::Unavailable)
+    }
+}
+impl JobLease {
+    async fn load(&self) -> Result<Job, LoginError> {
+        let (reply, receive) = oneshot::channel();
+        self.registry
+            .send(RegistryCommand::Load(self.id.clone(), self.token, reply))
+            .await
+            .map_err(|_| LoginError::Unavailable)?;
+        receive
+            .await
+            .map_err(|_| LoginError::Unavailable)??
+            .ok_or(LoginError::Unknown)
+    }
+    async fn update(&self, job: Job) -> Result<(), LoginError> {
+        let (reply, receive) = oneshot::channel();
+        self.registry
+            .send(RegistryCommand::Update(
+                self.id.clone(),
+                self.token,
+                job,
+                reply,
+            ))
+            .await
+            .map_err(|_| LoginError::Unavailable)?;
+        receive.await.map_err(|_| LoginError::Unavailable)?
+    }
+}
+impl Drop for JobLease {
+    fn drop(&mut self) {
+        let command = RegistryCommand::Release(self.id.clone(), self.token);
+        if let Err(mpsc::error::TrySendError::Full(command)) = self.registry.try_send(command) {
+            if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+                let sender = self.registry.clone();
+                drop(runtime.spawn(async move {
+                    drop(sender.send(command).await);
+                }));
+            }
+        }
+    }
+}
+impl StartReservation {
+    async fn finish(mut self, job: Job) -> Result<(), LoginError> {
+        let (reply, receive) = oneshot::channel();
+        self.registry
+            .send(RegistryCommand::FinishReservation(
+                self.id.clone(),
+                self.account.clone(),
+                job,
+                reply,
+            ))
+            .await
+            .map_err(|_| LoginError::Unavailable)?;
+        receive.await.map_err(|_| LoginError::Unavailable)??;
+        self.active = false;
+        Ok(())
+    }
+}
+impl Drop for StartReservation {
+    fn drop(&mut self) {
+        if self.active {
+            let command = RegistryCommand::CancelReservation(self.id.clone());
+            if let Err(mpsc::error::TrySendError::Full(command)) = self.registry.try_send(command)
+                && let Ok(runtime) = tokio::runtime::Handle::try_current()
+            {
+                let sender = self.registry.clone();
+                drop(runtime.spawn(async move {
+                    drop(sender.send(command).await);
+                }));
+            }
+        }
+    }
 }
 enum Command {
     Code(Vec<u8>, oneshot::Sender<Result<(), LoginError>>),
@@ -56,7 +336,7 @@ pub struct LoginService {
     launcher: Arc<dyn LoginLauncher>,
     receipts: Arc<dyn LoginReceipts>,
     chats: Arc<dyn LoginChats>,
-    jobs: Mutex<BTreeMap<String, Job>>,
+    jobs: JobRegistry,
     tasks: Mutex<Vec<tokio::task::JoinHandle<()>>>,
     failed: AtomicBool,
     on_change: Arc<dyn Fn() + Send + Sync>,
@@ -78,7 +358,7 @@ impl LoginService {
             launcher,
             receipts,
             chats,
-            jobs: Mutex::new(BTreeMap::new()),
+            jobs: JobRegistry::new(),
             tasks: Mutex::new(Vec::new()),
             failed: AtomicBool::new(false),
             on_change,
@@ -111,15 +391,18 @@ impl LoginService {
                 service.save(&restored).await?;
             }
             let restored = service.cleanup(&restored).await?;
-            service.jobs.lock().await.insert(
-                restored.request_id().into(),
-                Job {
-                    snapshot: restored,
-                    verified: false,
-                    url: None,
-                    commands: None,
-                },
-            );
+            service
+                .jobs
+                .insert(
+                    restored.request_id().into(),
+                    Job {
+                        snapshot: restored,
+                        verified: false,
+                        url: None,
+                        commands: None,
+                    },
+                )
+                .await?;
         }
         Ok(service)
     }
@@ -143,9 +426,8 @@ impl LoginService {
         request_id(id)?;
         self.settle_unknowns().await?;
         self.refresh_chats(id).await?;
-        let jobs = self.jobs.lock().await;
-        let job = jobs.get(id).ok_or(LoginError::Unknown)?;
-        Ok(public(job))
+        let lease = self.jobs.acquire(id).await?;
+        Ok(public(&lease.load().await?))
     }
     pub async fn start(
         self: &Arc<Self>,
@@ -164,22 +446,13 @@ impl LoginService {
         let signature = account
             .is_none()
             .then(|| crate::event_write::request_signature(&json!({"email":email,"label":label})));
-        let mut jobs = self.jobs.lock().await;
-        if let Some(job) = jobs.get(&id) {
+        let (existing, reservation) = self.jobs.reserve(&id, account.clone()).await?;
+        if existing.is_some() {
+            let lease = self.jobs.acquire(&id).await?;
+            let job = lease.load().await?;
             job.snapshot
                 .replay(account.as_deref(), signature.as_deref())?;
-            return Ok(public(job));
-        }
-        if jobs.len() >= MAX_JOBS
-            || jobs.values().filter(|j| j.snapshot.active()).count() >= MAX_ACTIVE
-        {
-            return Err(LoginError::Busy);
-        }
-        if jobs.values().any(|j| {
-            (j.snapshot.active() || unknown(&j.snapshot))
-                && account.as_deref() == Some(j.snapshot.account_key())
-        }) {
-            return Err(LoginError::Busy);
+            return Ok(public(&job));
         }
         let profile = if let Some(key) = &account {
             let accounts = self.accounts.clone();
@@ -268,16 +541,14 @@ impl LoginService {
         new_config.0 = None;
         let (sender, receiver) = mpsc::channel(4);
         let result = snapshot.receipt();
-        jobs.insert(
-            id.clone(),
-            Job {
+        reservation
+            .finish(Job {
                 snapshot,
                 verified: false,
                 url: None,
                 commands: Some(sender),
-            },
-        );
-        drop(jobs);
+            })
+            .await?;
         let service = self.clone();
         let launch = Launch {
             program,
@@ -298,16 +569,17 @@ impl LoginService {
         self.available()?;
         request_id(id)?;
         validate_code(&code)?;
-        let mut jobs = self.jobs.lock().await;
-        let job = jobs.get_mut(id).ok_or(LoginError::Unknown)?;
+        let lease = self.jobs.acquire(id).await?;
+        let mut job = lease.load().await?;
         let (next, write) = job
             .snapshot
             .code_intent(job.url.is_some() && job.commands.is_some())?;
         if !write {
-            return Ok(public(job));
+            return Ok(public(&job));
         }
         self.save(&next).await?;
         job.snapshot = next;
+        lease.update(job.clone()).await?;
         let sender = job.commands.clone().ok_or(LoginError::WaitForLink)?;
         let (reply, receipt) = oneshot::channel();
         let bytes = (code + "\n").into_bytes();
@@ -318,9 +590,10 @@ impl LoginService {
             self.save(&next).await?;
             job.snapshot = next;
             job.url = None;
-            return Ok(public(job));
+            lease.update(job.clone()).await?;
+            return Ok(public(&job));
         }
-        drop(jobs);
+        drop(lease);
         if !matches!(
             tokio::time::timeout(COMMAND_DEADLINE, receipt).await,
             Ok(Ok(Ok(())))
@@ -340,8 +613,8 @@ impl LoginService {
     pub async fn cancel(&self, id: &str) -> Result<Value, LoginError> {
         self.available()?;
         request_id(id)?;
-        let mut jobs = self.jobs.lock().await;
-        let job = jobs.get_mut(id).ok_or(LoginError::Unknown)?;
+        let lease = self.jobs.acquire(id).await?;
+        let mut job = lease.load().await?;
         if unknown(&job.snapshot) && job.commands.is_none() {
             // Explicit cancellation acknowledges only this receipt. It does not prove
             // the old child exited, delete its config, or resend any input.
@@ -355,6 +628,7 @@ impl LoginService {
             let next = LoginSnapshot::from_record(record)?;
             self.save(&next).await?;
             job.snapshot = next;
+            lease.update(job.clone()).await?;
             (self.on_change)();
         }
         if job.snapshot.active() {
@@ -368,9 +642,10 @@ impl LoginService {
                 self.failed.store(true, Ordering::Release);
                 return Err(LoginError::Unavailable);
             }
+            lease.update(job.clone()).await?;
             (self.on_change)();
         }
-        Ok(public(job))
+        Ok(public(&job))
     }
     async fn finish(
         &self,
@@ -378,13 +653,14 @@ impl LoginService {
         status: LoginStatus,
         error: Option<&str>,
     ) -> Result<(), LoginError> {
-        let mut jobs = self.jobs.lock().await;
-        let job = jobs.get_mut(id).ok_or(LoginError::Unknown)?;
+        let lease = self.jobs.acquire(id).await?;
+        let mut job = lease.load().await?;
         if job.snapshot.active() {
             let next = job.snapshot.finish(status, error)?;
             self.save(&next).await?;
             job.snapshot = next;
             job.url = None;
+            lease.update(job.clone()).await?;
             (self.on_change)();
         }
         Ok(())
@@ -430,8 +706,9 @@ impl LoginService {
         {
             self.failed.store(true, Ordering::Release);
         }
-        let mut jobs = self.jobs.lock().await;
-        if let Some(job) = jobs.get_mut(&id) {
+        let state = async {
+            let lease = self.jobs.acquire(&id).await?;
+            let mut job = lease.load().await?;
             if result.is_err() {
                 let mut record = job.snapshot.record().clone();
                 record["metadata"]["outcomeUnknown"] = json!(true);
@@ -447,9 +724,13 @@ impl LoginService {
                 Ok(next) => job.snapshot = next,
                 Err(_) => self.failed.store(true, Ordering::Release),
             }
+            lease.update(job).await
+        }
+        .await;
+        if state.is_err() {
+            self.failed.store(true, Ordering::Release);
         }
         drop(launch.lease);
-        drop(jobs);
         // A final receipt write may fail after Ready was installed in memory.
         // Wake readers even when finish() correctly leaves that terminal state intact.
         (self.on_change)();
@@ -461,8 +742,8 @@ impl LoginService {
         commands: &mut mpsc::Receiver<Command>,
     ) -> Result<(), LoginError> {
         let snapshot = {
-            let jobs = self.jobs.lock().await;
-            let job = jobs.get(id).ok_or(LoginError::Unknown)?;
+            let lease = self.jobs.acquire(id).await?;
+            let job = lease.load().await?;
             if !job.snapshot.active() {
                 return Ok(());
             }
@@ -501,8 +782,16 @@ impl LoginService {
                 event=child.next_event()=>match event?{
                     Some(LoginEvent::Output(bytes)|LoginEvent::Diagnostic(bytes))=>{
                         append_tail(&mut output,&bytes);
-                        if let Some(url)=find_url(&output){let mut jobs=self.jobs.lock().await;let job=jobs.get_mut(id).ok_or(LoginError::Unknown)?;
-                            if job.snapshot.active() && job.url.as_deref()!=Some(&url){job.snapshot=job.snapshot.finish(LoginStatus::Pending,None)?;job.url=Some(url);(self.on_change)();}}
+                        if let Some(url)=find_url(&output){
+                            let lease = self.jobs.acquire(id).await?;
+                            let mut job = lease.load().await?;
+                            if job.snapshot.active() && job.url.as_deref()!=Some(&url){
+                                job.snapshot=job.snapshot.finish(LoginStatus::Pending,None)?;
+                                job.url=Some(url);
+                                lease.update(job).await?;
+                                (self.on_change)();
+                            }
+                        }
                     },
                     Some(LoginEvent::Exited(success))=>break Some(success),None=>break None,
                 }
@@ -515,8 +804,8 @@ impl LoginService {
             return Ok(());
         };
         let metadata = self.probe(id, launch, commands).await?;
-        let mut jobs = self.jobs.lock().await;
-        let job = jobs.get_mut(id).ok_or(LoginError::Unknown)?;
+        let lease = self.jobs.acquire(id).await?;
+        let mut job = lease.load().await?;
         if !job.snapshot.active() {
             return Ok(());
         }
@@ -529,6 +818,7 @@ impl LoginService {
             self.save(&next).await?;
             job.snapshot = next;
             job.url = None;
+            lease.update(job).await?;
             (self.on_change)();
             return Ok(());
         }
@@ -562,14 +852,15 @@ impl LoginService {
         self.save(&next).await?;
         job.snapshot = next;
         job.url = None;
-        drop(jobs);
+        lease.update(job).await?;
+        drop(lease);
         self.refresh_chats(id).await?;
         (self.on_change)();
         Ok(())
     }
     async fn refresh_chats(&self, id: &str) -> Result<(), LoginError> {
-        let mut jobs = self.jobs.lock().await;
-        let job = jobs.get_mut(id).ok_or(LoginError::Unknown)?;
+        let lease = self.jobs.acquire(id).await?;
+        let mut job = lease.load().await?;
         if job.snapshot.record().pointer("/receipt/status") != Some(&json!("ready"))
             || job.snapshot.record().pointer("/receipt/chatsRefreshed") == Some(&json!(true))
         {
@@ -605,6 +896,7 @@ impl LoginService {
         let next = LoginSnapshot::from_record(record)?;
         self.save(&next).await?;
         job.snapshot = next;
+        lease.update(job).await?;
         Ok(())
     }
     async fn probe(
@@ -651,20 +943,29 @@ impl LoginService {
         id: &str,
         identity: Option<ChildIdentity>,
     ) -> Result<(), LoginError> {
-        let mut jobs = self.jobs.lock().await;
-        let job = jobs.get_mut(id).ok_or(LoginError::Unknown)?;
+        let lease = self.jobs.acquire(id).await?;
+        let mut job = lease.load().await?;
         let mut record = job.snapshot.record().clone();
         record["metadata"]["child"] =
             serde_json::to_value(identity).map_err(|_| LoginError::Unavailable)?;
         let next = LoginSnapshot::from_record(record)?;
         self.save(&next).await?;
         job.snapshot = next;
+        lease.update(job).await?;
         Ok(())
     }
     async fn settle_unknowns(&self) -> Result<(), LoginError> {
-        let mut jobs = self.jobs.lock().await;
-        for job in jobs.values_mut().filter(|job| unknown(&job.snapshot)) {
-            let metadata = &job.snapshot.record()["metadata"];
+        let candidates = self.jobs.snapshot().await?;
+        for (id, _candidate) in candidates
+            .into_iter()
+            .filter(|(_, job)| unknown(&job.snapshot))
+        {
+            let lease = self.jobs.acquire(&id).await?;
+            let mut job = lease.load().await?;
+            if !unknown(&job.snapshot) {
+                continue;
+            }
+            let metadata = job.snapshot.record()["metadata"].clone();
             if let Some(value) = metadata.get("child").filter(|v| !v.is_null()) {
                 let identity: ChildIdentity =
                     serde_json::from_value(value.clone()).map_err(|_| LoginError::Unavailable)?;
@@ -708,7 +1009,7 @@ impl LoginService {
                 "{}.lock",
                 studio_runtime_store::sha256_hex(config.to_string_lossy().as_bytes())
             ));
-            let lease = blocking(move || {
+            let config_lease = blocking(move || {
                 let file = OpenOptions::new()
                     .create(true)
                     .truncate(false)
@@ -720,7 +1021,7 @@ impl LoginService {
                 Ok(file)
             })
             .await;
-            let Ok(_lease) = lease else {
+            let Ok(_config_lease) = config_lease else {
                 continue;
             };
             let mut record = job.snapshot.record().clone();
@@ -730,6 +1031,7 @@ impl LoginService {
             let next = LoginSnapshot::from_record(record)?;
             self.save(&next).await?;
             job.snapshot = self.cleanup(&next).await?;
+            lease.update(job).await?;
         }
         Ok(())
     }
@@ -835,15 +1137,16 @@ impl LoginService {
         Ok(next)
     }
     pub async fn shutdown(&self) -> Result<(), LoginError> {
-        let jobs = self.jobs.lock().await;
-        for job in jobs.values() {
+        let jobs = self.jobs.snapshot().await?;
+        for (id, _) in jobs {
+            let lease = self.jobs.acquire(&id).await?;
+            let job = lease.load().await?;
             if let Some(sender) = &job.commands
                 && sender.try_send(Command::Cancel).is_err()
             {
                 self.failed.store(true, Ordering::Release);
             }
         }
-        drop(jobs);
         for task in self.tasks.lock().await.drain(..) {
             tokio::time::timeout(COMMAND_DEADLINE, task)
                 .await
@@ -894,4 +1197,48 @@ fn find_url(output: &[u8]) -> Option<String> {
 
 fn unknown(snapshot: &LoginSnapshot) -> bool {
     snapshot.record().pointer("/metadata/outcomeUnknown") == Some(&json!(true))
+}
+
+#[cfg(test)]
+mod registry_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn owner_runs_independent_requests_and_closes_queued_replies_on_shutdown() {
+        let registry = JobRegistry::new();
+        let (held_reply, held) = oneshot::channel();
+        registry
+            .0
+            .send(RegistryCommand::Acquire("same".into(), held_reply))
+            .await
+            .expect("owner accepts first lease");
+        let _held_token = held.await.expect("owner grants first lease");
+
+        let (queued_reply, queued) = oneshot::channel();
+        registry
+            .0
+            .send(RegistryCommand::Acquire("same".into(), queued_reply))
+            .await
+            .expect("owner accepts queued lease");
+        let (barrier_reply, barrier) = oneshot::channel();
+        registry
+            .0
+            .send(RegistryCommand::Snapshot(barrier_reply))
+            .await
+            .expect("owner accepts barrier");
+        barrier.await.expect("owner crossed queue barrier");
+
+        let (other_reply, other) = oneshot::channel();
+        registry
+            .0
+            .send(RegistryCommand::Acquire("other".into(), other_reply))
+            .await
+            .expect("owner accepts independent lease");
+        assert!(other.await.is_ok(), "another login proceeds concurrently");
+
+        // Keep the first key leased and drop every sender. The actor ends and
+        // drops its queued reply, so waiters receive an error instead of hanging.
+        drop(registry);
+        assert!(queued.await.is_err(), "shutdown closes pending requests");
+    }
 }
