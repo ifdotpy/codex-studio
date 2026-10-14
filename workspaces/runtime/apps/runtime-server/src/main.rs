@@ -11,12 +11,14 @@ mod native_probe;
 mod provider_ports;
 #[cfg(unix)]
 mod runtime_shutdown;
+use std::collections::BTreeMap;
 use std::env;
 use std::fs::File;
 use std::io::Read;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::Mutex;
 
 use axum::Extension;
 use studio_runtime_http::{HttpState, router};
@@ -165,11 +167,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .with_limits(account_policy.clone()),
     );
+    let session_binaries = Arc::new(Mutex::new(BTreeMap::<String, (u64, String)>::new()));
     let active_connections = Arc::new(provider_ports::LiveProviderConnections {
         accounts: account_driver.clone(),
         session: Arc::clone(&account_session),
-        native_runtime: Arc::clone(&native_runtime),
-        codex_binary: native_path.clone(),
+        session_binaries: Arc::clone(&session_binaries),
     });
     let provider_versions =
         studio_runtime_services::provider_versions::ProviderVersionMonitor::start(
@@ -214,6 +216,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             notice: env::var("CODEX_AGENTS_SUPERVISOR_FALLBACK")
                 .is_ok_and(|value| value == "1")
                 .then(|| "The process supervisor stopped unexpectedly. Studio applied normal recovery to turns, monitors, and terminals with reduced restart protection; accepted or uncertain operations were not resubmitted.".to_owned()),
+            state_dir: PathBuf::from(&state_dir),
         }));
     #[cfg(unix)]
     let io_runtime = Arc::new(io_runtime::IoRuntime::start(store.clone())?);
@@ -240,6 +243,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             Arc::clone(&monitor_wake),
         ),
     );
+    state = state.open_app_server_log();
     #[cfg(unix)]
     let runtime = match host_runtime::HostRuntime::start_with_monitor_wake_and_native_runtime(
         &mut state,
@@ -249,6 +253,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         monitor_runtime.dispatch_wake_handle(),
         account_session_broker,
         Some(Arc::clone(&native_runtime)),
+        Arc::clone(&session_binaries),
     )
     .await
     {

@@ -5,7 +5,6 @@ use axum::middleware as axum_middleware;
 use axum::response::Response;
 use axum::routing::any;
 use std::collections::BTreeSet;
-use std::path::Path;
 use std::sync::Arc;
 use studio_runtime_process::operational_log::OperationalLog;
 use studio_runtime_services::change_notifications::ChangeNotificationHub;
@@ -77,6 +76,20 @@ pub struct HttpState {
 }
 
 impl HttpState {
+    /// Open provider stderr logging at retained app-server construction time,
+    /// after the HTTP state itself has been assembled.
+    pub fn open_app_server_log(mut self) -> Self {
+        let log = OperationalLog::app_server(std::path::Path::new(&self.state_dir)).ok();
+        let changes = Arc::clone(&self.sync_changes);
+        self.model_catalog = studio_runtime_services::model_catalog::ModelCatalogService::with_change_callback_and_log(
+            self.native_path.clone(),
+            Arc::new(move || changes.notify_one()),
+            log.clone(),
+        );
+        self.app_server_log = log;
+        self
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         token: String,
@@ -90,12 +103,11 @@ impl HttpState {
     ) -> Self {
         let sync_changes = Arc::new(ChangeNotificationHub::new());
         let model_changes = Arc::clone(&sync_changes);
-        let app_server_log = OperationalLog::app_server(Path::new(&state_dir)).ok();
         let model_catalog =
             studio_runtime_services::model_catalog::ModelCatalogService::with_change_callback_and_log(
                 native_path.clone(),
                 Arc::new(move || model_changes.notify_one()),
-                app_server_log.clone(),
+                None,
             );
         if let Some(store) = &store {
             let changes = Arc::clone(&sync_changes);
@@ -120,7 +132,7 @@ impl HttpState {
             workspace_id,
             native_path,
             state_dir,
-            app_server_log,
+            app_server_log: None,
             port,
             public_origin,
             validators: Registry::default(),

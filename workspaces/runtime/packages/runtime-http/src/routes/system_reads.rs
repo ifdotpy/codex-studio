@@ -321,6 +321,25 @@ mod diagnostics_http_tests {
         }
     }
 
+    #[test]
+    fn app_server_log_opens_at_server_construction_not_http_state_creation() {
+        let directory = tempfile::tempdir().expect("temporary state directory");
+        let log_path = directory.path().join("app-server.log");
+        let state = HttpState::new(
+            "fixture-token".to_owned(),
+            "fixture-workspace".to_owned(),
+            None,
+            directory.path().display().to_string(),
+            4321,
+            None,
+            None,
+            None,
+        );
+        assert!(!log_path.exists());
+        let _state = state.open_app_server_log();
+        assert!(log_path.exists());
+    }
+
     #[tokio::test]
     async fn diagnostics_route_validates_full_schema_with_both_ports() {
         let directory = tempfile::tempdir().expect("tmpfs test state");
@@ -331,6 +350,7 @@ mod diagnostics_http_tests {
         let provider = Arc::new(ProviderDouble::default());
         let supervisor = Arc::new(SupervisorDouble::default());
         let proof_store = store.clone();
+        let files_before = state_directory_snapshot(directory.path());
         let state = HttpState::new(
             "fixture-token".to_owned(),
             "fixture-workspace".to_owned(),
@@ -348,7 +368,6 @@ mod diagnostics_http_tests {
         let version_before: i64 = proof_connection
             .query_row("PRAGMA data_version", [], |row| row.get(0))
             .expect("initial database version");
-        let files_before = state_directory_snapshot(directory.path());
         let mut request = Request::builder()
             .method("GET")
             .uri("/api/diagnostics")
@@ -429,6 +448,7 @@ mod diagnostics_http_tests {
         let version_before: i64 = proof_connection
             .query_row("PRAGMA data_version", [], |row| row.get(0))
             .expect("initial database version");
+        let files_before = state_directory_snapshot(directory.path());
         let state = HttpState::new(
             "fixture-token".to_owned(),
             "fixture-workspace".to_owned(),
@@ -439,9 +459,6 @@ mod diagnostics_http_tests {
             Some(store),
             None,
         );
-        // HttpState creates the operational log as part of setup; take the
-        // no-write baseline after setup and immediately before the route call.
-        let files_before = state_directory_snapshot(directory.path());
         let response = router(state)
             .expect("registered HTTP router")
             .oneshot(diagnostics_request())
