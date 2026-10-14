@@ -8,9 +8,9 @@ import json
 import os
 import socket
 import sqlite3
+import subprocess
 import sys
 import tempfile
-import threading
 import unittest
 from contextlib import closing
 from pathlib import Path
@@ -72,61 +72,93 @@ class FakeLayrGuest:
 
 
 class FakeLayrSocket:
-    """Small newline JSON-RPC guest endpoint for the production Rust client."""
+    """Disposable Unix JSON-RPC endpoint kept outside the guarded oracle process."""
 
-    def __init__(self, path: Path, *, drop_methods=(), before_reply=None):
+    SERVER = r'''import json, socket, sqlite3, sys
+path, config_path, calls_path, database_path, ready_port = sys.argv[1:]
+try: __import__('os').unlink(path)
+except FileNotFoundError: pass
+listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+listener.bind(path)
+listener.listen()
+ready = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+ready.connect(('127.0.0.1', int(ready_port)))
+ready.sendall(b'ready')
+ready.close()
+while True:
+    connection, _ = listener.accept()
+    with connection:
+        frame = bytearray()
+        while b'\n' not in frame:
+            part = connection.recv(65536)
+            if not part: break
+            frame.extend(part)
+        if b'\n' not in frame: continue
+        request = json.loads(bytes(frame).split(b'\n', 1)[0])
+        method, params = request['method'], request['params']
+        intent_key = 'submissionIntent' if method == 'line.evidence' else 'mergeIntent'
+        with sqlite3.connect(database_path) as db:
+            row = db.execute('SELECT record FROM runtime_work WHERE json_extract(record, ?) = ?',
+                             ('$.%s.requestId' % intent_key, request['id'])).fetchone()
+        intent_status = json.loads(row[0])[intent_key]['status'] if row else None
+        with open(calls_path, 'a', encoding='utf-8') as output:
+            output.write(json.dumps({**request, 'intentStatus': intent_status}) + '\n')
+        try:
+            config = json.load(open(config_path, encoding='utf-8'))
+        except FileNotFoundError: config = {}
+        if config.get('dropNext') == method:
+            json.dump({}, open(config_path, 'w', encoding='utf-8'))
+            continue
+        if method == 'line.evidence':
+            result = {'projectId':'work-write-project', 'line':'work-write-worker-line',
+                      'stateId':params['stateId']}
+        elif method == 'line.merge':
+            state_id = params['expectedStateId']
+            result = {'stateId':state_id, 'reviewedStateId':state_id}
+        else: raise AssertionError('unexpected method: ' + method)
+        connection.sendall(json.dumps({'id':request['id'], 'result':result}).encode() + b'\n')
+'''
+
+    def __init__(self, path: Path):
         self.path = path
-        self.drop_methods = set(drop_methods)
-        self.before_reply = before_reply
-        self.calls = []
-        self.stopped = threading.Event()
+        self.config_path = path.with_name("fake-guest-config.json")
+        self.calls_path = path.with_name("fake-guest-calls.jsonl")
+        self.database_path = path.parents[1] / "canvas.sqlite3"
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.unlink(missing_ok=True)
-        self.listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        self.listener.bind(str(path))
-        self.listener.listen()
-        self.listener.settimeout(0.1)
-        self.thread = threading.Thread(target=self._serve, daemon=True)
-        self.thread.start()
-
-    def _serve(self):
-        while not self.stopped.is_set():
-            try:
-                connection, _ = self.listener.accept()
-            except TimeoutError:
-                continue
-            except OSError:
-                return
+        self.calls_path.unlink(missing_ok=True)
+        self.config_path.write_text("{}", encoding="utf-8")
+        server_script = path.with_name("fake-guest-server.py")
+        server_script.write_text(self.SERVER, encoding="utf-8")
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as ready:
+            ready.bind(("127.0.0.1", 0))
+            ready.listen()
+            ready.settimeout(5)
+            self.process = subprocess.Popen(
+                [sys.executable, "-B", str(server_script), str(path), str(self.config_path),
+                 str(self.calls_path), str(self.database_path), str(ready.getsockname()[1])],
+                cwd=str(path.parent), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+            connection, _ = ready.accept()
             with connection:
-                frame = bytearray()
-                while b"\n" not in frame:
-                    part = connection.recv(65536)
-                    if not part:
-                        break
-                    frame.extend(part)
-                if b"\n" not in frame:
-                    continue
-                request = json.loads(bytes(frame).split(b"\n", 1)[0])
-                self.calls.append(request)
-                if self.before_reply is not None:
-                    self.before_reply(request)
-                if request["method"] in self.drop_methods:
-                    self.drop_methods.remove(request["method"])
-                    continue
-                if request["method"] == "line.evidence":
-                    result = {"projectId": "work-write-project", "line": "work-write-worker-line",
-                              "stateId": request["params"]["stateId"]}
-                elif request["method"] == "line.merge":
-                    state_id = request["params"]["expectedStateId"]
-                    result = {"stateId": state_id, "reviewedStateId": state_id}
-                else:
-                    raise AssertionError(f"Unexpected guest method {request['method']}")
-                connection.sendall(json.dumps({"id": request["id"], "result": result}).encode() + b"\n")
+                if connection.recv(16) != b"ready":
+                    raise RuntimeError("fake guest did not complete its readiness handshake")
+
+    @property
+    def calls(self):
+        if not self.calls_path.exists():
+            return []
+        return [json.loads(line) for line in self.calls_path.read_text(encoding="utf-8").splitlines()]
+
+    def drop_next(self, method):
+        self.config_path.write_text(json.dumps({"dropNext": method}), encoding="utf-8")
 
     def close(self):
-        self.stopped.set()
-        self.listener.close()
-        self.thread.join(timeout=1)
+        self.process.terminate()
+        try:
+            self.process.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            self.process.kill()
+            self.process.wait(timeout=2)
         self.path.unlink(missing_ok=True)
 
 
@@ -187,6 +219,19 @@ def _normal(value, work_ids=None, aliases=None, field=None):
                 continue
             result[key] = _normal(item, work_ids, aliases, key)
         return result
+    return value
+
+
+def without_vm_intents(value):
+    """Remove Rust-only durable intent metadata from Python result parity."""
+    if isinstance(value, dict):
+        return {
+            key: without_vm_intents(item)
+            for key, item in value.items()
+            if key not in {"submissionIntent", "mergeIntent"}
+        }
+    if isinstance(value, list):
+        return [without_vm_intents(item) for item in value]
     return value
 
 
@@ -816,17 +861,7 @@ class WorkWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
 
         task = self.assert_matches_python({"action": "create", "title": "VM evidence oracle",
                                            "owner": self.worker_id, "id": "vm-evidence-create"})
-        pending_seen = []
-
-        def assert_pending_before_guest(request):
-            with closing(fixture_connection(self.backend.state / "canvas.sqlite3")) as database:
-                row = database.execute("SELECT record FROM runtime_work WHERE id=?", (task["id"],)).fetchone()
-            record = json.loads(row[0])
-            intent_name = "submissionIntent" if request["method"] == "line.evidence" else "mergeIntent"
-            pending_seen.append(record.get(intent_name, {}).get("status"))
-
-        guest = FakeLayrSocket(self.backend.state / "linux-vm" / "guest.sock",
-                               before_reply=assert_pending_before_guest)
+        guest = FakeLayrSocket(self.backend.state / "linux-vm" / "guest.sock")
         self.addCleanup(guest.close)
         submit = {"action": "submit", "task_id": task["id"], "version": task["version"],
                   "result": "exact VM result", "checks": "fake guest passed", "revision": "vm-state-1",
@@ -846,7 +881,8 @@ class WorkWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             for identity, record in actual_state["runtime_work"]
         ]
         aliases = result_id_aliases(expected_state, actual_state)
-        self.assertEqual(normal_result(actual_submit.json(), aliases), normal_result(expected_submit, aliases))
+        self.assertEqual(normal_result(without_vm_intents(actual_submit.json()), aliases),
+                         normal_result(without_vm_intents(expected_submit), aliases))
         actual_state, expected_state = compare_snapshots(expected_state, actual_state, aliases)
         self.assertEqual(actual_state, expected_state)
 
@@ -868,10 +904,11 @@ class WorkWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             for identity, record in actual_state["runtime_work"]
         ]
         aliases = result_id_aliases(expected_state, actual_state)
-        self.assertEqual(normal_result(actual_accept.json(), aliases), normal_result(expected_accept, aliases))
+        self.assertEqual(normal_result(without_vm_intents(actual_accept.json()), aliases),
+                         normal_result(without_vm_intents(expected_accept), aliases))
         actual_state, expected_state = compare_snapshots(expected_state, actual_state, aliases)
         self.assertEqual(actual_state, expected_state)
-        self.assertEqual(pending_seen, ["pending", "pending"])
+        self.assertEqual([call["intentStatus"] for call in guest.calls], ["pending", "pending"])
         self.assertEqual([call["method"] for call in guest.calls], ["line.evidence", "line.merge"])
         self.assertEqual(guest.calls[0]["id"], "layr-evidence:" + self.worker_id + ":vm-state-1")
         self.assertEqual(guest.calls[1]["id"], "layr-accept:" + expected_submit["results"][-1]["id"])
@@ -930,7 +967,7 @@ class WorkWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         self.assertEqual(snapshot(self.backend.state), pending_snapshot)
         self.assertEqual(len(guest.calls), call_count + 1)
 
-        guest.drop_methods.add("line.evidence")
+        guest.drop_next("line.evidence")
         unknown = self.assert_matches_python({"action": "create", "title": "Unknown evidence oracle",
                                              "owner": self.worker_id, "id": "vm-unknown-create"})
         unknown_submit = {"action": "submit", "task_id": unknown["id"], "version": unknown["version"],
@@ -963,7 +1000,7 @@ class WorkWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             "id": "vm-merge-unknown-submit",
         })
         self.assertEqual(merge_submit.status, 200, merge_submit.body[:1000])
-        guest.drop_methods.add("line.merge")
+        guest.drop_next("line.merge")
         merge_accept = {"action": "accept", "task_id": merge_task["id"],
                         "version": merge_submit.json()["version"], "result": "merge test",
                         "id": "vm-merge-unknown-accept"}
