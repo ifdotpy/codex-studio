@@ -39,6 +39,7 @@ from studio_api.work.models import (
 )
 from codex_records import SafeNumber, WorktreeCleanupRecord
 from studio_api.sync.resources.models import (
+    MAX_TOKEN_RATE_IDENTIFIER_CODEPOINTS,
     MAX_TOKEN_RATE_ENTRIES,
     MAX_TOKEN_RATE_TOTAL_ENTRIES,
 )
@@ -46,7 +47,11 @@ import codex_records as record_contracts
 from studio_api.io.models import TerminalRecord
 from studio_api.work.models import RuleRecord, WorkItem
 from studio_api.generate_state_schemas import render_rust_agent_limits
-from studio_api.generate_types import render, render_schema_identity
+from studio_api.generate_types import (
+    render,
+    render_schema_identity,
+    render_token_rate_limits,
+)
 from studio_api.persisted_account_transfer import PersistedAccountTransferRecord
 from studio_api.schema import (
     canonical_openapi_json,
@@ -130,6 +135,10 @@ def sample_document(response_schema: dict[str, JsonValue]) -> dict[str, JsonValu
                         "rates": {
                             "type": "object",
                             "maxProperties": MAX_TOKEN_RATE_ENTRIES,
+                            "propertyNames": {
+                                "minLength": 1,
+                                "maxLength": MAX_TOKEN_RATE_IDENTIFIER_CODEPOINTS,
+                            },
                             "additionalProperties": {
                                 "$ref": "#/components/schemas/TokenRateValue",
                             },
@@ -137,9 +146,17 @@ def sample_document(response_schema: dict[str, JsonValue]) -> dict[str, JsonValu
                         "teams": {
                             "type": "object",
                             "maxProperties": MAX_TOKEN_RATE_ENTRIES,
+                            "propertyNames": {
+                                "minLength": 1,
+                                "maxLength": MAX_TOKEN_RATE_IDENTIFIER_CODEPOINTS,
+                            },
                             "additionalProperties": {
                                 "type": "object",
                                 "maxProperties": MAX_TOKEN_RATE_ENTRIES,
+                                "propertyNames": {
+                                    "minLength": 1,
+                                    "maxLength": MAX_TOKEN_RATE_IDENTIFIER_CODEPOINTS,
+                                },
                                 "additionalProperties": {
                                     "$ref": "#/components/schemas/TokenRateValue",
                                 },
@@ -152,7 +169,11 @@ def sample_document(response_schema: dict[str, JsonValue]) -> dict[str, JsonValu
                     "type": "object",
                     "required": ["turnId", "active", "estimated", "rate", "outputTokens"],
                     "properties": {
-                        "turnId": {"type": "string", "minLength": 1},
+                        "turnId": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": MAX_TOKEN_RATE_IDENTIFIER_CODEPOINTS,
+                        },
                         "active": {"type": "boolean"},
                         "estimated": {"type": "boolean"},
                         "rate": {"type": "number", "minimum": 0},
@@ -169,7 +190,9 @@ def sample_document(response_schema: dict[str, JsonValue]) -> dict[str, JsonValu
 
 
 class SchemaContractTests(unittest.TestCase):
-    def assert_token_rate_limit_exports(self, generated: str) -> None:
+    def assert_token_rate_limit_exports(
+        self, generated: str, document: dict[str, JsonValue]
+    ) -> None:
         self.assertIn(
             f"export const TOKEN_RATE_MAX_ENTRIES = {MAX_TOKEN_RATE_ENTRIES} as const;",
             generated,
@@ -177,6 +200,16 @@ class SchemaContractTests(unittest.TestCase):
         self.assertIn(
             f"export const TOKEN_RATE_MAX_TOTAL_ENTRIES = {MAX_TOKEN_RATE_TOTAL_ENTRIES} as const;",
             generated,
+        )
+        self.assertIn(
+            "export const TOKEN_RATE_IDENTIFIER_MAX_CODEPOINTS = "
+            f"{MAX_TOKEN_RATE_IDENTIFIER_CODEPOINTS} as const;",
+            generated,
+        )
+        self.assertIn(
+            "TOKEN_RATE_IDENTIFIER_MAX_CODEPOINTS: usize = "
+            f"{MAX_TOKEN_RATE_IDENTIFIER_CODEPOINTS};",
+            render_token_rate_limits(document),
         )
 
     def test_agent_capacity_contracts_derive_from_runtime_limits(self) -> None:
@@ -1319,7 +1352,7 @@ class SchemaContractTests(unittest.TestCase):
         self.assertIn('export type AgentEntityDto = components["schemas"]["AgentEntityDto"];', generated)
         self.assertIn('export type TaskEntityDto = components["schemas"]["TaskEntityDto"];', generated)
         self.assertIn('Status: "idle" | "running";', generated)
-        self.assert_token_rate_limit_exports(generated)
+        self.assert_token_rate_limit_exports(generated, document)
 
     def test_sync_pull_registers_entity_payload_union_and_all_dtos(self) -> None:
         document = openapi_document()
@@ -1440,7 +1473,7 @@ class SchemaContractTests(unittest.TestCase):
             'export type SyncEntityPayload = components["schemas"]["SyncEntityPayload"];',
             generated,
         )
-        self.assert_token_rate_limit_exports(generated)
+        self.assert_token_rate_limit_exports(generated, document)
 
     def test_generator_preserves_required_and_optional_defaulted_properties(self) -> None:
         document = sample_document({"$ref": "#/components/schemas/ResponseContract"})
@@ -1481,7 +1514,7 @@ class SchemaContractTests(unittest.TestCase):
         }
 
         generated = render(document)
-        self.assert_token_rate_limit_exports(generated)
+        self.assert_token_rate_limit_exports(generated, document)
 
         monitor_input = generated.split("MonitorInput: {", 1)[1].split("\n    };", 1)[0]
         response_contract = generated.split("ResponseContract: {", 1)[1].split("\n    };", 1)[0]
