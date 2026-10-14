@@ -211,7 +211,7 @@ fn archive_previous_repair(agent: &mut Value) -> Result<(), RepairError> {
     if !previous.is_object() {
         return Ok(());
     }
-    if previous["phase"] == "completed" {
+    if previous["phase"] == "completed" || studio_runtime_store::truthy(previous.get("rpcMethod")) {
         if agent
             .get("contextRepairHistory")
             .is_some_and(|history| !history.is_array())
@@ -1764,6 +1764,21 @@ mod repair_history_tests {
         archive_previous_repair(&mut agent).expect("archive prior completed repair");
 
         assert_eq!(agent["contextRepairHistory"], json!([completed]));
+        assert!(agent.get("lastContextRepairCheck").is_none());
+    }
+
+    #[test]
+    fn repair_with_rpc_method_is_kept_in_history_before_next_repair() {
+        let started = json!({
+            "id":"repair-rpc",
+            "phase":"preparing",
+            "rpcMethod":"thread/fork"
+        });
+        let mut agent = json!({"contextRepair":started});
+
+        archive_previous_repair(&mut agent).expect("archive prior dispatched repair");
+
+        assert_eq!(agent["contextRepairHistory"], json!([started]));
         assert!(agent.get("lastContextRepairCheck").is_none());
     }
 }
