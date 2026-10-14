@@ -52,6 +52,7 @@ from studio_api.sync.resources.models import (
     PanelResource,
     ResourceRef,
     ResourceTokenRatesEvent,
+    TokenRateSnapshot,
     TranscriptResource,
 )
 
@@ -466,6 +467,9 @@ def create_router(context: ApiContext) -> APIRouter:
                 ref_template="#/components/schemas/{model}"
             ),
             "ResourceTokenRatesEvent": ResourceTokenRatesEvent.model_json_schema(
+                ref_template="#/components/schemas/{model}"
+            ),
+            "TokenRateSnapshot": TokenRateSnapshot.model_json_schema(
                 ref_template="#/components/schemas/{model}"
             ),
             "ApiSchemaEvent": ApiSchemaEvent.model_json_schema(

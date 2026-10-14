@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import cast
 
 from studio_api.models import JsonValue
+from studio_api.sync.resources.models import MAX_TOKEN_RATE_TOTAL_ENTRIES
 from studio_api.schema import (
     bound_integer_schemas,
     API_SCHEMA_HASH_HEADER,
@@ -32,6 +33,7 @@ from codex_layout import REPOSITORY_ROOT, WEB_ROOT
 ROOT = REPOSITORY_ROOT
 OUTPUT = WEB_ROOT / "src" / "generated" / "api.ts"
 SCHEMA_OUTPUT = WEB_ROOT / "src" / "generated" / "apiSchema.ts"
+TOKEN_RATE_LIMITS_OUTPUT = ROOT / "workspaces/runtime/packages/runtime-schema/src/token_rate_limits.rs"
 OPENAPI_AUTHORITY = ROOT / "workspaces/runtime/packages/runtime-http/openapi.json"
 DEFAULT_CACHE_ROOT = Path.home() / ".cache"
 CACHE_ROOT_ENV = "XDG_CACHE_HOME"
@@ -52,6 +54,91 @@ def _entity_aliases(names: list[str], include_sync_entity_payload: bool = False)
     if include_sync_entity_payload:
         aliases += '\nexport type SyncEntityPayload = components["schemas"]["SyncEntityPayload"];'
     return aliases
+
+
+def _token_rate_max_entries(document: dict[str, JsonValue]) -> int:
+    components = document.get("components")
+    schemas = components.get("schemas") if isinstance(components, dict) else None
+    snapshot = schemas.get("TokenRateSnapshot") if isinstance(schemas, dict) else None
+    properties = snapshot.get("properties") if isinstance(snapshot, dict) else None
+    rates = properties.get("rates") if isinstance(properties, dict) else None
+    teams = properties.get("teams") if isinstance(properties, dict) else None
+    team_members = teams.get("additionalProperties") if isinstance(teams, dict) else None
+    limits = (
+        rates.get("maxProperties") if isinstance(rates, dict) else None,
+        teams.get("maxProperties") if isinstance(teams, dict) else None,
+        team_members.get("maxProperties") if isinstance(team_members, dict) else None,
+    )
+    maximum = limits[0]
+    if (
+        not isinstance(maximum, int)
+        or isinstance(maximum, bool)
+        or maximum <= 0
+        or any(type(limit) is not int or limit != maximum for limit in limits[1:])
+    ):
+        raise ValueError("TokenRateSnapshot must define one shared positive maxProperties limit")
+    return maximum
+
+
+def _token_rate_identifier_max_codepoints(document: dict[str, JsonValue]) -> int:
+    components = document.get("components")
+    schemas = components.get("schemas") if isinstance(components, dict) else None
+    value = schemas.get("TokenRateValue") if isinstance(schemas, dict) else None
+    properties = value.get("properties") if isinstance(value, dict) else None
+    turn_id = properties.get("turnId") if isinstance(properties, dict) else None
+    maximum = turn_id.get("maxLength") if isinstance(turn_id, dict) else None
+    rates = schemas.get("TokenRateSnapshot") if isinstance(schemas, dict) else None
+    snapshot_properties = rates.get("properties") if isinstance(rates, dict) else None
+    rate_map = snapshot_properties.get("rates") if isinstance(snapshot_properties, dict) else None
+    teams = snapshot_properties.get("teams") if isinstance(snapshot_properties, dict) else None
+    team_map = teams.get("additionalProperties") if isinstance(teams, dict) else None
+    identifier_schemas = (
+        rate_map.get("propertyNames") if isinstance(rate_map, dict) else None,
+        teams.get("propertyNames") if isinstance(teams, dict) else None,
+        team_map.get("propertyNames") if isinstance(team_map, dict) else None,
+    )
+    if (
+        type(maximum) is not int
+        or maximum <= 0
+        or not isinstance(turn_id, dict)
+        or type(turn_id.get("minLength")) is not int
+        or turn_id["minLength"] != 1
+        or any(
+            not isinstance(identifier_schema, dict)
+            or type(identifier_schema.get("minLength")) is not int
+            or identifier_schema["minLength"] != 1
+            or type(identifier_schema.get("maxLength")) is not int
+            or identifier_schema["maxLength"] != maximum
+            for identifier_schema in identifier_schemas
+        )
+    ):
+        raise ValueError("Token-rate identifiers must share one positive maxLength")
+    return maximum
+
+
+def render_token_rate_limits(document: dict[str, JsonValue]) -> str:
+    maximum = _token_rate_max_entries(document)
+    identifier_max = _token_rate_identifier_max_codepoints(document)
+    if MAX_TOKEN_RATE_TOTAL_ENTRIES != maximum * 2:
+        raise ValueError("Token-rate aggregate limit must cover two per-agent views")
+    return (
+        "// Generated from the Pydantic TokenRateSnapshot contract.\n"
+        f"pub const TOKEN_RATE_MAX_ENTRIES: usize = {maximum};\n"
+        f"pub const TOKEN_RATE_MAX_TOTAL_ENTRIES: usize = {MAX_TOKEN_RATE_TOTAL_ENTRIES};\n"
+        f"pub const TOKEN_RATE_IDENTIFIER_MAX_CODEPOINTS: usize = {identifier_max};\n"
+    )
+
+
+def render_token_rate_typescript_constant(document: dict[str, JsonValue]) -> str:
+    maximum = _token_rate_max_entries(document)
+    identifier_max = _token_rate_identifier_max_codepoints(document)
+    if MAX_TOKEN_RATE_TOTAL_ENTRIES != maximum * 2:
+        raise ValueError("Token-rate aggregate limit must cover two per-agent views")
+    return (
+        f"export const TOKEN_RATE_MAX_ENTRIES = {maximum} as const;\n"
+        f"export const TOKEN_RATE_MAX_TOTAL_ENTRIES = {MAX_TOKEN_RATE_TOTAL_ENTRIES} as const;\n"
+        f"export const TOKEN_RATE_IDENTIFIER_MAX_CODEPOINTS = {identifier_max} as const;"
+    )
 
 
 def _normalize_recursive_json_value(generated: str) -> str:
@@ -79,6 +166,7 @@ def render(document: dict[str, JsonValue]) -> str:
     validate_contract_schemas(document)
     validate_error_responses(document)
     entities = entity_schema_names(document)
+    token_rate_typescript_constant = render_token_rate_typescript_constant(document)
     components = document.get("components")
     schemas = components.get("schemas") if isinstance(components, dict) else None
     include_sync_entity_payload = isinstance(schemas, dict) and "SyncEntityPayload" in schemas
@@ -131,7 +219,7 @@ def render(document: dict[str, JsonValue]) -> str:
             check=True,
             text=True,
         )
-        return output_path.read_text(encoding="utf-8")
+        return output_path.read_text(encoding="utf-8") + f"\n{token_rate_typescript_constant}\n"
 
 
 def _agent_limit(document: dict[str, JsonValue], model: str, field: str, key: str) -> int:
@@ -202,6 +290,7 @@ def main(argv: list[str] | None = None) -> int:
         expected_files = {
             OUTPUT: render(document),
             SCHEMA_OUTPUT: render_schema_identity(schema_hash, document),
+            TOKEN_RATE_LIMITS_OUTPUT: render_token_rate_limits(document),
         }
     except (FileNotFoundError, RuntimeError, ValueError, subprocess.CalledProcessError) as error:
         print(f"API type generation failed: {error}", file=sys.stderr)

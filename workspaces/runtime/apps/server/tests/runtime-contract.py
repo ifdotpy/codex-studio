@@ -1541,10 +1541,17 @@ class RuntimeContract(unittest.TestCase):
         child = self.runtime.create({'name': 'Child', 'prompt': 'Review', 'role': 'reviewer'}, lead['id'])
         eventually(lambda: self.runtime.agent(child['id'])['status'] == 'running')
         current = self.runtime.agent(child['id'])
-        self.runtime.send(child['id'], 'A late answer')
-        self.runtime.server.notify({'method': 'turn/completed', 'params': {'threadId': current['threadId'],
-            'turn': {'id': current['turnId'], 'status': 'failed', 'error': {'message': 'failed now'}}}})
-        eventually(lambda: len([e for e in read_runtime_state(self.runtime)['events'] if e['kind'] == 'child_result']) == 1)
+        with patch.object(self.runtime, 'dispatch_candidates', lambda *_args, **_kwargs: 0):
+            receipt = self.runtime.send(child['id'], 'A late answer')
+            with self.runtime.read_db() as db:
+                status = db.execute(
+                    'SELECT status FROM runtime_events WHERE id=?', (receipt['id'],)
+                ).fetchone()[0]
+            self.assertEqual(status, 'pending')
+            self.runtime.server.notify({'method': 'turn/completed', 'params': {'threadId': current['threadId'],
+                'turn': {'id': current['turnId'], 'status': 'failed', 'error': {'message': 'failed now'}}}})
+            eventually(lambda: len([e for e in read_runtime_state(self.runtime)['events']
+                                   if e['kind'] == 'child_result']) == 1)
         with self.runtime.db() as db:
             result = db.execute("SELECT text FROM runtime_events WHERE kind='child_result'").fetchone()[0]
         self.assertEqual(json.loads(result)['status'], 'failed')
