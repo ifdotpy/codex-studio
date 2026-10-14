@@ -71,10 +71,13 @@ def switch(transfers: "AccountTransfers", key: str, target: str, request_id: str
         if any(a.get('environment') != 'linux' and not a.get('deletedAt')
                and a.get('accountKey', 'default') != target for a in members):
             raise ValueError('This team has Mac and Linux VM chats. Change the account of each part on its own.')
+        if target_provider != 'claude':
+            raise ValueError('A Linux VM chat can change only to another Claude account.')
+        # As on the Mac, a chat of another provider stays on its account.
+        left = [a for a in changing
+                if rt.accounts.get(a.get('accountKey', 'default')).get('provider', 'codex') != 'claude']
+        changing = [a for a in changing if a not in left]
         for a in changing:
-            provider = rt.accounts.get(a.get('accountKey', 'default')).get('provider', 'codex')
-            if provider != target_provider or provider != 'claude':
-                raise ValueError('A Linux VM chat can change only to another Claude account.')
             if a.get('inFlight') or a['status'] in ACTIVE:
                 raise ValueError('Wait until the Linux VM chats finish their turns.')
             blocker = transfers.local_blocker(db, a)
@@ -125,6 +128,12 @@ def switch(transfers: "AccountTransfers", key: str, target: str, request_id: str
             op['members'][a['id']] = {'phase': 'completed', 'name': current.get('name'), 'provider': 'claude',
                                       'sourceAccountKey': history['accountKey'],
                                       'sourceThreadId': current.get('threadId')}
+        for a in left:
+            provider = rt.accounts.get(a.get('accountKey', 'default')).get('provider', 'codex')
+            op['members'][a['id']] = {'phase': 'left', 'name': a.get('name'), 'provider': provider,
+                                      'sourceAccountKey': a.get('accountKey', 'default'),
+                                      'sourceThreadId': a.get('threadId'),
+                                      'reason': f'Uses {provider}; the destination account uses claude'}
         if scope == 'subagents':
             root = rt.agent(key, db)
             defaults = copy.deepcopy(root.get('workerDefaults') or rt.worker_defaults(root))

@@ -376,6 +376,29 @@ class VmAgents(unittest.TestCase):
         self.assertEqual(copy_argv[3:], [lead['id'], profile_path('default', 'claude'), profile_path('second', 'claude')])
         self.assertEqual(after['accountHistory'][-1]['targetThreadId'], before['threadId'])
 
+    def test_a_vm_account_switch_leaves_a_codex_worker_on_its_account(self):
+        from codex_account_transfer import transfer_store
+        lead = self.runtime.prepare(self.lead())
+        worker = self.runtime.prepare(self.worker(lead))
+        with self.runtime.lock, self.runtime.db() as db:
+            current = self.runtime.agent(worker['id'], db)
+            current.update(accountKey='codex-account', status='completed')
+            self.runtime.put(db, 'agents', current)
+        accounts = {'default': {'provider': 'claude'}, 'second': {'provider': 'claude'},
+                    'codex-account': {'provider': 'codex'}}
+        real = self.guest.request
+
+        def request(method, params=None, **options):
+            return {'state': 'stopped'} if method == 'provider.stop' else real(method, params, **options)
+        with patch.object(self.guest, 'request', side_effect=request), \
+                patch.object(self.runtime.accounts, 'get', side_effect=lambda key='default': accounts[key]), \
+                patch.object(self.runtime.accounts, 'home', return_value=str(self.root)):
+            op = transfer_store(self.runtime).request(lead['id'], 'second', str(uuid.uuid4()))
+        self.assertEqual(op['members'][lead['id']]['phase'], 'completed')
+        self.assertEqual(op['members'][worker['id']]['phase'], 'left')
+        self.assertEqual(self.runtime.agent(worker['id'])['accountKey'], 'codex-account')
+        self.assertEqual(self.runtime.agent(lead['id'])['accountKey'], 'second')
+
     def test_a_vm_account_switch_waits_for_the_current_turn(self):
         from codex_account_transfer import transfer_store
         lead = self.runtime.prepare(self.lead())
