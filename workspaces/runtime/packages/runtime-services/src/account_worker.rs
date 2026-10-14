@@ -46,9 +46,7 @@ impl From<rusqlite::Error> for WorkerError {
 pub const COMMAND_CAPACITY: usize = 16;
 const STREAM_CADENCE: std::time::Duration = std::time::Duration::from_millis(750);
 const PREPARATION_RETRY: std::time::Duration = std::time::Duration::from_secs(1);
-// Worker shutdown includes provider completion and durable cleanup. Give those
-// operations room to finish when the host is busy; tests use explicit hang guards.
-const SHUTDOWN_GRACE: std::time::Duration = std::time::Duration::from_secs(10);
+const SHUTDOWN_GRACE: std::time::Duration = std::time::Duration::from_secs(1);
 
 #[derive(Debug, thiserror::Error)]
 pub enum WorkerError {
