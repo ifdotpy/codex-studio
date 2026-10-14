@@ -222,7 +222,7 @@ fn apply(store: &RuntimeStore, case: &Value, prepared: &Value) -> Result<Value, 
                 let error = dispatch_notification(
                     tx, agent_id, &publication, &streams, &identity, &frame, 1234.5, effects,
                 ).expect_err("missing service must refuse before acknowledgement");
-                assert!(matches!(error, studio_runtime_services::notification_dispatch::NotificationDispatchError::Dependency(name) if name == service));
+                assert!(matches!(error, studio_runtime_services::notification_dispatch::NotificationDispatchError::Dependency(name) if name == service), "case {} expected missing dependency {service}, got {error:?}", case["id"]);
                 assert_eq!(raw_rows(tx), before, "caught service refusal leaked rows or receipt");
                 Ok::<_,studio_runtime_store::StoreError>(error.to_string())
             }).map_err(|e|e.to_string()).and_then(Err);
@@ -875,6 +875,7 @@ fn expected_with_deviations(mut expected: Value, case: &Value) -> Value {
     expected
 }
 #[test]
+#[ignore = "full Python-written parity oracle: just test-rust-runtime-corpora"]
 fn python_written_notification_corpus() {
     if let Some(path) = std::env::var_os("NOTIFICATION_REPLAY_CHILD") {
         let fixture: Value =
