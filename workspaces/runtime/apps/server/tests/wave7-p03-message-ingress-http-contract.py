@@ -171,7 +171,6 @@ class MessageIngressHTTP(TimedHTTPContractTest, unittest.TestCase):
             with sqlite3.connect(self.backend.state / "canvas.sqlite3") as db:
                 db.execute("DELETE FROM runtime_workspace_operations WHERE id='broken-operation'")
 
-    @unittest.skipUnless(os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"), "named Rust dependencies")
     def test_budget_and_workspace_admission_never_write_an_event(self):
         for fields in ({"tokenBudget": 0}, {"workspaceOperation": "restore"}):
             _fixture.update_agent(self.backend, self.agent, fields)
@@ -183,9 +182,9 @@ class MessageIngressHTTP(TimedHTTPContractTest, unittest.TestCase):
                 self.assertEqual(response.status, 400, response.body)
                 self.assertTrue(response.json()["error"].startswith("Team token budget"))
             else:
-                self.assertEqual(response.status, 501, response.body)
-                self.assertEqual(response.json()["error"],
-                                 "Not implemented: requires workspace-policy/message-admission")
+                self.assertEqual(response.status, 400, response.body)
+                self.assertTrue(response.json()["error"].startswith(
+                    "A workspace operation is active in this directory:"))
             self.assertEqual(no_write_snapshot(self.backend.state), before)
             _fixture.update_agent(self.backend, self.agent, {}, remove=tuple(fields))
 

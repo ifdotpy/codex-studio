@@ -75,6 +75,7 @@ impl MessageAdmission for PreparedAdmission {
         )?;
         let ids = query.query_map([], |row| row.get::<_, String>(0))?;
         let mut blockers = Vec::new();
+        let mut unsupported_operation = false;
         for id in ids {
             let id = id?;
             let other =
@@ -102,11 +103,7 @@ impl MessageAdmission for PreparedAdmission {
             if path != other_path {
                 continue;
             }
-            if !matches!(operation, "checkpoint" | "capture") {
-                return Err(CoordinationError::RequiresDependency(
-                    "workspace-policy/message-admission",
-                ));
-            }
+            unsupported_operation |= !matches!(operation, "checkpoint" | "capture");
             let mut blocker = json!({"agentId":id,"operation":operation});
             if let Some(id) = other
                 .extra
@@ -121,6 +118,12 @@ impl MessageAdmission for PreparedAdmission {
                 blocker["operationId"] = record["id"].clone();
             }
             blockers.push(blocker);
+        }
+        if unsupported_operation {
+            return Err(CoordinationError::AdmissionDenied(format!(
+                "A workspace operation is active in this directory: {}",
+                studio_runtime_store::python_json(&Value::Array(blockers)),
+            )));
         }
         Ok(blockers)
     }
