@@ -2183,7 +2183,20 @@ sys.stdout.write(subprocess.check_output(['ionice', '-p', str(os.getpid())], tex
             .parse()
             .expect("valid descendant pid");
         let pid = rustix::process::Pid::from_raw(descendant_pid).expect("valid pid");
-        assert!(!process_is_running(pid), "group descendant terminated");
+        let exited = match rustix::process::pidfd_open(pid, rustix::process::PidfdFlags::empty()) {
+            Ok(pidfd) => {
+                let timeout = rustix::event::Timespec::try_from(Duration::from_secs(2))
+                    .expect("two second pidfd wait fits timespec");
+                let mut poll_fd = rustix::event::PollFd::new(&pidfd, rustix::event::PollFlags::IN);
+                rustix::event::poll(std::slice::from_mut(&mut poll_fd), Some(&timeout))
+                    .expect("wait for descendant pidfd")
+                    == 1
+                    && poll_fd.revents().contains(rustix::event::PollFlags::IN)
+            }
+            Err(rustix::io::Errno::SRCH) => true,
+            Err(error) => panic!("open descendant pidfd: {error}"),
+        };
+        assert!(exited, "group descendant exited after timeout cleanup");
     }
 
     #[cfg(target_os = "linux")]
