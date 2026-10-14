@@ -36,16 +36,16 @@ pub(crate) fn output_with_timeout(
                 std::thread::sleep(Duration::from_millis(10));
             }
             Ok(None) => {
-                let _ = child.kill();
-                let _ = child.wait();
+                drop(child.kill());
+                drop(child.wait());
                 return Err(format!(
                     "{label}: Python oracle exceeded {} second timeout",
                     timeout.as_secs()
                 ));
             }
             Err(error) => {
-                let _ = child.kill();
-                let _ = child.wait();
+                drop(child.kill());
+                drop(child.wait());
                 return Err(format!(
                     "{label}: could not wait for Python oracle: {error}"
                 ));

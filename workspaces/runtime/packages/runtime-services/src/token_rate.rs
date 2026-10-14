@@ -111,6 +111,8 @@ const MIN_GENERATION_DURATION_SECONDS: f64 = 0.25;
 const TOKEN_ESTIMATE_TOKENS_PER_CHARACTER: f64 = 0.25;
 const TOKEN_RATE_WINDOW_SECONDS: f64 = 4.0;
 const MAX_PROJECTED_AGENTS: usize = TOKEN_RATE_MAX_ENTRIES;
+// Parity owner: apps/server/src/codex_token_rate.py::MAX_PENDING_RESPONSE_DURATION_ENTRIES.
+const MAX_PENDING_RESPONSE_DURATION_ENTRIES: usize = 1024;
 
 impl TokenRateSnapshot {
     pub fn from_value(value: serde_json::Value) -> Result<Self, TokenRateError> {
@@ -198,7 +200,8 @@ impl TokenRateHub {
         let agent_id = agent["id"].as_str().ok_or(TokenRateError::Unavailable)?;
         let delivery = &observation.delivery;
         let effect_bit = match effect {
-            NotificationPostCommit::Analytics { .. } => 1,
+            NotificationPostCommit::Analytics { .. }
+            | NotificationPostCommit::TokenRateUsage(_) => 1,
             NotificationPostCommit::AnalyticsStream { .. } => 2,
             NotificationPostCommit::TokenRateStream(_) => 4,
             NotificationPostCommit::TokenRateAssociation(_) => 8,
@@ -267,7 +270,8 @@ fn effect_observation(effect: &NotificationPostCommit) -> &NotificationObservati
         NotificationPostCommit::Analytics { observation, .. }
         | NotificationPostCommit::AnalyticsStream { observation, .. }
         | NotificationPostCommit::TokenRateStream(observation)
-        | NotificationPostCommit::TokenRateAssociation(observation) => observation,
+        | NotificationPostCommit::TokenRateAssociation(observation)
+        | NotificationPostCommit::TokenRateUsage(observation) => observation,
     }
 }
 
@@ -315,38 +319,40 @@ fn project_effect(
             }
             _ => {}
         },
-        NotificationPostCommit::Analytics { .. } => match observation.method.as_str() {
-            "turn/started" => {
-                if let Some(turn) = observed_turn(params, agent_turn(observation)) {
-                    if turn != state.turn {
-                        state.turn = turn;
-                        state.active = true;
-                        state.rate = 0.0;
-                        state.actual = 0.0;
-                        state.pending = 0.0;
-                        state.estimated = false;
-                        state.baseline = state.lifetime;
-                        state.samples.clear();
-                        state.response_outputs.clear();
-                        state.tools.clear();
-                        state.generation_elapsed = 0.0;
-                        state.response_durations.clear();
-                        state.response_duration_pending_tokens = 0.0;
+        NotificationPostCommit::Analytics { .. } | NotificationPostCommit::TokenRateUsage(_) => {
+            match observation.method.as_str() {
+                "turn/started" => {
+                    if let Some(turn) = observed_turn(params, agent_turn(observation)) {
+                        if turn != state.turn {
+                            state.turn = turn;
+                            state.active = true;
+                            state.rate = 0.0;
+                            state.actual = 0.0;
+                            state.pending = 0.0;
+                            state.estimated = false;
+                            state.baseline = state.lifetime;
+                            state.samples.clear();
+                            state.response_outputs.clear();
+                            state.tools.clear();
+                            state.generation_elapsed = 0.0;
+                            state.response_durations.clear();
+                            state.response_duration_pending_tokens = 0.0;
+                        }
+                        state.generation_started = Some(at);
+                        state.timing_valid = true;
                     }
-                    state.generation_started = Some(at);
-                    state.timing_valid = true;
                 }
+                "thread/tokenUsage/updated" => project_usage(state, params, at),
+                "turn/completed"
+                    if observed_turn(params, Some(&state.turn)).as_deref() == Some(&state.turn) =>
+                {
+                    state.active = false;
+                    state.estimated = false;
+                }
+                "turn/completed" => {}
+                _ => {}
             }
-            "thread/tokenUsage/updated" => project_usage(state, params, at),
-            "turn/completed"
-                if observed_turn(params, Some(&state.turn)).as_deref() == Some(&state.turn) =>
-            {
-                state.active = false;
-                state.estimated = false;
-            }
-            "turn/completed" => {}
-            _ => {}
-        },
+        }
         NotificationPostCommit::TokenRateAssociation(_) => match observation.method.as_str() {
             "thread/tokenUsage/updated" => associate_response(state, params),
             "item/started" | "item/completed" => project_item_association(state, observation),
@@ -512,8 +518,7 @@ fn project_item_association(state: &mut ProjectedAgent, observation: &Notificati
             {
                 let elapsed = (observation.observed_at - started).max(0.0);
                 state.generation_elapsed += elapsed;
-                state.response_durations.push_back((elapsed, state.pending));
-                state.response_duration_pending_tokens += state.pending;
+                append_response_duration(state, elapsed, state.pending);
                 state.pending = 0.0;
                 state.samples.clear();
             }
@@ -526,6 +531,16 @@ fn project_item_association(state: &mut ProjectedAgent, observation: &Notificati
             state.timing_valid = true;
         }
     }
+}
+
+fn append_response_duration(state: &mut ProjectedAgent, duration: f64, pending: f64) {
+    if state.response_durations.len() == MAX_PENDING_RESPONSE_DURATION_ENTRIES
+        && let Some((_, evicted_pending)) = state.response_durations.pop_front()
+    {
+        state.response_duration_pending_tokens -= evicted_pending;
+    }
+    state.response_durations.push_back((duration, pending));
+    state.response_duration_pending_tokens += pending;
 }
 
 fn snapshot_from_projector(projector: &RateProjector) -> TokenRateSnapshot {
@@ -598,10 +613,24 @@ mod tests {
         assert!(PYTHON_OWNER.contains("MIN_DURATION = .25"));
         assert!(PYTHON_OWNER.contains("len(text) / 4.0"));
         assert!(PYTHON_OWNER.contains("now - self.text_samples[0][0] > 4"));
+        assert!(PYTHON_OWNER.contains("MAX_PENDING_RESPONSE_DURATION_ENTRIES = 1024"));
         assert_eq!(super::MAX_TOKEN_RATE, 1_000.0);
         assert_eq!(super::MIN_GENERATION_DURATION_SECONDS, 0.25);
         assert_eq!(super::TOKEN_ESTIMATE_TOKENS_PER_CHARACTER, 0.25);
         assert_eq!(super::TOKEN_RATE_WINDOW_SECONDS, 4.0);
+        assert_eq!(super::MAX_PENDING_RESPONSE_DURATION_ENTRIES, 1024);
+    }
+
+    #[test]
+    fn pending_response_durations_match_python_bound() {
+        let mut state = super::ProjectedAgent::default();
+        for duration in 0..=super::MAX_PENDING_RESPONSE_DURATION_ENTRIES {
+            super::append_response_duration(&mut state, duration as f64, 1.0);
+        }
+        assert_eq!(state.response_durations.len(), 1024);
+        assert_eq!(state.response_durations.front(), Some(&(1.0, 1.0)));
+        assert_eq!(state.response_durations.back(), Some(&(1024.0, 1.0)));
+        assert_eq!(state.response_duration_pending_tokens, 1024.0);
     }
 
     #[test]

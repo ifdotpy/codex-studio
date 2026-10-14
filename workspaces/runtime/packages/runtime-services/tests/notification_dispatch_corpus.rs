@@ -424,6 +424,7 @@ fn apply(store: &RuntimeStore, case: &Value, prepared: &Value) -> Result<Value, 
             .expect("Python post-commit captures");
         let selected: Vec<_> = handoff
             .iter()
+            .filter(|effect| effect["kind"] != "tokenRateUsage")
             .filter(|effect| case["analytics_semantics"] != true || effect["kind"] != "analytics")
             .cloned()
             .collect();
@@ -479,7 +480,8 @@ impl studio_runtime_services::notification_runtime_effects::NotificationPostComm
             NotificationPostCommit::Analytics { observation, .. }
             | NotificationPostCommit::AnalyticsStream { observation, .. }
             | NotificationPostCommit::TokenRateStream(observation)
-            | NotificationPostCommit::TokenRateAssociation(observation) => observation,
+            | NotificationPostCommit::TokenRateAssociation(observation)
+            | NotificationPostCommit::TokenRateUsage(observation) => observation,
         };
         let identity = &observation.delivery;
         let signature = serde_json::to_vec(&json!({"providerHandle":identity.provider_handle,"generation":identity.generation,"cursor":identity.cursor})).expect("identity");
@@ -536,6 +538,9 @@ fn post_commit_value(
         NotificationPostCommit::TokenRateStream(observation) => ("stream", observation, None),
         NotificationPostCommit::TokenRateAssociation(observation) => {
             ("association", observation, None)
+        }
+        NotificationPostCommit::TokenRateUsage(observation) => {
+            ("tokenRateUsage", observation, None)
         }
     };
     // Python's stream callback intentionally resolves an agent through its

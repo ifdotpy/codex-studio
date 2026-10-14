@@ -118,6 +118,12 @@ impl NotificationEffects for RuntimeNotificationEffects {
             observation: observation(Some(&analytics_agent)),
             budget_capture_value: captured,
         });
+        if matches!(
+            method,
+            "turn/started" | "turn/completed" | "thread/tokenUsage/updated"
+        ) {
+            result.push(NotificationPostCommit::TokenRateUsage(observation(after)));
+        }
         if matches!(outcome, DispatchOutcome::Written)
             && matches!(
                 method,
@@ -139,6 +145,10 @@ impl NotificationEffects for RuntimeNotificationEffects {
 /// process may crash after publication and before the durable row is deleted.
 pub trait NotificationPostCommitSink: Send + Sync {
     fn publish(&self, effect: &NotificationPostCommit) -> Result<(), NotificationDispatchError>;
+
+    fn invalidate_state(&self, _request_id: &str) -> Result<(), NotificationDispatchError> {
+        Ok(())
+    }
 }
 
 pub struct UnavailablePostCommitSink;
@@ -162,7 +172,8 @@ impl NotificationPostCommitSink for RuntimeNotificationPostCommitSink {
     fn publish(&self, effect: &NotificationPostCommit) -> Result<(), NotificationDispatchError> {
         match effect {
             NotificationPostCommit::TokenRateStream(_)
-            | NotificationPostCommit::TokenRateAssociation(_) => {
+            | NotificationPostCommit::TokenRateAssociation(_)
+            | NotificationPostCommit::TokenRateUsage(_) => {
                 self.project_token_rate(effect)?;
             }
             NotificationPostCommit::Analytics {
@@ -183,7 +194,8 @@ impl NotificationPostCommitSink for RuntimeNotificationPostCommitSink {
             NotificationPostCommit::Analytics { observation, .. }
             | NotificationPostCommit::AnalyticsStream { observation, .. }
             | NotificationPostCommit::TokenRateStream(observation)
-            | NotificationPostCommit::TokenRateAssociation(observation) => observation,
+            | NotificationPostCommit::TokenRateAssociation(observation)
+            | NotificationPostCommit::TokenRateUsage(observation) => observation,
         };
         let delivery = &observation.delivery;
         let kind = match effect {
@@ -191,6 +203,7 @@ impl NotificationPostCommitSink for RuntimeNotificationPostCommitSink {
             NotificationPostCommit::AnalyticsStream { .. } => "analyticsStream",
             NotificationPostCommit::TokenRateStream(_) => "tokenRateStream",
             NotificationPostCommit::TokenRateAssociation(_) => "tokenRateAssociation",
+            NotificationPostCommit::TokenRateUsage(_) => "tokenRateUsage",
         };
         let request = serde_json::json!({
             "requestId": format!("provider-publication:{}:{}:{}:{kind}", delivery.provider_handle, delivery.generation, delivery.cursor),
@@ -200,6 +213,16 @@ impl NotificationPostCommitSink for RuntimeNotificationPostCommitSink {
         // to re-read current state and cannot duplicate or mutate stored rows.
         self.resources
             .publish_once(&request)
+            .map_err(|_| NotificationDispatchError::Dependency("sync/resources/publication"))?;
+        Ok(())
+    }
+
+    fn invalidate_state(&self, request_id: &str) -> Result<(), NotificationDispatchError> {
+        self.resources
+            .publish_once(&serde_json::json!({
+                "requestId": request_id,
+                "resources": [{"kind":"state"}],
+            }))
             .map_err(|_| NotificationDispatchError::Dependency("sync/resources/publication"))?;
         Ok(())
     }
@@ -213,7 +236,8 @@ impl RuntimeNotificationPostCommitSink {
         let observation = match effect {
             NotificationPostCommit::Analytics { observation, .. }
             | NotificationPostCommit::TokenRateStream(observation)
-            | NotificationPostCommit::TokenRateAssociation(observation) => observation,
+            | NotificationPostCommit::TokenRateAssociation(observation)
+            | NotificationPostCommit::TokenRateUsage(observation) => observation,
             NotificationPostCommit::AnalyticsStream { .. } => {
                 return Err(NotificationDispatchError::InvalidNotification);
             }
@@ -222,6 +246,7 @@ impl RuntimeNotificationPostCommitSink {
             NotificationPostCommit::Analytics { .. } => "analytics",
             NotificationPostCommit::TokenRateStream(_) => "tokenRateStream",
             NotificationPostCommit::TokenRateAssociation(_) => "tokenRateAssociation",
+            NotificationPostCommit::TokenRateUsage(_) => "tokenRateUsage",
             NotificationPostCommit::AnalyticsStream { .. } => {
                 return Err(NotificationDispatchError::InvalidNotification);
             }

@@ -1109,32 +1109,34 @@ pub(super) fn persist_publication_batch(
         |row| row.get(0),
     )?;
     let pending = usize::try_from(pending).map_err(|_| WorkerError::Capacity)?;
-    let available = MAX_PENDING_PUBLICATION_RECEIPTS.saturating_sub(pending);
+    let mut available = MAX_PENDING_PUBLICATION_RECEIPTS.saturating_sub(pending);
     let mut retained = 0;
     let mut overflow = batch.analytics_overflow;
-    let mut publication_overflow = 0_u64;
+    let publication_overflow = 0_u64;
     let mut last_saved = None;
     for (index, effect) in batch.effects.iter().enumerate() {
         if retained == available {
             if is_analytics_effect(effect) {
                 overflow = overflow.saturating_add(1);
+            } else if let Some(id) = oldest_analytics_receipt(tx, &prefix)? {
+                // Python drops captures at its analytics queue bound, but its
+                // token-rate observer continues to receive committed events.
+                // Reclaim only an analytics receipt to keep that behavior.
+                tx.execute("DELETE FROM runtime_operation_receipts WHERE id=?1", [&id])?;
+                overflow = overflow.saturating_add(1);
+                available += 1;
+                last_saved = Some(save_publication_effect(tx, account, batch, index, effect)?);
+                retained += 1;
             } else {
-                publication_overflow = publication_overflow.saturating_add(1);
+                // The pending token-rate queue is itself full. Coalesce this
+                // observation into the newest token-rate receipt rather than
+                // dropping the committed token-rate update.
+                coalesce_token_rate_receipt(tx, &prefix, effect)?;
             }
             continue;
         }
-        let operation = format!(
-            "notification-publication:{account}:{}:{index}",
-            batch.sequence
-        );
-        save(
-            tx,
-            &operation,
-            "pending",
-            json!({"account":account,"sequence":batch.sequence,"index":index,"effect":effect}),
-        )?;
+        last_saved = Some(save_publication_effect(tx, account, batch, index, effect)?);
         retained += 1;
-        last_saved = Some(operation);
     }
     if overflow > 0 || publication_overflow > 0 {
         if last_saved.is_none() && available > 0 {
@@ -1158,7 +1160,7 @@ pub(super) fn persist_publication_batch(
             last_saved = Some(operation);
         }
         let target = if let Some(operation) = last_saved {
-            Some(format!("account-worker:{operation}"))
+            Some(receipt_id(&operation, "pending"))
         } else {
             tx.query_row(
                 "SELECT id FROM runtime_operation_receipts WHERE id>=?1 AND id<?2 ORDER BY json_extract(result,'$.sequence') DESC,json_extract(result,'$.index') DESC,rowid DESC LIMIT 1",
@@ -1167,6 +1169,13 @@ pub(super) fn persist_publication_batch(
             ).optional()?
         };
         if let Some(id) = target {
+            let pending_invalidation: Option<String> = tx
+                .query_row(
+                    "SELECT id FROM runtime_operation_receipts WHERE id>=?1 AND id<?2 AND json_extract(result,'$.stateInvalidation')=1 ORDER BY rowid LIMIT 1",
+                    params![prefix, format!("{prefix}~")],
+                    |row| row.get(0),
+                )
+                .optional()?;
             tx.execute(
                 "UPDATE runtime_operation_receipts SET result=json_set(json_set(result,'$.analyticsOverflow',COALESCE(json_extract(result,'$.analyticsOverflow'),0)+?2),'$.publicationOverflow',COALESCE(json_extract(result,'$.publicationOverflow'),0)+?3) WHERE id=?1",
                 params![
@@ -1175,11 +1184,106 @@ pub(super) fn persist_publication_batch(
                     publication_overflow.min(i64::MAX as u64) as i64
                 ],
             )?;
+            if let Some(existing) = pending_invalidation {
+                // Changing the receipt result makes an in-flight drain retry
+                // this same coalesced invalidation after the commit.
+                tx.execute(
+                    "UPDATE runtime_operation_receipts SET result=json_set(result,'$.stateInvalidationGeneration',COALESCE(json_extract(result,'$.stateInvalidationGeneration'),0)+1) WHERE id=?1",
+                    [&existing],
+                )?;
+            } else {
+                tx.execute(
+                    "UPDATE runtime_operation_receipts SET result=json_set(result,'$.stateInvalidation',json('true')) WHERE id=?1",
+                    [&id],
+                )?;
+            }
         } else {
             // The only reachable case is a legacy database already beyond the
             // named cap with no publication rows to annotate. Preserve the
             // provider commit; the cap remains in force for all new receipts.
         }
+    }
+    Ok(())
+}
+
+fn save_publication_effect(
+    tx: &studio_runtime_store::Transaction<'_>,
+    account: &str,
+    batch: &NotificationPublicationBatch,
+    index: usize,
+    effect: &crate::notification_dispatch::NotificationPostCommit,
+) -> Result<String, WorkerError> {
+    let operation = format!(
+        "notification-publication:{account}:{}:{index}",
+        batch.sequence
+    );
+    save(
+        tx,
+        &operation,
+        "pending",
+        json!({"account":account,"sequence":batch.sequence,"index":index,"effect":effect}),
+    )?;
+    Ok(operation)
+}
+
+fn oldest_analytics_receipt(
+    tx: &studio_runtime_store::Transaction<'_>,
+    prefix: &str,
+) -> Result<Option<String>, WorkerError> {
+    let mut statement = tx.prepare(
+        "SELECT id,result FROM runtime_operation_receipts WHERE id>=?1 AND id<?2 ORDER BY json_extract(result,'$.sequence'),json_extract(result,'$.index'),rowid",
+    )?;
+    let rows = statement
+        .query_map(params![prefix, format!("{prefix}~")], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    for (id, result) in rows {
+        let value: Value = serde_json::from_str(&result).map_err(|_| invalid(&id))?;
+        let Some(effect) = value.get("effect") else {
+            continue;
+        };
+        let effect: crate::notification_dispatch::NotificationPostCommit =
+            serde_json::from_value(effect.clone()).map_err(|_| invalid(&id))?;
+        if is_analytics_effect(&effect) {
+            return Ok(Some(id));
+        }
+    }
+    Ok(None)
+}
+
+fn coalesce_token_rate_receipt(
+    tx: &studio_runtime_store::Transaction<'_>,
+    prefix: &str,
+    effect: &crate::notification_dispatch::NotificationPostCommit,
+) -> Result<(), WorkerError> {
+    let row: Option<(String, String)> = tx
+        .query_row(
+            "SELECT id,result FROM runtime_operation_receipts WHERE id>=?1 AND id<?2 AND (json_type(result,'$.effect.TokenRateStream') IS NOT NULL OR json_type(result,'$.effect.TokenRateAssociation') IS NOT NULL OR json_type(result,'$.effect.TokenRateUsage') IS NOT NULL) ORDER BY json_extract(result,'$.sequence') DESC,json_extract(result,'$.index') DESC,rowid DESC LIMIT 1",
+            params![prefix, format!("{prefix}~")],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?;
+    let row = match row {
+        Some(row) => Some(row),
+        None => tx
+            .query_row(
+                "SELECT id,result FROM runtime_operation_receipts WHERE id>=?1 AND id<?2 ORDER BY json_extract(result,'$.sequence') DESC,json_extract(result,'$.index') DESC,rowid DESC LIMIT 1",
+                params![prefix, format!("{prefix}~")],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?,
+    };
+    if let Some((id, result)) = row {
+        let mut value: Value = serde_json::from_str(&result).map_err(|_| invalid(&id))?;
+        value["effect"] = serde_json::to_value(effect).map_err(|_| invalid(&id))?;
+        value["tokenRateCoalesced"] = json!(true);
+        tx.execute(
+            "UPDATE runtime_operation_receipts SET result=?2 WHERE id=?1",
+            params![id, value.to_string()],
+        )?;
+    } else {
+        return Err(WorkerError::Capacity);
     }
     Ok(())
 }
@@ -1245,6 +1349,13 @@ pub(super) fn drain_publications_with_hook(
                     .unwrap_or_default(),
             )
             .map_err(|_| WorkerError::Capacity)?;
+        }
+        if value.get("stateInvalidation") == Some(&Value::Bool(true)) {
+            let generation = value
+                .get("stateInvalidationGeneration")
+                .and_then(Value::as_u64)
+                .unwrap_or_default();
+            sink.invalidate_state(&format!("coalesced-state-invalidation:{id}:{generation}"))?;
         }
         before_delete()?;
         // Overflow diagnostics are persisted to analytics_meta before receipt

@@ -592,7 +592,7 @@ pub fn mark_token_rate_delivered(
 
 fn token_rate_effect_bit(effect_kind: &str) -> Result<i64, CaptureError> {
     match effect_kind {
-        "analytics" => Ok(1),
+        "analytics" | "tokenRateUsage" => Ok(1),
         "tokenRateStream" => Ok(2),
         "tokenRateAssociation" => Ok(4),
         _ => Err(CaptureError::Invalid("/effectKind")),

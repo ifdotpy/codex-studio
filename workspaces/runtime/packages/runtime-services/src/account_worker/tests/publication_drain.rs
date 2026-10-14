@@ -53,6 +53,24 @@ fn analytics_effect(cursor: u64, method: &str, params: Value) -> NotificationPos
     }
 }
 
+fn token_rate_usage_effect(cursor: u64) -> NotificationPostCommit {
+    NotificationPostCommit::TokenRateUsage(NotificationObservation {
+        agent: Some(rate_agent()),
+        method: "thread/tokenUsage/updated".into(),
+        params: json!({"turnId":"turn","tokenUsage":{
+            "total":{"inputTokens":20,"outputTokens":100,"totalTokens":120},
+            "last":{"inputTokens":2,"outputTokens":10,"totalTokens":12}
+        }}),
+        delivery: ProviderDeliveryIdentity {
+            provider_handle: "account:default".into(),
+            generation: 7,
+            cursor,
+        },
+        observed_at: 10.0 + cursor as f64,
+        provider_at: 10.0 + cursor as f64,
+    })
+}
+
 fn seed_analytics_agent(store: &RuntimeStore) {
     let agent = rate_agent();
     store
@@ -128,6 +146,7 @@ impl NotificationPostCommitSink for RecordingSink {
         let cursor = match effect {
             NotificationPostCommit::TokenRateStream(observation)
             | NotificationPostCommit::TokenRateAssociation(observation)
+            | NotificationPostCommit::TokenRateUsage(observation)
             | NotificationPostCommit::Analytics { observation, .. }
             | NotificationPostCommit::AnalyticsStream { observation, .. } => {
                 observation.delivery.cursor
@@ -393,29 +412,111 @@ async fn provider_notification_is_acknowledged_at_the_publication_bound() {
         .await
         .expect("count bounded receipts");
     assert!(pending <= store::MAX_PENDING_PUBLICATION_RECEIPTS as i64);
-    tokio::time::timeout(std::time::Duration::from_secs(30), async {
-        loop {
-            let pending = state
-                .bridge
-                .run(|store| {
-                    let connection = store.read()?;
-                    Ok(connection.query_row(
-                        "SELECT count(*) FROM runtime_operation_receipts WHERE id LIKE 'account-worker:notification-publication:default:%'",
-                        [],
-                        |row| row.get::<_, i64>(0),
-                    )?)
-                })
-                .await
-                .expect("count receipts while worker drains");
-            if pending == 0 {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .expect("worker drains bounded backlog");
+    // Every acknowledged journal turn drains one bounded batch. These no-op
+    // provider frames are gates for the three remaining drain passes.
+    for index in 0..3 {
+        let cursor = peer
+            .frame(json!({
+                "method":"hook/started",
+                "params":{"threadId":"fake-thread-0","hookId":format!("drain-{index}")}
+            }))
+            .await;
+        peer.acknowledged_or_worker_exits(cursor, &mut worker).await;
+    }
+    let pending = state
+        .bridge
+        .run(|store| {
+            let connection = store.read()?;
+            Ok(connection.query_row(
+                "SELECT count(*) FROM runtime_operation_receipts WHERE id LIKE 'account-worker:notification-publication:default:%'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )?)
+        })
+        .await
+        .expect("count receipts after gated drains");
+    assert_eq!(pending, 0);
     worker.shutdown().await.expect("stop worker");
+}
+
+#[test]
+fn publication_bound_keeps_state_invalidation_and_token_rate_usage() {
+    let (root, store) = test_store();
+    let changes = Arc::new(crate::change_notifications::ChangeNotificationHub::new());
+    let client = changes.subscribe();
+    let token_rates = Arc::new(crate::token_rate::TokenRateHub::with_change_hub(
+        Arc::clone(&changes),
+    ));
+    let resources = Arc::new(crate::resource_notify::ResourceNotifications::new(
+        Arc::clone(&changes),
+    ));
+    let sink = RuntimeNotificationPostCommitSink {
+        token_rates: Arc::clone(&token_rates),
+        resources: Arc::clone(&resources),
+        analytics_store: Arc::clone(&store),
+        process_id: start_rate_process(&store),
+    };
+    seed_analytics_agent(&store);
+    let backlog = NotificationPublicationBatch {
+        sequence: 1,
+        effects: (1..=store::MAX_PENDING_PUBLICATION_RECEIPTS as u64)
+            .map(|cursor| analytics_effect(cursor, "turn/started", json!({"turnId":"turn"})))
+            .collect(),
+        analytics_overflow: 0,
+    };
+    store
+        .transaction_with(|tx| store::persist_publication_batch(tx, "default", &backlog))
+        .expect("fill publication receipts to the bound");
+    let pressured = NotificationPublicationBatch {
+        sequence: 2,
+        effects: vec![
+            analytics_effect(
+                300,
+                "thread/tokenUsage/updated",
+                json!({"turnId":"turn","tokenUsage":{
+                    "total":{"inputTokens":20,"outputTokens":100,"totalTokens":120},
+                    "last":{"inputTokens":2,"outputTokens":10,"totalTokens":12}
+                }}),
+            ),
+            token_rate_usage_effect(300),
+        ],
+        analytics_overflow: 0,
+    };
+    store
+        .transaction_with(|tx| store::persist_publication_batch(tx, "default", &pressured))
+        .expect("preserve token-rate observation under analytics pressure");
+    assert_eq!(
+        pending_count(&store),
+        store::MAX_PENDING_PUBLICATION_RECEIPTS as i64
+    );
+    let invalidations: i64 = store
+        .read()
+        .expect("read publication marker")
+        .query_row(
+            "SELECT count(*) FROM runtime_operation_receipts WHERE id LIKE 'account-worker:notification-publication:default:%' AND json_extract(result,'$.stateInvalidation')=1",
+            [],
+            |row| row.get(0),
+        )
+        .expect("count coalesced invalidation markers");
+    assert_eq!(invalidations, 1);
+
+    while store::drain_publications(&store, "default", &sink).expect("drain publications") > 0 {}
+
+    assert!(
+        client
+            .has_changed()
+            .expect("connected client remains subscribed")
+    );
+    let changes_since = resources
+        .changes_since(&[json!({"kind":"state"})], Some(0))
+        .expect("read state invalidation");
+    assert!(changes_since.entity_reset);
+    assert_eq!(changes_since.resources, vec![json!({"kind":"state"})]);
+    let snapshot = token_rates.snapshot().to_value();
+    assert_eq!(snapshot["rates"]["agent"]["turnId"], "turn");
+    assert_eq!(snapshot["rates"]["agent"]["outputTokens"], 10.0);
+    assert_eq!(pending_count(&store), 0);
+    std::fs::remove_dir_all(root).expect("remove test state");
 }
 
 #[tokio::test]
@@ -647,10 +748,10 @@ fn streamed_turn_analytics_rows_match_python_capture_oracle() {
         actual[table] = json!(rows);
     }
     // Tracking-since is store initialization metadata, independent of captures.
-    for rows in ["analytics_meta"] {
-        let values = actual[rows].as_array_mut().expect("metadata rows");
-        values.retain(|row| row["key"] != "trackingSince");
-    }
+    let values = actual["analytics_meta"]
+        .as_array_mut()
+        .expect("metadata rows");
+    values.retain(|row| row["key"] != "trackingSince");
     let mut expected = expected;
     let values = expected["analytics_meta"]
         .as_array_mut()

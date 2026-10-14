@@ -79,6 +79,7 @@ pub enum NotificationPostCommit {
     },
     TokenRateStream(NotificationObservation),
     TokenRateAssociation(NotificationObservation),
+    TokenRateUsage(NotificationObservation),
 }
 
 /// One committed publication unit. `sequence` is monotone per retained account

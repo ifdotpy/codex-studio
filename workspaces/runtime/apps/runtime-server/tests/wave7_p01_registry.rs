@@ -134,6 +134,9 @@ impl AccountLauncher for Scripted {
                     PathBuf::from("/isolated/python"),
                 )
                 .unwrap(),
+                publication_sink: Arc::new(
+                    studio_runtime_services::notification_runtime_effects::UnavailablePostCommitSink,
+                ),
             })
         })
     }
