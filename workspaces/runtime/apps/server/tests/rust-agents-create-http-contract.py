@@ -957,7 +957,11 @@ class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         saved = self.stored(body["id"])
         for field in ("concurrency", "agentMode", "subagentConcurrencyVersion"):
             self.assertNotIn(field, saved)
-        self.post("/api/conversation", {"id": body["id"]})
+        # The live scheduler can reserve the queued worker before this request.
+        # Python Runtime.configure() rejects execution-setting writes while a
+        # turn is in flight (codex_runtime.py:5331, 5353), so this is a valid
+        # refusal once the Rust scheduler has advanced the child.
+        self.post("/api/conversation", {"id": body["id"]}, 400)
 
     def test_probe_extra_null_creation_effort_and_invalid_stored_name(self):
         self.rust_only()

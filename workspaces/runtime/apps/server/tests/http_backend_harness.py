@@ -65,6 +65,10 @@ PROVIDER_CREDENTIAL_ENVIRONMENT = frozenset({
 # authority; docs/testing.md points here.
 BACKGROUND_OWNED_FIELDS: dict[str, frozenset[str]] = {
     "runtime_agents": frozenset({
+        # Python Runtime.schedule() owns these lifecycle fields while a queued
+        # child is reserved or prepared (codex_runtime.py:6503, 7036-7042,
+        # 7351-7585). They can advance after a refusing request returns.
+        "status", "inFlight", "startAttempt", "turnId", "turnEpoch", "error",
         # Dispatcher records which required complaints it presented at codex_runtime.py:7063.
         "complaintsPresented",
         # Dispatcher reconciles normalized settings into the active attempt at codex_runtime.py:6943.
@@ -100,6 +104,9 @@ BACKGROUND_OWNED_FIELDS: dict[str, frozenset[str]] = {
     # it into this projection in codex_execution.py:255-259.
     "runtime_execution_attempts": frozenset({"settingsFixed"}),
     "sync_entities": frozenset({
+        # Agent projections mirror scheduler-owned agent lifecycle changes.
+        "payload.value.status", "payload.value.inFlight", "payload.value.startAttempt",
+        "payload.value.turnId", "payload.value.turnEpoch", "payload.value.error",
         # Same dispatcher-only field is copied into the agent entity at codex_runtime.py:3302,3372.
         "payload.value.complaintsPresented",
         # Agent projection carries dispatcher-normalized attempts via codex_runtime.py:3302,3372.
@@ -122,14 +129,22 @@ BACKGROUND_OWNED_FIELDS: dict[str, frozenset[str]] = {
     }),
 }
 
+# The Rust host's account worker creates generation and cursor receipts while
+# it starts in the background (runtime-server/src/host_runtime.rs and
+# runtime-services/src/account_worker/store.rs). Python has no corresponding
+# request receipt table writes, so these rows are outside an HTTP no-write proof.
+BACKGROUND_OWNED_ROW_PREFIXES: dict[str, tuple[str, ...]] = {
+    "runtime_operation_receipts": ("account-worker:",),
+}
+
 
 def no_write_snapshot(state: Path) -> tuple[object, ...]:
     """Snapshot request-visible databases, omitting only named background fields.
 
-    A no-write proof compares what a request could write. Fields owned by the
-    background dispatcher or scheduler are excluded by their table and field
-    names; whole tables are never excluded, except the separate analytics.sqlite3
-    database. Python writes that database only through Runtime startup and the
+    A no-write proof compares what a request could write. Fields and namespaced
+    rows owned by the background dispatcher, scheduler, or Rust account worker
+    are excluded by the named owner maps; whole tables are never excluded,
+    except the separate analytics.sqlite3 database. Python writes that database only through Runtime startup and the
     background analytics capture/rollout collectors: codex_runtime.py:1811-1812,
     2407-2425, 2545-2592, 4139-4145, 7779, 7917-7921, 9052, 9209;
     codex_analytics.py:265-299, 301-324, 350-468, 493-768;
@@ -158,6 +173,14 @@ def no_write_snapshot(state: Path) -> tuple[object, ...]:
                 retained_columns = tuple(column for column in columns if column not in excluded)
                 selected_columns = ",".join(f'"{column}"' for column in columns)
                 rows = database.execute(f'SELECT {selected_columns} FROM "{table}"').fetchall()
+                if table in BACKGROUND_OWNED_ROW_PREFIXES and "id" in columns:
+                    id_index = columns.index("id")
+                    prefixes = BACKGROUND_OWNED_ROW_PREFIXES[table]
+                    rows = [
+                        row for row in rows
+                        if not isinstance(row[id_index], str)
+                        or not row[id_index].startswith(prefixes)
+                    ]
                 if not rows:
                     continue
                 retained_rows = []
