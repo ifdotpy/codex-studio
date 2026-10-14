@@ -3,7 +3,10 @@
 //! Registered differences: Unknown outcomes and intents left pending at restart
 //! are held under their durable request identity and are never resent without a
 //! proven NotSent receipt. Malformed stored inputs are rejected with a located
-//! error. The model-supplied `orchestration_title` tool remains the caller's
+//! error. Python stores completed receipts as operation results (`id`, `name`,
+//! `request_id`, `status`); Rust stores state-machine results (`state`, `title`,
+//! and request identity). Rust reads completed Python receipts but writes its
+//! own shape. The model-supplied `orchestration_title` tool remains the caller's
 //! responsibility; its `manualName` and name-change guards are enforced here.
 
 use std::{future::Future, pin::Pin, time::SystemTime};
@@ -99,6 +102,7 @@ struct Snapshot {
     account_key: String,
     provider: Option<String>,
     request_id: String,
+    eligible: bool,
 }
 
 enum Admission {
@@ -287,14 +291,71 @@ pub async fn generate(
         return Err(TitleError::Conflict);
     }
     let snapshot = make_snapshot(store, agent_id, catalog, request_id)?;
-    let Some(snapshot) = snapshot else {
-        return Ok(TitleResult::Skipped);
-    };
     let fingerprint = signature(&snapshot);
     let intent =
         json!({"state":"pending","agent":agent_id,"epoch":snapshot.epoch,"requestId":request_id});
     let intent_text = serde_json::to_string(&intent).map_err(StoreError::from)?;
     let admission = store.transaction_with(|tx| {
+        if let Some((saved_signature, raw_result)) = tx
+            .query_row(
+                "SELECT signature,result FROM runtime_operation_receipts WHERE id=?1",
+                [request_id],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+            )
+            .optional()?
+        {
+            let result: Value = serde_json::from_str(&raw_result)
+                .map_err(|_| invalid("runtime_operation_receipts", request_id))?;
+            if saved_signature == python_rename_signature(agent_id) {
+                let saved = result
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .filter(|_| {
+                        result.get("id").and_then(Value::as_str) == Some(agent_id)
+                            && result.get("request_id").and_then(Value::as_str) == Some(request_id)
+                            && result.get("status").and_then(Value::as_str) == Some("applied")
+                    })
+                    .ok_or_else(|| invalid("runtime_operation_receipts", request_id))?;
+                return Ok(Admission::Held(TitleResult::Applied {
+                    title: saved.to_owned(),
+                }));
+            }
+            if saved_signature != fingerprint {
+                return Err(TitleError::Conflict);
+            }
+            match result.get("state").and_then(Value::as_str) {
+                Some("unknown" | "pending") => {
+                    return Ok(Admission::Held(TitleResult::HeldUnknown));
+                }
+                Some("applied") => {
+                    let title = result
+                        .get("title")
+                        .and_then(Value::as_str)
+                        .ok_or_else(|| invalid("runtime_operation_receipts", request_id))?;
+                    return Ok(Admission::Held(TitleResult::Applied {
+                        title: title.to_owned(),
+                    }));
+                }
+                Some("discarded" | "invalid") => {
+                    return Ok(Admission::Held(TitleResult::Discarded));
+                }
+                Some("written") => {
+                    let title = result
+                        .get("title")
+                        .and_then(Value::as_str)
+                        .ok_or_else(|| invalid("runtime_operation_receipts", request_id))?;
+                    return Ok(Admission::Apply(title.to_owned()));
+                }
+                Some("not_sent") => {
+                    tx.execute(
+                        "UPDATE runtime_operation_receipts SET result=?1 WHERE id=?2",
+                        params![intent_text, request_id],
+                    )?;
+                }
+                _ => return Err(invalid("runtime_operation_receipts", request_id)),
+            }
+        }
+
         let current_agent = tx
             .query_row(
                 "SELECT record FROM runtime_agents WHERE id=?1",
@@ -305,7 +366,8 @@ pub async fn generate(
             .ok_or_else(|| invalid("runtime_agents", agent_id))?;
         let current_agent: Value =
             serde_json::from_str(&current_agent).map_err(StoreError::from)?;
-        if current_agent.get("id").and_then(Value::as_str) != Some(agent_id)
+        if !snapshot.eligible
+            || current_agent.get("id").and_then(Value::as_str) != Some(agent_id)
             || current_agent.get("epoch").and_then(Value::as_i64) != Some(snapshot.epoch)
             || current_agent.get("name").and_then(Value::as_str)
                 != Some(snapshot.original_name.as_str())
@@ -335,51 +397,20 @@ pub async fn generate(
         {
             return Err(TitleError::Conflict);
         }
-        match tx
+        if tx
             .query_row(
-                "SELECT signature,result FROM runtime_operation_receipts WHERE id=?1",
+                "SELECT 1 FROM runtime_operation_receipts WHERE id=?1",
                 [request_id],
-                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+                |_| Ok(()),
             )
             .optional()?
+            .is_none()
         {
-            Some((saved_signature, result)) => {
-                if saved_signature != fingerprint {
-                    return Err(TitleError::Conflict);
-                }
-                let result: Value = serde_json::from_str(&result).map_err(StoreError::from)?;
-                match result.get("state").and_then(Value::as_str) {
-                    Some("unknown" | "pending") => {
-                        return Ok(Admission::Held(TitleResult::HeldUnknown));
-                    }
-                    Some("applied" | "discarded" | "invalid") => {
-                        return Ok(Admission::Held(TitleResult::Discarded));
-                    }
-                    Some("written") => {
-                        let title = result
-                            .get("title")
-                            .and_then(Value::as_str)
-                            .ok_or_else(|| invalid("runtime_operation_receipts", request_id))?;
-                        return Ok(Admission::Apply(title.to_owned()));
-                    }
-                    Some("not_sent") => {
-                        tx.execute(
-                            "UPDATE runtime_operation_receipts SET result=?1 WHERE id=?2",
-                            params![intent_text, request_id],
-                        )?;
-                    }
-                    // A restart cannot prove whether this intent reached the provider.
-                    // Keep it held; only a durable NotSent receipt permits a resend.
-                    _ => return Err(invalid("runtime_operation_receipts", request_id)),
-                };
-            }
-            None => {
-                tx.execute(
-                    "INSERT INTO runtime_operation_receipts(id,signature,result) VALUES(?1,?2,?3)",
-                    params![request_id, fingerprint, intent_text],
-                )?;
-            }
-        };
+            tx.execute(
+                "INSERT INTO runtime_operation_receipts(id,signature,result) VALUES(?1,?2,?3)",
+                params![request_id, fingerprint, intent_text],
+            )?;
+        }
         Ok(Admission::Request)
     })?;
     let title = match admission {
@@ -472,6 +503,9 @@ pub async fn generate(
         }
         record["name"] = json!(title);
         record["needsTitle"] = json!(false);
+        // Python's provider-backed _finish calls _set_name, which persists
+        // manualName=true for every accepted title.
+        record["manualName"] = json!(true);
         let typed: AgentRecord =
             serde_json::from_value(record.clone()).map_err(StoreError::from)?;
         AgentRepository::put(tx, &typed)?;
@@ -498,7 +532,7 @@ fn make_snapshot(
     agent_id: &str,
     catalog: &Value,
     request_id: &str,
-) -> Result<Option<Snapshot>, TitleError> {
+) -> Result<Snapshot, TitleError> {
     let connection = store.read()?;
     let raw_agent = connection
         .query_row(
@@ -512,12 +546,9 @@ fn make_snapshot(
     if agent.get("id").and_then(Value::as_str) != Some(agent_id) {
         return Err(invalid("runtime_agents", agent_id));
     }
-    if agent.get("manualName").is_some_and(truthy)
-        || agent.get("needsTitle").and_then(Value::as_bool) != Some(true)
-        || agent.get("deletedAt").is_some_and(truthy)
-    {
-        return Ok(None);
-    }
+    let eligible = !agent.get("manualName").is_some_and(truthy)
+        && agent.get("needsTitle").and_then(Value::as_bool) == Some(true)
+        && !agent.get("deletedAt").is_some_and(truthy);
     let prompt = build_prompt(&connection, agent_id, &agent)?;
     let (model, effort) = title_model(catalog, &agent)?;
     let account_key = match agent.get("accountKey") {
@@ -530,7 +561,7 @@ fn make_snapshot(
         Some(Value::String(provider)) => Some(provider.clone()),
         Some(_) => return Err(invalid("runtime_agents", agent_id)),
     };
-    Ok(Some(Snapshot {
+    Ok(Snapshot {
         original_name: agent
             .get("name")
             .and_then(Value::as_str)
@@ -547,7 +578,8 @@ fn make_snapshot(
         account_key,
         provider,
         request_id: request_id.to_owned(),
-    }))
+        eligible,
+    })
 }
 
 fn build_prompt(
@@ -656,7 +688,6 @@ fn signature(snapshot: &Snapshot) -> String {
         "agent": {
             "id": snapshot.agent.get("id"),
             "epoch": snapshot.epoch,
-            "name": snapshot.original_name,
             "provider": snapshot.agent.get("provider"),
             "model": snapshot.agent.get("model"),
             "accountKey": snapshot.account_key,
@@ -668,6 +699,17 @@ fn signature(snapshot: &Snapshot) -> String {
         "accountKey": snapshot.account_key,
     });
     let digest = Sha256::digest(serde_json::to_vec(&content).unwrap_or_default());
+    digest.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+fn python_rename_signature(agent_id: &str) -> String {
+    // codex_work.operation_receipt hashes json.dumps(body, sort_keys=True),
+    // whose default separators include spaces after colons and commas.
+    let body = format!(
+        "{{\"chat\": {}, \"name\": null, \"operation\": \"rename\"}}",
+        serde_json::to_string(agent_id).unwrap_or_default()
+    );
+    let digest = Sha256::digest(body.as_bytes());
     digest.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 

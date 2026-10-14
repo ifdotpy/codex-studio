@@ -172,6 +172,89 @@ fn agent_and_projection(store: &RuntimeStore) -> (String, Vec<Value>) {
     (agent, projection)
 }
 
+fn persisted_snapshot(store: &RuntimeStore) -> Value {
+    let connection = store.read().expect("snapshot reader");
+    let agent: String = connection
+        .query_row(
+            "SELECT record FROM runtime_agents WHERE id='title-agent'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("persisted agent");
+    let mut events_statement = connection
+        .prepare("SELECT * FROM runtime_events ORDER BY id")
+        .expect("events query");
+    let event_columns = events_statement
+        .column_names()
+        .iter()
+        .map(|name| (*name).to_owned())
+        .collect::<Vec<_>>();
+    let events = events_statement
+        .query_map([], |row| {
+            let mut event = serde_json::Map::new();
+            for (index, name) in event_columns.iter().enumerate() {
+                let value = match row.get_ref(index)? {
+                    rusqlite::types::ValueRef::Null => Value::Null,
+                    rusqlite::types::ValueRef::Integer(value) => json!(value),
+                    rusqlite::types::ValueRef::Real(value) => json!(value),
+                    rusqlite::types::ValueRef::Text(value) => {
+                        json!(String::from_utf8_lossy(value).to_string())
+                    }
+                    rusqlite::types::ValueRef::Blob(value) => json!(
+                        value
+                            .iter()
+                            .map(|byte| format!("{byte:02x}"))
+                            .collect::<String>()
+                    ),
+                };
+                event.insert(name.clone(), value);
+            }
+            Ok(Value::Object(event))
+        })
+        .expect("event rows")
+        .collect::<Result<Vec<_>, _>>()
+        .expect("event values");
+    let projection = connection.prepare("SELECT collection,id,seq,hash,payload,deleted FROM sync_entities WHERE collection='agent' AND id='title-agent' ORDER BY id")
+        .expect("projection query")
+        .query_map([], |row| Ok(json!([row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, i64>(2)?, row.get::<_, String>(3)?, row.get::<_, Option<String>>(4)?, row.get::<_, i64>(5)?])))
+        .expect("projection rows").collect::<Result<Vec<_>, _>>().expect("projection values");
+    let receipts = connection
+        .prepare("SELECT id,signature,result FROM runtime_operation_receipts ORDER BY id")
+        .expect("receipt query")
+        .query_map([], |row| {
+            Ok(json!([
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?
+            ]))
+        })
+        .expect("receipt rows")
+        .collect::<Result<Vec<_>, _>>()
+        .expect("receipt values");
+    json!({"agent":serde_json::from_str::<Value>(&agent).expect("agent JSON"),"events":events,"projection":projection,"receipts":receipts})
+}
+
+fn python_persisted_snapshot(root: &Path, scenario: &str) -> Value {
+    let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src");
+    let python = prepared_python::prepared_python(&source);
+    let output = Command::new(python)
+        .arg("-B")
+        .arg(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/title_generation/persistence_oracle.py"),
+        )
+        .arg(root.join("canvas.sqlite3"))
+        .arg(scenario)
+        .output()
+        .expect("run Python persisted-state oracle");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    serde_json::from_slice(&output.stdout).expect("Python persisted snapshot JSON")
+}
+
 fn write_concurrent_title(store: &RuntimeStore, name: &str, manual: bool) {
     store
         .transaction_with(|tx| {
@@ -194,6 +277,203 @@ fn write_concurrent_title(store: &RuntimeStore, name: &str, manual: bool) {
             Ok::<_, studio_runtime_store::StoreError>(())
         })
         .expect("concurrent writer commits");
+}
+
+fn write_deleted(store: &RuntimeStore) {
+    store
+        .transaction_with(|tx| {
+            let raw: String = tx.query_row(
+                "SELECT record FROM runtime_agents WHERE id='title-agent'",
+                [],
+                |row| row.get(0),
+            )?;
+            let mut record: Value =
+                serde_json::from_str(&raw).map_err(studio_runtime_store::StoreError::from)?;
+            record["deletedAt"] = json!(1_791_936_000.0);
+            let typed: AgentRecord = serde_json::from_value(record.clone())
+                .map_err(studio_runtime_store::StoreError::from)?;
+            AgentRepository::put(tx, &typed)?;
+            studio_runtime_services::agents_create::publish_agent(tx, &record)?;
+            Ok::<_, studio_runtime_store::StoreError>(())
+        })
+        .expect("deletion commits");
+}
+
+#[tokio::test]
+async fn persisted_python_results_match_apply_late_writers_and_refusal() {
+    for (scenario, concurrent) in [
+        ("apply", None),
+        ("manual", Some(("Manual title", true))),
+        ("tool", Some(("Tool title", false))),
+        ("refusal", None),
+    ] {
+        let (_root, store) = fixture();
+        let (started_tx, mut started_rx) = mpsc::unbounded_channel();
+        let (reply_tx, reply_rx) = oneshot::channel();
+        let port = Arc::new(GatedPort {
+            started: started_tx,
+            reply: Mutex::new(Some(reply_rx)),
+        });
+        let task_store = Arc::new(store);
+        let future_store = task_store.clone();
+        let future_port = port.clone();
+        let task = tokio::spawn(async move {
+            generate(
+                &future_store,
+                future_port.as_ref(),
+                "title-agent",
+                &catalog(),
+                "persisted-title",
+                deadline(),
+            )
+            .await
+        });
+        let request = started_rx.recv().await.expect("provider request pending");
+        match concurrent {
+            Some((name, manual)) => write_concurrent_title(&task_store, name, manual),
+            None if scenario == "refusal" => write_deleted(&task_store),
+            None => {}
+        }
+        reply_tx
+            .send(receipt(
+                &request,
+                WriteOutcome::Written,
+                Some("Generated title"),
+            ))
+            .expect("provider result");
+        task.await
+            .expect("title task joins")
+            .expect("title service result");
+        let rust = persisted_snapshot(&task_store);
+        drop(task_store);
+        let (python_root, python_store) = fixture();
+        drop(python_store);
+        let python = python_persisted_snapshot(python_root.path(), scenario);
+        assert_eq!(rust["receipts"].as_array().map(Vec::len), Some(1));
+        assert_eq!(python["receipts"].as_array().map(Vec::len), Some(1));
+        let mut rust_without_receipts = rust.clone();
+        let mut python_without_receipts = python.clone();
+        rust_without_receipts
+            .as_object_mut()
+            .expect("Rust snapshot")
+            .remove("receipts");
+        python_without_receipts
+            .as_object_mut()
+            .expect("Python snapshot")
+            .remove("receipts");
+        assert_eq!(
+            rust_without_receipts, python_without_receipts,
+            "agent, events, and projection for {scenario}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn applied_request_replays_after_restart_and_rejects_changed_content_without_writes() {
+    let (root, store) = fixture();
+    let port = FixedPort::new(vec![TitleReceipt {
+        request_id: "restart-applied".into(),
+        agent_id: "title-agent".into(),
+        epoch: 1,
+        account_key: "default".into(),
+        outcome: WriteOutcome::Written,
+        title: Some("Persisted title".into()),
+    }]);
+    assert_eq!(
+        generate(
+            &store,
+            &port,
+            "title-agent",
+            &catalog(),
+            "restart-applied",
+            deadline(),
+        )
+        .await
+        .expect("first apply"),
+        TitleResult::Applied {
+            title: "Persisted title".into()
+        }
+    );
+    drop(store);
+
+    let reopened = RuntimeStore::open(Some(root.path())).expect("restart after applied title");
+    let before_replay = persisted_snapshot(&reopened);
+    let no_provider = FixedPort::new(Vec::new());
+    assert_eq!(
+        generate(
+            &reopened,
+            &no_provider,
+            "title-agent",
+            &catalog(),
+            "restart-applied",
+            deadline(),
+        )
+        .await
+        .expect("same identity replay"),
+        TitleResult::Applied {
+            title: "Persisted title".into()
+        }
+    );
+    assert_eq!(no_provider.calls.load(Ordering::SeqCst), 0);
+    assert_eq!(persisted_snapshot(&reopened), before_replay);
+
+    reopened
+        .transaction(|tx| {
+            tx.execute(
+                "UPDATE runtime_items SET record=json_set(record,'$.text','changed after apply') WHERE id='title-item-1'",
+                [],
+            )?;
+            Ok(())
+        })
+        .expect("changed request content persists");
+    let before_conflict = persisted_snapshot(&reopened);
+    assert!(matches!(
+        generate(
+            &reopened,
+            &no_provider,
+            "title-agent",
+            &catalog(),
+            "restart-applied",
+            deadline(),
+        )
+        .await,
+        Err(studio_runtime_services::title_generation::TitleError::Conflict)
+    ));
+    assert_eq!(no_provider.calls.load(Ordering::SeqCst), 0);
+    assert_eq!(persisted_snapshot(&reopened), before_conflict);
+}
+
+#[tokio::test]
+async fn completed_python_receipt_replays_without_request_or_persisted_writes() {
+    let (root, store) = fixture();
+    drop(store);
+    let python = python_persisted_snapshot(root.path(), "apply");
+    let reopened = RuntimeStore::open(Some(root.path())).expect("open Python-completed receipt");
+    let before = persisted_snapshot(&reopened);
+    assert_eq!(before, python, "Python persisted rows including receipt");
+
+    let no_provider = FixedPort::new(Vec::new());
+    assert_eq!(
+        generate(
+            &reopened,
+            &no_provider,
+            "title-agent",
+            &catalog(),
+            "persisted-title",
+            deadline(),
+        )
+        .await
+        .expect("Python receipt replay"),
+        TitleResult::Applied {
+            title: "Generated title".into()
+        }
+    );
+    assert_eq!(no_provider.calls.load(Ordering::SeqCst), 0);
+    assert_eq!(
+        persisted_snapshot(&reopened),
+        before,
+        "replay does not write agent, events, projection, or receipt"
+    );
 }
 
 #[tokio::test]

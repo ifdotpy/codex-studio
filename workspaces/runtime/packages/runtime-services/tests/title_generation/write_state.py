@@ -24,7 +24,7 @@ agent = PersistedAgentRecord.model_validate({
     "prompt": "Start the title fixture",
     "cwd": "/fixture",
     "accountKey": "default",
-    "isLead": True,
+    "isLead": False,
     "needsTitle": True,
     "manualName": False,
     "autoWake": False,
