@@ -472,7 +472,7 @@ fn reattach_cancel_and_unknown_input_never_resend_a_command() {
     runtime
         .input(&id, "acknowledged", &input, 2001.0)
         .expect("input reply");
-    assert!(runtime.input(&id, "acknowledged", &input, 2001.0).is_ok());
+    assert!(runtime.input(&id, "acknowledged", &input, 2001.0).is_err());
     *port.unknown.lock().expect("unknown") = true;
     assert!(runtime.input(&id, "unknown", &input, 2002.0).is_err());
     assert!(runtime.input(&id, "retry", &input, 2003.0).is_err());

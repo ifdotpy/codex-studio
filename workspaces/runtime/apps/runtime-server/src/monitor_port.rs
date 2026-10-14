@@ -242,7 +242,7 @@ impl RetainedMonitorPort {
         use studio_runtime_store::{AgentId, AgentRepository, MonitorsRepository};
 
         let (monitor, actor) = self.store.transaction_with(|tx| {
-            let (snapshot, actor) = studio_runtime_services::monitor_runtime::snapshot(tx, id)?;
+            let (snapshot, _actor) = studio_runtime_services::monitor_runtime::snapshot(tx, id)?;
             if snapshot.record()["status"] != "starting"
                 || snapshot
                     .record()
@@ -300,7 +300,7 @@ impl RetainedMonitorPort {
             epoch: i64::try_from(epoch)
                 .map_err(|_| MonitorError::Refused("Monitor epoch is invalid"))?,
             account_key: account.to_owned(),
-            connection_id: scope.connection,
+            connection_id: scope.connection.clone(),
             evidence: BTreeMap::new(),
         };
         let resources = self
