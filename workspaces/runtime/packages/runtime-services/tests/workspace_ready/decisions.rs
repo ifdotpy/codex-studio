@@ -302,6 +302,7 @@ fn shared_workspace_ignores_worktree_preference_and_stopped_or_deleted_actor_def
     record["worktree"] = json!(false);
     record["workspaceMode"] = json!("worktree");
     let actor: WorkspaceActor = serde_json::from_value(record.clone()).expect("actor");
+    assert!(!requires_worktree(&actor));
     assert!(matches!(
         decide_workspace(
             &actor,

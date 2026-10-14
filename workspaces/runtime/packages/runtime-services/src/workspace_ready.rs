@@ -42,6 +42,13 @@ pub struct WorkspaceActor {
     pub workspace_reservation_id: Option<String>,
 }
 
+/// Whether this actor requires Git worktree provisioning before it can run.
+/// `workspaceMode` is a preference; the persisted `worktree` flag is the owner.
+#[must_use]
+pub fn requires_worktree(actor: &WorkspaceActor) -> bool {
+    actor.worktree
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct GitObservation {
     pub destination_exists: bool,
@@ -173,7 +180,7 @@ pub fn decide_workspace(
     // Python assigns `worktree` only to implementer workers and gates worktree
     // creation on that flag (`codex_runtime.py:5001-5002, 6307-6308`). A lead may
     // retain a `workspaceMode` preference of `worktree` while using its shared cwd.
-    if !actor.worktree {
+    if !requires_worktree(actor) {
         return match cwd {
             Some(cwd) => WorkspaceDecision::Ready {
                 token: ReadyToken::new(record, cwd.clone()),

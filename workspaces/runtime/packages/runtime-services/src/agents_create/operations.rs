@@ -570,27 +570,8 @@ fn create_child(
             "Single agent mode disables new delegation",
         ));
     }
-    if request
-        .role
-        .as_deref()
-        .is_some_and(|role| role != "implementer")
-    {
-        return Err(OperationError::Invalid(
-            "Host child creation supports implementer workers",
-        ));
-    }
-    let workspace = request.workspace.as_deref().unwrap_or("worktree");
-    if workspace == "image" {
-        return Err(OperationError::Unavailable(
-            "workspace-state/image-workspace",
-        ));
-    }
-    if workspace == "layr" {
-        return Err(OperationError::Unavailable("workspace-state/vm-workspace"));
-    }
-    if workspace != "worktree" {
-        return Err(OperationError::Invalid("Unknown workspace mode"));
-    }
+    let (role, worktree) =
+        child_role_workspace(request.role.as_deref(), request.workspace.as_deref())?;
     let cwd = parent
         .get("cwd")
         .and_then(Value::as_str)
@@ -645,8 +626,11 @@ fn create_child(
     let catalog = context
         .catalog
         .ok_or(OperationError::Unavailable("provider-session/model-list"))?;
-    let (base_ref, base_commit) =
-        crate::host_worker_create::freeze_base(PathBuf::from(cwd).as_path())?;
+    let (base_ref, base_commit) = if worktree {
+        crate::host_worker_create::freeze_base(PathBuf::from(cwd).as_path())?
+    } else {
+        (String::new(), String::new())
+    };
     let body = json!({
         "account_key":account,"name":request.name.as_deref().unwrap_or(model),
         "model":model,"effort":effort,"fast_mode":fast_mode,
@@ -682,8 +666,8 @@ fn create_child(
         project_binding.as_ref(),
         &identity,
         catalog,
-        "implementer",
-        true,
+        role,
+        worktree,
         fast_mode,
         daybreak,
     )?;
@@ -726,6 +710,37 @@ fn create_child(
         provision_image_workspace(&result, id)?;
     }
     Ok(result)
+}
+
+/// Match Runtime.create's child defaults: implementers use the selected
+/// workspace, while reviewer children default to a shared, non-worktree cwd.
+/// Both roles still inherit the root's execution settings; provider permission
+/// preparation applies the reviewer's read-only policy when YOLO is disabled.
+fn child_role_workspace<'a>(
+    role: Option<&'a str>,
+    requested_workspace: Option<&'a str>,
+) -> Result<(&'a str, bool), OperationError> {
+    let role = role.unwrap_or("implementer");
+    if !matches!(role, "implementer" | "reviewer") {
+        return Err(OperationError::Invalid("Invalid agent role"));
+    }
+    let workspace = requested_workspace.unwrap_or(if role == "reviewer" {
+        "shared"
+    } else {
+        "worktree"
+    });
+    let worktree = match workspace {
+        "worktree" => true,
+        "shared" => false,
+        "image" => {
+            return Err(OperationError::Unavailable(
+                "workspace-state/image-workspace",
+            ));
+        }
+        "layr" => return Err(OperationError::Unavailable("workspace-state/vm-workspace")),
+        _ => return Err(OperationError::Invalid("Unknown workspace mode")),
+    };
+    Ok((role, worktree))
 }
 
 /// Record image intent so readiness can remount the durable ASIF state. On macOS,
@@ -1933,6 +1948,22 @@ fn local_server_id(context: &Context<'_>) -> Result<Option<String>, OperationErr
 mod tests {
     use super::*;
     use std::cell::{Cell, RefCell};
+
+    #[test]
+    fn reviewer_child_defaults_to_shared_workspace() {
+        assert_eq!(
+            child_role_workspace(Some("reviewer"), None).unwrap(),
+            ("reviewer", false),
+        );
+        assert_eq!(
+            child_role_workspace(None, None).unwrap(),
+            ("implementer", true),
+        );
+        assert!(matches!(
+            child_role_workspace(Some("orchestrator"), None),
+            Err(OperationError::Invalid("Invalid agent role"))
+        ));
+    }
 
     fn snapshot(store: &RuntimeStore) -> Vec<Vec<Vec<rusqlite::types::Value>>> {
         let connection = store.read().expect("snapshot connection");
