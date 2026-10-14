@@ -117,6 +117,16 @@ fn create(
         });
     let requested_cwd = request.cwd.as_deref().map(project_directory).transpose()?;
     if !draft {
+        // Import source is part of the durable creation identity. Keep it in
+        // the intent compared by replay_agent, including the transaction's
+        // concurrent recheck, rather than relying on an earlier route read.
+        if let Some(imported_from) = &request.imported_from {
+            request
+                .intent
+                .as_object_mut()
+                .ok_or(OperationError::Internal)?
+                .insert("imported_from".to_owned(), json!(imported_from));
+        }
         request
             .intent
             .as_object_mut()

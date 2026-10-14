@@ -13,6 +13,8 @@ import sys
 import time
 import unittest
 import uuid
+from concurrent.futures import ThreadPoolExecutor
+from threading import Barrier
 from pathlib import Path
 
 
@@ -281,8 +283,61 @@ class PortableHistoryImportHTTPContract(TimedHTTPContractTest, unittest.TestCase
         self.assertEqual(replay.json()["id"], agent_id)
         self.assertEqual(self._agent_count(), before + 1)
 
+    def test_concurrent_imports_bind_source_thread_in_creation_intent(self) -> None:
+        if not os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"):
+            self.skipTest("The Rust creation service owns the durable concurrent intent check")
+        agent_id = str(uuid.uuid4())
+        barrier = Barrier(3)
+
+        def submit(thread_id: str):
+            body = {
+                "id": agent_id,
+                "threadId": thread_id,
+                "prompt": "Concurrent source identity check.",
+            }
+            barrier.wait()
+            return thread_id, self.backend.request(
+                "POST", "/api/import", body=body, headers=self._common_headers(),
+            )
+
+        with ThreadPoolExecutor(max_workers=2) as workers:
+            first = workers.submit(submit, "source-thread")
+            second = workers.submit(submit, "other-source-thread")
+            barrier.wait()
+            results = [first.result(), second.result()]
+        accepted = [(thread_id, response) for thread_id, response in results if response.status == 200]
+        rejected = [(thread_id, response) for thread_id, response in results if response.status != 200]
+        self.assertEqual(len(accepted), 1, [response.status for _, response in results])
+        self.assertEqual(len(rejected), 1, [response.status for _, response in results])
+        with sqlite3.connect(self.backend.state / "canvas.sqlite3") as database:
+            stored = json.loads(database.execute(
+                "SELECT record FROM runtime_agents WHERE id=?", (agent_id,),
+            ).fetchone()[0])
+        self.assertEqual(stored["importedFrom"], accepted[0][0])
+        self.assertEqual(stored["creationIntent"]["imported_from"], accepted[0][0])
+        self.assertEqual(accepted[0][1].json()["id"], agent_id)
+
     def test_branch_copies_history_and_replays_completed_request(self) -> None:
         agent_id, message_id = self._seed_branch_source()
+        if os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"):
+            # The Rust route only writes the FTS projection when its feature
+            # tables exist. Seed the same FTS5 shape as Python's workspace
+            # search setup so the contract checks the copied row's index kind.
+            with sqlite3.connect(self.backend.state / "canvas.sqlite3") as database:
+                database.execute(
+                    "CREATE VIRTUAL TABLE IF NOT EXISTS runtime_search USING "
+                    "fts5(id UNINDEXED,agent UNINDEXED,kind UNINDEXED,body,tokenize='unicode61')"
+                )
+                database.execute(
+                    "CREATE TABLE IF NOT EXISTS runtime_search_rollout "
+                    "(id INTEGER PRIMARY KEY CHECK(id=1),phase TEXT NOT NULL,"
+                    "cursor INTEGER NOT NULL DEFAULT 0,updated REAL NOT NULL)"
+                )
+                database.execute(
+                    "INSERT INTO runtime_search_rollout(id,phase,cursor,updated) "
+                    "VALUES(1,'legacy',0,0) ON CONFLICT(id) DO UPDATE SET phase='legacy'"
+                )
+                database.commit()
         body = {"agent": agent_id, "id": str(uuid.uuid4()), "message_id": message_id}
         before = self._agent_count()
         response = self.backend.request(
@@ -305,7 +360,18 @@ class PortableHistoryImportHTTPContract(TimedHTTPContractTest, unittest.TestCase
                 "SELECT record FROM runtime_agents WHERE id=?", (branch_id,),
             ).fetchone()
         self.assertEqual(len(child_items), 1)
-        self.assertEqual(json.loads(child_items[0][0])["text"], "Synthetic branch question")
+        copied_item = json.loads(child_items[0][0])
+        self.assertEqual(copied_item["text"], "Synthetic branch question")
+        self.assertEqual(copied_item["title"], "User")
+        if os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"):
+            with sqlite3.connect(database_path) as database:
+                search_row = database.execute(
+                    "SELECT kind,body FROM runtime_search WHERE id=?",
+                    (f"{branch_id}:branch-message",),
+                ).fetchone()
+            # Python codex_runtime.item indexes `title or role` (lowercase),
+            # even though its displayed title falls back to `role.title()`.
+            self.assertEqual(search_row, ("user", "Synthetic branch question"))
         self.assertEqual(json.loads(operation[0])["phase"], "completed")
         self.assertEqual(json.loads(child[0])["forkedFrom"], agent_id)
         self.assertEqual(json.loads(child[0])["sourceMessage"], message_id)
@@ -353,7 +419,7 @@ class PortableHistoryImportHTTPContract(TimedHTTPContractTest, unittest.TestCase
         fork = next(frame for frame in frames if frame.get("method") == "thread/fork")
         self.assertEqual(fork["params"]["lastTurnId"], "older-turn")
 
-    def test_branch_provider_result_write_failure_is_not_replayed(self) -> None:
+    def test_branch_saved_provider_result_recovers_after_restart_without_refork(self) -> None:
         if not os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"):
             self.skipTest("The Rust branch route owns durable provider-result recovery")
         agent_id, message_id = self._seed_branch_source()
@@ -390,10 +456,44 @@ class PortableHistoryImportHTTPContract(TimedHTTPContractTest, unittest.TestCase
         )
         self.assertEqual(forks_after_failure, prior_forks + 1)
 
+        prior_provider_starts = len(self.backend.provider_start_times())
+        self.backend.stop()
+        with sqlite3.connect(database_path) as database:
+            database.create_function(
+                "sync_entity_payload", 4,
+                lambda collection, key, raw, deleted: json.dumps(
+                    {"collection": collection, "id": key,
+                     "value": {} if deleted else json.loads(raw),
+                     "deleted": bool(deleted)}, sort_keys=True, separators=(",", ":"),
+                ),
+            )
+            database.create_function(
+                "sync_entity_hash", 1,
+                lambda payload: hashlib.sha256(payload.encode()).hexdigest(),
+            )
+            raw = database.execute(
+                "SELECT record FROM runtime_agents WHERE id=?", (self.prewarm_agent_id,),
+            ).fetchone()[0]
+            prewarm = json.loads(raw)
+            prewarm.update(status="queued", autoWake=True, inFlight=False)
+            database.execute(
+                "UPDATE runtime_agents SET record=? WHERE id=?",
+                (json.dumps(prewarm), self.prewarm_agent_id),
+            )
+            database.execute(
+                "UPDATE runtime_events SET status='pending' WHERE id=?",
+                (f"{self.prewarm_agent_id}:initial",),
+            )
+            database.commit()
+        self.backend.start()
+        self.backend.wait_until(
+            lambda: len(self.backend.provider_start_times()) > prior_provider_starts,
+            "provider session after backend restart",
+        )
         replay = self.backend.request(
             "POST", "/api/branch", body=body, headers=self._common_headers(),
         )
-        self.assertNotEqual(replay.status, 200, self._error_detail(replay))
+        self.assertEqual(replay.status, 200, self._error_detail(replay))
         forks_after_replay = sum(
             frame.get("method") == "thread/fork"
             for frame in self.backend.received_provider_frames()

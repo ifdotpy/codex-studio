@@ -144,6 +144,13 @@ async fn branch(
                                     params![operation_id, prior.to_string()],
                                 )?;
                             }
+                            Some("provider_pending" | "recovery_required") => {
+                                // Re-submit the same broker operation identity
+                                // below. The retained broker returns its saved
+                                // receipt or Unknown and never sends a duplicate.
+                                operation = Some(prior);
+                                return Ok(());
+                            }
                             _ => {
                                 return Err(studio_runtime_store::StoreError::SchemaMismatch(
                                     "Workspace recovery is required before retrying this branch"
@@ -640,20 +647,63 @@ fn copy_branch_history(store: &RuntimeStore, copy: BranchCopy<'_>) -> Result<Val
             None => f64::NEG_INFINITY,
         };
         let mut assets=BTreeMap::<String,Value>::new();
-        for (old_id,raw,created) in rows.into_iter().take_while(|(_,_,created)|*created<=cutoff){
-            let mut record:Value=serde_json::from_str(&raw)?;
-            if before && record["turnId"].as_str()==selected.record["turnId"].as_str(){continue;}
+        for (old_id, raw, _created) in rows.into_iter().take_while(|(_, _, created)| *created <= cutoff) {
+            let source_record: Value = serde_json::from_str(&raw)?;
+            if before && source_record["turnId"].as_str()==selected.record["turnId"].as_str(){continue;}
             let local_id=old_id.split_once(':').map(|(_,id)|id).unwrap_or(&old_id);
-            let id=format!("{target}:{local_id}"); record["id"]=json!(id); record["agent"]=json!(target);
-            copy_asset_views(tx,source,target,&mut record["assets"],&mut assets)?;
-            if let Some(inputs)=record.get_mut("inputs").and_then(Value::as_array_mut){for input in inputs{copy_asset_views(tx,source,target,&mut input["assets"],&mut assets)?;}}
-            let item=TranscriptRepository::item(tx,source,&old_id)
-                .map_err(transcript_store_error)?
-                .ok_or(studio_runtime_store::StoreError::SchemaMismatch("missing transcript row".into()))?;
-            let text=TranscriptRepository::full_text(tx,&item)
-                .map_err(transcript_store_error)?
-                .unwrap_or_else(||record["text"].as_str().unwrap_or("").to_owned());
-            TranscriptRepository::put_item(tx,&id,target,&record,created,&text,true)
+            let id=format!("{target}:{local_id}");
+            let role = source_record["role"].as_str().unwrap_or("assistant");
+            let source_title = source_record
+                .get("title")
+                .and_then(Value::as_str)
+                .filter(|title| !title.is_empty());
+            let index_kind = source_title.unwrap_or(role).to_owned();
+            let title = source_title.map(str::to_owned).unwrap_or_else(|| match role {
+                    "assistant" => "Assistant".to_owned(),
+                    "user" => "User".to_owned(),
+                    "system" => "System".to_owned(),
+                    other => other.to_owned(),
+                });
+            let mut item_assets = source_record.get("assets").cloned().unwrap_or_else(|| json!([]));
+            copy_asset_views(tx,source,target,&mut item_assets,&mut assets)?;
+            let source_inputs = source_record.get("inputs").and_then(Value::as_array);
+            let mut inputs = Vec::new();
+            if let Some(source_inputs) = source_inputs {
+                let mut remaining = 20_000usize;
+                for input in source_inputs {
+                    let mut input_assets = input.get("assets").cloned().unwrap_or_else(|| json!([]));
+                    copy_asset_views(tx,source,target,&mut input_assets,&mut assets)?;
+                    let input_text = input.get("text").and_then(Value::as_str).unwrap_or_default();
+                    let excerpt = input_text.chars().take(remaining).collect::<String>();
+                    remaining = remaining.saturating_sub(excerpt.chars().count());
+                    inputs.push(json!({
+                        "id":input.get("id"),
+                        "at":input.get("created").or_else(|| input.get("at")),
+                        "kind":input.get("kind"),
+                        "text":excerpt,
+                        "truncated":excerpt.chars().count() < input_text.chars().count(),
+                        "assets":input_assets
+                    }));
+                }
+            }
+            let text = source_record.get("text").and_then(Value::as_str).unwrap_or_default();
+            let visible_text = text.chars().take(20_000).collect::<String>();
+            let copied_at = unix_time();
+            let mut record = json!({
+                "id":id,
+                "role":role,
+                "title":title,
+                "text":visible_text,
+                "truncated":text.chars().count() > 20_000,
+                "at":copied_at,
+                "turnId":source_record.get("turnId"),
+                "streaming":false,
+                "assets":item_assets
+            });
+            if source_inputs.is_some() {
+                record["inputs"] = json!(inputs);
+            }
+            TranscriptRepository::put_item_with_search_kind(tx,&id,target,&record,copied_at,text,true,Some(&index_kind))
                 .map_err(transcript_store_error)?;
         }
         if before {

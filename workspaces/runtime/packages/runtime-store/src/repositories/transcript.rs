@@ -434,7 +434,46 @@ impl TranscriptRepository {
         ) {
             return Err(invalid_record("runtime_items", id));
         }
-        Self::put_notification_item(transaction, id, agent, record, created, text, index_search)
+        Self::put_item_with_search_kind(
+            transaction,
+            id,
+            agent,
+            record,
+            created,
+            text,
+            index_search,
+            None,
+        )
+    }
+
+    /// Persist an item with the explicit Python-compatible FTS kind used by
+    /// callers which reconstruct an item's display title separately.
+    pub fn put_item_with_search_kind(
+        transaction: &Transaction<'_>,
+        id: &str,
+        agent: &str,
+        record: &Value,
+        created: f64,
+        text: &str,
+        index_search: bool,
+        search_kind: Option<&str>,
+    ) -> TranscriptStoreResult<()> {
+        if !matches!(
+            record.get("role").and_then(Value::as_str),
+            Some("assistant" | "user" | "system")
+        ) {
+            return Err(invalid_record("runtime_items", id));
+        }
+        Self::put_notification_item_with_search_kind(
+            transaction,
+            id,
+            agent,
+            record,
+            created,
+            text,
+            index_search,
+            search_kind,
+        )
     }
 
     /// Notification tools additionally write Python's `output` transcript role.
@@ -447,6 +486,28 @@ impl TranscriptRepository {
         created: f64,
         text: &str,
         index_search: bool,
+    ) -> TranscriptStoreResult<()> {
+        Self::put_notification_item_with_search_kind(
+            transaction,
+            id,
+            agent,
+            record,
+            created,
+            text,
+            index_search,
+            None,
+        )
+    }
+
+    fn put_notification_item_with_search_kind(
+        transaction: &Transaction<'_>,
+        id: &str,
+        agent: &str,
+        record: &Value,
+        created: f64,
+        text: &str,
+        index_search: bool,
+        search_kind: Option<&str>,
     ) -> TranscriptStoreResult<()> {
         if record.get("id").and_then(Value::as_str) != Some(id)
             || !matches!(
@@ -492,14 +553,16 @@ impl TranscriptRepository {
                 transaction,
                 id,
                 agent,
-                if record["role"] == "system" || record["role"] == "output" {
-                    record
-                        .get("title")
-                        .and_then(Value::as_str)
-                        .unwrap_or("system")
-                } else {
-                    record.get("role").and_then(Value::as_str).unwrap_or("")
-                },
+                search_kind.unwrap_or_else(|| {
+                    if record["role"] == "system" || record["role"] == "output" {
+                        record
+                            .get("title")
+                            .and_then(Value::as_str)
+                            .unwrap_or("system")
+                    } else {
+                        record.get("role").and_then(Value::as_str).unwrap_or("")
+                    }
+                }),
                 text,
             )?;
         } else {
