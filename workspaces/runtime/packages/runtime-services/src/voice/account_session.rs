@@ -88,6 +88,7 @@ impl VoiceRequestPort for AccountSessionVoicePort {
                         operation: operation.clone(),
                         actor: None,
                         expected_scope: None,
+                        deleted_actor_session: None,
                         method: super::runtime::Method::AccountRead,
                         params: json!({"refreshToken": false}),
                         deadline: Instant::now() + ACCOUNT_READ_TIMEOUT,
@@ -148,6 +149,11 @@ impl VoiceRequestPort for AccountSessionVoicePort {
                     connection: scope.connection_id.clone(),
                     generation: scope.generation,
                 };
+                let deleted_actor_session = (method == super::runtime::Method::ThreadRealtimeStop)
+                    .then(|| operation_id.strip_prefix("voice:delete-stop:"))
+                    .flatten()
+                    .filter(|session_id| !session_id.is_empty())
+                    .map(str::to_owned);
                 let receipt = match session.provider_request(ProviderRequest {
                     account: scope.account_key,
                     operation: operation_id.clone(),
@@ -156,6 +162,7 @@ impl VoiceRequestPort for AccountSessionVoicePort {
                         epoch: scope.epoch,
                     }),
                     expected_scope: Some(expected_scope.clone()),
+                    deleted_actor_session,
                     method,
                     params,
                     deadline,

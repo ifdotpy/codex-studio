@@ -469,6 +469,7 @@ struct CapturedRequest {
     operation: String,
     actor: Option<RequestActor>,
     expected_scope: Option<ConnectionScope>,
+    deleted_actor_session: Option<String>,
     method: Method,
     params: serde_json::Value,
 }
@@ -492,6 +493,7 @@ impl AccountSessionPort for MockAccountSession {
                 operation: request.operation.clone(),
                 actor: request.actor.clone(),
                 expected_scope: request.expected_scope.clone(),
+                deleted_actor_session: request.deleted_actor_session.clone(),
                 method: request.method,
                 params: request.params,
             });
@@ -559,6 +561,10 @@ async fn account_session_voice_adapter_preserves_scope_identity_and_unknown_once
                 RequestCertainty::Written,
                 Some(ProviderResponse::Rejected(json!({"message":"no"}))),
             ),
+            (
+                RequestCertainty::Written,
+                Some(ProviderResponse::Reply(json!({}))),
+            ),
         ])),
         calls: Mutex::new(Vec::new()),
     });
@@ -608,9 +614,26 @@ async fn account_session_voice_adapter_preserves_scope_identity_and_unknown_once
         )
         .await;
     assert_eq!(rejected.certainty, VoiceWriteCertainty::Rejected);
+    let deleted_stop = adapter
+        .request(
+            VoiceProviderContext {
+                agent_id: "deleted-agent".into(),
+                epoch: 3,
+                account_key: "account".into(),
+                thread_id: "thread".into(),
+                connection_id: scope.connection.clone(),
+                generation: scope.generation,
+            },
+            "voice:delete-stop:deleted-session".into(),
+            Method::ThreadRealtimeStop,
+            json!({"threadId":"thread"}),
+            deadline,
+        )
+        .await;
+    assert_eq!(deleted_stop.certainty, VoiceWriteCertainty::Written);
 
     let calls = session.calls.lock().expect("calls lock");
-    assert_eq!(calls.len(), 4, "Unknown is returned without a retry");
+    assert_eq!(calls.len(), 5, "Unknown is returned without a retry");
     assert_eq!(calls[0].operation, "voice:prepare:voice-session");
     assert_eq!(calls[0].method, Method::AccountRead);
     assert_eq!(calls[0].params, json!({"refreshToken":false}));
@@ -630,6 +653,13 @@ async fn account_session_voice_adapter_preserves_scope_identity_and_unknown_once
     assert_eq!(calls[2].expected_scope, Some(scope));
     assert_eq!(calls[2].method, Method::ThreadRealtimeAppendSpeech);
     assert_eq!(calls[3].method, Method::ThreadRealtimeStop);
+    assert_eq!(calls[3].deleted_actor_session, None);
+    assert_eq!(calls[4].operation, "voice:delete-stop:deleted-session");
+    assert_eq!(calls[4].actor.as_ref().map(|actor| actor.epoch), Some(3));
+    assert_eq!(
+        calls[4].deleted_actor_session.as_deref(),
+        Some("deleted-session")
+    );
 }
 
 #[tokio::test]
