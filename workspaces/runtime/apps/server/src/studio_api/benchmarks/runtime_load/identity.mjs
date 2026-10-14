@@ -1,4 +1,4 @@
-const ENTITY_SCOPE = "state:entities:v1";
+import { SYNC_ENTITY_SCOPE } from "../../../generated/syncProtocol.mjs";
 const PAGE_SIZE = 500;
 const MAX_PAGES = 100;
 
@@ -44,7 +44,7 @@ export async function fetchRuntimeIdentity(origin, fetchImpl = fetch) {
         `Studio entity pull exceeded its ${MAX_PAGES}-page limit at checkpoint ${after}`,
       );
     const query = new URLSearchParams({
-      scope: ENTITY_SCOPE,
+      scope: SYNC_ENTITY_SCOPE,
       after: String(after),
       limit: String(PAGE_SIZE),
     });

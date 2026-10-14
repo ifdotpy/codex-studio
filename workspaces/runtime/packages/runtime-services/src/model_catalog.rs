@@ -17,13 +17,13 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 use studio_runtime_process::child_priority::ChildPriority;
 use studio_runtime_providers::{Method, ResponseBody};
+use studio_runtime_schema::shared_values::{
+    MODEL_CATALOG_CACHE_TTL_SECONDS, MODEL_CATALOG_ITEMS_PER_PAGE, MODEL_CATALOG_MAX_FRAME_BYTES,
+    MODEL_CATALOG_MAX_PAGES, MODEL_CATALOG_MAX_RESPONSE_BYTES,
+    MODEL_CATALOG_OPERATION_TIMEOUT_SECONDS,
+};
 type ManagedChildProcess = Box<dyn process_wrap::std::ChildWrapper>;
 
-const CATALOG_TTL: Duration = Duration::from_secs(300);
-const CATALOG_TIMEOUT: Duration = Duration::from_secs(30);
-const MAX_CATALOG_PAGE_BYTES: usize = 2 * 1024 * 1024;
-const MAX_CATALOG_RESPONSE_BYTES: usize = 16 * 1024 * 1024;
-const MAX_CATALOG_PAGES: usize = 100;
 pub type ChangeCallback = Arc<dyn Fn() + Send + Sync + 'static>;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -151,7 +151,8 @@ fn store_result(
         && entry.pending
     {
         entry.pending = false;
-        entry.expires_at = Some(Instant::now() + CATALOG_TTL);
+        entry.expires_at =
+            Some(Instant::now() + Duration::from_secs(MODEL_CATALOG_CACHE_TTL_SECONDS));
         match result {
             Ok(value) => {
                 entry.value = Some(value);
@@ -190,11 +191,17 @@ fn read_provider_catalog(
             .env_remove("CODEX_API_KEY");
     }
     let child = spawn_provider(command).map_err(|_| ())?;
-    let process = ChildProcess::new(child, started + CATALOG_TIMEOUT);
+    let process = ChildProcess::new(
+        child,
+        started + Duration::from_secs(MODEL_CATALOG_OPERATION_TIMEOUT_SECONDS),
+    );
     let mut config = ProviderSessionConfig::new();
     config.generation = 1;
-    config.request_timeout_ms =
-        duration_ms(CATALOG_TIMEOUT.checked_sub(started.elapsed()).ok_or(())?);
+    config.request_timeout_ms = duration_ms(
+        Duration::from_secs(MODEL_CATALOG_OPERATION_TIMEOUT_SECONDS)
+            .checked_sub(started.elapsed())
+            .ok_or(())?,
+    );
     config.initialize_params = json!({
         "clientInfo": {"name": "codex_studio_catalog", "version": "1.0.0"},
         "capabilities": {"experimentalApi": true}
@@ -217,14 +224,18 @@ fn read_pages(session: &mut ProviderSession, started: Instant) -> Result<Value, 
     let mut total_bytes = 0_usize;
 
     loop {
-        if cursor.is_some() && seen_cursors.len() >= MAX_CATALOG_PAGES {
+        if catalog_page_limit_reached(&cursor, seen_cursors.len()) {
             return Err(());
         }
-        let remaining = CATALOG_TIMEOUT.checked_sub(started.elapsed()).ok_or(())?;
+        let remaining = Duration::from_secs(MODEL_CATALOG_OPERATION_TIMEOUT_SECONDS)
+            .checked_sub(started.elapsed())
+            .ok_or(())?;
         let timeout_ms = duration_ms(remaining);
         let params = match &cursor {
-            Some(cursor) => json!({"limit": 100, "includeHidden": true, "cursor": cursor}),
-            None => json!({"limit": 100, "includeHidden": true}),
+            Some(cursor) => {
+                json!({"limit": MODEL_CATALOG_ITEMS_PER_PAGE, "includeHidden": true, "cursor": cursor})
+            }
+            None => json!({"limit": MODEL_CATALOG_ITEMS_PER_PAGE, "includeHidden": true}),
         };
         let ticket = session
             .send_request(Method::ModelList, params, None, true, timeout_ms)
@@ -251,11 +262,11 @@ fn read_pages(session: &mut ProviderSession, started: Instant) -> Result<Value, 
             }
         };
         let page_bytes = serde_json::to_vec(&page).map_err(|_| ())?.len();
-        if page_bytes > MAX_CATALOG_PAGE_BYTES {
+        if page_bytes > MODEL_CATALOG_MAX_FRAME_BYTES {
             return Err(());
         }
         total_bytes = total_bytes.checked_add(page_bytes).ok_or(())?;
-        if total_bytes > MAX_CATALOG_RESPONSE_BYTES {
+        if total_bytes > MODEL_CATALOG_MAX_RESPONSE_BYTES {
             return Err(());
         }
         let page_object = page.as_object().ok_or(())?;
@@ -293,6 +304,10 @@ fn read_pages(session: &mut ProviderSession, started: Instant) -> Result<Value, 
     result.insert("data".to_owned(), Value::Array(rows));
     result.insert("nextCursor".to_owned(), Value::Null);
     Ok(Value::Object(result))
+}
+
+fn catalog_page_limit_reached(cursor: &Option<String>, seen_cursors: usize) -> bool {
+    cursor.is_some() && seen_cursors >= MODEL_CATALOG_MAX_PAGES
 }
 
 fn duration_ms(duration: Duration) -> u64 {
@@ -511,7 +526,7 @@ impl<R: Read> Read for BoundedReader<R> {
         self.total_bytes = self.total_bytes.checked_add(count).ok_or_else(|| {
             io::Error::new(io::ErrorKind::InvalidData, "provider output too large")
         })?;
-        if self.total_bytes > MAX_CATALOG_RESPONSE_BYTES {
+        if self.total_bytes > MODEL_CATALOG_MAX_RESPONSE_BYTES {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "provider output too large",
@@ -521,7 +536,7 @@ impl<R: Read> Read for BoundedReader<R> {
             self.frame_bytes = self.frame_bytes.checked_add(1).ok_or_else(|| {
                 io::Error::new(io::ErrorKind::InvalidData, "provider frame too large")
             })?;
-            if self.frame_bytes > MAX_CATALOG_PAGE_BYTES {
+            if self.frame_bytes > MODEL_CATALOG_MAX_FRAME_BYTES {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
                     "provider frame too large",
@@ -548,9 +563,8 @@ fn discard_stderr(mut stderr: ChildStderr) {
 #[cfg(test)]
 mod tests {
     use super::{
-        BoundedReader, CATALOG_TIMEOUT, CacheEntry, CatalogRead, ChildProcess,
-        MAX_CATALOG_PAGE_BYTES, MAX_CATALOG_RESPONSE_BYTES, ModelCatalogService, spawn_provider,
-        store_result,
+        BoundedReader, CacheEntry, CatalogRead, ChildProcess, ModelCatalogService,
+        catalog_page_limit_reached, spawn_provider, store_result,
     };
     use crate::provider_session::ProviderProcess;
     use std::io::{Cursor, Read, Write};
@@ -558,6 +572,23 @@ mod tests {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::{Duration, Instant};
+    use studio_runtime_schema::shared_values::{
+        MODEL_CATALOG_MAX_FRAME_BYTES, MODEL_CATALOG_MAX_PAGES, MODEL_CATALOG_MAX_RESPONSE_BYTES,
+        MODEL_CATALOG_OPERATION_TIMEOUT_SECONDS,
+    };
+
+    #[test]
+    fn page_limit_allows_exactly_the_configured_number_of_requests() {
+        assert!(!catalog_page_limit_reached(&None, 0));
+        assert!(!catalog_page_limit_reached(
+            &Some("cursor-100".to_owned()),
+            MODEL_CATALOG_MAX_PAGES - 1,
+        ));
+        assert!(catalog_page_limit_reached(
+            &Some("cursor-101".to_owned()),
+            MODEL_CATALOG_MAX_PAGES,
+        ));
+    }
 
     #[test]
     fn claude_catalog_is_reported_unavailable_without_starting_codex() {
@@ -622,7 +653,7 @@ mod tests {
 
     #[test]
     fn raw_stdout_limit_counts_each_frame_before_json_decoding() {
-        let input = vec![b' '; MAX_CATALOG_PAGE_BYTES + 1];
+        let input = vec![b' '; MODEL_CATALOG_MAX_FRAME_BYTES + 1];
         let mut reader = BoundedReader::new(Cursor::new(input));
         let mut buffer = [0_u8; 8192];
         let rejected = loop {
@@ -638,7 +669,7 @@ mod tests {
     #[test]
     fn raw_stdout_limit_counts_unknown_frames_toward_total() {
         let mut input = Vec::new();
-        let frame = vec![b' '; MAX_CATALOG_PAGE_BYTES - 1];
+        let frame = vec![b' '; MODEL_CATALOG_MAX_FRAME_BYTES - 1];
         for _ in 0..9 {
             input.extend_from_slice(&frame);
             input.push(b'\n');
@@ -657,7 +688,7 @@ mod tests {
             }
         }
         assert!(rejected);
-        assert!(reader.total_bytes > MAX_CATALOG_RESPONSE_BYTES);
+        assert!(reader.total_bytes > MODEL_CATALOG_MAX_RESPONSE_BYTES);
     }
 
     #[cfg(unix)]
@@ -677,7 +708,7 @@ mod tests {
             .write_all(&vec![b'x'; 8 * 1024 * 1024])
             .expect_err("the provider is not reading stdin");
         assert_eq!(failure.kind(), std::io::ErrorKind::TimedOut);
-        assert!(started.elapsed() < CATALOG_TIMEOUT);
+        assert!(started.elapsed() < Duration::from_secs(MODEL_CATALOG_OPERATION_TIMEOUT_SECONDS));
         drop(writer);
         process
             .stop()

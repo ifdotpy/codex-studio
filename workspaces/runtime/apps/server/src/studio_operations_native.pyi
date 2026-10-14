@@ -32,7 +32,7 @@ PersistedStage = Literal[
 ]
 PersistedOutcome = Literal["pending", "not_applied", "applied", "unknown"]
 
-PROTOCOL_VERSION: Literal[4]
+PROTOCOL_VERSION: int
 EVENT_NAMES: list[EventName]
 PROOF_NAMES: list[ProofName]
 RESULT_NAMES: list[ResultKind]

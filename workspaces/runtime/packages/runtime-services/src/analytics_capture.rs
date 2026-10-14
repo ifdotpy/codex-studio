@@ -5,6 +5,7 @@
 use crate::analytics_measurements::{item_sizes, payload_size};
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde_json::{Value, json};
+use studio_runtime_schema::shared_values::MAX_SAFE_INTEGER;
 use studio_runtime_store::analytics_capture::{AnalyticsCaptureRepository as Repo, CaptureTable};
 use studio_runtime_store::{RuntimeStore, StoreError, python_json_compact, sha256_hex};
 use thiserror::Error;
@@ -1168,9 +1169,9 @@ fn same_content(left: &Value, right: &Value) -> bool {
             a == b
                 || (a
                     .as_f64()
-                    .is_some_and(|n| n.abs() <= 9_007_199_254_740_991.)
+                    .is_some_and(|n| n.abs() <= MAX_SAFE_INTEGER as f64)
                     && b.as_f64()
-                        .is_some_and(|n| n.abs() <= 9_007_199_254_740_991.)
+                        .is_some_and(|n| n.abs() <= MAX_SAFE_INTEGER as f64)
                     && a.as_f64() == b.as_f64())
         }
         (Value::Array(a), Value::Array(b)) => {

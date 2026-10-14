@@ -1,4 +1,5 @@
 import { serverDatabaseSuffix } from "../servers/environment";
+import { MAX_SAFE_INTEGER } from "../generated/sharedValues";
 import { createRxDatabase, addRxPlugin } from "rxdb";
 import { getRxStorageDexie } from "rxdb/plugins/storage-dexie";
 import { RxDBLeaderElectionPlugin } from "rxdb/plugins/leader-election";
@@ -51,6 +52,7 @@ import {
 } from "./transcriptCache";
 import { DRAFT_SYNC_TIMING_MS } from "./draftSyncTiming.mjs";
 import { API_SCHEMA_HASH } from "../generated/apiSchema";
+import { SYNC_ENTITY_SCOPE } from "../generated/api";
 import {
   canSerializeEntityProjectionWrites,
   withEntityProjectionWrite,
@@ -100,7 +102,7 @@ const schema = {
     seq: {
       type: "integer",
       minimum: 0,
-      maximum: 9007199254740991,
+      maximum: MAX_SAFE_INTEGER,
       multipleOf: 1,
     },
   },
@@ -263,7 +265,7 @@ async function persistEntityDocuments(
   try {
     await withEntityProjectionWrite(db.projections.database.name, async () => {
       const checkpoint = getEntitySequenceCheckpoint(
-        "state:entities:v1",
+        SYNC_ENTITY_SCOPE,
         API_SCHEMA_HASH,
       );
       if (streamEpoch) {
@@ -320,7 +322,7 @@ async function persistEntityDocumentsUnlocked(
   )
     return;
   const checkpoint = getEntitySequenceCheckpoint(
-    "state:entities:v1",
+    SYNC_ENTITY_SCOPE,
     API_SCHEMA_HASH,
   );
   const resetVersion = checkpoint.resetVersion;
@@ -489,7 +491,7 @@ async function pull(
       after,
       limit,
       ...(initialHigh !== undefined ? { fresh: "1", initialHigh } : {}),
-      ...(scope === "state:entities:v1" ? { reset: "1" } : {}),
+      ...(scope === SYNC_ENTITY_SCOPE ? { reset: "1" } : {}),
       ...(priorityId ? { priorityId } : {}),
     },
     ...(signal ? { signal } : {}),
@@ -886,7 +888,7 @@ async function acquireProjection(
   if (expectedWorkspace && expectedWorkspace !== workspaceId)
     throw new WorkspaceMismatchError();
   while (closingScopes.has(scope)) await closingScopes.get(scope);
-  const remoteScope = scope === "state" ? "state:entities:v1" : scope;
+  const remoteScope = scope === "state" ? SYNC_ENTITY_SCOPE : scope;
   let state = scopes.get(scope);
   if (!state) {
     const listeners = new Set<(error: unknown | null) => void>();
@@ -897,12 +899,12 @@ async function acquireProjection(
     let requiredEntitySequence: number | undefined;
     // Sequence zero is a valid initial baseline. Keep a sentinel until the
     // first pull establishes that the local projection already has that row.
-    const isEntityScope = remoteScope === "state:entities:v1";
+    const isEntityScope = remoteScope === SYNC_ENTITY_SCOPE;
     const latestEntitySequence = isEntityScope
       ? getEntitySequenceCheckpoint(remoteScope, API_SCHEMA_HASH)
       : new EntitySequenceCheckpoint();
     if (
-      remoteScope === "state:entities:v1" &&
+      remoteScope === SYNC_ENTITY_SCOPE &&
       !latestEntitySequence.initialized
     ) {
       const [checkpoint] =
@@ -968,7 +970,7 @@ async function acquireProjection(
     };
 
     const checkpointId =
-      remoteScope === "state:entities:v1" ? "state:entities:checkpoint" : scope;
+      remoteScope === SYNC_ENTITY_SCOPE ? "state:entities:checkpoint" : scope;
     const settleCoveredEntityInvalidation = () => {
       if (
         !entitySequenceInvalidationCovered(
@@ -1004,7 +1006,7 @@ async function acquireProjection(
           let more = true;
           let firstRequest = true;
           const markers =
-            remoteScope === "state:entities:v1"
+            remoteScope === SYNC_ENTITY_SCOPE
               ? await db.projections.storageInstance.findDocumentsById(
                   [
                     "state:entities:ready",
@@ -1038,7 +1040,7 @@ async function acquireProjection(
           }
           let readyPublished = !!ready;
           let initialHigh: number | undefined =
-            remoteScope === "state:entities:v1" && !complete
+            remoteScope === SYNC_ENTITY_SCOPE && !complete
               ? (initialMarker?.seq ?? 0)
               : undefined;
           while (more && !stopped) {
@@ -1068,7 +1070,7 @@ async function acquireProjection(
             if (
               firstRequest &&
               iterationCanSkipVersioned &&
-              remoteScope === "state:entities:v1" &&
+              remoteScope === SYNC_ENTITY_SCOPE &&
               requiredEntitySequence !== undefined &&
               !iterationUnversioned &&
               !unversionedInvalidation &&
@@ -1086,7 +1088,7 @@ async function acquireProjection(
             const coveredBeforeDispatch =
               firstRequest &&
               iterationCanSkipVersioned &&
-              remoteScope === "state:entities:v1" &&
+              remoteScope === SYNC_ENTITY_SCOPE &&
               !iterationUnversioned &&
               !unversionedInvalidation &&
               latestEntitySequence.canUseDurableCheckpoint &&
@@ -1094,7 +1096,7 @@ async function acquireProjection(
               latestEntitySequence.coversWithInFlight(requiredEntitySequence);
             if (coveredBeforeDispatch) {
               if (
-                remoteScope === "state:entities:v1" &&
+                remoteScope === SYNC_ENTITY_SCOPE &&
                 requiredEntitySequence !== undefined
               )
                 latestEntitySequence.markInFlightCoverageUsed(
@@ -1110,11 +1112,11 @@ async function acquireProjection(
                 pull(
                   remoteScope,
                   after,
-                  remoteScope === "state:entities:v1" ? ENTITY_BATCH_SIZE : 100,
+                  remoteScope === SYNC_ENTITY_SCOPE ? ENTITY_BATCH_SIZE : 100,
                   workspaceId,
                   verifyWorkspace,
                   initialHigh,
-                  remoteScope === "state:entities:v1" &&
+                  remoteScope === SYNC_ENTITY_SCOPE &&
                     after === 0 &&
                     initialHigh !== undefined &&
                     window.matchMedia("(max-width: 760px)").matches
@@ -1129,7 +1131,7 @@ async function acquireProjection(
             // checkpoint. Same-epoch responses remain usable and cannot move
             // the local checkpoint backwards.
             if (
-              remoteScope === "state:entities:v1" &&
+              remoteScope === SYNC_ENTITY_SCOPE &&
               !latestEntitySequence.isSameResetVersion(pullResetVersion)
             ) {
               more = true;
@@ -1142,26 +1144,26 @@ async function acquireProjection(
               continue;
             }
             if (
-              remoteScope === "state:entities:v1" &&
+              remoteScope === SYNC_ENTITY_SCOPE &&
               initialHigh !== undefined &&
               result.initialHigh == null
             )
               throw new Error(
                 "The server omitted the initial sync checkpoint.",
               );
-            if (remoteScope === "state:entities:v1" && result.maxSeq == null)
+            if (remoteScope === SYNC_ENTITY_SCOPE && result.maxSeq == null)
               throw new Error("The server omitted the sync sequence limit.");
             const entityBatch: SyncDocument[] = [];
             for (const document of result.documents) {
               if (
-                remoteScope === "state:entities:v1"
+                remoteScope === SYNC_ENTITY_SCOPE
                   ? !document.id.startsWith("entity:")
                   : document.id !== remoteScope
               )
                 throw new Error(
                   "The server returned an invalid projection document.",
                 );
-              if (remoteScope === "state:entities:v1") {
+              if (remoteScope === SYNC_ENTITY_SCOPE) {
                 entityBatch.push(document);
                 continue;
               }
@@ -1224,7 +1226,7 @@ async function acquireProjection(
                 id: scope,
               });
             }
-            if (remoteScope === "state:entities:v1") {
+            if (remoteScope === SYNC_ENTITY_SCOPE) {
               const applied = await withEntityProjectionWrite(
                 db.projections.database.name,
                 async () => {
@@ -1292,7 +1294,7 @@ async function acquireProjection(
           settleCoveredEntityInvalidation();
           report(null);
         } while (invalidated && !stopped);
-        if (!stopped && remoteScope === "state:entities:v1") {
+        if (!stopped && remoteScope === SYNC_ENTITY_SCOPE) {
           const completedResetVersion = latestEntitySequence.resetVersion;
           await withEntityProjectionWrite(
             db.projections.database.name,
@@ -1349,7 +1351,7 @@ async function acquireProjection(
       // A stream hint cannot authorize another read after a permanent rejection.
       // Explicit refresh still uses the normal workspace and HTTP checks.
       if (invalidationBlocked) return;
-      if (remoteScope === "state:entities:v1" && version) {
+      if (remoteScope === SYNC_ENTITY_SCOPE && version) {
         latestEntitySequence.observeEpoch(version.epoch);
         if (version.entitySequenceReset) {
           latestEntitySequence.reset();
@@ -1357,7 +1359,7 @@ async function acquireProjection(
         }
       }
       if (
-        remoteScope === "state:entities:v1" &&
+        remoteScope === SYNC_ENTITY_SCOPE &&
         version?.entitySequence !== undefined
       ) {
         if (
@@ -1381,9 +1383,9 @@ async function acquireProjection(
         ? watchTranscriptInvalidations(transcriptId, invalidate)
         : watchSyncInvalidations(
             invalidate,
-            remoteScope === "state:entities:v1" ? "entities" : "legacy",
+            remoteScope === SYNC_ENTITY_SCOPE ? "entities" : "legacy",
           );
-      if (remoteScope === "state:entities:v1")
+      if (remoteScope === SYNC_ENTITY_SCOPE)
         stopAccountsBaseline = watchResourceChanges(
           { kind: "accounts" },
           () => {},

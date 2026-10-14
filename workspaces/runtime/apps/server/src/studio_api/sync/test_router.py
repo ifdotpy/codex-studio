@@ -23,7 +23,7 @@ from pydantic import TypeAdapter
 from unittest.mock import patch
 
 from studio_api.context import ApiContext
-from studio_api.models import ErrorResponse
+from studio_api.models import MAX_SAFE_INTEGER, ErrorResponse
 from studio_api.sync.models import SyncStreamQuery
 from studio_api.responses import API_BOUNDARY_RESPONSE_HEADERS, install_error_response_docs
 from studio_api.schema import API_SCHEMA_HASH_PARAM, API_SCHEMA_MISMATCH_FIELD, openapi_document
@@ -658,7 +658,7 @@ class SyncRouterTests(unittest.TestCase):
         self.assertNotIn("oneOf", last_event_id)
         self.assertEqual(last_event_id["type"], "integer")
         self.assertEqual(last_event_id["minimum"], 0)
-        self.assertEqual(last_event_id["maximum"], 9_007_199_254_740_991)
+        self.assertEqual(last_event_id["maximum"], MAX_SAFE_INTEGER)
         self.assertIn("426", responses)
         event_schema = responses["200"]["content"]["text/event-stream"]["schema"]
         self.assertEqual(

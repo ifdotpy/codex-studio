@@ -1,4 +1,4 @@
-"""Authoritative typed contracts for protocol 3 resource notifications."""
+"""Authoritative typed contracts for sync resource notifications."""
 
 from __future__ import annotations
 
@@ -7,10 +7,11 @@ from typing import Annotated, Literal
 
 from pydantic import Field, RootModel, StrictBool, StrictFloat, StrictStr, model_validator
 
-from studio_api.models import ContractModel, SafeInt, SyncEntity
+from studio_api.models import ContractModel, MAX_SAFE_INTEGER, SafeInt, SyncEntity
 from studio_api.schema import API_SCHEMA_MISMATCH_FIELD
+from studio_api.sync.protocol_type_generated import SyncProtocolVersion
 
-MAX_SAFE_REVISION = 9_007_199_254_740_991
+MAX_SAFE_REVISION = MAX_SAFE_INTEGER
 MAX_TOKEN_RATE_ENTRIES = 4096
 # Upstream agent, thread, and turn IDs are opaque Unicode strings. The schema's
 # maxLength and every consumer count Unicode code points, not bytes or graphemes.
@@ -189,7 +190,7 @@ class ResourceRevisionEntry(ContractModel):
 class ResourceChangeEvent(ContractModel):
     """Named `resources` SSE payload with optional bounded state data."""
 
-    protocol: Literal[3]
+    protocol: SyncProtocolVersion
     workspaceId: NonEmptyIdentifier
     epoch: NonEmptyIdentifier
     revision: ResourceRevision
@@ -213,7 +214,7 @@ class ResourceChangeEvent(ContractModel):
 class ResourceHeartbeatEvent(ContractModel):
     """Named `heartbeat` SSE payload; it never requests a resource read."""
 
-    protocol: Literal[3]
+    protocol: SyncProtocolVersion
     workspaceId: NonEmptyIdentifier
     epoch: NonEmptyIdentifier
     revision: ResourceRevision
@@ -258,7 +259,7 @@ def _token_rate_total_exceeded(value: object) -> bool:
 class ResourceTokenRatesEvent(ContractModel):
     """Named `token-rates` SSE payload; values come from workspace_snapshot()."""
 
-    protocol: Literal[3]
+    protocol: SyncProtocolVersion
     workspaceId: NonEmptyIdentifier
     epoch: NonEmptyIdentifier
     revision: ResourceRevision

@@ -201,7 +201,8 @@ Cancel leaves the destination unchanged. A failed save shows an error.
 On iPhone, Save a copy uses the system share sheet when file sharing is available.
 Other browsers use an explicit download fallback.
 
-The existing file API limits inline previews to 20 MiB.
+The file API limits inline previews to the server-owned
+[workspace preview byte cap](../workspaces/runtime/apps/server/src/codex_shared_values.py).
 Native file actions remain available when that limit prevents a preview.
 Table previews show at most 200 rows and 100 columns.
 Their text parser stops after 1,048,576 UTF-16 code units.
@@ -218,7 +219,8 @@ The file remains outside Git. Agents that share a working directory have separat
 files. A project's own `PROGRESS.md` does not control this display.
 
 Agents read and edit the file with ordinary file tools. Content must be UTF-8
-Markdown and at most 128 KiB. The display has a maximum height of 150px.
+Markdown and no larger than the server-owned [progress byte limit](../workspaces/runtime/apps/server/src/codex_shared_values.py).
+The display has a maximum height of 150px.
 Its current width, font and available height determine fit. Studio uses passive
 Markdown and checks the complete rendered revision before display. Overflow or
 unsupported content produces a compact notice with access to the original file.

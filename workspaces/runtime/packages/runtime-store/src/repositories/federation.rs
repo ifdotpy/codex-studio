@@ -464,8 +464,11 @@ impl FederationRepository {
                 ));
             }
         } else {
-            let (count,bytes):(i64,i64)=tx.query_row("SELECT count(*),COALESCE(sum(length(record)),0) FROM runtime_federation_outbox WHERE peer_id=?1 AND json_extract(record,'$.status')='queued'",[&peer_state],|r|Ok((r.get(0)?,r.get(1)?)))?;
-            if count >= 10000 || bytes + queued.to_string().len() as i64 > 32 * 1024 * 1024 {
+            let (count, bytes) = super::federation_messaging::queued_outbox_size(tx, &peer_state)?;
+            if count >= studio_runtime_schema::federation_limits_generated::MAX_QUEUE_ROWS
+                || bytes + queued.to_string().len() as u64
+                    > studio_runtime_schema::federation_limits_generated::MAX_QUEUE_BYTES
+            {
                 return Err(StoreError::SchemaMismatch(
                     "federation queue is full".into(),
                 ));

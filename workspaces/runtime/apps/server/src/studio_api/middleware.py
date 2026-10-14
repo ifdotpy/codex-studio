@@ -15,6 +15,8 @@ from starlette.datastructures import QueryParams
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from studio_api.context import ApiContext
+from codex_federation_limits import FEDERATION_PATHS
+from codex_http_body_limits import REQUEST_BODY_READ_TIMEOUT_SECONDS, request_body_limit
 from studio_api.models import JsonValue
 from studio_api.schema import (
     API_SCHEMA_HASH_HEADER,
@@ -23,10 +25,6 @@ from studio_api.schema import (
 )
 
 ASGIHandler: TypeAlias = Callable[[Scope, Receive, Send], Awaitable[None]]
-FEDERATION_PATHS = frozenset({
-    "/api/federation/v1/pair", "/api/federation/v1/status",
-    "/api/federation/v1/message", "/api/federation/v1/pull",
-})
 FRAME_ACCOUNT_MUTATION_PATHS = frozenset({
     "/api/accounts/login",
     "/api/accounts/login/cancel",
@@ -35,11 +33,7 @@ FRAME_ACCOUNT_MUTATION_PATHS = frozenset({
     "/api/accounts/claude/login/code",
     "/api/accounts/claude/login/cancel",
 })
-DEFAULT_BODY_LIMIT = 262_144
-ASSET_BODY_LIMIT = 28 * 1024 * 1024
-VOICE_AUDIO_BODY_LIMIT = 6 * 1024 * 1024
-FEDERATION_BODY_LIMIT = 256 * 1024
-REQUEST_READ_TIMEOUT_SECONDS = 10.0
+REQUEST_READ_TIMEOUT_SECONDS = float(REQUEST_BODY_READ_TIMEOUT_SECONDS)
 API_SCHEMA_HASH_WAIT_TIMEOUT_SECONDS = 10.0
 OPTIONAL_JSON_BODY_PATHS = frozenset({"/api/accounts/discover"})
 
@@ -176,13 +170,7 @@ async def _reject(
 
 
 def _request_limit(path: str) -> int:
-    if path in FEDERATION_PATHS:
-        return FEDERATION_BODY_LIMIT
-    if path == "/api/assets":
-        return ASSET_BODY_LIMIT
-    if path in {"/api/voice/audio", "/api/projects"}:
-        return VOICE_AUDIO_BODY_LIMIT
-    return DEFAULT_BODY_LIMIT
+    return request_body_limit(path)
 
 
 class RequestBoundary:

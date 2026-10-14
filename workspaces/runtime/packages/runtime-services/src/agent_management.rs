@@ -6,6 +6,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use studio_runtime_schema::shared_values::MAX_SAFE_INTEGER;
 use studio_runtime_store::AgentStatus;
 use thiserror::Error;
 
@@ -13,7 +14,7 @@ use crate::event_write::{python_strip, truthy};
 
 const MAX_ROWS: usize = 10_000;
 const MAX_RECORD_BYTES: usize = 1_048_576;
-const MAX_SAFE_EPOCH: i64 = 9_007_199_254_740_991;
+const MAX_SAFE_EPOCH: i64 = MAX_SAFE_INTEGER;
 const BRIEF_FIELDS: &[&str] = &[
     "id",
     "name",

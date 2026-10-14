@@ -43,6 +43,7 @@ from codex_questions import QuestionsMixin, is_question, answer_signature, recor
 from codex_panel import PanelMixin
 from codex_tool_requests import RequestMixin, request_tools
 from codex_turn_recovery import TurnRecoveryMixin
+from codex_agent_message_limits import MAX_AGENT_MESSAGE_CODEPOINTS
 from codex_capacity_retry import CapacityRetryMixin
 from codex_agent_modes import (DEFAULT_MAX_TEAM_AGENTS, DEFAULT_SUBAGENT_CONCURRENCY,
                                MAX_SUBAGENT_CONCURRENCY, MAX_TEAM_AGENTS,
@@ -57,6 +58,7 @@ from codex_usage_resume import UsageResumeMixin, _auth_error
 from codex_scheduler_wake import SchedulerWake, record_needs_dispatch
 from codex_safety_buffering import active as safety_retry_active
 from codex_native_errors import NativeRpcError, SUPPORTED_REQUESTS, error_message, native_thread_block, assert_native_thread_open, THREAD_BLOCK_MESSAGE, refresh_native_limits
+from codex_provider_limits import CALLBACK_QUEUE_LIMIT as PROVIDER_CALLBACK_QUEUE_LIMIT
 
 from native_notifications.dispatch import consume_native_notification, advance_native_status, notice, account_notices
 
@@ -439,7 +441,7 @@ class SubmissionUnknown(ResponseTimeout):
 
 class AppServer:
     WRITE_TIMEOUT = 5
-    CALLBACK_QUEUE_LIMIT = 65536
+    CALLBACK_QUEUE_LIMIT = PROVIDER_CALLBACK_QUEUE_LIMIT
     # Streamed fragments are redundant: item/completed carries the full text.
     # Past this depth they are shed so the queue never closes the connection.
     DELTA_SHED_DEPTH = 2048
@@ -9955,8 +9957,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             if (importance != "progress" or not isinstance(progress_key, str) or not 1 <= len(progress_key) <= 200
                     or type(progress_version) is not int or progress_version < 0):
                 raise ValueError("Versioned progress requires a progress_key and nonnegative integer progress_version")
-        if not isinstance(text, str) or not 1 <= len(text.strip()) <= 12000:
-            raise ValueError("Message must have 1 to 12000 characters")
+        if not isinstance(text, str) or not 1 <= len(text.strip()) <= MAX_AGENT_MESSAGE_CODEPOINTS:
+            raise ValueError(f"Message must have 1 to {MAX_AGENT_MESSAGE_CODEPOINTS} characters")
         text = text.strip()
         actor = self.agent(sender_id)
         if actor.get('remoteOrigin') and not target.startswith(('federated:', 'remote:')) and target != 'user':

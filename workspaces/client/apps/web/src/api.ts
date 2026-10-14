@@ -13,6 +13,7 @@ import type {
   PathsWithMethod,
 } from "openapi-typescript-helpers";
 import type { components, paths } from "./generated/api";
+import { SYNC_ENTITY_SCOPE } from "./generated/api";
 import {
   API_SCHEMA_HASH,
   API_SCHEMA_HASH_HEADER,
@@ -587,7 +588,7 @@ function beginMutationEntityCoverage(
   const through = Math.max(...entities.map((document) => document.seq));
   const checkpoint = getEntitySequenceCheckpointForWorkspace(
     targetWorkspaceId,
-    "state:entities:v1",
+    SYNC_ENTITY_SCOPE,
     API_SCHEMA_HASH,
   );
   if (!checkpoint) return undefined;

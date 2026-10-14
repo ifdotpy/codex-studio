@@ -3,11 +3,15 @@
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
 
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+
 import base64
 import importlib.util
 import json
 import os
-from pathlib import Path
 import threading
 import unittest
 from unittest.mock import patch
@@ -15,6 +19,7 @@ import urllib.request
 
 spec=importlib.util.spec_from_file_location('file_fixture',Path(__file__).with_name('workspace-contract.py'))
 f=importlib.util.module_from_spec(spec);spec.loader.exec_module(f)
+from codex_shared_values import MAX_WORKSPACE_PREVIEW_BYTES
 
 class FileInfo(unittest.TestCase):
     setUp=f.WorkspaceContract.setUp
@@ -24,10 +29,10 @@ class FileInfo(unittest.TestCase):
 
     def test_large_file_metadata_does_not_read_content(self):
         actor=self.lead();file=self.project/'large.pdf'
-        with file.open('wb') as stream:stream.truncate(21*1024*1024)
+        with file.open('wb') as stream:stream.truncate(MAX_WORKSPACE_PREVIEW_BYTES + 1)
         with patch.object(Path,'read_bytes',side_effect=AssertionError('Metadata read file bytes')):
             info=self.runtime.file_info(actor['id'],'large.pdf')
-        self.assertEqual(info,{'path':str(file.resolve()),'name':'large.pdf','mime':'application/pdf','size':21*1024*1024})
+        self.assertEqual(info,{'path':str(file.resolve()),'name':'large.pdf','mime':'application/pdf','size':MAX_WORKSPACE_PREVIEW_BYTES + 1})
         with self.assertRaisesRegex(ValueError,'preview limit'):
             self.runtime.file_content(actor['id'],'large.pdf')
 

@@ -1,4 +1,6 @@
-const ENTITY_SCOPE = "state:entities:v1";
+import { SYNC_ENTITY_SCOPE } from "../generated/api";
+
+const ENTITY_SCOPE = SYNC_ENTITY_SCOPE;
 
 function isContiguous(after: number, checkpoint: number, through: number) {
   return (

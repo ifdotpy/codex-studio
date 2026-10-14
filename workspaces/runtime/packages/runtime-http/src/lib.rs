@@ -1,6 +1,7 @@
 //! Axum HTTP edge for the Studio runtime.
 
 pub mod error;
+mod http_body_limits_generated;
 mod json_body;
 pub mod middleware;
 pub mod router;

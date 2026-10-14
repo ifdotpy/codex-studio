@@ -32,6 +32,7 @@ if os.name == 'nt':
     Path(tempfile.tempdir).mkdir(parents=True, exist_ok=True)
 import codex_model_catalog_reader as reader
 from codex_catalog import ModelCatalogCache, CatalogPending, runtime_catalog
+from codex_shared_values import MODEL_CATALOG_ITEMS_PER_PAGE, MODEL_CATALOG_MAX_PAGES
 
 
 PROGRAM = r'''
@@ -85,9 +86,16 @@ for line in sys.stdin:
    print(json.dumps({'id': message['id'], 'error': {'message': 'secret'}}), flush=True)
    continue
   cursor = message['params'].get('cursor')
-  result = {'data': [{'model': 'two' if cursor else 'one',
-                     'availableAccessPrograms': {'cyber': ['standard', 'daybreakBlue']}}],
-            'nextCursor': ('two' if not cursor or mode == 'cycle' else None)}
+  if mode in ('exact-pages', 'too-many-pages'):
+   page = int(cursor) if cursor else 0
+   page_limit = int((home / 'page-limit').read_text())
+   last_page = page_limit - (1 if mode == 'exact-pages' else 0)
+   result = {'data': [{'model': f'model-{page}'}],
+             'nextCursor': str(page + 1) if page < last_page else None}
+  else:
+   result = {'data': [{'model': 'two' if cursor else 'one',
+                       'availableAccessPrograms': {'cyber': ['standard', 'daybreakBlue']}}],
+             'nextCursor': ('two' if not cursor or mode == 'cycle' else None)}
  print(json.dumps({'id': message['id'], 'result': result}), flush=True)
 '''
 
@@ -97,6 +105,7 @@ class ReaderContract(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.home = Path(self.temp.name)
+        (self.home / 'page-limit').write_text(str(MODEL_CATALOG_MAX_PAGES))
         self.binary = self.home / 'native'
         self.binary.write_text('#!' + sys.executable + '\n' + PROGRAM)
         self.binary.chmod(0o700)
@@ -172,6 +181,26 @@ class ReaderContract(unittest.TestCase):
         self.assertTrue(requests[0]['params']['capabilities']['experimentalApi'])
         self.assertTrue(requests[2]['params']['includeHidden'])
         self.assertEqual(requests[3]['params']['cursor'], 'two')
+        self.assert_reaped()
+
+    def test_model_catalog_allows_exactly_the_owned_page_count(self):
+        (self.home / 'mode').write_text('exact-pages')
+        result = self.read()
+        self.assertEqual(len(result['data']), MODEL_CATALOG_MAX_PAGES)
+        requests = [json.loads(line) for line in (self.home / 'requests').read_text().splitlines()]
+        model_requests = [request for request in requests if request.get('method') == 'model/list']
+        self.assertEqual(len(model_requests), MODEL_CATALOG_MAX_PAGES)
+        self.assertTrue(all(request['params']['limit'] == MODEL_CATALOG_ITEMS_PER_PAGE
+                            for request in model_requests))
+        self.assert_reaped()
+
+    def test_model_catalog_rejects_before_requesting_page_after_limit(self):
+        (self.home / 'mode').write_text('too-many-pages')
+        with self.assertRaisesRegex(ValueError, 'Invalid or repeated model/list cursor'):
+            self.read()
+        requests = [json.loads(line) for line in (self.home / 'requests').read_text().splitlines()]
+        model_requests = [request for request in requests if request.get('method') == 'model/list']
+        self.assertEqual(len(model_requests), MODEL_CATALOG_MAX_PAGES)
         self.assert_reaped()
 
     def test_default_account_preserves_native_auth_environment(self):

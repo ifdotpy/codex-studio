@@ -6,13 +6,13 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::{Map, Value, json};
+use studio_runtime_schema::shared_values::{
+    MAX_PROGRESS_FILE_BYTES, MAX_SAFE_INTEGER, PROGRESS_FILE_LIMIT_LABEL,
+    PROGRESS_LAYOUT_FRESH_SECONDS, PROGRESS_LAYOUT_MAX_BYTES, PROGRESS_LAYOUT_MAX_CLIENTS,
+};
 use thiserror::Error;
 
-const MAX_PROGRESS_BYTES: usize = 128 * 1024;
-const MAX_LAYOUT_BYTES: usize = 64 * 1024;
-const MAX_CLIENTS: usize = 32;
-const FRESH_SECONDS: f64 = 90.0;
-const SAFE_INTEGER: u64 = 9_007_199_254_740_991;
+const MAX_PROGRESS_BYTES: usize = MAX_PROGRESS_FILE_BYTES;
 const RENDERER_V1: &str = "progress-markdown-v1";
 const RENDERER_V2: &str = "progress-markdown-v2";
 const LAYOUT_FILE: &str = "PROGRESS.layout.json";
@@ -21,8 +21,8 @@ const LAYOUT_FILE: &str = "PROGRESS.layout.json";
 pub enum ProgressPanelError {
     #[error("Invalid agent identity for PROGRESS.md")]
     InvalidAgent,
-    #[error("PROGRESS.md exceeds the 128 KiB limit")]
-    ProgressTooLarge,
+    #[error("PROGRESS.md exceeds the {0} limit")]
+    ProgressTooLarge(&'static str),
     #[error("PROGRESS.md must contain valid UTF-8 text")]
     ProgressUtf8,
     #[error("PROGRESS.md changed during the read. Studio will retry")]
@@ -124,10 +124,9 @@ pub fn read_progress(state_dir: &Path, agent: &str) -> Result<Value, ProgressPan
             panel["exists"] = Value::Bool(true);
         }
         Ok(None) => {}
-        Err(ProgressPanelError::ProgressTooLarge) => {
+        Err(error @ ProgressPanelError::ProgressTooLarge(_)) => {
             panel["exists"] = Value::Bool(true);
-            panel["error"] =
-                json!("Cannot read PROGRESS.md: PROGRESS.md exceeds the 128 KiB limit");
+            panel["error"] = json!(format!("Cannot read PROGRESS.md: {error}"));
         }
         Err(ProgressPanelError::ProgressUtf8) => {
             panel["exists"] = Value::Bool(true);
@@ -175,7 +174,9 @@ fn read_file(path: &Path) -> Result<Option<(String, String, f64)>, ProgressPanel
         return Err(std::io::Error::other("PROGRESS.md must be a regular file").into());
     }
     if metadata.len() > MAX_PROGRESS_BYTES as u64 {
-        return Err(ProgressPanelError::ProgressTooLarge);
+        return Err(ProgressPanelError::ProgressTooLarge(
+            PROGRESS_FILE_LIMIT_LABEL,
+        ));
     }
     let mut file = match OpenOptions::new().read(true).open(path) {
         Ok(file) => file,
@@ -197,7 +198,9 @@ fn read_file(path: &Path) -> Result<Option<(String, String, f64)>, ProgressPanel
         .read_to_end(&mut bytes)?;
     let after = file.metadata()?;
     if bytes.len() > MAX_PROGRESS_BYTES {
-        return Err(ProgressPanelError::ProgressTooLarge);
+        return Err(ProgressPanelError::ProgressTooLarge(
+            PROGRESS_FILE_LIMIT_LABEL,
+        ));
     }
     let first_revision = revision(&before)?;
     let final_revision = revision(&after)?;
@@ -323,12 +326,15 @@ pub fn record_layout(state_dir: &Path, body: &Value) -> Result<Value, ProgressPa
         .drain(..)
         .filter(|item| item.get("client").and_then(Value::as_str) != Some(client))
         .collect::<Vec<_>>();
-    if others.len() >= MAX_CLIENTS {
+    if others.len() >= PROGRESS_LAYOUT_MAX_CLIENTS {
         return Err(ProgressPanelError::TooManyClients);
     }
     let mut saved_report = report;
     saved_report.insert("measuredAt".to_owned(), json!(now));
-    saved_report.insert("expiresAt".to_owned(), json!(now + FRESH_SECONDS));
+    saved_report.insert(
+        "expiresAt".to_owned(),
+        json!(now + PROGRESS_LAYOUT_FRESH_SECONDS),
+    );
     let mut updated_reports = others;
     updated_reports.push(Value::Object(saved_report));
     let result = json!({
@@ -343,7 +349,7 @@ pub fn record_layout(state_dir: &Path, body: &Value) -> Result<Value, ProgressPa
     let mut bytes =
         serde_json::to_vec_pretty(&result).map_err(|_| ProgressPanelError::InvalidStoredLayout)?;
     bytes.push(b'\n');
-    if bytes.len() > MAX_LAYOUT_BYTES {
+    if bytes.len() > PROGRESS_LAYOUT_MAX_BYTES {
         return Err(ProgressPanelError::InvalidLayout("layout size"));
     }
     atomic_replace(directory, &layout_path, &progress, &revision, &bytes)?;
@@ -413,7 +419,7 @@ fn validate_report(body: &Value) -> Result<Map<String, Value>, ProgressPanelErro
     }
     if body["sequence"]
         .as_u64()
-        .is_none_or(|value| value > SAFE_INTEGER)
+        .is_none_or(|value| value > MAX_SAFE_INTEGER as u64)
     {
         return Err(ProgressPanelError::InvalidLayout("sequence"));
     }
@@ -517,7 +523,9 @@ fn fresh_reports(value: &Value, now: f64) -> Vec<Value> {
         .filter(|row| {
             let measured = row.get("measuredAt").and_then(Value::as_f64);
             measured.is_some_and(|measured| {
-                measured.is_finite() && now - measured >= 0.0 && now - measured < FRESH_SECONDS
+                measured.is_finite()
+                    && now - measured >= 0.0
+                    && now - measured < PROGRESS_LAYOUT_FRESH_SECONDS
             })
         })
         .filter(|row| {
@@ -566,14 +574,14 @@ fn read_layout(path: &Path) -> Result<Value, ProgressPanelError> {
         Err(error) => return Err(error),
     };
     let metadata = file.metadata()?;
-    if metadata.len() > MAX_LAYOUT_BYTES as u64 {
+    if metadata.len() > PROGRESS_LAYOUT_MAX_BYTES as u64 {
         return Err(ProgressPanelError::InvalidStoredLayout);
     }
     let mut bytes = Vec::new();
     Read::by_ref(&mut file)
-        .take((MAX_LAYOUT_BYTES + 1) as u64)
+        .take((PROGRESS_LAYOUT_MAX_BYTES + 1) as u64)
         .read_to_end(&mut bytes)?;
-    if bytes.len() > MAX_LAYOUT_BYTES {
+    if bytes.len() > PROGRESS_LAYOUT_MAX_BYTES {
         return Err(ProgressPanelError::InvalidStoredLayout);
     }
     let value: Value =
@@ -633,7 +641,7 @@ fn validate_stored_layout(value: &Value) -> Result<(), ProgressPanelError> {
     let reports = object
         .get("reports")
         .and_then(Value::as_array)
-        .filter(|reports| reports.len() <= MAX_CLIENTS)
+        .filter(|reports| reports.len() <= PROGRESS_LAYOUT_MAX_CLIENTS)
         .ok_or(ProgressPanelError::InvalidStoredLayout)?;
     let mut clients = std::collections::HashSet::new();
     for row in reports {
@@ -737,7 +745,10 @@ fn atomic_replace(
 
 #[cfg(test)]
 mod tests {
-    use super::{ProgressPanelError, atomic_replace, read_progress, record_layout};
+    use super::{
+        MAX_PROGRESS_BYTES, PROGRESS_FILE_LIMIT_LABEL, PROGRESS_LAYOUT_FRESH_SECONDS,
+        ProgressPanelError, atomic_replace, read_progress, record_layout,
+    };
     use serde_json::{Value, json};
     use std::fs;
     use std::path::Path;
@@ -777,10 +788,15 @@ mod tests {
         assert!(panel["exists"].as_bool().unwrap_or(false));
         assert!(panel["revision"].as_str().is_some());
 
-        let bytes = vec![b'x'; 128 * 1024 + 1];
+        let bytes = vec![b'x'; MAX_PROGRESS_BYTES + 1];
         fs::write(&path, &bytes).expect("large content writes");
         let panel = read_progress(root.path(), "agent-a").expect("large file returns panel error");
-        assert!(panel["error"].as_str().is_some());
+        assert_eq!(
+            panel["error"],
+            format!(
+                "Cannot read PROGRESS.md: PROGRESS.md exceeds the {PROGRESS_FILE_LIMIT_LABEL} limit"
+            )
+        );
         assert!(panel["exists"].as_bool().unwrap_or(false));
         assert_eq!(fs::read(&path).expect("large file retained"), bytes);
 
@@ -935,7 +951,8 @@ mod tests {
             "status":"fits", "updatedAt":now,
             "reports":[{"client":"phone", "sequence":1, "renderer":"progress-markdown-v1",
                 "width":320, "height":150, "contentWidth":100, "contentHeight":40,
-                "fits":true, "reason":null, "measuredAt":now, "expiresAt":now+90.0}],
+                "fits":true, "reason":null, "measuredAt":now,
+                "expiresAt":now+PROGRESS_LAYOUT_FRESH_SECONDS}],
         });
         fs::write(
             path.with_file_name("PROGRESS.layout.json"),

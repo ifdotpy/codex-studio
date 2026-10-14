@@ -12,9 +12,14 @@ from typing import TYPE_CHECKING, Any
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 from pydantic import ValidationError
 
-from codex_multi_server import AccessError, MAX_RESPONSE_BYTES, SIGNATURE_HEADERS
+from codex_multi_server import AccessError, SIGNATURE_HEADERS
+from codex_federation_limits import FEDERATION_PATHS
+from codex_multi_server_transport_limits import (
+    MULTI_SERVER_MAX_RESPONSE_BYTES,
+    MULTI_SERVER_MAX_RESPONSE_LABEL,
+)
 from studio_api.middleware import (
-    FEDERATION_PATHS, HeaderView, REQUEST_READ_TIMEOUT_SECONDS, _request_limit,
+    HeaderView, REQUEST_READ_TIMEOUT_SECONDS, _request_limit,
 )
 from studio_api.multi_server.router import service_for
 from studio_api.multi_server.models import DevicePairRequest, AutoPairRequest
@@ -281,8 +286,8 @@ class MultiServerBoundary:
                         start = message
                     elif message["type"] == "http.response.body":
                         response_body.extend(message.get("body", b""))
-                        if len(response_body) > MAX_RESPONSE_BYTES:
-                            raise AccessError(502, "outcome_unknown", "The response exceeds 1 MiB. Recover the existing operation receipt")
+                        if len(response_body) > MULTI_SERVER_MAX_RESPONSE_BYTES:
+                            raise AccessError(502, "outcome_unknown", f"The response exceeds {MULTI_SERVER_MAX_RESPONSE_LABEL}. Recover the existing operation receipt")
 
                 await self.app(scope, replay_receive, save_send)
                 if receipt_replayed:

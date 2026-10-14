@@ -33,6 +33,12 @@ from codex_accounts import AccountStore
 from codex_safety_buffering import active as safety_retry_active
 from codex_work import text_field
 from codex_entity_contracts import (ACTIVE_MONITOR_STATUSES, monitor_records, task_records)
+from codex_shared_values import (
+    MAX_USER_ATTACHMENT_BYTES,
+    MAX_WORKSPACE_PREVIEW_BYTES,
+    user_attachment_limit_label,
+    workspace_preview_limit_label,
+)
 
 if TYPE_CHECKING:
     from codex_runtime import Runtime
@@ -140,7 +146,7 @@ class WorkspaceRuntime(_WorkHost, Protocol):
     def message_inputs(self, agent_id: str, text: str, asset_ids: Sequence[str]) -> JsonObject: ...
     def file_info(self, agent_id: str | None = None, path: str | Path | None = None, asset_id: str | None = None) -> JsonObject: ...
     def file_content(self, agent_id: str | None = None, path: str | Path | None = None,
-                     asset_id: str | None = None, limit: int = 20 * 1024 * 1024) -> bytes: ...
+                     asset_id: str | None = None, limit: int = MAX_WORKSPACE_PREVIEW_BYTES) -> bytes: ...
     def _image_file_size(self, file: Path, agent: AgentRecord | None = None) -> int: ...
     def _read_image_file(self, file: Path, limit: int, agent: AgentRecord | None = None) -> bytes: ...
     def git(self, a: AgentRecord, args: Sequence[str], env: dict[str, str]=None, input: bytes | None=None) -> subprocess.CompletedProcess[bytes]: ...
@@ -582,8 +588,8 @@ class WorkspaceMixin:
             )
         except (ValueError, TypeError):
             raise ValueError("Invalid file data")
-        if not content or len(content) > 20 * 1024 * 1024:
-            raise ValueError("Files must contain 1 byte to 20 MiB")
+        if not content or len(content) > MAX_USER_ATTACHMENT_BYTES:
+            raise ValueError(f"Files must contain 1 byte to {user_attachment_limit_label()}")
         key = str(uuid.UUID(data["id"])) if data.get("id") else str(uuid.uuid4())
         digest = hashlib.sha256(content).hexdigest()
         with self.lock, self.db() as db:
@@ -689,7 +695,7 @@ class WorkspaceMixin:
         return {"path": str(file), "name": file.name, "mime": mime, "size": size}
 
     def file_content(
-        self: "WorkspaceRuntime", agent_id: str | None = None, path: str | Path | None = None, asset_id: str | None = None, limit: int=20 * 1024 * 1024
+        self: "WorkspaceRuntime", agent_id: str | None = None, path: str | Path | None = None, asset_id: str | None = None, limit: int=MAX_WORKSPACE_PREVIEW_BYTES
     ) -> bytes:
         if asset_id:
             asset = self.asset_record(asset_id)
@@ -706,7 +712,7 @@ class WorkspaceMixin:
             if not file.is_file():
                 raise ValueError("This file does not exist")
             if file.stat().st_size > limit:
-                raise ValueError("This file exceeds the 20 MiB preview limit")
+                raise ValueError(f"This file exceeds the {workspace_preview_limit_label()} preview limit")
             content = file.read_bytes()
         return content, mime, file.name
 
@@ -727,11 +733,11 @@ class WorkspaceMixin:
         result = subprocess.run([*(self.workspace_exec_prefix(agent) if agent else exec_prefix()), "python3", "-c", script, str(file), str(limit)],
                                 capture_output=True, timeout=30)
         if result.returncode == 23:
-            raise ValueError("This file exceeds the 20 MiB preview limit")
+            raise ValueError(f"This file exceeds the {workspace_preview_limit_label()} preview limit")
         if result.returncode:
             raise ValueError("This file does not exist")
         if len(result.stdout) > limit:
-            raise ValueError("This file exceeds the 20 MiB preview limit")
+            raise ValueError(f"This file exceeds the {workspace_preview_limit_label()} preview limit")
         return result.stdout
 
     def git(self, a, args, env=None, input=None):

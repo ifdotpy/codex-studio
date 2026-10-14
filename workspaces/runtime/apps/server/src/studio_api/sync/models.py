@@ -6,11 +6,14 @@ from typing import Annotated, Literal
 from typing_extensions import NotRequired, TypedDict
 from pydantic import ConfigDict, Field, TypeAdapter, field_validator, model_validator
 
+from codex_shared_values import SYNC_BATCH_LIMIT
 from codex_records import NativeNoticeRecord, NativeSafetyBufferingRecord
 from codex_nested_delegation import (
     DEFAULT_DELEGATION_DEPTH, MAX_DELEGATION_DEPTH, MIN_DELEGATION_DEPTH,
 )
 from studio_api.sync.preferences import UiPreferencesDto
+from studio_api.sync.protocol import SYNC_PROTOCOL_VERSION
+from studio_api.sync.protocol_type_generated import SyncProtocolVersion
 from studio_api.models import (
     ContractModel,
     ContractStrEnum,
@@ -1158,8 +1161,8 @@ class WorkspaceEntityDto(ContractModel):
 
 
 class SyncProtocolResponse(ResponseModel):
-    protocolVersion: Literal[3]
-    supportedVersions: list[Literal[3]]
+    protocolVersion: SyncProtocolVersion
+    supportedVersions: list[SyncProtocolVersion]
     capabilities: list[str]
     scopes: list[str]
     pullEndpoint: Literal["/api/sync/pull"]
@@ -1182,7 +1185,7 @@ class SyncStreamQuery(ContractModel):
     after: SafeQueryInt | None = None
     resources: str | None = Field(
         default=None,
-        description="Protocol 3 JSON-encoded array of ResourceRef values",
+        description=f"Protocol {SYNC_PROTOCOL_VERSION} JSON-encoded array of ResourceRef values",
     )
     apiSchema: str | None = None
 
@@ -1253,7 +1256,7 @@ class DraftPushRow(ContractModel):
 
 
 class DraftPushRequest(ContractModel):
-    rows: list[DraftPushRow] = Field(max_length=100)
+    rows: list[DraftPushRow] = Field(max_length=SYNC_BATCH_LIMIT)
 
     @model_validator(mode="after")
     def validate_identities(self) -> DraftPushRequest:

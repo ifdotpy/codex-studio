@@ -49,6 +49,37 @@ spec.loader.exec_module(fixture)
 
 
 class RateContract(unittest.TestCase):
+    def test_pending_response_duration_total_tracks_eviction_correction_and_consumption(self):
+        with patch.object(codex_token_rate, 'MAX_PENDING_RESPONSE_DURATION_ENTRIES', 2):
+            rate = TurnRate('duration-window', 0)
+            rate.response(10, 0.1, 'known-response')
+            for index, (text_length, text_at, tool_at, finish_at) in enumerate((
+                    (8, 0.5, 1.1, 2.0),
+                    (12, 2.5, 3.0, 4.0),
+                    (20, 4.5, 5.0, 6.0))):
+                rate.text('x' * text_length, text_at)
+                rate.start_tool(f'tool-{index}', tool_at)
+                rate.finish_tool(f'tool-{index}', finish_at)
+
+            # The third append evicts the oldest of two pending segments.
+            self.assertEqual(list(rate.response_durations), [(1.0, 3.0), (1.0, 5.0)])
+            self.assertEqual(rate.response_duration_pending_tokens, 8.0)
+            rate.response(12, 6.1, 'known-response')
+            self.assertEqual(rate.response_duration_pending_tokens, 8.0)
+            self.assertEqual(rate.snapshot(6.1)['outputTokens'], 20.0)
+
+            # A new response consumes the oldest retained segment exactly once.
+            rate.response(7, 6.2, 'new-response')
+            self.assertEqual(list(rate.response_durations), [(1.0, 5.0)])
+            self.assertEqual(rate.response_duration_pending_tokens, 5.0)
+            self.assertEqual(rate.snapshot(6.2)['outputTokens'], 24.0)
+
+            # Finishing snapshots first, then releases the bounded queue.
+            rate.finish(7.0)
+            self.assertEqual(rate.snapshot(7.0)['outputTokens'], 24.0)
+            self.assertEqual(len(rate.response_durations), 0)
+            self.assertEqual(rate.response_duration_pending_tokens, 0.0)
+
     def test_long_turn_response_history_stops_admitting_unseen_ids_safely(self):
         with patch.object(codex_token_rate, 'MAX_TURN_RESPONSE_HISTORY_ENTRIES', 3):
             rate = TurnRate('long-turn', 0)

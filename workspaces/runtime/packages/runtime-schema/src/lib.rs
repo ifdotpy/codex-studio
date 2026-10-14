@@ -1,4 +1,7 @@
-//! Compiled validators for the schemas persisted by the Rust runtime.
+//! Compiled persisted-state validators and generated shared runtime values.
+
+pub mod federation_limits_generated;
+pub mod shared_values;
 
 use std::collections::BTreeMap;
 use std::sync::OnceLock;
@@ -7,6 +10,8 @@ pub use jsonschema::{Draft, Registry as JsonSchemaRegistry, Validator};
 use serde_json::{Value, json};
 
 pub mod agent_limits_generated;
+pub mod sync_protocol;
+pub use sync_protocol::{SYNC_ENTITY_SCOPE, SYNC_PROTOCOL_VERSION, SYNC_PROTOCOL_VERSION_TEXT};
 mod token_rate_limits;
 pub use token_rate_limits::{
     TOKEN_RATE_IDENTIFIER_MAX_CODEPOINTS, TOKEN_RATE_MAX_ENTRIES, TOKEN_RATE_MAX_TOTAL_ENTRIES,

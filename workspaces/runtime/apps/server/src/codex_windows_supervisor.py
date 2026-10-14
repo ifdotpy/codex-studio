@@ -12,6 +12,7 @@ import time
 import uuid
 from ctypes import wintypes
 from typing import Any, Callable, cast
+from codex_shared_values import MAX_SUPERVISOR_FRAME_BYTES
 
 
 # POSIX typeshed does not expose Windows-only ctypes APIs such as WinDLL.
@@ -211,7 +212,7 @@ class NamedPipeReader:
         self.buffer = bytearray()
 
     def readline(
-        self, limit: int = 1024 * 1024 + 1, *, timeout: float | None = None
+        self, limit: int = MAX_SUPERVISOR_FRAME_BYTES + 1, *, timeout: float | None = None
     ) -> bytes:
         read_timeout = self.connection.timeout if timeout is None else timeout
         deadline = None if read_timeout is None else time.monotonic() + read_timeout
@@ -452,8 +453,8 @@ def create_pipe_server(endpoint: str, connection_handler: ConnectionHandler) -> 
 def _dispatch_pipe_client(connection: NamedPipeConnection, connection_handler: ConnectionHandler) -> None:
     reader = NamedPipeReader(connection)
     try:
-        first_line = reader.readline(1024 * 1024 + 1, timeout=PIPE_READ_TIMEOUT)
-        if not first_line or len(first_line) > 1024 * 1024:
+        first_line = reader.readline(MAX_SUPERVISOR_FRAME_BYTES + 1, timeout=PIPE_READ_TIMEOUT)
+        if not first_line or len(first_line) > MAX_SUPERVISOR_FRAME_BYTES:
             raise ValueError("Supervisor frame exceeds the size limit")
         verify_pipe_client(connection.handle)
         connection.settimeout(None)

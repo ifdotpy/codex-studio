@@ -9,13 +9,14 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use crate::workspace_files;
 use base64::Engine;
 use serde_json::{Value, json};
+use studio_runtime_schema::shared_values::{
+    MAX_USER_ATTACHMENT_BYTES as MAX_UPLOAD_BYTES, USER_ATTACHMENT_LIMIT_LABEL,
+};
 use studio_runtime_store::{
     AgentId, AgentRepository, RuntimeStore, StoreError, WorkspaceFilesRepository, sha256_hex,
 };
 use thiserror::Error;
 use uuid::Uuid;
-
-const MAX_UPLOAD_BYTES: usize = 20 * 1024 * 1024;
 
 #[derive(Debug, Error)]
 pub enum PayloadStoreError {
@@ -23,7 +24,7 @@ pub enum PayloadStoreError {
     InvalidData,
     #[error("Invalid filename")]
     InvalidFilename,
-    #[error("Files must contain 1 byte to 20 MiB")]
+    #[error("Files must contain 1 byte to {}", USER_ATTACHMENT_LIMIT_LABEL)]
     ContentLimit,
     #[error("This upload id has different content")]
     UploadConflict,

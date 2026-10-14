@@ -13,6 +13,7 @@ import {
   type PairReceipt,
 } from "./pairing";
 import type { StudioServer } from "./registry";
+import { ACCESS_PROTOCOL_VERSION } from "../generated/multiServerProtocol";
 type Credential = {
   inviteId?: string;
   id: string;
@@ -115,7 +116,7 @@ export class BrowserServerCredentials implements ServerCredentialAdapter {
       );
       const clientId = crypto.randomUUID();
       const body = JSON.stringify({
-        protocol: 1,
+        protocol: ACCESS_PROTOCOL_VERSION,
         inviteId: invitation.inviteId,
         token: invitation.token,
         clientId,
