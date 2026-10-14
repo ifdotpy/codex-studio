@@ -75,6 +75,7 @@ pub mod projects;
 pub mod provider_callbacks;
 pub(crate) mod provider_exchange;
 pub mod provider_session_task;
+pub mod provider_versions;
 pub mod questions_reads;
 pub mod questions_write;
 pub mod queue_write;
