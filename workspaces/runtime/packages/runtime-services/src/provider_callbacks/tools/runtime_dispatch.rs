@@ -187,8 +187,6 @@ pub(crate) trait StatusWatchPort: Send + Sync {
         request_id: &str,
         now: f64,
     ) -> Result<RulesActionResult, Error>;
-
-    fn cancel_monitor(&self, monitor_id: &str, owner: &str, now: f64) -> Result<(), Error>;
 }
 
 pub(crate) trait ChildCreationPort: Send + Sync {
@@ -222,18 +220,9 @@ pub(crate) trait InterruptPort: Send + Sync {
     ) -> Result<DispatchedOperation, Error>;
 }
 
-pub(crate) trait MonitorPort: Send + Sync {
-    fn create(
-        &self,
-        store: &RuntimeStore,
-        actor: &Actor,
-        args: &Value,
-        request_id: &str,
-        now: f64,
-    ) -> Result<OperationResult, Error>;
-
+pub(crate) trait MonitorInputPort: Send + Sync {
     /// The authenticated caller is explicit even though the retained native
-    /// runtime's legacy input method has no caller argument.
+    /// runtime's input method takes the owner from the persisted monitor.
     fn input(
         &self,
         store: &RuntimeStore,
@@ -243,9 +232,11 @@ pub(crate) trait MonitorPort: Send + Sync {
         ticket: &str,
         input: &Value,
         now: f64,
-    ) -> Result<DispatchedOperation, Error>;
+    ) -> Result<Value, Error>;
+}
 
-    fn cancel_monitor(&self, monitor_id: &str, owner: &str, now: f64) -> Result<(), Error>;
+pub(crate) trait MonitorCancelPort: Send + Sync {
+    fn cancel_monitor(&self, monitor_id: &str, owner: &str, now: f64) -> Result<Value, Error>;
 }
 
 #[derive(Clone)]
@@ -253,12 +244,14 @@ pub(crate) struct ManagedToolRuntimePorts {
     pub(crate) status_watch: Option<std::sync::Arc<dyn StatusWatchPort>>,
     pub(crate) child_creation: Option<std::sync::Arc<dyn ChildCreationPort>>,
     pub(crate) interrupt: Option<std::sync::Arc<dyn InterruptPort>>,
-    pub(crate) monitor: Option<std::sync::Arc<dyn MonitorPort>>,
+    pub(crate) monitor_input: Option<std::sync::Arc<dyn MonitorInputPort>>,
+    pub(crate) monitor_cancel: Option<std::sync::Arc<dyn MonitorCancelPort>>,
 }
 
 pub(super) fn dispatch(
     store: &RuntimeStore,
     actor: &Actor,
+    context: &crate::provider_callbacks::CallbackContext,
     tool: &str,
     args: &Value,
     request_id: &str,
@@ -283,7 +276,7 @@ pub(super) fn dispatch(
         }
         "orchestration_watch" => {
             let action = args["action"].as_str().unwrap_or("list");
-            if matches!(action, "pause" | "delete") && ports.monitor.is_none() {
+            if action != "list" && ports.monitor_cancel.is_none() {
                 return Ok(Some(not_sent(Error::Unavailable(
                     "monitor-runtime/rule-cancel",
                 ))));
@@ -295,7 +288,7 @@ pub(super) fn dispatch(
             };
             let result = port.rules(store, actor, args, request_id, now)?;
             for monitor_id in result.cancel_monitor_ids {
-                let Some(monitor_port) = ports.monitor.as_ref() else {
+                let Some(monitor_port) = ports.monitor_cancel.as_ref() else {
                     return Ok(Some(not_sent(Error::Unavailable(
                         "monitor-runtime/rule-cancel",
                     ))));
@@ -307,7 +300,7 @@ pub(super) fn dispatch(
         "orchestration_spawn" | "orchestration_review" => {
             let Some(port) = ports.child_creation.as_ref() else {
                 return Ok(Some(not_sent(Error::Unavailable(
-                    "agent-create/worker-driver",
+                    "agent-create/managed-environment",
                 ))));
             };
             let result = if tool == "orchestration_spawn" {
@@ -329,19 +322,16 @@ pub(super) fn dispatch(
                 .ok_or(Error::Invalid(
                     "Supply agent_id for orchestration_interrupt",
                 ))?;
-            port.stop_by_agent(store, actor, target, request_id, now)?
+            let target = super::services::resolve_interrupt_target(store, context, target)?;
+            port.stop_by_agent(store, actor, &target, request_id, now)?
         }
         "orchestration_monitor" if args["action"].as_str() != Some("cancel") => {
-            let Some(port) = ports.monitor.as_ref() else {
-                return Ok(Some(not_sent(Error::Unavailable(
-                    "monitor-runtime/managed-create",
-                ))));
-            };
-            let result = port.create(store, actor, args, request_id, now)?;
-            written(result.value, result.signals)
+            return Ok(Some(not_sent(Error::Unavailable(
+                "workspace-state/monitor-admission",
+            ))));
         }
         "orchestration_monitor_input" => {
-            let Some(port) = ports.monitor.as_ref() else {
+            let Some(port) = ports.monitor_input.as_ref() else {
                 return Ok(Some(not_sent(Error::Unavailable(
                     "monitor-runtime/managed-input",
                 ))));
@@ -353,7 +343,7 @@ pub(super) fn dispatch(
             let input: Value = serde_json::from_value(args.clone())
                 .map_err(|_| Error::Invalid("Invalid monitor input"))?;
             authorize_monitor_input(store, actor, monitor_id)?;
-            port.input(
+            match port.input(
                 store,
                 actor_id,
                 actor_epoch,
@@ -361,11 +351,37 @@ pub(super) fn dispatch(
                 request_id,
                 &input,
                 now,
-            )?
+            ) {
+                Ok(value) => written(value, Vec::new()),
+                Err(error) => match input_attempt(store, monitor_id, request_id) {
+                    Ok(Some(record)) => managed_input_receipt(&record, request_id)?,
+                    Ok(None) => not_sent(error),
+                    Err(_) => unknown_input(),
+                },
+            }
         }
         _ => return Ok(None),
     };
     Ok(Some(dispatched))
+}
+
+fn input_attempt(
+    store: &RuntimeStore,
+    monitor_id: &str,
+    request_id: &str,
+) -> Result<Option<Value>, Error> {
+    store
+        .read_transaction_with_error(|connection| {
+            let record = studio_runtime_store::MonitorsRepository::get(connection, monitor_id)?;
+            Ok(record.and_then(|record| {
+                let value = record.value();
+                [&value["lastInputAttempt"], &value["inputAttempt"]]
+                    .into_iter()
+                    .any(|receipt| receipt.get("id").and_then(Value::as_str) == Some(request_id))
+                    .then(|| value.clone())
+            }))
+        })
+        .map_err(Error::Store)
 }
 
 pub(crate) fn authorize_monitor_input(
@@ -450,6 +466,17 @@ fn not_sent(error: Error) -> DispatchedOperation {
         },
         certainty: DeliveryCertainty::NotSent,
         applied: Some(false),
+    }
+}
+
+fn unknown_input() -> DispatchedOperation {
+    DispatchedOperation {
+        result: OperationResult {
+            value: json!("Monitor input outcome unknown; do not repeat it"),
+            signals: Vec::new(),
+        },
+        certainty: DeliveryCertainty::Unknown,
+        applied: None,
     }
 }
 

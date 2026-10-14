@@ -334,6 +334,7 @@ fn empty_runtime_ports() -> crate::provider_callbacks::tools::ManagedToolRuntime
         status_watch: None,
         child_creation: None,
         interrupt: None,
-        monitor: None,
+        monitor_input: None,
+        monitor_cancel: None,
     }
 }

@@ -8,6 +8,8 @@ use studio_runtime_store::{RuntimeStore, system_reads as records};
 mod runtime_dispatch;
 pub(crate) mod services;
 pub(crate) use runtime_dispatch::{ManagedToolRuntimePorts, MonitorPort};
+#[cfg(test)]
+pub(crate) use runtime_dispatch::{MonitorCancelPort, MonitorInputPort};
 impl From<tool_requests::ToolRequestError> for CallbackError {
     fn from(error: tool_requests::ToolRequestError) -> Self {
         match error {

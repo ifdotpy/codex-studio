@@ -345,51 +345,54 @@ struct ScriptedMonitorPort {
     tickets: Mutex<Vec<String>>,
 }
 
-impl crate::provider_callbacks::MonitorPort for ScriptedMonitorPort {
-    fn create(
-        &self,
-        _: &RuntimeStore,
-        _: &Actor,
-        _: &Value,
-        _: &str,
-        _: f64,
-    ) -> Result<OperationResult, Error> {
-        Err(Error::Unavailable("test/unused-monitor-create"))
-    }
-
+impl crate::provider_callbacks::MonitorInputPort for ScriptedMonitorPort {
     fn input(
         &self,
-        _: &RuntimeStore,
+        store: &RuntimeStore,
         _: &str,
         _: i64,
-        _: &str,
+        monitor_id: &str,
         ticket: &str,
         _: &Value,
         _: f64,
-    ) -> Result<crate::managed_host_tools::DispatchedOperation, Error> {
+    ) -> Result<Value, Error> {
         self.calls.fetch_add(1, Ordering::SeqCst);
         self.tickets.lock().unwrap().push(ticket.to_owned());
-        Ok(crate::managed_host_tools::DispatchedOperation {
-            result: OperationResult {
-                value: json!({"ticket":ticket}),
-                signals: Vec::new(),
-            },
-            certainty: self.certainty,
-            applied: match self.certainty {
-                crate::managed_host_tools::DeliveryCertainty::Written => Some(true),
-                crate::managed_host_tools::DeliveryCertainty::NotSent => Some(false),
-                crate::managed_host_tools::DeliveryCertainty::Unknown => None,
-            },
-        })
+        match self.certainty {
+            crate::managed_host_tools::DeliveryCertainty::Written => Ok(json!({"ticket":ticket})),
+            crate::managed_host_tools::DeliveryCertainty::NotSent => {
+                Err(Error::Unavailable("test/input-not-sent"))
+            }
+            crate::managed_host_tools::DeliveryCertainty::Unknown => {
+                store.transaction_with(|tx| {
+                    let mut record = studio_runtime_store::system_reads::get(
+                        tx,
+                        "runtime_monitors",
+                        monitor_id,
+                    )?
+                    .ok_or(Error::Invalid("Unknown test monitor"))?;
+                    record["inputAttempt"] = json!({"id":ticket,"status":"pending"});
+                    tx.execute(
+                        "UPDATE runtime_monitors SET record=?1 WHERE id=?2",
+                        rusqlite::params![record.to_string(), monitor_id],
+                    )?;
+                    Ok::<_, Error>(())
+                })?;
+                Err(Error::Unavailable("test/input-unknown"))
+            }
+        }
     }
+}
 
-    fn cancel_monitor(&self, _: &str, _: &str, _: f64) -> Result<(), Error> {
-        Ok(())
+impl crate::provider_callbacks::MonitorCancelPort for ScriptedMonitorPort {
+    fn cancel_monitor(&self, _: &str, _: &str, _: f64) -> Result<Value, Error> {
+        Ok(Value::Null)
     }
 }
 
 fn managed_ports(
-    monitor: Option<Arc<dyn crate::provider_callbacks::MonitorPort>>,
+    monitor_input: Option<Arc<dyn crate::provider_callbacks::MonitorInputPort>>,
+    monitor_cancel: Option<Arc<dyn crate::provider_callbacks::MonitorCancelPort>>,
 ) -> ManagedToolPortsConfig {
     ManagedToolPortsConfig {
         wake: Arc::new(tokio::sync::Notify::new()),
@@ -398,7 +401,8 @@ fn managed_ports(
             status_watch: None,
             child_creation: None,
             interrupt: None,
-            monitor,
+            monitor_input,
+            monitor_cancel,
         },
     }
 }
@@ -438,7 +442,7 @@ fn managed_monitor_input_checks_owner_and_preserves_delivery_receipts_on_replay(
             &store,
             &context,
             &frame,
-            managed_ports(Some(fake.clone())),
+            managed_ports(Some(fake.clone()), Some(fake.clone())),
         )
         .unwrap();
         dispatch_with_managed_tools(&store, &context, &frame, 20.0, &ports).unwrap();
@@ -491,7 +495,7 @@ fn managed_monitor_input_checks_owner_and_preserves_delivery_receipts_on_replay(
         &store,
         &worker_context,
         &frame,
-        managed_ports(Some(fake.clone())),
+        managed_ports(Some(fake.clone()), Some(fake.clone())),
     )
     .unwrap();
     let _ = dispatch_with_managed_tools(&store, &worker_context, &frame, 20.0, &ports);
@@ -526,7 +530,7 @@ fn each_missing_managed_runtime_port_refuses_without_domain_writes() {
         (
             "orchestration_spawn",
             json!({"agents":[{"name":"W","prompt":"p"}]}),
-            "agent-create/worker-driver",
+            "agent-create/managed-environment",
         ),
         (
             "orchestration_interrupt",
@@ -536,12 +540,17 @@ fn each_missing_managed_runtime_port_refuses_without_domain_writes() {
         (
             "orchestration_monitor",
             json!({"command":"true"}),
-            "monitor-runtime/managed-create",
+            "workspace-state/monitor-admission",
         ),
         (
             "orchestration_monitor_input",
             json!({"monitor_id":"m","text":"x"}),
             "monitor-runtime/managed-input",
+        ),
+        (
+            "orchestration_watch",
+            json!({"action":"pause","id":"rule"}),
+            "monitor-runtime/rule-cancel",
         ),
     ];
     for (index, (tool, args, refusal)) in cases.into_iter().enumerate() {
@@ -552,7 +561,7 @@ fn each_missing_managed_runtime_port_refuses_without_domain_writes() {
             &store,
             &context,
             &frame,
-            managed_ports(None),
+            managed_ports(None, None),
         )
         .unwrap();
         let decision = dispatch_with_managed_tools(&store, &context, &frame, 20.0, &ports).unwrap();
@@ -814,12 +823,12 @@ fn named_refusals_leave_all_application_tables_unchanged() {
         (
             "orchestration_spawn",
             json!({"agents":[{"name":"Worker","prompt":"Task"}]}),
-            "provider-session/model-list",
+            "agent-create/managed-environment",
         ),
         (
             "orchestration_review",
             json!({"target":{"type":"uncommittedChanges"}}),
-            "provider-session/model-list",
+            "agent-create/managed-environment",
         ),
         (
             "orchestration_context",

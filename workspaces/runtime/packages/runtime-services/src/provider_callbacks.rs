@@ -77,7 +77,9 @@ pub trait ManagedCreationAccountRead: Send + Sync {
     ) -> Result<ManagedAccountIdentity, ManagedCreationAccountError>;
 }
 
-pub(crate) use tools::{ManagedToolRuntimePorts, MonitorPort};
+pub(crate) use tools::ManagedToolRuntimePorts;
+#[cfg(test)]
+pub(crate) use tools::{MonitorCancelPort, MonitorInputPort};
 
 pub(crate) struct ManagedToolPortsConfig {
     pub(crate) wake: std::sync::Arc<tokio::sync::Notify>,
@@ -144,7 +146,8 @@ pub(crate) fn managed_tool_ports_with_monitor_wake(
                 status_watch: None,
                 child_creation: None,
                 interrupt: None,
-                monitor: None,
+                monitor_input: None,
+                monitor_cancel: None,
             },
         },
     )

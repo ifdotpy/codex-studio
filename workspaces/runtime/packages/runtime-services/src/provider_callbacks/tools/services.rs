@@ -498,6 +498,7 @@ impl crate::managed_host_tools::PostCommitPort for ProductionPorts {
         super::runtime_dispatch::dispatch(
             store,
             actor,
+            &self.context,
             tool,
             args,
             request_id,
@@ -521,6 +522,32 @@ impl crate::managed_host_tools::PostCommitPort for ProductionPorts {
         }
         Ok(())
     }
+}
+
+pub(super) fn resolve_interrupt_target(
+    store: &studio_runtime_store::RuntimeStore,
+    context: &CallbackContext,
+    supplied: &str,
+) -> Result<String, crate::managed_host_tools::Error> {
+    store.transaction_with(|tx| {
+        let snapshot = super::super::storage::snapshot(tx, context)
+            .map_err(|_| crate::managed_host_tools::Error::Stale)?;
+        let target =
+            messages::resolve_agent(tx, &snapshot, supplied).map_err(|error| match error {
+                CallbackError::Store(error) => crate::managed_host_tools::Error::Store(error),
+                CallbackError::Stored(_) => crate::managed_host_tools::Error::Stale,
+                CallbackError::Invalid(message) => {
+                    crate::managed_host_tools::Error::Invalid(message)
+                }
+                _ => crate::managed_host_tools::Error::Invalid("Unknown managed agent"),
+            })?;
+        if !is_descendant(tx, &context.agent, &target)? {
+            return Err(crate::managed_host_tools::Error::Invalid(
+                "You can interrupt only your descendants",
+            ));
+        }
+        Ok(target)
+    })
 }
 
 impl From<event_write::EventWriteError> for CallbackError {
