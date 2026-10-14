@@ -41,6 +41,9 @@ ENTITY_TOMBSTONE_PRUNE_BATCH = 500
 ENTITY_TOMBSTONE_COUNT_KEY = "entity_tombstone_count"
 ENTITY_TOMBSTONE_FLOOR_KEY = "entity_tombstone_floor"
 MAX_MUTATION_SYNC_ENTITIES = 500
+# SQLite trigger schema owner for atomic event projection/window maintenance.
+ENTITY_EVENT_TRIGGER_PREFIX = "sync_entity_event"
+ENTITY_EVENT_INSERT_TRIGGER = ENTITY_EVENT_TRIGGER_PREFIX + "_INSERT"
 
 
 def entity_tombstone_prune_due(count: int) -> bool:
@@ -460,15 +463,60 @@ def register_functions(db: sqlite3.Connection) -> None:
                        lambda value: hashlib.sha256(value.encode("utf-8")).hexdigest())
 
 
-def install_bypass_triggers(db: sqlite3.Connection) -> None:
-    """Track direct runtime_events writes; Runtime.put owns all other DTO rows."""
-    for operation in ("INSERT", "UPDATE", "DELETE"):
-        old = operation == "DELETE"
-        record = "'{}'" if old else "json_object('id',NEW.id,'agent',NEW.agent,'kind',NEW.kind,'status',NEW.status,'created',NEW.created,'error',NEW.error)"
-        key = "OLD.id" if old else "NEW.id"
-        deleted = 1 if old else 0
-        payload = f"sync_entity_payload('event',{key},{record},{deleted})"
-        db.execute(f"""CREATE TRIGGER IF NOT EXISTS sync_entity_event_{operation}
+def event_window_statements(*, full: bool = False) -> tuple[str, str, str]:
+    """Own portable event-window SQL used by Python and generated Rust triggers.
+
+    EVENT_WINDOW remains owned by codex_entity_contracts. Row numbering gives
+    each projected/backfilled/tombstoned entity a distinct global sequence.
+    Only the two existing portable projection functions are required.
+    """
+    from codex_entity_contracts import EVENT_WINDOW
+    high = """(SELECT max(seq) FROM (
+        SELECT COALESCE(MAX(seq),0) seq FROM sync_entities UNION ALL
+        SELECT COALESCE(MAX(seq),0) FROM sync_documents UNION ALL
+        SELECT COALESCE(MAX(seq),0) FROM sync_versions))"""
+    recent = f"""SELECT id,agent,kind,status,created,error FROM runtime_events
+        ORDER BY created DESC,id LIMIT {EVENT_WINDOW}"""
+    raw = "json_object('id',e.id,'agent',e.agent,'kind',e.kind,'status',e.status,'created',e.created,'error',e.error)"
+    live_payload = f"sync_entity_payload('event',e.id,{raw},0)"
+    backfill = f"""INSERT INTO sync_entities(collection,id,seq,hash,payload,deleted)
+        SELECT 'event',e.id,{high}+ROW_NUMBER() OVER (ORDER BY e.created DESC,e.id),
+               sync_entity_hash({live_payload}),{live_payload},0
+        FROM ({recent}) e
+        WHERE {int(full)} OR NOT EXISTS (SELECT 1 FROM sync_entities s
+            WHERE s.collection='event' AND s.id=e.id AND s.deleted=0)
+        ON CONFLICT(collection,id) DO UPDATE SET
+            seq=excluded.seq,hash=excluded.hash,payload=excluded.payload,deleted=excluded.deleted
+        WHERE sync_entities.hash!=excluded.hash OR sync_entities.deleted!=excluded.deleted"""
+    dead_payload = "sync_entity_payload('event',s.id,'{}',1)"
+    retire = f"""INSERT INTO sync_entities(collection,id,seq,hash,payload,deleted)
+        SELECT 'event',s.id,{high}+ROW_NUMBER() OVER (ORDER BY s.id),
+               sync_entity_hash({dead_payload}),{dead_payload},1
+        FROM sync_entities s
+        WHERE s.collection='event' AND s.deleted=0
+          AND s.id NOT IN (SELECT id FROM ({recent}))
+        ON CONFLICT(collection,id) DO UPDATE SET
+            seq=excluded.seq,hash=excluded.hash,payload=excluded.payload,deleted=excluded.deleted
+        WHERE sync_entities.hash!=excluded.hash OR sync_entities.deleted!=excluded.deleted"""
+    marker = """INSERT INTO sync_entity_meta(key,value)
+        VALUES('event_window_seq',CAST((SELECT COALESCE(MAX(seq),0) FROM sync_entities
+            WHERE collection='event') AS TEXT))
+        ON CONFLICT(key) DO UPDATE SET value=excluded.value
+        WHERE sync_entity_meta.value!=excluded.value"""
+    return backfill, retire, marker
+
+
+def event_trigger_sql(operation: str) -> str:
+    """Generate one event trigger; the Rust stored SQL is a checked consumer."""
+    if operation not in ('INSERT', 'UPDATE', 'DELETE'):
+        raise ValueError('Invalid event trigger operation')
+    old = operation == 'DELETE'
+    record = "'{}'" if old else "json_object('id',NEW.id,'agent',NEW.agent,'kind',NEW.kind,'status',NEW.status,'created',NEW.created,'error',NEW.error)"
+    key = 'OLD.id' if old else 'NEW.id'
+    deleted = int(old)
+    payload = f"sync_entity_payload('event',{key},{record},{deleted})"
+    statements = ';\n'.join(event_window_statements())
+    return f"""CREATE TRIGGER IF NOT EXISTS {ENTITY_EVENT_TRIGGER_PREFIX}_{operation}
           AFTER {operation} ON runtime_events BEGIN
           INSERT INTO sync_entities(collection,id,seq,hash,payload,deleted)
           VALUES ('event',{key},(SELECT max(seq)+1 FROM (
@@ -479,7 +527,23 @@ def install_bypass_triggers(db: sqlite3.Connection) -> None:
           ON CONFLICT(collection,id) DO UPDATE SET
             seq=excluded.seq,hash=excluded.hash,payload=excluded.payload,deleted=excluded.deleted
           WHERE sync_entities.hash!=excluded.hash OR sync_entities.deleted!=excluded.deleted;
-        END""")
+          {statements};
+        END"""
+
+
+def install_bypass_triggers(db: sqlite3.Connection) -> None:
+    """Keep direct event SQL writes and their exact bounded projection atomic."""
+    for operation in ('INSERT', 'UPDATE', 'DELETE'):
+        # Retire the intermediate Python-only callback trigger if a development
+        # state was prepared with it. Both runtimes keep the portable names.
+        db.execute(f"DROP TRIGGER IF EXISTS sync_entity_event_window_v2_{operation}")
+        expected = event_trigger_sql(operation)
+        row = db.execute('SELECT sql FROM sqlite_master WHERE type=\'trigger\' AND name=?',
+                         (f'{ENTITY_EVENT_TRIGGER_PREFIX}_{operation}',)).fetchone()
+        if row and row[0] == expected.replace("CREATE TRIGGER IF NOT EXISTS", "CREATE TRIGGER", 1):
+            continue
+        db.execute(f'DROP TRIGGER IF EXISTS {ENTITY_EVENT_TRIGGER_PREFIX}_{operation}')
+        db.execute(expected)
 
 
 def _ensure_sequence_transaction(db: sqlite3.Connection) -> None:
@@ -888,38 +952,20 @@ def seed(db: sqlite3.Connection, runtime_owner: "Runtime | None" = None,
 
 
 def sync_event_window(db: sqlite3.Connection, *, full: bool = True) -> int:
-    """Materialize the shared bounded event window.
-
-    The runtime_events triggers project every inserted or changed event with
-    the same DTO projection as put(). Without `full`, only window events that
-    have no live entity are projected again; a full pass also repairs rows
-    left by older versions. Both passes retire events that left the window.
-    """
+    """Run the portable writer-owned event-window SQL during startup repair."""
     if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='runtime_events'").fetchone():
         return 0
     changed = db.execute("SELECT COALESCE(MAX(seq),0) FROM sync_entities WHERE collection='event'").fetchone()[0]
     marker = db.execute("SELECT value FROM sync_entity_meta WHERE key='event_window_seq'").fetchone()
-    if marker and int(marker[0]) == changed:
+    if not full and marker and int(marker[0]) == changed:
         return 0
-    recent = event_records(db)
-    live = {str(key) for (key,) in db.execute(
-        "SELECT id FROM sync_entities WHERE collection='event' AND deleted=0")}
-    selected: set[str] = set()
-    for record in recent:
-        key = record.get("id")
-        if not isinstance(key, str) or not key:
-            _report_bad_entity("event", "", ValueError("event record has no valid id"))
-            continue
-        selected.add(key)
-        if full or key not in live:
-            put(db, "event", key, record)
-    stale = sorted(live - selected)
-    for key in stale:
-        put(db, "event", key, {}, deleted=True)
-    final_seq = db.execute("SELECT COALESCE(MAX(seq),0) FROM sync_entities WHERE collection='event'").fetchone()[0]
-    db.execute("INSERT INTO sync_entity_meta(key,value) VALUES('event_window_seq',?) "
-               "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (str(final_seq),))
-    return len(stale)
+    register_functions(db)
+    backfill, retire, stamp = event_window_statements(full=full)
+    _ensure_sequence_transaction(db)
+    db.execute(backfill)
+    retired = db.execute(retire).rowcount
+    db.execute(stamp)
+    return retired
 
 
 def _recent_monitor_records(db: sqlite3.Connection) -> list[Any]:

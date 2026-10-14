@@ -274,9 +274,10 @@ by the core schema before bootstrap. Transcript item triggers are created when
 `runtime_items` exists. Event triggers use the registered
 `sync_entity_payload` and `sync_entity_hash` connection functions. Legacy
 triggers with the literal, case-sensitive `sync_watch_` prefix are removed.
-The DDL text matches the current Python producer's stored index and trigger
-SQL; first opens of both a Python-prepared database and the committed live-state
-fixture replace zero derived objects.
+The event trigger SQL is generated from the Python projection contract. A
+current Python-prepared database opens without replacing derived objects. The
+committed older live-state fixture upgrades its three event triggers atomically
+while preserving its source records and sync rows.
 
 ### What the table check does and does not establish
 

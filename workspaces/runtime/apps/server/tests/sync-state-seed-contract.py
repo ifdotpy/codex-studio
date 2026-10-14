@@ -185,6 +185,7 @@ class CanvasChatSeedContract(unittest.TestCase):
                         "SELECT id,seq FROM sync_entities WHERE collection='agent'")}
                 canvas.runtime = runtime
                 self.assertIs(context.sync(), store)
+                store.prepare_runtime()
                 store.pull("state:entities:v1", fresh=True, reset_support=True)
                 self.assertIs(store.runtime, runtime)
                 with runtime.db() as db:
@@ -529,7 +530,7 @@ class CanvasChatSeedContract(unittest.TestCase):
             canvas = Canvas(Path(directory))
             store = SyncStore(canvas.connect, canvas.transcript, canvas=canvas)
             with canvas.connect() as db:
-                db.execute("INSERT INTO sync_entity_meta(key,value) VALUES('seeded','1')")
+                db.execute("INSERT OR REPLACE INTO sync_entity_meta(key,value) VALUES('seeded','1')")
                 db.execute("INSERT INTO sync_entity_meta(key,value) VALUES('agent_organization_fields','3')")
                 db.execute("INSERT INTO sync_entities(collection,id,seq,hash,payload,deleted) "
                            "VALUES('agent','broken',999,'bad','{',0)")
@@ -543,9 +544,10 @@ class CanvasChatSeedContract(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="sync-state-page-corrupt-") as directory:
             canvas = Canvas(Path(directory))
             store = SyncStore(canvas.connect, canvas.transcript, canvas=canvas)
+            boot_ids = {row["id"] for row in store.pull("state:entities:v1", fresh=True)["documents"]}
             with canvas.connect() as db:
                 from codex_sync_entities import put
-                db.execute("INSERT INTO sync_entity_meta(key,value) VALUES('seeded','1')")
+                db.execute("INSERT OR REPLACE INTO sync_entity_meta(key,value) VALUES('seeded','1')")
                 db.execute("INSERT INTO sync_entity_meta(key,value) VALUES('agent_organization_fields','3')")
                 for index in range(10):
                     put(db, "rule", f"rule-{index}", {"id": f"rule-{index}", "name": f"Rule {index}"})
@@ -559,7 +561,7 @@ class CanvasChatSeedContract(unittest.TestCase):
                 if checkpoint == after or checkpoint >= page["maxSeq"]:
                     break
                 after = checkpoint
-            self.assertEqual(received, {f"entity:rule:rule-{index}" for index in range(10) if index != 1})
+            self.assertEqual(received, boot_ids | {f"entity:rule:rule-{index}" for index in range(10) if index != 1})
 
     def test_fresh_seed_does_not_create_never_visible_tombstones(self):
         fixture = runtime_fixture()

@@ -232,7 +232,13 @@ mod tests {
         };
 
         let info = file_info("link.md", Some(&context.cwd)).expect("metadata reads");
-        assert_eq!(info.path, target.to_string_lossy());
+        assert_eq!(
+            info.path,
+            target
+                .canonicalize()
+                .expect("target resolves")
+                .to_string_lossy()
+        );
         assert_eq!(info.name, "outside.md");
         assert_eq!(info.size, 7);
         assert_eq!(info.mime, "text/markdown");

@@ -252,6 +252,8 @@ class BoundServer:
         self, poll_interval: float = 0.5, *, shutdown_requested: Callable[[], bool] | None = None,
     ) -> None:
         del poll_interval  # Uvicorn runs the event loop and polling itself.
+        if not self.context.schema_only:
+            self.context.sync().prepare_runtime()
         self.server.shutdown_requested = shutdown_requested
         asyncio.run(self.server.serve(sockets=[self.socket]))
 

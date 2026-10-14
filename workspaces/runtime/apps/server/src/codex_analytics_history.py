@@ -626,7 +626,7 @@ class AnalyticsHistoryMixin:
         key = a["id"] + ":" + a.get("accountKey", "default") + ":" + a["threadId"]
         with self.analytics_history_db() as db:
             if hasattr(self, "analytics_db"):
-                budget_advanced = migrate_budget_usage(db, a, budget_db=self.db())
+                budget_advanced = migrate_budget_usage(db, a, budget_db=self.write_db())
             else:
                 budget_advanced = migrate_budget_usage(db, a)
             row = db.execute("SELECT record FROM analytics_history WHERE id=?", (key,)).fetchone()
@@ -767,20 +767,23 @@ class AnalyticsHistoryMixin:
                         collected.append((action, dict(context), measurements))
             budget_values = {}
             if hasattr(self, 'analytics_db'):
-                # Native callbacks take the runtime writer before analytics.
-                # Save exact budget receipts in that order before analytics SQL.
-                for index, ((action, method, p, at), event_context, _) in enumerate(collected):
-                    if action != 'event' or method != 'thread/tokenUsage/updated':
-                        continue
-                    event_agent = {**a, 'turnId': event_context.get('turnId'),
-                                   'model': event_context.get('model'), 'effort': event_context.get('effort')}
-                    with self.lock, self.db() as budget_db:
+                usage_records = [(index, entry) for index, entry in enumerate(collected)
+                                 if entry[0][:2] == ('event', 'thread/tokenUsage/updated')]
+                if usage_records:
+                    # One bounded page owns one FULL commit. Writer admission
+                    # waits outside Runtime.lock; application and commit keep
+                    # its protection against whole-record lifecycle updates.
+                    # Receipts remain durable before analytics advances its checkpoint.
+                    with self.write_db() as budget_db:
                         current = self.agent(a['id'], budget_db)
                         if (current.get('threadId') != a['threadId']
                                 or current.get('accountKey', 'default') != a.get('accountKey', 'default')):
                             return False
-                        budget_values[index] = budget_capture(
-                            budget_db, event_agent, p, at=at, source='rollout')
+                        for index, ((_, _, p, at), event_context, _) in usage_records:
+                            event_agent = {**a, 'turnId': event_context.get('turnId'),
+                                           'model': event_context.get('model'), 'effort': event_context.get('effort')}
+                            budget_values[index] = budget_capture(
+                                budget_db, event_agent, p, at=at, source='rollout')
             with self.analytics_history_db() as db:
                 current = self.agent(a["id"], db)
                 if current.get("threadId") != a["threadId"] or current.get("accountKey", "default") != a.get("accountKey", "default"):

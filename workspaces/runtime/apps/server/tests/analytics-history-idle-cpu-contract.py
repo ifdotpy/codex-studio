@@ -118,6 +118,22 @@ class IdleHistoryCpu(unittest.TestCase):
             self.assertFalse(history.migrate_budget_usage(db, self.agent, budget_db=unopened()))
         self.assertEqual(entered, [])
 
+    def test_history_migration_retains_lifecycle_lock_during_budget_application(self):
+        self.add_usage('migrated-with-lifecycle-lock', 35)
+        self.reset_migration()
+        captures = []
+        original = history.budget_capture
+
+        def capture(db, agent, payload, **options):
+            captures.append(payload.get('responseId'))
+            self.assertTrue(self.runtime.lock._is_owned())
+            return original(db, agent, payload, **options)
+
+        with patch.object(history, 'budget_capture', side_effect=capture):
+            self.assertTrue(self.runtime.analytics_history_step())
+        self.assertIn('migrated-with-lifecycle-lock', captures)
+        self.assertEqual(self.budget()[0]['spent'], 135)
+
     def test_nonempty_page_commits_budget_before_analytics_checkpoint(self):
         self.add_usage('new-exact-response', 35)
         self.reset_migration()

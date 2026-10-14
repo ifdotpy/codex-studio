@@ -1,4 +1,8 @@
-"""Durable token admission. Call helpers under Runtime.lock and its transaction.
+"""Durable token admission under Runtime.lock and its SQLite write transaction.
+
+History captures reserve the SQLite writer before Runtime.lock, then keep both
+through application and commit. The lifecycle lock protects budget fields from
+whole-record updates that read an agent before taking the SQLite writer.
 
 Response IDs identify charges. Notice counters are provisional observations, not
 additional charges. The initial lifetime floor covers historical imports.
