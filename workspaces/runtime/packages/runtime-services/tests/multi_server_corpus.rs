@@ -441,11 +441,12 @@ fn browser_callback_matches_python_and_replays_without_second_loopback_relay() {
     use std::io::{Read, Write};
     use std::net::TcpListener;
     use std::sync::Arc;
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
     use studio_runtime_services::multi_server_auth::{AccessError, refused};
     use studio_runtime_services::multi_server_orchestration::{
-        OrchestrationDriver, PairedTransport, RuntimeOrchestrationEffects,
+        ExchangeOutcome, OrchestrationDriver, PairedTransport, RuntimeOrchestrationEffects,
     };
+    const CALLBACK_FIXTURE_TIMEOUT: Duration = Duration::from_secs(2);
     struct NoTransport;
     impl PairedTransport for NoTransport {
         fn exchange(&self, _: &str, _: &Value, _: Duration) -> Result<Value, AccessError> {
@@ -462,15 +463,37 @@ fn browser_callback_matches_python_and_replays_without_second_loopback_relay() {
     .to_string();
     let listener = TcpListener::bind("127.0.0.1:0").expect("loopback callback fixture");
     let port = listener.local_addr().unwrap().port();
+    listener.set_nonblocking(true).expect("nonblocking fixture");
     let relay = std::thread::spawn(move || {
-        let (mut stream, _) = listener.accept().expect("one callback relay");
-        let mut request = [0; 1024];
-        let count = stream.read(&mut request).expect("callback request");
-        assert!(
-            String::from_utf8_lossy(&request[..count])
-                .starts_with("GET /callback?code=ok HTTP/1.1")
-        );
-        stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 9\r\nConnection: close\r\n\r\nsigned in").expect("callback response");
+        let deadline = Instant::now() + CALLBACK_FIXTURE_TIMEOUT;
+        let mut calls = 0;
+        while Instant::now() < deadline {
+            match listener.accept() {
+                Ok((mut stream, _)) => {
+                    calls += 1;
+                    stream
+                        .set_read_timeout(Some(CALLBACK_FIXTURE_TIMEOUT))
+                        .expect("bounded callback read");
+                    stream
+                        .set_write_timeout(Some(CALLBACK_FIXTURE_TIMEOUT))
+                        .expect("bounded callback write");
+                    let mut request = [0; 1024];
+                    let count = stream.read(&mut request).expect("callback request");
+                    assert!(
+                        String::from_utf8_lossy(&request[..count])
+                            .starts_with("GET /callback?code=ok HTTP/1.1")
+                    );
+                    stream
+                        .write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 9\r\nConnection: close\r\n\r\nsigned in")
+                        .expect("callback response");
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                Err(error) => panic!("bounded loopback accept failed: {error}"),
+            }
+        }
+        calls
     });
     let (_root, store) = store();
     let mut record = json!({"id":request_id,"method":"browser/open","status":"answered","params":{"bridgeId":bridge_id,"forward":{"tokenHash":""},"redirect":{"host":"127.0.0.1","port":port}}});
@@ -507,12 +530,6 @@ fn browser_callback_matches_python_and_replays_without_second_loopback_relay() {
         .receive("peer-server", &envelope, 101)
         .expect("cached callback receipt");
     assert_eq!(first, replay);
-    relay.join().expect("local relay server");
-
-    use studio_runtime_services::multi_server_orchestration::{
-        OrchestrationEffects, RuntimeOrchestrationEffects as Effects,
-    };
-    let effects = Effects::new(Arc::clone(&store));
     for (label, payload, status) in [
         (
             "wrongToken",
@@ -526,12 +543,19 @@ fn browser_callback_matches_python_and_replays_without_second_loopback_relay() {
         ),
     ] {
         let request = json!({"requestId":format!("browser-{label}"),"action":"browser_callback","payload":payload});
-        let before = rows(&store);
-        let error = effects
-            .execute("peer-server", &request)
-            .expect_err("callback refused");
-        assert_eq!(error.status(), status);
-        assert_eq!(rows(&store), before, "{label} refusal has no writes");
+        let receipt = driver
+            .receive("peer-server", &request, 102)
+            .expect("definite callback refusal is returned as a receipt");
+        let ExchangeOutcome::NotApplied(message) = &receipt else {
+            panic!("{label} must remain a definite refusal: {receipt:?}");
+        };
+        assert!(!message.is_empty(), "{label} refusal names its cause");
+        assert_eq!(
+            driver
+                .receive("peer-server", &request, 103)
+                .expect("refusal receipt is idempotently replayed"),
+            receipt
+        );
         assert_eq!(
             expected[label]["refused"],
             if status == 403 {
@@ -540,7 +564,20 @@ fn browser_callback_matches_python_and_replays_without_second_loopback_relay() {
                 "ValueError"
             }
         );
+        let connection = store.read().expect("saved request remains readable");
+        let saved: String = connection
+            .query_row(
+                "SELECT record FROM runtime_requests WHERE id=?1",
+                [&request_id],
+                |row| row.get(0),
+            )
+            .expect("wrong and unknown bridge attempts do not modify saved request");
+        assert_eq!(
+            serde_json::from_str::<Value>(&saved).expect("saved callback JSON"),
+            record
+        );
     }
+    assert_eq!(relay.join().expect("bounded local relay server"), 1);
 }
 
 #[test]

@@ -987,10 +987,13 @@ impl OrchestrationDriver {
         if let DeliveryDecision::Return(result) = decision {
             return Ok(result);
         }
-        let result = self
-            .effects
-            .execute(principal, &envelope.value())
-            .unwrap_or(ExchangeOutcome::Unknown);
+        let result = match self.effects.execute(principal, &envelope.value()) {
+            Ok(result) => result,
+            Err(error) if envelope.action == "browser_callback" && error.status() < 500 => {
+                ExchangeOutcome::NotApplied(error.to_string())
+            }
+            Err(_) => ExchangeOutcome::Unknown,
+        };
         if result.to_value(&envelope.key).to_string().len() > MAX_RESPONSE_BYTES {
             self.finish(
                 "inbox",

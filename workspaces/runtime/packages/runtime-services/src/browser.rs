@@ -42,6 +42,7 @@ const MAX_HEADER_COUNT: usize = HEAD_LIMIT / 4;
 const BODY_LIMIT: usize = 256 * 1024;
 const BODY_BASE64_LIMIT: usize = BODY_LIMIT.div_ceil(3) * 4;
 const HEADER_LIMIT: usize = 1024;
+const CALLBACK_DELIVERY_TIMEOUT: Duration = Duration::from_secs(20);
 const SENT_HEADERS: [&str; 3] = ["user-agent", "accept", "accept-language"];
 const SANDBOX: &str = "sandbox; default-src 'none'; style-src 'unsafe-inline'; img-src data:";
 const REMOTE_ACTION: &str = "browser_callback";
@@ -321,13 +322,45 @@ impl BrowserCallbackReceiver {
                 "The sign-in redirect is not local",
             ));
         }
-        let headers = payload.get("headers").and_then(Value::as_object);
+        BrowserForwarder::deliver_local_callback(
+            host,
+            port as u16,
+            target,
+            payload.get("headers").and_then(Value::as_object),
+        )
+    }
+}
+
+impl crate::multi_server_orchestration::BrowserCallbackEffect for BrowserCallbackReceiver {
+    fn receive(&self, envelope: &Value) -> Result<Value, crate::multi_server_auth::AccessError> {
+        self.receive(&envelope["payload"])
+    }
+}
+
+impl BrowserForwarder {
+    pub fn new(exchange: Arc<dyn PairedExchange>) -> Self {
+        Self {
+            exchange,
+            forwards: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// Deliver a verified peer redirect to the saved local browser listener.
+    /// This is the inverse direction of the paired listener relay, but shares
+    /// its bounded HTTP request and response mapping here.
+    fn deliver_local_callback(
+        host: &str,
+        port: u16,
+        target: &str,
+        headers: Option<&Map<String, Value>>,
+    ) -> Result<Value, crate::multi_server_auth::AccessError> {
+        use crate::multi_server_auth::refused;
         let url_host = if host == "::1" { "[::1]" } else { host };
         let url = format!("http://{url_host}:{port}{target}");
         let config = ureq::Agent::config_builder()
             .http_status_as_error(false)
             .max_redirects(0)
-            .timeout_global(Some(Duration::from_secs(20)))
+            .timeout_global(Some(CALLBACK_DELIVERY_TIMEOUT))
             .build();
         let agent = ureq::Agent::new_with_config(config);
         let mut request = agent.get(&url);
@@ -353,7 +386,7 @@ impl BrowserCallbackReceiver {
         let content_type = response
             .headers()
             .get("content-type")
-            .and_then(|v| v.to_str().ok())
+            .and_then(|value| value.to_str().ok())
             .unwrap_or("text/html; charset=utf-8")
             .to_owned();
         let body = response
@@ -376,21 +409,6 @@ impl BrowserCallbackReceiver {
             )
         })?;
         Ok(json!({"status":status,"contentType":content_type,"body":body,"done":true}))
-    }
-}
-
-impl crate::multi_server_orchestration::BrowserCallbackEffect for BrowserCallbackReceiver {
-    fn receive(&self, envelope: &Value) -> Result<Value, crate::multi_server_auth::AccessError> {
-        self.receive(&envelope["payload"])
-    }
-}
-
-impl BrowserForwarder {
-    pub fn new(exchange: Arc<dyn PairedExchange>) -> Self {
-        Self {
-            exchange,
-            forwards: Mutex::new(HashMap::new()),
-        }
     }
 
     pub async fn open(
