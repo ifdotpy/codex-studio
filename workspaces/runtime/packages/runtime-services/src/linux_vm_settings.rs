@@ -2,6 +2,10 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
+#[cfg(target_os = "macos")]
+use std::process::{Command, Stdio};
+#[cfg(target_os = "macos")]
+use std::thread;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
@@ -12,6 +16,8 @@ use crate::linux_vm_guest::{GuestError, GuestRpc};
 
 const GIB: u64 = 1024 * 1024 * 1024;
 const CONTROL_TIMEOUT: Duration = Duration::from_secs(5);
+#[cfg(target_os = "macos")]
+const MACOS_MEMORY_COMMAND_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -24,8 +30,8 @@ pub struct VmSettings {
 
 #[derive(Debug, Error)]
 pub enum SettingsError {
-    #[error("Invalid VM settings: {0}")]
-    Invalid(&'static str),
+    #[error("{0}")]
+    Invalid(String),
     #[error("Stop the Linux VM before changing its resource limits.")]
     Running,
     #[error("VM disks cannot shrink. Keep the existing disk limit.")]
@@ -49,29 +55,105 @@ impl VmSettings {
     }
 
     pub fn validate(self) -> Result<Self, SettingsError> {
-        let cpus = host_logical_cpu_count();
-        if self.cpus == 0 || self.cpus > cpus {
+        #[cfg(target_os = "macos")]
+        let macos_memory_bytes = Some(read_macos_host_memory_bytes()?);
+        #[cfg(not(target_os = "macos"))]
+        let macos_memory_bytes = None;
+        self.validate_for_host(host_logical_cpu_count(), macos_memory_bytes)
+    }
+
+    /// Validate with host limits; `Some` models Darwin's `hw.memsize` check.
+    /// This also keeps the sysctl boundary replaceable in cross-platform corpus tests.
+    pub fn validate_for_host(
+        self,
+        host_cpus: u64,
+        macos_memory_bytes: Option<u64>,
+    ) -> Result<Self, SettingsError> {
+        if self.cpus == 0 || self.cpus > host_cpus {
             return Err(SettingsError::Invalid(
-                "CPU count must be between 1 and the host CPU count",
+                "VM CPU count exceeds the available host CPUs.".to_owned(),
             ));
         }
         if !(GIB..=64 * GIB).contains(&self.memory_bytes) {
             return Err(SettingsError::Invalid(
-                "Memory must be between 1 and 64 GiB",
+                "VM memory must be between 1 and 64 GiB.".to_owned(),
             ));
+        }
+        if let Some(host_memory) = macos_memory_bytes {
+            let limit = macos_memory_limit(host_memory);
+            if self.memory_bytes > limit {
+                return Err(SettingsError::Invalid(format!(
+                    "VM memory must leave macOS enough memory: at most {:.1} GiB on this Mac.",
+                    limit as f64 / GIB as f64
+                )));
+            }
         }
         if !(8 * GIB..=128 * GIB).contains(&self.system_disk_bytes) {
             return Err(SettingsError::Invalid(
-                "System disk must be between 8 and 128 GiB",
+                "VM system disk must be between 8 and 128 GiB.".to_owned(),
             ));
         }
         if !(8 * GIB..=1024 * GIB).contains(&self.data_disk_bytes) {
             return Err(SettingsError::Invalid(
-                "Data disk must be between 8 and 1024 GiB",
+                "VM data disk must be between 8 and 1024 GiB.".to_owned(),
             ));
         }
         Ok(self)
     }
+}
+
+/// Python's codex_linux_vm.memory_limit formula, in bytes.
+pub const fn macos_memory_limit(host_memory_bytes: u64) -> u64 {
+    let three_quarters = host_memory_bytes.saturating_mul(3) / 4;
+    let half = host_memory_bytes / 2;
+    let leave_eight_gib = host_memory_bytes.saturating_sub(8 * GIB);
+    let retained_host_memory = if half > leave_eight_gib {
+        half
+    } else {
+        leave_eight_gib
+    };
+    if three_quarters < retained_host_memory {
+        three_quarters
+    } else {
+        retained_host_memory
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn read_macos_host_memory_bytes() -> Result<u64, SettingsError> {
+    let mut child = Command::new("sysctl")
+        .args(["-n", "hw.memsize"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(SettingsError::Io)?;
+    let deadline = std::time::Instant::now() + MACOS_MEMORY_COMMAND_TIMEOUT;
+    loop {
+        match child.try_wait().map_err(SettingsError::Io)? {
+            Some(status) if status.success() => break,
+            Some(_) => {
+                return Err(SettingsError::Invalid(
+                    "Could not read macOS host memory.".to_owned(),
+                ));
+            }
+            None if std::time::Instant::now() < deadline => {
+                thread::sleep(Duration::from_millis(10));
+            }
+            None => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(SettingsError::Invalid(
+                    "Reading macOS host memory exceeded its timeout.".to_owned(),
+                ));
+            }
+        }
+    }
+    let output = child.wait_with_output().map_err(SettingsError::Io)?;
+    String::from_utf8_lossy(&output.stdout)
+        .trim()
+        .parse::<u64>()
+        .map_err(|_| SettingsError::Invalid("Could not read macOS host memory.".to_owned()))
 }
 
 fn host_logical_cpu_count() -> u64 {
@@ -121,6 +203,26 @@ pub fn set_settings(
     control: &dyn GuestRpc,
 ) -> Result<VmSettings, SettingsError> {
     let settings = settings.validate()?;
+    set_validated_settings(vm_dir, settings, control)
+}
+
+/// The `set_settings` path with an injected Darwin host-memory result.
+/// Callers normally use `set_settings`; this entry makes the sysctl boundary testable.
+pub fn set_settings_with_macos_memory(
+    vm_dir: &Path,
+    settings: VmSettings,
+    control: &dyn GuestRpc,
+    host_memory_bytes: u64,
+) -> Result<VmSettings, SettingsError> {
+    let settings = settings.validate_for_host(host_logical_cpu_count(), Some(host_memory_bytes))?;
+    set_validated_settings(vm_dir, settings, control)
+}
+
+fn set_validated_settings(
+    vm_dir: &Path,
+    settings: VmSettings,
+    control: &dyn GuestRpc,
+) -> Result<VmSettings, SettingsError> {
     let current_status = status(vm_dir, control)?;
     if current_status["state"].as_str() != Some("stopped") {
         return Err(SettingsError::Running);

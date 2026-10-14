@@ -4,6 +4,8 @@ import sqlite3
 import sys
 import threading
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "turn_lifecycle"))
 from oracle_guard import install_guard
@@ -11,7 +13,7 @@ from oracle_guard import install_guard
 install_guard(block_processes=True)
 sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "apps/server/src"))
 
-from codex_linux_vm import Client
+from codex_linux_vm import Client, LinuxVMError
 from codex_runtime import Runtime
 import codex_linux_workspaces
 import codex_linux_vm_share
@@ -78,6 +80,31 @@ def main(state_dir, choice):
     state_dir = Path(state_dir)
     vm_dir = state_dir / "linux-vm"
     vm = Client(state_dir=vm_dir)
+    if choice == "memory-ceiling":
+        before = (vm_dir / "settings.json").read_text()
+        try:
+            with patch("codex_linux_vm.platform.system", return_value="Darwin"), \
+                    patch("codex_linux_vm._run", return_value=str(16 * 1024 ** 3)):
+                vm.set_settings({"cpus": 1, "memoryBytes": 9 * 1024 ** 3,
+                                 "systemDiskBytes": 16 * 1024 ** 3,
+                                 "dataDiskBytes": 128 * 1024 ** 3})
+        except LinuxVMError as error:
+            return {"error": str(error), "settingsBefore": json.loads(before),
+                    "settingsAfter": json.loads((vm_dir / "settings.json").read_text())}
+        raise AssertionError("Python accepted settings above its Darwin memory ceiling")
+    if choice == "write-space-preflight":
+        preflights = []
+        for method in ("project.import", "line.branch", "upload.begin", "upload.commit", "sync.push"):
+            with patch("codex_linux_vm.shutil.disk_usage", return_value=SimpleNamespace(free=0)):
+                with patch.object(vm, "_channel") as channel:
+                    try:
+                        list(vm.stream(method, {"agentId": "agent-1"}, request_id=f"request-{method}"))
+                    except LinuxVMError as error:
+                        preflights.append({"method": method, "error": str(error),
+                                           "channelOpened": channel.called})
+                    else:
+                        raise AssertionError(f"Python accepted {method} below its free-space floor")
+        return {"preflights": preflights}
     settings_read = vm.get_settings()
     settings_set = vm.set_settings({"cpus": 1, "memoryBytes": 4294967296,
                                     "systemDiskBytes": 17179869184,

@@ -6,6 +6,7 @@
 
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use serde_json::{Map, Value};
@@ -21,6 +22,22 @@ pub const GUEST_EXEC_TIMEOUT_SECONDS: u64 = 9_000;
 pub const GUEST_CONNECT_TIMEOUT_SECONDS: u64 = 15;
 const BUFFER_READ_BYTES: usize = 65_536;
 const REQUEST_ID_MAX_CHARS: usize = 128;
+const DEFAULT_AGENT_MIN_FREE_BYTES: u64 = 5 * 1024 * 1024 * 1024;
+const AGENT_MIN_FREE_BYTES_ENV: &str = "CODEX_WORKSPACE_AGENT_MIN_FREE_BYTES";
+
+/// Host-disk query used before guest writes that can consume substantial VM disk space.
+pub trait GuestSpaceProbe: Send + Sync {
+    fn free_bytes(&self, path: &Path) -> std::io::Result<u64>;
+}
+
+struct HostGuestSpaceProbe;
+
+impl GuestSpaceProbe for HostGuestSpaceProbe {
+    fn free_bytes(&self, path: &Path) -> std::io::Result<u64> {
+        let stats = nix::sys::statvfs::statvfs(path).map_err(std::io::Error::other)?;
+        Ok((stats.blocks_free() as u64).saturating_mul(stats.fragment_size() as u64))
+    }
+}
 
 /// Error from connecting to the guest or exchanging one RPC.
 #[derive(Debug, Error)]
@@ -29,6 +46,8 @@ pub enum GuestError {
     InvalidRequest,
     #[error("could not create Linux VM guest request identity")]
     Identity,
+    #[error("{message}")]
+    SpacePreflight { message: String },
     #[error("Linux VM guest transport failed: {message}")]
     Transport { message: String, uncertain: bool },
     #[error("Linux VM guest protocol failed: {message}")]
@@ -53,7 +72,7 @@ impl GuestError {
             Self::Transport { uncertain, .. }
             | Self::Protocol { uncertain, .. }
             | Self::Rejected { uncertain, .. } => *uncertain,
-            Self::InvalidRequest | Self::Identity => false,
+            Self::InvalidRequest | Self::Identity | Self::SpacePreflight { .. } => false,
             Self::FrameCallback { uncertain } => *uncertain,
         }
     }
@@ -102,17 +121,41 @@ pub trait GuestRpc: Send + Sync {
 
 /// Production client for the guest Unix-domain socket.
 #[cfg(unix)]
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct UnixGuestRpc {
+    vm_state_dir: PathBuf,
     socket_path: PathBuf,
+    space_probe: Arc<dyn GuestSpaceProbe>,
+}
+
+#[cfg(unix)]
+impl std::fmt::Debug for UnixGuestRpc {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("UnixGuestRpc")
+            .field("vm_state_dir", &self.vm_state_dir)
+            .field("socket_path", &self.socket_path)
+            .finish_non_exhaustive()
+    }
 }
 
 #[cfg(unix)]
 impl UnixGuestRpc {
     /// Connect to `<vm_state_dir>/guest.sock`.
     pub fn new(vm_state_dir: impl Into<PathBuf>) -> Self {
+        Self::with_space_probe(vm_state_dir, Arc::new(HostGuestSpaceProbe))
+    }
+
+    /// Construct the client with an injectable disk-space boundary, primarily for corpus tests.
+    pub fn with_space_probe(
+        vm_state_dir: impl Into<PathBuf>,
+        space_probe: Arc<dyn GuestSpaceProbe>,
+    ) -> Self {
+        let vm_state_dir = vm_state_dir.into();
         Self {
-            socket_path: vm_state_dir.into().join("guest.sock"),
+            socket_path: vm_state_dir.join("guest.sock"),
+            vm_state_dir,
+            space_probe,
         }
     }
 
@@ -141,6 +184,7 @@ impl GuestRpc for UnixGuestRpc {
         timeout: Duration,
         on_frame: &mut dyn FnMut(Value) -> Result<(), GuestError>,
     ) -> Result<Value, GuestError> {
+        guest_write_preflight(method, &self.vm_state_dir, self.space_probe.as_ref())?;
         stream_socket(
             &self.socket_path,
             method,
@@ -150,6 +194,46 @@ impl GuestRpc for UnixGuestRpc {
             on_frame,
         )
     }
+}
+
+#[cfg(unix)]
+fn guest_write_preflight(
+    method: &str,
+    vm_state_dir: &Path,
+    space_probe: &dyn GuestSpaceProbe,
+) -> Result<(), GuestError> {
+    if !matches!(
+        method,
+        "project.import" | "line.branch" | "upload.begin" | "upload.commit" | "sync.push"
+    ) {
+        return Ok(());
+    }
+    let required = match std::env::var(AGENT_MIN_FREE_BYTES_ENV) {
+        Ok(value) => value
+            .parse::<u64>()
+            .map_err(|_| GuestError::SpacePreflight {
+                message: format!("{AGENT_MIN_FREE_BYTES_ENV} must be a non-negative integer."),
+            })?,
+        Err(std::env::VarError::NotPresent) => DEFAULT_AGENT_MIN_FREE_BYTES,
+        Err(std::env::VarError::NotUnicode(_)) => {
+            return Err(GuestError::SpacePreflight {
+                message: format!("{AGENT_MIN_FREE_BYTES_ENV} must be a non-negative integer."),
+            });
+        }
+    };
+    let free = space_probe
+        .free_bytes(vm_state_dir)
+        .map_err(|_| GuestError::SpacePreflight {
+            message: "Could not check free disk space for the Linux VM.".to_owned(),
+        })?;
+    if free < required {
+        return Err(GuestError::SpacePreflight {
+            message: format!(
+                "Not enough free disk space for the Linux VM: {free} free, {required} required (bytes)."
+            ),
+        });
+    }
+    Ok(())
 }
 
 /// Production client for the host-side VM control socket.

@@ -11,6 +11,7 @@ base64 = { workspace = true }
 bytes = "=1.10.1"
 chrono = { workspace = true }
 futures-util.workspace = true
+flate2 = "=1.1.10"
 data-encoding = { workspace = true }
 getrandom = { workspace = true }
 http-body-util = "=0.1.3"

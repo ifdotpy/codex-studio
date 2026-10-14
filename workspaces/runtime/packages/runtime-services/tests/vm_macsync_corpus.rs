@@ -5,10 +5,11 @@ use rusqlite::{Connection, params};
 use serde_json::{Value, json};
 use std::path::Path;
 use std::process::{Command, Stdio};
+use std::sync::Arc;
 use std::time::Duration;
 use studio_runtime_services::{
     coordination,
-    linux_vm_guest::{GuestError, GuestRpc},
+    linux_vm_guest::{GuestError, GuestRpc, GuestSpaceProbe, UnixGuestRpc},
     linux_vm_settings, mac_sync,
     message_admission::MessageAdmission,
 };
@@ -382,4 +383,115 @@ fn real_python_vm_and_mac_functions_match_rust_for_each_resolution_choice() {
             );
         }
     }
+}
+
+#[test]
+fn python_and_rust_reject_darwin_memory_over_the_host_ceiling_before_persisting() {
+    let python_root = tempfile::tempdir().expect("Python fixture root");
+    let rust_root = tempfile::tempdir().expect("Rust fixture root");
+    seed(python_root.path());
+    seed(rust_root.path());
+    std::fs::create_dir_all(python_root.path().join("home")).expect("isolated HOME");
+    let expected = oracle(python_root.path(), "memory-ceiling");
+
+    let settings_dir = rust_root.path().join("state/linux-vm");
+    let before = std::fs::read(settings_dir.join("settings.json")).expect("seeded settings");
+    let guest = FakeGuest(std::sync::Mutex::new(Vec::new()));
+    let error = linux_vm_settings::set_settings_with_macos_memory(
+        &settings_dir,
+        linux_vm_settings::VmSettings {
+            cpus: 1,
+            memory_bytes: 9 * 1024 * 1024 * 1024,
+            system_disk_bytes: 16 * 1024 * 1024 * 1024,
+            data_disk_bytes: 128 * 1024 * 1024 * 1024,
+        },
+        &guest,
+        16 * 1024 * 1024 * 1024,
+    )
+    .expect_err("settings over Darwin host limit are rejected");
+
+    assert_eq!(error.to_string(), expected["error"]);
+    assert_eq!(
+        serde_json::from_slice::<Value>(&before).expect("Rust seed JSON"),
+        expected["settingsBefore"]
+    );
+    assert_eq!(
+        std::fs::read(settings_dir.join("settings.json")).expect("unchanged Rust settings"),
+        before,
+        "invalid Darwin setting must not be persisted"
+    );
+    assert_eq!(
+        serde_json::from_slice::<Value>(
+            &std::fs::read(settings_dir.join("settings.json")).expect("persisted Rust settings"),
+        )
+        .expect("Rust settings JSON"),
+        expected["settingsAfter"]
+    );
+    assert!(guest.0.lock().expect("guest call log").is_empty());
+}
+
+struct EmptyDisk;
+
+impl GuestSpaceProbe for EmptyDisk {
+    fn free_bytes(&self, _path: &Path) -> std::io::Result<u64> {
+        Ok(0)
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn python_and_rust_write_space_preflight_refuse_before_opening_the_guest_socket() {
+    use std::os::unix::net::UnixListener;
+
+    let python_root = tempfile::tempdir().expect("Python fixture root");
+    let rust_root = tempfile::tempdir().expect("Rust fixture root");
+    seed(python_root.path());
+    std::fs::create_dir_all(python_root.path().join("home")).expect("isolated HOME");
+    let expected = oracle(python_root.path(), "write-space-preflight");
+
+    let mut actual_preflights = Vec::new();
+    for (index, method) in [
+        "project.import",
+        "line.branch",
+        "upload.begin",
+        "upload.commit",
+        "sync.push",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let state_dir = rust_root.path().join(format!("state/linux-vm-{index}"));
+        std::fs::create_dir_all(&state_dir).expect("VM state directory");
+        let rpc = UnixGuestRpc::with_space_probe(&state_dir, Arc::new(EmptyDisk));
+        let listener = UnixListener::bind(rpc.socket_path()).expect("fake guest endpoint binds");
+        listener
+            .set_nonblocking(true)
+            .expect("fake endpoint is nonblocking");
+        let error = rpc
+            .call(
+                method,
+                &json!({"agentId":"agent-1"}),
+                Some(&format!("request-{method}")),
+                Duration::from_secs(2),
+            )
+            .expect_err("write below free-space floor is refused");
+        let channel_opened = match listener.accept() {
+            Ok(_) => true,
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => false,
+            Err(error) => panic!("fake endpoint accept failed: {error}"),
+        };
+        assert!(matches!(error, GuestError::SpacePreflight { .. }));
+        assert!(!error.uncertain(), "preflight refusal is known not sent");
+        actual_preflights.push(json!({
+            "method": method,
+            "error": error.to_string(),
+            "channelOpened": channel_opened,
+        }));
+    }
+
+    assert_eq!(
+        Value::Array(actual_preflights),
+        expected["preflights"],
+        "Python and Rust refuse all disk-consuming guest RPCs before socket connect"
+    );
 }
