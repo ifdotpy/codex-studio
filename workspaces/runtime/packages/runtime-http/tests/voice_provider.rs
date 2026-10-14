@@ -28,6 +28,7 @@ impl VoiceRequestPort for RecordingPort {
     fn prepare<'a>(
         &'a self,
         agent_id: &'a str,
+        _session_id: &'a str,
         account_key: &'a str,
         thread_id: &'a str,
         epoch: i64,
@@ -39,6 +40,7 @@ impl VoiceRequestPort for RecordingPort {
                 account_key: account_key.to_owned(),
                 thread_id: thread_id.to_owned(),
                 connection_id: "voice-http-connection".into(),
+                generation: 1,
             })
         })
     }

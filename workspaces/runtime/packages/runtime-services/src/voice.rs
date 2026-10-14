@@ -12,13 +12,16 @@ use thiserror::Error;
 
 use crate::event_write::{self, EventWriteError};
 
-#[path = "voice/policy.rs"]
-pub mod policy;
+#[path = "voice/account_session.rs"]
+pub mod account_session;
 
 #[path = "voice/audio.rs"]
 mod audio;
 
 pub use audio::{VoiceAudioError, save_audio};
+
+#[path = "voice/policy.rs"]
+pub mod policy;
 
 #[path = "voice/provider.rs"]
 pub mod provider;

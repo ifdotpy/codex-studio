@@ -80,10 +80,17 @@ fn request_deadline() -> Instant {
     Instant::now() + VOICE_REQUEST_TIMEOUT
 }
 
+fn connection_generation(connection: &str) -> u64 {
+    // The retained account worker uses its generation as connection_id.
+    // Non-numeric Python-era ids cannot authorize a generation-bound write.
+    connection.parse().unwrap_or(0)
+}
+
 fn certainty_error(certainty: VoiceWriteCertainty) -> VoiceProviderError {
     match certainty {
         VoiceWriteCertainty::NotSent => VoiceProviderError::NotSent,
         VoiceWriteCertainty::Unknown => VoiceProviderError::Unknown,
+        VoiceWriteCertainty::Rejected => VoiceProviderError::Rejected,
         VoiceWriteCertainty::Written => VoiceProviderError::Operation,
     }
 }
@@ -531,6 +538,7 @@ fn prepare_end(
                         account_key: account.to_owned(),
                         thread_id: thread.to_owned(),
                         connection_id: connection.to_owned(),
+                        generation: connection_generation(connection),
                     }),
                 )
             }
@@ -600,6 +608,7 @@ pub async fn speech(
         VoiceWriteCertainty::Written => ("submitted", None),
         VoiceWriteCertainty::NotSent => ("failed", Some("Request was not sent")),
         VoiceWriteCertainty::Unknown => ("unknown", Some("Request outcome is unknown")),
+        VoiceWriteCertainty::Rejected => ("failed", Some("Provider rejected request")),
     };
     let store_for_update = store.clone();
     let id = receipt_id.clone();
@@ -678,6 +687,7 @@ pub async fn approve(
         VoiceWriteCertainty::Written => "accepted",
         VoiceWriteCertainty::NotSent => "not_sent",
         VoiceWriteCertainty::Unknown => "unknown",
+        VoiceWriteCertainty::Rejected => "unknown",
     };
     let state_value = state.to_owned();
     let result = json!({"status": "answered"});
@@ -820,6 +830,7 @@ fn reserve_approval(
             account_key: account_key.to_owned(),
             thread_id: thread_id.to_owned(),
             connection_id: session.connection_id().ok_or(VoiceProviderError::ContextUnavailable)?.to_owned(),
+            generation: connection_generation(session.connection_id().ok_or(VoiceProviderError::ContextUnavailable)?),
         };
         let request_account = current.get("accountKey").and_then(Value::as_str);
         let request_connection = current.get("connectionId").and_then(Value::as_str);
@@ -925,6 +936,7 @@ fn reserve_speech(
             account_key: account_key.to_owned(),
             thread_id: thread_id.to_owned(),
             connection_id: session.connection_id().ok_or(VoiceProviderError::ContextUnavailable)?.to_owned(),
+            generation: connection_generation(session.connection_id().ok_or(VoiceProviderError::ContextUnavailable)?),
         };
         let marker = format!("voice-content-sha256:{}|", studio_runtime_store::sha256_hex(record.text.as_bytes()));
         transaction.execute(
@@ -961,6 +973,7 @@ fn update_stop_failure(
     let (state, ended) = match certainty {
         VoiceWriteCertainty::NotSent => ("ended", Some(now)),
         VoiceWriteCertainty::Unknown => ("unknown", None),
+        VoiceWriteCertainty::Rejected => ("unknown", None),
         VoiceWriteCertainty::Written => ("ended", Some(now)),
     };
     store.transaction_with_error(|transaction| -> Result<_, VoiceProviderError> {
@@ -1267,6 +1280,7 @@ pub fn stop_call_for_notification(
             account_key: account_key.to_owned(),
             thread_id: thread_id.clone(),
             connection_id: connection_id.to_owned(),
+            generation: connection_generation(connection_id),
         },
         method: Method::ThreadRealtimeStop,
         params: json!({"threadId": thread_id}),
@@ -1340,7 +1354,7 @@ pub async fn start(
 
     let (account_key, thread_id, epoch) = agent_context(&store, &agent_id)?;
     let context = provider
-        .prepare(&agent_id, &account_key, &thread_id, epoch)
+        .prepare(&agent_id, &session_id, &account_key, &thread_id, epoch)
         .await
         .map_err(certainty_error)?;
     if context.agent_id != agent_id
@@ -1500,6 +1514,7 @@ fn set_start_failure(
     let state = match certainty {
         VoiceWriteCertainty::NotSent => "failed",
         VoiceWriteCertainty::Unknown => "unknown",
+        VoiceWriteCertainty::Rejected => "failed",
         VoiceWriteCertainty::Written => "connecting",
     };
     store.transaction_with_error(|transaction| -> Result<_, VoiceProviderError> {
@@ -1606,6 +1621,7 @@ mod tests {
         fn prepare<'a>(
             &'a self,
             agent_id: &'a str,
+            _session_id: &'a str,
             account_key: &'a str,
             thread_id: &'a str,
             epoch: i64,
@@ -1617,6 +1633,7 @@ mod tests {
                     account_key: account_key.to_owned(),
                     thread_id: thread_id.to_owned(),
                     connection_id: "scripted-connection".to_owned(),
+                    generation: 1,
                 })
             })
         }
@@ -1664,6 +1681,7 @@ mod tests {
                             account_key: String::new(),
                             thread_id: String::new(),
                             connection_id: String::new(),
+                            generation: 0,
                         },
                         operation_id,
                         method: Method::ItemCommandExecutionRequestApproval,
@@ -1688,6 +1706,7 @@ mod tests {
             account_key: "account".into(),
             thread_id: "thread".into(),
             connection_id: "connection".into(),
+            generation: 1,
         };
         let call = start_call(context, "session", "v=0\r\n...");
         let receipt = request(provider.as_ref(), call.clone()).await;

@@ -17,6 +17,7 @@ pub struct VoiceConnectionScope {
     pub account_key: String,
     pub thread_id: String,
     pub connection_id: String,
+    pub generation: u64,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -24,6 +25,7 @@ pub enum VoiceWriteCertainty {
     Written,
     NotSent,
     Unknown,
+    Rejected,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -43,13 +45,14 @@ pub struct VoiceReply {
     pub result: Value,
 }
 
-/// Port to one retained provider connection. `prepare` resolves and validates
-/// the current account connection; `request` must preserve the supplied
-/// identity and absolute deadline, and report uncertainty without resending.
+/// Port to one retained provider connection. `prepare` resolves the current
+/// account connection using a session-scoped durable operation; `request` must
+/// preserve the supplied identity and deadline and never resend an Unknown.
 pub trait VoiceRequestPort: Send + Sync {
     fn prepare<'a>(
         &'a self,
         agent_id: &'a str,
+        session_id: &'a str,
         account_key: &'a str,
         thread_id: &'a str,
         epoch: i64,

@@ -1,13 +1,23 @@
 #[path = "support/prepared_python.rs"]
 mod python_test_support;
 use serde_json::json;
+use std::collections::VecDeque;
 use std::fs;
 use std::path::Path;
 use std::process::Command;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, SystemTime};
-use studio_runtime_providers::Method;
+use std::time::{Duration, Instant, SystemTime};
+use studio_runtime_providers::{Method, RequestId, RequestTicket};
+use studio_runtime_services::account_session_runtime::{
+    AccountSessionError, AccountSessionPort, ConnectionScope, ProviderRequest, ProviderResponse,
+    RequestCertainty, SessionReceipt,
+};
+use studio_runtime_services::account_worker::retained::RequestActor;
+use studio_runtime_services::callback_runtime::{CallbackReplyPort, ReplyOutcome, ReplyReceipt};
+use studio_runtime_services::provider_callbacks::CallbackError;
 use studio_runtime_services::voice;
+use studio_runtime_services::voice::account_session::AccountSessionVoicePort;
 use studio_runtime_services::voice::policy::{
     self, SessionSignal, VoiceSession, VoiceSessionRow, VoiceSessionState,
 };
@@ -15,7 +25,7 @@ use studio_runtime_services::voice::provider::VoiceCallbackActor;
 use studio_runtime_services::voice::provider::notification_requires_stop;
 use studio_runtime_services::voice::runtime::{
     VoiceConnectionScope as VoiceProviderContext, VoiceFuture as ProviderFuture, VoiceReply,
-    VoiceRequestPort as VoiceProviderPort, VoiceRequestReceipt, VoiceWriteCertainty,
+    VoiceRequestPort as VoiceProviderPort, VoiceRequestReceipt, VoiceRpcId, VoiceWriteCertainty,
 };
 use studio_runtime_store::RuntimeStore;
 
@@ -454,6 +464,265 @@ fn table_rows(connection: &rusqlite::Connection, table: &str, order: &str) -> se
     json!(rows)
 }
 
+struct CapturedRequest {
+    account: String,
+    operation: String,
+    actor: Option<RequestActor>,
+    expected_scope: Option<ConnectionScope>,
+    method: Method,
+    params: serde_json::Value,
+}
+
+struct MockAccountSession {
+    scope: ConnectionScope,
+    outcomes: Mutex<VecDeque<(RequestCertainty, Option<ProviderResponse>)>>,
+    calls: Mutex<Vec<CapturedRequest>>,
+}
+
+impl AccountSessionPort for MockAccountSession {
+    fn provider_request(
+        &self,
+        request: ProviderRequest,
+    ) -> Result<SessionReceipt, AccountSessionError> {
+        self.calls
+            .lock()
+            .expect("calls lock")
+            .push(CapturedRequest {
+                account: request.account.clone(),
+                operation: request.operation.clone(),
+                actor: request.actor.clone(),
+                expected_scope: request.expected_scope.clone(),
+                method: request.method,
+                params: request.params,
+            });
+        let (certainty, result) = self
+            .outcomes
+            .lock()
+            .expect("outcomes lock")
+            .pop_front()
+            .expect("scripted session outcome");
+        Ok(SessionReceipt {
+            scope: self.scope.clone(),
+            operation: request.operation,
+            ticket: Some(RequestTicket {
+                generation: self.scope.generation,
+                id: RequestId::Number(1),
+                method: request.method,
+            }),
+            certainty,
+            result,
+            not_sent_reason: None,
+        })
+    }
+}
+
+#[derive(Default)]
+struct NoopCallbackReplyPort(AtomicUsize);
+
+impl CallbackReplyPort for NoopCallbackReplyPort {
+    fn deliver(
+        &self,
+        reply: &studio_runtime_services::provider_callbacks::Reply,
+        _deadline: Duration,
+    ) -> Result<ReplyReceipt, CallbackError> {
+        self.0.fetch_add(1, Ordering::SeqCst);
+        Ok(ReplyReceipt {
+            identity: reply.identity.clone(),
+            outcome: ReplyOutcome::Written,
+        })
+    }
+}
+
+#[tokio::test]
+async fn account_session_voice_adapter_preserves_scope_identity_and_unknown_once() {
+    let (_root, store) = seeded_store();
+    let scope = ConnectionScope {
+        account: "account".into(),
+        connection: "connection-7".into(),
+        generation: 7,
+    };
+    let session = Arc::new(MockAccountSession {
+        scope: scope.clone(),
+        outcomes: Mutex::new(VecDeque::from([
+            (
+                RequestCertainty::Written,
+                Some(ProviderResponse::Reply(
+                    json!({"account":{"type":"chatgpt"}}),
+                )),
+            ),
+            (
+                RequestCertainty::Written,
+                Some(ProviderResponse::Reply(json!({"answer":"v=0"}))),
+            ),
+            (RequestCertainty::Unknown, None),
+            (
+                RequestCertainty::Written,
+                Some(ProviderResponse::Rejected(json!({"message":"no"}))),
+            ),
+        ])),
+        calls: Mutex::new(Vec::new()),
+    });
+    let store = Arc::new(store);
+    let callbacks = Arc::new(
+        studio_runtime_services::callback_runtime::CallbackRuntime::new(
+            Arc::clone(&store),
+            Arc::new(NoopCallbackReplyPort::default()),
+        ),
+    );
+    let adapter = AccountSessionVoicePort::new(Arc::clone(&store), session.clone(), callbacks);
+    let context = adapter
+        .prepare("agent", "voice-session", "account", "thread", 0)
+        .await
+        .expect("account/read prepares the live session");
+    assert_eq!(context.connection_id, scope.connection);
+    assert_eq!(context.generation, scope.generation);
+
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let started = adapter
+        .request(
+            context.clone(),
+            "voice:start:voice-session".into(),
+            Method::ThreadRealtimeStart,
+            json!({"threadId":"thread","realtimeSessionId":"voice-session"}),
+            deadline,
+        )
+        .await;
+    assert_eq!(started.certainty, VoiceWriteCertainty::Written);
+    let unknown = adapter
+        .request(
+            context.clone(),
+            "voice:speech:voice-session:record".into(),
+            Method::ThreadRealtimeAppendSpeech,
+            json!({"threadId":"thread","audio":"encoded"}),
+            deadline,
+        )
+        .await;
+    assert_eq!(unknown.certainty, VoiceWriteCertainty::Unknown);
+    let rejected = adapter
+        .request(
+            context,
+            "voice:end:voice-session".into(),
+            Method::ThreadRealtimeStop,
+            json!({"threadId":"thread"}),
+            deadline,
+        )
+        .await;
+    assert_eq!(rejected.certainty, VoiceWriteCertainty::Rejected);
+
+    let calls = session.calls.lock().expect("calls lock");
+    assert_eq!(calls.len(), 4, "Unknown is returned without a retry");
+    assert_eq!(calls[0].operation, "voice:prepare:voice-session");
+    assert_eq!(calls[0].method, Method::AccountRead);
+    assert_eq!(calls[0].params, json!({"refreshToken":false}));
+    assert!(calls[0].actor.is_none());
+    assert!(calls[0].expected_scope.is_none());
+    assert_eq!(calls[1].account, "account");
+    assert_eq!(calls[1].operation, "voice:start:voice-session");
+    assert_eq!(
+        calls[1].actor,
+        Some(RequestActor {
+            agent: "agent".into(),
+            epoch: 0
+        })
+    );
+    assert_eq!(calls[1].expected_scope, Some(scope.clone()));
+    assert_eq!(calls[1].method, Method::ThreadRealtimeStart);
+    assert_eq!(calls[2].expected_scope, Some(scope));
+    assert_eq!(calls[2].method, Method::ThreadRealtimeAppendSpeech);
+    assert_eq!(calls[3].method, Method::ThreadRealtimeStop);
+}
+
+#[tokio::test]
+async fn account_session_voice_approval_uses_the_shared_callback_lane() {
+    let (_root, store) = seeded_store();
+    let callback_request_id = "voice-approval-request";
+    let connection_id = "connection-7";
+    let scope = VoiceProviderContext {
+        agent_id: "agent".into(),
+        epoch: 0,
+        account_key: "account".into(),
+        thread_id: "thread".into(),
+        connection_id: connection_id.into(),
+        generation: 7,
+    };
+    store
+        .transaction(|tx| {
+            let raw: String = tx.query_row(
+                "SELECT record FROM runtime_agents WHERE id='agent'",
+                [],
+                |row| row.get(0),
+            )?;
+            let mut actor: serde_json::Value = serde_json::from_str(&raw)?;
+            actor["autoWake"] = json!(true);
+            actor["turnId"] = json!("turn");
+            actor["turnEpoch"] = json!(0);
+            actor["startAttempt"] = json!({
+                "connectionId":connection_id,
+                "connectionGeneration":7
+            });
+            tx.execute(
+                "UPDATE runtime_agents SET record=?1 WHERE id='agent'",
+                [actor.to_string()],
+            )?;
+            tx.execute(
+                "INSERT INTO runtime_requests(id,record) VALUES(?1,?2)",
+                rusqlite::params![
+                    callback_request_id,
+                    json!({
+                        "id":callback_request_id,
+                        "rpcId":99,
+                        "method":"item/commandExecution/requestApproval",
+                        "params":{"threadId":"thread","turnId":"turn"},
+                        "agent":"agent",
+                        "accountKey":"account",
+                        "connectionId":connection_id,
+                        "epoch":0,
+                        "supervisor":{"generation":7},
+                        "status":"pending",
+                        "createdAt":1.0
+                    })
+                    .to_string()
+                ],
+            )?;
+            Ok(())
+        })
+        .expect("seed callback request and live actor");
+
+    let store = Arc::new(store);
+    let reply_port = Arc::new(NoopCallbackReplyPort::default());
+    let callbacks = Arc::new(
+        studio_runtime_services::callback_runtime::CallbackRuntime::new(
+            Arc::clone(&store),
+            reply_port.clone(),
+        ),
+    );
+    let unused_session = Arc::new(MockAccountSession {
+        scope: ConnectionScope {
+            account: "account".into(),
+            connection: connection_id.into(),
+            generation: 7,
+        },
+        outcomes: Mutex::new(VecDeque::new()),
+        calls: Mutex::new(Vec::new()),
+    });
+    let adapter =
+        AccountSessionVoicePort::new(Arc::clone(&store), unused_session.clone(), callbacks);
+    let receipt = adapter
+        .reply(
+            scope,
+            format!("voice:approve:{callback_request_id}"),
+            VoiceReply {
+                rpc_id: VoiceRpcId::Number(99),
+                result: json!({"decision":"accept"}),
+            },
+            Instant::now() + Duration::from_secs(10),
+        )
+        .await;
+    assert_eq!(receipt.certainty, VoiceWriteCertainty::Written);
+    assert_eq!(reply_port.0.load(Ordering::SeqCst), 1);
+    assert!(unused_session.calls.lock().expect("calls lock").is_empty());
+}
+
 #[test]
 fn providerless_receipt_replay_checks_agent_session_and_record_tuple() {
     let (_root, store) = seeded_store();
@@ -853,6 +1122,7 @@ impl VoiceProviderPort for ReceiptProvider {
     fn prepare<'a>(
         &'a self,
         agent_id: &'a str,
+        _session_id: &'a str,
         account_key: &'a str,
         thread_id: &'a str,
         epoch: i64,
@@ -864,6 +1134,7 @@ impl VoiceProviderPort for ReceiptProvider {
                 account_key: account_key.to_owned(),
                 thread_id: thread_id.to_owned(),
                 connection_id: "receipt-matrix-connection".into(),
+                generation: 1,
             })
         })
     }
@@ -911,6 +1182,7 @@ impl VoiceProviderPort for BlockingProvider {
     fn prepare<'a>(
         &'a self,
         agent_id: &'a str,
+        _session_id: &'a str,
         account_key: &'a str,
         thread_id: &'a str,
         epoch: i64,
@@ -922,6 +1194,7 @@ impl VoiceProviderPort for BlockingProvider {
                 account_key: account_key.to_owned(),
                 thread_id: thread_id.to_owned(),
                 connection_id: "voice-corpus-connection".into(),
+                generation: 1,
             })
         })
     }
