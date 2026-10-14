@@ -38,17 +38,9 @@ impl IoRuntime {
         let weak: Weak<_> = Arc::downgrade(&terminals);
         session.set_notification_callback(Arc::new(move |notification: TerminalNotification| {
             if let Some(terminals) = weak.upgrade() {
-                let mut delay = std::time::Duration::from_millis(10);
-                loop {
-                    match terminals.apply_notification(notification.clone()) {
-                        Ok(()) => break,
-                        Err(error) => {
-                            eprintln!("Could not persist terminal notification; retaining it for retry: {error}");
-                            std::thread::sleep(delay);
-                            delay = (delay * 2).min(std::time::Duration::from_secs(1));
-                        }
-                    }
-                }
+                persist_notification_until_saved(notification, |notification| {
+                    terminals.apply_notification(notification)
+                });
             }
         }));
         let weak = Arc::downgrade(&terminals);
@@ -110,5 +102,56 @@ impl IoRuntime {
 
     pub fn shutdown(&self) -> Result<(), studio_runtime_services::terminal_driver::TerminalError> {
         self.terminals.close_session()
+    }
+}
+
+#[cfg(unix)]
+fn persist_notification_until_saved(
+    notification: TerminalNotification,
+    mut persist: impl FnMut(TerminalNotification) -> Result<(), TerminalError>,
+) {
+    let mut delay = std::time::Duration::from_millis(10);
+    loop {
+        match persist(notification.clone()) {
+            Ok(()) => break,
+            Err(error) => {
+                eprintln!(
+                    "Could not persist terminal notification; retaining it for retry: {error}"
+                );
+                std::thread::sleep(delay);
+                delay = (delay * 2).min(std::time::Duration::from_secs(1));
+            }
+        }
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[test]
+    fn terminal_notification_is_retained_until_persistence_succeeds() {
+        let attempts = AtomicUsize::new(0);
+        let notification = TerminalNotification {
+            terminal_id: "terminal".into(),
+            sequence: 3,
+            event: studio_runtime_services::terminal_driver::TerminalEvent::Output(
+                b"chunk".to_vec(),
+            ),
+        };
+        persist_notification_until_saved(notification, |retry| {
+            assert_eq!(retry.terminal_id, "terminal");
+            assert_eq!(retry.sequence, 3);
+            assert!(
+                matches!(retry.event, studio_runtime_services::terminal_driver::TerminalEvent::Output(bytes) if bytes == b"chunk")
+            );
+            if attempts.fetch_add(1, Ordering::SeqCst) == 0 {
+                Err(TerminalError::InvalidRequest)
+            } else {
+                Ok(())
+            }
+        });
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
     }
 }
