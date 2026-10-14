@@ -99,6 +99,18 @@ impl AccountSessionBroker {
             runtime,
         })
     }
+
+    #[cfg(test)]
+    pub(crate) fn attach_test_session(
+        &self,
+        account: String,
+        session: studio_runtime_services::account_worker::retained::RetainedSessionPort,
+    ) {
+        self.sessions
+            .write()
+            .expect("test broker session lock")
+            .insert(account, session);
+    }
 }
 
 struct BrokerCallbackReplyPort {
