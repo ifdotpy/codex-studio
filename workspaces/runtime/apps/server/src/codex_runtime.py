@@ -3783,7 +3783,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                         if self.factory is AppServer:
                             server = self.factory(root, *callbacks, home=home,
                                                   isolated=account_key != "default", provider=provider,
-                                                  provider_options=({**account, '_nativeAuthPending': native_auth_pending}
+                                                  provider_options=({**account, '_nativeAuthPending': native_auth_pending,
+                                                                     **({'_historyRead': True} if history_only else {})}
                                                                     if provider == "claude" else None),
                                                   executable=selected["path"] if selected else None,
                                                   supervisor_handle="account:" + account_key,
