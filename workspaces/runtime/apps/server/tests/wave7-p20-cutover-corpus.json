@@ -93,22 +93,6 @@
           "owner": "R1"
         }
       ],
-      "dependency": "cross-server/remote-events",
-      "operation_count": 3,
-      "operations": [
-        "POST /api/answer",
-        "POST /api/messages",
-        "POST /api/monitor/cancel"
-      ]
-    },
-    {
-      "closures": [
-        {
-          "closes": "R1",
-          "kind": "external_or_scope",
-          "owner": "R1"
-        }
-      ],
       "dependency": "federation/trusted-origin-observation",
       "operation_count": 3,
       "operations": [
@@ -243,6 +227,18 @@
     {
       "closures": [
         {
+          "closes": "R1",
+          "kind": "external_or_scope",
+          "owner": "R1"
+        }
+      ],
+      "dependency": "cross-server/remote-events",
+      "operation_count": 2,
+      "operations": ["POST /api/messages", "POST /api/monitor/cancel"]
+    },
+    {
+      "closures": [
+        {
           "closes": "origin/feat/wave7-p06-notification-effects",
           "kind": "accepted_branch",
           "owner": "P06"
@@ -362,6 +358,18 @@
       "dependency": "provider-session/monitor-commands",
       "operation_count": 2,
       "operations": ["POST /api/monitor/cancel", "POST /api/monitor/input"]
+    },
+    {
+      "closures": [
+        {
+          "closes": "origin/feat/wave7-p04-callback-runtime",
+          "kind": "accepted_branch",
+          "owner": "P04"
+        }
+      ],
+      "dependency": "provider-session/question-answer",
+      "operation_count": 2,
+      "operations": ["POST /api/answer", "POST /api/questions/delete"]
     },
     {
       "closures": [
@@ -893,6 +901,23 @@
     {
       "closures": [
         {
+          "closes": "origin/feat/wave7-p04-callback-runtime",
+          "kind": "accepted_branch",
+          "owner": "P04"
+        },
+        {
+          "closes": "origin/feat/wave7-p15-monitors-rules",
+          "kind": "accepted_branch",
+          "owner": "P15"
+        }
+      ],
+      "dependency": "question-answer/monitor-approval",
+      "operation_count": 1,
+      "operations": ["POST /api/answer"]
+    },
+    {
+      "closures": [
+        {
           "closes": "R1",
           "kind": "external_or_scope",
           "owner": "R1"
@@ -1051,10 +1076,10 @@
     }
   ],
   "counts": {
-    "implemented": 108,
-    "named_dependencies": 72,
+    "implemented": 107,
+    "named_dependencies": 74,
     "not_registered": 0,
-    "partial": 52,
+    "partial": 53,
     "total": 160
   },
   "lifecycle_dependencies": {
@@ -1492,9 +1517,10 @@
     },
     {
       "dependencies": [
-        "cross-server/remote-events",
+        "provider-session/question-answer",
         "question-answer/async-question",
-        "question-answer/browser-open"
+        "question-answer/browser-open",
+        "question-answer/monitor-approval"
       ],
       "operation": "POST /api/answer",
       "status": "partial"
@@ -1786,9 +1812,9 @@
       "status": "implemented"
     },
     {
-      "dependencies": [],
+      "dependencies": ["provider-session/question-answer"],
       "operation": "POST /api/questions/delete",
-      "status": "implemented"
+      "status": "partial"
     },
     {
       "dependencies": [],
