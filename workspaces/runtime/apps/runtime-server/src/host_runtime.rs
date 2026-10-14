@@ -888,6 +888,13 @@ mod voice_composition_tests {
     struct UnusedCallbackReplyPort;
 
     impl CallbackReplyPort for UnusedCallbackReplyPort {
+        fn has_live_session(
+            &self,
+            _: &studio_runtime_services::provider_callbacks::CallbackContext,
+        ) -> bool {
+            false
+        }
+
         fn deliver(
             &self,
             _reply: &Reply,

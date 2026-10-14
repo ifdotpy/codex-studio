@@ -105,6 +105,10 @@ pub struct Port {
     pub foreign: Mutex<bool>,
 }
 impl CallbackReplyPort for Port {
+    fn has_live_session(&self, _: &CallbackContext) -> bool {
+        true
+    }
+
     fn deliver(
         &self,
         reply: &Reply,

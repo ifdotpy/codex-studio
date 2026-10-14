@@ -24,6 +24,23 @@ from http_backend_harness import TimedHTTPContractTest, start_contract_backend, 
 from http_runtime_test_support import answer_refusal_error
 
 
+COMPLAINT_WRITE_TABLES = frozenset({
+    "runtime_complaints",
+    "runtime_events",
+    "runtime_event_meta",
+    "runtime_operation_receipts",
+})
+
+
+def complaint_write_snapshot(
+    state: Path, baseline: tuple[object, ...] | None = None,
+) -> tuple[object, ...]:
+    """Compare complaint-route write tables, excluding asynchronous projections."""
+    return no_write_snapshot(
+        state, include_tables=COMPLAINT_WRITE_TABLES, baseline_snapshot=baseline,
+    )
+
+
 def seed_records(backend) -> None:
     source = Path(__file__).resolve().parents[1] / "src"
     seed = f"""
@@ -72,8 +89,12 @@ try:
                 "id":"questions-write-" + key, "agent":agent_id, "method":method,
                 "status":status, "createdAt":now,
                 "epoch":0,
-                "params":({{"mode":"form", "requestedSchema":{{"properties":{{}}}}}}
-                          if key == "elicitation" else {{"questions":[{{"id":"value", "question":"Value?"}}]}}),
+                "accountKey":"default", "connectionId":"questions-write-connection",
+                "supervisor":{{"generation":1}},
+                "params":({{"mode":"form", "requestedSchema":{{"properties":{{}}}},
+                           "threadId":"questions-write-thread", "turnId":"questions-write-turn"}}
+                          if key == "elicitation" else {{"questions":[{{"id":"value", "question":"Value?"}}],
+                                                         "threadId":"questions-write-thread", "turnId":"questions-write-turn"}}),
             }}, sync_rooms=False)
         runtime.put(db, "complaints", {{
             "id":"questions-write-malformed-complaint", "leadId":lead["id"],
@@ -167,6 +188,20 @@ class QuestionsWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         self.assertEqual(no_write_snapshot(self.backend.state), before)
         return response
 
+    def _set_request_status(self, request_id: str, status: str) -> None:
+        with closing(sqlite3.connect(self.backend.state / "canvas.sqlite3")) as database:
+            row = database.execute(
+                "SELECT record FROM runtime_requests WHERE id=?", (request_id,)
+            ).fetchone()
+            self.assertIsNotNone(row, request_id)
+            record = json.loads(row[0])
+            record["status"] = status
+            database.execute(
+                "UPDATE runtime_requests SET record=? WHERE id=?",
+                (json.dumps(record, separators=(",", ":"), sort_keys=True), request_id),
+            )
+            database.commit()
+
     def test_defer_and_state_only_delete_commit_and_replay(self) -> None:
         before_noop = no_write_snapshot(self.backend.state)
         no_change = self._post(
@@ -204,6 +239,11 @@ class QuestionsWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         )
         if not os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"):
             self.skipTest("provider answer delivery is implemented by the Python backend")
+        # Startup recovery expires pending native requests before HTTP readiness
+        # (codex_runtime.py:1834-1849). Re-pend them now so this contract exercises
+        # the live-session preflight for a genuinely pending native question.
+        self._set_request_status("questions-write-native", "pending")
+        self._set_request_status("questions-write-elicitation", "pending")
         self._unchanged_error(
             "/api/answer", {"id": "questions-write-native", "decision": "cancel"},
             501, answer_refusal_error(),
@@ -400,14 +440,16 @@ class QuestionsWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
                 "SELECT count(*) FROM runtime_events WHERE id=?", ("complaint:" + record["id"],)
             ).fetchone()[0]
         self.assertEqual(count, 1)
-        before_replay = no_write_snapshot(self.backend.state)
+        before_replay = complaint_write_snapshot(self.backend.state)
         replay = self._post("/api/complaints", {
             "id": "questions-write-submit", "lead": "questions-write-lead",
             "text": "  Please fix the issue  ",
         })
         self.assertEqual(replay.status, 200, replay.body[:1000])
         self.assertEqual(replay.json()["id"], record["id"])
-        self.assertEqual(no_write_snapshot(self.backend.state), before_replay)
+        self.assertEqual(
+            complaint_write_snapshot(self.backend.state, before_replay), before_replay,
+        )
         self._unchanged_error("/api/complaints", {
             "id": "questions-write-submit", "lead": "questions-write-lead", "text": "Changed"
         }, 400, "This complaint id has different content")
@@ -426,7 +468,7 @@ class QuestionsWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
                 ("complaint-response:user:questions-write-response",),
             ).fetchone()
         self.assertEqual(event, ("complaint_response", "pending"))
-        before_replay = no_write_snapshot(self.backend.state)
+        before_replay = complaint_write_snapshot(self.backend.state)
         repeated = self._post("/api/complaints", {
             "action": "respond", "id": "questions-write-response",
             "complaint_id": "questions-write-existing", "text": "  Fixed  ",
@@ -435,7 +477,9 @@ class QuestionsWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         self.assertEqual(repeated.status, 200, repeated.body[:1000])
         self.assertEqual(repeated.json()["version"], reply.json()["version"])
         self.assertEqual(repeated.json()["responses"], reply.json()["responses"])
-        self.assertEqual(no_write_snapshot(self.backend.state), before_replay)
+        self.assertEqual(
+            complaint_write_snapshot(self.backend.state, before_replay), before_replay,
+        )
         self._unchanged_error("/api/complaints", {
             "action": "respond", "id": "questions-write-stale",
             "complaint_id": "questions-write-existing", "text": "Stale",

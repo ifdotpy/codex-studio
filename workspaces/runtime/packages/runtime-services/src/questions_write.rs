@@ -46,6 +46,12 @@ pub struct ComplaintResponseWrite<'a> {
     pub signature: &'a str,
 }
 
+pub struct ComplaintWriteResult {
+    pub record: Value,
+    pub event_inserted: bool,
+    pub wake_event_worker: bool,
+}
+
 pub fn defer_question(
     transaction: &Transaction<'_>,
     id: &str,
@@ -159,7 +165,7 @@ pub fn submit_complaint(
     request_id: &str,
     text: &str,
     validate: impl Fn(&Value) -> bool,
-) -> Result<Value, QuestionsWriteError> {
+) -> Result<ComplaintWriteResult, QuestionsWriteError> {
     let actor = stored_agent(transaction, lead_id)?
         .ok_or(QuestionsWriteError::InvalidRequest("Invalid request"))?;
     if event_write::truthy(actor.extra.get("deletedAt")) {
@@ -202,7 +208,11 @@ pub fn submit_complaint(
                 "This complaint id has different content",
             ));
         }
-        return Ok(previous);
+        return Ok(ComplaintWriteResult {
+            record: previous,
+            event_inserted: false,
+            wake_event_worker: false,
+        });
     }
     let record = json!({
         "id": id,
@@ -228,7 +238,7 @@ pub fn submit_complaint(
         .ok_or_else(|| QuestionsWriteError::InvalidRequest("Invalid complaint"))?;
     QuestionsWriteRepository::put_complaint(transaction, id, &event_write::python_json(&record))?;
     let message = complaint_message(&record);
-    event_write::enqueue_event(
+    let event_inserted = event_write::enqueue_event(
         transaction,
         &lead,
         format!("complaint:{id}"),
@@ -236,14 +246,24 @@ pub fn submit_complaint(
         message,
         now,
     )?;
-    Ok(record)
+    // Python's enqueue() fast-dispatches only for autoWake agents, while its
+    // send eligibility excludes moveImportPending agents. Keep the event
+    // durable, but do not wake the worker while either owner gate is closed.
+    let wake_event_worker = event_inserted
+        && event_write::truthy(lead.extra.get("autoWake"))
+        && !event_write::recovery_pending(&lead);
+    Ok(ComplaintWriteResult {
+        record,
+        event_inserted,
+        wake_event_worker,
+    })
 }
 
 pub fn respond_to_complaint(
     transaction: &Transaction<'_>,
     input: ComplaintResponseWrite<'_>,
     validate: impl Fn(&Value) -> bool,
-) -> Result<Value, QuestionsWriteError> {
+) -> Result<ComplaintWriteResult, QuestionsWriteError> {
     let ComplaintResponseWrite {
         complaint_id,
         request_id,
@@ -261,7 +281,11 @@ pub fn respond_to_complaint(
         complaint_id,
         &validate,
     )? {
-        return Ok(saved);
+        return Ok(ComplaintWriteResult {
+            record: saved,
+            event_inserted: false,
+            wake_event_worker: false,
+        });
     }
     let raw = QuestionsWriteRepository::complaint(transaction, complaint_id)?
         .ok_or(QuestionsWriteError::InvalidRequest("Unknown complaint"))?;
@@ -342,7 +366,7 @@ pub fn respond_to_complaint(
         complaint_id,
         &event_write::python_json(&complaint),
     )?;
-    if !event_write::truthy(reporter.extra.get("deletedAt")) {
+    let event_inserted = if !event_write::truthy(reporter.extra.get("deletedAt")) {
         let event = json!({
             "complaint_id": complaint_id,
             "responder": USER,
@@ -355,10 +379,21 @@ pub fn respond_to_complaint(
             "complaint_response",
             event_write::python_json(&event),
             now,
-        )?;
-    }
+        )?
+    } else {
+        false
+    };
+    // Match Python enqueue/send gates: preserve the event, but do not wake
+    // while autoWake is disabled or move import/recovery blocks sending.
+    let wake_event_worker = event_inserted
+        && event_write::truthy(reporter.extra.get("autoWake"))
+        && !event_write::recovery_pending(&reporter);
     event_write::save_receipt(transaction, Some(&receipt_id), signature, &complaint)?;
-    Ok(complaint)
+    Ok(ComplaintWriteResult {
+        record: complaint,
+        event_inserted,
+        wake_event_worker,
+    })
 }
 
 fn request(

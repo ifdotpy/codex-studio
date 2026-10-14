@@ -290,6 +290,14 @@ pub(super) fn claim(
     agent: &str,
     epoch: i64,
 ) -> Result<Option<TurnIntent>, WorkerError> {
+    let snapshot = AgentRepository::get(&store.read()?, &AgentId::from(agent))?;
+    if snapshot.as_ref().is_none_or(|record| {
+        record.epoch != epoch
+            || account_key(record) != account
+            || studio_runtime_store::truthy(record.extra.get("moveImportPending"))
+    }) {
+        return Ok(None);
+    }
     let mut bytes = [0u8; 16];
     getrandom::fill(&mut bytes).map_err(|_| WorkerError::TaskFailed)?;
     let attempt = studio_runtime_store::sha256_hex(&bytes);
@@ -312,6 +320,12 @@ pub(super) fn claim(
     scheduler::lifecycle_transaction_with(store, |tx| -> Result<Option<TurnIntent>, WorkerError> {
         let record = AgentRepository::get(tx, &AgentId::from(agent))?;
         if record.as_ref().is_none_or(|a| account_key(a) != account) {
+            return Ok(None);
+        }
+        if record
+            .as_ref()
+            .is_some_and(|a| studio_runtime_store::truthy(a.extra.get("moveImportPending")))
+        {
             return Ok(None);
         }
         if record.as_ref().is_some_and(|a| {

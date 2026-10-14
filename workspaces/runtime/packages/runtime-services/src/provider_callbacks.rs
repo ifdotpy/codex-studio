@@ -14,7 +14,8 @@ pub use crate::managed_child_create::{
     ManagedCreationEnvironment, ManagedCreationEnvironmentError,
 };
 pub use cards::{
-    AnswerAuthority, answer, answer_value, expire, prepare_delete, prepare_user_answer, resolve,
+    AnswerAuthority, answer, answer_value, expire, pending_native_delete_context, prepare_delete,
+    prepare_user_answer, resolve,
 };
 pub use model::{
     CallbackContext, CallbackDecision, CallbackError, CallbackSnapshot, Reply, ReplyIdentity,
