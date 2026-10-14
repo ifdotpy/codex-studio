@@ -9,17 +9,15 @@ use axum::http::{HeaderMap, HeaderValue, Method, Request, StatusCode, header};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use futures_util::FutureExt;
-use studio_runtime_services::federation_limits::{FEDERATION_BODY_LIMIT, FEDERATION_PATHS};
+use studio_runtime_services::federation_limits::FEDERATION_PATHS;
 use subtle::ConstantTimeEq;
 
 use crate::error::{ApiError, error_response, with_api_headers};
+use crate::http_body_limits_generated::request_limit;
 use crate::router::HttpState;
 use crate::schema::{API_SCHEMA_HASH_HEADER, API_SCHEMA_MISMATCH_HEADER, api_schema_hash};
 use crate::validation::RawRequest;
 
-const DEFAULT_BODY_LIMIT: usize = 262_144;
-const ASSET_BODY_LIMIT: usize = 28 * 1024 * 1024;
-const VOICE_BODY_LIMIT: usize = 6 * 1024 * 1024;
 const REQUEST_READ_TIMEOUT: Duration = Duration::from_secs(10);
 
 pub(crate) async fn boundary(
@@ -657,17 +655,6 @@ fn frame_account_origin(headers: &HeaderMap, host: &str, port: u16) -> bool {
     true
 }
 
-pub(crate) fn request_limit(path: &str) -> usize {
-    if is_federation_path(path) {
-        return FEDERATION_BODY_LIMIT;
-    }
-    match path {
-        "/api/assets" => ASSET_BODY_LIMIT,
-        "/api/voice/audio" | "/api/projects" => VOICE_BODY_LIMIT,
-        _ => DEFAULT_BODY_LIMIT,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use axum::Router;
@@ -678,8 +665,18 @@ mod tests {
     use serde_json::Value;
     use tower::ServiceExt;
 
-    use super::response_safety;
+    use super::{request_limit, response_safety};
     use crate::HttpState;
+
+    #[test]
+    fn generated_request_body_route_limits_preserve_api_boundaries() {
+        assert_eq!(request_limit("/api/agents"), 256 * 1024);
+        assert_eq!(request_limit("/api/assets"), 28 * 1024 * 1024);
+        assert_eq!(request_limit("/api/projects"), 6 * 1024 * 1024);
+        assert_eq!(request_limit("/api/voice/audio"), 6 * 1024 * 1024);
+        assert_eq!(request_limit("/api/federation/v1/pull"), 256 * 1024);
+        assert_eq!(request_limit("/api/unknown"), 256 * 1024);
+    }
 
     async fn panic_handler() -> &'static str {
         panic!("test handler panic")

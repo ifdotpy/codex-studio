@@ -2,6 +2,7 @@
 
 pub mod error;
 mod json_body;
+mod http_body_limits_generated;
 pub mod middleware;
 pub mod router;
 pub mod routes;

@@ -6,10 +6,10 @@ from typing import Annotated, Literal, TypeAlias
 
 from pydantic import BeforeValidator, Field
 
-from codex_federation_limits import MAX_BATCH_ITEMS, MAX_ROOM_MEMBERS
+from codex_federation_limits import MAX_BATCH_ITEMS, MAX_ROOM_MEMBERS, PROTOCOL_VERSION
+from codex_federation_protocol_generated import FederationProtocolVersion
 from studio_api.models import ContractModel, ContractStrEnum, JsonValue, ResponseModel, SafeInt, require_strict_integer
 
-PROTOCOL_VERSION = 1
 MAX_BATCH = MAX_BATCH_ITEMS
 
 
@@ -129,7 +129,7 @@ class FederationSnapshot(ResponseModel):
 
 
 class FederationInvitation(ContractModel):
-    protocol: Annotated[Literal[1], BeforeValidator(require_strict_integer)]
+    protocol: Annotated[FederationProtocolVersion, BeforeValidator(require_strict_integer)]
     inviteId: str
     token: str
     stateId: str
@@ -221,7 +221,7 @@ ManagementRequest: TypeAlias = Annotated[
 
 
 class PairRequest(ContractModel):
-    protocol: Annotated[Literal[1], BeforeValidator(require_strict_integer)]
+    protocol: Annotated[FederationProtocolVersion, BeforeValidator(require_strict_integer)]
     inviteId: str
     token: str
     stateId: str
@@ -234,11 +234,11 @@ class PairRequest(ContractModel):
 
 
 class StatusRequest(ContractModel):
-    protocol: Annotated[Literal[1], BeforeValidator(require_strict_integer)]
+    protocol: Annotated[FederationProtocolVersion, BeforeValidator(require_strict_integer)]
 
 
 class SignedEnvelope(ContractModel):
-    protocol: Annotated[Literal[1], BeforeValidator(require_strict_integer)]
+    protocol: Annotated[FederationProtocolVersion, BeforeValidator(require_strict_integer)]
     senderServer: str
     id: str = Field(max_length=128)
     kind: MessageKind
@@ -253,7 +253,7 @@ class SignedEnvelope(ContractModel):
 
 
 class MessageRequest(ContractModel):
-    protocol: Annotated[Literal[1], BeforeValidator(require_strict_integer)]
+    protocol: Annotated[FederationProtocolVersion, BeforeValidator(require_strict_integer)]
     envelope: SignedEnvelope
 
 
@@ -263,12 +263,12 @@ class FederationAck(ContractModel):
 
 
 class PullRequest(ContractModel):
-    protocol: Annotated[Literal[1], BeforeValidator(require_strict_integer)]
+    protocol: Annotated[FederationProtocolVersion, BeforeValidator(require_strict_integer)]
     acks: list[FederationAck] = Field(default_factory=list, max_length=MAX_BATCH)
 
 
 class SignedPairResult(ContractModel):
-    protocol: Literal[1]
+    protocol: FederationProtocolVersion
     accepted: Literal[True]
     remoteApproved: bool
     whoisStatus: WhoisStatus
@@ -276,13 +276,13 @@ class SignedPairResult(ContractModel):
 
 
 class SignedStatusResult(ContractModel):
-    protocol: Literal[1]
+    protocol: FederationProtocolVersion
     approved: bool
     revoked: bool
 
 
 class MessageReceipt(ContractModel):
-    protocol: Literal[1]
+    protocol: FederationProtocolVersion
     messageId: str
     accepted: Literal[True]
     room: str
@@ -295,7 +295,7 @@ class FederationAckResult(ContractModel):
 
 
 class PullResult(ContractModel):
-    protocol: Literal[1]
+    protocol: FederationProtocolVersion
     messages: list[SignedEnvelope]
     acks: list[FederationAckResult]
     acknowledged: list[FederationAckResult]

@@ -14,10 +14,20 @@ from codex_federation_limits import (
     MAX_BATCH_BYTES,
     MAX_BATCH_ITEMS,
     MAX_MESSAGE_CODEPOINTS,
+    MAX_QUEUE_BYTES,
+    MAX_QUEUE_ROWS,
     MAX_ROOM_MEMBERS,
+    MAX_ROOM_RATE,
+    PROTOCOL_VERSION,
 )
-from codex_federation import MAX_BODY, MAX_BATCH, MAX_MESSAGE
-from studio_api.federation.models import CreateRoomRequest, PullRequest
+from codex_federation import MAX_BODY, MAX_BATCH, MAX_MESSAGE, PROTOCOL
+from studio_api.federation.models import (
+    CreateRoomRequest,
+    PROTOCOL_VERSION as MODEL_PROTOCOL_VERSION,
+    PullRequest,
+    PairRequest,
+    SignedPairResult,
+)
 from studio_api.federation.router import FEDERATION_PATHS as ROUTER_PATHS, MAX_BODY_BYTES
 from studio_api.middleware import FEDERATION_PATHS as MIDDLEWARE_PATHS
 from studio_api.persisted_federation import (
@@ -37,7 +47,23 @@ class FederationLimitsContract(unittest.TestCase):
         self.assertEqual(MAX_MESSAGE, MAX_MESSAGE_CODEPOINTS)
         self.assertEqual(MAX_BATCH_BYTES, 200 * 1024)
         self.assertEqual(MAX_ROOM_MEMBERS, 50)
+        self.assertEqual(MAX_QUEUE_ROWS, 10_000)
+        self.assertEqual(MAX_QUEUE_BYTES, 32 * 1024 * 1024)
+        self.assertEqual(MAX_ROOM_RATE, 30)
         self.assertEqual(FEDERATION_BODY_LIMIT, 256 * 1024)
+
+    def test_protocol_version_has_one_owner_and_preserves_openapi_singleton(self):
+        self.assertEqual(PROTOCOL_VERSION, 1)
+        self.assertEqual(PROTOCOL, PROTOCOL_VERSION)
+        self.assertEqual(MODEL_PROTOCOL_VERSION, PROTOCOL_VERSION)
+        self.assertEqual(
+            PairRequest.model_json_schema()["properties"]["protocol"]["const"],
+            PROTOCOL_VERSION,
+        )
+        self.assertEqual(
+            SignedPairResult.model_json_schema()["properties"]["protocol"]["const"],
+            PROTOCOL_VERSION,
+        )
 
     def test_generated_rust_output_matches_the_python_owner(self):
         for path, expected in OUTPUTS.items():

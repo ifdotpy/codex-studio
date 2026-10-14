@@ -151,9 +151,11 @@ is treated as absent after reading its bounded bytes. Non-empty bodies require
 the documented JSON media type. Duplicate JSON object keys use the last value,
 matching Python's `json` parser. It performs an iterative depth scan before
 parsing and accepts up to 127 nested arrays or
-objects, matching serde_json's parser limit. The byte limits come from
-`studio_api/middleware.py::_request_limit`: 256 KiB by default and for
-federation, 28 MiB for assets, and 6 MiB for projects and voice audio. The
+objects, matching serde_json's parser limit. The byte limits and route mapping
+come from `codex_http_body_limits.py`, with the federation cap owned by
+`codex_federation_limits.py`; `studio_api/middleware.py::_request_limit` and the
+generated Rust middleware contract use those sources: 256 KiB by default and
+for federation, 28 MiB for assets, and 6 MiB for projects and voice audio. The
 127-level nesting cap is a deliberate safety limit; deeper JSON receives a 400
 validation response before serde_json parses it. The scanner and body reader are
 linear in the bounded request size. Schema

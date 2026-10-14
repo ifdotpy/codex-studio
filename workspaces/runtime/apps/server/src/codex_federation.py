@@ -26,7 +26,11 @@ from codex_federation_limits import (
     MAX_BATCH_BYTES,
     MAX_BATCH_ITEMS,
     MAX_MESSAGE_CODEPOINTS,
+    MAX_QUEUE_BYTES,
+    MAX_QUEUE_ROWS,
     MAX_ROOM_MEMBERS,
+    MAX_ROOM_RATE,
+    PROTOCOL_VERSION,
 )
 from codex_records import (
     FederationIdentityRecord, FederationInviteRecord, FederationOutboxRecord,
@@ -35,7 +39,7 @@ from codex_records import (
 from pydantic import BaseModel
 from studio_api.federation.models import MessageRequest, PairRequest, PullRequest, StatusRequest
 
-PROTOCOL = 1
+PROTOCOL = PROTOCOL_VERSION
 MAX_CLOCK_SKEW = 300
 MAX_BODY = FEDERATION_BODY_LIMIT
 # Compatibility aliases used by service code and test fixtures.
@@ -788,7 +792,7 @@ class FederationService:
         pending = db.execute("SELECT count(*),COALESCE(sum(length(record)),0) FROM runtime_federation_outbox "
                              "WHERE peer_id=? AND json_extract(record,'$.status')='queued'",
                              (peer["stateId"],)).fetchone()
-        if pending[0] >= 10000 or pending[1] + len(_json(value).encode()) > 32 * 1024 * 1024:
+        if pending[0] >= MAX_QUEUE_ROWS or pending[1] + len(_json(value).encode()) > MAX_QUEUE_BYTES:
             raise ValueError("Federation queue is full. Retry after earlier messages are delivered.")
         db.execute("INSERT INTO runtime_federation_outbox(id,peer_id,record) VALUES(?,?,?)",
                    (message_id, peer["stateId"], _json(value)))
@@ -1032,7 +1036,7 @@ class FederationService:
                           "AND json_extract(record,'$.kind')='chat-message' "
                           "AND json_extract(record,'$.created')>=?",
                           (peer["stateId"], room_id, time.time() - 60)).fetchone()[0]
-        if rate >= 30:
+        if rate >= MAX_ROOM_RATE:
             raise PermissionError("Federation room rate limit exceeded")
         row_id = "federated:" + hashlib.sha256((peer["stateId"] + ":" + envelope["id"]).encode()).hexdigest()
         existing = db.execute("SELECT seq,text,sender FROM runtime_chat_messages WHERE id=?", (row_id,)).fetchone()

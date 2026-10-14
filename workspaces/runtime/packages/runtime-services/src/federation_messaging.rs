@@ -1,7 +1,8 @@
 //! Pure federation decisions. Inputs are checked stored records; no I/O or clock.
 pub use crate::federation_limits::{
     MAX_BATCH_BYTES, MAX_BATCH_ITEMS as MAX_BATCH, MAX_MESSAGE_CODEPOINTS as MAX_MESSAGE,
-    MAX_ROOM_MEMBERS,
+    MAX_QUEUE_BYTES, MAX_QUEUE_ROWS, MAX_ROOM_MEMBERS, MAX_ROOM_RATE,
+    PROTOCOL_VERSION as PROTOCOL,
 };
 use crate::remote_transport::{RemoteTransportError, canonical_json};
 use serde::Deserialize;
@@ -9,10 +10,6 @@ use serde_json::{Value, json};
 use studio_runtime_store::federation_messaging::FederationTable;
 use thiserror::Error;
 
-pub const PROTOCOL: u64 = 1;
-const MAX_QUEUE_ROWS: u64 = 10_000;
-const MAX_QUEUE_BYTES: u64 = 32 * 1024 * 1024;
-const MAX_ROOM_RATE: u64 = 30;
 
 #[derive(Debug, Error)]
 pub enum FederationMessageError {

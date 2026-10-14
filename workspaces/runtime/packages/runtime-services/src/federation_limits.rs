@@ -3,6 +3,10 @@ pub const MAX_MESSAGE_CODEPOINTS: usize = 12000;
 pub const MAX_BATCH_ITEMS: usize = 50;
 pub const MAX_BATCH_BYTES: usize = 204800;
 pub const MAX_ROOM_MEMBERS: usize = 50;
+pub const MAX_QUEUE_ROWS: u64 = 10000;
+pub const MAX_QUEUE_BYTES: u64 = 33554432;
+pub const MAX_ROOM_RATE: u64 = 30;
+pub const PROTOCOL_VERSION: u64 = 1;
 pub const FEDERATION_BODY_LIMIT: usize = 262144;
 pub const FEDERATION_PATHS: [&str; 4] = [
     "/api/federation/v1/pair",
