@@ -4,7 +4,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-const PYTHON_ORACLE_TIMEOUT: Duration = Duration::from_secs(60);
+pub(crate) const PYTHON_ORACLE_TIMEOUT: Duration = Duration::from_secs(60);
 
 #[allow(dead_code)]
 pub(crate) struct IsolatedTestEnvironment {
