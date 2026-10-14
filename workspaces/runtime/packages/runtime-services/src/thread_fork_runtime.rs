@@ -179,6 +179,7 @@ pub fn dispatch_reserved_via_broker(
                 epoch,
             }),
             expected_scope: Some(scope.clone()),
+            deleted_actor_session: None,
             method,
             params: request.params.clone(),
             deadline,

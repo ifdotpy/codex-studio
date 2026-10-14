@@ -25,6 +25,7 @@ pub struct SessionRequest {
     pub operation: String,
     pub actor: Option<RequestActor>,
     pub transfer: Option<TransferAuthorization>,
+    pub deleted_actor_session: Option<String>,
     pub method: Method,
     pub params: Value,
     pub deadline: Instant,
@@ -162,6 +163,25 @@ fn validate(request: &SessionRequest) -> Result<(), PortError> {
                 | Method::ThreadTurnsList
         )
         && (request.method != Method::ThreadList || request.params.get("threadId").is_none());
+    let deleted_voice_stop = request
+        .deleted_actor_session
+        .as_ref()
+        .is_some_and(|session_id| {
+            !session_id.is_empty()
+                && request.transfer.is_none()
+                && request.actor.is_some()
+                && request.expected_scope.as_ref() == Some(&request.scope)
+                && request.method == Method::ThreadRealtimeStop
+                && request.operation == format!("voice:delete-stop:{session_id}")
+                && request.params.as_object().is_some_and(|params| {
+                    params.len() == 1
+                        && request
+                            .params
+                            .get("threadId")
+                            .and_then(Value::as_str)
+                            .is_some_and(|id| !id.is_empty())
+                })
+        });
     let actor_method = request.transfer.is_none()
         && request.actor.is_some()
         && matches!(
@@ -187,7 +207,8 @@ fn validate(request: &SessionRequest) -> Result<(), PortError> {
                 | Method::CommandExecWrite
                 | Method::CommandExecResize
                 | Method::CommandExecTerminate
-        );
+        )
+        || deleted_voice_stop;
     let transfer_method = request.transfer.as_ref().is_some_and(|transfer| {
         matches!(
             request.method,
@@ -266,6 +287,7 @@ pub(super) struct Call {
     operation: String,
     actor: Option<RequestActor>,
     transfer: Option<TransferAuthorization>,
+    deleted_actor_session: Option<String>,
     method: String,
     params: Value,
 }
@@ -323,6 +345,7 @@ mod validation_tests {
                 epoch: 1,
             }),
             transfer: None,
+            deleted_actor_session: None,
             method: Method::ThreadTurnsList,
             params: json!({
                 "threadId":"fixture-thread",

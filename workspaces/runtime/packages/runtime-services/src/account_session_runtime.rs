@@ -54,6 +54,9 @@ pub struct ProviderRequest {
     pub operation: String,
     pub actor: Option<RequestActor>,
     pub expected_scope: Option<ConnectionScope>,
+    /// Exact voice session authorized by a committed agent-delete intent.
+    /// Only `thread/realtime/stop` may set this field.
+    pub deleted_actor_session: Option<String>,
     pub method: Method,
     pub params: Value,
     pub deadline: std::time::Instant,
@@ -297,6 +300,14 @@ pub struct AccountSessionRuntime {
     limits: Option<Arc<crate::account_policy::AccountPolicyState>>,
 }
 impl AccountSessionRuntime {
+    fn block_on_retained<F: std::future::Future>(&self, future: F) -> F::Output {
+        if tokio::runtime::Handle::try_current().is_ok() {
+            tokio::task::block_in_place(|| self.runtime.block_on(future))
+        } else {
+            self.runtime.block_on(future)
+        }
+    }
+
     pub fn new(
         driver: Arc<AccountDriver>,
         session: Option<Arc<dyn RetainedAccountSession>>,
@@ -335,7 +346,7 @@ impl AccountSessionRuntime {
             "Unsupported retained provider method",
         ))?;
         let deadline = Instant::now() + timeout;
-        let receipt = self.runtime.block_on(async {
+        let receipt = self.block_on_retained(async {
             tokio::time::timeout_at(
                 deadline,
                 session.request(ProviderRequest {
@@ -343,6 +354,7 @@ impl AccountSessionRuntime {
                     operation: operation.clone(),
                     actor: None,
                     expected_scope: None,
+                    deleted_actor_session: None,
                     method,
                     params,
                     deadline: deadline.into_std(),
@@ -478,7 +490,7 @@ impl AccountSessionPort for AccountSessionRuntime {
         let deadline = request.deadline;
         let operation = request.operation.clone();
         let account = request.account.clone();
-        match self.runtime.block_on(async {
+        match self.block_on_retained(async {
             tokio::time::timeout_at(
                 tokio::time::Instant::from_std(deadline),
                 session.request(request),
@@ -505,7 +517,7 @@ impl AccountSessionPort for AccountSessionRuntime {
         let operation = request.operation.clone();
         let account = request.source_account.clone();
         let scope = request.expected_scope.clone();
-        match self.runtime.block_on(async {
+        match self.block_on_retained(async {
             tokio::time::timeout_at(
                 tokio::time::Instant::from_std(deadline),
                 session.transfer_request(request),
@@ -532,7 +544,7 @@ impl AccountSessionPort for AccountSessionRuntime {
         let session = self.session.as_ref().ok_or(AccountSessionError::Requires(
             "provider-session/callback-barrier",
         ))?;
-        let wait = self.runtime.block_on(async {
+        let wait = self.block_on_retained(async {
             tokio::time::timeout_at(
                 tokio::time::Instant::from_std(deadline),
                 session.callback_barrier(account.to_owned(), expected_scope.clone(), deadline),

@@ -82,6 +82,7 @@ impl ClaudeSessionPort for ClaudePort {
                             .map_err(|_| ControlError::Changed)?,
                     }),
                     transfer: None,
+                    deleted_actor_session: None,
                     method: call.identity.method,
                     params: call.params,
                     deadline: (tokio::time::Instant::now() + std::time::Duration::from_secs(20))
@@ -171,6 +172,7 @@ impl crate::recovery_runtime::RetainedHistory for HistoryPort {
                 expected_scope: None,
                 actor: Some(self.actor.clone()),
                 transfer: None,
+                deleted_actor_session: None,
                 operation,
                 method: Method::from_wire(method.as_str()).ok_or(HistoryError::Unsupported)?,
                 params,
