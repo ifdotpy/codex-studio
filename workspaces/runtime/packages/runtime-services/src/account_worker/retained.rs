@@ -14,8 +14,9 @@ pub struct RequestActor {
 #[derive(Clone)]
 pub struct SessionRequest {
     pub scope: ConnectionScope,
+    pub expected_scope: Option<ConnectionScope>,
     pub operation: String,
-    pub actor: RequestActor,
+    pub actor: Option<RequestActor>,
     pub method: Method,
     pub params: Value,
     pub deadline: Instant,
@@ -38,6 +39,8 @@ pub struct SessionReceipt {
 pub enum PortError {
     #[error("retained-session/identity-changed")]
     Identity,
+    #[error("retained-session/expected-scope-mismatch")]
+    ScopeMismatch,
     #[error("retained-session/invalid-request")]
     Invalid,
     #[error("retained-session/not-sent")]
@@ -127,24 +130,51 @@ impl RetainedSessionPort {
     }
 }
 fn validate(request: &SessionRequest) -> Result<(), PortError> {
-    if !matches!(
+    if request
+        .expected_scope
+        .as_ref()
+        .is_some_and(|expected| expected != &request.scope)
+    {
+        return Err(PortError::ScopeMismatch);
+    }
+    let actorless_read = request.actor.is_none()
+        && matches!(
+            request.method,
+            Method::ThreadList
+                | Method::ThreadLoadedList
+                | Method::ModelList
+                | Method::ClaudeDiagnostics
+        )
+        && (request.method != Method::ThreadList || request.params.get("threadId").is_none());
+    let actor_method = matches!(
         request.method,
         Method::ThreadRead
             | Method::ThreadTurnsList
             | Method::ThreadItemsList
             | Method::ThreadBackgroundTerminalsList
+            | Method::ThreadStart
+            | Method::TurnStart
+            | Method::ThreadFork
+            | Method::ThreadCompactStart
+            | Method::ReviewStart
             | Method::ClaudeState
             | Method::ClaudeCommands
             | Method::ClaudeSettings
             | Method::ClaudeStopTask
             | Method::ThreadRollback
             | Method::ThreadQueueList
-    ) || request.operation.is_empty()
+            | Method::TurnInterrupt
+    );
+    if !(actorless_read || (request.actor.is_some() && actor_method))
+        || request.operation.is_empty()
         || request.operation.len() > 1024
         || request.params.to_string().len() > 2 * 1024 * 1024
         || !request.params.is_object()
         || (request.method == Method::ThreadRead
-            && request.params.get("includeTurns") != Some(&json!(false)))
+            && request
+                .params
+                .get("includeTurns")
+                .is_some_and(|value| value != &json!(false)))
     {
         return Err(PortError::Invalid);
     }
@@ -154,7 +184,7 @@ fn validate(request: &SessionRequest) -> Result<(), PortError> {
 pub(super) struct Call {
     scope: ConnectionScope,
     operation: String,
-    actor: RequestActor,
+    actor: Option<RequestActor>,
     method: String,
     params: Value,
 }

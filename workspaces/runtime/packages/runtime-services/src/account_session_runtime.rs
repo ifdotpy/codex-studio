@@ -10,8 +10,11 @@
 //! until a confirmed late receipt or auth reconciliation. The regression test is
 //! `restart_and_cancellation_latch_never_authorize_another_send`.
 
+use crate::account_worker::retained::RequestActor;
 use serde::Deserialize;
 use serde_json::Value;
+use studio_runtime_providers::Method;
+use studio_runtime_providers::RequestTicket;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -24,6 +27,36 @@ pub enum AccountSessionError {
     InvalidResponse(String),
     #[error("Account session persistence failed")]
     Persistence,
+    #[error("The provider request outcome is unknown; inspect its receipt before retrying")]
+    Unknown,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NotSentReason {
+    NoLiveAccountWorker,
+    ExpectedScopeMismatch,
+    DeadlineExpired,
+    WorkerNotSent,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum ProviderResponse {
+    Reply(Value),
+    Rejected(Value),
+}
+
+/// One request on an account's retained provider session. Agent-bound requests
+/// are checked against that agent's epoch, account and thread by the worker;
+/// only allow-listed read methods may omit an actor.
+#[derive(Clone)]
+pub struct ProviderRequest {
+    pub account: String,
+    pub operation: String,
+    pub actor: Option<RequestActor>,
+    pub expected_scope: Option<ConnectionScope>,
+    pub method: Method,
+    pub params: Value,
+    pub deadline: std::time::Instant,
 }
 
 pub use crate::account_driver::CodexLoginRequest as LoginRequest;
@@ -41,6 +74,17 @@ pub struct ProfileRequest {
 /// registry/store lock. These defaults also allow composition one capability at a
 /// time without advertising success for an absent consumer.
 pub trait AccountSessionPort: Send + Sync {
+    fn current_scope(&self, _account: &str) -> Option<ConnectionScope> {
+        None
+    }
+    fn provider_request(
+        &self,
+        _request: ProviderRequest,
+    ) -> Result<SessionReceipt, AccountSessionError> {
+        Err(AccountSessionError::Requires(
+            "provider-session/native-request",
+        ))
+    }
     fn login(&self, _request: LoginRequest) -> Result<Value, AccountSessionError> {
         Err(AccountSessionError::Requires(
             "provider-session/codex-login",
@@ -159,11 +203,7 @@ const LOGIN_TIMEOUT: Duration = Duration::from_secs(20);
 const CANCEL_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_CONFIG_BYTES: u64 = 1024 * 1024;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ConnectionScope {
-    pub account: String,
-    pub connection: String,
-}
+pub use crate::recovery_history::ConnectionScope;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RequestCertainty {
     Written,
@@ -173,24 +213,23 @@ pub enum RequestCertainty {
 pub struct SessionReceipt {
     pub scope: ConnectionScope,
     pub operation: String,
+    /// Missing only when the retained owner proves the request was not handed
+    /// off (for example, no live account worker exists).
+    pub ticket: Option<RequestTicket>,
     pub certainty: RequestCertainty,
-    pub result: Option<Value>,
+    pub result: Option<ProviderResponse>,
+    pub not_sent_reason: Option<NotSentReason>,
 }
-pub type SessionFuture = Pin<Box<dyn Future<Output = SessionReceipt> + Send>>;
+pub type SessionFuture =
+    Pin<Box<dyn Future<Output = Result<SessionReceipt, AccountSessionError>> + Send>>;
 
 /// The integrator adapts its retained session's request(scope, operation, method,
 /// params, absolute deadline) here. Scope lookup must not dispatch a mutation.
 pub trait RetainedAccountSession: Send + Sync {
-    fn scope(&self, account: &str, for_login: bool)
-    -> Result<ConnectionScope, AccountSessionError>;
-    fn request(
-        &self,
-        scope: ConnectionScope,
-        operation: String,
-        method: &'static str,
-        params: Value,
-        deadline: Instant,
-    ) -> SessionFuture;
+    fn current_scope(&self, _account: &str) -> Option<ConnectionScope> {
+        None
+    }
+    fn request(&self, request: ProviderRequest) -> SessionFuture;
 }
 
 /// Called on the HTTP edge's blocking pool. Only the retained-session wait uses
@@ -230,7 +269,7 @@ impl AccountSessionRuntime {
     fn exchange(
         &self,
         account: &str,
-        for_login: bool,
+        _for_login: bool,
         operation: String,
         method: &'static str,
         params: Value,
@@ -239,26 +278,33 @@ impl AccountSessionRuntime {
         let session = self.session.as_ref().ok_or(AccountSessionError::Requires(
             "provider-session/codex-login",
         ))?;
-        let scope = session.scope(account, for_login)?;
-        if scope.account != account || scope.connection.is_empty() {
-            return Err(AccountSessionError::InvalidResponse("/connection".into()));
-        }
+        let method = Method::from_wire(method).ok_or(AccountSessionError::Refused(
+            "Unsupported retained provider method",
+        ))?;
         let deadline = Instant::now() + timeout;
         let receipt = self.runtime.block_on(async {
             tokio::time::timeout_at(
                 deadline,
-                session.request(scope.clone(), operation.clone(), method, params, deadline),
+                session.request(ProviderRequest {
+                    account: account.to_owned(),
+                    operation: operation.clone(),
+                    actor: None,
+                    expected_scope: None,
+                    method,
+                    params,
+                    deadline: deadline.into_std(),
+                }),
             )
             .await
         });
         match receipt {
-            Ok(receipt) if receipt.scope == scope && receipt.operation == operation => Ok(receipt),
-            _ => Ok(SessionReceipt {
-                scope,
-                operation,
-                certainty: RequestCertainty::Unknown,
-                result: None,
-            }),
+            Ok(Ok(receipt))
+                if receipt.operation == operation && receipt.scope.account == account =>
+            {
+                Ok(receipt)
+            }
+            Ok(Err(error)) => Err(error),
+            _ => Err(AccountSessionError::Unknown),
         }
     }
     fn accounts(&self) -> Result<Value, AccountSessionError> {
@@ -365,53 +411,36 @@ impl AccountSessionRuntime {
     }
 }
 impl AccountSessionPort for AccountSessionRuntime {
-    fn model_list(
-        &self,
-        account: &str,
-        provider: &str,
-        params: Value,
-    ) -> Result<Value, AccountSessionError> {
-        if !matches!(provider, "codex" | "claude") || !params.is_object() {
-            return Err(AccountSessionError::InvalidResponse("/".into()));
-        }
-        let snapshot = self.driver.listing_snapshot().map_err(account_error)?;
-        let profile = snapshot
-            .accounts
-            .iter()
-            .find(|row| row["id"].as_str() == Some(account))
-            .ok_or(AccountSessionError::Refused("Unknown account"))?;
-        if profile
-            .get("provider")
-            .and_then(Value::as_str)
-            .unwrap_or("codex")
-            != provider
-        {
-            return Err(AccountSessionError::Refused("Account provider changed"));
-        }
-        let operation = format!(
-            "model-list:{}",
-            crate::event_write::request_signature(
-                &serde_json::json!({"account": account, "provider": provider, "params": params}),
-            )
-        );
-        let receipt = self.exchange(
-            account,
-            false,
-            operation,
-            "model/list",
-            params,
-            Duration::from_secs(
-                studio_runtime_schema::shared_values::MODEL_CATALOG_OPERATION_TIMEOUT_SECONDS,
-            ),
-        )?;
-        if receipt.certainty != RequestCertainty::Written {
-            return Err(AccountSessionError::Requires("provider-session/model-list"));
-        }
-        receipt
-            .result
-            .ok_or_else(|| AccountSessionError::InvalidResponse("/".into()))
+    fn current_scope(&self, account: &str) -> Option<ConnectionScope> {
+        self.session.as_ref()?.current_scope(account)
     }
 
+    fn provider_request(
+        &self,
+        request: ProviderRequest,
+    ) -> Result<SessionReceipt, AccountSessionError> {
+        let session = self.session.as_ref().ok_or(AccountSessionError::Requires(
+            "provider-session/native-request",
+        ))?;
+        let deadline = request.deadline;
+        let operation = request.operation.clone();
+        let account = request.account.clone();
+        match self.runtime.block_on(async {
+            tokio::time::timeout_at(
+                tokio::time::Instant::from_std(deadline),
+                session.request(request),
+            )
+            .await
+        }) {
+            Ok(Ok(receipt))
+                if receipt.operation == operation && receipt.scope.account == account =>
+            {
+                Ok(receipt)
+            }
+            Ok(Err(error)) => Err(error),
+            _ => Err(AccountSessionError::Unknown),
+        }
+    }
     fn read_limits(&self, account: &str) -> Result<Value, AccountSessionError> {
         let snapshot = self.driver.snapshot().map_err(account_error)?;
         if !snapshot
@@ -477,7 +506,10 @@ impl AccountSessionPort for AccountSessionRuntime {
         let (result, sent) = match response {
             Ok(response) => (
                 if response.certainty == RequestCertainty::Written {
-                    response.result
+                    match response.result {
+                        Some(ProviderResponse::Reply(value)) => Some(value),
+                        Some(ProviderResponse::Rejected(_)) | None => None,
+                    }
                 } else {
                     None
                 },
@@ -550,10 +582,10 @@ impl AccountSessionPort for AccountSessionRuntime {
         let confirmed = response.ok().is_some_and(|receipt| {
             receipt.certainty == RequestCertainty::Written
                 && matches!(
-                    receipt
-                        .result
-                        .as_ref()
-                        .and_then(|result| result["status"].as_str()),
+                    receipt.result.as_ref().and_then(|result| match result {
+                        ProviderResponse::Reply(value) => value["status"].as_str(),
+                        ProviderResponse::Rejected(_) => None,
+                    }),
                     Some("canceled" | "notFound")
                 )
         });
