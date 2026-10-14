@@ -7,6 +7,7 @@ use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use thiserror::Error;
 
+use studio_runtime_schema::agent_limits_generated::MAX_TRANSFER_AGENT_RECORDS;
 pub use studio_runtime_store::MAX_TRANSFER_RECORD_BYTES as MAX_RECORD_BYTES;
 pub const EXECUTOR_REQUIRED: &str = "account-transfer/provider-history-executor";
 pub const SETTINGS_REQUIRED: &str = "account-transfer/destination-settings";
@@ -152,7 +153,7 @@ impl Snapshot {
         let mut bytes = raw.len();
         for (id, raw) in agents {
             bytes = bytes.saturating_add(raw.len());
-            if records.len() >= 2049 || bytes > 64 * 1024 * 1024 {
+            if records.len() >= MAX_TRANSFER_AGENT_RECORDS || bytes > 64 * 1024 * 1024 {
                 return Err(invalid("transfer snapshot", "/resourceLimit"));
             }
             // `runtime_agents` uses the table schema. Keep the open record as JSON;

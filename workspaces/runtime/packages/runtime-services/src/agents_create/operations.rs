@@ -5,6 +5,9 @@ use crate::account_policy::AccountPolicyState;
 use crate::event_write::{python_json, python_strip, truthy};
 use sha2::{Digest, Sha256};
 use std::path::PathBuf;
+use studio_runtime_schema::agent_limits_generated::{
+    DEFAULT_MAX_TEAM_AGENTS, DEFAULT_SUBAGENT_CONCURRENCY, TEAM_AGENT_HEADROOM,
+};
 use studio_runtime_store::RuntimeStore;
 
 pub struct Context<'a> {
@@ -68,8 +71,6 @@ pub struct Conversation {
 }
 
 const DEFAULT_LEAD_MODEL: &str = "gpt-6-astra";
-const DEFAULT_CONCURRENCY: i64 = 32;
-const DEFAULT_MAX_AGENTS: i64 = 64;
 
 pub fn lead(context: &Context<'_>, request: Creation) -> Result<Value, OperationError> {
     create(context, request, true)
@@ -201,13 +202,13 @@ fn create(
             .and_then(Value::as_bool)
             .unwrap_or(true)
     });
-    let concurrency = request.concurrency.unwrap_or(DEFAULT_CONCURRENCY);
-    let requested_max_agents = request.max_agents.unwrap_or(DEFAULT_MAX_AGENTS);
+    let concurrency = request.concurrency.unwrap_or(DEFAULT_SUBAGENT_CONCURRENCY);
+    let requested_max_agents = request.max_agents.unwrap_or(DEFAULT_MAX_TEAM_AGENTS);
     let role = request.role.as_deref().unwrap_or("orchestrator");
     let max_agents = if request.max_agents.is_some() || role != "orchestrator" {
         requested_max_agents
     } else {
-        requested_max_agents.max(concurrency + 2)
+        requested_max_agents.max(concurrency + TEAM_AGENT_HEADROOM)
     };
     let prompt = python_strip(&request.prompt);
     let created = crate::event_write::unix_time().map_err(|_| OperationError::Internal)?;

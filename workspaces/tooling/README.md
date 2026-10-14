@@ -9,6 +9,8 @@ pre-commit hook.
   checks for staged Git content; see its [Change Contract](apps/repository-checks/README.md).
   The root [`package.json`](../../package.json) owns the commands and `.githooks/`
   invokes the checker.
+- [`worker-env.sh`](worker-env.sh): source this for isolated Rust worker builds.
+  It retains Cargo's configured compiler wrapper, including `sccache` when enabled.
 
 There are no tooling packages yet. Repository checks may inspect all workspaces
 but application code must not depend on this tooling app at runtime.

@@ -1363,16 +1363,26 @@ mod tests {
             )
             .expect_err("minimum string length is enforced");
         assert_eq!(project.location.first(), Some(&json!("body")));
+        registry
+            .validate_route(
+                "POST",
+                "/api/agents",
+                RawRequest {
+                    body: Some(json!({"prompt":"x", "concurrency":2048, "maxAgents":2050})),
+                    ..RawRequest::default()
+                },
+            )
+            .expect("maximum concurrency and team headroom are accepted");
         let agent = registry
             .validate_route(
                 "POST",
                 "/api/agents",
                 RawRequest {
-                    body: Some(json!({"prompt":"x", "concurrency":513})),
+                    body: Some(json!({"prompt":"x", "concurrency":2049})),
                     ..RawRequest::default()
                 },
             )
-            .expect_err("maximum concurrency is enforced");
+            .expect_err("concurrency above the maximum is rejected");
         assert_eq!(agent.location.first(), Some(&json!("body")));
     }
 

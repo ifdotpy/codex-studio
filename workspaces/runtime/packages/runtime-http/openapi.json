@@ -21043,7 +21043,7 @@
         "properties": {
           "concurrency": {
             "default": 32,
-            "maximum": 512.0,
+            "maximum": 2048.0,
             "minimum": 0.0,
             "title": "Concurrency",
             "type": "integer"
@@ -21070,7 +21070,7 @@
           },
           "maxAgents": {
             "default": 64,
-            "maximum": 1024.0,
+            "maximum": 2050.0,
             "minimum": 1.0,
             "title": "Maxagents",
             "type": "integer"
@@ -22418,7 +22418,7 @@
           },
           "subagent_concurrency": {
             "default": 32,
-            "maximum": 512.0,
+            "maximum": 2048.0,
             "minimum": 0.0,
             "title": "Subagent Concurrency",
             "type": "integer"
@@ -22617,7 +22617,7 @@
           },
           "concurrency": {
             "default": 32,
-            "maximum": 512.0,
+            "maximum": 2048.0,
             "minimum": 0.0,
             "title": "Concurrency",
             "type": "integer"
@@ -22682,7 +22682,7 @@
           },
           "maxAgents": {
             "default": 64,
-            "maximum": 1024.0,
+            "maximum": 2050.0,
             "minimum": 1.0,
             "title": "Maxagents",
             "type": "integer"

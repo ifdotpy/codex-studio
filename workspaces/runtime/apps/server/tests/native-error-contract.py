@@ -380,15 +380,19 @@ class NativeErrorContract(unittest.TestCase):
                 'misalignment': {'errorType': 'untrusted', 'details': 'Exact native details'}}
 
     def test_policy_block_preserves_queue_and_exact_receipts(self):
-        queued = self.runtime.send(self.key, 'Pending task', message_id='before-policy')
-        error = self.policy_error()
-        self.send('error', error=error, willRetry=False)
-        self.send('turn/completed', turn={'id': self.turn, 'status': 'failed'})
-        for options in ({'manual': True}, {'manual': False}, {'resume': True}, {'delivery': 'steer'}):
-            with self.subTest(options=options), self.assertRaisesRegex(ValueError, 'another chat'):
-                self.runtime.send(self.key, 'Continue', message_id='after-policy', **options)
-        self.assertEqual(self.runtime.send(self.key, 'Pending task', message_id='before-policy'),
-                         {'id': queued['id'], 'status': 'pending', 'error': None})
+        # Keep the accepted event pending while the asynchronous scheduler
+        # processes the policy refusal. Once policy handling completes, normal
+        # dispatch is safely blocked by the durable native thread block.
+        with patch.object(self.runtime, 'dispatch_candidates', return_value=0):
+            queued = self.runtime.send(self.key, 'Pending task', message_id='before-policy')
+            error = self.policy_error()
+            self.send('error', error=error, willRetry=False)
+            self.send('turn/completed', turn={'id': self.turn, 'status': 'failed'})
+            for options in ({'manual': True}, {'manual': False}, {'resume': True}, {'delivery': 'steer'}):
+                with self.subTest(options=options), self.assertRaisesRegex(ValueError, 'another chat'):
+                    self.runtime.send(self.key, 'Continue', message_id='after-policy', **options)
+            self.assertEqual(self.runtime.send(self.key, 'Pending task', message_id='before-policy'),
+                             {'id': queued['id'], 'status': 'pending', 'error': None})
         self.assertIsNone(self.runtime.delivery_receipt('after-policy'))
         for action in ('compact', 'review'):
             with self.assertRaisesRegex(ValueError, 'another chat'):
