@@ -34,12 +34,48 @@ from codex_shared_values import (
 )
 from codex_sync import TRANSCRIPT_MAX_TOMBSTONES as SYNC_TRANSCRIPT_MAX_TOMBSTONES
 from studio_api.agents.models import ProjectSecretSetRequest
+from studio_api.models import MAX_SAFE_INTEGER
 from studio_api.sync.models import DraftPushRequest
 
 
 class SharedValuesContract(unittest.TestCase):
     def test_generated_cross_language_values_match_the_authority(self):
         self.assertEqual(main(["--check"]), 0)
+
+    def test_javascript_safe_integer_ceiling_has_one_generated_rust_consumer(self):
+        self.assertEqual(MAX_SAFE_INTEGER, 9_007_199_254_740_991)
+        rust_values = (
+            REPOSITORY_ROOT / "workspaces/runtime/packages/runtime-schema/src/shared_values.rs"
+        ).read_text(encoding="utf-8")
+        self.assertIn(f"pub const MAX_SAFE_INTEGER: i64 = {MAX_SAFE_INTEGER};", rust_values)
+        for relative in (
+            "workspaces/runtime/packages/runtime-http/src/validation.rs",
+            "workspaces/runtime/packages/runtime-services/src/change_notifications.rs",
+            "workspaces/runtime/packages/runtime-services/src/workspace_views.rs",
+            "workspaces/runtime/packages/runtime-services/src/agent_management.rs",
+            "workspaces/runtime/packages/runtime-services/src/progress_panel.rs",
+            "workspaces/runtime/packages/runtime-services/src/voice.rs",
+            "workspaces/runtime/packages/runtime-services/src/continuation.rs",
+            "workspaces/runtime/packages/runtime-services/src/analytics_capture.rs",
+            "workspaces/runtime/packages/runtime-services/src/analytics_history.rs",
+        ):
+            source = (REPOSITORY_ROOT / relative).read_text(encoding="utf-8")
+            with self.subTest(source=relative):
+                self.assertIn("MAX_SAFE_INTEGER", source)
+                self.assertNotIn("9_007_199_254_740_991", source)
+        for relative in (
+            "workspaces/runtime/apps/server/src/studio_api/analytics_capture_models.py",
+            "workspaces/runtime/apps/server/src/studio_api/persisted_continuations.py",
+            "workspaces/runtime/apps/server/src/studio_api/relocation_models.py",
+            "workspaces/runtime/apps/server/src/studio_api/request_schema_audit.py",
+            "workspaces/runtime/apps/server/src/studio_api/sync/preferences.py",
+            "workspaces/runtime/apps/server/src/studio_api/sync/resources/models.py",
+            "workspaces/runtime/apps/server/src/codex_progress_layout.py",
+        ):
+            source = (REPOSITORY_ROOT / relative).read_text(encoding="utf-8")
+            with self.subTest(source=relative):
+                self.assertIn("MAX_SAFE_INTEGER", source)
+                self.assertNotIn("9_007_199_254_740_991", source)
 
     def test_python_supervisor_uses_the_named_handshake_version(self):
         self.assertEqual(PROTOCOL, PROCESS_SUPERVISOR_PROTOCOL_VERSION)

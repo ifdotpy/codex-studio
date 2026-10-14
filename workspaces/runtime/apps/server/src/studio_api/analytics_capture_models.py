@@ -2,9 +2,10 @@
 from typing import Annotated
 
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, StrictStr
+from studio_api.models import MAX_SAFE_INTEGER
 
 Nonnegative = Annotated[float, Field(ge=0)]
-Counter = Annotated[StrictInt, Field(ge=0, le=9007199254740991)]
+Counter = Annotated[StrictInt, Field(ge=0, le=MAX_SAFE_INTEGER)]
 
 
 class AnalyticsObject(BaseModel):

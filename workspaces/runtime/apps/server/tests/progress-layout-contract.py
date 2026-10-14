@@ -6,6 +6,7 @@ import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT, SERVER_TESTS_ROOT
+from studio_api.models import MAX_SAFE_INTEGER
 
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
@@ -82,6 +83,14 @@ class ProgressLayoutContract(unittest.TestCase):
         self.assertEqual(layout.layout_status(self.root, "first")["status"], "fits")
         self.assertEqual(read_progress(self.root, "first"), before)
         self.assertEqual(self.feedback.stat().st_mode & 0o777, 0o444)
+
+    def test_sequence_uses_the_shared_safe_integer_boundary(self):
+        result = self.record(sequence=MAX_SAFE_INTEGER)
+        self.assertEqual(result["reports"][0]["sequence"], MAX_SAFE_INTEGER)
+        before = self.feedback.read_bytes()
+        with self.assertRaises(ValueError):
+            self.record(sequence=MAX_SAFE_INTEGER + 1)
+        self.assertEqual(self.feedback.read_bytes(), before)
 
     def test_stale_revision_rejected_and_new_file_unmeasured(self):
         body = self.report()

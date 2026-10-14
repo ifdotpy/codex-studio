@@ -19,6 +19,7 @@ from codex_shared_values import (
     PROGRESS_LAYOUT_MAX_BYTES,
     PROGRESS_LAYOUT_MAX_CLIENTS,
 )
+from studio_api.models import MAX_SAFE_INTEGER
 
 RENDERER = "progress-markdown-v2"
 LEGACY_RENDERER = "progress-markdown-v1"
@@ -122,7 +123,7 @@ def _report(body):
     if not isinstance(body["client"], str) or not 1 <= len(body["client"]) <= 100 or not all(
             c.isascii() and (c.isalnum() or c in "-_") for c in body["client"]):
         raise ValueError("Invalid progress client identity")
-    if type(body["sequence"]) is not int or not 0 <= body["sequence"] <= 9007199254740991:
+    if type(body["sequence"]) is not int or not 0 <= body["sequence"] <= MAX_SAFE_INTEGER:
         raise ValueError("Invalid progress measurement sequence")
     for field in ("width", "height", "contentWidth", "contentHeight"):
         number = body[field]

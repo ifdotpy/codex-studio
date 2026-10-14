@@ -7,13 +7,12 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::{Map, Value, json};
 use studio_runtime_schema::shared_values::{
-    MAX_PROGRESS_FILE_BYTES, PROGRESS_FILE_LIMIT_LABEL, PROGRESS_LAYOUT_FRESH_SECONDS,
-    PROGRESS_LAYOUT_MAX_BYTES, PROGRESS_LAYOUT_MAX_CLIENTS,
+    MAX_PROGRESS_FILE_BYTES, MAX_SAFE_INTEGER, PROGRESS_FILE_LIMIT_LABEL,
+    PROGRESS_LAYOUT_FRESH_SECONDS, PROGRESS_LAYOUT_MAX_BYTES, PROGRESS_LAYOUT_MAX_CLIENTS,
 };
 use thiserror::Error;
 
 const MAX_PROGRESS_BYTES: usize = MAX_PROGRESS_FILE_BYTES;
-const SAFE_INTEGER: u64 = 9_007_199_254_740_991;
 const RENDERER_V1: &str = "progress-markdown-v1";
 const RENDERER_V2: &str = "progress-markdown-v2";
 const LAYOUT_FILE: &str = "PROGRESS.layout.json";
@@ -420,7 +419,7 @@ fn validate_report(body: &Value) -> Result<Map<String, Value>, ProgressPanelErro
     }
     if body["sequence"]
         .as_u64()
-        .is_none_or(|value| value > SAFE_INTEGER)
+        .is_none_or(|value| value > MAX_SAFE_INTEGER as u64)
     {
         return Err(ProgressPanelError::InvalidLayout("sequence"));
     }

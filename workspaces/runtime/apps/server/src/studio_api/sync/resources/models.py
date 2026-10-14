@@ -6,11 +6,11 @@ from typing import Annotated, Literal
 
 from pydantic import Field, RootModel, StrictBool, StrictFloat, StrictStr, model_validator
 
-from studio_api.models import ContractModel, SafeInt, SyncEntity
+from studio_api.models import ContractModel, MAX_SAFE_INTEGER, SafeInt, SyncEntity
 from studio_api.schema import API_SCHEMA_MISMATCH_FIELD
 from studio_api.sync.protocol_type_generated import SyncProtocolVersion
 
-MAX_SAFE_REVISION = 9_007_199_254_740_991
+MAX_SAFE_REVISION = MAX_SAFE_INTEGER
 MAX_ENTITY_CHANGE_DOCUMENTS = 512
 MAX_ENTITY_CHANGE_BYTES = 262_144
 ResourceRevision = Annotated[SafeInt, Field(ge=0, le=MAX_SAFE_REVISION)]

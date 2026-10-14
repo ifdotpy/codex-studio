@@ -20,6 +20,7 @@ isolate_supervisor_environment()
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from runtime_test_environment import runtime_environment
 from http_backend_harness import TimedHTTPContractTest, start_contract_backend, no_write_snapshot
+from studio_api.models import MAX_SAFE_INTEGER
 
 
 def seed_python_rules(backend) -> None:
@@ -135,8 +136,8 @@ class RulesHTTPContract(TimedHTTPContractTest, unittest.TestCase):
     def test_out_of_window_rule_time_is_refused_without_writes(self) -> None:
         values = (
             0, 1.0, 2**64, 2**100, 1.5, -1, 1,
-            9_007_199_254_740_990, 9_007_199_254_740_992,
-            9_007_199_254_740_991,
+            MAX_SAFE_INTEGER - 1, MAX_SAFE_INTEGER + 1,
+            MAX_SAFE_INTEGER,
         )
         for index, at in enumerate(values):
             with self.subTest(at=at):

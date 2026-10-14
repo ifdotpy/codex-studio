@@ -3,13 +3,13 @@ from __future__ import annotations
 
 from typing import Annotated, Literal
 from pydantic import ConfigDict, Field, StrictBool, StrictInt, StrictStr
-from studio_api.models import ContractModel, JsonValue
+from studio_api.models import MAX_SAFE_INTEGER, ContractModel, JsonValue
 from studio_api.accounts.models import UsageLimitsResponse
 
 Text = Annotated[StrictStr, Field(max_length=1048576)]
 Identity = Annotated[StrictStr, Field(min_length=1, max_length=4096)]
-Count = Annotated[StrictInt, Field(ge=0, le=9007199254740991)]
-Stamp = Annotated[float, Field(ge=0, le=9007199254740991)]
+Count = Annotated[StrictInt, Field(ge=0, le=MAX_SAFE_INTEGER)]
+Stamp = Annotated[float, Field(ge=0, le=MAX_SAFE_INTEGER)]
 
 
 class OpenRecord(ContractModel):
@@ -103,7 +103,7 @@ class AuthWaitReceipt(OpenRecord):
     status: Literal["auth_probe_wait", "completed", "cancelled"]
     cause: Literal["claude_auth_probe"]
     error: Literal["Cannot read Claude Code sign-in status"]
-    createdAt: Annotated[float, Field(gt=0, le=9007199254740991)]
+    createdAt: Annotated[float, Field(gt=0, le=MAX_SAFE_INTEGER)]
     dueAt: Stamp | None
     source: dict[str, JsonValue]
     attempt: ContinuationAttempt

@@ -10,9 +10,9 @@ use std::sync::Arc;
 use axum::body::Bytes;
 use jsonschema::{Draft, Registry as SchemaRegistry, Validator};
 use serde_json::{Map, Value, json};
+use studio_runtime_schema::shared_values::MAX_SAFE_INTEGER;
 
 const OPENAPI_URI: &str = "https://codex-studio.invalid/openapi.json";
-const MAX_SAFE_INTEGER: i128 = 9_007_199_254_740_991;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct LocatedError {
@@ -1240,8 +1240,8 @@ mod tests {
     use std::sync::Arc;
 
     use super::{
-        OperationValidator, RawRequest, Registry, check_safe_integer_bounds, compile_part,
-        schema_registry,
+        MAX_SAFE_INTEGER, OperationValidator, RawRequest, Registry, check_safe_integer_bounds,
+        compile_part, schema_registry,
     };
     use axum::http::{HeaderMap, HeaderValue};
     use serde_json::{Map, Value, json};
@@ -1497,7 +1497,7 @@ mod tests {
         let document = json!({"components":{"schemas":{}}});
         let registry = schema_registry(&document).expect("embedded test document registers");
         let definitions = Arc::new(Map::new());
-        let header_schema = json!({"type":"object","properties":{"last-event-id":{"type":"integer","minimum":0,"maximum":9007199254740991_i64}},"required":[]});
+        let header_schema = json!({"type":"object","properties":{"last-event-id":{"type":"integer","minimum":0,"maximum":MAX_SAFE_INTEGER}},"required":[]});
         let header = compile_part(
             header_schema.clone(),
             header_schema,
@@ -1542,7 +1542,12 @@ mod tests {
             invalid_ascii.location,
             vec![json!("header"), json!("last-event-id")]
         );
-        for value in ["0", "1", "9007199254740991", "01"] {
+        for value in [
+            "0".to_owned(),
+            "1".to_owned(),
+            MAX_SAFE_INTEGER.to_string(),
+            "01".to_owned(),
+        ] {
             let validated = registry
                 .validate_route(
                     "GET",
@@ -1550,7 +1555,7 @@ mod tests {
                     RawRequest {
                         headers: BTreeMap::from([(
                             "Last-Event-ID".to_owned(),
-                            vec![value.to_owned()],
+                            vec![value.clone()],
                         )]),
                         ..RawRequest::default()
                     },
@@ -1605,7 +1610,7 @@ mod tests {
         });
         let operation = json!({
             "parameters":[
-                {"name":"X-Codex-Sync-Protocol","in":"header","required":true,"schema":{"type":"integer","minimum":0,"maximum":9007199254740991_i64,"enum":[3]}},
+                {"name":"X-Codex-Sync-Protocol","in":"header","required":true,"schema":{"type":"integer","minimum":0,"maximum":MAX_SAFE_INTEGER,"enum":[3]}},
                 {"name":"protocol","in":"query","required":true,"schema":{"type":"string","enum":["3"]}}
             ]
         });
@@ -1629,7 +1634,7 @@ mod tests {
         );
         let impossible = json!({
             "parameters":[{"name":"Last-Event-ID","in":"header","schema":{
-                "type":"integer","minimum":0,"maximum":9007199254740991_i64,
+                "type":"integer","minimum":0,"maximum":MAX_SAFE_INTEGER,
                 "anyOf":[{"type":"null"},{"type":"string"}]
             }}]
         });
@@ -1647,7 +1652,7 @@ mod tests {
         let document = json!({"components":{"schemas":{}},"paths":{"/x":{}}});
         let accepted = [
             json!({"type":"string"}),
-            json!({"anyOf":[{"type":"integer","minimum":-9007199254740991_i64,"maximum":9007199254740991_i64},{"type":"null"}]}),
+            json!({"anyOf":[{"type":"integer","minimum":-MAX_SAFE_INTEGER,"maximum":MAX_SAFE_INTEGER},{"type":"null"}]}),
             json!({"type":"array","items":{"type":"string"}}),
         ];
         for schema in accepted {
@@ -1786,11 +1791,15 @@ mod tests {
         let registry =
             Registry::compile(&[("POST".to_owned(), "/api/servers/orchestration".to_owned())])
                 .expect("orchestration request schema compiles");
+        let beyond_max = (MAX_SAFE_INTEGER + 1).to_string();
+        let below_min = (-MAX_SAFE_INTEGER - 1).to_string();
+        let beyond_positive = (MAX_SAFE_INTEGER + 2).to_string();
+        let beyond_negative = (-MAX_SAFE_INTEGER - 2).to_string();
         let integers = [
-            "9007199254740992",
-            "-9007199254740992",
-            "9007199254740993",
-            "-9007199254740993",
+            beyond_max.as_str(),
+            below_min.as_str(),
+            beyond_positive.as_str(),
+            beyond_negative.as_str(),
             "18446744073709551615",
             "18446744073709551616",
             "1267650600228229401496703205376",
@@ -1842,8 +1851,9 @@ mod tests {
             );
         }
 
-        let safe_raw_body = r#"{"requestId":"r","action":"x","payload":{"key":9007199254740991}}"#;
-        let safe_body = serde_json::from_str(safe_raw_body).expect("safe integer parses");
+        let safe_raw_body =
+            format!(r#"{{"requestId":"r","action":"x","payload":{{"key":{MAX_SAFE_INTEGER}}}}}"#);
+        let safe_body = serde_json::from_str(&safe_raw_body).expect("safe integer parses");
         assert!(
             registry
                 .validate_route(
@@ -1944,7 +1954,8 @@ mod tests {
         assert!(error.contains("create_widget"));
         assert!(error.contains("/requestBody/schema/properties/count"));
 
-        let safe_schema = json!({"type":"integer","minimum":-9007199254740991_i64,"maximum":9007199254740991_i64});
+        let safe_schema =
+            json!({"type":"integer","minimum":-MAX_SAFE_INTEGER,"maximum":MAX_SAFE_INTEGER});
         assert!(check_safe_integer_bounds(&document, &safe_schema, "/query/limit", "find").is_ok());
         let integral_float_spelling = json!({"type":"integer","minimum":1.0,"maximum":3.0});
         assert!(
@@ -1995,7 +2006,7 @@ mod tests {
     #[test]
     fn integer_bound_audit_walks_supported_schema_forms_and_fails_closed() {
         let document = json!({"components":{"schemas":{"Count":{
-            "type":"integer","minimum":-9007199254740991_i64,"maximum":9007199254740991_i64
+            "type":"integer","minimum":-MAX_SAFE_INTEGER,"maximum":MAX_SAFE_INTEGER
         }}}});
         let nested_integer = json!({"type":"integer"});
         let schemas_with_hidden_integer = [
