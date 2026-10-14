@@ -35,6 +35,17 @@ def database_snapshot(path: Path):
         }
 
 
+def state_directory_snapshot(root: Path):
+    return sorted(
+        (
+            path.relative_to(root).as_posix(),
+            path.lstat().st_size,
+            path.lstat().st_mtime_ns,
+        )
+        for path in root.rglob("*")
+    )
+
+
 def seed_summary_agent(backend) -> str:
     backend.stop()
     spec = importlib.util.spec_from_file_location(
@@ -177,14 +188,48 @@ class SystemReadsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         self.assertEqual(database_snapshot(self.backend.state / "canvas.sqlite3"), before)
 
     def test_diagnostics_names_the_required_live_schema_fields(self):
+        before = database_snapshot(self.backend.state / "canvas.sqlite3")
+        state_before = (
+            state_directory_snapshot(self.backend.state) if self.rust_backend else None
+        )
         response = self.backend.request("GET", "/api/diagnostics", headers=self.headers())
         if self.rust_backend:
             self.assertEqual(response.status, 501, response.body[:1000])
-            for field in ("process-tree", "host-resources", "native-accounts", "sqlite-contention",
-                          "request-metrics", "supervisor-status"):
-                self.assertIn(field, response.json()["error"])
+            self.assertEqual(
+                response.json(),
+                {"error": "Not implemented: requires runtime-process/studio-loaded-threads, runtime-process/supervisor-status"},
+            )
+            self.assertEqual(
+                state_directory_snapshot(self.backend.state),
+                state_before,
+                "diagnostics refusal must not change state directory names, sizes, or mtimes",
+            )
         else:
             self.assertEqual(response.status, 200, response.body[:1000])
+            expected_fields = {
+                "at",
+                "processTree",
+                "hostResources",
+                "resourceAttribution",
+                "nativeAccounts",
+                "studioLoadedThreads",
+                "queues",
+                "runtimeLockSamples",
+                "executions",
+                "sqliteContention",
+                "httpRequestMetrics",
+                "analyticsCapture",
+                "migrations",
+                "searchMigrationError",
+                "runtimeLockOperations",
+                "supervisor",
+            }
+            self.assertEqual(set(response.json()), expected_fields)
+        self.assertEqual(
+            database_snapshot(self.backend.state / "canvas.sqlite3"),
+            before,
+            "diagnostics must not write durable SQLite state",
+        )
 
     @unittest.skipUnless(os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"), "Rust backend only")
     def test_remote_directory_browse_names_its_missing_driver(self):

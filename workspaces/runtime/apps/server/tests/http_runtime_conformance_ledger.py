@@ -215,7 +215,11 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
         "primary": {"query": {"agent": "$agent"}},
     },
     ("GET", "/api/diagnostics"): {
-        "primary": {"expected": "501", "assert_no_write": True},
+        "primary": {
+            "expected": "501",
+            "expected_error": "Not implemented: requires runtime-process/studio-loaded-threads, runtime-process/supervisor-status",
+            "assert_no_write": True,
+        },
     },
     ("GET", "/api/directories"): {
         "primary": {"query": {"server": "local", "path": "$projectPath"}, "expected": "2xx", "assert_no_write": True},
