@@ -1283,7 +1283,7 @@ fn settle_callback_in_transaction(
 // Python codex_streaming.FLUSH_SECONDS is .75. The additional byte threshold
 // bounds a durable batch when producers outpace that timer; answers are uncut.
 pub(super) const STREAM_FLUSH_BYTES: usize = 64 * 1024;
-pub(super) fn persist_publication_batch(
+pub(crate) fn persist_publication_batch(
     tx: &studio_runtime_store::Transaction<'_>,
     account: &str,
     batch: &NotificationPublicationBatch,
@@ -1623,7 +1623,7 @@ pub(super) fn drain_publications_with_hook(
     Ok(delivered)
 }
 
-pub(super) fn persist_streams(
+pub(crate) fn persist_streams(
     tx: &studio_runtime_store::Transaction<'_>,
     account: &str,
     streams: &NotificationStreamBuffer,

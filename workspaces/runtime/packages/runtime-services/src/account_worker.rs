@@ -31,12 +31,13 @@ use tokio::{
     task::JoinHandle,
 };
 pub mod callback;
+mod connection_recovery;
 pub(crate) mod history;
 pub mod preparation;
 pub(crate) mod restart_recovery;
 pub mod retained;
 pub mod retained_frame;
-mod store;
+pub(crate) mod store;
 
 impl From<rusqlite::Error> for WorkerError {
     fn from(error: rusqlite::Error) -> Self {
@@ -245,6 +246,15 @@ pub enum AccountCommand {
     RetainedRequest(Box<retained::RequestCommand>),
     CommittedFrame(Box<retained_frame::FrameCommand>),
     JournalBarrier(retained::BarrierCommand),
+    ConnectionRecovery {
+        agent_id: String,
+        reply: tokio::sync::oneshot::Sender<Result<Value, retained::PortError>>,
+    },
+    ConnectionRecoveryComplete {
+        result: Result<Value, retained::PortError>,
+        streams: Option<NotificationStreamBuffer>,
+        reply: tokio::sync::oneshot::Sender<Result<Value, retained::PortError>>,
+    },
     #[cfg(test)]
     Barrier(tokio::sync::oneshot::Sender<usize>),
     /// The caller's durable event and epoch are rechecked inside the claim transaction.
@@ -462,6 +472,8 @@ pub async fn start_account_worker_with_publication_sink(
         closing: false,
         restart_recovery_started: false,
         restart_recovery: None,
+        connection_recovery: tokio::task::JoinSet::new(),
+        connection_recovery_active: false,
     };
     let mut cancelled_owner = stop.subscribe();
     #[cfg(test)]
@@ -552,6 +564,8 @@ struct Worker {
     callbacks: BTreeMap<String, studio_runtime_process::EventCursor>,
     restart_recovery_started: bool,
     restart_recovery: Option<JoinHandle<()>>,
+    connection_recovery: tokio::task::JoinSet<()>,
+    connection_recovery_active: bool,
 }
 impl Worker {
     async fn run(mut self) -> Result<(), WorkerError> {
@@ -560,6 +574,8 @@ impl Worker {
             recovery.abort();
             let _joined = recovery.await;
         }
+        self.connection_recovery.abort_all();
+        while self.connection_recovery.join_next().await.is_some() {}
         self.control.cancel();
         let exit = self.session.completion().await;
         // Completion has an independent lane. Drain bounded delivered and retained
@@ -639,6 +655,49 @@ impl Worker {
                     Some(AccountCommand::CommittedFrame(command)) => self.committed_frame(*command).await?,
                     Some(AccountCommand::RetainedRequest(command)) => self.retained_request(*command).await?,
                     Some(AccountCommand::JournalBarrier(command)) => self.retained_barrier(command).await?,
+                    Some(AccountCommand::ConnectionRecovery { agent_id, reply }) => {
+                        if self.connection_recovery_active {
+                            let _sent = reply.send(Err(retained::PortError::Capacity));
+                        } else {
+                            self.connection_recovery_active = true;
+                            let request = connection_recovery::Command {
+                                bridge: self.bridge.clone(),
+                                account: self.account.clone(),
+                                scope: self.retained_session.scope().clone(),
+                                session: self.retained_session.clone(),
+                                agent_id,
+                                runtime: tokio::runtime::Handle::current(),
+                            };
+                            let commands = self.commands.clone();
+                            self.connection_recovery.spawn(async move {
+                                let result = tokio::task::spawn_blocking(move || {
+                                    connection_recovery::run(request)
+                                }).await;
+                                let (response, streams) = match result {
+                                    Ok(Ok(completed)) => (Ok(completed.receipt), completed.streams),
+                                    Ok(Err(_)) | Err(_) => (Err(retained::PortError::Unknown), None),
+                                };
+                                let (done, acknowledged) = tokio::sync::oneshot::channel();
+                                if commands.send(AccountCommand::ConnectionRecoveryComplete {
+                                    result: response,
+                                    streams,
+                                    reply: done,
+                                }).await.is_ok() {
+                                    let final_result = acknowledged.await.unwrap_or(Err(retained::PortError::Unknown));
+                                    let _sent = reply.send(final_result);
+                                } else {
+                                    let _sent = reply.send(Err(retained::PortError::Unknown));
+                                }
+                            });
+                        }
+                    },
+                    Some(AccountCommand::ConnectionRecoveryComplete { result, streams, reply }) => {
+                        if let Some(streams) = streams {
+                            self.streams = streams;
+                            self.schedule_publication_drain();
+                        }
+                        let _sent = reply.send(result);
+                    },
                     Some(AccountCommand::Wake { agent_id, epoch }) => self.wake(agent_id, epoch).await?,
                     Some(AccountCommand::Stop { agent_id }) => self.stop_agent(agent_id).await?,
                     Some(AccountCommand::RadioInterrupt { agent_id, thread_id, turn_id }) => {
@@ -655,6 +714,9 @@ impl Worker {
                     None => return Ok(()),
                 },
                 event = self.events.recv() => match event { Some(event) => self.event(event).await?, None => return Ok(()) },
+                _ = self.connection_recovery.join_next(), if !self.connection_recovery.is_empty() => {
+                    self.connection_recovery_active = false;
+                },
                 changed = self.session.status.changed() => { if changed.is_err() { return Ok(()); } },
             }
             // One ready event after a command prevents a command flood starving evidence.

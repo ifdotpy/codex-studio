@@ -64,6 +64,23 @@ The supervisor does not set `PRAGMA user_version`; migrations inspect existing c
 
 Python writes JSON with `json.dumps`; some writers use compact separators and `ensure_ascii=False`, while ordinary record writes use their local defaults. No reader should depend on whitespace, escaping choice, or object key order. `codex_time.py` also emits UTC RFC 3339-like strings with millisecond precision and `Z`; other externally sourced date strings may carry offsets. SQLite's primary persisted runtime timestamps are numeric Unix seconds, not Python `datetime` objects.
 
+### Connection recovery request receipt
+
+`runtime_agents.record.connectionRecovery` may include `requestId`,
+`requestState`, `requestBasis`, and `requestReceipt`. The record contract is owned by
+`studio_api.recovery_models.ConnectionRecoveryFields` and mirrored by
+`ConnectionRecoveryRecord` in `codex_records.py`; the generated Rust schema is
+`recovery-agent-record.schema.json`. `requestState` is `pending` before any
+retained provider history read and `result` after the synchronous recovery
+status is committed. The ID is a digest of the agent ID, epoch, account, thread,
+turn, and current disconnect or restart receipt. `requestBasis` retains those
+inputs so an identical HTTP retry can find its saved result after reconciliation
+changes the current turn fields. History read operation IDs are
+derived from this recovery ID, method, and query. A repeated request with the
+same ID returns its saved receipt; an uncertain history operation stays
+uncertain and is not resent. The final result is written in the same transaction
+as recovery effects, so there is no separate post-commit receipt write.
+
 ### External files read by the runtime, owned elsewhere
 
 These are not files owned by the Studio state store, but can be runtime inputs. Keep their readers only where a whole-runtime behavior still consumes them; do not copy them into or rewrite them during state migration.

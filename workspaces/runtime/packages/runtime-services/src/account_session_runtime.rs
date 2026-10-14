@@ -137,6 +137,15 @@ pub trait AccountSessionPort: Send + Sync {
             "provider-session/callback-barrier",
         ))
     }
+    fn recover_connection(
+        &self,
+        _account: &str,
+        _agent_id: &str,
+    ) -> Result<Value, AccountSessionError> {
+        Err(AccountSessionError::Requires(
+            "account-worker/recovery-history",
+        ))
+    }
     fn login(&self, _request: LoginRequest) -> Result<Value, AccountSessionError> {
         Err(AccountSessionError::Requires(
             "provider-session/codex-login",
@@ -275,6 +284,7 @@ pub struct SessionReceipt {
 pub type SessionFuture =
     Pin<Box<dyn Future<Output = Result<SessionReceipt, AccountSessionError>> + Send>>;
 pub type BarrierFuture = Pin<Box<dyn Future<Output = Result<(), AccountSessionError>> + Send>>;
+pub type RecoveryFuture = Pin<Box<dyn Future<Output = Result<Value, AccountSessionError>> + Send>>;
 
 /// The integrator adapts its retained session's request(scope, operation, method,
 /// params, absolute deadline) here. Scope lookup must not dispatch a mutation.
@@ -314,6 +324,13 @@ pub trait RetainedAccountSession: Send + Sync {
         Box::pin(async {
             Err(AccountSessionError::Requires(
                 "provider-session/callback-barrier",
+            ))
+        })
+    }
+    fn recover_connection(&self, _account: String, _agent_id: String) -> RecoveryFuture {
+        Box::pin(async {
+            Err(AccountSessionError::Requires(
+                "account-worker/recovery-history",
             ))
         })
     }
@@ -612,6 +629,27 @@ impl AccountSessionPort for AccountSessionRuntime {
                 "provider-session/claude-controls",
             ))?
             .claude_control_session(account)
+    }
+
+    fn recover_connection(
+        &self,
+        account: &str,
+        agent_id: &str,
+    ) -> Result<Value, AccountSessionError> {
+        let session = self.session.as_ref().ok_or(AccountSessionError::Requires(
+            "account-worker/recovery-history",
+        ))?;
+        let expected = session
+            .current_scope(account)
+            .ok_or(AccountSessionError::Unknown)?;
+        self.block_on_retained(session.recover_connection(account.to_owned(), agent_id.to_owned()))
+            .and_then(|result| {
+                if session.current_scope(account).as_ref() == Some(&expected) {
+                    Ok(result)
+                } else {
+                    Err(AccountSessionError::Unknown)
+                }
+            })
     }
 
     fn provider_request(

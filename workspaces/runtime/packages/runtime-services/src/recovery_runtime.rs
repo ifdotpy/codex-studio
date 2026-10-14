@@ -53,11 +53,7 @@ impl<'a> RetainedRecoveryReader<'a> {
         port: &'a mut dyn RetainedHistory,
         observation: &'a ObservationSource<'a>,
     ) -> Result<Self, HistoryError> {
-        if scope.account.is_empty()
-            || scope.connection.is_empty()
-            || scope.generation == 0
-            || thread.is_empty()
-        {
+        if scope.account.is_empty() || scope.connection.is_empty() || scope.generation == 0 {
             return Err(HistoryError::Identity);
         }
         Ok(Self {
@@ -97,7 +93,8 @@ impl RecoveryReader for RetainedRecoveryReader<'_> {
         deadline: Instant,
     ) -> Result<HistoryReceipt, HistoryError> {
         self.ready(scope, deadline)?;
-        if params["threadId"] != self.thread
+        if self.thread.is_empty()
+            || params["threadId"] != self.thread
             || (method == HistoryMethod::Thread && params["includeTurns"] != false)
         {
             return Err(HistoryError::Identity);

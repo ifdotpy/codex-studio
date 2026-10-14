@@ -56,6 +56,46 @@ impl RecoverySnapshot {
     pub fn eligibility(&self) -> Eligibility {
         eligibility(&self.agent)
     }
+
+    /// Stable identity for one persisted disconnect/restart recovery. A later
+    /// transport receipt changes the identity even when the agent turn is the
+    /// same, so an older saved result cannot answer a new recovery.
+    pub fn connection_recovery_id(&self) -> String {
+        connection_recovery_id(&self.agent)
+    }
+}
+
+pub fn connection_recovery_id(agent: &Value) -> String {
+    studio_runtime_store::sha256_hex(connection_recovery_basis(agent).to_string().as_bytes())
+}
+
+pub fn connection_recovery_basis(agent: &Value) -> Value {
+    let disconnect = &agent["disconnectRecovery"];
+    let restart = &agent["restartRecovery"];
+    json!([
+        agent["id"],
+        agent["epoch"],
+        agent.get("accountKey").cloned().unwrap_or(json!("default")),
+        agent["threadId"],
+        agent["turnId"],
+        disconnect
+            .get("connectionId")
+            .cloned()
+            .unwrap_or(Value::Null),
+        disconnect.get("at").cloned().unwrap_or(Value::Null),
+        disconnect["startAttempt"]
+            .get("id")
+            .cloned()
+            .unwrap_or(Value::Null),
+        disconnect.get("turnId").cloned().unwrap_or(Value::Null),
+        restart.get("connectionId").cloned().unwrap_or(Value::Null),
+        restart.get("at").cloned().unwrap_or(Value::Null),
+        restart.get("turnId").cloned().unwrap_or(Value::Null),
+        restart["startAttempt"]
+            .get("id")
+            .cloned()
+            .unwrap_or(Value::Null),
+    ])
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -385,4 +425,26 @@ pub fn native_operations_settled(turn: &Value) -> bool {
                 _ => true,
             })
         })
+}
+
+#[cfg(test)]
+mod connection_recovery_identity_tests {
+    use super::connection_recovery_id;
+    use serde_json::json;
+
+    #[test]
+    fn a_new_disconnect_cannot_reuse_an_old_connection_recovery_receipt() {
+        let first = json!({
+            "id":"agent-1", "epoch":4, "accountKey":"acct", "threadId":"thread-1",
+            "turnId":"turn-1", "disconnectRecovery":{"connectionId":"conn-1","at":10.0}
+        });
+        let second = json!({
+            "id":"agent-1", "epoch":4, "accountKey":"acct", "threadId":"thread-1",
+            "turnId":"turn-1", "disconnectRecovery":{"connectionId":"conn-2","at":11.0}
+        });
+        assert_ne!(
+            connection_recovery_id(&first),
+            connection_recovery_id(&second)
+        );
+    }
 }

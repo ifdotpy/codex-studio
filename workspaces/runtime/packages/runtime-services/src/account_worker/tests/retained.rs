@@ -913,6 +913,7 @@ async fn repeated_retained_history_reads_observe_fresh_provider_state() {
             epoch: state.epoch,
         },
         tokio::runtime::Handle::current(),
+        "history-read-test".into(),
     );
     let first_deadline =
         (tokio::time::Instant::now() + std::time::Duration::from_secs(60)).into_std();
@@ -922,44 +923,39 @@ async fn repeated_retained_history_reads_observe_fresh_provider_state() {
     let first_params = params.clone();
     let first = tokio::task::spawn_blocking(move || {
         let mut history = first_history;
-        history.request(
+        let receipt = history.request(
             &first_scope,
             HistoryMethod::Thread,
             first_params,
             first_deadline,
-        )
+        );
+        (history, receipt)
     });
     let first_wire = peer.write("thread/read").await;
     let first_cursor = peer
         .frame(json!({
             "id":first_wire["id"],
-            "result":{"thread":{"id":"fake-thread-0","revision":1}}
+            "result":{"thread":{"id":"fake-thread-0","status":{"type":"active"},"revision":1}}
         }))
         .await;
     peer.acknowledged_or_worker_exits(first_cursor, &mut worker)
         .await;
-    let first_result: HistoryReceipt = first.await.unwrap().unwrap();
+    let (history, first_result): (HistoryPort, Result<HistoryReceipt, _>) = first.await.unwrap();
+    let first_result = first_result.unwrap();
 
     let second_scope = scope.clone();
     let second_params = params.clone();
     let second_deadline =
         (tokio::time::Instant::now() + std::time::Duration::from_secs(60)).into_std();
-    let second_history = HistoryPort::new(
-        retained,
-        RequestActor {
-            agent: state.agent.clone(),
-            epoch: state.epoch,
-        },
-        tokio::runtime::Handle::current(),
-    );
     let second = tokio::task::spawn_blocking(move || {
-        let mut history = second_history;
-        history.request(
+        let mut history = history;
+        let receipt = history.request(
             &second_scope,
             HistoryMethod::Thread,
             second_params,
             second_deadline,
-        )
+        );
+        (history, receipt)
     });
     let mut second = second;
     let second_wire = tokio::select! {
@@ -971,14 +967,17 @@ async fn repeated_retained_history_reads_observe_fresh_provider_state() {
     let second_cursor = peer
         .frame(json!({
             "id":second_wire["id"],
-            "result":{"thread":{"id":"fake-thread-0","revision":2}}
+            "result":{"thread":{"id":"fake-thread-0","status":{"type":"idle"},"revision":2}}
         }))
         .await;
     peer.acknowledged_or_worker_exits(second_cursor, &mut worker)
         .await;
-    let second_result = second.await.unwrap().unwrap();
+    let (_history, second_result) = second.await.unwrap();
+    let second_result = second_result.unwrap();
     assert_eq!(first_result.body["thread"]["revision"], 1);
     assert_eq!(second_result.body["thread"]["revision"], 2);
+    assert_eq!(first_result.body["thread"]["status"]["type"], "active");
+    assert_eq!(second_result.body["thread"]["status"]["type"], "idle");
     worker.shutdown().await.unwrap();
 }
 #[tokio::test(start_paused = true)]
@@ -1009,6 +1008,156 @@ async fn retained_barrier_waits_for_committed_journal_without_owning_bridge() {
     waiter.await.unwrap().unwrap();
     peer.acknowledged(cursor).await;
     worker.shutdown().await.unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn connection_recovery_history_receipt_survives_worker_restart_without_resend() {
+    use crate::{
+        account_worker::retained::consumers::HistoryPort,
+        recovery_history::{HistoryMethod, HistoryReceipt},
+        recovery_runtime::RetainedHistory,
+    };
+
+    let state = State::new().await;
+    let before = state.record().await;
+    let recovery_id = crate::recovery_policy::connection_recovery_id(&before);
+    let pending = state
+        .bridge
+        .run({
+            let recovery_id = recovery_id.clone();
+            let agent_id = state.agent.clone();
+            move |store| {
+                crate::account_worker::connection_recovery::begin_request(
+                    store,
+                    &agent_id,
+                    &before,
+                    &recovery_id,
+                )
+                .expect("persist request intent before history read");
+                Ok(())
+            }
+        })
+        .await;
+    pending.unwrap();
+    let params = json!({"threadId":"fake-thread-0","includeTurns":false});
+    let expected = json!({"thread":{"id":"fake-thread-0","revision":7}});
+
+    let mut first_peer = Peer::identity("default", 1, None);
+    let mut first_worker = first_peer.worker(state.bridge.clone()).await;
+    let first_session = first_worker.retained_session();
+    let first_scope = first_session.scope().clone();
+    let first_history = HistoryPort::new(
+        first_session,
+        RequestActor {
+            agent: state.agent.clone(),
+            epoch: state.epoch,
+        },
+        tokio::runtime::Handle::current(),
+        recovery_id.clone(),
+    );
+    let deadline = (tokio::time::Instant::now() + std::time::Duration::from_secs(60)).into_std();
+    let first_params = params.clone();
+    let first = tokio::task::spawn_blocking(move || {
+        let mut history = first_history;
+        history.request(&first_scope, HistoryMethod::Thread, first_params, deadline)
+    });
+    let request = first_peer.write("thread/read").await;
+    first_peer.reply(&request, expected.clone()).await;
+    let first_receipt: HistoryReceipt = first.await.unwrap().unwrap();
+    assert_eq!(first_receipt.body, expected);
+
+    // This models a process crash after the retained provider receipt is durable,
+    // but before RecoveryRuntime can commit the final connectionRecovery result.
+    first_worker.shutdown().await.unwrap();
+
+    let mut second_peer = Peer::identity("default", 2, None);
+    let mut second_worker = second_peer.worker(state.bridge.clone()).await;
+    let second_session = second_worker.retained_session();
+    let second_scope = second_session.scope().clone();
+    let second_history = HistoryPort::new(
+        second_session,
+        RequestActor {
+            agent: state.agent.clone(),
+            epoch: state.epoch,
+        },
+        tokio::runtime::Handle::current(),
+        recovery_id.clone(),
+    );
+    let deadline = (tokio::time::Instant::now() + std::time::Duration::from_secs(60)).into_std();
+    let second = tokio::task::spawn_blocking(move || {
+        let mut history = second_history;
+        history.request(&second_scope, HistoryMethod::Thread, params, deadline)
+    });
+    let replay: HistoryReceipt = second.await.unwrap().unwrap();
+    assert_eq!(replay.body, first_receipt.body);
+    assert_eq!(replay.scope.generation, 1);
+    assert!(
+        second_peer.writes.try_recv().is_err(),
+        "saved history receipt must not be resent"
+    );
+    let agent = state.record().await;
+    assert_eq!(agent["connectionRecovery"]["requestId"], recovery_id);
+    assert_eq!(agent["connectionRecovery"]["requestState"], "pending");
+    second_worker.shutdown().await.unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn connection_recovery_repeated_request_returns_saved_status_without_history_read() {
+    let state = State::new().await;
+    let before = state.record().await;
+    let recovery_id = crate::recovery_policy::connection_recovery_id(&before);
+    let agent_id = state.agent.clone();
+    let saved = json!({"status":"superseded"});
+    let pending = state
+        .bridge
+        .run({
+            let agent_id = agent_id.clone();
+            let recovery_id = recovery_id.clone();
+            let before = before.clone();
+            let saved = saved.clone();
+            move |store| {
+                crate::account_worker::connection_recovery::begin_request(
+                    store,
+                    &agent_id,
+                    &before,
+                    &recovery_id,
+                )
+                .expect("persist recovery intent");
+                crate::account_worker::connection_recovery::finish_request(
+                    store,
+                    &agent_id,
+                    &recovery_id,
+                    &saved,
+                )
+                .expect("persist recovery result");
+                Ok(())
+            }
+        })
+        .await;
+    pending.unwrap();
+
+    let (commands, _receiver) = tokio::sync::mpsc::channel(1);
+    let session = RetainedSessionPort {
+        scope: ConnectionScope {
+            account: "default".into(),
+            connection: "saved-result-test".into(),
+            generation: 1,
+        },
+        commands,
+        stop: studio_runtime_process::provider_seam::Shutdown::default(),
+    };
+    let result = crate::account_worker::connection_recovery::run(
+        crate::account_worker::connection_recovery::Command {
+            bridge: state.bridge.clone(),
+            account: "default".into(),
+            scope: session.scope().clone(),
+            session,
+            agent_id,
+            runtime: tokio::runtime::Handle::current(),
+        },
+    )
+    .unwrap();
+    assert_eq!(result.receipt, saved);
 }
 
 #[tokio::test(start_paused = true)]
@@ -1096,6 +1245,7 @@ async fn recovery_reconcile_wait_does_not_hold_store_bridge_permit() {
         session,
         actor,
         tokio::runtime::Handle::current(),
+        "recovery-runtime-test".into(),
     );
     let reconcile = tokio::task::spawn_blocking(move || {
         let observation = move |current: &ConnectionScope| {

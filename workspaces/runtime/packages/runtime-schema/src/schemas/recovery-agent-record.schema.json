@@ -1,5 +1,43 @@
 {
   "$defs": {
+    "ConnectionRecoveryFields": {
+      "additionalProperties": {
+        "$ref": "#/$defs/JsonValue"
+      },
+      "properties": {
+        "requestBasis": {
+          "$ref": "#/$defs/JsonValue"
+        },
+        "requestId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Requestid"
+        },
+        "requestReceipt": {
+          "$ref": "#/$defs/JsonValue"
+        },
+        "requestState": {
+          "anyOf": [
+            {
+              "enum": ["pending", "result"],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Requeststate"
+        }
+      },
+      "title": "ConnectionRecoveryFields",
+      "type": "object"
+    },
     "JsonValue": {},
     "RecoveryFields": {
       "additionalProperties": {
@@ -412,7 +450,7 @@
     "connectionRecovery": {
       "anyOf": [
         {
-          "$ref": "#/$defs/RecoveryFields"
+          "$ref": "#/$defs/ConnectionRecoveryFields"
         },
         {
           "type": "null"

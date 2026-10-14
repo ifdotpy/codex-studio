@@ -131,6 +131,7 @@ fn reconcile_first_pass(
                     epoch,
                 },
                 tokio::runtime::Handle::current(),
+                snapshot.connection_recovery_id(),
             );
             let mut reader =
                 RetainedRecoveryReader::new(scope.clone(), thread, &mut history, source)?;

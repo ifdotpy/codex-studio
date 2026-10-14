@@ -37,6 +37,50 @@ use crate::{
     sync_policy, work_write,
 };
 
+/// Recovery shares stop/delete's canonical parent notification and failed-work
+/// release owners. These writes run inside RecoveryStore's transaction.
+pub struct ProductionRecoveryDelivery {
+    pub at: f64,
+}
+
+impl crate::recovery_store::RecoveryDelivery for ProductionRecoveryDelivery {
+    fn start_held(
+        &mut self,
+        tx: &Transaction<'_>,
+        agent: &Value,
+        _: &str,
+        event_id: &str,
+    ) -> Result<(), crate::recovery::RecoveryError> {
+        let effect = LifecycleEffect::new(
+            LifecycleEffectKind::NotifyParent,
+            agent.clone(),
+            agent.clone(),
+            self.at,
+        );
+        notify_parent_with_id(tx, &effect, Some(event_id))
+            .map_err(|_| crate::recovery::RecoveryError::CommitFailed)
+    }
+
+    fn terminal(
+        &mut self,
+        tx: &Transaction<'_>,
+        agent: &mut Value,
+        turn: &Value,
+        _: crate::recovery::CompletionMode,
+    ) -> Result<(), crate::recovery::RecoveryError> {
+        let mut before = agent.clone();
+        before["turnId"] = turn["id"].clone();
+        let effect = LifecycleEffect::new(
+            LifecycleEffectKind::NotifyParent,
+            before,
+            agent.clone(),
+            self.at,
+        );
+        notify_parent(tx, &effect).map_err(|_| crate::recovery::RecoveryError::CommitFailed)?;
+        release_work(tx, &effect).map_err(|_| crate::recovery::RecoveryError::CommitFailed)
+    }
+}
+
 const INTERRUPT_TIMEOUT: Duration = Duration::from_secs(10);
 const VOICE_DELETE_RETRY_ATTEMPTS: usize = 8;
 // Ordinary voice stops can remain in flight until their 30-second deadline.
@@ -603,6 +647,14 @@ fn release_work(tx: &Transaction<'_>, effect: &LifecycleEffect) -> Result<(), Ma
 }
 
 fn notify_parent(tx: &Transaction<'_>, effect: &LifecycleEffect) -> Result<(), ManagementError> {
+    notify_parent_with_id(tx, effect, None)
+}
+
+fn notify_parent_with_id(
+    tx: &Transaction<'_>,
+    effect: &LifecycleEffect,
+    event_id_override: Option<&str>,
+) -> Result<(), ManagementError> {
     let agent = effect.stopped();
     if agent.get("isLead").and_then(Value::as_bool) == Some(true)
         || agent.get("parentId").and_then(Value::as_str).is_none()
@@ -715,14 +767,15 @@ fn notify_parent(tx: &Transaction<'_>, effect: &LifecycleEffect) -> Result<(), M
                 .and_then(Value::as_str)
         })
         .unwrap_or("stop");
-    let event_id = format!(
+    let generated_event_id = format!(
         "child-stop:{id}:{}:stop:{stopped_turn}",
         effect.stopped()["epoch"].as_i64().unwrap_or_default()
     );
+    let event_id = event_id_override.unwrap_or(&generated_event_id);
     event_write::enqueue_recovery_event(
         tx,
         &parent,
-        event_id,
+        event_id.to_owned(),
         "child_result",
         payload.to_string(),
         effect.at(),
