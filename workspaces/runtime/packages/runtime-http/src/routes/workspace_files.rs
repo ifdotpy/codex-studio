@@ -266,10 +266,9 @@ fn file_error(error: WorkspaceFilesError) -> ApiError {
         WorkspaceFilesError::MissingFile => {
             ApiError::new(StatusCode::BAD_REQUEST, "This file does not exist")
         }
-        WorkspaceFilesError::PreviewLimit => ApiError::new(
-            StatusCode::BAD_REQUEST,
-            "This file exceeds the 20 MiB preview limit",
-        ),
+        error @ WorkspaceFilesError::PreviewLimit { .. } => {
+            ApiError::new(StatusCode::BAD_REQUEST, error.to_string())
+        }
         WorkspaceFilesError::MissingPath => ApiError::new(StatusCode::BAD_REQUEST, "Supply a path"),
         WorkspaceFilesError::InvalidPath => ApiError::new(StatusCode::BAD_REQUEST, "Invalid path"),
     }

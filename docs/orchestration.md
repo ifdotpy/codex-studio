@@ -201,7 +201,8 @@ Cancel leaves the destination unchanged. A failed save shows an error.
 On iPhone, Save a copy uses the system share sheet when file sharing is available.
 Other browsers use an explicit download fallback.
 
-The existing file API limits inline previews to 20 MiB.
+The file API limits inline previews to the server-owned
+[workspace preview byte cap](../workspaces/runtime/apps/server/src/codex_shared_values.py).
 Native file actions remain available when that limit prevents a preview.
 Table previews show at most 200 rows and 100 columns.
 Their text parser stops after 1,048,576 UTF-16 code units.

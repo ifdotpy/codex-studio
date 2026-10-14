@@ -5,9 +5,12 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use serde_json::Value;
+use studio_runtime_schema::shared_values::{
+    MAX_WORKSPACE_PREVIEW_BYTES, WORKSPACE_PREVIEW_LIMIT_LABEL,
+};
 use thiserror::Error;
 
-pub const MAX_PREVIEW_BYTES: u64 = 20 * 1024 * 1024;
+pub const MAX_PREVIEW_BYTES: u64 = MAX_WORKSPACE_PREVIEW_BYTES;
 const MAX_PATH_CHARS: usize = 4096;
 const PYTHON_MIME_OVERRIDES: &[(&str, &str)] = &[
     ("ts", "text/vnd.trolltech.linguist"),
@@ -41,8 +44,8 @@ pub enum WorkspaceFilesError {
     InvalidAgent(String),
     #[error("This file does not exist")]
     MissingFile,
-    #[error("This file exceeds the 20 MiB preview limit")]
-    PreviewLimit,
+    #[error("This file exceeds the {limit_label} preview limit")]
+    PreviewLimit { limit_label: &'static str },
     #[error("Supply a path")]
     MissingPath,
     #[error("Invalid path")]
@@ -106,14 +109,18 @@ pub fn file_content(path: &str, root: Option<&str>) -> Result<FileContent, Works
         return Err(WorkspaceFilesError::MissingFile);
     }
     if metadata.len() > MAX_PREVIEW_BYTES {
-        return Err(WorkspaceFilesError::PreviewLimit);
+        return Err(WorkspaceFilesError::PreviewLimit {
+            limit_label: WORKSPACE_PREVIEW_LIMIT_LABEL,
+        });
     }
     let mut bytes = Vec::with_capacity(metadata.len() as usize);
     file.take(MAX_PREVIEW_BYTES + 1)
         .read_to_end(&mut bytes)
         .map_err(|_| WorkspaceFilesError::MissingFile)?;
     if bytes.len() as u64 > MAX_PREVIEW_BYTES {
-        return Err(WorkspaceFilesError::PreviewLimit);
+        return Err(WorkspaceFilesError::PreviewLimit {
+            limit_label: WORKSPACE_PREVIEW_LIMIT_LABEL,
+        });
     }
     Ok(FileContent {
         name: file_path
@@ -257,7 +264,9 @@ mod tests {
         );
         assert_eq!(
             file_content(&path, None),
-            Err(WorkspaceFilesError::PreviewLimit)
+            Err(WorkspaceFilesError::PreviewLimit {
+                limit_label: WORKSPACE_PREVIEW_LIMIT_LABEL,
+            })
         );
         fs::remove_dir_all(root).expect("temporary directory removes");
     }
