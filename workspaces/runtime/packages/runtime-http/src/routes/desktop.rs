@@ -103,6 +103,7 @@ mod tests {
                 ProviderProfile {
                     account_key: "connected".into(),
                     provider: "codex".into(),
+                    launched_binary: None,
                     configured_binary: None,
                     server_identity: "server-7".into(),
                     connection_id: Some("connection-9".into()),
@@ -110,6 +111,7 @@ mod tests {
                 ProviderProfile {
                     account_key: "claude-connected".into(),
                     provider: "claude".into(),
+                    launched_binary: Some(self.claude_binary.clone()),
                     configured_binary: Some(self.claude_binary.clone()),
                     server_identity: "server-8".into(),
                     connection_id: Some("connection-11".into()),
