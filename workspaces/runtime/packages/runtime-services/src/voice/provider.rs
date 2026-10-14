@@ -1,4 +1,10 @@
 //! Voice-session RPC port and durable request adapter.
+//!
+//! Registered differences from Python:
+//! - `UnknownVoiceWriteHeld`: an unknown provider write is never resent after
+//!   a retry or restart.
+//! - `VoiceApprovalContextRechecked`: approval request identity, epoch,
+//!   playback, and transcript are revalidated immediately before dispatch.
 
 use std::collections::HashMap;
 use std::{
@@ -756,8 +762,7 @@ fn reserve_approval(
         ).optional()?.ok_or(VoiceProviderError::ContextUnavailable)?;
         let current: Value = serde_json::from_str(&current)
             .map_err(|_| VoiceProviderError::Operation)?;
-        let encoded = serde_json::to_vec(&current).map_err(|_| VoiceProviderError::Operation)?;
-        let fingerprint = Sha256::digest(encoded)
+        let fingerprint = Sha256::digest(studio_runtime_store::python_json(&current).as_bytes())
             .iter()
             .map(|byte| format!("{byte:02x}"))
             .collect::<String>();

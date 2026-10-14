@@ -6,7 +6,7 @@
 use std::{future::Future, pin::Pin, time::Instant};
 
 use serde_json::Value;
-use studio_runtime_providers::Method;
+pub use studio_runtime_providers::Method;
 
 pub type VoiceFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 

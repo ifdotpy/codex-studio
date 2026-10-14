@@ -460,7 +460,7 @@ pub fn approval_speech(
         ))?;
     let fingerprint =
         studio_runtime_store::sha256_hex(event_write::python_json(request).as_bytes());
-    let params = serde_json::to_string(request.get("params").unwrap_or(&Value::Null))?;
+    let params = studio_runtime_store::python_json(request.get("params").unwrap_or(&Value::Null));
     let text = format!("Запрос разрешения. {params}. Для подтверждения скажите «разрешаю».");
     if text.chars().count() > 4096 {
         return Err(VoiceError::InvalidRequest(
