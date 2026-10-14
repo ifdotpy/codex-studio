@@ -21,7 +21,11 @@ isolate_supervisor_environment()
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from runtime_test_environment import make_runtime
 from codex_session_names import identity as native_name_identity
-from http_backend_harness import TimedHTTPContractTest, start_contract_backend
+from http_backend_harness import (
+    TimedHTTPContractTest,
+    assert_read_succeeds_unchanged_under_writer,
+    start_contract_backend,
+)
 
 
 def database_snapshot(path: Path):
@@ -118,6 +122,19 @@ class SystemReadsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         })
         self.assertEqual(database_snapshot(self.backend.state / "canvas.sqlite3"), before)
 
+    def test_local_identity_directory_read_succeeds_unchanged_under_writer(self):
+        identity = json.loads(
+            (self.backend.state / "multi-server" / "identity.json").read_text(
+                encoding="utf-8"
+            )
+        )["serverId"]
+        path = "/api/directories?" + urlencode(
+            {"server": identity, "path": str(self.root)}
+        )
+        assert_read_succeeds_unchanged_under_writer(
+            self, self.backend, path, self.headers()
+        )
+
     def test_directory_home_forms_non_strict_resolution_and_symlink(self):
         before = database_snapshot(self.backend.state / "canvas.sqlite3")
         user = __import__("getpass").getuser()
@@ -206,10 +223,24 @@ class SystemReadsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
     def test_saved_local_server_id_uses_local_browse(self):
         self.backend.stop()
         identity_dir = self.backend.state / "multi-server"
-        identity_dir.mkdir(exist_ok=True)
-        (identity_dir / "identity.json").write_text(
-            '{"serverId":"local-server-contract"}', encoding="utf-8"
-        )
+        identity_dir.mkdir(mode=0o700, exist_ok=True)
+        identity_dir.chmod(0o700)
+        identity_path = identity_dir / "identity.json"
+        identity_path.write_text(json.dumps({
+            "serverId": "local-server-contract",
+            "label": "Contract server",
+            "privateKey": (
+                "-----BEGIN PRIVATE KEY-----\n"
+                "MC4CAQAwBQYDK2VwBCIEIE61KAT30Wa88aoE0mzaDqoSoQ4P7lPOk8hmxPsDG1FZ\n"
+                "-----END PRIVATE KEY-----\n"
+            ),
+            "publicKey": (
+                "-----BEGIN PUBLIC KEY-----\n"
+                "MCowBQYDK2VwAyEABPuG6SKDgrZWlm/D+iwjQAXlsZ2T/8cOLGt/g1IayQ0=\n"
+                "-----END PUBLIC KEY-----\n"
+            ),
+        }), encoding="utf-8")
+        identity_path.chmod(0o600)
         self.backend.start()
         response = self.backend.request(
             "GET", "/api/directories?" + urlencode({

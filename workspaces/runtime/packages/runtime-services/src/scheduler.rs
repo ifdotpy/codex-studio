@@ -62,7 +62,7 @@ pub(crate) fn lifecycle_transaction_with<T, E: From<StoreError>>(
     store: &RuntimeStore,
     change: impl FnOnce(&rusqlite::Transaction<'_>) -> Result<T, E>,
 ) -> Result<T, E> {
-    let server_id = crate::sync_entity_context::local_server_id(&store.root().to_string_lossy())?;
+    let server_id = store.local_server_id()?;
     store.transaction_with(|tx| {
         let generation: i64 = tx.query_row("SELECT value FROM runtime_agent_record_generation WHERE id=1",[],|r|r.get(0)).map_err(StoreError::from)?;
         let result = change(tx)?;

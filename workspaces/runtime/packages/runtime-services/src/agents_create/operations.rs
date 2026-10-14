@@ -103,7 +103,6 @@ fn create(
     mut request: Creation,
     draft: bool,
 ) -> Result<Value, OperationError> {
-    let server_id = local_server_id(context)?;
     let id = request.id.clone().map_or_else(new_id, Ok)?;
     let workspace = request
         .workspace
@@ -142,11 +141,7 @@ fn create(
     if existing.is_some() {
         return context.store.transaction_with_error(|tx| {
             let current = replay(tx)?.ok_or(CreateError::Conflict)?;
-            Ok(sync_projection_with_server_id(
-                tx,
-                &current,
-                server_id.as_deref(),
-            )?)
+            Ok(sync_projection(tx, &current)?)
         });
     }
     let read = context.store.read()?;
@@ -413,11 +408,7 @@ fn create(
     .any(|field| request.intent.get(*field).is_some());
     mutate(context, |tx| {
         if let Some(existing) = replay(tx)? {
-            return Ok(sync_projection_with_server_id(
-                tx,
-                &existing,
-                server_id.as_deref(),
-            )?);
+            return Ok(sync_projection(tx, &existing)?);
         }
         if let Some(prior) = previous_lead(tx, request.previous.as_deref(), &validate)?
             && request.reuse_empty.unwrap_or(true)
@@ -489,11 +480,7 @@ fn create(
                 rusqlite::params![id, reused["id"].as_str(), signature],
             )
             .map_err(StoreError::from)?;
-            return Ok(sync_projection_with_server_id(
-                tx,
-                &reused,
-                server_id.as_deref(),
-            )?);
+            return Ok(sync_projection(tx, &reused)?);
         }
         if let Some(binding) = &binding {
             let current = resolve_project_binding_from(
@@ -509,14 +496,8 @@ fn create(
                 return Err(CreateError::IdentityChanged.into());
             }
         }
-        Ok(super::create_agent_with_server_id(
-            tx,
-            &id,
-            prompt,
-            record,
-            created,
-            validate,
-            server_id.as_deref(),
+        Ok(super::create_agent_with_identity(
+            tx, &id, prompt, record, created, validate,
         )?)
     })
 }
@@ -695,22 +676,13 @@ fn create_child(
         .and_then(Value::as_f64)
         .ok_or(OperationError::Internal)?;
     let prompt = request.prompt.trim();
-    let server_id = local_server_id(context)?;
     let task_id = intent
         .get("task_id")
         .and_then(Value::as_str)
         .map(str::to_owned);
     mutate(context, |tx| {
         crate::host_worker_create::recheck_worker(tx, &draft, epoch, &identity)?;
-        let result = super::create_agent_with_server_id(
-            tx,
-            id,
-            prompt,
-            record,
-            created,
-            validate,
-            server_id.as_deref(),
-        )?;
+        let result = super::create_agent_with_identity(tx, id, prompt, record, created, validate)?;
         if let Some(task_id) = &task_id {
             let actor = studio_runtime_store::AgentRepository::get(
                 tx,
@@ -1839,12 +1811,7 @@ fn mutate(
 }
 
 fn local_server_id(context: &Context<'_>) -> Result<Option<String>, OperationError> {
-    let state_dir = context
-        .store
-        .root()
-        .to_str()
-        .ok_or(OperationError::Internal)?;
-    Ok(crate::sync_entity_context::local_server_id(state_dir)?)
+    Ok(context.store.local_server_id()?)
 }
 
 #[cfg(test)]

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import os
+import sqlite3
 from pathlib import Path
 import subprocess
 import sys
@@ -15,10 +16,13 @@ from test_isolation import isolate_supervisor_environment
 
 isolate_supervisor_environment()
 
-from http_backend_harness import TimedHTTPContractTest, start_contract_backend, no_write_snapshot
+from http_backend_harness import (
+    TimedHTTPContractTest,
+    assert_read_succeeds_unchanged_under_writer,
+    no_write_snapshot,
+    start_contract_backend,
+)
 from sync_http_contract_support import prepare_sync_store_for_rust_contract
-
-
 
 
 class SyncDocumentsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
@@ -29,6 +33,26 @@ class SyncDocumentsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         if os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"):
             prepare_sync_store_for_rust_contract(cls.backend, seed_python_rows=True)
         cls._prepare_python_entity_tombstone()
+
+    @unittest.skipUnless(os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"), "Rust backend only")
+    def test_entity_and_transcript_pull_read_under_a_held_writer(self):
+        headers = self._common_headers()
+        with sqlite3.connect(self.backend.state / "canvas.sqlite3") as database:
+            entity_high = database.execute(
+                "SELECT coalesce(max(seq),0) FROM sync_entities WHERE collection NOT LIKE 'transcript:%'"
+            ).fetchone()[0]
+        assert_read_succeeds_unchanged_under_writer(
+            self,
+            self.backend,
+            f"/api/sync/pull?scope=state:entities:v1&after={entity_high}",
+            headers,
+        )
+        assert_read_succeeds_unchanged_under_writer(
+            self,
+            self.backend,
+            "/api/sync/pull?scope=transcript:agent-a&after=0",
+            headers,
+        )
 
     @unittest.skipUnless(os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"), "Rust storage validation")
     def test_sync_and_chat_refuse_agent_missing_epoch_without_projection_writes(self):

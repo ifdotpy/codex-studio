@@ -127,6 +127,7 @@ impl Credentials {
             }
             let mut identity = remote_transport::read_multi_server_identity(store.root())?;
             self.recover(store, &mut identity)?;
+            store.set_local_server_id(Some(identity.server_id.clone()))?;
             *saved = Some(identity);
         }
         saved.as_mut().ok_or(CredentialError::Storage)
@@ -137,27 +138,43 @@ impl Credentials {
         store: &RuntimeStore,
         identity: &mut StoredMultiServerIdentity,
     ) -> Result<(), CredentialError> {
-        // The outer credential mutex and the store's single writer serialize
-        // recovery; no HTTP call can observe an applied journal with stale keys.
+        // File access stays outside store transactions; the writer rechecks
+        // the journal before marking each recovery complete.
+        let pending = store.read_transaction_with_error(Journal::pending_names)?;
+        if pending.is_empty() {
+            return Ok(());
+        }
+        for (_, label, _) in &pending {
+            validate_stored_name(label)?;
+        }
+        let mut updates = Vec::with_capacity(pending.len());
+        let mut updated = identity.clone();
+        for (id, label, actor) in pending {
+            updated.label = label;
+            write_identity(store.root(), &updated, false)?;
+            updates.push((id, actor, updated.label.clone()));
+        }
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|_| CredentialError::Storage)?
+            .as_secs_f64();
         store.transaction_with(|tx| -> Result<(), CredentialError> {
-            let pending = Journal::pending_names(tx)?;
-            // Refuse malformed journal rows before changing any file.
-            for (_, label, _) in &pending {
-                validate_stored_name(label)?;
-            }
-            for (id, label, actor) in pending {
-                let mut updated = identity.clone();
-                updated.label = label;
-                write_identity(store.root(), &updated, false)?;
-                let now = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map_err(|_| CredentialError::Storage)?
-                    .as_secs_f64();
-                Journal::complete_name(tx, &id, &updated.server_id, &actor, now)?;
-                *identity = updated;
+            let current = Journal::pending_names(tx)?;
+            for (id, actor, label) in &updates {
+                if !current
+                    .iter()
+                    .any(|(current_id, current_label, current_actor)| {
+                        current_id == id && current_label == label && current_actor == actor
+                    })
+                {
+                    return Err(CredentialError::InvalidJournal);
+                }
+                Journal::complete_name(tx, id, &updated.server_id, actor, now)?;
             }
             Ok(())
-        })
+        })?;
+        *identity = updated;
+        Ok(())
     }
 }
 

@@ -256,6 +256,7 @@ pub(crate) fn map_transcript_error(error: TranscriptError) -> ApiError {
             format!("Invalid stored object {table}/{id}"),
         ),
         TranscriptError::Store => ApiError::internal(),
+        TranscriptError::ReadOnlyRepair => ApiError::internal(),
     }
 }
 inventory::submit! {

@@ -20,7 +20,11 @@ isolate_supervisor_environment()
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from runtime_test_environment import make_runtime
-from http_backend_harness import TimedHTTPContractTest, start_contract_backend
+from http_backend_harness import (
+    TimedHTTPContractTest,
+    assert_read_succeeds_unchanged_under_writer,
+    start_contract_backend,
+)
 
 
 def database_snapshot(state: Path):
@@ -210,6 +214,18 @@ class ToolRequestsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             "X-Canvas-Token": cls.backend.session["token"],
             "X-Studio-API-Schema": cls.backend.schema_hash,
         }
+
+    @unittest.skipUnless(os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"), "Rust backend only")
+    def test_list_and_get_reads_succeed_unchanged_while_writer_is_held(self):
+        request_id = "held-writer-read"
+        write_receipts(self.backend, [receipt(request_id, self.lead_id)])
+        headers = self.headers()
+        paths = (
+            "/api/tool-requests?" + urlencode({"agent": self.lead_id}),
+            "/api/tool-requests?" + urlencode({"agent": self.lead_id, "request_id": request_id}),
+        )
+        for path in paths:
+            assert_read_succeeds_unchanged_under_writer(self, self.backend, path, headers)
 
     def test_terminal_metadata_list_reads_python_state_and_strips_payload_fields(self):
         write_receipts(self.backend, [receipt("terminal-receipt", self.lead_id)])

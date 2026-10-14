@@ -5,8 +5,8 @@ pub use operations::*;
 use rusqlite::{Connection, OptionalExtension};
 use serde_json::{Value, json};
 use studio_runtime_store::{
-    AgentId, AgentRecord, AgentRepository, AgentStatus, EventWriteRepository, StoreError,
-    SyncDocumentsRepository, Transaction,
+    AgentId, AgentRecord, AgentRepository, AgentStatus, EventWriteRepository, RuntimeStore,
+    StoreError, SyncDocumentsRepository, Transaction,
 };
 use thiserror::Error;
 
@@ -115,41 +115,26 @@ pub fn mode_fields(record: &mut Value) {
 }
 
 /// Use the shared canonical renderer builder for every agent publication.
-pub(crate) fn sync_projection_with_server_id(
+pub(crate) fn sync_projection(
     transaction: &Transaction<'_>,
     record: &Value,
-    server_id: Option<&str>,
 ) -> Result<Value, StoreError> {
     let mut record = record.clone();
     mode_fields(&mut record);
-    let context = crate::sync_entity_context::agent_view_context(transaction, &record, server_id)?;
+    let server_id = RuntimeStore::transaction_local_server_id(transaction)?;
+    let context =
+        crate::sync_entity_context::agent_view_context(transaction, &record, server_id.as_deref())?;
     crate::sync_views::agent_entity_view(&record, &context)
         .ok_or_else(|| StoreError::SchemaMismatch("agent sync projection has no id".to_owned()))
 }
 
-fn sync_projection(transaction: &Transaction<'_>, record: &Value) -> Result<Value, StoreError> {
-    let server_id = transaction
-        .path()
-        .and_then(|path| std::path::Path::new(path).parent()?.to_str())
-        .map(crate::sync_entity_context::local_server_id)
-        .transpose()?
-        .flatten();
-    sync_projection_with_server_id(transaction, record, server_id.as_deref())
-}
-
 pub fn publish_agent(transaction: &Transaction<'_>, record: &Value) -> Result<Value, StoreError> {
-    let server_id = transaction
-        .path()
-        .and_then(|path| std::path::Path::new(path).parent()?.to_str())
-        .map(crate::sync_entity_context::local_server_id)
-        .transpose()?
-        .flatten();
     let id = record
         .get("id")
         .and_then(Value::as_str)
         .ok_or_else(|| StoreError::SchemaMismatch("agent sync projection has no id".to_owned()))?;
     let deleted = crate::event_write::truthy(record.get("deletedAt"));
-    let projection = sync_projection_with_server_id(transaction, record, server_id.as_deref())?;
+    let projection = sync_projection(transaction, record)?;
     SyncDocumentsRepository::put_entity(transaction, "agent", id, projection.clone(), deleted)?;
     Ok(projection)
 }
@@ -371,17 +356,16 @@ fn create_agent(
     created: f64,
     validate: impl Fn(&str, &Value) -> bool,
 ) -> Result<Value, CreateError> {
-    create_agent_with_server_id(transaction, id, prompt, record, created, validate, None)
+    create_agent_with_identity(transaction, id, prompt, record, created, validate)
 }
 
-fn create_agent_with_server_id(
+fn create_agent_with_identity(
     transaction: &Transaction<'_>,
     id: &str,
     prompt: &str,
     record: Value,
     created: f64,
     validate: impl Fn(&str, &Value) -> bool,
-    server_id: Option<&str>,
 ) -> Result<Value, CreateError> {
     if !validate("PersistedAgentRecord", &record) {
         return Err(CreateError::InvalidStoredObject {
@@ -422,7 +406,7 @@ fn create_agent_with_server_id(
         .and_then(Value::as_str)
         .ok_or_else(|| StoreError::SchemaMismatch("agent sync projection has no id".to_owned()))?;
     let deleted = crate::event_write::truthy(record.get("deletedAt"));
-    let projection = sync_projection_with_server_id(transaction, &record, server_id)?;
+    let projection = sync_projection(transaction, &record)?;
     SyncDocumentsRepository::put_entity(transaction, "agent", id, projection.clone(), deleted)?;
     if !draft {
         let event_id = format!("{id}:initial");

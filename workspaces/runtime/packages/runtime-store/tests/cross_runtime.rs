@@ -1071,3 +1071,95 @@ fn temporary_state(label: &str) -> TemporaryState {
         .expect("cross-runtime test operation succeeds");
     TemporaryState(directory.path().to_path_buf(), directory)
 }
+#[test]
+fn server_identity_registry_is_shared_by_store_connections_and_scoped_to_database() {
+    let first_root = temporary_state("identity-registry-first");
+    let second_root = temporary_state("identity-registry-second");
+    python(&first_root, CREATE_PYTHON_STATE, &[]);
+    python(&second_root, CREATE_PYTHON_STATE, &[]);
+    for (root, server_id) in [
+        (&*first_root, "server-first"),
+        (&*second_root, "server-second"),
+    ] {
+        let directory = root.join("multi-server");
+        std::fs::create_dir_all(&directory).expect("identity directory exists");
+        std::fs::write(
+            directory.join("identity.json"),
+            format!(r#"{{"serverId":"{server_id}"}}"#),
+        )
+        .expect("identity file created");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700))
+                .expect("safe identity directory");
+            std::fs::set_permissions(
+                directory.join("identity.json"),
+                std::fs::Permissions::from_mode(0o600),
+            )
+            .expect("safe identity file");
+        }
+    }
+
+    let first = RuntimeStore::open(Some(&first_root)).expect("first store opens");
+    let second = RuntimeStore::open(Some(&second_root)).expect("second store opens");
+    assert_eq!(
+        first.local_server_id().expect("identity lookup"),
+        Some("server-first".to_owned())
+    );
+    assert_eq!(
+        second.local_server_id().expect("identity lookup"),
+        Some("server-second".to_owned())
+    );
+    first
+        .transaction(|tx| {
+            assert_eq!(
+                RuntimeStore::transaction_local_server_id(tx)?,
+                Some("server-first".to_owned())
+            );
+            Ok(())
+        })
+        .expect("writer sees its store identity");
+    second
+        .transaction(|tx| {
+            assert_eq!(
+                RuntimeStore::transaction_local_server_id(tx)?,
+                Some("server-second".to_owned())
+            );
+            Ok(())
+        })
+        .expect("second database sees its own identity");
+    let reader = first.read().expect("reader opens");
+    let tx = reader
+        .unchecked_transaction()
+        .expect("read transaction begins");
+    assert_eq!(
+        RuntimeStore::transaction_local_server_id(&tx).expect("reader identity"),
+        Some("server-first".to_owned())
+    );
+    tx.rollback().expect("read transaction ends");
+    first
+        .set_local_server_id(Some("server-updated".to_owned()))
+        .expect("credential loader updates registry");
+    let tx = reader
+        .unchecked_transaction()
+        .expect("second read transaction begins");
+    assert_eq!(
+        RuntimeStore::transaction_local_server_id(&tx).expect("updated reader identity"),
+        Some("server-updated".to_owned())
+    );
+    tx.rollback().expect("second read transaction ends");
+
+    drop(first);
+    let raw =
+        rusqlite::Connection::open(first_root.join("canvas.sqlite3")).expect("raw connection");
+    let tx = raw.unchecked_transaction().expect("raw transaction begins");
+    assert_eq!(
+        RuntimeStore::transaction_local_server_id(&tx).expect("unregistered database identity"),
+        None
+    );
+    tx.rollback().expect("raw transaction ends");
+    drop(second);
+    first_root.cleanup().expect("first fixture removed");
+    second_root.cleanup().expect("second fixture removed");
+}

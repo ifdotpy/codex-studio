@@ -51,6 +51,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let configured_state_dir = env::var_os("CODEX_AGENTS_STATE_DIR").map(PathBuf::from);
     let store = Arc::new(RuntimeStore::open(configured_state_dir.as_deref())?);
     studio_runtime_services::maintenance::remove_review_assignments(&store)?;
+    let credentials =
+        Arc::new(studio_runtime_services::federation_credentials::Credentials::default());
+    #[cfg(unix)]
+    {
+        credentials.identity(&store, None)?;
+    }
     studio_runtime_services::workspace_operations_effects::startup_recovery(&store)?;
     let workspace_id = studio_runtime_store::SyncDocumentsRepository::workspace_id(&store.read()?)?;
     let state_root = store.root().canonicalize()?;
@@ -131,7 +137,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Some(account_policy.clone()),
     )
     .with_account_driver(account_driver.clone())
-    .with_provider_versions(provider_versions);
+    .with_provider_versions(provider_versions)
+    .with_credentials(credentials);
     account_driver.recover_codex_logins()?;
     let home = env::var_os("HOME")
         .map(PathBuf::from)

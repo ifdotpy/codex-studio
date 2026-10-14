@@ -91,7 +91,7 @@ fn apply(store: &RuntimeStore, case: &Value, prepared: &Value) -> Result<Value, 
         NotificationStreamBuffer, ProviderDeliveryIdentity, PublicationContext,
         dispatch_notification_with_effects as dispatch_notification,
     };
-    let publication = PublicationContext::load(store.root()).map_err(|e| e.to_string())?;
+    let publication = PublicationContext::load(store).map_err(|e| e.to_string())?;
     if case["submission"] == true {
         use studio_runtime_services::notification_dispatch::{
             PreparedSubmission, SubmittedInput, record_user_submission,
@@ -551,7 +551,7 @@ fn effect_failpoints(
     };
     use studio_runtime_services::notification_runtime_effects::RuntimeNotificationEffects;
     use studio_runtime_store::{StoreError, Transaction};
-    let publication = PublicationContext::load(store.root()).map_err(|e| e.to_string())?;
+    let publication = PublicationContext::load(store).map_err(|e| e.to_string())?;
     struct Failure(u8);
     impl NotificationEffects for Failure {
         fn capture_usage(
@@ -709,7 +709,7 @@ fn flush(
     use studio_runtime_services::notification_dispatch::{
         NotificationDispatchError, PublicationContext, flush_notification_streams,
     };
-    let publication = PublicationContext::load(store.root()).map_err(|e| e.to_string())?;
+    let publication = PublicationContext::load(store).map_err(|e| e.to_string())?;
     let mut rolled = None;
     let rollback: Result<(), NotificationDispatchError> = store.transaction_with(|tx| {
         rolled = Some(flush_notification_streams(

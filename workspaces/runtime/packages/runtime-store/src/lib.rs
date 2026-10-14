@@ -35,12 +35,14 @@ pub use repositories::remote_transport::{
 };
 pub use repositories::system_reads;
 
+use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
+use std::io::BufReader;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-pub use rusqlite::{Connection, Transaction};
+pub use rusqlite::{Connection, Error as SqliteError, ErrorCode, Transaction};
 use rusqlite::{OpenFlags, TransactionBehavior};
 use thiserror::Error;
 
@@ -93,6 +95,16 @@ pub use repositories::workspace_ready;
 pub use repositories::workspace_views::{WorkspaceTaskRow, WorkspaceViewsRepository};
 
 const DATABASE_BUSY_TIMEOUT_MS: u32 = 15_000;
+
+struct IdentityEntry {
+    server_id: Option<String>,
+    stores: usize,
+}
+
+fn identity_registry() -> &'static Mutex<HashMap<PathBuf, IdentityEntry>> {
+    static REGISTRY: OnceLock<Mutex<HashMap<PathBuf, IdentityEntry>>> = OnceLock::new();
+    REGISTRY.get_or_init(|| Mutex::new(HashMap::new()))
+}
 
 #[derive(Debug, Error)]
 pub enum StoreError {
@@ -162,6 +174,7 @@ pub struct RuntimeStore {
     _runtime_lock: RuntimeLock,
     writer: Mutex<Connection>,
     version_reader: Mutex<Connection>,
+    identity_registry_path: PathBuf,
     commit_notifier: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
 }
 
@@ -173,6 +186,7 @@ impl RuntimeStore {
             None => resolve_state_dir()?,
         };
         let runtime_lock = RuntimeLock::acquire(&root)?;
+        let local_server_id = local_server_id(&root)?;
 
         let canvas_path = root.join("canvas.sqlite3");
         let analytics_path = root.join("analytics.sqlite3");
@@ -190,11 +204,25 @@ impl RuntimeStore {
         schema::register_python_trigger_functions(&writer)?;
         let version_reader = open_database(&canvas_path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
         version_reader.pragma_update(None, "query_only", "ON")?;
+        let identity_registry_path = canvas_path.clone();
+        {
+            let mut registry = identity_registry()
+                .lock()
+                .map_err(|_| StoreError::WriterPoisoned)?;
+            let entry = registry
+                .entry(identity_registry_path.clone())
+                .or_insert_with(|| IdentityEntry {
+                    server_id: local_server_id.clone(),
+                    stores: 0,
+                });
+            entry.stores += 1;
+        }
         let store = Self {
             root,
             _runtime_lock: runtime_lock,
             writer: Mutex::new(writer),
             version_reader: Mutex::new(version_reader),
+            identity_registry_path,
             commit_notifier: Mutex::new(None),
         };
         store.transaction(|transaction| {
@@ -214,6 +242,51 @@ impl RuntimeStore {
 
     pub fn root(&self) -> &Path {
         &self.root
+    }
+
+    /// Update the process-local server identity before requests begin.
+    pub fn set_local_server_id(&self, server_id: Option<String>) -> StoreResult<()> {
+        if server_id.as_deref().is_some_and(str::is_empty) {
+            return Err(StoreError::InvalidSyncObject {
+                scope: "multi-server".to_owned(),
+                id: "identity.json".to_owned(),
+            });
+        }
+        let mut registry = identity_registry()
+            .lock()
+            .map_err(|_| StoreError::WriterPoisoned)?;
+        let entry =
+            registry
+                .get_mut(&self.identity_registry_path)
+                .ok_or(StoreError::RecordContract(
+                    "runtime identity registry entry missing",
+                ))?;
+        entry.server_id = server_id;
+        Ok(())
+    }
+
+    pub fn local_server_id(&self) -> StoreResult<Option<String>> {
+        identity_registry()
+            .lock()
+            .map_err(|_| StoreError::WriterPoisoned)?
+            .get(&self.identity_registry_path)
+            .map(|entry| entry.server_id.clone())
+            .ok_or(StoreError::RecordContract(
+                "runtime identity registry entry missing",
+            ))
+    }
+
+    pub fn transaction_local_server_id(
+        transaction: &Transaction<'_>,
+    ) -> StoreResult<Option<String>> {
+        let Some(path) = transaction.path() else {
+            return Ok(None);
+        };
+        Ok(identity_registry()
+            .lock()
+            .map_err(|_| StoreError::WriterPoisoned)?
+            .get(Path::new(path))
+            .and_then(|entry| entry.server_id.clone()))
     }
 
     /// Install the process-local notification fired after each successful write commit.
@@ -301,10 +374,25 @@ impl RuntimeStore {
         &self,
         operation: impl FnOnce(&Transaction<'_>) -> StoreResult<T>,
     ) -> StoreResult<T> {
+        self.read_transaction_with_error(operation)
+    }
+
+    /// Run a read-only snapshot with a domain error type that preserves
+    /// operation refusals while still reporting store and commit failures.
+    pub fn read_transaction_with_error<T, E>(
+        &self,
+        operation: impl FnOnce(&Transaction<'_>) -> Result<T, E>,
+    ) -> Result<T, E>
+    where
+        E: From<StoreError>,
+    {
         let mut connection = self.read()?;
-        let transaction = connection.transaction()?;
+        let transaction = connection.transaction().map_err(StoreError::from)?;
         let value = operation(&transaction)?;
-        transaction.commit()?;
+        transaction
+            .commit()
+            .map_err(StoreError::from)
+            .map_err(E::from)?;
         Ok(value)
     }
 
@@ -323,6 +411,110 @@ impl RuntimeStore {
             &self.root.join("canvas.sqlite3"),
             &self.root.join("analytics.sqlite3"),
         )
+    }
+}
+
+impl Drop for RuntimeStore {
+    fn drop(&mut self) {
+        let Ok(mut registry) = identity_registry().lock() else {
+            return;
+        };
+        if let Some(entry) = registry.get_mut(&self.identity_registry_path) {
+            entry.stores = entry.stores.saturating_sub(1);
+            if entry.stores == 0 {
+                registry.remove(&self.identity_registry_path);
+            }
+        }
+    }
+}
+
+/// Read the public routing ID from the multi-server identity file before startup.
+/// Missing identity remains a read-only `None`; malformed, unsafe, or unusable
+/// identity data is refused, matching the Python runtime's credential gate.
+pub fn local_server_id(root: &Path) -> StoreResult<Option<String>> {
+    let directory = root.join("multi-server");
+    let directory_metadata = match std::fs::symlink_metadata(&directory) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(_) => {
+            return Err(invalid_local_identity(
+                "cannot inspect credential directory",
+            ));
+        }
+    };
+    if !directory_metadata.is_dir() || directory_metadata.file_type().is_symlink() {
+        return Err(invalid_local_identity(
+            "credential directory is not a directory",
+        ));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if directory_metadata.permissions().mode() & 0o077 != 0 {
+            return Err(invalid_local_identity(
+                "unsafe credential directory permissions",
+            ));
+        }
+    }
+    let path = directory.join("identity.json");
+    let path_metadata = match std::fs::symlink_metadata(&path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(_) => return Err(invalid_local_identity("cannot inspect identity.json")),
+    };
+    if !path_metadata.is_file()
+        || path_metadata.file_type().is_symlink()
+        || path_metadata.len() > 16_384
+    {
+        return Err(invalid_local_identity(
+            "identity.json is not a bounded regular file",
+        ));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if path_metadata.permissions().mode() & 0o077 != 0 {
+            return Err(invalid_local_identity("unsafe identity.json permissions"));
+        }
+    }
+    let file =
+        File::open(&path).map_err(|_| invalid_local_identity("cannot read identity.json"))?;
+    if !file
+        .metadata()
+        .map_err(|_| invalid_local_identity("cannot inspect identity.json"))?
+        .is_file()
+    {
+        return Err(invalid_local_identity(
+            "identity.json is not a regular file",
+        ));
+    }
+    let identity: serde_json::Value = match serde_json::from_reader(BufReader::new(file)) {
+        Ok(identity) => identity,
+        Err(_) => return Err(invalid_local_identity("malformed JSON in identity.json")),
+    };
+    let Some(server_id) = identity.get("serverId").and_then(serde_json::Value::as_str) else {
+        return Err(invalid_local_identity("missing serverId"));
+    };
+    if !valid_server_id(server_id) {
+        return Err(invalid_local_identity("invalid serverId"));
+    }
+    Ok(Some(server_id.to_owned()))
+}
+
+fn valid_server_id(value: &str) -> bool {
+    let mut bytes = value.bytes();
+    bytes
+        .next()
+        .is_some_and(|first| first.is_ascii_alphanumeric())
+        && value.len() <= 128
+        && bytes
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'.' | b':' | b'-'))
+}
+
+fn invalid_local_identity(reason: &str) -> StoreError {
+    StoreError::InvalidSyncObject {
+        scope: "multi-server".to_owned(),
+        id: format!("identity.json: {reason}"),
     }
 }
 

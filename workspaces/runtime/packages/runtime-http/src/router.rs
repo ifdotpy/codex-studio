@@ -165,6 +165,14 @@ impl HttpState {
         self
     }
 
+    pub fn with_credentials(
+        mut self,
+        credentials: Arc<studio_runtime_services::federation_credentials::Credentials>,
+    ) -> Self {
+        self.credentials = credentials;
+        self
+    }
+
     pub fn with_title_request_port(
         mut self,
         port: Arc<dyn studio_runtime_services::title_generation::TitleRequestPort>,
