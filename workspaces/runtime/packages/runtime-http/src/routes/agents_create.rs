@@ -10,6 +10,7 @@ use studio_runtime_services::agents_create::{
 use studio_runtime_services::host_worker_create::{
     AccountIdentity, CreationCatalog, ExecutionSettings,
 };
+use studio_runtime_services::model_catalog::ModelListPort;
 
 struct RouteCreationCatalog<'a> {
     service: &'a studio_runtime_services::model_catalog::ModelCatalogService,
@@ -395,19 +396,19 @@ async fn rename(
                 "Not implemented: requires account-driver/unavailable",
             )
         })?;
-        let account = driver
-            .snapshot()
-            .map_err(|_| ApiError::internal())?
+        let snapshot = driver.snapshot().map_err(|_| ApiError::internal())?;
+        let account = snapshot
             .accounts
-            .into_iter()
+            .iter()
             .find(|row| row.get("id").and_then(Value::as_str) == Some(&account_key))
+            .cloned()
             .ok_or_else(|| {
                 ApiError::new(
                     StatusCode::NOT_IMPLEMENTED,
                     "Not implemented: requires account-driver/unavailable",
                 )
             })?;
-        let home = account.get("home").and_then(Value::as_str).ok_or_else(|| {
+        let _home = account.get("home").and_then(Value::as_str).ok_or_else(|| {
             ApiError::new(
                 StatusCode::NOT_IMPLEMENTED,
                 "Not implemented: requires provider-session/model-list",
@@ -417,19 +418,38 @@ async fn rename(
             .get("provider")
             .and_then(Value::as_str)
             .unwrap_or("codex");
-        let catalog = match state
+        state
             .model_catalog
-            .read(&account_key, home, provider, false)
+            .set_account_session(state.account_session.clone());
+        state.model_catalog.retain_accounts(&snapshot.accounts);
+        let catalog = state
+            .model_catalog
+            .list(
+                &account_key,
+                provider,
+                json!({
+                    "limit": studio_runtime_schema::shared_values::MODEL_CATALOG_ITEMS_PER_PAGE
+                }),
+            )
             .await
-        {
-            studio_runtime_services::model_catalog::CatalogRead::Ready(value) => value,
-            _ => {
-                return Err(ApiError::new(
-                    StatusCode::NOT_IMPLEMENTED,
-                    "Not implemented: requires provider-session/model-list",
-                ));
-            }
-        };
+            .map_err(|error| match error {
+                studio_runtime_services::model_catalog::ModelListError::Pending => {
+                    ApiError::new(StatusCode::CONFLICT, "Model catalog is pending")
+                }
+                studio_runtime_services::model_catalog::ModelListError::UnknownAccount
+                | studio_runtime_services::model_catalog::ModelListError::ProviderMismatch => {
+                    ApiError::new(StatusCode::BAD_REQUEST, "Account model catalog changed")
+                }
+                studio_runtime_services::model_catalog::ModelListError::InvalidParams => {
+                    ApiError::internal()
+                }
+                studio_runtime_services::model_catalog::ModelListError::Unavailable => {
+                    ApiError::new(
+                        StatusCode::NOT_IMPLEMENTED,
+                        "Not implemented: requires provider-session/model-list",
+                    )
+                }
+            })?;
         let deadline = std::time::SystemTime::now() + std::time::Duration::from_secs(30);
         let generated = studio_runtime_services::title_generation::generate(
             &store,
