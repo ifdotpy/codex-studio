@@ -177,7 +177,10 @@ Limits:
   restart or an operator restarts it.
 - No restart while `upgrade-linux-vm-layr.py` holds `maintenance.lock` (for the whole upgrade),
   or while create, start or stop holds `client.lock`. An upgrade does not start during a restart.
-- The watchdog acts only on a live helper and never starts a stopped VM.
+- The watchdog acts only on a live helper. It starts a stopped VM only when its last intent is a
+  start from before the current Mac boot (`kern.boottime`): the Mac restarted under the VM. The
+  same limits apply, and the record has kind `host_restart`. A VM that stopped in this boot (a
+  guest power-off, a helper exit) or by a stop on purpose stays stopped.
   `Client.stop()` saves `intent.json` before it takes the client lock, also for a stopped VM.
   A stop at any time before the watchdog's start cancels that start (outcome `cancelled`).
   The watchdog does not hold the client lock while the helper stops a dead kernel.
