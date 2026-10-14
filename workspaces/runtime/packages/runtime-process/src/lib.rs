@@ -4,6 +4,7 @@ pub mod child_priority;
 mod client;
 mod ports;
 mod protocol;
+mod shared_values_generated;
 #[cfg(unix)]
 pub mod stream_child;
 mod transport;

@@ -5,9 +5,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 use crate::protocol::*;
+use crate::shared_values_generated::PROCESS_SUPERVISOR_PROTOCOL_VERSION;
 use crate::transport::{SupervisorTransport, read_frame, write_frame};
 
-const PROTOCOL_VERSION: u64 = 1;
 const IO_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
 pub struct SupervisorClient<T: SupervisorTransport> {
@@ -17,7 +17,7 @@ pub struct SupervisorClient<T: SupervisorTransport> {
 }
 
 impl<T: SupervisorTransport> SupervisorClient<T> {
-    /// Perform the protocol-v1 identity handshake over an already-connected
+    /// Perform the process-supervisor handshake over an already-connected
     /// transport. The transport is closed by dropping the client.
     pub fn from_transport(
         transport: T,
@@ -32,7 +32,7 @@ impl<T: SupervisorTransport> SupervisorClient<T> {
         operator: bool,
     ) -> Result<Self, SupervisorError> {
         let mut handshake = serde_json::json!({
-            "protocol": PROTOCOL_VERSION,
+            "protocol": PROCESS_SUPERVISOR_PROTOCOL_VERSION,
             "stateDir": identity.state_dir,
             "backendId": identity.backend_id,
         });
@@ -57,7 +57,7 @@ impl<T: SupervisorTransport> SupervisorClient<T> {
                 .unwrap_or("unexpected handshake response")
                 .to_owned();
             Err(SupervisorError::ProtocolMismatch {
-                expected: PROTOCOL_VERSION,
+                expected: PROCESS_SUPERVISOR_PROTOCOL_VERSION,
                 received: None,
                 detail,
             })

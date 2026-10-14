@@ -26,8 +26,9 @@ import time
 import uuid
 
 from codex_open_file_limit import raise_open_file_limit
+from codex_shared_values import PROCESS_SUPERVISOR_PROTOCOL_VERSION
 
-PROTOCOL = 1
+PROTOCOL = PROCESS_SUPERVISOR_PROTOCOL_VERSION
 MAX_STDERR_EVENT_BYTES = 256 * 1024
 MAX_FRAME_BYTES = 1024 * 1024
 HANDLE_LIMIT = 256 * 1024 * 1024
