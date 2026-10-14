@@ -6,7 +6,8 @@ mod account_registry;
 mod prepared_python;
 
 use account_registry::{
-    AccountLaunch, AccountLauncher, AccountRegistry, AccountSessionBroker, LaunchFuture,
+    AccountLaunch, AccountLauncher, AccountRegistry, AccountRegistryConfig, AccountSessionBroker,
+    LaunchFuture,
 };
 use serde_json::{Value, json};
 use std::{
@@ -31,6 +32,10 @@ use studio_runtime_services::{
 };
 use studio_runtime_store::{RuntimeStore, StoreError};
 use tokio::sync::{Notify, mpsc, watch};
+
+fn test_registry_config() -> AccountRegistryConfig {
+    AccountRegistryConfig::default()
+}
 
 struct Fixture {
     _root: tempfile::TempDir,
@@ -610,6 +615,7 @@ async fn concurrent_ensure_session_starts_one_cold_account_worker() {
         launcher.clone(),
         Arc::new(Notify::new()),
         broker.clone(),
+        test_registry_config(),
     )
     .await
     .unwrap();
@@ -642,9 +648,10 @@ async fn production_reconcile_delivers_radio_interrupt_once_with_deterministic_c
     let snapshot = radio_interrupt_snapshot(scratch.path());
     seed_radio_interrupt(&fixture, &snapshot);
     let (launcher, _writes) = scripted();
-    let mut registry = AccountRegistry::new(fixture.store.clone(), launcher)
-        .await
-        .unwrap();
+    let mut registry =
+        AccountRegistry::new(fixture.store.clone(), launcher, test_registry_config())
+            .await
+            .unwrap();
     registry.set_radio_clock_for_test(Arc::new(|| 1_000.0));
     registry.start("default").await.unwrap();
 
@@ -675,9 +682,13 @@ async fn production_reconcile_admits_radio_queue_event_to_retained_worker() {
     let snapshot = radio_queue_snapshot(scratch.path());
     seed_radio_interrupt(&fixture, &snapshot);
     let (launcher, mut writes) = scripted_with_resume_recording(true, true);
-    let mut registry = AccountRegistry::new(fixture.store.clone(), launcher.clone())
-        .await
-        .unwrap();
+    let mut registry = AccountRegistry::new(
+        fixture.store.clone(),
+        launcher.clone(),
+        test_registry_config(),
+    )
+    .await
+    .unwrap();
     registry.set_radio_clock_for_test(Arc::new(|| 2_000_000_000.0));
 
     registry.reconcile(None).await.unwrap();
@@ -743,9 +754,10 @@ async fn production_reconcile_admits_radio_queue_event_to_retained_worker() {
         "radio queue event was sent twice"
     );
     drop(registry);
-    let mut restarted = AccountRegistry::new(fixture.store.clone(), launcher)
-        .await
-        .unwrap();
+    let mut restarted =
+        AccountRegistry::new(fixture.store.clone(), launcher, test_registry_config())
+            .await
+            .unwrap();
     restarted.reconcile(None).await.unwrap();
     assert!(
         writes.try_recv().is_err(),
@@ -761,9 +773,10 @@ async fn production_reconcile_keeps_closed_worker_interrupt_unknown_without_rese
     let snapshot = radio_interrupt_snapshot(scratch.path());
     seed_radio_interrupt(&fixture, &snapshot);
     let (launcher, _writes) = scripted();
-    let mut registry = AccountRegistry::new(fixture.store.clone(), launcher)
-        .await
-        .unwrap();
+    let mut registry =
+        AccountRegistry::new(fixture.store.clone(), launcher, test_registry_config())
+            .await
+            .unwrap();
     registry.set_radio_clock_for_test(Arc::new(|| 1_000.0));
     registry.start("default").await.unwrap();
     registry.close_worker_for_test("default").await.unwrap();
@@ -794,9 +807,13 @@ async fn committed_input_reaches_one_retained_session_and_unknown_restart_does_n
     let fixture = tokio::task::spawn_blocking(Fixture::new).await.unwrap();
     fixture.enqueue(0, "committed-before-start");
     let (launcher, mut writes) = scripted();
-    let mut registry = AccountRegistry::new(fixture.store.clone(), launcher.clone())
-        .await
-        .unwrap();
+    let mut registry = AccountRegistry::new(
+        fixture.store.clone(),
+        launcher.clone(),
+        test_registry_config(),
+    )
+    .await
+    .unwrap();
     registry.reconcile(None).await.unwrap();
     let (account, write) = tokio::time::timeout(std::time::Duration::from_secs(10), writes.recv())
         .await
@@ -808,9 +825,13 @@ async fn committed_input_reaches_one_retained_session_and_unknown_restart_does_n
     assert_eq!(launcher.opened.lock().unwrap().len(), 1);
     registry.shutdown().await.unwrap();
     assert_eq!(launcher.active.load(Ordering::SeqCst), 0);
-    let mut restarted = AccountRegistry::new(fixture.store.clone(), launcher.clone())
-        .await
-        .unwrap();
+    let mut restarted = AccountRegistry::new(
+        fixture.store.clone(),
+        launcher.clone(),
+        test_registry_config(),
+    )
+    .await
+    .unwrap();
     restarted.reconcile(None).await.unwrap();
     restarted.shutdown().await.unwrap();
     assert!(
@@ -835,9 +856,13 @@ async fn image_workspace_pending_event_is_refused_before_account_provider_launch
         .unwrap();
     fixture.enqueue(0, "image-workspace-refused");
     let (launcher, mut writes) = scripted();
-    let mut registry = AccountRegistry::new(fixture.store.clone(), launcher.clone())
-        .await
-        .unwrap();
+    let mut registry = AccountRegistry::new(
+        fixture.store.clone(),
+        launcher.clone(),
+        test_registry_config(),
+    )
+    .await
+    .unwrap();
 
     registry.reconcile(None).await.unwrap();
 
@@ -867,9 +892,13 @@ async fn image_workspace_pending_event_is_refused_before_account_provider_launch
     assert_eq!(held["autoWake"], false);
     registry.shutdown().await.unwrap();
 
-    let mut restarted = AccountRegistry::new(fixture.store.clone(), launcher.clone())
-        .await
-        .unwrap();
+    let mut restarted = AccountRegistry::new(
+        fixture.store.clone(),
+        launcher.clone(),
+        test_registry_config(),
+    )
+    .await
+    .unwrap();
     restarted.reconcile(None).await.unwrap();
     assert_eq!(serde_json::from_str::<Value>(&record()).unwrap(), held);
     assert!(launcher.opened.lock().unwrap().is_empty());
@@ -896,9 +925,13 @@ async fn two_accounts_are_independent_and_shutdown_joins_all_attachments() {
     // Lost write acceptance is covered by the adjacent restart test and can make
     // an already-failed provider task race the explicit shutdown.
     let (launcher, mut writes) = scripted_with_unknown_writes(false);
-    let mut registry = AccountRegistry::new(fixture.store.clone(), launcher.clone())
-        .await
-        .unwrap();
+    let mut registry = AccountRegistry::new(
+        fixture.store.clone(),
+        launcher.clone(),
+        test_registry_config(),
+    )
+    .await
+    .unwrap();
     registry.reconcile(None).await.unwrap();
     let mut accounts = vec![
         tokio::time::timeout(std::time::Duration::from_secs(10), writes.recv())
@@ -924,9 +957,13 @@ async fn start_failure_preserves_input_and_post_commit_notify_dispatches_it() {
     fixture.enqueue(0, "retry-start");
     let (launcher, mut writes) = scripted();
     launcher.failures.store(1, Ordering::SeqCst);
-    let mut registry = AccountRegistry::new(fixture.store.clone(), launcher.clone())
-        .await
-        .unwrap();
+    let mut registry = AccountRegistry::new(
+        fixture.store.clone(),
+        launcher.clone(),
+        test_registry_config(),
+    )
+    .await
+    .unwrap();
     assert!(registry.reconcile(None).await.is_err());
     let wake = Arc::new(Notify::new());
     let stop = Shutdown::default();
@@ -967,9 +1004,13 @@ async fn accepted_http_message_wakes_retained_worker_and_receipt_replay_does_not
     let wake = state.event_wake_handle();
     let app = studio_runtime_http::router(state.clone()).unwrap();
     let (launcher, mut writes) = scripted();
-    let registry = AccountRegistry::new(fixture.store.clone(), launcher.clone())
-        .await
-        .unwrap();
+    let registry = AccountRegistry::new(
+        fixture.store.clone(),
+        launcher.clone(),
+        test_registry_config(),
+    )
+    .await
+    .unwrap();
     let stop = Shutdown::default();
     let task = tokio::spawn(registry.run(wake, stop.clone()));
     let body = json!({"room":fixture.agents[0]["id"],"id":"b2ba3b37-4ef4-467d-b215-155c09c088e6","text":"committed through HTTP"});
@@ -1014,16 +1055,24 @@ async fn shutdown_between_worker_start_and_wake_handoff_leaves_committed_input_r
     let fixture = tokio::task::spawn_blocking(Fixture::new).await.unwrap();
     fixture.enqueue(0, "before-wake-handoff");
     let (launcher, mut writes) = scripted();
-    let mut registry = AccountRegistry::new(fixture.store.clone(), launcher.clone())
-        .await
-        .unwrap();
+    let mut registry = AccountRegistry::new(
+        fixture.store.clone(),
+        launcher.clone(),
+        test_registry_config(),
+    )
+    .await
+    .unwrap();
     registry.start("default").await.unwrap();
     registry.shutdown().await.unwrap();
     assert!(writes.try_recv().is_err());
     assert_eq!(launcher.active.load(Ordering::SeqCst), 0);
-    let mut restarted = AccountRegistry::new(fixture.store.clone(), launcher.clone())
-        .await
-        .unwrap();
+    let mut restarted = AccountRegistry::new(
+        fixture.store.clone(),
+        launcher.clone(),
+        test_registry_config(),
+    )
+    .await
+    .unwrap();
     restarted.reconcile(None).await.unwrap();
     assert_eq!(
         tokio::time::timeout(std::time::Duration::from_secs(10), writes.recv())
@@ -1075,6 +1124,7 @@ async fn runtime_shutdown_reaps_backend_owned_catalog_child() {
         fixture.store.clone(),
         launcher,
         state.event_wake_handle(),
+        test_registry_config(),
     )
     .await
     .unwrap();
@@ -1130,9 +1180,13 @@ async fn connection_loss_replaces_worker_before_delivering_new_input() {
     }).unwrap();
     fixture.enqueue(0, "unknown-before-disconnect");
     let (launcher, mut writes) = scripted();
-    let registry = AccountRegistry::new(fixture.store.clone(), launcher.clone())
-        .await
-        .unwrap();
+    let registry = AccountRegistry::new(
+        fixture.store.clone(),
+        launcher.clone(),
+        test_registry_config(),
+    )
+    .await
+    .unwrap();
     let wake = Arc::new(Notify::new());
     let stop = Shutdown::default();
     let task = tokio::spawn(registry.run(wake.clone(), stop.clone()));
@@ -1281,9 +1335,13 @@ async fn saturated_wake_lane_does_not_starve_eligible_agent_after_blocked_prefix
     seed_backlog(&fixture, 48, false);
     fixture.enqueue(0, "eligible-after-blocked-prefix");
     let (launcher, mut writes) = scripted();
-    let registry = AccountRegistry::new(fixture.store.clone(), launcher.clone())
-        .await
-        .unwrap();
+    let registry = AccountRegistry::new(
+        fixture.store.clone(),
+        launcher.clone(),
+        test_registry_config(),
+    )
+    .await
+    .unwrap();
     let stop = Shutdown::default();
     let task = tokio::spawn(registry.run(Arc::new(Notify::new()), stop.clone()));
     let (_, request) = tokio::time::timeout(std::time::Duration::from_secs(10), writes.recv())
@@ -1923,6 +1981,7 @@ async fn host_start_reattaches_python_launch_and_delivers_http_input() {
         fixture.store.clone(),
         accounts.clone(),
         Some(executable.to_string_lossy().into_owned()),
+        test_registry_config(),
     )
     .await
     .unwrap();
@@ -2271,10 +2330,15 @@ async fn rust_direct_claude_launch_runs_the_scripted_bridge_turn() {
         None,
     )
     .with_account_driver(accounts.clone());
-    let runtime =
-        host_runtime::HostRuntime::start(&mut state, fixture.store.clone(), accounts.clone(), None)
-            .await
-            .unwrap();
+    let runtime = host_runtime::HostRuntime::start(
+        &mut state,
+        fixture.store.clone(),
+        accounts.clone(),
+        None,
+        test_registry_config(),
+    )
+    .await
+    .unwrap();
     let app = studio_runtime_http::router(state.clone()).unwrap();
     let mut changes = state.sync_changes_handle().subscribe();
     assert_eq!(
@@ -2470,6 +2534,7 @@ async fn rust_direct_claude_launch_runs_the_scripted_bridge_turn() {
         fixture.store.clone(),
         accounts,
         None,
+        test_registry_config(),
     )
     .await
     .unwrap();
@@ -2576,6 +2641,7 @@ async fn direct_launch_mode_completes_http_turn_and_reaps_child() {
         fixture.store.clone(),
         accounts,
         Some(executable.to_string_lossy().into_owned()),
+        test_registry_config(),
     )
     .await
     .unwrap();
@@ -2781,6 +2847,7 @@ async fn direct_generation_and_journal_identity_survive_backend_restart() {
         fixture.store.clone(),
         accounts.clone(),
         Some(executable.to_string_lossy().into_owned()),
+        test_registry_config(),
     )
     .await
     .unwrap();
@@ -2819,6 +2886,7 @@ async fn direct_generation_and_journal_identity_survive_backend_restart() {
         fixture.store.clone(),
         accounts,
         Some(executable.to_string_lossy().into_owned()),
+        test_registry_config(),
     )
     .await
     .unwrap();
@@ -2918,6 +2986,7 @@ async fn direct_child_crash_holds_written_turn_without_resending_after_relaunch(
         fixture.store.clone(),
         accounts,
         Some(executable.to_string_lossy().into_owned()),
+        test_registry_config(),
     )
     .await
     .unwrap();
@@ -3093,6 +3162,7 @@ async fn direct_child_crash_before_turn_write_retries_queued_input_once() {
         fixture.store.clone(),
         accounts,
         Some(executable.to_string_lossy().into_owned()),
+        test_registry_config(),
     )
     .await
     .unwrap();

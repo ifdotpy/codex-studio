@@ -96,6 +96,19 @@ pub(crate) struct AccountRegistry {
     after_agent: BTreeMap<String, String>,
 }
 
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct AccountRegistryConfig {
+    pub(crate) accepted_archive_tick_enabled: bool,
+}
+
+impl Default for AccountRegistryConfig {
+    fn default() -> Self {
+        Self {
+            accepted_archive_tick_enabled: true,
+        }
+    }
+}
+
 #[derive(Clone)]
 pub(crate) struct AccountSessionBroker {
     sessions: Arc<
@@ -593,12 +606,14 @@ impl AccountRegistry {
     pub async fn new(
         store: Arc<RuntimeStore>,
         launcher: Arc<dyn AccountLauncher>,
+        config: AccountRegistryConfig,
     ) -> Result<Self, WorkerError> {
         Self::new_with_broker(
             store,
             launcher,
             Arc::new(Notify::new()),
             AccountSessionBroker::new(),
+            config,
         )
         .await
     }
@@ -608,13 +623,10 @@ impl AccountRegistry {
         launcher: Arc<dyn AccountLauncher>,
         monitor_dispatch_wake: Arc<Notify>,
         session_broker: AccountSessionBroker,
+        config: AccountRegistryConfig,
     ) -> Result<Self, WorkerError> {
         let bridge = StoreBridge::new(store.clone()).await?;
         bridge.set_monitor_dispatch_wake(monitor_dispatch_wake);
-        // The HTTP differential harness compares the synchronous work write
-        // boundary; the retry dispatcher has its own injected-clock tests.
-        let accepted_archive_tick_enabled =
-            std::env::var_os("STUDIO_TEST_DISABLE_ACCEPTED_ARCHIVE_TICK").is_none();
         let ensure_requests = session_broker.take_ensure_receiver()?;
         Ok(Self {
             store,
@@ -624,7 +636,7 @@ impl AccountRegistry {
             workers: BTreeMap::new(),
             session_broker,
             last_accepted_archive_tick: None,
-            accepted_archive_tick_enabled,
+            accepted_archive_tick_enabled: config.accepted_archive_tick_enabled,
             ensure_requests,
             after_account: String::new(),
             after_agent: BTreeMap::new(),

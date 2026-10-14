@@ -1,7 +1,8 @@
 //! Binary composition of retained account sessions. The supervisor is an
 //! independently installed service; backend shutdown never takes its children.
 use crate::account_registry::{
-    AccountLaunch, AccountLauncher, AccountRegistry, AccountSessionBroker, LaunchFuture,
+    AccountLaunch, AccountLauncher, AccountRegistry, AccountRegistryConfig, AccountSessionBroker,
+    LaunchFuture,
 };
 use serde_json::json;
 use std::{
@@ -112,6 +113,7 @@ impl HostRuntime {
         store: Arc<RuntimeStore>,
         accounts: Arc<AccountDriver>,
         native_path: Option<String>,
+        config: AccountRegistryConfig,
     ) -> Result<Self, WorkerError> {
         Self::start_with_monitor_wake(
             state,
@@ -120,6 +122,7 @@ impl HostRuntime {
             native_path,
             Arc::new(tokio::sync::Notify::new()),
             AccountSessionBroker::new(),
+            config,
         )
         .await
     }
@@ -132,6 +135,7 @@ impl HostRuntime {
         native_path: Option<String>,
         monitor_dispatch_wake: Arc<tokio::sync::Notify>,
         session_broker: AccountSessionBroker,
+        config: AccountRegistryConfig,
     ) -> Result<Self, WorkerError> {
         Self::start_with_monitor_wake_and_native_runtime(
             state,
@@ -142,6 +146,7 @@ impl HostRuntime {
             session_broker,
             None,
             Arc::new(Mutex::new(BTreeMap::new())),
+            config,
         )
         .await
     }
@@ -156,6 +161,7 @@ impl HostRuntime {
         session_broker: AccountSessionBroker,
         native_runtime: Option<Arc<NativeRuntime>>,
         session_binaries: Arc<Mutex<BTreeMap<String, crate::provider_ports::SessionExecutables>>>,
+        config: AccountRegistryConfig,
     ) -> Result<Self, WorkerError> {
         let mut nonce = [0_u8; 16];
         getrandom::fill(&mut nonce).map_err(|_| WorkerError::TaskFailed)?;
@@ -237,6 +243,7 @@ impl HostRuntime {
             monitor_dispatch_wake,
             session_broker,
             Some(Arc::clone(&preparation_resources)),
+            config,
         )
         .await?;
         runtime.preparation_resources = Some(preparation_resources);
@@ -249,12 +256,14 @@ impl HostRuntime {
         store: Arc<RuntimeStore>,
         launcher: Arc<dyn AccountLauncher>,
         wake: Arc<tokio::sync::Notify>,
+        config: AccountRegistryConfig,
     ) -> Result<Self, WorkerError> {
         Self::with_launcher_and_monitor_wake(
             store,
             launcher,
             wake,
             Arc::new(tokio::sync::Notify::new()),
+            config,
         )
         .await
     }
@@ -265,6 +274,7 @@ impl HostRuntime {
         launcher: Arc<dyn AccountLauncher>,
         wake: Arc<tokio::sync::Notify>,
         monitor_dispatch_wake: Arc<tokio::sync::Notify>,
+        config: AccountRegistryConfig,
     ) -> Result<Self, WorkerError> {
         Self::with_launcher_broker(
             store,
@@ -273,6 +283,7 @@ impl HostRuntime {
             monitor_dispatch_wake,
             AccountSessionBroker::new(),
             None,
+            config,
         )
         .await
     }
@@ -284,12 +295,14 @@ impl HostRuntime {
         monitor_dispatch_wake: Arc<tokio::sync::Notify>,
         session_broker: AccountSessionBroker,
         preparation_resources: Option<Arc<PreparationResources>>,
+        config: AccountRegistryConfig,
     ) -> Result<Self, WorkerError> {
         let registry = AccountRegistry::new_with_broker(
             store,
             launcher,
             monitor_dispatch_wake,
             session_broker,
+            config,
         )
         .await?;
         let shutdown = Shutdown::default();

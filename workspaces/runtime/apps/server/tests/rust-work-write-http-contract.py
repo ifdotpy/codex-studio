@@ -17,6 +17,11 @@ from contextlib import closing
 from pathlib import Path
 
 HERE = Path(os.path.abspath(os.path.dirname(__file__)))
+# Fields advanced by the accepted-archive tick between differential snapshots.
+TICK_OWNED_WORK_FIELDS = {
+    "archive": {"tasks"},
+    "archiveIntent": {"attempts", "nextAttemptAt", "lastOutcome"},
+}
 sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE.parents[4] / "workspaces/runtime/packages/runtime-services/tests/turn_lifecycle"))
 from oracle_guard import install_guard
@@ -209,10 +214,6 @@ def start_backend_with_seeded_agents(test_case):
     test_case.addClassCleanup(backend.close)
     backend.create_codex_replay("restart-mid-turn-supervisor-replay.json")
     agent_ids = seed_agents(backend)
-    if os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"):
-        # Match quiet_runtime(), which deliberately leaves archive retry timing
-        # to the focused maintenance tests instead of this differential contract.
-        os.environ["STUDIO_TEST_DISABLE_ACCEPTED_ARCHIVE_TICK"] = "1"
     ready = backend.start()
     backend.ready_samples.append(ready)
     return backend, agent_ids
@@ -314,11 +315,23 @@ def normalize_event_id(identity, work_ids, aliases):
     return ":".join(parts)
 
 
+def strip_tick_owned_work_fields(state):
+    state.pop("accepted_archive_receipts", None)
+    for identity, record in state.get("runtime_work", []):
+        for owner, fields in TICK_OWNED_WORK_FIELDS.items():
+            section = record.get(owner)
+            if isinstance(section, dict):
+                record[owner] = {key: value for key, value in section.items() if key not in fields}
+    return state
+
+
 def compare_snapshots(expected_state, actual_state, aliases):
     actual_work_ids = actual_state.pop("_work_ids")
     expected_work_ids = expected_state.pop("_work_ids")
-    actual_state.pop("accepted_archive_receipts", None)
-    expected_state.pop("accepted_archive_receipts", None)
+    # The reference Python oracle keeps its dispatcher quiet, so the two
+    # backends can reach different retries after the same request.
+    strip_tick_owned_work_fields(actual_state)
+    strip_tick_owned_work_fields(expected_state)
     actual_state = _normal(actual_state, actual_work_ids, aliases)
     expected_state = _normal(expected_state, expected_work_ids, aliases)
     for state, work_ids in ((actual_state, actual_work_ids), (expected_state, expected_work_ids)):
@@ -498,6 +511,20 @@ def python_error(backend, agent_id, body):
 
 
 class WorkWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
+    def assert_snapshots_equal(self, expected, actual, message=None):
+        self.assertEqual(
+            strip_tick_owned_work_fields(actual),
+            strip_tick_owned_work_fields(expected),
+            message,
+        )
+
+    def assert_snapshots_differ(self, expected, actual, message=None):
+        self.assertNotEqual(
+            strip_tick_owned_work_fields(actual),
+            strip_tick_owned_work_fields(expected),
+            message,
+        )
+
     @classmethod
     def setUpClass(cls) -> None:
         cls.backend, (cls.agent_id, cls.worker_id) = start_backend_with_seeded_agents(cls)
@@ -847,7 +874,7 @@ class WorkWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         refused = self.post(body)
         self.assertEqual(refused.status, 501, refused.body[:1000])
         self.assertEqual(refused.json().get("error"), "Not implemented: requires cross-server/remote-events")
-        self.assertEqual(snapshot(self.backend.state), before)
+        self.assert_snapshots_equal(before, snapshot(self.backend.state))
         self.assertEqual(len(guest.calls), calls_before_accept)
         with closing(fixture_connection(self.backend.state / "canvas.sqlite3")) as database, database:
             row = database.execute("SELECT record FROM runtime_agents WHERE id=?", (self.worker_id,)).fetchone()
@@ -910,7 +937,7 @@ class WorkWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         response = self.post_as(self.worker_id, conflict)
         self.assertEqual(response.status, 400, response.body[:1000])
         self.assertEqual(response.json().get("error"), expected_error)
-        self.assertEqual(snapshot(self.backend.state), before)
+        self.assert_snapshots_equal(before, snapshot(self.backend.state))
 
     def test_vm_submission_accept_parity_and_unknown_intents_survive_restart(self):
         if not os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"):
@@ -964,7 +991,10 @@ class WorkWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         actual_state = snapshot(self.backend.state)
         rust_work = actual_state["runtime_work"][-1][1]
         expected_work = expected_state["runtime_work"][-1][1]
-        self.assertEqual(rust_work.get("archiveIntent"), expected_work.get("archiveIntent"))
+        self.assert_snapshots_equal(
+            {"runtime_work": [(task["id"], expected_work)]},
+            {"runtime_work": [(task["id"], rust_work)]},
+        )
         archive_receipts = [
             item for item in actual_state["accepted_archive_receipts"]
             if item[2].get("taskId") == task["id"]
@@ -1018,7 +1048,7 @@ class WorkWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         call_count = len(guest.calls)
         refused_before_intent = self.post_as(self.worker_id, before_intent_body)
         self.assertNotEqual(refused_before_intent.status, 200, refused_before_intent.body[:1000])
-        self.assertEqual(snapshot(self.backend.state), before_intent_snapshot)
+        self.assert_snapshots_equal(before_intent_snapshot, snapshot(self.backend.state))
         self.assertEqual(len(guest.calls), call_count)
         with closing(fixture_connection(self.backend.state / "canvas.sqlite3")) as database, database:
             database.execute("DROP TRIGGER fail_vm_intent")
@@ -1046,12 +1076,12 @@ class WorkWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             database.execute("DROP TRIGGER fail_vm_completion")
         pending_snapshot = snapshot(self.backend.state)
         self.assertIn(self.post_as(self.worker_id, after_guest_body).status, (400, 409))
-        self.assertEqual(snapshot(self.backend.state), pending_snapshot)
+        self.assert_snapshots_equal(pending_snapshot, snapshot(self.backend.state))
         self.assertEqual(len(guest.calls), call_count + 1)
         self.backend.stop()
         self.backend.start()
         self.assertIn(self.post_as(self.worker_id, after_guest_body).status, (400, 409))
-        self.assertEqual(snapshot(self.backend.state), pending_snapshot)
+        self.assert_snapshots_equal(pending_snapshot, snapshot(self.backend.state))
         self.assertEqual(len(guest.calls), call_count + 1)
 
         guest.drop_next("line.evidence")
@@ -1071,13 +1101,13 @@ class WorkWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         before_retry = snapshot(self.backend.state)
         retry = self.post_as(self.worker_id, unknown_submit)
         self.assertIn(retry.status, (400, 409))
-        self.assertEqual(snapshot(self.backend.state), before_retry)
+        self.assert_snapshots_equal(before_retry, snapshot(self.backend.state))
         self.assertEqual(len(guest.calls), call_count + 1)
         self.backend.stop()
         self.backend.start()
         after_restart = self.post_as(self.worker_id, unknown_submit)
         self.assertIn(after_restart.status, (400, 409))
-        self.assertEqual(snapshot(self.backend.state), before_retry)
+        self.assert_snapshots_equal(before_retry, snapshot(self.backend.state))
         self.assertEqual(len(guest.calls), call_count + 1)
 
         merge_task = self.assert_matches_python({"action": "create", "title": "Unknown merge oracle",
@@ -1102,7 +1132,7 @@ class WorkWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         self.assertEqual(json.loads(row[0])["status"], "unknown")
         before_merge_retry = snapshot(self.backend.state)
         self.assertIn(self.post(merge_accept).status, (400, 409))
-        self.assertEqual(snapshot(self.backend.state), before_merge_retry)
+        self.assert_snapshots_equal(before_merge_retry, snapshot(self.backend.state))
         self.assertEqual(len(guest.calls), call_count + 1)
         replacement = self.post_as(self.worker_id, {
             "action": "submit", "task_id": merge_task["id"],
@@ -1119,7 +1149,7 @@ class WorkWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         }
         replacement_accept = self.post(replacement_accept_body)
         self.assertIn(replacement_accept.status, (400, 409))
-        self.assertEqual(snapshot(self.backend.state), before_replacement_accept)
+        self.assert_snapshots_equal(before_replacement_accept, snapshot(self.backend.state))
         self.assertEqual(len(guest.calls), call_count + 2)  # one fresh evidence request, no second merge
         with closing(fixture_connection(self.backend.state / "canvas.sqlite3")) as database:
             row = database.execute(
@@ -1130,7 +1160,7 @@ class WorkWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         self.backend.stop()
         self.backend.start()
         self.assertIn(self.post(replacement_accept_body).status, (400, 409))
-        self.assertEqual(snapshot(self.backend.state), before_replacement_accept)
+        self.assert_snapshots_equal(before_replacement_accept, snapshot(self.backend.state))
         self.assertEqual(len(guest.calls), call_count + 2)
 
 
@@ -1160,7 +1190,7 @@ class WorkWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         response = self.post(blank_accept)
         self.assertEqual(response.status, 400, response.body[:1000])
         self.assertEqual(response.json().get("error"), "Field must not be empty")
-        self.assertEqual(snapshot(self.backend.state), before)
+        self.assert_snapshots_equal(before, snapshot(self.backend.state))
         self.assertEqual([call["method"] for call in guest.calls], ["line.evidence"])
 
     def test_vm_nonlead_accept_does_not_reserve_or_send_a_merge(self):
@@ -1187,7 +1217,7 @@ class WorkWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         before = snapshot(self.backend.state)
         rejected = self.post_as(self.worker_id, accept)
         self.assertEqual(rejected.status, 400, rejected.body[:1000])
-        self.assertEqual(snapshot(self.backend.state), before)
+        self.assert_snapshots_equal(before, snapshot(self.backend.state))
         with closing(fixture_connection(self.backend.state / "canvas.sqlite3")) as database:
             reservation = database.execute(
                 "SELECT 1 FROM runtime_operation_receipts WHERE id=?", (accept["id"],)
@@ -1245,7 +1275,7 @@ class WorkWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
                             "owner": self.worker_id, "id": request_id})
         self.assertEqual(reused.status, 400, reused.body[:1000])
         self.assertEqual(reused.json().get("error"), "This request id has different content")
-        self.assertEqual(snapshot(self.backend.state), before_reuse)
+        self.assert_snapshots_equal(before_reuse, snapshot(self.backend.state))
         conflict = self.post({"action": "accept", "task_id": tasks[1][0],
                               "version": tasks[1][1], "result": "accept second", "id": request_id})
         self.assertEqual(conflict.status, 400, conflict.body[:1000])
@@ -1265,7 +1295,7 @@ class WorkWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             before = snapshot(self.backend.state)
             response = self.post(body)
             self.assertEqual(response.status, 400, response.body[:1000])
-            self.assertEqual(snapshot(self.backend.state), before)
+            self.assert_snapshots_equal(before, snapshot(self.backend.state))
 
         review = python_action(self.backend, self.agent_id, {"action": "create", "title": "Blank accept"})
         claim = python_action(self.backend, self.agent_id, {"action": "claim", "task_id": review["id"], "owner": self.agent_id})
@@ -1279,7 +1309,7 @@ class WorkWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             "result": "\u001c", "id": "blank-accept",
         })
         self.assertEqual(response.status, 400, response.body[:1000])
-        self.assertEqual(snapshot(self.backend.state), before)
+        self.assert_snapshots_equal(before, snapshot(self.backend.state))
 
     def test_claim_submit_accept_stale_versions_match_python_and_replay_conflicts(self):
         task = python_action(self.backend, self.agent_id, {"action": "create", "title": "Stale claim"})
@@ -1293,7 +1323,7 @@ class WorkWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         response = self.post(body)
         self.assertEqual(response.status, 400, response.body[:1000])
         self.assertEqual(response.json().get("error"), expected_error)
-        self.assertEqual(snapshot(self.backend.state), before)
+        self.assert_snapshots_equal(before, snapshot(self.backend.state))
 
         submitted = python_action(self.backend, self.agent_id, {"action": "create", "title": "Stale submit"})
         python_action(self.backend, self.agent_id, {
@@ -1306,7 +1336,7 @@ class WorkWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         response = self.post(body)
         self.assertEqual(response.status, 400, response.body[:1000])
         self.assertEqual(response.json().get("error"), expected_error)
-        self.assertEqual(snapshot(self.backend.state), before)
+        self.assert_snapshots_equal(before, snapshot(self.backend.state))
 
         reviewed = python_action(self.backend, self.agent_id, {"action": "create", "title": "Stale accept"})
         claim = python_action(self.backend, self.agent_id, {
@@ -1323,7 +1353,7 @@ class WorkWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         response = self.post_as(self.worker_id, body)
         self.assertEqual(response.status, 400, response.body[:1000])
         self.assertEqual(response.json().get("error"), expected_error)
-        self.assertEqual(snapshot(self.backend.state), before)
+        self.assert_snapshots_equal(before, snapshot(self.backend.state))
 
     def test_claim_submit_accept_blocked_and_terminal_transitions_match_python(self):
         blocker = python_action(self.backend, self.agent_id, {
@@ -1372,7 +1402,7 @@ class WorkWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         response = self.post_as(agent_id, body)
         self.assertEqual(response.status, 400, response.body[:1000])
         self.assertEqual(response.json().get("error"), expected_error)
-        self.assertEqual(snapshot(self.backend.state), before)
+        self.assert_snapshots_equal(before, snapshot(self.backend.state))
 
     def test_submit_accept_store_failpoints_and_artifact_replay(self):
         metadata_failpoint = (
@@ -1409,7 +1439,7 @@ class WorkWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
                 database.execute(trigger)
             failed = self.post(body)
             self.assertNotEqual(failed.status, 200, f"{label}: {failed.body[:1000]}")
-            self.assertEqual(snapshot(self.backend.state), before, label)
+            self.assert_snapshots_equal(before, snapshot(self.backend.state), label)
             with closing(fixture_connection(self.backend.state / "canvas.sqlite3")) as database, database:
                 database.execute("DROP TRIGGER fail_point")
 
@@ -1448,7 +1478,7 @@ class WorkWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
                 database.execute(trigger)
             failed = self.post(body)
             self.assertNotEqual(failed.status, 200, f"{label}: {failed.body[:1000]}")
-            self.assertEqual(snapshot(self.backend.state), before, label)
+            self.assert_snapshots_equal(before, snapshot(self.backend.state), label)
             with closing(fixture_connection(self.backend.state / "canvas.sqlite3")) as database, database:
                 database.execute("DROP TRIGGER fail_point")
 
@@ -1467,10 +1497,10 @@ class WorkWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         self.assertEqual(replay.status, 200, replay.body[:1000])
         artifact = Path(replay.json()["results"][-1]["resultFile"])
         self.assertTrue(artifact.is_file())
-        self.assertEqual(snapshot(self.backend.state), committed)
+        self.assert_snapshots_equal(committed, snapshot(self.backend.state))
         conflict = self.post({**body, "result": "changed committed result"})
         self.assertEqual(conflict.status, 400, conflict.body[:1000])
-        self.assertEqual(snapshot(self.backend.state), committed)
+        self.assert_snapshots_equal(committed, snapshot(self.backend.state))
 
     def test_create_matches_python_fields_receipt_replay_and_dependency_state(self):
         dependency = self.post({"action": "create", "title": "Accepted dependency"})
@@ -1519,13 +1549,13 @@ class WorkWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         replay = self.post_as(self.worker_id, submit)
         self.assertEqual(replay.status, 200, replay.body[:1000])
         self.assertEqual(normal_result(replay.json()), normal_result(response.json()))
-        self.assertEqual(snapshot(self.backend.state), after_submit)
+        self.assert_snapshots_equal(after_submit, snapshot(self.backend.state))
         before_archive = snapshot(self.backend.state)
         worker_accept = self.post({"action": "accept", "task_id": worker_id, "result": "Verified"})
         self.assertEqual(worker_accept.status, 200, worker_accept.body[:1000])
         self.assertEqual(worker_accept.json()["status"], "accepted")
         self.assertEqual(worker_accept.json()["archive"]["status"], "kept")
-        self.assertNotEqual(snapshot(self.backend.state), before_archive)
+        self.assert_snapshots_differ(before_archive, snapshot(self.backend.state))
 
         lead_task = self.post({"action": "create", "title": "Lead submission"})
         self.assertEqual(lead_task.status, 200, lead_task.body[:1000])
