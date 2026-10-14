@@ -133,6 +133,26 @@ pub(crate) async fn work_action(
         }),
         _ => return Err(invalid_request()),
     };
+    if action == "accept" {
+        let store = state.store.clone().ok_or_else(ApiError::internal)?;
+        let receipt_agent = agent.clone();
+        let request = request_id.clone();
+        let receipt_signature = signature.clone();
+        let receipt = tokio::task::spawn_blocking(move || {
+            work_write::read_work_receipt(
+                &store,
+                &receipt_agent,
+                request.as_deref(),
+                &receipt_signature,
+            )
+        })
+        .await
+        .map_err(|_| ApiError::internal())?
+        .map_err(write_error)?;
+        if let Some(receipt) = receipt {
+            return Ok(Json(receipt));
+        }
+    }
     #[cfg(unix)]
     if let WorkWrite::Submit(input) = &mut command {
         prepare_vm_submission(&state, &agent, request_id.as_deref(), &signature, input).await?;
@@ -443,7 +463,7 @@ async fn commit(
             .map_err(|_| ApiError::internal())?
             .map_err(|_| ApiError::internal())?;
     }
-    if is_accept && result.record["archivePending"] == true {
+    if is_accept && result.record["status"] == "accepted" {
         return finalize_accepted_archive(&state, result.record, request_id_for_archive.as_deref())
             .await;
     }
@@ -523,49 +543,133 @@ async fn finalize_accepted_archive(
         }
         drop(connection);
         let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs_f64();
-        let archived = studio_runtime_services::agent_management_store::archive_accepted_result(
+        work_write::begin_accepted_archive_attempt(&store, &work_id_for_read, now)
+            .map_err(write_error)?;
+        let archived = studio_runtime_services::agent_management_store::execute(
             &store,
-            root_id,
-            lead.epoch,
-            owner_id,
+            &studio_runtime_services::agent_management::Action::Archive {
+                actor: root_id.to_owned(),
+                epoch: lead.epoch,
+                target: owner_id.to_owned(),
+                reason: "Accepted task result is on main".to_owned(),
+                unassign_work: false,
+            },
             now,
         );
         let outcome = match archived {
             Ok(value) => value,
-            Err(error) => serde_json::json!({"status":"kept","reason":error.to_string()}),
+            Err(error) => serde_json::json!({
+                "status":"kept",
+                "reason":format!("The archive check failed: {error}"),
+            }),
         };
-        let retryable = outcome["status"] == "blocked" || outcome["retryable"] == true;
+        let retryable = outcome["status"] == "blocked"
+            || outcome["retryable"] == true
+            || outcome["cleanupPending"] == true;
         Ok((work, outcome, retryable))
     }).await.map_err(|_| ApiError::internal())??;
     let (mut work, outcome, retryable) = result;
+    let archive_result_id = work["decisions"]
+        .as_array()
+        .and_then(|values| values.last())
+        .and_then(|decision| decision["resultId"].as_str())
+        .unwrap_or("accepted")
+        .to_owned();
     work["archive"] = outcome.clone();
-    work["archivePending"] = Value::Bool(retryable);
-    if let Some(intent) = work.get_mut("archiveIntent") {
-        intent["status"] = Value::String(
-            if retryable {
-                "pending"
-            } else if outcome["status"] == "archived" {
-                "complete"
-            } else {
-                "terminal"
-            }
-            .to_owned(),
-        );
-        intent["updated"] = serde_json::json!(
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs_f64()
-        );
-        intent["outcome"] = outcome;
+    let updated = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs_f64();
+    if let Some(object) = work.as_object_mut() {
+        object.remove("archivePending");
+    }
+    if retryable {
+        let intent_id = format!("{work_id}:{archive_result_id}");
+        work["archiveIntent"] = serde_json::json!({
+            "id": intent_id,
+            "status": "pending",
+            "owner": work["owner"],
+            "attempts": 0,
+            "created": updated,
+        });
+    } else if work.get("archiveIntent").is_some() {
+        let intent_status = if work["archive"]["status"] == "archived" {
+            "complete"
+        } else {
+            "terminal"
+        };
+        let archive_outcome = work["archive"].clone();
+        if let Some(intent) = work.get_mut("archiveIntent") {
+            intent["status"] = serde_json::json!(intent_status);
+            intent["updated"] = serde_json::json!(updated);
+            intent["outcome"] = archive_outcome;
+        }
     }
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
-    let receipt_result = serde_json::to_string(&work).map_err(|_| ApiError::internal())?;
     let request = request_id.map(str::to_owned);
     let wake = state.event_wake.clone();
-    let ((), event_inserted) = store
+    let (response, event_inserted) = store
         .transaction(|tx| {
             studio_runtime_store::WorkItemsRepository::update_work(tx, &work_id, &work)?;
+            let attempt_status = if retryable {
+                "retryable"
+            } else if work["archive"]["status"] == "archived" {
+                "complete"
+            } else if work["archive"]["reason"]
+                .as_str()
+                .is_some_and(|reason| reason.starts_with("The archive check failed:"))
+            {
+                "unknown"
+            } else {
+                "terminal"
+            };
+            let actor_epoch = studio_runtime_store::AgentRepository::get(
+                tx,
+                &studio_runtime_store::AgentId::from(work["rootId"].as_str().unwrap_or_default()),
+            )?
+            .map(|actor| actor.epoch)
+            .unwrap_or_default();
+            if work["owner"]
+                .as_str()
+                .is_some_and(|owner| owner != work["rootId"].as_str().unwrap_or_default())
+            {
+                let attempt_receipt_id = format!("work-archive:{}:{archive_result_id}", work_id);
+                let prior_attempt = tx.query_row(
+                    "SELECT result FROM runtime_operation_receipts WHERE id=?1",
+                    [attempt_receipt_id.as_str()],
+                    |row| row.get::<_, String>(0),
+                )?;
+                let prior_attempt =
+                    serde_json::from_str::<Value>(&prior_attempt).map_err(|_| {
+                        studio_runtime_store::StoreError::RecordContract("archive attempt receipt")
+                    })?;
+                let attempts = prior_attempt["attempts"].as_u64().unwrap_or_default();
+                let delay = 2_u64.pow(attempts.min(6) as u32).min(60);
+                let mut attempt_receipt = prior_attempt;
+                attempt_receipt["status"] = Value::String(if retryable {
+                    "pending".to_owned()
+                } else {
+                    attempt_status.to_owned()
+                });
+                attempt_receipt["taskId"] = serde_json::json!(work_id);
+                attempt_receipt["intentId"] =
+                    serde_json::json!(format!("{}:{archive_result_id}", work_id));
+                attempt_receipt["actor"] = work["rootId"].clone();
+                attempt_receipt["actorEpoch"] = serde_json::json!(actor_epoch);
+                attempt_receipt["target"] = work["owner"].clone();
+                attempt_receipt["attempts"] = serde_json::json!(attempts);
+                attempt_receipt["nextAttemptAt"] =
+                    serde_json::json!(updated + if retryable { delay as f64 } else { 60.0 });
+                attempt_receipt["lastOutcome"] = work["archive"].clone();
+                attempt_receipt["updated"] = serde_json::json!(updated);
+                if !retryable {
+                    attempt_receipt["outcome"] = work["archive"].clone();
+                }
+                tx.execute(
+                    "UPDATE runtime_operation_receipts SET result=?1 WHERE id=?2",
+                    [attempt_receipt.to_string(), attempt_receipt_id.as_str()],
+                )?;
+            }
             let mut event_inserted = false;
             if outcome_status_is_terminal(&work)
                 && work["archive"]["status"] != "archived"
@@ -605,23 +709,31 @@ async fn finalize_accepted_archive(
                     studio_runtime_store::StoreError::RecordContract("work decision event")
                 })?;
             }
+            let mut response = studio_runtime_services::work_write::work_item_view(tx, &work)?;
+            response["archive"] = work["archive"].clone();
+            response["archivePending"] = Value::Bool(retryable);
+            if let Some(object) = response.as_object_mut() {
+                object.remove("archiveIntent");
+            }
+            let receipt_result = serde_json::to_string(&response)
+                .map_err(|_| studio_runtime_store::StoreError::RecordContract("work response"))?;
             if let Some(request_id) = request {
                 tx.execute(
                     "UPDATE runtime_operation_receipts SET result=?1 WHERE id=?2",
                     (&receipt_result, request_id),
                 )?;
             }
-            Ok(((), event_inserted))
+            Ok((response, event_inserted))
         })
         .map_err(|_| ApiError::internal())?;
     if event_inserted {
         wake.notify_one();
     }
-    Ok(work)
+    Ok(response)
 }
 
 fn outcome_status_is_terminal(work: &Value) -> bool {
-    work["archivePending"] != true
+    work["archive"]["retryable"] != true && work["archive"]["cleanupPending"] != true
 }
 
 fn commit_error(error: WorkCommitError) -> ApiError {

@@ -41,6 +41,11 @@ def quiet_runtime(state):
     class QuietRuntime(_fixture.Runtime):
         def schedule(self):
             pass
+
+        def _queue_accepted_archive(self, task_id, intent_id):
+            # The Rust route returns before its delayed maintenance retry. Keep
+            # Python's WorkMixin intent at the same post-write boundary.
+            pass
     return make_runtime(QuietRuntime, state, _fixture.FakeServer)
 
 
@@ -211,12 +216,19 @@ def _normal(value, work_ids=None, aliases=None, field=None):
         return value
     if isinstance(value, (list, tuple)):
         normalized = [_normal(item, work_ids, aliases, field) for item in value]
+        if field == "tasks" and all(isinstance(item, str) for item in normalized):
+            normalized.sort()
         return normalized if isinstance(value, list) else tuple(normalized)
     if isinstance(value, dict):
         result = {}
         for key, item in value.items():
             if key in {"created", "updated", "enqueuedAt"}:
                 continue
+            if key == "nextAttemptAt" and isinstance(item, (int, float)):
+                updated = value.get("updated")
+                if isinstance(updated, (int, float)):
+                    result[key] = round(item - updated, 1)
+                    continue
             result[key] = _normal(item, work_ids, aliases, key)
         return result
     return value
@@ -239,7 +251,16 @@ def snapshot(state: Path):
                           "restartRecovery", "connectionRecovery", "worktreePreparation"):
                 record.pop(field, None)
             agents.append((identity, _normal(record)))
-        receipts = [(identity, signature, _normal(json.loads(result), work_ids)) for identity, signature, result in database.execute("SELECT id,signature,result FROM runtime_operation_receipts WHERE id NOT LIKE 'work-write-vm-intent:%' ORDER BY id")]
+        receipts = []
+        archive_receipts = []
+        for identity, signature, result in database.execute(
+            "SELECT id,signature,result FROM runtime_operation_receipts ORDER BY id"
+        ):
+            record = _normal(json.loads(result), work_ids)
+            if signature == "accepted-archive-v1":
+                archive_receipts.append((identity, signature, record))
+            elif not identity.startswith("work-write-vm-intent:"):
+                receipts.append((identity, signature, record))
         events = []
         for row in database.execute("SELECT id,agent,kind,text,status,created,epoch,turn_id,error FROM runtime_events"):
             identity, agent, kind, body, status, created, epoch, turn_id, error = row
@@ -259,6 +280,10 @@ def snapshot(state: Path):
             "runtime_work": normalized_work,
             "runtime_agents": agents,
             "runtime_operation_receipts": receipts,
+            # Rust's durable retry receipt has no Python-side table analogue;
+            # assert its contract separately while comparing all Python-visible
+            # rows, events, responses, and the complete work records.
+            "accepted_archive_receipts": archive_receipts,
             "runtime_events": events,
             "runtime_event_meta": event_meta,
             "_work_ids": work_ids,
@@ -280,6 +305,8 @@ def normalize_event_id(identity, work_ids, aliases):
 def compare_snapshots(expected_state, actual_state, aliases):
     actual_work_ids = actual_state.pop("_work_ids")
     expected_work_ids = expected_state.pop("_work_ids")
+    actual_state.pop("accepted_archive_receipts", None)
+    expected_state.pop("accepted_archive_receipts", None)
     actual_state = _normal(actual_state, actual_work_ids, aliases)
     expected_state = _normal(expected_state, expected_work_ids, aliases)
     for state, work_ids in ((actual_state, actual_work_ids), (expected_state, expected_work_ids)):
@@ -853,8 +880,9 @@ class WorkWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         submit = {"action": "submit", "task_id": task["id"], "version": task["version"],
                   "result": "exact VM result", "checks": "fake guest passed", "revision": "vm-state-1",
                   "files": [], "id": "vm-evidence-submit"}
+        expected_submit_guest = FakeLayrGuest()
         expected_submit, expected_state = reference_action(
-            self.backend, self.worker_id, submit, guest=FakeLayrGuest())
+            self.backend, self.worker_id, submit, guest=expected_submit_guest)
         actual_submit = self.post_as(self.worker_id, submit)
         self.assertEqual(actual_submit.status, 200, actual_submit.body[:1000])
         actual_state = snapshot(self.backend.state)
@@ -869,6 +897,7 @@ class WorkWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         aliases = result_id_aliases(expected_state, actual_state)
         self.assertEqual(normal_result(actual_submit.json(), aliases),
                          normal_result(expected_submit, aliases))
+        self.assertEqual([call[0] for call in expected_submit_guest.calls], ["line.evidence"])
         actual_state, expected_state = compare_snapshots(expected_state, actual_state, aliases)
         self.assertEqual(actual_state, expected_state)
 
@@ -879,9 +908,24 @@ class WorkWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             self.backend, self.agent_id, accept, guest=expected_guest)
         actual_accept = self.post(accept)
         self.assertEqual(actual_accept.status, 200, actual_accept.body[:1000])
-        self.assertEqual(set(actual_accept.json()), set(expected_accept),
-                         f"accept result fields differ: actual={sorted(actual_accept.json())}, expected={sorted(expected_accept)}")
+        actual_accept_fields = set(actual_accept.json()) - {"_syncEntities", "_syncEntitiesAfter"}
+        self.assertEqual(actual_accept_fields, set(expected_accept),
+                         f"accept result fields differ: actual={sorted(actual_accept_fields)}, expected={sorted(expected_accept)}")
         actual_state = snapshot(self.backend.state)
+        rust_work = actual_state["runtime_work"][-1][1]
+        expected_work = expected_state["runtime_work"][-1][1]
+        self.assertEqual(rust_work.get("archiveIntent"), expected_work.get("archiveIntent"))
+        archive_receipts = [
+            item for item in actual_state["accepted_archive_receipts"]
+            if item[2].get("taskId") == task["id"]
+        ]
+        self.assertEqual(len(archive_receipts), 1)
+        archive_receipt = archive_receipts[0][2]
+        self.assertEqual(archive_receipt["taskId"], task["id"])
+        self.assertEqual(archive_receipt["intentId"], task["id"] + ":" + actual_accept.json()["results"][-1]["id"])
+        self.assertEqual(archive_receipt["actor"], self.agent_id)
+        self.assertEqual(archive_receipt["target"], self.worker_id)
+        self.assertIn(archive_receipt["status"], {"unknown", "pending", "retryable", "terminal", "complete"})
         with closing(fixture_connection(self.backend.state / "canvas.sqlite3")) as database:
             intent = json.loads(database.execute(
                 "SELECT result FROM runtime_operation_receipts WHERE id=?",
@@ -891,6 +935,7 @@ class WorkWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         self.assertEqual(intent["requestId"],
                          "layr-accept:" + actual_accept.json()["results"][-1]["id"])
         aliases = result_id_aliases(expected_state, actual_state)
+        self.maxDiff = None
         self.assertEqual(normal_result(actual_accept.json(), aliases),
                          normal_result(expected_accept, aliases))
         actual_state, expected_state = compare_snapshots(expected_state, actual_state, aliases)
@@ -899,7 +944,8 @@ class WorkWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         self.assertEqual([call["method"] for call in guest.calls], ["line.evidence", "line.merge"])
         self.assertEqual(guest.calls[0]["id"], "layr-evidence:" + self.worker_id + ":vm-state-1")
         self.assertEqual(guest.calls[1]["id"], intent["requestId"])
-        self.assertEqual(expected_guest.calls[1][2],
+        self.assertEqual([call[0] for call in expected_guest.calls], ["line.merge"])
+        self.assertEqual(expected_guest.calls[0][2],
                          "layr-accept:" + expected_accept["results"][-1]["id"])
         completed_call_count = len(guest.calls)
         replay_submit = self.post_as(self.worker_id, submit)

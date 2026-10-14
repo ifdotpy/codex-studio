@@ -11,14 +11,18 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use rusqlite::OptionalExtension;
 use serde_json::{Value, json};
 use studio_runtime_store::{
-    AgentId, AgentRecord, AgentRepository, Connection, RuntimeStore, Transaction,
-    WorkItemsRepository,
+    AgentId, AgentRecord, AgentRepository, Connection, EventWriteRepository, RuntimeStore,
+    Transaction, WorkItemsRepository,
 };
 
 use crate::event_write::{self, EventWriteError as Error};
 use thiserror::Error;
 
 static GENERATED_WORK_ID: AtomicU64 = AtomicU64::new(0);
+const ACCEPTED_ARCHIVE_PAGE_SIZE: usize = 16;
+const ACCEPTED_ARCHIVE_BASE_DELAY_SECONDS: u64 = 2;
+const ACCEPTED_ARCHIVE_MAX_DELAY_SECONDS: u64 = 60;
+const ACCEPTED_ARCHIVE_MAX_BACKOFF_EXPONENT: u64 = 6;
 
 /// Check whether a submitted commit is on local main without contacting a remote.
 /// Repositories with an origin are kept for the separately scheduled remote check.
@@ -87,6 +91,433 @@ pub fn repository_has_origin(repository: &str) -> bool {
             .lines()
             .any(|remote| remote == "origin")
     })
+}
+
+/// Retry accepted-result archives whose Python-compatible retry deadline has
+/// elapsed. `now` is injected so scheduling and exponential backoff are
+/// deterministic in tests. Pending/unknown receipts are reconciled against the
+/// target before any retry; a known retryable response may be retried with the
+/// same intent identity and target.
+pub fn accepted_archive_tick(store: &RuntimeStore, now: f64) -> Result<usize, WorkWriteError> {
+    let due = {
+        let connection = store.read()?;
+        accepted_archive_due_records(&connection, now)?
+    };
+    let mut handled = 0;
+    for (task_id, encoded_intent) in due {
+        let intent: Value = serde_json::from_str(&encoded_intent)
+            .map_err(studio_runtime_store::StoreError::from)?;
+        let connection = store.read()?;
+        let Some(encoded_work) = WorkItemsRepository::work_record(&connection, &task_id)? else {
+            continue;
+        };
+        let work = encoded_work;
+        drop(connection);
+        if work["status"] != "accepted" {
+            continue;
+        }
+        let intent_id = intent["intentId"].as_str().unwrap_or_default().to_owned();
+        let owner_id = work["owner"].as_str().unwrap_or_default().to_owned();
+        let root_id = work["rootId"].as_str().unwrap_or_default().to_owned();
+        if intent_id.is_empty() || owner_id.is_empty() || root_id.is_empty() {
+            continue;
+        }
+        let receipt_id = format!("work-archive:{intent_id}");
+        let mut dispatch_actor_epoch = 0_i64;
+        let mut prior_status = String::new();
+        let should_dispatch =
+            store.transaction_with_error(|tx| -> Result<bool, WorkWriteError> {
+                let current = WorkItemsRepository::work_record(tx, &task_id)?
+                    .ok_or(Error::InvalidRequest("Unknown work item"))?;
+                if current["status"] != "accepted"
+                    || current["owner"] != owner_id
+                    || current["rootId"] != root_id
+                    || !matches!(
+                        intent["status"].as_str(),
+                        Some("pending" | "retryable" | "unknown")
+                    )
+                    || intent["nextAttemptAt"].as_f64().unwrap_or(0.0) > now
+                {
+                    return Ok(false);
+                }
+                let receipt = tx
+                    .query_row(
+                        "SELECT result FROM runtime_operation_receipts WHERE id=?1",
+                        [&receipt_id],
+                        |row| row.get::<_, String>(0),
+                    )
+                    .optional()
+                    .map_err(studio_runtime_store::StoreError::from)?;
+                let mut receipt = if let Some(receipt) = receipt {
+                    let receipt: Value = serde_json::from_str(&receipt)
+                        .map_err(studio_runtime_store::StoreError::from)?;
+                    if !matches!(
+                        receipt["status"].as_str(),
+                        Some("pending" | "retryable" | "unknown")
+                    ) || receipt["nextAttemptAt"].as_f64().unwrap_or(0.0) > now
+                    {
+                        return Ok(false);
+                    }
+                    prior_status = receipt["status"].as_str().unwrap_or_default().to_owned();
+                    dispatch_actor_epoch = receipt["actorEpoch"].as_i64().unwrap_or_default();
+                    receipt
+                } else {
+                    json!({"status":"pending","taskId":task_id,"intentId":intent_id,
+                        "actor":root_id,"target":owner_id,"attempts":0,"created":now})
+                };
+                let actor_epoch = if dispatch_actor_epoch == 0 {
+                    AgentRepository::get(tx, &AgentId::from(root_id.as_str()))?
+                        .map(|actor| actor.epoch)
+                        .unwrap_or_default()
+                } else {
+                    dispatch_actor_epoch
+                };
+                dispatch_actor_epoch = actor_epoch;
+                receipt["status"] = json!("unknown");
+                receipt["actorEpoch"] = json!(actor_epoch);
+                receipt["attemptStartedAt"] = json!(now);
+                tx.execute(
+                    "INSERT INTO runtime_operation_receipts(id,signature,result) VALUES (?1,?2,?3) \
+                 ON CONFLICT(id) DO UPDATE SET result=excluded.result",
+                    rusqlite::params![receipt_id, "accepted-archive-v1", receipt.to_string()],
+                )
+                .map_err(studio_runtime_store::StoreError::from)?;
+                Ok(true)
+            })?;
+        if !should_dispatch {
+            continue;
+        }
+
+        let preflight = {
+            let connection = store.read()?;
+            accepted_archive_preflight(
+                &connection,
+                &task_id,
+                &work,
+                &intent,
+                &owner_id,
+                &root_id,
+                dispatch_actor_epoch,
+            )?
+        };
+        let outcome = match preflight {
+            Some(value) => Ok(value),
+            None if prior_status == "unknown" => Ok(json!({
+                "status":"kept",
+                "reason":"The accepted archive outcome is unconfirmed",
+            })),
+            None => crate::agent_management_store::execute(
+                store,
+                &crate::agent_management::Action::Archive {
+                    actor: root_id.clone(),
+                    epoch: dispatch_actor_epoch,
+                    target: owner_id.clone(),
+                    reason: "Accepted task result is on main".to_owned(),
+                    unassign_work: false,
+                },
+                now,
+            ),
+        };
+        let (receipt_status, archive, retryable) = match outcome {
+            Ok(value) => {
+                let retryable = value["retryable"] == true
+                    || value["status"] == "blocked"
+                    || value["cleanupPending"] == true;
+                let receipt_status = if retryable {
+                    "retryable"
+                } else if value["status"] == "archived" {
+                    "complete"
+                } else {
+                    "terminal"
+                };
+                (receipt_status, value, retryable)
+            }
+            Err(error) => (
+                "unknown",
+                json!({"status":"kept","reason":format!("The archive check failed: {error}")}),
+                false,
+            ),
+        };
+        store.transaction_with_error(|tx| -> Result<(), WorkWriteError> {
+            let Some(mut current) = WorkItemsRepository::work_record(tx, &task_id)? else {
+                return Ok(());
+            };
+            if current["status"] != "accepted"
+                || current["owner"] != owner_id
+                || current["rootId"] != root_id
+            {
+                return Ok(());
+            }
+            let attempts = intent["attempts"].as_u64().unwrap_or_default();
+            let next_attempt = attempts + 1;
+            let delay = if retryable {
+                ACCEPTED_ARCHIVE_BASE_DELAY_SECONDS
+                    .pow(next_attempt.min(ACCEPTED_ARCHIVE_MAX_BACKOFF_EXPONENT) as u32)
+                    .min(ACCEPTED_ARCHIVE_MAX_DELAY_SECONDS)
+            } else {
+                ACCEPTED_ARCHIVE_MAX_DELAY_SECONDS
+            };
+            if receipt_status != "unknown" {
+                current["archive"] = archive.clone();
+            }
+            if retryable {
+                let mut row_intent = current.get("archiveIntent").cloned().unwrap_or_else(|| {
+                    json!({
+                        "id":intent_id,"status":"pending","owner":owner_id,"attempts":0,
+                        "created":intent.get("created").and_then(Value::as_f64).unwrap_or(now),
+                    })
+                });
+                row_intent["status"] = json!("pending");
+                row_intent["attempts"] = json!(next_attempt);
+                row_intent["nextAttemptAt"] = json!(now + delay as f64);
+                row_intent["lastOutcome"] = archive.clone();
+                row_intent["updated"] = json!(now);
+                current["archiveIntent"] = row_intent;
+            } else if receipt_status == "unknown" {
+                if let Some(mut row_intent) = current.get("archiveIntent").cloned() {
+                    row_intent["nextAttemptAt"] =
+                        json!(now + ACCEPTED_ARCHIVE_MAX_DELAY_SECONDS as f64);
+                    current["archiveIntent"] = row_intent;
+                }
+            } else if let Some(mut row_intent) = current.get("archiveIntent").cloned() {
+                row_intent["status"] = json!(if receipt_status == "complete" {
+                    "complete"
+                } else {
+                    "terminal"
+                });
+                row_intent["updated"] = json!(now);
+                row_intent["outcome"] = archive.clone();
+                current["archiveIntent"] = row_intent;
+            }
+            WorkItemsRepository::update_work(tx, &task_id, &current)?;
+            let mut final_intent = intent.clone();
+            final_intent["status"] = json!(if retryable { "pending" } else { receipt_status });
+            final_intent["attempts"] = json!(next_attempt);
+            final_intent["nextAttemptAt"] = json!(now + delay as f64);
+            final_intent["lastOutcome"] = archive.clone();
+            final_intent["updated"] = json!(now);
+            final_intent["actorEpoch"] = json!(dispatch_actor_epoch);
+            if !retryable {
+                final_intent["outcome"] = archive.clone();
+            }
+            tx.execute(
+                "UPDATE runtime_operation_receipts SET result=?1 WHERE id=?2",
+                rusqlite::params![final_intent.to_string(), receipt_id],
+            )
+            .map_err(studio_runtime_store::StoreError::from)?;
+            Ok(())
+        })?;
+        handled += 1;
+    }
+    Ok(handled)
+}
+
+/// Persist uncertainty before the synchronous accept route attempts an archive
+/// effect. A later tick reconciles the target before replaying the same tuple.
+pub fn begin_accepted_archive_attempt(
+    store: &RuntimeStore,
+    task_id: &str,
+    now: f64,
+) -> Result<(), WorkWriteError> {
+    store.transaction_with_error(|tx| -> Result<(), WorkWriteError> {
+        let work = WorkItemsRepository::work_record(tx, task_id)?
+            .ok_or(Error::InvalidRequest("Unknown work item"))?;
+        if work["status"] != "accepted" {
+            return Err(Error::InvalidRequest("Work item is not accepted").into());
+        }
+        let result_id = work["decisions"]
+            .as_array()
+            .and_then(|items| items.last())
+            .and_then(|decision| decision["resultId"].as_str())
+            .ok_or(Error::InvalidRequest("Accepted result is missing"))?;
+        let receipt_id = format!("work-archive:{task_id}:{result_id}");
+        let raw = tx
+            .query_row(
+                "SELECT result FROM runtime_operation_receipts WHERE id=?1 AND signature='accepted-archive-v1'",
+                [&receipt_id],
+                |row| row.get::<_, String>(0),
+            )
+            .map_err(studio_runtime_store::StoreError::from)?;
+        let mut intent: Value = serde_json::from_str(&raw)
+            .map_err(studio_runtime_store::StoreError::from)?;
+        if !matches!(intent["status"].as_str(), Some("pending" | "retryable")) {
+            return Err(Error::InvalidRequest("Archive attempt is not dispatchable").into());
+        }
+        intent["status"] = json!("unknown");
+        intent["attemptStartedAt"] = json!(now);
+        intent["nextAttemptAt"] = json!(now + ACCEPTED_ARCHIVE_MAX_DELAY_SECONDS as f64);
+        tx.execute(
+            "UPDATE runtime_operation_receipts SET result=?1 WHERE id=?2",
+            rusqlite::params![intent.to_string(), receipt_id],
+        )
+        .map_err(studio_runtime_store::StoreError::from)?;
+        Ok(())
+    })?;
+    Ok(())
+}
+
+/// Reconcile the target and accepted result before replaying a lifecycle archive.
+/// A canonical archive marker proves the prior effect committed; cleanupPending
+/// or a conflicting marker is held without repeating cleanup effects.
+fn accepted_archive_preflight(
+    connection: &Connection,
+    task_id: &str,
+    work: &Value,
+    intent: &Value,
+    owner_id: &str,
+    root_id: &str,
+    actor_epoch: i64,
+) -> Result<Option<Value>, WorkWriteError> {
+    let Some(actor) = AgentRepository::get(connection, &AgentId::from(root_id))? else {
+        return Ok(Some(
+            json!({"status":"kept","reason":"The archive actor changed"}),
+        ));
+    };
+    if actor.epoch != actor_epoch
+        || actor
+            .extra
+            .get("deletedAt")
+            .is_some_and(|value| !value.is_null())
+    {
+        return Ok(Some(
+            json!({"status":"kept","reason":"The archive actor changed"}),
+        ));
+    }
+    let Some(owner) = AgentRepository::get(connection, &AgentId::from(owner_id))? else {
+        return Ok(Some(
+            json!({"status":"kept","reason":"The accepted task owner changed"}),
+        ));
+    };
+    let owner_value = owner.value();
+    if owner_value
+        .get("remoteWorker")
+        .is_some_and(|value| event_write::truthy(Some(value)))
+    {
+        return Ok(Some(
+            json!({"status":"kept","reason":"The remote worker workspace requires review on its own server"}),
+        ));
+    }
+    let Some(result) = work["results"].as_array().and_then(|items| items.last()) else {
+        return Ok(Some(
+            json!({"status":"kept","reason":"The accepted task result is missing"}),
+        ));
+    };
+    let Some(result_id) = result["id"].as_str() else {
+        return Ok(Some(
+            json!({"status":"kept","reason":"The accepted task result is missing"}),
+        ));
+    };
+    if intent["intentId"] != format!("{task_id}:{result_id}")
+        || work["owner"] != owner_id
+        || work["rootId"] != root_id
+    {
+        return Ok(Some(
+            json!({"status":"kept","reason":"The accepted task owner or result changed"}),
+        ));
+    }
+
+    let archive_marker = owner_value.get("agentArchive").unwrap_or(&Value::Null);
+    if !archive_marker.is_null() {
+        let canonical = archive_marker["by"] == root_id
+            && archive_marker["reason"] == "Accepted task result is on main"
+            && archive_marker["epoch"] == owner.epoch
+            && archive_marker.get("at") == owner_value.get("deletedAt")
+            && archive_marker["at"].as_f64().unwrap_or_default()
+                >= intent["created"].as_f64().unwrap_or_default()
+            && archive_marker["cleanupPending"] == false
+            && !event_write::truthy(archive_marker.get("cleanupPending"));
+        if !canonical {
+            return Ok(Some(json!({
+                "status":"kept",
+                "reason":"The accepted archive outcome is unconfirmed",
+                "cleanupPending":event_write::truthy(archive_marker.get("cleanupPending")),
+            })));
+        }
+        let cleaned = owner_value
+            .get("cleanedWorktree")
+            .filter(|value| !value.is_null());
+        let worktree = if cleaned.is_some_and(|value| event_write::truthy(value.get("missing"))) {
+            json!({"state":"missing","reason":cleaned.and_then(|v| v.get("note")),"bytes":0})
+        } else if let Some(cleaned) = cleaned {
+            json!({"state":"removed","bytes":cleaned.get("bytes")})
+        } else if event_write::truthy(owner_value.get("worktreeReady")) {
+            json!({"state":"kept","reason":"The archived worktree remains","bytes":0})
+        } else {
+            json!({"state":"none","bytes":0})
+        };
+        return Ok(Some(json!({"status":"archived","worktree":worktree})));
+    }
+
+    let mut statement = connection
+        .prepare(
+            "SELECT id FROM runtime_work WHERE json_extract(record,'$.owner')=?1 \
+             AND id<>?2 AND json_extract(record,'$.status') NOT IN ('accepted','cancelled') \
+             ORDER BY id LIMIT 20",
+        )
+        .map_err(studio_runtime_store::StoreError::from)?;
+    let open_tasks = statement
+        .query_map([owner_id, task_id], |row| row.get::<_, String>(0))
+        .map_err(studio_runtime_store::StoreError::from)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(studio_runtime_store::StoreError::from)?;
+    if !open_tasks.is_empty() {
+        return Ok(Some(
+            json!({"status":"kept","reason":"The owner has another open task",
+            "tasks":open_tasks,"retryable":true}),
+        ));
+    }
+
+    if owner_value.get("executionMode").and_then(Value::as_str) == Some("vm") {
+        if !vm_merge_confirmed(
+            connection,
+            task_id,
+            result_id,
+            result["revision"].as_str().unwrap_or_default(),
+        )? {
+            return Ok(Some(
+                json!({"status":"kept","reason":"The layr result merge is not confirmed"}),
+            ));
+        }
+    } else {
+        let revision = result["revision"].as_str().unwrap_or_default();
+        let cwd = owner_value
+            .get("cwd")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        if cwd.is_empty() || !accepted_revision_is_on_local_main(cwd, revision) {
+            let remote = !cwd.is_empty() && repository_has_origin(cwd);
+            let reason = if remote {
+                "Remote-origin main verification requires cross-server/remote-transport"
+            } else {
+                "The result commit is not reachable from local main"
+            };
+            return Ok(Some(json!({"status":"kept","reason":reason})));
+        }
+    }
+    Ok(None)
+}
+
+fn accepted_archive_due_records(
+    connection: &Connection,
+    now: f64,
+) -> Result<Vec<(String, String)>, WorkWriteError> {
+    let mut statement = connection
+        .prepare(
+            "SELECT json_extract(result,'$.taskId'),result FROM runtime_operation_receipts \
+         WHERE signature='accepted-archive-v1' \
+           AND json_extract(result,'$.status') IN ('pending','retryable','unknown') \
+           AND COALESCE(json_extract(result,'$.nextAttemptAt'),0)<=?1 \
+         ORDER BY COALESCE(json_extract(result,'$.nextAttemptAt'),0),id LIMIT ?2",
+        )
+        .map_err(studio_runtime_store::StoreError::from)?;
+    Ok(statement
+        .query_map(
+            rusqlite::params![now, ACCEPTED_ARCHIVE_PAGE_SIZE as i64],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+        )
+        .map_err(studio_runtime_store::StoreError::from)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(studio_runtime_store::StoreError::from)?)
 }
 
 pub struct CreateWork {
@@ -160,9 +591,10 @@ fn read_vm_intent(
         )
         .optional()
         .map_err(studio_runtime_store::StoreError::from)?;
-    Ok(encoded
+    let decoded = encoded
         .map(|value| serde_json::from_str(&value).map_err(studio_runtime_store::StoreError::from))
-        .transpose()?)
+        .transpose()?;
+    Ok(decoded)
 }
 
 fn write_vm_intent(
@@ -487,6 +919,40 @@ pub enum WorkWriteError {
     Store(#[from] studio_runtime_store::StoreError),
     #[error("Not implemented: requires {0}")]
     NotImplemented(&'static str),
+}
+
+/// Read and validate an idempotency receipt before an external VM side effect.
+pub fn read_work_receipt(
+    store: &RuntimeStore,
+    agent_id: &str,
+    request_id: Option<&str>,
+    signature: &str,
+) -> Result<Option<Value>, WorkWriteError> {
+    let Some(request_id) = request_id.filter(|id| !id.is_empty()) else {
+        return Ok(None);
+    };
+    let connection = store.read()?;
+    let agent = AgentRepository::get(&connection, &AgentId::from(agent_id))?
+        .ok_or(Error::InvalidRequest("Invalid request"))?;
+    if agent.id.0 != agent_id || event_write::truthy(agent.extra.get("deletedAt")) {
+        return Err(Error::InvalidRequest("Invalid request").into());
+    }
+    let Some(receipt) = EventWriteRepository::receipt(&connection, request_id)? else {
+        return Ok(None);
+    };
+    if receipt.signature != signature {
+        return Err(Error::Conflict("This request id has different content").into());
+    }
+    let value: Value = serde_json::from_str(&receipt.result)
+        .map_err(|_| invalid("runtime_operation_receipts", request_id))?;
+    let Some(id) = value.get("id").and_then(Value::as_str) else {
+        return Err(invalid("runtime_work", request_id).into());
+    };
+    if value.get("rootId").and_then(Value::as_str) != Some(agent.root_id.0.as_str()) {
+        return Err(Error::InvalidRequest("Invalid request").into());
+    }
+    WorkItemsRepository::validate_work(&connection, id, &value).map_err(WorkWriteError::Store)?;
+    Ok(Some(value))
 }
 
 pub fn write(
@@ -1612,7 +2078,7 @@ fn accept(
     }
     let root = AgentRepository::get(tx, &agent.root_id)?
         .ok_or_else(|| invalid("runtime_agents", &agent.root_id.0))?;
-    let mut updated = decide_accept(
+    let updated = decide_accept(
         WorkSnapshot {
             record: &work,
             dependency_statuses: &statuses,
@@ -1685,25 +2151,26 @@ fn accept(
     let archive_owner = work["owner"]
         .as_str()
         .filter(|owner| *owner != agent.root_id.0);
-    let archive_intent = archive_owner.map(|owner| {
-        json!({
-            "id":format!("{}:{result_id}", input.task_id),
-            "status":"pending",
-            "owner":owner,
-            "attempts":0,
-            "created":now,
-        })
-    });
-    if let Some(intent) = &archive_intent {
-        updated["archiveIntent"] = intent.clone();
-        updated["archivePending"] = json!(true);
+    if let Some(owner) = archive_owner {
+        let archive_intent_id = format!("{}:{result_id}", input.task_id);
+        tx.execute(
+            "INSERT INTO runtime_operation_receipts(id,signature,result) VALUES (?1,?2,?3) \
+             ON CONFLICT(id) DO NOTHING",
+            rusqlite::params![
+                format!("work-archive:{archive_intent_id}"),
+                "accepted-archive-v1",
+                json!({"status":"pending","taskId":input.task_id,
+                    "intentId":archive_intent_id,"actor":agent.root_id.0,"actorEpoch":root.epoch,
+                    "target":owner,"attempts":0,"created":now,
+                    "nextAttemptAt":now + ACCEPTED_ARCHIVE_MAX_DELAY_SECONDS as f64})
+                .to_string()
+            ],
+        )
+        .map_err(studio_runtime_store::StoreError::from)?;
     }
     WorkItemsRepository::update_work(tx, &input.task_id, &updated)?;
     let mut record = single_view(tx, &updated)?;
     record["archivePending"] = json!(archive_owner.is_some());
-    if let Some(intent) = archive_intent {
-        record["archiveIntent"] = intent;
-    }
     event_write::save_receipt(tx, request_id, signature, &record)?;
     Ok(WorkWriteResult {
         record,
@@ -1782,6 +2249,30 @@ fn push_decision(work: &mut Value, decision: Value) -> Result<(), Error> {
         .ok_or_else(|| invalid("runtime_work", &id))?
         .push(decision);
     Ok(())
+}
+
+pub fn work_item_view(
+    connection: &Connection,
+    work: &Value,
+) -> studio_runtime_store::StoreResult<Value> {
+    let mut statuses = BTreeMap::new();
+    if let (Some(id), Some(status)) = (work["id"].as_str(), work["status"].as_str()) {
+        statuses.insert(id.to_owned(), status.to_owned());
+    }
+    for dependency in work["dependencies"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+    {
+        if let Some(value) = WorkItemsRepository::work_record(connection, dependency)?
+            && value["rootId"] == work["rootId"]
+            && let (Some(id), Some(status)) = (value["id"].as_str(), value["status"].as_str())
+        {
+            statuses.insert(id.to_owned(), status.to_owned());
+        }
+    }
+    Ok(crate::work_policy::work_item_view(work, &statuses))
 }
 
 fn single_view(tx: &Transaction<'_>, work: &Value) -> Result<Value, Error> {
@@ -2110,7 +2601,7 @@ mod actor_tests {
     use super::SubmitWork;
     use super::{
         AcceptWork, ClaimWork, CreateWork, WorkActorWrite, WorkMutation, WorkWrite, WorkWriteError,
-        write_action_as_agent, write_as_agent,
+        accepted_archive_due_records, write_action_as_agent, write_as_agent,
     };
     use rusqlite::Connection;
     use serde_json::{Value, json};
@@ -2176,6 +2667,39 @@ mod actor_tests {
                 rusqlite::params![work["id"].as_str().expect("work id"), work.to_string()],
             )
             .expect("work row inserts");
+    }
+
+    #[test]
+    fn accepted_archive_due_selection_uses_injected_clock() {
+        let connection = database();
+        let pending = work("archive-due", Some("worker"), "accepted", json!([]));
+        insert_work(&connection, &pending);
+        connection
+            .execute(
+                "INSERT INTO runtime_operation_receipts(id,signature,result) VALUES (?1,?2,?3)",
+                rusqlite::params![
+                    "work-archive:archive-due:result-1",
+                    "accepted-archive-v1",
+                    json!({"taskId":"archive-due","intentId":"archive-due:result-1",
+                    "status":"pending","nextAttemptAt":120.0})
+                    .to_string()
+                ],
+            )
+            .expect("archive intent receipt inserts");
+
+        assert!(
+            accepted_archive_due_records(&connection, 119.999)
+                .expect("before deadline query succeeds")
+                .is_empty()
+        );
+        let due =
+            accepted_archive_due_records(&connection, 120.0).expect("deadline query succeeds");
+        assert_eq!(due.len(), 1);
+        assert_eq!(due[0].0, "archive-due");
+        assert_eq!(
+            serde_json::from_str::<Value>(&due[0].1).expect("receipt JSON")["intentId"],
+            "archive-due:result-1"
+        );
     }
 
     #[test]
