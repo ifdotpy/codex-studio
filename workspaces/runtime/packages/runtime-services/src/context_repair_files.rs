@@ -410,7 +410,7 @@ fn rewrite_with_hook(
     let rewrite_terminal_id = terminal
         .turn_id
         .as_deref()
-        .or_else(|| latest_terminal.as_deref())
+        .or(latest_terminal.as_deref())
         .ok_or(HistoryFileError::Rewrite(RepairError::ReceiptHold))?;
     if terminal.turn_id.as_deref() == latest_started.as_deref()
         && latest_terminal.as_deref() != terminal.turn_id.as_deref()

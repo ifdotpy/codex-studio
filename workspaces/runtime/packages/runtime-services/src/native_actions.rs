@@ -270,10 +270,10 @@ pub fn reserve(
         for (key, value) in pending_settings {
             agent[key] = value;
         }
-        agent.as_object_mut().map(|record| {
+        if let Some(record) = agent.as_object_mut() {
             record.remove("pendingSettings");
             record.remove("pendingSettingsAccountKey");
-        });
+        }
     }
     gate.check(tx, &agent, request.action)?;
     agent["status"] = json!("starting");
@@ -535,12 +535,11 @@ pub fn execute_provider_prepared(
     effects: &impl Acceptance,
     preparation: &impl Preparation,
 ) -> Result<Value> {
-    if let Some(snapshot) = store.read_transaction_with_error(|tx| replay(tx, request))? {
-        if !matches!(snapshot.outcome, Outcome::Pending { .. })
-            || snapshot.agent["startAttempt"]["submitted"] == true
-        {
-            return Ok(response(&snapshot, true));
-        }
+    if let Some(snapshot) = store.read_transaction_with_error(|tx| replay(tx, request))?
+        && (!matches!(snapshot.outcome, Outcome::Pending { .. })
+            || snapshot.agent["startAttempt"]["submitted"] == true)
+    {
+        return Ok(response(&snapshot, true));
     }
     let agent_snapshot = store.read_transaction_with_error(|tx| agent(tx, &request.agent))?;
     let account = agent_snapshot
