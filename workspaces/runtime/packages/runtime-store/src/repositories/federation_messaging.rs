@@ -203,7 +203,8 @@ mod tests {
         .expect("insert delivered record");
 
         assert_eq!(
-            FederationMessagingRepository::queue_size(&db, "peer").unwrap(),
+            FederationMessagingRepository::queue_size(&db, "peer")
+                .expect("queued outbox size is readable"),
             (1, queued.len() as u64),
         );
         assert!(queued.len() > queued.chars().count());

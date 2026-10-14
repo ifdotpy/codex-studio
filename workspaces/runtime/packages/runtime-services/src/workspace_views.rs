@@ -214,7 +214,7 @@ impl TryFrom<serde_json::Number> for CursorNumber {
     fn try_from(value: serde_json::Number) -> Result<Self, Self::Error> {
         if value
             .as_i64()
-            .is_some_and(|integer| integer < 0 || integer > MAX_SAFE_INTEGER)
+            .is_some_and(|integer| !(0..=MAX_SAFE_INTEGER).contains(&integer))
             || value
                 .as_u64()
                 .is_some_and(|integer| integer > MAX_SAFE_INTEGER as u64)
