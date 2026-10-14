@@ -1,7 +1,7 @@
 //! HTTP adapters for question delivery and durable complaint writes.
 
 use super::extractors::ApiJson;
-use super::manifest::{Dependency, OperationStatus, RouteGroup, dependency_unavailable, post};
+use super::manifest::{Dependency, OperationStatus, RouteGroup, post};
 use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
@@ -13,14 +13,12 @@ use studio_runtime_store::{RuntimeStore, Transaction};
 use crate::error::ApiError;
 use crate::router::HttpState;
 
-const QUESTION_ANSWER_DEPENDENCY: [Dependency; 1] =
-    [Dependency::new("provider-session/question-answer")];
+const CALLBACK_REPLY_DEPENDENCY: [Dependency; 1] = [Dependency::new("callback-runtime/reply-port")];
 
-const ANSWER_DEPENDENCIES: [Dependency; 4] = [
-    Dependency::new("provider-session/question-answer"),
+const ANSWER_DEPENDENCIES: [Dependency; 3] = [
     Dependency::new("question-answer/async-question"),
     Dependency::new("question-answer/browser-open"),
-    Dependency::new("question-answer/monitor-approval"),
+    Dependency::new("cross-server/remote-events"),
 ];
 
 pub(crate) fn routes() -> RouteGroup {
@@ -33,7 +31,7 @@ pub(crate) fn routes() -> RouteGroup {
         post("/api/complaints", OperationStatus::Implemented, complaints),
         post(
             "/api/questions/delete",
-            OperationStatus::partial(&QUESTION_ANSWER_DEPENDENCY),
+            OperationStatus::Implemented,
             delete_question,
         ),
         post(
@@ -46,14 +44,51 @@ pub(crate) fn routes() -> RouteGroup {
 
 async fn answer(
     State(state): State<HttpState>,
+    monitor: Option<
+        axum::Extension<Arc<studio_runtime_services::monitor_runtime_wiring::MonitorRuntime>>,
+    >,
     ApiJson(body): ApiJson<crate::generated::AnswerBody>,
 ) -> Result<Json<Value>, ApiError> {
-    let runtime = state.callback_runtime.clone().ok_or_else(|| {
-        dependency_unavailable("POST", "/api/answer", &ANSWER_DEPENDENCIES)
-            .unwrap_or_else(|_| ApiError::internal())
-    })?;
     let id = body.id.clone();
-    let data = serde_json::to_value(body).map_err(|_| ApiError::internal())?;
+    let data = serde_json::to_value(&body).map_err(|_| ApiError::internal())?;
+    let store = state.store.clone().ok_or_else(ApiError::internal)?;
+    let monitor_available = monitor.is_some();
+    let monitor_id = id.clone();
+    let monitor_data = data.clone();
+    if let Some(answer) = tokio::task::spawn_blocking(move || {
+        studio_runtime_services::monitor_runtime::answer_approval(
+            &store,
+            &monitor_id,
+            &monitor_data,
+            callback_clock().map_err(|_| {
+                studio_runtime_services::monitor_policy::MonitorError::Refused(
+                    "The system clock is unavailable",
+                )
+            })?,
+            monitor_available,
+        )
+    })
+    .await
+    .map_err(|_| ApiError::internal())?
+    .map_err(monitor_approval_error)?
+    {
+        if answer.accepted {
+            monitor
+                .as_ref()
+                .ok_or_else(|| ApiError::dependency("monitor-driver/start-dispatch"))?
+                .0
+                .dispatch_wake_handle()
+                .notify_one();
+        }
+        state.event_wake.notify_one();
+        return Ok(Json(
+            super::generated_json::<crate::generated::AnswerResult>(answer.response)?,
+        ));
+    }
+    let runtime = state
+        .callback_runtime
+        .clone()
+        .ok_or_else(|| ApiError::dependency(CALLBACK_REPLY_DEPENDENCY[0].name()))?;
     let value = tokio::task::spawn_blocking(move || runtime.answer(&id, &data, callback_clock()?))
         .await
         .map_err(|_| ApiError::internal())?
@@ -62,6 +97,24 @@ async fn answer(
     Ok(Json(
         super::generated_json::<crate::generated::AnswerResult>(value)?,
     ))
+}
+
+fn monitor_approval_error(
+    error: studio_runtime_services::monitor_policy::MonitorError,
+) -> ApiError {
+    use studio_runtime_services::monitor_policy::MonitorError as E;
+    match error {
+        E::Unavailable(name) => ApiError::dependency(name),
+        E::Event(
+            studio_runtime_services::event_write::EventWriteError::RemoteEventsUnavailable,
+        ) => ApiError::dependency("cross-server/remote-events"),
+        E::Refused(message) => ApiError::new(StatusCode::BAD_REQUEST, message),
+        E::InvalidStored { id, location } => ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Invalid stored object monitors/{id} at {location}"),
+        ),
+        _ => ApiError::internal(),
+    }
 }
 
 fn callback_clock() -> Result<f64, studio_runtime_services::provider_callbacks::CallbackError> {
@@ -108,24 +161,17 @@ async fn delete_question(
     ApiJson(body): ApiJson<crate::generated::QuestionBody>,
 ) -> Result<Json<Value>, ApiError> {
     let id = body.id;
-    if let Some(runtime) = state.callback_runtime.clone() {
-        let value =
-            tokio::task::spawn_blocking(move || runtime.delete_question(&id, callback_clock()?))
-                .await
-                .map_err(|_| ApiError::internal())?
-                .map_err(callback_error)?;
-        state.event_wake.notify_one();
-        return Ok(Json(generated_receipt(value)?));
-    }
-    let store = state.store.clone().ok_or_else(ApiError::internal)?;
-    let validators = state.validators.clone();
-    let result = write(store, move |transaction| {
-        questions_write::delete_question(transaction, &id, |record| {
-            validators.validate_table_record("runtime_requests", record)
-        })
-    })
-    .await?;
-    Ok(Json(generated_receipt(result)?))
+    let runtime = state
+        .callback_runtime
+        .clone()
+        .ok_or_else(|| ApiError::dependency(CALLBACK_REPLY_DEPENDENCY[0].name()))?;
+    let value =
+        tokio::task::spawn_blocking(move || runtime.delete_question(&id, callback_clock()?))
+            .await
+            .map_err(|_| ApiError::internal())?
+            .map_err(callback_error)?;
+    state.event_wake.notify_one();
+    Ok(Json(generated_receipt(value)?))
 }
 
 async fn complaints(
@@ -224,7 +270,7 @@ fn api_error(error: QuestionsWriteError) -> ApiError {
         QuestionsWriteError::Conflict(message) => ApiError::new(StatusCode::CONFLICT, message),
         QuestionsWriteError::QuestionAnswerUnavailable => ApiError::new(
             StatusCode::NOT_IMPLEMENTED,
-            "Not implemented: requires provider-session/question-answer",
+            "Not implemented: requires callback-runtime/reply-port",
         ),
         QuestionsWriteError::InvalidStoredObject { object, id } => ApiError::new(
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -248,6 +294,6 @@ inventory::submit! {
     crate::routes::manifest::RouteModuleRegistration {
         name: "questions_write",
         routes: Some(routes),
-        dependencies: &["provider-session/question-answer", "question-answer/async-question", "question-answer/browser-open", "question-answer/monitor-approval"],
+        dependencies: &["callback-runtime/reply-port", "question-answer/async-question", "question-answer/browser-open", "cross-server/remote-events"],
     }
 }

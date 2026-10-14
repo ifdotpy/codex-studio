@@ -218,7 +218,7 @@ impl HostRuntime {
             native_path,
             native_runtime,
             session_binaries,
-            resources,
+            resources: Arc::clone(&preparation_resources),
             claude_bridge_dir,
             publication_sink: Arc::new(
                 studio_runtime_services::notification_runtime_effects::RuntimeNotificationPostCommitSink {
@@ -236,6 +236,7 @@ impl HostRuntime {
             state.event_wake_handle(),
             monitor_dispatch_wake,
             session_broker,
+            Some(Arc::clone(&preparation_resources)),
         )
         .await?;
         runtime.preparation_resources = Some(preparation_resources);
@@ -249,12 +250,29 @@ impl HostRuntime {
         launcher: Arc<dyn AccountLauncher>,
         wake: Arc<tokio::sync::Notify>,
     ) -> Result<Self, WorkerError> {
-        Self::with_launcher_broker(
+        Self::with_launcher_and_monitor_wake(
             store,
             launcher,
             wake,
             Arc::new(tokio::sync::Notify::new()),
+        )
+        .await
+    }
+
+    #[cfg(test)]
+    pub async fn with_launcher_and_monitor_wake(
+        store: Arc<RuntimeStore>,
+        launcher: Arc<dyn AccountLauncher>,
+        wake: Arc<tokio::sync::Notify>,
+        monitor_dispatch_wake: Arc<tokio::sync::Notify>,
+    ) -> Result<Self, WorkerError> {
+        Self::with_launcher_broker(
+            store,
+            launcher,
+            wake,
+            monitor_dispatch_wake,
             AccountSessionBroker::new(),
+            None,
         )
         .await
     }
@@ -265,6 +283,7 @@ impl HostRuntime {
         wake: Arc<tokio::sync::Notify>,
         monitor_dispatch_wake: Arc<tokio::sync::Notify>,
         session_broker: AccountSessionBroker,
+        preparation_resources: Option<Arc<PreparationResources>>,
     ) -> Result<Self, WorkerError> {
         let registry = AccountRegistry::new_with_broker(
             store,
@@ -278,11 +297,11 @@ impl HostRuntime {
         Ok(Self {
             shutdown,
             task,
-            preparation_resources: None,
+            preparation_resources,
         })
     }
 
-    pub(crate) fn preparation_resources(&self) -> Option<Arc<PreparationResources>> {
+    pub fn preparation_resources(&self) -> Option<Arc<PreparationResources>> {
         self.preparation_resources.clone()
     }
 
@@ -335,7 +354,7 @@ struct HostLauncher {
     native_path: Option<String>,
     native_runtime: Option<Arc<NativeRuntime>>,
     session_binaries: Arc<Mutex<BTreeMap<String, crate::provider_ports::SessionExecutables>>>,
-    resources: PreparationResources,
+    resources: Arc<PreparationResources>,
     claude_bridge_dir: PathBuf,
     publication_sink:
         Arc<dyn studio_runtime_services::notification_runtime_effects::NotificationPostCommitSink>,
@@ -351,7 +370,7 @@ impl AccountLauncher for HostLauncher {
                 tokio::task::spawn_blocking(move || selected_account(&accounts, &key))
                     .await
                     .map_err(|_| WorkerError::TaskFailed)??;
-            let mut resources = self.resources.clone();
+            let mut resources = (*self.resources).clone();
             resources.account_home.clone_from(&home);
             let accounts = self.accounts.clone();
             let key = account.clone();
@@ -919,6 +938,8 @@ mod voice_composition_tests {
             account_home: String::new(),
             server_source_root: directory.to_path_buf(),
             python_executable: "/usr/bin/python3".into(),
+            claude_account_pin: serde_json::Value::Null,
+            account_driver: None,
             account_session: None,
         };
         let worker = start_account_worker_with_preparation(

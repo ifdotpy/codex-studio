@@ -13,6 +13,7 @@ pub struct Port {
     pub deliveries: Mutex<VecDeque<Delivery>>,
     pub submitted: Mutex<Vec<Effect>>,
     pub probes: Mutex<Vec<(String, i64, String)>>,
+    pub starts: Mutex<Vec<(String, f64)>>,
     pub fail_ack: Mutex<bool>,
     pub fail_ack_gate: Mutex<Option<(Arc<tokio::sync::Notify>, mpsc::Receiver<()>)>>,
     pub acknowledged: Mutex<Option<Arc<tokio::sync::Semaphore>>>,
@@ -70,6 +71,14 @@ impl RuleMonitor for Port {
     }
 }
 impl MonitorPort for Port {
+    fn start_monitor(&self, id: &str, now: f64) -> Result<(), MonitorError> {
+        self.starts
+            .lock()
+            .expect("monitor starts")
+            .push((id.to_owned(), now));
+        Ok(())
+    }
+
     fn next(&self) -> Result<Option<Delivery>, MonitorError> {
         Ok(self.deliveries.lock().expect("queue").front().cloned())
     }

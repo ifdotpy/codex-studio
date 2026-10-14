@@ -14,7 +14,7 @@ use serde_json::{Value, json};
 use std::sync::Arc;
 use studio_runtime_http::{HttpState, router};
 use studio_runtime_services::monitor_runtime_wiring::MonitorRuntime;
-use studio_runtime_store::MonitorsRepository;
+use studio_runtime_store::{MonitorsRepository, RequestRecord, Table};
 use tower::ServiceExt;
 
 fn database_snapshot(store: &studio_runtime_store::RuntimeStore) -> Value {
@@ -137,19 +137,30 @@ async fn installed_runtime_drives_input_and_cancel_through_http() {
     ));
     let app = router(state).expect("router").layer(Extension(runtime));
     let body = json!({"id":case["before"]["id"],"text":"hello"});
-    let before_refusal = database_snapshot(&store);
-    let (status, refusal) = call(&app, "/api/monitor/input", body.clone()).await;
-    assert_eq!(status, 501);
+    *port.unknown.lock().expect("unknown") = true;
+    let (status, result) = call(&app, "/api/monitor/input", body.clone()).await;
     assert_eq!(
-        refusal["error"],
-        "Not implemented: requires monitor-input-request-identity"
+        status, 400,
+        "unknown input result must be surfaced: {result}"
     );
-    assert!(port.submitted.lock().expect("submitted").is_empty());
+    assert_eq!(port.submitted.lock().expect("submitted").len(), 1);
+    let after_unknown = database_snapshot(&store);
+    let (status, retry) = call(&app, "/api/monitor/input", body).await;
+    assert_eq!(
+        status, 400,
+        "unknown input retry must stay refused: {retry}"
+    );
+    assert_eq!(
+        port.submitted.lock().expect("submitted").len(),
+        1,
+        "a repeated HTTP request must not resend an Unknown native input"
+    );
     assert_eq!(
         database_snapshot(&store),
-        before_refusal,
-        "input refusal writes nothing"
+        after_unknown,
+        "refusing a repeat must leave the durable Unknown latch unchanged"
     );
+    *port.unknown.lock().expect("unknown") = false;
     for attempt in 0..2 {
         let (status, response) = call(
             &app,
@@ -169,7 +180,7 @@ async fn installed_runtime_drives_input_and_cancel_through_http() {
             assert!(response["_syncEntitiesAfter"].is_number());
         }
     }
-    assert_eq!(port.submitted.lock().expect("submitted").len(), 1);
+    assert_eq!(port.submitted.lock().expect("submitted").len(), 2);
     let saved = MonitorsRepository::get(
         &store.read().expect("read"),
         case["before"]["id"].as_str().expect("id"),
@@ -180,4 +191,89 @@ async fn installed_runtime_drives_input_and_cancel_through_http() {
     .clone();
     assert_eq!(saved["cancelDispatch"]["status"], "written");
     assert_eq!(fixtures::events(&store), json!([]));
+}
+
+#[tokio::test]
+async fn monitor_approval_routes_commit_decision_then_launch_only_accepts() {
+    for decision in ["accept", "decline"] {
+        let root = fixtures::tempdir();
+        let cases = fixtures::corpus(root.path());
+        let mut case = cases
+            .iter()
+            .find(|case| case["name"] == "finish-0-None-False")
+            .expect("running monitor case")
+            .clone();
+        case["before"]["status"] = json!("approval");
+        case["before"]
+            .as_object_mut()
+            .expect("monitor record")
+            .remove("operation");
+        let store = Arc::new(fixtures::store(root.path(), decision));
+        fixtures::seed(&store, &case);
+        let id = case["before"]["id"].as_str().expect("monitor id");
+        let request_id = format!("monitor-approval:{id}");
+        store
+            .transaction(|tx| {
+                let request = RequestRecord::from_value(json!({
+                    "id":request_id,
+                    "method":"monitor/approve",
+                    "agent":"agent",
+                    "params":{"monitorId":id,"command":case["before"]["command"],"cwd":case["before"]["cwd"]},
+                    "status":"pending",
+                    "createdAt":1000.0
+                }))?;
+                Table::<RequestRecord>::new(tx).put(&request)
+            })
+            .expect("seed monitor approval request");
+        let port = Arc::new(support::Port::default());
+        let state = HttpState::new(
+            "fixture-token".into(),
+            "fixture".into(),
+            None,
+            store.root().to_string_lossy().into(),
+            49171,
+            None,
+            Some(store.clone()),
+            None,
+        );
+        let runtime = Arc::new(MonitorRuntime::new(
+            store.clone(),
+            port.clone(),
+            state.event_wake_handle(),
+        ));
+        let app = router(state)
+            .expect("router")
+            .layer(Extension(runtime.clone()));
+        let (status, response) = call(
+            &app,
+            "/api/answer",
+            json!({"id":request_id,"decision":decision}),
+        )
+        .await;
+        assert_eq!(status, 200, "{response}");
+        assert_eq!(response["status"], "answered");
+        let request = Table::<RequestRecord>::new(&store.read().expect("read request"))
+            .get(&request_id)
+            .expect("get approval request")
+            .expect("approval request");
+        assert_eq!(request.value()["status"], "answered");
+        assert_eq!(request.value()["answerDecision"], decision);
+        let monitor = MonitorsRepository::get(&store.read().expect("read monitor"), id)
+            .expect("get monitor")
+            .expect("monitor")
+            .value()
+            .clone();
+        if decision == "accept" {
+            assert_eq!(monitor["status"], "starting");
+            runtime
+                .tick(1001.0)
+                .expect("dispatch committed start intent");
+            assert_eq!(port.starts.lock().expect("starts").len(), 1);
+            assert_eq!(port.starts.lock().expect("starts")[0].0, id);
+        } else {
+            assert_eq!(monitor["status"], "cancelled");
+            runtime.tick(1001.0).expect("no start dispatch for decline");
+            assert!(port.starts.lock().expect("starts").is_empty());
+        }
+    }
 }

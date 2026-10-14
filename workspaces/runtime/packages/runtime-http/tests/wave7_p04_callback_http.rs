@@ -56,6 +56,14 @@ async fn human_http_roundtrip_requires_consumer_and_authenticated_user() {
         501
     );
     assert_eq!(stored(&store, &id), before);
+    assert_eq!(
+        call(&unwired, "/api/questions/delete", json!({"id":id}), "token")
+            .await
+            .0,
+        501,
+        "delete cannot bypass CallbackRuntime when its reply port is absent"
+    );
+    assert_eq!(stored(&store, &id), before);
     let port = Arc::new(Port::default());
     let app = router(
         state.with_callback_runtime(Arc::new(CallbackRuntime::new(store.clone(), port.clone()))),

@@ -1290,6 +1290,11 @@ impl Worker {
         if let Some(effect) = effect {
             self.push(effect)?;
         }
+        if let JournalPayload::Frame(Frame::Notification(notification)) = &entry.payload
+            && notification.method.as_str() == "command/exec/outputDelta"
+        {
+            self.bridge.monitor_dispatch_wake().notify_one();
+        }
         if let JournalPayload::Frame(frame) = &entry.payload
             && let Frame::Request(request) = frame
             && request.method.as_str() == "item/tool/call"

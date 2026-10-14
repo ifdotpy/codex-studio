@@ -721,6 +721,22 @@ pub(super) fn journal(
                 )),
                 _ => None,
             };
+            if let Some(("command/exec/outputDelta", params)) = notice {
+                let process_id = params["processId"]
+                    .as_str()
+                    .filter(|id| !id.is_empty())
+                    .ok_or(
+                    crate::notification_dispatch::NotificationDispatchError::InvalidNotification,
+                )?;
+                crate::monitor_event_queue::enqueue_output_in_transaction(
+                    tx,
+                    process_id,
+                    account,
+                    entry.generation.0,
+                    entry.cursor.0,
+                    params,
+                )?;
+            }
             if let Some((method, params)) = notice
                 && let Some(thread) = params["threadId"].as_str()
             {

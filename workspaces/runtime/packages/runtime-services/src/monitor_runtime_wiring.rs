@@ -1,6 +1,14 @@
 //! Retained monitor consumer. The account/session owner supplies the transport;
 //! this task owns no provider connection and never repeats an uncertain command.
 //! Result recovery precedes stall decisions. Publication and transport ACK follow commit.
+//!
+//! Registered HTTP gap: "monitor input has no request identity; pending owner decision".
+//! Python has the same acknowledged-response gap: codex_rules.py:727 refuses only while
+//! `inputAttempt` exists; codex_rules.py:781-782 clears it on settlement and saves
+//! `lastInputAttempt` without comparing it on the next call. Therefore an identical HTTP retry
+//! after an acknowledged response may be a new input. Each provider write still has a durable
+//! ticketed intent; an unknown provider outcome remains latched and is never resent. Managed-tool
+//! input uses its callback request identity for durable replay instead.
 
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -64,6 +72,11 @@ pub enum InputReply {
 /// `command/exec` runs inside the retained provider app-server. Its child priority
 /// is selected by the provider launch environment; this port never spawns it locally.
 pub trait MonitorPort: MonitorNative + rules_tick::RuleMonitor + Send + Sync {
+    /// Prepare and submit one persisted managed start. Implementations must return
+    /// after a durable intent and retain Unknown without another command/exec.
+    fn start_monitor(&self, _id: &str, _now: f64) -> Result<(), MonitorError> {
+        Err(MonitorError::Unavailable("provider-session/monitor-start"))
+    }
     fn next(&self) -> Result<Option<Delivery>, MonitorError>;
     fn acknowledge(&self, delivery: &Delivery) -> Result<(), MonitorError>;
     fn reattach(&self, snapshot: &MonitorSnapshot) -> Result<Option<ReattachProof>, MonitorError>;
@@ -187,6 +200,16 @@ impl MonitorRuntime {
 
         // Cancellation receipts and rule pages progress even under sustained stream
         // output. Their exact identities and replay receipts make this safe.
+        match monitor_driver::pending_start_ids(&self.store) {
+            Ok(ids) => {
+                for id in ids {
+                    if let Err(error) = self.port.start_monitor(&id, now) {
+                        record_tick_failure(&mut failure, error);
+                    }
+                }
+            }
+            Err(error) => record_tick_failure(&mut failure, error),
+        }
         match monitor_driver::pending_cancel_ids(&self.store, now) {
             Ok(ids) => {
                 for id in ids {
@@ -398,10 +421,14 @@ impl MonitorRuntime {
         Ok(result)
     }
 
-    /// MonitorInput lacks a caller identity, so fail closed until its schema carries
-    /// a stable request_id that can key a saved replay receipt.
-    pub fn input_http(&self, _id: &str, _input: &Input, _now: f64) -> Result<Value, MonitorError> {
-        Err(MonitorError::Unavailable("monitor-input-request-identity"))
+    /// Submit HTTP input with a fresh server ticket. The HTTP schema currently has
+    /// no caller request identity, so a lost HTTP response cannot be distinguished
+    /// from a new identical request; that retry gap is registered in this module's
+    /// documentation. Provider writes still commit an intent first, and an
+    /// uncertain provider outcome is retained and never resent.
+    pub fn input_http(&self, id: &str, input: &Input, now: f64) -> Result<Value, MonitorError> {
+        let ticket = http_input_ticket()?;
+        self.input(id, &ticket, input, now)
     }
 
     pub fn input(
@@ -449,6 +476,15 @@ impl MonitorRuntime {
         monitor_runtime::settle_input(&self.store, id, operation, ticket, outcome, now)?;
         response
     }
+}
+
+fn http_input_ticket() -> Result<String, MonitorError> {
+    let mut bytes = [0_u8; 16];
+    getrandom::fill(&mut bytes)
+        .map_err(|_| MonitorError::Refused("Could not allocate monitor input ticket"))?;
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    Ok(uuid::Uuid::from_bytes(bytes).to_string())
 }
 
 fn record_tick_failure(current: &mut Option<MonitorError>, incoming: MonitorError) {

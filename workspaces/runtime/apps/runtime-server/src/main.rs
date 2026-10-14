@@ -271,10 +271,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     )
     .await?;
     let monitor_wake = state.event_wake_handle();
+    let monitor_port = Arc::new(monitor_port::RetainedMonitorPort::new(
+        Arc::clone(&store),
+        state
+            .account_session
+            .clone()
+            .ok_or("account session runtime is unavailable")?,
+    ));
+    let monitor_port_trait: Arc<dyn studio_runtime_services::monitor_runtime_wiring::MonitorPort> =
+        monitor_port.clone();
     let monitor_runtime = Arc::new(
         studio_runtime_services::monitor_runtime_wiring::MonitorRuntime::new(
             Arc::clone(&store),
-            Arc::new(monitor_port::UnavailableMonitorPort),
+            monitor_port_trait,
             Arc::clone(&monitor_wake),
         ),
     );
@@ -301,6 +310,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             return Err(error.into());
         }
     };
+    monitor_port.set_preparation_resources(
+        runtime
+            .preparation_resources()
+            .ok_or("monitor preparation resources are unavailable")?,
+    );
     let lifecycle_ports: Arc<dyn studio_runtime_services::agent_lifecycle_runtime::LifecyclePorts> =
         Arc::new(
             studio_runtime_services::lifecycle_effects::ProductionLifecyclePorts::new(
