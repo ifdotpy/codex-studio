@@ -556,12 +556,14 @@ pub fn execute_provider_prepared(
     effects: &impl Acceptance,
     preparation: &impl Preparation,
 ) -> Result<Value> {
-    if let Some(snapshot) = store.read_transaction_with_error(|tx| replay(tx, request))?
+    let existing = store.read_transaction_with_error(|tx| replay(tx, request))?;
+    if let Some(snapshot) = existing.as_ref()
         && (!matches!(snapshot.outcome, Outcome::Pending { .. })
             || snapshot.agent["startAttempt"]["submitted"] == true)
     {
-        return Ok(response(&snapshot, true));
+        return Ok(response(snapshot, true));
     }
+    let resume_reserved = existing.is_some();
     let agent_snapshot = store.read_transaction_with_error(|tx| agent(tx, &request.agent))?;
     let account = agent_snapshot
         .get("accountKey")
@@ -580,7 +582,9 @@ pub fn execute_provider_prepared(
         if scope.account != account {
             return Err(NativeError::Changed);
         }
-        preparation.before_reserve(store, port, request, &scope)?;
+        if should_repair_before_reserve(resume_reserved) {
+            preparation.before_reserve(store, port, request, &scope)?;
+        }
         if port.current_scope(&account).as_ref() != Some(&scope) {
             return Err(NativeError::Changed);
         }
@@ -648,6 +652,21 @@ pub fn execute_provider_prepared(
         return Ok(value);
     }
     Err(NativeError::Unknown)
+}
+
+fn should_repair_before_reserve(resume_reserved: bool) -> bool {
+    !resume_reserved
+}
+
+#[cfg(test)]
+mod native_action_retry_tests {
+    use super::should_repair_before_reserve;
+
+    #[test]
+    fn preflight_repair_runs_only_for_new_admission() {
+        assert!(should_repair_before_reserve(false));
+        assert!(!should_repair_before_reserve(true));
+    }
 }
 
 /// Validate and settle the exact receipt returned by the retained account broker.
