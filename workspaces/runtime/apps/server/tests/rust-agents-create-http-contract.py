@@ -566,8 +566,18 @@ class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         expected_fields = REVIEW_CORPUS["childStoredFields"]
         self.assertEqual(saved["name"], expected_fields["name"])
         self.assertEqual(saved["prompt"], expected_fields["prompt"])
+        # The oracle draft uses QuietRuntime.schedule(), while the live Rust
+        # backend has already scheduled the child. Python Runtime.schedule()
+        # also reserves queued workers (codex_runtime.py around 6503/7036),
+        # changing only these lifecycle fields after create.
+        scheduler_fields = {"status", "inFlight", "startAttempt", "turnId", "turnEpoch"}
+        saved_for_creation = normalized_agent(saved)
+        expected_for_creation = normalized_agent(expected)
+        for field in scheduler_fields:
+            saved_for_creation.pop(field, None)
+            expected_for_creation.pop(field, None)
         self.assertEqual(
-            agent_delta(normalized_agent(saved), normalized_agent(expected)),
+            agent_delta(saved_for_creation, expected_for_creation),
             {},
         )
 

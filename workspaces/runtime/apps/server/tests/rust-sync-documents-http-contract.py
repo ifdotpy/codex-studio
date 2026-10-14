@@ -117,17 +117,21 @@ class SyncDocumentsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         message_id = f"sync-diff-{suffix}-message"
         identity_path = backend.state / "multi-server" / "identity.json"
         identity_preexisting = identity_path.exists()
+        # Match Python's restart-normalized fixture state: Runtime.__init__
+        # writes inFlight=False for every local agent before seeding entities.
         fixtures = {
             "records": {
                 "runtime_agents": [
                     [agent_a, {"id": agent_a, "kind": "agent", "isLead": True, "parentId": None,
                      "rootId": agent_a, "epoch": 1, "name": "First lead", "cwd": project_path, "status": "idle",
+                     "inFlight": False,
                      "overview": {"task": "stale lead overview"}}],
                     [agent_b, {"id": agent_b, "kind": "agent", "isLead": True, "parentId": None,
-                     "rootId": agent_b, "epoch": 1, "name": None, "cwd": project_path + "/.", "status": "idle"}],
+                     "rootId": agent_b, "epoch": 1, "name": None, "cwd": project_path + "/.", "status": "idle",
+                     "inFlight": False}],
                     [worker_id, {"id": worker_id, "kind": "agent", "isLead": False,
                      "parentId": agent_a, "rootId": agent_a, "epoch": 1, "name": "Worker", "cwd": project_path,
-                     "status": "completed", "prompt": "Python view task", "lastAnswer": "done",
+                     "status": "completed", "inFlight": False, "prompt": "Python view task", "lastAnswer": "done",
                      "lastCompletedTurn": "turn-view", "turnId": "", "threadId": "thread-view",
                      "nativeRelease": {"id": "release-request", "phase": "released",
                                        "resetPending": False, "threadId": "thread-view",
@@ -136,7 +140,7 @@ class SyncDocumentsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
                      "nativeThreadBlock": {"threadId": "thread-view", "error": {"message": "blocked"}}}],
                     [turn_error_id, {"id": turn_error_id, "kind": "agent", "isLead": False,
                      "parentId": agent_a, "rootId": agent_a, "epoch": 1, "name": "Turn error worker",
-                     "status": "idle", "threadId": "thread-error", "turnId": "",
+                     "status": "idle", "inFlight": False, "threadId": "thread-error", "turnId": "",
                      "nativeTurnError": {"turnId": "", "error": {
                          "codexErrorInfo": "misalignmentPolicyViolation", "message": "blocked"}}}],
                 ],
@@ -159,7 +163,9 @@ class SyncDocumentsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
                                    "members": [agent_a, agent_b]}],
                     "peerTeamsRevision": 7,
                 }]],
-                "runtime_requests": [[request_id, {"id": request_id, "status": "pending"}]],
+                # Python Runtime.__init__ expires pending native requests that
+                # lack a live agent/asyncQuestion owner before entity seeding.
+                "runtime_requests": [[request_id, {"id": request_id, "status": "expired"}]],
                 "runtime_rules": [[rule_id, {"id": rule_id}]],
                 "runtime_work": [[work_id, {"id": work_id, "owner": worker_id,
                     "results": [{"agent": worker_id, "resultFile": "results/view.md", "created": 10}]}],

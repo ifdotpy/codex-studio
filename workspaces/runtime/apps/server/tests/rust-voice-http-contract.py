@@ -418,6 +418,22 @@ class VoiceHTTPContract(TimedHTTPContractTest, unittest.TestCase):
 
     @unittest.skipUnless(os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"), "Rust backend only")
     def test_provider_operations_refuse_without_writes(self):
+        # Runtime.__init__ expires pending native requests during startup
+        # (codex_runtime.py's restart recovery retains only matching
+        # agent/asyncQuestion requests). This approval fixture was written
+        # before another test restarted the backend, so restore its original
+        # pending state before measuring this request's write behavior.
+        with sqlite3.connect(self.backend.state / "canvas.sqlite3") as connection:
+            connection.execute(
+                "UPDATE runtime_requests SET record=? WHERE id='python-approval'",
+                (json.dumps({
+                    "id": "python-approval",
+                    "method": "item/commandExecution/requestApproval",
+                    "agent": self.lead_id,
+                    "status": "pending",
+                    "params": {"command": "echo safe"},
+                }),),
+            )
         before = no_write_snapshot(self.backend.state)
         requests = (
             ("start", {"agent": self.lead_id, "session_id": "unused", "sdp": "offer"}),
@@ -468,9 +484,12 @@ class VoiceHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             connection.execute(
                 "UPDATE voice_records SET payload='not-json' WHERE id='python-user-record'"
             )
-        before = no_write_snapshot(self.backend.state)
         self.backend.start()
         self.backend.ready_samples.append(self.backend.ready_seconds or 0)
+        # Startup recovery is allowed to expire unrelated requests and
+        # normalize scheduler state, as Python Runtime.__init__ does. The
+        # no-write assertion below covers only the invalid-record read.
+        before = no_write_snapshot(self.backend.state)
         response = self.request("/api/voice/records", {"agent": self.lead_id, "after": 0})
         self.assertEqual(response.status, 500, response.body[:1000])
         self.assertIn("voice_records", response.json()["error"])
