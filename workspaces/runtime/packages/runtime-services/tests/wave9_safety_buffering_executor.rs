@@ -7,7 +7,11 @@ use std::sync::Arc;
 use std::{
     path::{Path, PathBuf},
     process::Command,
-    sync::{Mutex, OnceLock, mpsc},
+    sync::{
+        Mutex, OnceLock,
+        atomic::{AtomicUsize, Ordering},
+        mpsc,
+    },
     thread,
     time::Duration,
 };
@@ -19,9 +23,11 @@ use studio_runtime_services::{
     },
     account_worker::preparation::PreparationResources,
     account_worker::retained::RequestActor,
+    agent_lifecycle_runtime::{LifecycleEffect, LifecycleEffectKind, LifecyclePorts},
+    agent_management::ManagementError,
     safety_buffering,
 };
-use studio_runtime_store::RuntimeStore;
+use studio_runtime_store::{RuntimeStore, Transaction};
 
 fn test_resources() -> Arc<PreparationResources> {
     Arc::new(
@@ -69,6 +75,7 @@ struct Session<'a> {
     requires_at: Option<usize>,
     not_sent_at: Option<usize>,
     not_sent_used: Mutex<bool>,
+    reject_start: bool,
 }
 impl AccountSessionPort for Session<'_> {
     fn current_scope(&self, account: &str) -> Option<ConnectionScope> {
@@ -152,7 +159,13 @@ impl AccountSessionPort for Session<'_> {
                 method: request.method,
             }),
             certainty: RequestCertainty::Written,
-            result: Some(ProviderResponse::Reply(result)),
+            result: Some(
+                if self.reject_start && request.method == Method::TurnStart {
+                    ProviderResponse::Rejected(json!({"message":"start rejected"}))
+                } else {
+                    ProviderResponse::Reply(result)
+                },
+            ),
             not_sent_reason: None,
         })
     }
@@ -163,6 +176,159 @@ struct BlockingSession {
     entered: Mutex<Option<mpsc::Sender<()>>>,
     release: Mutex<mpsc::Receiver<()>>,
     calls: Mutex<Vec<String>>,
+}
+
+struct IntentBlockingSession {
+    scope: ConnectionScope,
+    scope_calls: AtomicUsize,
+    entered: Mutex<Option<mpsc::Sender<()>>>,
+    release: Mutex<mpsc::Receiver<()>>,
+    requests: AtomicUsize,
+}
+
+impl AccountSessionPort for IntentBlockingSession {
+    fn current_scope(&self, account: &str) -> Option<ConnectionScope> {
+        if self.scope_calls.fetch_add(1, Ordering::SeqCst) == 1 {
+            if let Some(entered) = self.entered.lock().expect("entered").take() {
+                entered.send(()).expect("notify before intent");
+            }
+            self.release
+                .lock()
+                .expect("release")
+                .recv()
+                .expect("release before intent");
+        }
+        (account == self.scope.account).then(|| self.scope.clone())
+    }
+
+    fn provider_request(
+        &self,
+        _request: ProviderRequest,
+    ) -> Result<SessionReceipt, AccountSessionError> {
+        self.requests.fetch_add(1, Ordering::SeqCst);
+        Err(AccountSessionError::Refused("unexpected dispatch"))
+    }
+}
+
+struct StartBlockingSession {
+    store: Arc<RuntimeStore>,
+    scope: ConnectionScope,
+    entered: Mutex<Option<mpsc::Sender<()>>>,
+    release: Mutex<mpsc::Receiver<()>>,
+}
+
+impl AccountSessionPort for StartBlockingSession {
+    fn current_scope(&self, account: &str) -> Option<ConnectionScope> {
+        (account == self.scope.account).then(|| self.scope.clone())
+    }
+
+    fn provider_request(
+        &self,
+        request: ProviderRequest,
+    ) -> Result<SessionReceipt, AccountSessionError> {
+        let raw = self
+            .store
+            .read()
+            .map_err(|_| AccountSessionError::Persistence)?
+            .query_row(
+                "SELECT record FROM runtime_safety_retries WHERE id='agent:turn'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .map_err(|_| AccountSessionError::Persistence)?;
+        let intent: Value =
+            serde_json::from_str(&raw).map_err(|_| AccountSessionError::Persistence)?;
+        assert_eq!(intent["dispatch"], "intent");
+        assert_eq!(intent["rpcMethod"], request.method.as_str());
+        let stage = intent["stage"].as_str().unwrap_or_default();
+        if request.method == Method::TurnStart {
+            if let Some(entered) = self.entered.lock().expect("entered").take() {
+                entered.send(()).expect("notify at accepted start");
+            }
+            self.release
+                .lock()
+                .expect("release")
+                .recv()
+                .expect("release accepted start");
+        }
+        let result = match request.method {
+            Method::ThreadTurnsList => {
+                json!({"data":[{"id":"turn","status":if stage == "verify_turns" {"interrupted"} else {"inProgress"}}]})
+            }
+            Method::ThreadItemsList => {
+                json!({"data":[{"turnId":"turn","item":{"type":"userMessage","content":[{"type":"text","text":"hello"}]}}]})
+            }
+            Method::TurnInterrupt => json!({}),
+            Method::ThreadFork => json!({"thread":{"id":"new-thread"}}),
+            Method::TurnStart => json!({"turn":{"id":"new-turn"}}),
+            _ => return Err(AccountSessionError::Refused("Unexpected safety method")),
+        };
+        Ok(SessionReceipt {
+            scope: self.scope.clone(),
+            operation: request.operation.clone(),
+            ticket: Some(RequestTicket {
+                generation: self.scope.generation,
+                id: RequestId::String(request.operation),
+                method: request.method,
+            }),
+            certainty: RequestCertainty::Written,
+            result: Some(ProviderResponse::Reply(result)),
+            not_sent_reason: None,
+        })
+    }
+}
+
+#[derive(Default)]
+struct LifecycleProbe {
+    store: Option<Arc<RuntimeStore>>,
+    staged: Mutex<Vec<Value>>,
+    committed: AtomicUsize,
+}
+
+impl LifecycleProbe {
+    fn new(store: Arc<RuntimeStore>) -> Self {
+        Self {
+            store: Some(store),
+            staged: Mutex::default(),
+            committed: AtomicUsize::new(0),
+        }
+    }
+}
+
+impl LifecyclePorts for LifecycleProbe {
+    fn stage(&self, tx: &Transaction<'_>, effect: &LifecycleEffect) -> Result<(), ManagementError> {
+        assert_eq!(effect.kind(), LifecycleEffectKind::Interrupt);
+        let stage: String = tx.query_row(
+            "SELECT json_extract(record,'$.stage') FROM runtime_safety_retries WHERE id='agent:turn'",
+            [],
+            |row| row.get(0),
+        ).map_err(studio_runtime_store::StoreError::from)?;
+        assert_eq!(stage, "start", "effect is staged in acceptance transaction");
+        self.staged.lock().expect("staged").push(json!({
+            "before":effect.before(),
+            "stopped":effect.stopped(),
+        }));
+        Ok(())
+    }
+
+    fn committed(&self) -> Result<(), ManagementError> {
+        if let Some(store) = &self.store {
+            let stage: String = store
+                .read()?
+                .query_row(
+                    "SELECT json_extract(record,'$.stage') FROM runtime_safety_retries WHERE id='agent:turn'",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(studio_runtime_store::StoreError::from)?;
+            assert_eq!(
+                stage, "running",
+                "commit hook runs after acceptance transaction"
+            );
+        }
+        self.committed.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    }
 }
 
 impl AccountSessionPort for BlockingSession {
@@ -222,11 +388,13 @@ fn action_runs_python_corpus_stage_path_and_commits_each_intent_before_dispatch(
         requires_at: None,
         not_sent_at: None,
         not_sent_used: Mutex::new(false),
+        reject_start: false,
     };
     let result = safety_buffering::execute_action(
         &store,
         &session,
         &test_resources(),
+        None,
         "agent",
         RequestActor {
             agent: "agent".into(),
@@ -332,6 +500,7 @@ fn late_provider_receipt_preserves_concurrent_cancel_and_does_not_advance() {
             &retry_store,
             retry_session.as_ref(),
             &test_resources(),
+            None,
             "agent",
             RequestActor {
                 agent: "agent".into(),
@@ -348,6 +517,7 @@ fn late_provider_receipt_preserves_concurrent_cancel_and_does_not_advance() {
         &store,
         session.as_ref(),
         &test_resources(),
+        None,
         "agent",
         RequestActor {
             agent: "agent".into(),
@@ -389,6 +559,222 @@ fn late_provider_receipt_preserves_concurrent_cancel_and_does_not_advance() {
 }
 
 #[test]
+fn cancellation_before_intent_persistence_prevents_provider_dispatch() {
+    let (template, _) = python_corpus();
+    let root = tempfile::tempdir().expect("state copy");
+    for file in ["canvas.sqlite3", "analytics.sqlite3"] {
+        std::fs::copy(template.join(file), root.path().join(file)).expect("Python-written DB");
+    }
+    let store = Arc::new(RuntimeStore::open(Some(root.path())).expect("open state"));
+    let scope = ConnectionScope {
+        account: "acct".into(),
+        connection: "connection".into(),
+        generation: 1,
+    };
+    let (entered_tx, entered_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel();
+    let session = Arc::new(IntentBlockingSession {
+        scope,
+        scope_calls: AtomicUsize::new(0),
+        entered: Mutex::new(Some(entered_tx)),
+        release: Mutex::new(release_rx),
+        requests: AtomicUsize::new(0),
+    });
+    let retry_store = Arc::clone(&store);
+    let retry_session = Arc::clone(&session);
+    let worker = thread::spawn(move || {
+        safety_buffering::execute_action(
+            &retry_store,
+            retry_session.as_ref(),
+            &test_resources(),
+            None,
+            "agent",
+            RequestActor {
+                agent: "agent".into(),
+                epoch: 7,
+            },
+            "turn",
+            "retry",
+        )
+    });
+    entered_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("pause before intent");
+    let cancelled = safety_buffering::execute_action(
+        &store,
+        session.as_ref(),
+        &test_resources(),
+        None,
+        "agent",
+        RequestActor {
+            agent: "agent".into(),
+            epoch: 7,
+        },
+        "turn",
+        "cancel",
+    )
+    .expect("cancel commits");
+    assert_eq!(cancelled["stage"], "cancelled");
+    release_tx.send(()).expect("continue retry");
+    let resumed = worker
+        .join()
+        .expect("retry worker")
+        .expect("cancel respected");
+    assert_eq!(resumed["stage"], "cancelled");
+    assert_eq!(session.requests.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn accepted_start_after_concurrent_stop_stages_interrupt_then_commits_lifecycle() {
+    let (template, _) = python_corpus();
+    let root = tempfile::tempdir().expect("state copy");
+    for file in ["canvas.sqlite3", "analytics.sqlite3"] {
+        std::fs::copy(template.join(file), root.path().join(file)).expect("Python-written DB");
+    }
+    let store = Arc::new(RuntimeStore::open(Some(root.path())).expect("open state"));
+    let scope = ConnectionScope {
+        account: "acct".into(),
+        connection: "connection".into(),
+        generation: 1,
+    };
+    let (entered_tx, entered_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel();
+    let (done_tx, done_rx) = mpsc::channel();
+    let session = Arc::new(StartBlockingSession {
+        store: Arc::clone(&store),
+        scope,
+        entered: Mutex::new(Some(entered_tx)),
+        release: Mutex::new(release_rx),
+    });
+    let lifecycle = Arc::new(LifecycleProbe::new(Arc::clone(&store)));
+    let retry_store = Arc::clone(&store);
+    let retry_session = Arc::clone(&session);
+    let retry_lifecycle = Arc::clone(&lifecycle);
+    let worker = thread::spawn(move || {
+        let result = safety_buffering::execute_action(
+            &retry_store,
+            retry_session.as_ref(),
+            &test_resources(),
+            Some(retry_lifecycle.as_ref()),
+            "agent",
+            RequestActor {
+                agent: "agent".into(),
+                epoch: 7,
+            },
+            "turn",
+            "retry",
+        );
+        let state = result
+            .as_ref()
+            .map_or_else(|error| error.to_string(), |_| "success".into());
+        let _ = done_tx.send(state);
+        result
+    });
+    if entered_rx.recv_timeout(Duration::from_secs(5)).is_err() {
+        let state = done_rx
+            .recv_timeout(Duration::from_secs(1))
+            .unwrap_or_else(|_| "still running".into());
+        panic!("turn/start was not reached: {state}");
+    }
+
+    store
+        .transaction_with(|tx| {
+            let raw: String = tx.query_row(
+                "SELECT record FROM runtime_agents WHERE id='agent'",
+                [],
+                |row| row.get(0),
+            )?;
+            let mut agent: Value = serde_json::from_str(&raw).expect("agent record");
+            agent["epoch"] = json!(8);
+            agent["status"] = json!("paused");
+            agent["autoWake"] = json!(false);
+            agent["turnEpoch"] = json!(7);
+            agent["inFlight"] = json!(false);
+            agent["error"] = json!("Stopped by user");
+            tx.execute(
+                "UPDATE runtime_agents SET record=?1 WHERE id='agent'",
+                [agent.to_string()],
+            )?;
+            Ok::<_, studio_runtime_store::StoreError>(())
+        })
+        .expect("concurrent stop commits before late start receipt");
+    release_tx.send(()).expect("release start receipt");
+    let receipt = worker
+        .join()
+        .expect("retry worker")
+        .expect("lifecycle settlement");
+    assert_eq!(receipt["stage"], "running");
+    assert_eq!(lifecycle.committed.load(Ordering::SeqCst), 1);
+    let effects = lifecycle.staged.lock().expect("staged effects");
+    assert_eq!(effects.len(), 1);
+    assert_eq!(effects[0]["before"]["turnId"], "new-turn");
+    assert_eq!(effects[0]["before"]["epoch"], 7);
+    assert_eq!(effects[0]["stopped"]["epoch"], 8);
+}
+
+#[test]
+fn rejected_safety_start_settles_the_empty_event_attempt() {
+    let (template, _) = python_corpus();
+    let root = tempfile::tempdir().expect("state copy");
+    for file in ["canvas.sqlite3", "analytics.sqlite3"] {
+        std::fs::copy(template.join(file), root.path().join(file)).expect("Python-written DB");
+    }
+    let store = RuntimeStore::open(Some(root.path())).expect("open state");
+    let session = Session {
+        store: &store,
+        scope: ConnectionScope {
+            account: "acct".into(),
+            connection: "connection".into(),
+            generation: 1,
+        },
+        calls: Mutex::default(),
+        unknown_at: None,
+        requires_at: None,
+        not_sent_at: None,
+        not_sent_used: Mutex::new(false),
+        reject_start: true,
+    };
+    assert!(
+        safety_buffering::execute_action(
+            &store,
+            &session,
+            &test_resources(),
+            None,
+            "agent",
+            RequestActor {
+                agent: "agent".into(),
+                epoch: 7,
+            },
+            "turn",
+            "retry",
+        )
+        .is_err()
+    );
+    let db = store.read().expect("state read");
+    let raw: String = db
+        .query_row(
+            "SELECT record FROM runtime_agents WHERE id='agent'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("settled agent");
+    let agent: Value = serde_json::from_str(&raw).expect("agent JSON");
+    assert_eq!(agent["status"], "failed");
+    assert_eq!(agent["inFlight"], false);
+    assert_eq!(agent["startAttempt"]["executionOutcome"], "rejected");
+    let retry: String = db
+        .query_row(
+            "SELECT record FROM runtime_safety_retries WHERE id='agent:turn'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("failed retry");
+    let retry: Value = serde_json::from_str(&retry).expect("retry JSON");
+    assert_eq!(retry["stage"], "failed");
+    assert_eq!(retry["dispatch"], "rejected");
+}
+
+#[test]
 fn unknown_at_every_stage_is_durable_and_never_resent_after_restart_or_action_replay() {
     let (template, _) = python_corpus();
     for failed_stage in 0..7 {
@@ -409,11 +795,13 @@ fn unknown_at_every_stage_is_durable_and_never_resent_after_restart_or_action_re
             requires_at: None,
             not_sent_at: None,
             not_sent_used: Mutex::new(false),
+            reject_start: false,
         };
         let result = safety_buffering::execute_action(
             &store,
             &session,
             &test_resources(),
+            None,
             "agent",
             RequestActor {
                 agent: "agent".into(),
@@ -440,11 +828,13 @@ fn unknown_at_every_stage_is_durable_and_never_resent_after_restart_or_action_re
             requires_at: None,
             not_sent_at: None,
             not_sent_used: Mutex::new(false),
+            reject_start: false,
         };
         let replay = safety_buffering::execute_action(
             &reopened,
             &restarted_session,
             &test_resources(),
+            None,
             "agent",
             RequestActor {
                 agent: "agent".into(),
@@ -484,11 +874,13 @@ fn not_sent_retries_same_operation_id_and_records_each_receipt() {
             requires_at: None,
             not_sent_at: Some(not_sent_at),
             not_sent_used: Mutex::new(false),
+            reject_start: false,
         };
         let result = safety_buffering::execute_action(
             &store,
             &session,
             &test_resources(),
+            None,
             "agent",
             RequestActor {
                 agent: "agent".into(),
@@ -550,12 +942,14 @@ fn restart_resumes_recorded_intent_with_the_same_operation_id() {
             requires_at: Some(interrupted_stage),
             not_sent_at: None,
             not_sent_used: Mutex::new(false),
+            reject_start: false,
         };
         assert!(
             safety_buffering::execute_action(
                 &store,
                 &first,
                 &test_resources(),
+                None,
                 "agent",
                 RequestActor {
                     agent: "agent".into(),
@@ -587,11 +981,13 @@ fn restart_resumes_recorded_intent_with_the_same_operation_id() {
             requires_at: None,
             not_sent_at: None,
             not_sent_used: Mutex::new(false),
+            reject_start: false,
         };
         let result = safety_buffering::execute_action(
             &restarted,
             &second,
             &test_resources(),
+            None,
             "agent",
             RequestActor {
                 agent: "agent".into(),
@@ -631,12 +1027,14 @@ fn restart_applies_persisted_written_receipt_without_redispatch() {
             requires_at: Some(interrupted_stage),
             not_sent_at: None,
             not_sent_used: Mutex::new(false),
+            reject_start: false,
         };
         assert!(
             safety_buffering::execute_action(
                 &store,
                 &first,
                 &test_resources(),
+                None,
                 "agent",
                 RequestActor {
                     agent: "agent".into(),
@@ -668,6 +1066,23 @@ fn restart_applies_persisted_written_receipt_without_redispatch() {
                     "result":response,
                 }]);
                 operation["dispatch"] = json!("received");
+                if stage == "start" {
+                    let request_id = operation_id.as_str().expect("start operation id");
+                    operation["requestId"] = json!(request_id);
+                    operation["requestGeneration"] = json!(1);
+                    let raw: String = tx.query_row(
+                        "SELECT record FROM runtime_agents WHERE id='agent'",
+                        [],
+                        |row| row.get(0),
+                    )?;
+                    let mut agent: Value = serde_json::from_str(&raw).expect("agent record");
+                    agent["startAttempt"]["requestTicket"] = json!(request_id);
+                    agent["startAttempt"]["connectionGeneration"] = json!(1);
+                    tx.execute(
+                        "UPDATE runtime_agents SET record=?1 WHERE id='agent'",
+                        [agent.to_string()],
+                    )?;
+                }
                 tx.execute(
                     "UPDATE runtime_safety_retries SET record=?1 WHERE id='agent:turn'",
                     [operation.to_string()],
@@ -691,11 +1106,13 @@ fn restart_applies_persisted_written_receipt_without_redispatch() {
             requires_at: None,
             not_sent_at: None,
             not_sent_used: Mutex::new(false),
+            reject_start: false,
         };
         let result = safety_buffering::execute_action(
             &restarted,
             &second,
             &test_resources(),
+            None,
             "agent",
             RequestActor {
                 agent: "agent".into(),

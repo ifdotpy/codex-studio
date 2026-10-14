@@ -766,6 +766,156 @@ impl SchedulerRepository {
         Ok(saved["interrupt"].as_bool())
     }
 
+    /// Bind a safety retry start that has no queued Studio events. This mirrors
+    /// Python's safety `start_accepted` path while preserving the same provider
+    /// ticket, account, generation, thread, turn and stop-race checks.
+    #[allow(clippy::too_many_arguments)]
+    pub fn settle_safety_started_provider(
+        transaction: &Transaction<'_>,
+        agent_id: &str,
+        epoch: i64,
+        attempt_id: &str,
+        request_id: &str,
+        account_key: &str,
+        generation: u64,
+        thread_id: &str,
+        turn_id: &str,
+    ) -> StoreResult<Option<bool>> {
+        let receipt_input = acceptance_input(agent_id, epoch, turn_id);
+        if let Some(result) = ExecutionHistoryRepository::replay(
+            transaction,
+            attempt_id,
+            "startResult",
+            &receipt_input,
+        )? {
+            let saved = ExecutionHistoryRepository::attempt(transaction, attempt_id)?
+                .ok_or_else(|| invalid_agent(agent_id))?;
+            if saved["requestTicket"] != request_id
+                || saved["accountKey"] != account_key
+                || saved["connectionGeneration"].as_u64() != Some(generation)
+                || saved["threadId"] != thread_id
+            {
+                return Err(ExecutionHistoryRepository::invalid(
+                    "runtime_execution_attempts",
+                    attempt_id,
+                ));
+            }
+            return Ok(result["interrupt"].as_bool());
+        }
+        let Some(agent) = load_agent(transaction, agent_id)? else {
+            return Ok(None);
+        };
+        let attempt = agent.extra.get("startAttempt").unwrap_or(&Value::Null);
+        if attempt["id"] != attempt_id
+            || attempt["epoch"] != epoch
+            || attempt["submitted"] != true
+            || attempt["accountKey"] != account_key
+            || attempt["threadId"] != thread_id
+            || agent
+                .extra
+                .get("accountKey")
+                .and_then(Value::as_str)
+                .unwrap_or("default")
+                != account_key
+            || agent.extra.get("threadId").and_then(Value::as_str) != Some(thread_id)
+            || attempt["requestTicket"] != request_id
+            || attempt["connectionGeneration"].as_u64() != Some(generation)
+            || attempt["events"]
+                .as_array()
+                .is_none_or(|events| !events.is_empty())
+        {
+            return Ok(None);
+        }
+        let authority = attempt_authority(&agent, epoch);
+        let interrupt = match acceptance_decision(&agent, epoch, turn_id, authority) {
+            AcceptanceDecision::Bind { interrupt, .. } => interrupt,
+            AcceptanceDecision::InterruptOnly => return Ok(Some(true)),
+            AcceptanceDecision::Ignore => return Ok(None),
+        };
+        ExecutionHistoryRepository::record(transaction, &agent)?;
+        let accepted = Self::apply_acceptance(
+            transaction,
+            ValidatedAttempt {
+                agent,
+                event_ids: ("[]".to_owned(), 0),
+                authority,
+            },
+            epoch,
+            attempt_id,
+            turn_id,
+        )?;
+        Ok(accepted.then_some(interrupt))
+    }
+
+    /// Reject a safety retry start that owns no queued Studio events. Keep this
+    /// path narrow so ordinary starts still require validated event batches.
+    #[allow(clippy::too_many_arguments)]
+    pub fn settle_safety_start_rejected_provider(
+        transaction: &Transaction<'_>,
+        agent_id: &str,
+        epoch: i64,
+        attempt_id: &str,
+        request_id: &str,
+        account_key: &str,
+        generation: u64,
+        thread_id: &str,
+        message: &str,
+    ) -> StoreResult<bool> {
+        let input = json!({"error":{"message":message},"ticket":request_id,"account":account_key,"generation":generation,"thread":thread_id});
+        let receipt_input = json!({"agent":agent_id,"epoch":epoch,"input":input});
+        if let Some(result) = ExecutionHistoryRepository::replay(
+            transaction,
+            attempt_id,
+            "startResult",
+            &receipt_input,
+        )? {
+            return result.as_bool().ok_or_else(|| invalid_agent(agent_id));
+        }
+        let Some(mut agent) = load_agent(transaction, agent_id)? else {
+            return Ok(false);
+        };
+        let attempt = agent.extra.get("startAttempt").unwrap_or(&Value::Null);
+        if attempt["id"] != attempt_id
+            || attempt["epoch"] != epoch
+            || attempt["submitted"] != true
+            || attempt["accountKey"] != account_key
+            || attempt["threadId"] != thread_id
+            || attempt["requestTicket"] != request_id
+            || attempt["connectionGeneration"].as_u64() != Some(generation)
+            || attempt["events"]
+                .as_array()
+                .is_none_or(|events| !events.is_empty())
+        {
+            return Ok(false);
+        }
+        let decision = start_error_decision(&agent, epoch, false, false);
+        if decision.return_busy_input {
+            return Err(ExecutionHistoryRepository::invalid(
+                "runtime_execution_attempts",
+                attempt_id,
+            ));
+        }
+        if let Some(status) = decision.visible {
+            agent.status = status;
+            agent.extra.insert("error".into(), json!(message));
+        }
+        agent.extra.insert("inFlight".into(), json!(false));
+        agent.extra.remove("startOutcomeHold");
+        agent
+            .extra
+            .get_mut("startAttempt")
+            .ok_or_else(|| invalid_agent(agent_id))?["executionOutcome"] = json!("rejected");
+        publish_agent(transaction, &agent)?;
+        ExecutionHistoryRepository::save_receipt(
+            transaction,
+            attempt_id,
+            "startResult",
+            receipt_input,
+            json!(true),
+        )?;
+        Ok(true)
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn settle_start_rejected_provider(
         transaction: &Transaction<'_>,

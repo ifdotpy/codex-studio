@@ -11,6 +11,7 @@ use crate::{
         preparation::{PreparationResources, SafetyRetryPreparation, prepare_safety_retry},
         retained::RequestActor,
     },
+    agent_lifecycle_runtime::{LifecycleEffect, LifecycleEffectKind, LifecyclePorts},
 };
 use rusqlite::{OptionalExtension, Transaction, params};
 use serde_json::{Value, json};
@@ -18,8 +19,10 @@ use std::{
     sync::Arc,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
-use studio_runtime_providers::Method;
-use studio_runtime_store::{AgentId, AgentRecord, AgentRepository, RuntimeStore, StoreError};
+use studio_runtime_providers::{Method, RequestId};
+use studio_runtime_store::{
+    AgentId, AgentRecord, AgentRepository, RuntimeStore, SchedulerRepository, StoreError,
+};
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
 const NOT_SENT_RETRIES: usize = 1;
@@ -30,6 +33,7 @@ pub fn execute_action(
     store: &RuntimeStore,
     provider: &dyn AccountSessionPort,
     resources: &Arc<PreparationResources>,
+    lifecycle: Option<&dyn LifecyclePorts>,
     agent_id: &str,
     actor: RequestActor,
     turn_id: &str,
@@ -161,7 +165,7 @@ pub fn execute_action(
     })?;
     match decision {
         ActionPlan::Return(receipt) => Ok(receipt),
-        ActionPlan::Drive(operation) => drive(store, provider, resources, operation),
+        ActionPlan::Drive(operation) => drive(store, provider, resources, lifecycle, operation),
     }
 }
 
@@ -174,6 +178,7 @@ fn drive(
     store: &RuntimeStore,
     provider: &dyn AccountSessionPort,
     resources: &Arc<PreparationResources>,
+    lifecycle: Option<&dyn LifecyclePorts>,
     mut operation: Value,
 ) -> Result<Value, Error> {
     loop {
@@ -202,7 +207,7 @@ fn drive(
         if let Some(response) =
             recorded_written_response(&operation, stage, &operation_id, &saved_scope)?
         {
-            match advance_stage(store, &mut operation, stage, response) {
+            match advance_stage(store, &mut operation, stage, response, lifecycle) {
                 Ok(true) => continue,
                 Ok(false) => return public_receipt(&operation),
                 Err(error @ (Error::ProviderRejected | Error::Inactive)) => {
@@ -225,7 +230,9 @@ fn drive(
         }
         let (method, params) =
             request_for_stage(store, resources, &operation, stage, scope.generation)?;
-        persist_intent(store, &mut operation, stage, &operation_id, method, &params)?;
+        if !persist_intent(store, &mut operation, stage, &operation_id, method, &params)? {
+            return public_receipt(&operation);
+        }
         let request = ProviderRequest {
             account: account.clone(),
             operation: operation_id.clone(),
@@ -236,6 +243,7 @@ fn drive(
                     .and_then(Value::as_i64)
                     .ok_or(Error::InvalidStoredState)?,
             }),
+            deleted_actor_session: None,
             expected_scope: Some(scope),
             method,
             params: params.clone(),
@@ -291,6 +299,16 @@ fn drive(
                     )? {
                         return public_receipt(&operation);
                     }
+                    if stage == Stage::Start
+                        && !settle_start_rejected(
+                            store,
+                            &mut operation,
+                            None,
+                            "Provider refused turn/start",
+                        )?
+                    {
+                        return public_receipt(&operation);
+                    }
                     operation["stage"] = json!(Stage::Failed.as_str());
                     operation["dispatch"] = json!("rejected");
                     operation["error"] = json!("Provider request refused");
@@ -330,6 +348,16 @@ fn drive(
         let body = match receipt.result {
             Some(ProviderResponse::Reply(value)) => value,
             Some(ProviderResponse::Rejected(_)) => {
+                if stage == Stage::Start
+                    && !settle_start_rejected(
+                        store,
+                        &mut operation,
+                        receipt.ticket.as_ref(),
+                        "Provider rejected turn/start",
+                    )?
+                {
+                    return public_receipt(&operation);
+                }
                 operation["stage"] = json!(Stage::Failed.as_str());
                 operation["dispatch"] = json!("rejected");
                 operation["error"] = json!("Provider rejected the safety retry request");
@@ -350,7 +378,7 @@ fn drive(
             .ok_or(Error::InvalidStoredState)?
             .insert(stage.as_str().into(), body.clone());
         operation["dispatch"] = json!("received");
-        match advance_stage(store, &mut operation, stage, body) {
+        match advance_stage(store, &mut operation, stage, body, lifecycle) {
             Ok(true) => (),
             Ok(false) => return public_receipt(&operation),
             Err(error @ (Error::ProviderRejected | Error::Inactive)) => {
@@ -444,7 +472,7 @@ fn persist_intent(
     operation_id: &str,
     method: Method,
     params: &Value,
-) -> Result<(), Error> {
+) -> Result<bool, Error> {
     operation["stage"] = json!(stage.as_str());
     operation["dispatch"] = json!("intent");
     operation["rpcMethod"] = json!(method.as_str());
@@ -452,6 +480,12 @@ fn persist_intent(
     operation["requestParams"] = params.clone();
     operation["updated"] = json!(unix_seconds());
     store.transaction_with(|tx| {
+        let current =
+            read_retry(tx, required_str(operation, "id")?)?.ok_or(Error::InvalidStoredState)?;
+        if current.get("stage").and_then(Value::as_str) != Some(stage.as_str()) {
+            *operation = current;
+            return Ok(false);
+        }
         let mut agent = read_agent(tx, required_str(operation, "agent")?)?;
         validate_current(&agent, operation, stage)?;
         if stage == Stage::Start {
@@ -481,7 +515,8 @@ fn persist_intent(
             agent["error"] = Value::Null;
             agent["startAttempt"] = attempt;
         }
-        save_operation(tx, &mut agent, operation)
+        save_operation(tx, &mut agent, operation)?;
+        Ok(true)
     })
 }
 
@@ -536,138 +571,198 @@ fn advance_stage(
     operation: &mut Value,
     stage: Stage,
     response: Value,
+    lifecycle: Option<&dyn LifecyclePorts>,
 ) -> Result<bool, Error> {
-    store.transaction_with(|tx| {
-        let id = required_str(operation, "id")?;
-        let current = read_retry(tx, id)?.ok_or(Error::InvalidStoredState)?;
-        if current.get("stage").and_then(Value::as_str) != Some(stage.as_str()) {
-            *operation = current;
-            return Ok(false);
-        }
-        let mut agent = read_agent(tx, required_str(operation, "agent")?)?;
-        validate_current(&agent, operation, stage)?;
-        match stage {
-            Stage::Turns | Stage::VerifyTurns => {
-                let turns = response
-                    .get("data")
-                    .and_then(Value::as_array)
-                    .ok_or(Error::ProviderRejected)?;
-                let latest = turns.first().ok_or(Error::Inactive)?;
-                if latest.get("id").and_then(Value::as_str)
-                    != operation.get("turnId").and_then(Value::as_str)
-                {
-                    return Err(Error::Inactive);
-                }
-                if stage == Stage::VerifyTurns
-                    && latest.get("status").and_then(Value::as_str) != Some("interrupted")
-                {
-                    return Err(Error::ProviderRejected);
-                }
-                operation["stage"] = json!(if stage == Stage::Turns {
-                    "items"
-                } else {
-                    "verify_items"
-                });
+    let mut committed_interrupt = false;
+    store
+        .transaction_with(|tx| {
+            let id = required_str(operation, "id")?;
+            let current = read_retry(tx, id)?.ok_or(Error::InvalidStoredState)?;
+            if current.get("stage").and_then(Value::as_str) != Some(stage.as_str()) {
+                *operation = current;
+                return Ok(false);
             }
-            Stage::Items | Stage::VerifyItems => {
-                let entries = response
-                    .get("data")
-                    .and_then(Value::as_array)
-                    .ok_or(Error::ProviderRejected)?;
-                if response
-                    .get("nextCursor")
-                    .is_some_and(|cursor| !cursor.is_null() && cursor != "")
-                {
-                    return Err(Error::ProviderRejected);
-                }
-                let mut input = Vec::new();
-                for entry in entries {
-                    if entry.get("turnId").and_then(Value::as_str)
+            let mut agent = read_agent(tx, required_str(operation, "agent")?)?;
+            if stage != Stage::Start {
+                validate_current(&agent, operation, stage)?;
+            }
+            match stage {
+                Stage::Turns | Stage::VerifyTurns => {
+                    let turns = response
+                        .get("data")
+                        .and_then(Value::as_array)
+                        .ok_or(Error::ProviderRejected)?;
+                    let latest = turns.first().ok_or(Error::Inactive)?;
+                    if latest.get("id").and_then(Value::as_str)
                         != operation.get("turnId").and_then(Value::as_str)
+                    {
+                        return Err(Error::Inactive);
+                    }
+                    if stage == Stage::VerifyTurns
+                        && latest.get("status").and_then(Value::as_str) != Some("interrupted")
                     {
                         return Err(Error::ProviderRejected);
                     }
-                    let item = entry.get("item").ok_or(Error::ProviderRejected)?;
-                    match item.get("type").and_then(Value::as_str) {
-                        Some("userMessage") => {
-                            if let Some(content) = item.get("content").and_then(Value::as_array) {
-                                input.extend(content.iter().cloned());
-                            }
-                        }
-                        Some("reasoning") => {}
-                        _ => return Err(Error::ProviderRejected),
+                    operation["stage"] = json!(if stage == Stage::Turns {
+                        "items"
+                    } else {
+                        "verify_items"
+                    });
+                }
+                Stage::Items | Stage::VerifyItems => {
+                    let entries = response
+                        .get("data")
+                        .and_then(Value::as_array)
+                        .ok_or(Error::ProviderRejected)?;
+                    if response
+                        .get("nextCursor")
+                        .is_some_and(|cursor| !cursor.is_null() && cursor != "")
+                    {
+                        return Err(Error::ProviderRejected);
                     }
+                    let mut input = Vec::new();
+                    for entry in entries {
+                        if entry.get("turnId").and_then(Value::as_str)
+                            != operation.get("turnId").and_then(Value::as_str)
+                        {
+                            return Err(Error::ProviderRejected);
+                        }
+                        let item = entry.get("item").ok_or(Error::ProviderRejected)?;
+                        match item.get("type").and_then(Value::as_str) {
+                            Some("userMessage") => {
+                                if let Some(content) = item.get("content").and_then(Value::as_array)
+                                {
+                                    input.extend(content.iter().cloned());
+                                }
+                            }
+                            Some("reasoning") => {}
+                            _ => return Err(Error::ProviderRejected),
+                        }
+                    }
+                    if input.is_empty() {
+                        return Err(Error::ProviderRejected);
+                    }
+                    operation["input"] = Value::Array(input);
+                    operation["stage"] = json!(if stage == Stage::Items {
+                        "interrupt"
+                    } else {
+                        "fork"
+                    });
                 }
-                if input.is_empty() {
-                    return Err(Error::ProviderRejected);
+                Stage::Interrupt => operation["stage"] = json!("verify_turns"),
+                Stage::Fork => {
+                    let thread = response
+                        .pointer("/thread/id")
+                        .and_then(Value::as_str)
+                        .filter(|id| !id.is_empty())
+                        .ok_or(Error::ProviderUnknown)?;
+                    if operation.get("threadId").and_then(Value::as_str) == Some(thread) {
+                        return Err(Error::ProviderUnknown);
+                    }
+                    operation["newThreadId"] = json!(thread);
+                    operation["stage"] = json!("start");
+                    agent["threadId"] = json!(thread);
+                    agent["model"] = operation
+                        .get("model")
+                        .cloned()
+                        .ok_or(Error::InvalidStoredState)?;
+                    agent["effort"] = json!("low");
+                    agent["nativeEffort"] = json!("low");
+                    agent["turnId"] = Value::Null;
+                    agent["inFlight"] = json!(false);
+                    agent["status"] = json!("starting");
+                    agent["nativeFailureHold"] = json!(false);
+                    agent["activeTools"] = json!([]);
+                    agent["error"] = Value::Null;
+                    agent
+                        .as_object_mut()
+                        .ok_or(Error::InvalidStoredState)?
+                        .remove("nativeSafetyBuffering");
+                    agent
+                        .as_object_mut()
+                        .ok_or(Error::InvalidStoredState)?
+                        .remove("startAttempt");
                 }
-                operation["input"] = Value::Array(input);
-                operation["stage"] = json!(if stage == Stage::Items {
-                    "interrupt"
-                } else {
-                    "fork"
-                });
-            }
-            Stage::Interrupt => operation["stage"] = json!("verify_turns"),
-            Stage::Fork => {
-                let thread = response
-                    .pointer("/thread/id")
-                    .and_then(Value::as_str)
-                    .filter(|id| !id.is_empty())
-                    .ok_or(Error::ProviderUnknown)?;
-                if operation.get("threadId").and_then(Value::as_str) == Some(thread) {
-                    return Err(Error::ProviderUnknown);
+                Stage::Start => {
+                    let accepted = response
+                        .pointer("/turn/id")
+                        .and_then(Value::as_str)
+                        .filter(|id| !id.is_empty())
+                        .ok_or(Error::ProviderUnknown)?;
+                    let request_id = operation
+                        .get("requestId")
+                        .cloned()
+                        .and_then(|value| serde_json::from_value::<RequestId>(value).ok())
+                        .ok_or(Error::InvalidStoredState)?;
+                    let request_id = request_id_string(&request_id);
+                    let generation = operation
+                        .get("requestGeneration")
+                        .and_then(Value::as_u64)
+                        .ok_or(Error::InvalidStoredState)?;
+                    let settled = SchedulerRepository::settle_safety_started_provider(
+                        tx,
+                        required_str(operation, "agent")?,
+                        operation
+                            .get("epoch")
+                            .and_then(Value::as_i64)
+                            .ok_or(Error::InvalidStoredState)?,
+                        required_str(operation, "attemptId")?,
+                        &request_id,
+                        required_str(operation, "accountKey")?,
+                        generation,
+                        required_str(operation, "newThreadId")?,
+                        accepted,
+                    )?;
+                    // The lifecycle owner may decline a stale acceptance or request an
+                    // interrupt after an intervening stop. Keep the durable start receipt
+                    // at this stage so recovery can reapply the same correlated decision.
+                    if settled.is_none() {
+                        return Ok(false);
+                    }
+                    if settled == Some(true) {
+                        let ports =
+                            lifecycle.ok_or(Error::Requires("account-worker/agent-interrupt"))?;
+                        let accepted_agent = read_agent(tx, required_str(operation, "agent")?)?;
+                        let mut before = accepted_agent.clone();
+                        before["epoch"] = operation
+                            .get("epoch")
+                            .cloned()
+                            .ok_or(Error::InvalidStoredState)?;
+                        before["status"] = json!("starting");
+                        before["autoWake"] = json!(true);
+                        before["inFlight"] = json!(true);
+                        before["turnId"] = json!(accepted);
+                        before["connectionGeneration"] = json!(generation);
+                        let effect = LifecycleEffect::new(
+                            LifecycleEffectKind::Interrupt,
+                            before,
+                            accepted_agent,
+                            unix_seconds(),
+                        );
+                        ports.stage(tx, &effect).map_err(lifecycle_error)?;
+                        committed_interrupt = true;
+                    }
+                    operation["stage"] = json!("running");
+                    operation["acceptedTurnId"] = json!(accepted);
+                    operation["error"] = Value::Null;
+                    agent = read_agent(tx, required_str(operation, "agent")?)?;
                 }
-                operation["newThreadId"] = json!(thread);
-                operation["stage"] = json!("start");
-                agent["threadId"] = json!(thread);
-                agent["model"] = operation
-                    .get("model")
-                    .cloned()
-                    .ok_or(Error::InvalidStoredState)?;
-                agent["effort"] = json!("low");
-                agent["nativeEffort"] = json!("low");
-                agent["turnId"] = Value::Null;
-                agent["inFlight"] = json!(false);
-                agent["status"] = json!("starting");
-                agent["nativeFailureHold"] = json!(false);
-                agent["activeTools"] = json!([]);
-                agent["error"] = Value::Null;
-                agent
-                    .as_object_mut()
-                    .ok_or(Error::InvalidStoredState)?
-                    .remove("nativeSafetyBuffering");
-                agent
-                    .as_object_mut()
-                    .ok_or(Error::InvalidStoredState)?
-                    .remove("startAttempt");
+                _ => return Err(Error::InvalidStoredState),
             }
-            Stage::Start => {
-                let accepted = response
-                    .pointer("/turn/id")
-                    .and_then(Value::as_str)
-                    .filter(|id| !id.is_empty())
-                    .ok_or(Error::ProviderUnknown)?;
-                operation["stage"] = json!("running");
-                operation["acceptedTurnId"] = json!(accepted);
-                operation["error"] = Value::Null;
-                agent["turnId"] = json!(accepted);
-                agent["inFlight"] = json!(true);
-                agent["turnEpoch"] = operation
-                    .get("epoch")
-                    .cloned()
-                    .ok_or(Error::InvalidStoredState)?;
-                agent["status"] = json!("running");
-                agent["nativeFailureHold"] = json!(false);
-                agent["error"] = Value::Null;
+            operation["dispatch"] = json!("ready");
+            operation["updated"] = json!(unix_seconds());
+            save_operation(tx, &mut agent, operation)?;
+            Ok(true)
+        })
+        .and_then(|advanced| {
+            if committed_interrupt {
+                lifecycle
+                    .ok_or(Error::Requires("account-worker/agent-interrupt"))?
+                    .committed()
+                    .map_err(lifecycle_error)?;
             }
-            _ => return Err(Error::InvalidStoredState),
-        }
-        operation["dispatch"] = json!("ready");
-        operation["updated"] = json!(unix_seconds());
-        save_operation(tx, &mut agent, operation)?;
-        Ok(true)
-    })
+            Ok(advanced)
+        })
 }
 
 fn validate_receipt(
@@ -679,6 +774,63 @@ fn validate_receipt(
         return Err(Error::StaleRetry);
     }
     Ok(())
+}
+
+fn settle_start_rejected(
+    store: &RuntimeStore,
+    operation: &mut Value,
+    ticket: Option<&studio_runtime_providers::RequestTicket>,
+    reason: &str,
+) -> Result<bool, Error> {
+    let id = required_str(operation, "id")?.to_owned();
+    let (current, settled) = store.transaction_with::<_, Error>(|tx| {
+        let mut current = read_retry(tx, &id)?.ok_or(Error::InvalidStoredState)?;
+        if current.get("stage").and_then(Value::as_str) != Some(Stage::Start.as_str()) {
+            return Ok((current, false));
+        }
+        let agent_id = required_str(&current, "agent")?.to_owned();
+        let epoch = current
+            .get("epoch")
+            .and_then(Value::as_i64)
+            .ok_or(Error::InvalidStoredState)?;
+        let attempt_id = required_str(&current, "attemptId")?.to_owned();
+        let account = required_str(&current, "accountKey")?.to_owned();
+        let thread = required_str(&current, "newThreadId")?.to_owned();
+        let request_id = ticket
+            .map(|ticket| request_id_string(&ticket.id))
+            .or_else(|| {
+                current
+                    .get("requestId")
+                    .cloned()
+                    .and_then(|value| serde_json::from_value::<RequestId>(value).ok())
+                    .map(|id| request_id_string(&id))
+            })
+            .ok_or(Error::InvalidStoredState)?;
+        let generation = ticket
+            .map(|ticket| ticket.generation)
+            .or_else(|| current.get("requestGeneration").and_then(Value::as_u64))
+            .ok_or(Error::InvalidStoredState)?;
+        SchedulerRepository::settle_safety_start_rejected_provider(
+            tx,
+            &agent_id,
+            epoch,
+            &attempt_id,
+            &request_id,
+            &account,
+            generation,
+            &thread,
+            reason,
+        )?;
+        current["stage"] = json!(Stage::Failed.as_str());
+        current["dispatch"] = json!("rejected");
+        current["error"] = json!(reason);
+        current["updated"] = json!(unix_seconds());
+        let mut agent = read_agent(tx, &agent_id)?;
+        save_operation(tx, &mut agent, &current)?;
+        Ok((current, true))
+    })?;
+    *operation = current;
+    Ok(settled)
 }
 
 fn persist_stage_receipt(
@@ -732,6 +884,13 @@ fn persist_stage_receipt(
                 current["requestId"] =
                     serde_json::to_value(&ticket.id).map_err(|_| Error::InvalidStoredState)?;
                 current["requestGeneration"] = json!(ticket.generation);
+                if stage == Stage::Start {
+                    if ticket.method != Method::TurnStart
+                        || ticket.generation != receipt.scope.generation
+                    {
+                        return Err(Error::StaleRetry);
+                    }
+                }
             }
             if let Some(ProviderResponse::Reply(value)) = receipt.result.as_ref() {
                 current
@@ -743,6 +902,21 @@ fn persist_stage_receipt(
             current["dispatch"] = json!("received");
             current["updated"] = json!(unix_seconds());
             let mut agent = read_agent(tx, required_str(&current, "agent")?)?;
+            if stage == Stage::Start {
+                if let Some(ticket) = receipt.ticket.as_ref() {
+                    let attempt = agent
+                        .get_mut("startAttempt")
+                        .and_then(Value::as_object_mut)
+                        .ok_or(Error::InvalidStoredState)?;
+                    if attempt.get("id").and_then(Value::as_str)
+                        != current.get("attemptId").and_then(Value::as_str)
+                    {
+                        return Err(Error::StaleRetry);
+                    }
+                    attempt.insert("requestTicket".into(), json!(request_id_string(&ticket.id)));
+                    attempt.insert("connectionGeneration".into(), json!(ticket.generation));
+                }
+            }
             save_operation(tx, &mut agent, &current)?;
         } else {
             tx.execute(
@@ -840,6 +1014,24 @@ fn persist_operation(store: &RuntimeStore, operation: &mut Value) -> Result<(), 
     })?;
     *operation = updated;
     Ok(())
+}
+
+fn request_id_string(id: &RequestId) -> String {
+    match id {
+        RequestId::String(value) => value.clone(),
+        RequestId::Number(value) => value.to_string(),
+    }
+}
+
+fn lifecycle_error(error: crate::agent_management::ManagementError) -> Error {
+    match error {
+        crate::agent_management::ManagementError::Unavailable(dependency) => {
+            Error::Requires(dependency)
+        }
+        crate::agent_management::ManagementError::Invalid(_)
+        | crate::agent_management::ManagementError::Stored { .. }
+        | crate::agent_management::ManagementError::Store(_) => Error::Persistence,
+    }
 }
 
 fn save_operation(tx: &Transaction<'_>, agent: &mut Value, operation: &Value) -> Result<(), Error> {
