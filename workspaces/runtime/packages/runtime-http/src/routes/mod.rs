@@ -98,14 +98,6 @@ fn generated_json<T: DeserializeOwned>(value: Value) -> Result<T, crate::error::
     serde_json::from_value::<T>(value).map_err(|_| crate::error::ApiError::internal())
 }
 
-fn generated_value<T: DeserializeOwned + serde::Serialize>(
-    value: Value,
-) -> Result<Value, crate::error::ApiError> {
-    serde_json::from_value::<T>(value)
-        .and_then(serde_json::to_value)
-        .map_err(|_| crate::error::ApiError::internal())
-}
-
 fn registered_route_groups() -> Vec<RegisteredRouteGroup> {
     let mut registered = inventory::iter::<manifest::RouteModuleRegistration>
         .into_iter()

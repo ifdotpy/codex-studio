@@ -142,7 +142,7 @@ fn callback_error(error: studio_runtime_services::provider_callbacks::CallbackEr
 async fn defer_question(
     State(state): State<HttpState>,
     ApiJson(body): ApiJson<crate::generated::QuestionDeferBody>,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<Json<crate::generated::MutationReceipt>, ApiError> {
     let id = body.id;
     let deferred = body.deferred;
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
@@ -153,13 +153,15 @@ async fn defer_question(
         })
     })
     .await?;
-    Ok(Json(generated_receipt(result)?))
+    Ok(Json(super::generated_json::<
+        crate::generated::MutationReceipt,
+    >(result)?))
 }
 
 async fn delete_question(
     State(state): State<HttpState>,
     ApiJson(body): ApiJson<crate::generated::QuestionBody>,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<Json<crate::generated::MutationReceipt>, ApiError> {
     let id = body.id;
     let runtime = state
         .callback_runtime
@@ -171,7 +173,9 @@ async fn delete_question(
             .map_err(|_| ApiError::internal())?
             .map_err(callback_error)?;
     state.event_wake.notify_one();
-    Ok(Json(generated_receipt(value)?))
+    Ok(Json(super::generated_json::<
+        crate::generated::MutationReceipt,
+    >(value)?))
 }
 
 async fn complaints(
@@ -256,10 +260,6 @@ async fn write(
     operation: impl FnOnce(&Transaction<'_>) -> Result<Value, QuestionsWriteError> + Send + 'static,
 ) -> Result<Value, ApiError> {
     super::sync_delta::write(store, operation, api_error).await
-}
-
-fn generated_receipt(value: Value) -> Result<Value, ApiError> {
-    super::generated_value::<crate::generated::MutationReceipt>(value)
 }
 
 fn api_error(error: QuestionsWriteError) -> ApiError {

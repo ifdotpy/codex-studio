@@ -250,7 +250,7 @@ async fn list_projects(
 async fn write_project(
     State(state): State<HttpState>,
     ApiJson(body): ApiJson<Value>,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<Json<ProjectWriteResponse>, ApiError> {
     if let Some(dependency) = projects::write_dependency(&body) {
         return Err(ApiError::new(
             StatusCode::NOT_IMPLEMENTED,
@@ -274,16 +274,27 @@ async fn write_project(
     let value = tokio::task::spawn_blocking(move || {
         let value = projects::write(&store, &body, &default, &known).map_err(projects_error)?;
         if is_remove {
-            super::generated_value::<crate::generated::ProjectRemovalResponse>(value)
+            super::generated_json::<crate::generated::ProjectRemovalResponse>(value)
+                .map(ProjectWriteResponse::Removal)
         } else if is_sidebar {
-            super::generated_value::<crate::generated::SidebarOrderResponse>(value)
+            super::generated_json::<crate::generated::SidebarOrderResponse>(value)
+                .map(ProjectWriteResponse::Sidebar)
         } else {
-            super::generated_value::<crate::generated::ProjectMutationRecord>(value)
+            super::generated_json::<crate::generated::ProjectMutationRecord>(value)
+                .map(ProjectWriteResponse::Mutation)
         }
     })
     .await
     .map_err(|_| ApiError::internal())??;
     Ok(Json(value))
+}
+
+#[derive(serde::Serialize)]
+#[serde(untagged)]
+enum ProjectWriteResponse {
+    Removal(crate::generated::ProjectRemovalResponse),
+    Sidebar(crate::generated::SidebarOrderResponse),
+    Mutation(crate::generated::ProjectMutationRecord),
 }
 
 async fn project_locations(
@@ -303,7 +314,7 @@ async fn project_locations(
 async fn peer_teams(
     State(state): State<HttpState>,
     ApiJson(body): ApiJson<Value>,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<Json<PeerTeamWriteResponse>, ApiError> {
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
     let account_policy = state
         .account_policy
@@ -339,18 +350,21 @@ async fn peer_teams(
         .await
         .map_err(|_| ApiError::internal())??;
         state.event_wake.notify_one();
-        return Ok(Json(value));
+        return Ok(Json(PeerTeamWriteResponse::Raw(value)));
     }
     let is_radio = body.get("action").and_then(Value::as_str) == Some("radio");
     let result = tokio::task::spawn_blocking(move || {
         let value = projects::peer_team_write(&store, &body, &default_account, &known)
             .map_err(projects_error)?;
         match body["action"].as_str() {
-            Some("radio") => super::generated_value::<crate::generated::PeerRadioResponse>(value),
+            Some("radio") => super::generated_json::<crate::generated::PeerRadioResponse>(value)
+                .map(PeerTeamWriteResponse::Radio),
             Some("convert") => {
-                super::generated_value::<crate::generated::PeerConversionResponse>(value)
+                super::generated_json::<crate::generated::PeerConversionResponse>(value)
+                    .map(PeerTeamWriteResponse::Conversion)
             }
-            _ => super::generated_value::<crate::generated::PeerProjectResponse>(value),
+            _ => super::generated_json::<crate::generated::PeerProjectResponse>(value)
+                .map(PeerTeamWriteResponse::Project),
         }
     })
     .await
@@ -359,6 +373,15 @@ async fn peer_teams(
         state.event_wake.notify_one();
     }
     Ok(Json(result))
+}
+
+#[derive(serde::Serialize)]
+#[serde(untagged)]
+enum PeerTeamWriteResponse {
+    Raw(Value),
+    Radio(crate::generated::PeerRadioResponse),
+    Conversion(crate::generated::PeerConversionResponse),
+    Project(crate::generated::PeerProjectResponse),
 }
 
 fn projects_error(error: ProjectsError) -> ApiError {

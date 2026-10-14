@@ -25,7 +25,10 @@ pub(crate) fn routes() -> RouteGroup {
         ),
     ])
 }
-async fn read(State(state): State<HttpState>, query: QueryParams) -> Result<Json<Value>, ApiError> {
+async fn read(
+    State(state): State<HttpState>,
+    query: QueryParams,
+) -> Result<Json<ToolRequestResponse>, ApiError> {
     let actor = query
         .typed_value("agent")
         .and_then(Value::as_str)
@@ -41,7 +44,7 @@ async fn read(State(state): State<HttpState>, query: QueryParams) -> Result<Json
 async fn cancel(
     State(state): State<HttpState>,
     ApiJson(body): ApiJson<crate::generated::ToolRequestCancelBody>,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<Json<ToolRequestResponse>, ApiError> {
     run(state, body.agent, Some(body.request_id), true).await
 }
 async fn run(
@@ -49,7 +52,7 @@ async fn run(
     actor: String,
     id: Option<String>,
     cancel: bool,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<Json<ToolRequestResponse>, ApiError> {
     let store = state.store.ok_or_else(ApiError::internal)?;
     let value = tokio::task::spawn_blocking(move || {
         let now = studio_runtime_services::event_write::unix_time()
@@ -63,13 +66,15 @@ async fn run(
             let value = tool_requests::execute(tx, &actor, action, now)?;
             let canonical = value["id"].as_str().unwrap_or("list").to_owned();
             let response = if cancel {
-                super::generated_value::<
+                super::generated_json::<
                     crate::generated::CancelToolRequestApiToolRequestsCancelPostResponse,
                 >(value)
+                .map(ToolRequestResponse::Cancel)
             } else {
-                super::generated_value::<crate::generated::ToolRequestsApiToolRequestsGetResponse>(
+                super::generated_json::<crate::generated::ToolRequestsApiToolRequestsGetResponse>(
                     value,
                 )
+                .map(ToolRequestResponse::ListOrGet)
             };
             response.map_err(|_| {
                 ToolRequestError::Store(studio_runtime_store::system_reads::invalid(
@@ -95,6 +100,13 @@ async fn run(
     .map_err(|_| ApiError::internal())?
     .map_err(error)?;
     Ok(Json(value))
+}
+
+#[derive(serde::Serialize)]
+#[serde(untagged)]
+enum ToolRequestResponse {
+    Cancel(crate::generated::CancelToolRequestApiToolRequestsCancelPostResponse),
+    ListOrGet(crate::generated::ToolRequestsApiToolRequestsGetResponse),
 }
 fn error(error: ToolRequestError) -> ApiError {
     match error {

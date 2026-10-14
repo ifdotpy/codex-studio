@@ -56,7 +56,7 @@ pub(crate) async fn list(
 async fn update(
     State(state): State<HttpState>,
     ApiJson(body): ApiJson<Value>,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<Json<RuleWriteResponse>, ApiError> {
     let action = string(&body, "action").unwrap_or("save");
     let now = now_seconds()?;
     if action == "save"
@@ -209,12 +209,21 @@ async fn update(
                 }
             };
             if result.get("deleted").is_some() {
-                super::generated_value::<crate::generated::DeletedRuleReceipt>(result)
+                super::generated_json::<crate::generated::DeletedRuleReceipt>(result)
+                    .map(RuleWriteResponse::Deleted)
             } else {
-                super::generated_value::<crate::generated::RuleRecordResponse>(result)
+                super::generated_json::<crate::generated::RuleRecordResponse>(result)
+                    .map(RuleWriteResponse::Record)
             }
         })?;
     Ok(Json(result))
+}
+
+#[derive(serde::Serialize)]
+#[serde(untagged)]
+enum RuleWriteResponse {
+    Deleted(crate::generated::DeletedRuleReceipt),
+    Record(crate::generated::RuleRecordResponse),
 }
 
 fn rules_error(error: RulesError) -> ApiError {

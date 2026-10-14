@@ -76,7 +76,7 @@ pub(crate) async fn protocol(
 pub(crate) async fn pull(
     query: QueryParams,
     State(state): State<HttpState>,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<Json<SyncPullResponseBody>, ApiError> {
     let scope = query
         .typed_value("scope")
         .and_then(Value::as_str)
@@ -203,11 +203,22 @@ pub(crate) async fn pull(
     .await
     .map_err(|_| ApiError::internal())??;
     let response = if result.get("reset").and_then(Value::as_bool) == Some(true) {
-        super::generated_value::<crate::generated::SyncPullResetResponse>(result)?
+        SyncPullResponseBody::Reset(super::generated_json::<
+            crate::generated::SyncPullResetResponse,
+        >(result)?)
     } else {
-        super::generated_value::<crate::generated::SyncPullResponse>(result)?
+        SyncPullResponseBody::Page(super::generated_json::<crate::generated::SyncPullResponse>(
+            result,
+        )?)
     };
     Ok(Json(response))
+}
+
+#[derive(serde::Serialize)]
+#[serde(untagged)]
+pub(crate) enum SyncPullResponseBody {
+    Reset(crate::generated::SyncPullResetResponse),
+    Page(crate::generated::SyncPullResponse),
 }
 
 #[derive(Debug, Deserialize)]

@@ -201,7 +201,7 @@ async fn action(
     path: MatchedPath,
     State(state): State<HttpState>,
     ApiJson(body): ApiJson<Value>,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<Json<TerminalActionResponse>, ApiError> {
     #[cfg(unix)]
     {
         require_reconciled_driver(&state).await?;
@@ -220,13 +220,13 @@ async fn action(
             .map_err(|_| ApiError::internal())?
             .map_err(terminal_body_error)?;
         if is_input {
-            Ok(Json(super::generated_value::<
-                crate::generated::TerminalInputResult,
-            >(result)?))
+            Ok(Json(TerminalActionResponse::Input(
+                super::generated_json::<crate::generated::TerminalInputResult>(result)?,
+            )))
         } else {
-            Ok(Json(super::generated_value::<
-                crate::generated::TerminalRecord,
-            >(result)?))
+            Ok(Json(TerminalActionResponse::Record(
+                super::generated_json::<crate::generated::TerminalRecord>(result)?,
+            )))
         }
     }
     #[cfg(not(unix))]
@@ -237,6 +237,13 @@ async fn action(
                 .unwrap_or_else(|_| ApiError::internal()),
         )
     }
+}
+
+#[derive(serde::Serialize)]
+#[serde(untagged)]
+enum TerminalActionResponse {
+    Input(crate::generated::TerminalInputResult),
+    Record(crate::generated::TerminalRecord),
 }
 
 fn checked_agent_cwd(
