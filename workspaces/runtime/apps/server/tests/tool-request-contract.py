@@ -210,6 +210,11 @@ class RequestContract(unittest.TestCase):
         self.assertEqual(self.runtime.tool_request(queued['id'])['outcome'], 'not_applied')
         self.assertEqual(self.runtime.tool_request(running['id'])['outcome'], 'unknown')
         self.assertEqual(self.runtime.tool_request(running['id'])['stage'], 'interrupted')
+        # 2026-10-14: a host_exec call of a surviving Claude chat waited for hours, because the
+        # interrupted receipt had no result for tool response recovery to send.
+        answer = json.loads(self.runtime.tool_request(running['id'])['result']['contentItems'][0]['text'])
+        self.assertEqual((answer['stage'], answer['outcome']), ('interrupted', 'unknown'))
+        self.assertIn('Nothing was repeated', answer['message'])
         self.assertEqual(self.runtime.tool_request(cached['id'])['outcome'], 'applied')
         self.assertFalse(self.runtime.begin_tool_request(running['id']))
 

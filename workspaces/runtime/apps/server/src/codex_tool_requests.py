@@ -130,6 +130,14 @@ def _cancel_result(record: "ToolRequestRecord", message: str) -> "JsonObject":
     })}]}
 
 
+def _interrupted_result(record: "ToolRequestRecord", message: str) -> "JsonObject":
+    """The answer for a native caller that still waits on a call that a restart interrupted."""
+    return {"success": False, "contentItems": [{"type": "inputText", "text": json.dumps({
+        "requestId": record["id"], "stage": "interrupted", "outcome": "unknown", "message": message
+        + ". Nothing was repeated. Check what the call did before you run it again.",
+    })}]}
+
+
 def _spawned_ids(result: "JsonObject") -> list[str]:
     ids: list[str] = []
     if not isinstance(result, dict):
@@ -258,6 +266,9 @@ class RequestMixin:
             else:
                 record["stage"] = "interrupted"
                 record["error"] = "Server restarted before the execution receipt"
+                # A surviving native caller still waits on this call; tool response recovery
+                # sends it this answer, and the outcome stays unknown.
+                record["result"] = _interrupted_result(record, record["error"])
             self.put(db, "tool_requests", record)
 
     @staticmethod
