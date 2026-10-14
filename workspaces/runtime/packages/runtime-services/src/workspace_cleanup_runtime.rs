@@ -197,7 +197,55 @@ pub fn cleanup_agent_workspace_with_ports(
             }
         }
     }
+    finalize_cleanup(store, agent_id, action)?;
     Ok(result(agent_id, action, workspace, worktree, false))
+}
+
+fn finalize_cleanup(
+    store: &RuntimeStore,
+    agent_id: &str,
+    action: CleanupAction,
+) -> Result<(), WorkspaceCleanupError> {
+    store.transaction_with_error(|tx| {
+        let mut agent = load_agent(tx, agent_id)?;
+        let intent = agent
+            .get(INTENT_FIELD)
+            .cloned()
+            .ok_or(WorkspaceCleanupError::InvalidRecord)?;
+        if intent.get("action") != Some(&serde_json::to_value(action).map_err(StoreError::from)?)
+            || !matches!(intent.get("phase").and_then(Value::as_str), Some("written"))
+        {
+            return Err(WorkspaceCleanupError::Held);
+        }
+        if let (Some(original), Some(current)) = (
+            intent.get("identity").and_then(Value::as_object),
+            Some(lifecycle_identity(&agent)),
+        ) {
+            for key in ["id", "epoch", "deletedAt", "archiveAt", "archiveEpoch"] {
+                if original.get(key) != current.get(key) {
+                    return Err(WorkspaceCleanupError::Held);
+                }
+            }
+        }
+        if action == CleanupAction::Archive
+            && agent
+                .pointer("/agentArchive/cleanupPending")
+                .and_then(Value::as_bool)
+                == Some(true)
+        {
+            agent["agentArchive"]["cleanupPending"] = json!(false);
+        }
+        agent
+            .as_object_mut()
+            .ok_or(WorkspaceCleanupError::InvalidRecord)?
+            .remove(INTENT_FIELD);
+        AgentRepository::put(
+            tx,
+            &AgentRecord::from_value(agent).map_err(StoreError::from)?,
+        )?;
+        Ok::<(), WorkspaceCleanupError>(())
+    })?;
+    Ok(())
 }
 
 /// Reconcile state left by a crash. Unfinished `pending` effects are changed
@@ -384,7 +432,8 @@ fn worktree_identity(agent: &Value) -> Result<Value, WorkspaceCleanupError> {
     }
     Ok(
         json!({"id":id,"cwd":cwd,"root":root,"repository":repo,"relative":relative,"head":head,
-        "branch":agent.get("branch"),"epoch":agent.get("epoch"),"deletedAt":agent.get("deletedAt"),
+        "branch":agent.get("branch"),"lifecycleIdentity":[agent.get("epoch"),agent.get("cwd"),agent.get("deletedAt")],
+        "epoch":agent.get("epoch"),"deletedAt":agent.get("deletedAt"),
         "archive":agent.get("agentArchive")}),
     )
 }
@@ -428,26 +477,35 @@ fn begin_effect(
             {
                 attempt = intent.get("attempt").and_then(Value::as_u64).unwrap_or(0) + 1;
             }
-            let request_id = uuid::Uuid::new_v5(
-                &uuid::Uuid::NAMESPACE_OID,
-                json!([agent_id, action, effect, attempt]).to_string().as_bytes(),
-            )
-            .to_string();
-            if intent.get("requestId").and_then(Value::as_str) == Some(&request_id)
-                && intent.get("phase").and_then(Value::as_str) == Some("written")
-                && intent.get("effect") == Some(&serde_json::to_value(effect).map_err(StoreError::from)?)
-            {
-                return Ok((request_id, Some(intent.get("receipt").cloned().unwrap_or(Value::Null))));
-            }
             let phase = intent.get("phase").and_then(Value::as_str);
             if intent.get("identity").is_some_and(|previous| *previous != identity) {
                 return Err(WorkspaceCleanupError::Held);
+            }
+            let same_effect = intent.get("action") == Some(&serde_json::to_value(action).map_err(StoreError::from)?)
+                && intent.get("effect") == Some(&serde_json::to_value(effect).map_err(StoreError::from)?);
+            if phase == Some("written") && same_effect {
+                let request_id = intent
+                    .get("requestId")
+                    .and_then(Value::as_str)
+                    .ok_or(WorkspaceCleanupError::InvalidRecord)?
+                    .to_owned();
+                return Ok((
+                    request_id,
+                    Some(intent.get("receipt").cloned().unwrap_or(Value::Null)),
+                ));
             }
             if phase == Some("queued") {
                 if intent.get("action") != Some(&serde_json::to_value(action).map_err(StoreError::from)?) {
                     return Err(WorkspaceCleanupError::Held);
                 }
-            } else if !matches!(phase, Some("written" | "not_sent")) {
+            } else if phase == Some("not_sent") {
+                if !same_effect {
+                    return Err(WorkspaceCleanupError::Held);
+                }
+                attempt = intent.get("attempt").and_then(Value::as_u64).unwrap_or(0) + 1;
+            } else if phase == Some("written") {
+                attempt = 0;
+            } else {
                 return Err(WorkspaceCleanupError::Held);
             }
         } else {
@@ -483,15 +541,36 @@ fn complete_effect(
     effect: &CleanupEffect,
     receipt: &Value,
 ) -> Result<(), WorkspaceCleanupError> {
-    store.transaction_with_error(|tx| {
+    let completed = store.transaction_with_error(|tx| {
         let mut agent = load_agent(tx, agent_id)?;
+        let intent_value = agent
+            .get(INTENT_FIELD)
+            .cloned()
+            .ok_or(WorkspaceCleanupError::InvalidRecord)?;
+        if intent_value.get("requestId").and_then(Value::as_str) != Some(request_id) {
+            return Ok::<bool, WorkspaceCleanupError>(false);
+        }
+        if intent_value.get("identity") != Some(&lifecycle_identity(&agent)) {
+            agent[INTENT_FIELD]["phase"] = json!("unknown");
+            AgentRepository::put(
+                tx,
+                &AgentRecord::from_value(agent).map_err(StoreError::from)?,
+            )?;
+            return Ok(false);
+        }
+        if !valid_receipt(effect, receipt) {
+            agent[INTENT_FIELD]["phase"] = json!("unknown");
+            agent[INTENT_FIELD]["receipt"] = receipt.clone();
+            AgentRepository::put(
+                tx,
+                &AgentRecord::from_value(agent).map_err(StoreError::from)?,
+            )?;
+            return Ok(false);
+        }
         let intent = agent
             .get_mut(INTENT_FIELD)
             .and_then(Value::as_object_mut)
             .ok_or(WorkspaceCleanupError::InvalidRecord)?;
-        if intent.get("requestId").and_then(Value::as_str) != Some(request_id) {
-            return Err(WorkspaceCleanupError::Held);
-        }
         intent.insert("phase".into(), json!("written"));
         intent.insert("receipt".into(), receipt.clone());
         apply_effect_result(&mut agent, effect, receipt)?;
@@ -499,9 +578,22 @@ fn complete_effect(
             tx,
             &AgentRecord::from_value(agent).map_err(StoreError::from)?,
         )?;
-        Ok::<(), WorkspaceCleanupError>(())
+        Ok(true)
     })?;
+    if !completed {
+        return Err(WorkspaceCleanupError::Held);
+    }
     Ok(())
+}
+
+fn valid_receipt(effect: &CleanupEffect, receipt: &Value) -> bool {
+    match effect {
+        CleanupEffect::SaveVmTurn { .. } => receipt
+            .get("stateId")
+            .and_then(Value::as_str)
+            .is_some_and(|state_id| !state_id.is_empty()),
+        _ => true,
+    }
 }
 
 fn finalize_effect(
@@ -513,10 +605,15 @@ fn finalize_effect(
 ) -> Result<(), WorkspaceCleanupError> {
     store.transaction_with_error(|tx| {
         let mut agent = load_agent(tx, agent_id)?;
+        let intent = agent
+            .get(INTENT_FIELD)
+            .cloned()
+            .ok_or(WorkspaceCleanupError::InvalidRecord)?;
         if agent
             .pointer(&format!("/{INTENT_FIELD}/requestId"))
             .and_then(Value::as_str)
             != Some(request_id)
+            || intent.get("identity") != Some(&lifecycle_identity(&agent))
         {
             return Err(WorkspaceCleanupError::Held);
         }
@@ -540,7 +637,6 @@ fn apply_effect_result(
             agent["imageWorkspaceReady"] = json!(false);
             agent["imageWorkspacePhase"] = json!("archived");
             agent["cleanedImageWorkspace"] = json!({"phase":"archived","freedBytes":receipt.get("freedBytes").cloned().unwrap_or(json!(0))});
-            agent["agentArchive"]["cleanupPending"] = json!(false);
         }
         CleanupEffect::RemoveImage => {
             agent["imageWorkspaceReady"] = json!(false);
@@ -548,13 +644,6 @@ fn apply_effect_result(
         }
         CleanupEffect::ReleaseVmLine { .. } => {
             agent["layrReady"] = json!(false);
-            if agent
-                .pointer("/agentArchive/cleanupPending")
-                .and_then(Value::as_bool)
-                == Some(true)
-            {
-                agent["agentArchive"]["cleanupPending"] = json!(false);
-            }
         }
         CleanupEffect::RemoveWorktree { identity } => {
             let repo = identity
@@ -577,12 +666,19 @@ fn apply_effect_result(
                 .to_string_lossy()
             );
             agent["worktreeReady"] = json!(false);
-            agent["cleanedWorktree"] = identity.clone();
+            agent["cleanedWorktree"] = json!({
+                "root": identity.get("root"),
+                "repo": identity.get("repository"),
+                "relative": identity.get("relative"),
+                "branch": identity.get("branch").and_then(Value::as_str),
+                "head": identity.get("head"),
+                "identity": identity.get("lifecycleIdentity"),
+                "bytes": receipt.get("bytes").cloned().unwrap_or(Value::Null)
+            });
             agent
                 .as_object_mut()
                 .ok_or(WorkspaceCleanupError::InvalidRecord)?
                 .remove("worktreeCleanup");
-            agent["agentArchive"]["cleanupPending"] = json!(false);
         }
         CleanupEffect::SaveWorktreeRef { .. } => {}
         CleanupEffect::SaveVmTurn { turn_id } => {
@@ -684,14 +780,17 @@ impl CleanupPorts for ProductionPorts {
                         Some(request_id),
                         GUEST_TIMEOUT,
                     )
-                    .map_err(|error| {
-                        if error.uncertain() {
-                            EffectFailure::Unknown
-                        } else {
-                            EffectFailure::NotSent
-                        }
+                    .map_err(|error| match error {
+                        crate::linux_vm_guest::GuestError::InvalidRequest
+                        | crate::linux_vm_guest::GuestError::Identity => EffectFailure::NotSent,
+                        _ => EffectFailure::Unknown,
                     })?;
-                Ok(json!({"stateId":value.get("stateId")}))
+                let state_id = value
+                    .get("stateId")
+                    .and_then(Value::as_str)
+                    .filter(|state_id| !state_id.is_empty())
+                    .ok_or(EffectFailure::Unknown)?;
+                Ok(json!({"stateId":state_id}))
             }
             CleanupEffect::ReleaseVmLine { method } => {
                 let client =
@@ -703,12 +802,10 @@ impl CleanupPorts for ProductionPorts {
                         Some(request_id),
                         GUEST_TIMEOUT,
                     )
-                    .map_err(|error| {
-                        if error.uncertain() {
-                            EffectFailure::Unknown
-                        } else {
-                            EffectFailure::NotSent
-                        }
+                    .map_err(|error| match error {
+                        crate::linux_vm_guest::GuestError::InvalidRequest
+                        | crate::linux_vm_guest::GuestError::Identity => EffectFailure::NotSent,
+                        _ => EffectFailure::Unknown,
                     })
             }
             CleanupEffect::SaveWorktreeRef { identity } => {
@@ -846,13 +943,24 @@ fn check_worktree(identity: &Value) -> Result<(PathBuf, PathBuf, String, String)
     if !belongs || entry.get("HEAD").copied() != Some(saved_head.as_str()) {
         return Err(());
     }
-    let branch = identity.get("branch").and_then(Value::as_str).ok_or(())?;
+    let branch = identity.get("branch").and_then(Value::as_str);
     if entry
         .get("branch")
         .and_then(|v| v.strip_prefix("refs/heads/"))
-        != Some(branch)
+        != branch
     {
         return Err(());
+    }
+    for field in listing
+        .split('\0')
+        .filter(|field| field.starts_with("worktree "))
+    {
+        let registered_path = PathBuf::from(field.trim_start_matches("worktree "));
+        if let Ok(registered_path) = registered_path.canonicalize() {
+            if registered_path != root && registered_path.starts_with(&root) {
+                return Err(());
+            }
+        }
     }
     let status = git_output(
         &root,
@@ -889,7 +997,17 @@ fn save_worktree_archive_ref(identity: &Value) -> Result<(), ()> {
     let mut commands = String::from("start\n");
     if !previous.is_empty() && previous != head {
         let history = format!("refs/codex-agents/archive-history/{id}/{previous}");
-        commands.push_str(&format!("create {history} {previous}\n"));
+        let existing = String::from_utf8(git_output(
+            &repo,
+            &["for-each-ref", "--format=%(objectname)", &history],
+            None,
+        )?)
+        .map_err(|_| ())?;
+        if existing.trim().is_empty() {
+            commands.push_str(&format!("create {history} {previous}\n"));
+        } else if existing.trim() != previous {
+            return Err(());
+        }
     }
     commands.push_str(&format!(
         "update {current} {head} {}\nprepare\ncommit\n",
@@ -1127,6 +1245,182 @@ mod tests {
     }
 
     #[test]
+    fn crash_with_pending_intent_becomes_unknown_after_reopen() {
+        struct CrashPort;
+        impl CleanupPorts for CrashPort {
+            fn perform(
+                &self,
+                _agent: &Value,
+                _effect: &CleanupEffect,
+                _request_id: &str,
+            ) -> Result<Value, EffectFailure> {
+                panic!("simulated response loss after the durable pending write");
+            }
+        }
+
+        let (directory, store) = fixture();
+        put_agent(
+            &store,
+            json!({"imageWorkspace":true,"imageWorkspaceReady":true,
+                "agentArchive":{"cleanupPending":true}}),
+        );
+        let crash = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = cleanup_agent_workspace_with_ports(
+                &store,
+                "cleanup-agent",
+                CleanupAction::Archive,
+                &CrashPort,
+            );
+        }));
+        assert!(crash.is_err(), "fake effect loses its response");
+        drop(store);
+        let store = RuntimeStore::open(Some(directory.path())).expect("state reopens");
+        let held = reconcile_pending_cleanup(&store).expect("pending effect reconciles");
+        assert_eq!(held.len(), 1);
+        assert!(held[0].held);
+        assert_eq!(
+            agent(&store).pointer("/workspaceCleanupIntent/phase"),
+            Some(&json!("unknown"))
+        );
+    }
+
+    #[test]
+    fn delete_removes_image_workspace_through_the_effect_port() {
+        let (_directory, store) = fixture();
+        put_agent(
+            &store,
+            json!({"imageWorkspace":true,"imageWorkspaceReady":true}),
+        );
+        let ports = FakePorts::new(vec![Ok(json!({"state":"removed","freedBytes":44}))]);
+        cleanup_agent_workspace_with_ports(&store, "cleanup-agent", CleanupAction::Delete, &ports)
+            .expect("delete removes image workspace");
+        assert!(matches!(
+            ports.calls.lock().expect("calls mutex")[0].0,
+            CleanupEffect::RemoveImage
+        ));
+        let saved = agent(&store);
+        assert_eq!(saved["imageWorkspacePhase"], "removed");
+        assert_eq!(saved["imageWorkspaceReady"], false);
+    }
+
+    #[test]
+    fn written_retry_replays_the_persisted_attempt_without_resending() {
+        let (_directory, store) = fixture();
+        put_agent(
+            &store,
+            json!({
+                "executionMode":"vm", "layrReady":true,
+                "agentArchive":{"cleanupPending":true}
+            }),
+        );
+        let action = CleanupAction::Archive;
+        let effect = CleanupEffect::ReleaseVmLine {
+            method: "line.remove".into(),
+        };
+        let request_id = uuid::Uuid::new_v5(
+            &uuid::Uuid::NAMESPACE_OID,
+            json!(["cleanup-agent", action, effect, 1_u64])
+                .to_string()
+                .as_bytes(),
+        )
+        .to_string();
+        let mut record = agent(&store);
+        record["workspaceCleanupIntent"] = json!({
+            "requestId":request_id,
+            "attempt":1,
+            "action":action,
+            "effect":effect,
+            "identity":super::lifecycle_identity(&record),
+            "phase":"written",
+            "receipt":{"state":"released"}
+        });
+        store
+            .transaction(|tx| {
+                AgentRepository::put(tx, &AgentRecord::from_value(record).expect("record parses"))
+            })
+            .expect("written effect stages");
+
+        let ports = FakePorts::new(vec![]);
+        cleanup_agent_workspace_with_ports(&store, "cleanup-agent", action, &ports)
+            .expect("written release replays from its receipt");
+        assert!(ports.calls.lock().expect("calls mutex").is_empty());
+        let saved = agent(&store);
+        assert_eq!(saved["agentArchive"]["cleanupPending"], false);
+        assert!(saved.get("workspaceCleanupIntent").is_none());
+    }
+
+    #[test]
+    fn late_receipt_after_lifecycle_change_is_held_without_applying_it() {
+        struct MutateLifecyclePort<'a>(&'a RuntimeStore);
+        impl CleanupPorts for MutateLifecyclePort<'_> {
+            fn perform(
+                &self,
+                _agent: &Value,
+                _effect: &CleanupEffect,
+                _request_id: &str,
+            ) -> Result<Value, EffectFailure> {
+                let mut changed = agent(self.0);
+                changed["epoch"] = json!(8);
+                self.0
+                    .transaction(|tx| {
+                        AgentRepository::put(
+                            tx,
+                            &AgentRecord::from_value(changed).expect("record parses"),
+                        )
+                    })
+                    .expect("new lifecycle commits");
+                Ok(json!({"state":"removed"}))
+            }
+        }
+
+        let (_directory, store) = fixture();
+        put_agent(
+            &store,
+            json!({"imageWorkspace":true,"imageWorkspaceReady":true}),
+        );
+        assert!(matches!(
+            cleanup_agent_workspace_with_ports(
+                &store,
+                "cleanup-agent",
+                CleanupAction::Delete,
+                &MutateLifecyclePort(&store)
+            ),
+            Err(WorkspaceCleanupError::Held)
+        ));
+        let saved = agent(&store);
+        assert_eq!(saved["epoch"], 8);
+        assert_eq!(saved["imageWorkspaceReady"], true);
+        assert_eq!(saved["workspaceCleanupIntent"]["phase"], "unknown");
+    }
+
+    #[test]
+    fn malformed_vm_save_receipt_holds_before_release() {
+        let (_directory, store) = fixture();
+        put_agent(
+            &store,
+            json!({
+                "executionMode":"vm", "layrReady":true,
+                "layrTurnSaves":{"turn-1":{"status":"pending"}},
+                "agentArchive":{"cleanupPending":true}
+            }),
+        );
+        let ports = FakePorts::new(vec![Ok(json!({"stateId":""}))]);
+        assert!(matches!(
+            cleanup_agent_workspace_with_ports(
+                &store,
+                "cleanup-agent",
+                CleanupAction::Archive,
+                &ports
+            ),
+            Err(WorkspaceCleanupError::Held)
+        ));
+        assert_eq!(ports.calls.lock().expect("calls mutex").len(), 1);
+        let saved = agent(&store);
+        assert_eq!(saved["layrReady"], true);
+        assert_eq!(saved["workspaceCleanupIntent"]["phase"], "unknown");
+    }
+
+    #[test]
     fn definite_not_sent_retry_uses_a_new_guest_request_identity() {
         let (_directory, store) = fixture();
         put_agent(
@@ -1188,6 +1482,20 @@ mod tests {
         std::fs::write(repository.join("README.md"), "fixture\n").expect("fixture file writes");
         git(&["add", "README.md"]);
         git(&["commit", "-q", "-m", "fixture"]);
+        let previous = git(&["rev-parse", "HEAD"]);
+        std::fs::write(repository.join("README.md"), "second fixture\n")
+            .expect("second fixture file writes");
+        git(&["commit", "-q", "-am", "second fixture"]);
+        git(&[
+            "update-ref",
+            "refs/codex-agents/archive/cleanup-agent",
+            &previous,
+        ]);
+        git(&[
+            "update-ref",
+            &format!("refs/codex-agents/archive-history/cleanup-agent/{previous}"),
+            &previous,
+        ]);
         git(&[
             "worktree",
             "add",
@@ -1214,9 +1522,127 @@ mod tests {
         let saved = agent(&store);
         assert_eq!(saved["worktreeReady"], false);
         assert_eq!(
+            saved["cleanedWorktree"]["repo"],
+            repository.to_string_lossy().to_string()
+        );
+        assert!(saved["cleanedWorktree"]["identity"].is_array());
+        assert_eq!(
             saved.pointer("/agentArchive/cleanupPending"),
             Some(&json!(false))
         );
+    }
+
+    #[test]
+    fn archive_allows_a_verified_detached_worktree() {
+        use std::process::Command;
+
+        let (directory, store) = fixture();
+        let repository = directory.path().join("detached-project");
+        let root = repository.join(".worktrees/codex-agents/cleanup-agent");
+        std::fs::create_dir_all(root.parent().expect("worktree parent creates"))
+            .expect("fixture parent creates");
+        let init = Command::new("git")
+            .args(["init", "-q"])
+            .arg(&repository)
+            .output()
+            .expect("fixture git init starts");
+        assert!(init.status.success(), "fixture repository initializes");
+        let git = |args: &[&str]| {
+            let output = Command::new("git")
+                .arg("-C")
+                .arg(&repository)
+                .args(args)
+                .output()
+                .expect("fixture Git starts");
+            assert!(output.status.success(), "fixture Git succeeds");
+            String::from_utf8_lossy(&output.stdout).trim().to_owned()
+        };
+        git(&["config", "user.name", "Cleanup Fixture"]);
+        git(&["config", "user.email", "cleanup@example.invalid"]);
+        std::fs::write(repository.join("README.md"), "fixture\n").expect("fixture file writes");
+        git(&["add", "README.md"]);
+        git(&["commit", "-q", "-m", "fixture"]);
+        git(&[
+            "worktree",
+            "add",
+            "-q",
+            "--detach",
+            root.to_str().expect("fixture path is UTF-8"),
+        ]);
+        put_agent(
+            &store,
+            json!({
+                "cwd":root, "branch":null, "worktreeReady":true,
+                "agentArchive":{"at":7,"epoch":7,"cleanupPending":true}
+            }),
+        );
+        super::cleanup_agent_workspace(&store, "cleanup-agent", CleanupAction::Archive)
+            .expect("detached worktree archives");
+        assert!(!root.exists(), "detached worktree is removed");
+        assert_eq!(agent(&store)["cleanedWorktree"]["branch"], Value::Null);
+    }
+
+    #[test]
+    fn archive_keeps_parent_when_a_registered_nested_worktree_exists() {
+        use std::process::Command;
+
+        let (directory, store) = fixture();
+        let repository = directory.path().join("nested-project");
+        let root = repository.join(".worktrees/codex-agents/cleanup-agent");
+        let nested = root.join(".worktrees/nested");
+        std::fs::create_dir_all(root.parent().expect("worktree parent creates"))
+            .expect("fixture parent creates");
+        let init = Command::new("git")
+            .args(["init", "-q"])
+            .arg(&repository)
+            .output()
+            .expect("fixture git init starts");
+        assert!(init.status.success(), "fixture repository initializes");
+        let git = |args: &[&str]| {
+            let output = Command::new("git")
+                .arg("-C")
+                .arg(&repository)
+                .args(args)
+                .output()
+                .expect("fixture Git starts");
+            assert!(output.status.success(), "fixture Git succeeds");
+            String::from_utf8_lossy(&output.stdout).trim().to_owned()
+        };
+        git(&["config", "user.name", "Cleanup Fixture"]);
+        git(&["config", "user.email", "cleanup@example.invalid"]);
+        std::fs::write(repository.join("README.md"), "fixture\n").expect("fixture file writes");
+        git(&["add", "README.md"]);
+        git(&["commit", "-q", "-m", "fixture"]);
+        git(&[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "cleanup-agent",
+            root.to_str().expect("fixture path is UTF-8"),
+        ]);
+        std::fs::write(repository.join(".git/info/exclude"), ".worktrees/\n")
+            .expect("nested worktree path ignored");
+        git(&[
+            "worktree",
+            "add",
+            "-q",
+            "--detach",
+            nested.to_str().expect("nested path is UTF-8"),
+        ]);
+        put_agent(
+            &store,
+            json!({
+                "cwd":root, "branch":"cleanup-agent", "worktreeReady":true,
+                "agentArchive":{"at":7,"epoch":7,"cleanupPending":true}
+            }),
+        );
+
+        let error = super::cleanup_agent_workspace(&store, "cleanup-agent", CleanupAction::Archive)
+            .expect_err("nested registration is unsafe to remove");
+        assert!(matches!(error, WorkspaceCleanupError::NotSent));
+        assert!(root.exists(), "parent worktree remains on disk");
+        assert!(nested.exists(), "nested worktree remains on disk");
     }
 
     #[test]
