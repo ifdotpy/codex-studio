@@ -7,7 +7,7 @@ use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use futures_util::StreamExt;
 use serde_json::{Value, json};
-use studio_runtime_store::{EntityRow, SyncDocumentsRepository};
+use studio_runtime_store::{EntityRow, SyncDocumentsRepository, Transaction};
 
 use crate::error::ApiError;
 use crate::router::HttpState;
@@ -168,7 +168,7 @@ fn should_sample(request: &Request<Body>) -> bool {
 }
 
 fn sample_entity_cursor(
-    connection: &studio_runtime_store::Connection,
+    connection: &Transaction<'_>,
 ) -> Result<i64, studio_runtime_store::StoreError> {
     Ok(SyncDocumentsRepository::entity_sequence(connection)?
         .max(SyncDocumentsRepository::entity_tombstone_floor(connection)?))
@@ -296,16 +296,17 @@ mod tests {
             .expect("hold writer lock");
         let before = data_version(&writer);
 
-        let reader = Connection::open_with_flags(&path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+        let mut reader = Connection::open_with_flags(&path, OpenFlags::SQLITE_OPEN_READ_ONLY)
             .expect("open read-only connection");
         reader
             .pragma_update(None, "query_only", "ON")
             .expect("set query-only mode");
+        let snapshot = reader.transaction().expect("begin read snapshot");
         assert_eq!(
-            sample_entity_cursor(&reader).expect("sample cursor with writer held"),
+            sample_entity_cursor(&snapshot).expect("sample cursor with writer held"),
             6
         );
-        let delta = read_entity_delta(&reader, 5).expect("read delta with writer held");
+        let delta = read_entity_delta(&snapshot, 5).expect("read delta with writer held");
         assert_eq!(delta.rows.len(), 1);
         assert_eq!(delta.rows[0].sequence, 6);
         assert_eq!(data_version(&writer), before);
@@ -333,17 +334,15 @@ mod tests {
         let directory = tempfile::tempdir().expect("temporary state directory");
         let path = directory.path().join("canvas.sqlite3");
         create_sync_database(&path);
-        let connection = Connection::open(&path).expect("open test database");
+        let mut connection = Connection::open(&path).expect("open test database");
         connection
             .execute(
                 "UPDATE sync_entity_meta SET value='12' WHERE key='entity_tombstone_floor'",
                 [],
             )
             .expect("raise tombstone floor");
-        assert_eq!(
-            sample_entity_cursor(&connection).expect("sample cursor"),
-            12
-        );
+        let snapshot = connection.transaction().expect("begin read snapshot");
+        assert_eq!(sample_entity_cursor(&snapshot).expect("sample cursor"), 12);
     }
 
     #[test]
