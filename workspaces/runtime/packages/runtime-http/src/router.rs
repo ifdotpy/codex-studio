@@ -56,6 +56,7 @@ pub struct HttpState {
     pub(crate) workspace_id: String,
     pub(crate) native_path: Option<String>,
     pub(crate) state_dir: String,
+    pub(crate) vm_state_dir: std::path::PathBuf,
     pub(crate) app_server_log: Option<OperationalLog>,
     pub(crate) port: u16,
     pub(crate) public_origin: Option<String>,
@@ -108,6 +109,8 @@ impl HttpState {
         store: Option<Arc<RuntimeStore>>,
         account_policy: Option<Arc<studio_runtime_services::account_policy::AccountPolicyState>>,
     ) -> Self {
+        let vm_state_dir =
+            studio_runtime_services::vault::linux_vm_state_dir(std::path::Path::new(&state_dir));
         let sync_changes = Arc::new(ChangeNotificationHub::new());
         let orchestration_driver = store.as_ref().map(|store| {
             Arc::new(studio_runtime_services::multi_server_orchestration::OrchestrationDriver::new(
@@ -157,6 +160,7 @@ impl HttpState {
             workspace_id,
             native_path,
             state_dir,
+            vm_state_dir,
             app_server_log: None,
             port,
             public_origin,
@@ -217,6 +221,12 @@ impl HttpState {
             python,
             server_source,
         ));
+        self
+    }
+
+    /// Override the VM data directory for an isolated runtime or test fixture.
+    pub fn with_vm_state_dir(mut self, path: std::path::PathBuf) -> Self {
+        self.vm_state_dir = path;
         self
     }
 

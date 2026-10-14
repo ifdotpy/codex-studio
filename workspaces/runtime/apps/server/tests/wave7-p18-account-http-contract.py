@@ -72,9 +72,9 @@ class AccountSessionHTTPContract(unittest.TestCase):
         updated = {**options,"customModels":[{"id":"fixture-model","label":"fixture-model"}],"launchArgs":"--verbose"}
         result = self.post("/api/claude/profiles",{"account_key":profile["id"],"options":updated,"label":"Updated fixture"})
         self.assertEqual(result.status,200,result.body)
+        catalog = self.backend.request("GET", "/api/models?account_key=" + profile["id"])
+        self.assertEqual(catalog.status,400,catalog.body)
         if os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"):
-            catalog = self.backend.request("GET", "/api/models?account_key=" + profile["id"])
-            self.assertEqual(catalog.status,400,catalog.body)
             self.assertTrue(catalog.json().get("catalogPending"),catalog.json())
         stored = json.loads(self.registry.read_text())
         self.assertEqual(stored["accounts"][profile["id"]]["claudeOptions"]["customModels"],[{"id":"fixture-model","label":"fixture-model"}])
