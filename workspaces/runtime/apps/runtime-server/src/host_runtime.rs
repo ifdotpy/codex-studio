@@ -243,27 +243,11 @@ impl HostRuntime {
         launcher: Arc<dyn AccountLauncher>,
         wake: Arc<tokio::sync::Notify>,
     ) -> Result<Self, WorkerError> {
-        Self::with_launcher_and_monitor_wake(
-            store,
-            launcher,
-            wake,
-            Arc::new(tokio::sync::Notify::new()),
-        )
-        .await
-    }
-
-    #[cfg(any(unix, test))]
-    pub async fn with_launcher_and_monitor_wake(
-        store: Arc<RuntimeStore>,
-        launcher: Arc<dyn AccountLauncher>,
-        wake: Arc<tokio::sync::Notify>,
-        monitor_dispatch_wake: Arc<tokio::sync::Notify>,
-    ) -> Result<Self, WorkerError> {
         Self::with_launcher_broker(
             store,
             launcher,
             wake,
-            monitor_dispatch_wake,
+            Arc::new(tokio::sync::Notify::new()),
             AccountSessionBroker::new(),
         )
         .await
@@ -536,7 +520,7 @@ async fn resolve_python(
 
 pub(crate) fn codex_launch(
     native_path: Option<&str>,
-    environment: BTreeMap<String, String>,
+    mut environment: BTreeMap<String, String>,
     home: String,
     isolated: bool,
     root: PathBuf,
@@ -780,6 +764,7 @@ fn selected_account(
     Ok((provider, home, false, Some(profile)))
 }
 
+#[cfg(test)]
 pub(crate) fn claude_launch(
     profile: serde_json::Value,
     bridge_dir: &Path,

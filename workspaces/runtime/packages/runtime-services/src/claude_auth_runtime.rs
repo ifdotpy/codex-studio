@@ -446,8 +446,9 @@ pub async fn account_read(
     let receipt = port
         .request(SessionRequest {
             scope: port.scope().clone(),
+            expected_scope: None,
             operation,
-            actor,
+            actor: Some(actor),
             method: Method::AccountRead,
             params: json!({}),
             deadline,

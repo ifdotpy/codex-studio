@@ -357,19 +357,10 @@ impl AccountRegistry {
         store: Arc<RuntimeStore>,
         launcher: Arc<dyn AccountLauncher>,
     ) -> Result<Self, WorkerError> {
-        Self::new_with_monitor_wake(store, launcher, Arc::new(Notify::new())).await
-    }
-
-    #[cfg(any(unix, test))]
-    pub async fn new_with_monitor_wake(
-        store: Arc<RuntimeStore>,
-        launcher: Arc<dyn AccountLauncher>,
-        monitor_dispatch_wake: Arc<Notify>,
-    ) -> Result<Self, WorkerError> {
         Self::new_with_broker(
             store,
             launcher,
-            monitor_dispatch_wake,
+            Arc::new(Notify::new()),
             AccountSessionBroker::new(),
         )
         .await
