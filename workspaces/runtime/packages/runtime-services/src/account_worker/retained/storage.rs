@@ -61,6 +61,7 @@ pub(super) fn authorize(tx: &rusqlite::Transaction<'_>, call: &Call) -> Result<b
                 .get("operationId")
                 .and_then(Value::as_str)
                 .is_some_and(|id| id.starts_with("monitor:") && id.len() > "monitor:".len()),
+            "account/read" => call.params == json!({"refreshToken": false}),
             _ => false,
         });
     };
