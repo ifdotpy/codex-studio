@@ -187,7 +187,7 @@ impl RuntimeStore {
             None => resolve_state_dir()?,
         };
         let runtime_lock = RuntimeLock::acquire(&root)?;
-        let fresh_state = fresh_state::prepare(&root)?;
+        fresh_state::prepare(&root)?;
         let local_server_id = local_server_id(&root)?;
 
         let canvas_path = root.join("canvas.sqlite3");
@@ -229,9 +229,7 @@ impl RuntimeStore {
         };
         store.transaction(|transaction| {
             bootstrap::prepare_sync_schema(transaction)?;
-            if !fresh_state {
-                feature_schema::prepare(transaction)?;
-            }
+            feature_schema::prepare(transaction)?;
             schema::verify_bootstrap(transaction)
         })?;
         let recovery_time = SystemTime::now()
