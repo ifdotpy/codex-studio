@@ -56,6 +56,9 @@ async fn stop(
         Action::Stop {
             target: body.id,
             descendants: body.descendants.unwrap_or(true),
+            reason: None,
+            sender: None,
+            sender_epoch: None,
         },
         ports.map(|Extension(ports)| ports),
     )

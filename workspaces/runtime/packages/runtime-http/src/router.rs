@@ -291,6 +291,12 @@ impl HttpState {
         self
     }
 
+    pub fn voice_request_port_handle(
+        &self,
+    ) -> Option<Arc<dyn studio_runtime_services::voice::runtime::VoiceRequestPort>> {
+        self.voice_request_port.clone()
+    }
+
     /// Attach the full selected native tool catalog for capabilities reads.
     pub fn with_tool_catalog(
         mut self,

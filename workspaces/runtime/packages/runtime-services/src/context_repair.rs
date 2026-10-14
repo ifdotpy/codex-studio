@@ -979,28 +979,44 @@ fn require_schema(tx: &Transaction<'_>, tables: &[&str]) -> Result<(), RepairErr
 
 /// Partial explicit repair operation: real no-op paths return their saved receipt.
 pub fn repair_idle(store: &RuntimeStore, id: &str) -> Result<Value, RepairError> {
-    let mut connection = store.read()?;
-    let db = connection.transaction().map_err(StoreError::from)?;
-    let agent = ContextRepairRepository::agent(&db, id)?.ok_or(RepairError::MissingAgent)?;
-    assert_available(&agent)?;
-    if agent["provider"] == "claude" || agent["threadId"].is_null() || agent["threadId"] == "" {
-        return Ok(
-            json!({"id": id, "repair": agent.get("contextRepair").cloned().unwrap_or(Value::Null)}),
-        );
-    }
-    require_schema(&db, &["runtime_event_meta"])?;
-    if !ContextRepairRepository::has_candidates(
-        &db,
-        id,
-        agent["epoch"]
-            .as_i64()
-            .ok_or(RepairError::Invalid("agent.epoch"))?,
-    )? {
-        return Ok(
-            json!({"id": id, "repair": agent.get("contextRepair").cloned().unwrap_or(Value::Null)}),
-        );
-    }
-    Err(RepairError::RewriteUnavailable)
+    store.transaction_with(|db| {
+        let mut agent = ContextRepairRepository::agent(db, id)?.ok_or(RepairError::MissingAgent)?;
+        assert_available(&agent)?;
+        if agent["environment"] == "linux"
+            && studio_runtime_store::truthy(agent.get("imageWorkspaceReady"))
+        {
+            const NOTE: &str = "Automatic context repair is skipped for Linux workers. The rollout stays in the guest. The next turn can proceed.";
+            if agent.get("contextRepairNote").and_then(Value::as_str) != Some(NOTE) {
+                agent["contextRepairNote"] = json!(NOTE);
+                ContextRepairRepository::put_agent(db, &agent)?;
+            }
+            return Ok(json!({
+                "id": id,
+                "repair": agent.get("contextRepair").cloned().unwrap_or(Value::Null)
+            }));
+        }
+        if agent["provider"] == "claude"
+            || agent["threadId"].is_null()
+            || agent["threadId"] == ""
+        {
+            return Ok(
+                json!({"id": id, "repair": agent.get("contextRepair").cloned().unwrap_or(Value::Null)}),
+            );
+        }
+        require_schema(db, &["runtime_event_meta"])?;
+        if !ContextRepairRepository::has_candidates(
+            db,
+            id,
+            agent["epoch"]
+                .as_i64()
+                .ok_or(RepairError::Invalid("agent.epoch"))?,
+        )? {
+            return Ok(
+                json!({"id": id, "repair": agent.get("contextRepair").cloned().unwrap_or(Value::Null)}),
+            );
+        }
+        Err(RepairError::RewriteUnavailable)
+    })
 }
 
 /// Reconcile and safely fork an idle Codex history after durable event writes.
@@ -1027,7 +1043,7 @@ pub fn repair_idle_with_broker(
     if let Err(error) = &result {
         // A failed read/copy before fork submission can be retried under a new
         // operation. Any submitted operation stays held as Unknown.
-        drop(store.transaction_with(|tx| {
+        let _settlement_result = store.transaction_with(|tx| {
             let Some(mut current) = ContextRepairRepository::agent(tx, id)? else {
                 return Ok::<(), RepairError>(());
             };
@@ -1049,7 +1065,7 @@ pub fn repair_idle_with_broker(
                 ContextRepairRepository::put_agent(tx, &current)?;
             }
             Ok(())
-        }));
+        });
     }
     result
 }
@@ -1166,15 +1182,15 @@ fn repair_idle_with_broker_inner(
         .map_err(|_| RepairError::AccountSession)?;
     let read = broker_read(
         broker,
-        &scope,
-        &actor,
         BrokerRead {
+            scope: &scope,
+            actor: &actor,
             operation: &operation_id,
             suffix: "thread-read",
             method: studio_runtime_providers::Method::ThreadRead,
             params: json!({"threadId":thread,"includeTurns":false}),
+            deadline,
         },
-        deadline,
     )?;
     let native = read.get("thread").unwrap_or(&read);
     if native["id"] != thread {
@@ -1198,15 +1214,15 @@ fn repair_idle_with_broker_inner(
     )?;
     let turns = broker_read(
         broker,
-        &scope,
-        &actor,
         BrokerRead {
+            scope: &scope,
+            actor: &actor,
             operation: &operation_id,
             suffix: "turns-latest",
             method: studio_runtime_providers::Method::ThreadTurnsList,
             params: json!({"threadId":thread,"limit":1,"sortDirection":"desc","itemsView":"notLoaded"}),
+            deadline,
         },
-        deadline,
     )?;
     let turn = turns["data"].as_array().and_then(|v| v.first());
     let inherited_empty = turn.is_none();
@@ -1256,15 +1272,15 @@ fn repair_idle_with_broker_inner(
     )?;
     let checked = broker_read(
         broker,
-        &scope,
-        &actor,
         BrokerRead {
+            scope: &scope,
+            actor: &actor,
             operation: &operation_id,
             suffix: "thread-read-check",
             method: studio_runtime_providers::Method::ThreadRead,
             params: json!({"threadId":thread,"includeTurns":false}),
+            deadline,
         },
-        deadline,
     )?;
     let checked_thread = checked.get("thread").unwrap_or(&checked);
     let checked_status = checked_thread["status"]["type"].as_str();
@@ -1280,15 +1296,15 @@ fn repair_idle_with_broker_inner(
     }
     let latest = broker_read(
         broker,
-        &scope,
-        &actor,
         BrokerRead {
+            scope: &scope,
+            actor: &actor,
             operation: &operation_id,
             suffix: "turns-latest-check",
             method: studio_runtime_providers::Method::ThreadTurnsList,
             params: json!({"threadId":thread,"limit":1,"sortDirection":"desc","itemsView":"notLoaded"}),
+            deadline,
         },
-        deadline,
     )?;
     let current_turn = latest["data"].as_array().and_then(|v| v.first());
     if match (turn, current_turn) {
@@ -1538,27 +1554,27 @@ impl RepairEventSummary for RepairSummary {
 }
 
 struct BrokerRead<'a> {
+    scope: &'a ConnectionScope,
+    actor: &'a crate::account_worker::retained::RequestActor,
     operation: &'a str,
     suffix: &'a str,
     method: studio_runtime_providers::Method,
     params: Value,
+    deadline: Instant,
 }
 
 fn broker_read(
     broker: &dyn AccountSessionPort,
-    scope: &ConnectionScope,
-    actor: &crate::account_worker::retained::RequestActor,
     request: BrokerRead<'_>,
-    deadline: Instant,
 ) -> Result<Value, RepairError> {
     broker_call(
         broker,
-        scope,
-        actor,
+        request.scope,
+        request.actor,
         &format!("context-repair:{}:{}", request.operation, request.suffix),
         request.method,
         request.params,
-        deadline,
+        request.deadline,
     )
 }
 fn broker_call(
@@ -1574,8 +1590,8 @@ fn broker_call(
         account: scope.account.clone(),
         operation: operation.to_owned(),
         actor: Some(actor.clone()),
-        deleted_actor_session: None,
         expected_scope: Some(scope.clone()),
+        deleted_actor_session: None,
         method,
         params,
         deadline,
@@ -1620,15 +1636,15 @@ fn assert_native_queues_empty(
         };
         let result = broker_read(
             broker,
-            scope,
-            actor,
             BrokerRead {
+                scope,
+                actor,
                 operation,
                 suffix,
                 method,
                 params: json!({"threadId":thread}),
+                deadline,
             },
-            deadline,
         )?;
         if result["data"]
             .as_array()
@@ -1663,15 +1679,15 @@ fn verify_native_items(
         }
         let page = broker_read(
             broker,
-            scope,
-            actor,
             BrokerRead {
+                scope,
+                actor,
                 operation,
                 suffix: &format!("items-{page_index}"),
                 method: studio_runtime_providers::Method::ThreadItemsList,
                 params,
+                deadline,
             },
-            deadline,
         )?;
         let data = page["data"].as_array().ok_or(RepairError::ReceiptHold)?;
         for entry in data {

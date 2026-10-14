@@ -21,6 +21,35 @@ pub fn execute(store: &RuntimeStore, action: &Action, now: f64) -> Result<Value,
     })
 }
 
+/// Archive a worker after its accepted result has been merged and verified on
+/// main by the work acceptance service. The caller owns that repository check;
+/// this function performs the shared authorized lifecycle transaction.
+pub fn archive_accepted_result(
+    store: &RuntimeStore,
+    actor: &str,
+    epoch: i64,
+    target: &str,
+    now: f64,
+) -> Result<Value, ManagementError> {
+    let result = execute(
+        store,
+        &Action::Archive {
+            actor: actor.to_owned(),
+            epoch,
+            target: target.to_owned(),
+            reason: "Accepted task result is on main".to_owned(),
+            unassign_work: false,
+        },
+        now,
+    )?;
+    crate::workspace_cleanup_runtime::reconcile_pending_cleanup(store).map_err(|_| {
+        studio_runtime_store::StoreError::RecordContract(
+            "Archive committed; workspace cleanup remains pending",
+        )
+    })?;
+    Ok(result)
+}
+
 pub fn execute_in_transaction(
     transaction: &Transaction<'_>,
     action: &Action,

@@ -10,6 +10,7 @@ use studio_runtime_services::agents_create::{
 use studio_runtime_services::host_worker_create::{
     AccountIdentity, CreationCatalog, ExecutionSettings,
 };
+use studio_runtime_services::model_catalog::ModelListPort;
 
 struct RouteCreationCatalog<'a> {
     service: &'a studio_runtime_services::model_catalog::ModelCatalogService,
@@ -136,24 +137,20 @@ impl CreationCatalog for RouteCreationCatalog<'_> {
 
 pub(crate) fn routes() -> RouteGroup {
     const LEAD_DEPENDENCIES: [Dependency; 6] = [
-        Dependency::new("account-driver/unavailable"),
         Dependency::new("cross-server-driver/local-identity"),
         Dependency::new("cross-server-driver/project-binding"),
-        Dependency::new("provider-session/model-list"),
         Dependency::new("project-driver/folder-selection"),
+        Dependency::new("worker-driver/settings-catalog"),
+        Dependency::new("workspace-state/image-workspace"),
         Dependency::new("workspace-state/vm-workspace"),
     ];
-    const RENAME_DEPENDENCIES: [Dependency; 1] =
-        [Dependency::new("provider-session/title-generation")];
     const AGENT_DEPENDENCIES: [Dependency; 3] = [
-        Dependency::new("account-driver/unavailable"),
-        Dependency::new("provider-session/model-list"),
+        Dependency::new("worker-driver/settings-catalog"),
+        Dependency::new("workspace-state/image-workspace"),
         Dependency::new("workspace-state/vm-workspace"),
     ];
-    const CONVERSATION_DEPENDENCIES: [Dependency; 2] = [
-        Dependency::new("account-driver/unavailable"),
-        Dependency::new("provider-session/model-list"),
-    ];
+    const CONVERSATION_DEPENDENCIES: [Dependency; 1] =
+        [Dependency::new("worker-driver/settings-catalog")];
     RouteGroup::new(vec![
         post(
             "/api/agents",
@@ -171,11 +168,7 @@ pub(crate) fn routes() -> RouteGroup {
             OperationStatus::partial(&LEAD_DEPENDENCIES),
             create_lead,
         ),
-        post(
-            "/api/rename",
-            OperationStatus::partial(&RENAME_DEPENDENCIES),
-            rename,
-        ),
+        post("/api/rename", OperationStatus::Implemented, rename),
     ])
 }
 
@@ -215,9 +208,9 @@ async fn create_lead(
 ) -> Result<Json<Value>, ApiError> {
     let request = Creation {
         intent: serde_json::to_value(&body).map_err(|_| ApiError::internal())?,
-        catalog: body.effort.as_ref().is_some_and(Option::is_some)
-            || body.fast_mode.as_ref().is_some_and(Option::is_some)
-            || body.daybreak_enabled.as_ref().is_some_and(Option::is_some)
+        catalog: body.effort.is_some()
+            || body.fast_mode.is_some()
+            || body.daybreak_enabled.is_some()
             || body.model.as_ref().is_some_and(Option::is_some),
         worker_catalog: body.worker_defaults.is_some() || body.review_defaults.is_some(),
         project_binding: body.project_id.flatten().is_some()
@@ -241,17 +234,12 @@ async fn create_agent(
     State(state): State<HttpState>,
     ApiJson(body): ApiJson<generated::CreateAgentRequest>,
 ) -> Result<Json<Value>, ApiError> {
-    if state.store.is_none() && state.account_driver.is_none() {
-        return Err(operation_error(OperationError::Unavailable(
-            "account-driver/unavailable",
-        )));
-    }
     let request = Creation {
         intent: serde_json::to_value(&body).map_err(|_| ApiError::internal())?,
-        catalog: body.model.as_ref().is_some_and(Option::is_some)
-            || body.effort.as_ref().is_some_and(Option::is_some)
-            || body.fast_mode.as_ref().is_some_and(Option::is_some)
-            || body.daybreak_enabled.as_ref().is_some_and(Option::is_some),
+        catalog: body.model.is_some()
+            || body.effort.is_some()
+            || body.fast_mode.is_some()
+            || body.daybreak_enabled.is_some(),
         worker_catalog: body.worker_defaults.is_some(),
         id: body.id.flatten(),
         cwd: body.cwd,
@@ -360,8 +348,8 @@ async fn rename(
     if name.is_none() {
         let Some(port) = state.title_request.clone() else {
             return Err(ApiError::new(
-                StatusCode::NOT_IMPLEMENTED,
-                "Not implemented: requires provider-session/title-generation",
+                StatusCode::SERVICE_UNAVAILABLE,
+                "Title generation is unavailable",
             ));
         };
         let request_id = body
@@ -394,51 +382,61 @@ async fn rename(
             .to_owned();
         let driver = state.account_driver.as_ref().ok_or_else(|| {
             ApiError::new(
-                StatusCode::NOT_IMPLEMENTED,
-                "Not implemented: requires account-driver/unavailable",
+                StatusCode::SERVICE_UNAVAILABLE,
+                "Account metadata is unavailable",
             )
         })?;
-        let account = driver
-            .snapshot()
-            .map_err(|_| ApiError::internal())?
+        let snapshot = driver.snapshot().map_err(|_| ApiError::internal())?;
+        let account = snapshot
             .accounts
-            .into_iter()
+            .iter()
             .find(|row| row.get("id").and_then(Value::as_str) == Some(&account_key))
+            .cloned()
             .ok_or_else(|| {
-                ApiError::new(
-                    StatusCode::NOT_IMPLEMENTED,
-                    "Not implemented: requires account-driver/unavailable",
-                )
+                ApiError::new(StatusCode::BAD_REQUEST, "Unknown account for managed agent")
             })?;
         let _home = account.get("home").and_then(Value::as_str).ok_or_else(|| {
             ApiError::new(
-                StatusCode::NOT_IMPLEMENTED,
-                "Not implemented: requires provider-session/model-list",
+                StatusCode::SERVICE_UNAVAILABLE,
+                "Provider account home is unavailable",
             )
         })?;
         let provider = account
             .get("provider")
             .and_then(Value::as_str)
             .unwrap_or("codex");
-        let model_list = state.model_catalog.model_list_port();
-        let catalog = match model_list
+        state
+            .model_catalog
+            .set_account_session(state.account_session.clone());
+        state.model_catalog.retain_accounts(&snapshot.accounts);
+        let catalog = state
+            .model_catalog
             .list(
                 &account_key,
                 provider,
-                serde_json::json!({
+                json!({
                     "limit": studio_runtime_schema::shared_values::MODEL_CATALOG_ITEMS_PER_PAGE
                 }),
             )
             .await
-        {
-            Ok(value) => value,
-            Err(_) => {
-                return Err(ApiError::new(
-                    StatusCode::NOT_IMPLEMENTED,
-                    "Not implemented: requires provider-session/model-list",
-                ));
-            }
-        };
+            .map_err(|error| match error {
+                studio_runtime_services::model_catalog::ModelListError::Pending => {
+                    ApiError::new(StatusCode::CONFLICT, "Model catalog is pending")
+                }
+                studio_runtime_services::model_catalog::ModelListError::UnknownAccount
+                | studio_runtime_services::model_catalog::ModelListError::ProviderMismatch => {
+                    ApiError::new(StatusCode::BAD_REQUEST, "Account model catalog changed")
+                }
+                studio_runtime_services::model_catalog::ModelListError::InvalidParams => {
+                    ApiError::internal()
+                }
+                studio_runtime_services::model_catalog::ModelListError::Unavailable => {
+                    ApiError::new(
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        "Provider model catalog is unavailable",
+                    )
+                }
+            })?;
         let deadline = std::time::SystemTime::now() + std::time::Duration::from_secs(30);
         let generated = studio_runtime_services::title_generation::generate(
             &store,
@@ -492,15 +490,26 @@ fn operation_error(error: OperationError) -> ApiError {
     ) {
         return ApiError::validation(vec![Value::String("body".to_owned())]);
     }
+    let implemented_but_unavailable = matches!(
+        &error,
+        OperationError::Create(
+            MutationError::CapabilityUnavailable(
+                "account-driver/unavailable"
+                    | "provider-session/model-list"
+                    | "provider-session/title-generation"
+            ) | MutationError::TitleGenerationUnavailable
+        )
+    );
+    if implemented_but_unavailable {
+        return ApiError::new(StatusCode::SERVICE_UNAVAILABLE, error.to_string());
+    }
     let status = match &error {
         OperationError::Unavailable(_)
-        | OperationError::PlatformRefusal(_)
         | OperationError::Create(MutationError::CapabilityUnavailable(_))
         | OperationError::Create(MutationError::TitleGenerationUnavailable) => {
             StatusCode::NOT_IMPLEMENTED
         }
         OperationError::Internal
-        | OperationError::Workspace(_)
         | OperationError::Store(_)
         | OperationError::Create(
             MutationError::Store(_) | MutationError::InvalidStoredObject { .. },
@@ -521,13 +530,11 @@ inventory::submit! {
         name: "agents_create",
         routes: Some(routes),
         dependencies: &[
-        "account-driver/unavailable",
         "cross-server-driver/local-identity",
         "cross-server-driver/project-binding",
         "project-driver/folder-selection",
-        "provider-session/model-list",
-        "provider-session/title-generation",
         "worker-driver/settings-catalog",
+        "workspace-state/image-workspace",
         "workspace-state/vm-workspace",
         ],
     }
