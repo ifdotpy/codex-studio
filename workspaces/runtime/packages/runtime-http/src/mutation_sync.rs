@@ -350,8 +350,10 @@ mod tests {
         let original = br#"{ "n" : 1e+03, "name":"kept" }"#;
         let changed = splice_envelope(original, &[], Some(7)).expect("splice envelope");
         let changed = std::str::from_utf8(&changed).expect("UTF-8 JSON");
-        assert!(changed.starts_with(r#"{ "n" : 1e+03, "name":"kept","_syncEntities":[]"#));
-        assert!(changed.ends_with(r#", "_syncEntitiesAfter":7 }"#));
+        assert_eq!(
+            changed,
+            r#"{ "n" : 1e+03, "name":"kept" ,"_syncEntities":[],"_syncEntitiesAfter":7 }"#
+        );
     }
 
     #[tokio::test]
