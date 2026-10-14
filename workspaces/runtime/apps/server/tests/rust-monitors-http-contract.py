@@ -441,7 +441,13 @@ class MonitorsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             self.assertEqual(response.status, 200, response.body[:1000])
             self.assertEqual(response.json(), {"id":"contract-monitor", "status":"completed"})
         response = self.backend.request("POST", "/api/monitor/input", headers=self.headers(), body={"id":"contract-monitor", "text":"x"})
-        self.assertEqual(response.status, 400, response.body[:1000])
+        expected_status = 501 if os.environ.get("STUDIO_HTTP_BACKEND_COMMAND") else 400
+        self.assertEqual(response.status, expected_status, response.body[:1000])
+        if expected_status == 501:
+            self.assertEqual(
+                response.json()["error"],
+                "Not implemented: requires monitor-input-request-identity",
+            )
         self.assertEqual(no_write_snapshot(self.backend.state), before)
 
     def test_pending_monitor_cancel_expires_approval_and_records_exit(self) -> None:

@@ -3,35 +3,6 @@
     {
       "closures": [
         {
-          "closes": "origin/feat/wave7-p01-runtime-composition",
-          "kind": "accepted_branch",
-          "owner": "P01"
-        },
-        {
-          "closes": "origin/feat/wave7-p14-sync-resources",
-          "kind": "accepted_branch",
-          "owner": "P14"
-        },
-        {
-          "closes": "origin/feat/wave7-p17-terminals",
-          "kind": "accepted_branch",
-          "owner": "P17"
-        }
-      ],
-      "dependency": "provider-session/app-server",
-      "operation_count": 6,
-      "operations": [
-        "GET /api/sync/stream",
-        "POST /api/terminals/close",
-        "POST /api/terminals/create",
-        "POST /api/terminals/input",
-        "POST /api/terminals/rename",
-        "POST /api/terminals/resize"
-      ]
-    },
-    {
-      "closures": [
-        {
           "closes": "NEW vault/runtime-service (out of scope)",
           "kind": "external_or_scope",
           "owner": "NEW vault/runtime-service (out of scope)"
@@ -166,6 +137,22 @@
           "owner": "R1"
         }
       ],
+      "dependency": "multi-server-runtime/orchestration",
+      "operation_count": 3,
+      "operations": [
+        "POST /api/browser/forward",
+        "POST /api/multi-server",
+        "POST /api/servers/orchestration"
+      ]
+    },
+    {
+      "closures": [
+        {
+          "closes": "R1",
+          "kind": "external_or_scope",
+          "owner": "R1"
+        }
+      ],
       "dependency": "remote-transport/owner-lookup",
       "operation_count": 3,
       "operations": [
@@ -269,6 +256,18 @@
           "owner": "P10"
         }
       ],
+      "dependency": "account-worker/deleted-settlement",
+      "operation_count": 2,
+      "operations": ["POST /api/conversation/delete", "POST /api/stop"]
+    },
+    {
+      "closures": [
+        {
+          "closes": "origin/feat/wave7-p10-stop-delete",
+          "kind": "accepted_branch",
+          "owner": "P10"
+        }
+      ],
       "dependency": "agent-management/snapshot-limit",
       "operation_count": 2,
       "operations": ["POST /api/conversation/delete", "POST /api/stop"]
@@ -339,29 +338,14 @@
           "owner": "P10"
         },
         {
-          "closes": "Wave 7 P15 Monitors/rules",
-          "kind": "open_task",
+          "closes": "origin/feat/wave7-p15-monitors-rules",
+          "kind": "accepted_branch",
           "owner": "P15"
         }
       ],
       "dependency": "monitor-driver/agent-stop",
       "operation_count": 2,
       "operations": ["POST /api/conversation/delete", "POST /api/stop"]
-    },
-    {
-      "closures": [
-        {
-          "closes": "R1",
-          "kind": "external_or_scope",
-          "owner": "R1"
-        }
-      ],
-      "dependency": "multi-server-runtime/orchestration",
-      "operation_count": 2,
-      "operations": [
-        "POST /api/multi-server",
-        "POST /api/servers/orchestration"
-      ]
     },
     {
       "closures": [
@@ -451,8 +435,8 @@
     {
       "closures": [
         {
-          "closes": "Wave 7 P15 Monitors/rules",
-          "kind": "open_task",
+          "closes": "origin/feat/wave7-p15-monitors-rules",
+          "kind": "accepted_branch",
           "owner": "P15"
         }
       ],
@@ -570,8 +554,8 @@
           "owner": "P10"
         },
         {
-          "closes": "Wave 7 P16 Work board",
-          "kind": "open_task",
+          "closes": "origin/feat/wave7-p16-work-assignment",
+          "kind": "accepted_branch",
           "owner": "P16"
         }
       ],
@@ -737,23 +721,6 @@
       "dependency": "agent-management/empty-chat-reuse",
       "operation_count": 1,
       "operations": ["POST /api/leads"]
-    },
-    {
-      "closures": [
-        {
-          "closes": "origin/feat/wave7-p03-message-ingress",
-          "kind": "accepted_branch",
-          "owner": "P03"
-        },
-        {
-          "closes": "origin/feat/wave7-p09-budget-runtime",
-          "kind": "accepted_branch",
-          "owner": "P09"
-        }
-      ],
-      "dependency": "budget-policy/message-admission",
-      "operation_count": 1,
-      "operations": ["POST /api/messages"]
     },
     {
       "closures": [
@@ -966,8 +933,20 @@
     {
       "closures": [
         {
-          "closes": "Wave 7 P15 Monitors/rules",
-          "kind": "open_task",
+          "closes": "origin/feat/wave7-p19-projects-radio",
+          "kind": "accepted_branch",
+          "owner": "P19"
+        }
+      ],
+      "dependency": "host-project/radio-create",
+      "operation_count": 1,
+      "operations": ["POST /api/peer-teams"]
+    },
+    {
+      "closures": [
+        {
+          "closes": "origin/feat/wave7-p15-monitors-rules",
+          "kind": "accepted_branch",
           "owner": "P15"
         }
       ],
@@ -1063,6 +1042,28 @@
       "dependency": "provider-session/account-rate-limits",
       "operation_count": 1,
       "operations": ["GET /api/limits"]
+    },
+    {
+      "closures": [
+        {
+          "closes": "origin/feat/wave7-p01-runtime-composition",
+          "kind": "accepted_branch",
+          "owner": "P01"
+        },
+        {
+          "closes": "origin/feat/wave7-p14-sync-resources",
+          "kind": "accepted_branch",
+          "owner": "P14"
+        },
+        {
+          "closes": "origin/feat/wave7-p17-terminals",
+          "kind": "accepted_branch",
+          "owner": "P17"
+        }
+      ],
+      "dependency": "provider-session/app-server",
+      "operation_count": 1,
+      "operations": ["GET /api/sync/stream"]
     },
     {
       "closures": [
@@ -1176,31 +1177,14 @@
           "owner": "P04"
         },
         {
-          "closes": "Wave 7 P15 Monitors/rules",
-          "kind": "open_task",
+          "closes": "origin/feat/wave7-p15-monitors-rules",
+          "kind": "accepted_branch",
           "owner": "P15"
         }
       ],
       "dependency": "question-answer/monitor-approval",
       "operation_count": 1,
       "operations": ["POST /api/answer"]
-    },
-    {
-      "closures": [
-        {
-          "closes": "origin/feat/wave7-p17-terminals",
-          "kind": "accepted_branch",
-          "owner": "P17"
-        },
-        {
-          "closes": "R1",
-          "kind": "external_or_scope",
-          "owner": "R1"
-        }
-      ],
-      "dependency": "remote-transport/browser-forward",
-      "operation_count": 1,
-      "operations": ["POST /api/browser/forward"]
     },
     {
       "closures": [
@@ -1225,18 +1209,6 @@
       "dependency": "remote-transport/tailscale-identity",
       "operation_count": 1,
       "operations": ["POST /api/federation"]
-    },
-    {
-      "closures": [
-        {
-          "closes": "Wave 7 P15 Monitors/rules",
-          "kind": "open_task",
-          "owner": "P15"
-        }
-      ],
-      "dependency": "rule-driver/monitor-finish",
-      "operation_count": 1,
-      "operations": ["POST /api/monitor/cancel"]
     },
     {
       "closures": [
@@ -1530,8 +1502,8 @@
     {
       "closures": [
         {
-          "closes": "Wave 7 P16 Work board",
-          "kind": "open_task",
+          "closes": "origin/feat/wave7-p16-work-assignment",
+          "kind": "accepted_branch",
           "owner": "P16"
         },
         {
@@ -1571,18 +1543,6 @@
     {
       "closures": [
         {
-          "closes": "Wave 7 P16 Work board",
-          "kind": "open_task",
-          "owner": "P16"
-        }
-      ],
-      "dependency": "workspace-state/organization-effects",
-      "operation_count": 1,
-      "operations": ["POST /api/organization"]
-    },
-    {
-      "closures": [
-        {
           "closes": "origin/feat/wave7-p19-projects-radio",
           "kind": "accepted_branch",
           "owner": "P19"
@@ -1606,10 +1566,10 @@
     }
   ],
   "counts": {
-    "implemented": 71,
-    "named_dependencies": 112,
-    "not_registered": 13,
-    "partial": 76,
+    "implemented": 77,
+    "named_dependencies": 110,
+    "not_registered": 12,
+    "partial": 71,
     "total": 160
   },
   "lifecycle_dependencies": {
@@ -2093,9 +2053,9 @@
       "status": "partial"
     },
     {
-      "dependencies": ["remote-transport/browser-forward"],
+      "dependencies": ["multi-server-runtime/orchestration"],
       "operation": "POST /api/browser/forward",
-      "status": "not_registered"
+      "status": "partial"
     },
     {
       "dependencies": [
@@ -2172,6 +2132,7 @@
     {
       "dependencies": [
         "account-worker/agent-interrupt",
+        "account-worker/deleted-settlement",
         "agent-management/snapshot-limit",
         "cross-server/agent-management",
         "event-driver/child-stop-notification",
@@ -2254,7 +2215,6 @@
     },
     {
       "dependencies": [
-        "budget-policy/message-admission",
         "capacity-retry/store",
         "cross-server/remote-events",
         "federation-driver/rooms",
@@ -2267,8 +2227,7 @@
     {
       "dependencies": [
         "cross-server/remote-events",
-        "provider-session/monitor-commands",
-        "rule-driver/monitor-finish"
+        "provider-session/monitor-commands"
       ],
       "operation": "POST /api/monitor/cancel",
       "status": "partial"
@@ -2313,9 +2272,9 @@
       "status": "partial"
     },
     {
-      "dependencies": ["workspace-state/organization-effects"],
+      "dependencies": [],
       "operation": "POST /api/organization",
-      "status": "partial"
+      "status": "implemented"
     },
     {
       "dependencies": [],
@@ -2325,6 +2284,7 @@
     {
       "dependencies": [
         "cross-server-driver/peer-team-transport",
+        "host-project/radio-create",
         "workspace-state/peer-radio"
       ],
       "operation": "POST /api/peer-teams",
@@ -2406,6 +2366,7 @@
     {
       "dependencies": [
         "account-worker/agent-interrupt",
+        "account-worker/deleted-settlement",
         "agent-management/snapshot-limit",
         "cross-server/agent-management",
         "event-driver/child-stop-notification",
@@ -2434,29 +2395,29 @@
       "status": "implemented"
     },
     {
-      "dependencies": ["provider-session/app-server"],
+      "dependencies": [],
       "operation": "POST /api/terminals/close",
-      "status": "partial"
+      "status": "implemented"
     },
     {
-      "dependencies": ["provider-session/app-server"],
+      "dependencies": [],
       "operation": "POST /api/terminals/create",
-      "status": "partial"
+      "status": "implemented"
     },
     {
-      "dependencies": ["provider-session/app-server"],
+      "dependencies": [],
       "operation": "POST /api/terminals/input",
-      "status": "partial"
+      "status": "implemented"
     },
     {
-      "dependencies": ["provider-session/app-server"],
+      "dependencies": [],
       "operation": "POST /api/terminals/rename",
-      "status": "partial"
+      "status": "implemented"
     },
     {
-      "dependencies": ["provider-session/app-server"],
+      "dependencies": [],
       "operation": "POST /api/terminals/resize",
-      "status": "partial"
+      "status": "implemented"
     },
     {
       "dependencies": [

@@ -44,6 +44,8 @@ ACCEPTED_BRANCHES = {
     "P11": "origin/feat/wave7-p11-native-actions",
     "P13": "origin/feat/wave7-p13-transcript-delivery",
     "P14": "origin/feat/wave7-p14-sync-resources",
+    "P15": "origin/feat/wave7-p15-monitors-rules",
+    "P16": "origin/feat/wave7-p16-work-assignment",
     "P17": "origin/feat/wave7-p17-terminals",
     "P18": "origin/feat/wave7-p18-account-catalog",
     "P19": "origin/feat/wave7-p19-projects-radio",
@@ -52,8 +54,6 @@ OPEN_TASKS = {
     "P02": "Wave 7 P02 Host creation/configuration",
     "P05": "Wave 7 P05 Managed host tools",
     "P12": "Wave 7 P12 Completion/continuations",
-    "P15": "Wave 7 P15 Monitors/rules",
-    "P16": "Wave 7 P16 Work board",
     "direct provider launch": "Direct provider launch runtime composition",
 }
 
@@ -64,6 +64,7 @@ EXACT_OWNERS: dict[str, list[str]] = {
     "account-driver/unavailable": ["P01", "P02", "P18"],
     "account-driver/reset-credit-redemption": ["R3"],
     "account-worker/agent-interrupt": ["P10"],
+    "account-worker/deleted-settlement": ["P10"],
     "account-worker/native-action": ["P11"],
     "account-worker/recovery-history": ["P07"],
     "account-worker/voice-session": ["R2"],
@@ -90,6 +91,7 @@ EXACT_OWNERS: dict[str, list[str]] = {
     "cross-server-driver/project-location-read": ["P19", "R1"],
     "cross-server-driver/project-location-write": ["P19", "R1"],
     "cross-server-driver/project-registration": ["P19"],
+    "host-project/radio-create": ["P19"],
     "event-driver/child-stop-notification": ["P06", "P10"],
     "event-driver/message-receipts": ["P03", "P06", "P13"],
     "event-driver/queue-mutations": ["P12"],
@@ -366,9 +368,9 @@ class RouteCensusContract(unittest.TestCase):
         expected = json.loads(CORPUS.read_text(encoding="utf-8"))
         self.assertEqual(actual, expected)
         self.assertEqual(actual["counts"]["total"], 160)
-        self.assertEqual(actual["counts"]["implemented"], 71)
-        self.assertEqual(actual["counts"]["partial"], 76)
-        self.assertEqual(actual["counts"]["not_registered"], 13)
+        self.assertEqual(actual["counts"]["implemented"], 77)
+        self.assertEqual(actual["counts"]["partial"], 71)
+        self.assertEqual(actual["counts"]["not_registered"], 12)
 
     def test_every_partial_and_unregistered_route_has_a_named_closure(self) -> None:
         census = json.loads(CORPUS.read_text(encoding="utf-8"))

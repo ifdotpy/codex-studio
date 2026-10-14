@@ -15,7 +15,7 @@ use studio_runtime_services::{
     agent_management::Action,
     monitor_driver,
     monitor_lifecycle::MonitorLifecyclePorts,
-    monitor_policy::Input,
+    monitor_policy::{Effect, Input},
     monitor_receipts::{self, ResultReceipt},
     monitor_runtime_wiring::{Delivery, MonitorEvent, MonitorRuntime},
 };
@@ -271,10 +271,8 @@ fn lifecycle_cancel_intent_survives_crash_before_committed_and_dispatches_after_
     let path = store.root().to_owned();
     drop(store);
     let store = Arc::new(RuntimeStore::open(Some(&path)).expect("restart store"));
-    assert_eq!(
-        monitor_driver::pending_cancel_ids(&store, 2000.0).expect("pending IDs"),
-        [id]
-    );
+    let pending = monitor_driver::pending_cancel_ids(&store, 2000.0).expect("pending IDs");
+    assert_eq!(pending.as_slice(), std::slice::from_ref(&id));
 
     let port = Arc::new(Port::default());
     runtime(&store, &port)
@@ -282,7 +280,11 @@ fn lifecycle_cancel_intent_survives_crash_before_committed_and_dispatches_after_
         .expect("restart tick dispatches committed cancellation");
     assert_eq!(
         *port.submitted.lock().expect("submissions"),
-        [studio_runtime_services::monitor_policy::Effect::Terminate]
+        [Effect::Native {
+            identity: format!("monitor-cancel:{id}"),
+            method: "command/exec/terminate",
+            params: json!({"processId": id}),
+        }]
     );
 }
 
