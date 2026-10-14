@@ -136,9 +136,9 @@ pub fn maintain_entity_projections(
     maintain_event_window(transaction, &validate_projection)?;
     maintain_canvas_chat_entities(transaction, &validate_projection)?;
 
-    // Python creates a workspace projection on first seed even though its
-    // value is mostly defaults. Preserve an existing workspace view and add
-    // only the stable persisted-state defaults available to this service.
+    // Python refreshes workspace/current after entity mutations only when a
+    // workspace projection already exists. Initial creation belongs to seed
+    // and explicit workspace publishers, not unrelated lifecycle mutations.
     let prior = transaction
         .query_row(
             "SELECT payload FROM sync_entities WHERE collection='workspace' AND id='current' AND deleted=0",
@@ -146,26 +146,27 @@ pub fn maintain_entity_projections(
             |row| row.get::<_, Option<String>>(0),
         )
         .optional()?;
-    let mut workspace = prior
-        .and_then(|payload| payload)
-        .and_then(|payload| serde_json::from_str::<Value>(&payload).ok())
-        .and_then(|payload| payload.get("value").and_then(Value::as_object).cloned())
-        .unwrap_or_default();
-    workspace.insert("stateDir".to_owned(), Value::String(state_dir.to_owned()));
-    workspace.entry("connected").or_insert(Value::Bool(false));
-    workspace
-        .entry("projectOrganizationVersion")
-        .or_insert(json!(1));
-    workspace.entry("peerTeamsVersion").or_insert(json!(1));
-    workspace.entry("tasksHistoryLimit").or_insert(json!(100));
-    put_projection(
-        transaction,
-        "workspace",
-        "current",
-        Value::Object(workspace),
-        false,
-        &validate_projection,
-    )?;
+    if let Some(Ok(payload)) = prior
+        .flatten()
+        .map(|payload| serde_json::from_str::<Value>(&payload))
+        && let Some(mut workspace) = payload.get("value").and_then(Value::as_object).cloned()
+    {
+        workspace.insert("stateDir".to_owned(), Value::String(state_dir.to_owned()));
+        workspace.entry("connected").or_insert(Value::Bool(false));
+        workspace
+            .entry("projectOrganizationVersion")
+            .or_insert(json!(1));
+        workspace.entry("peerTeamsVersion").or_insert(json!(1));
+        workspace.entry("tasksHistoryLimit").or_insert(json!(100));
+        put_projection(
+            transaction,
+            "workspace",
+            "current",
+            Value::Object(workspace),
+            false,
+            &validate_projection,
+        )?;
+    }
     Ok(())
 }
 
