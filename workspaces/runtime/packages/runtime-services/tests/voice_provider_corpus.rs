@@ -683,6 +683,7 @@ async fn account_session_voice_approval_uses_the_shared_callback_lane() {
                 |row| row.get(0),
             )?;
             let mut actor: serde_json::Value = serde_json::from_str(&raw)?;
+            actor["status"] = json!("approval");
             actor["autoWake"] = json!(true);
             actor["turnId"] = json!("turn");
             actor["turnEpoch"] = json!(0);
