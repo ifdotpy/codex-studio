@@ -217,7 +217,7 @@ impl TerminalsRepository {
         end: i64,
         limit: i64,
     ) -> StoreResult<Vec<(i64, i64, String)>> {
-        let mut statement = connection.prepare(
+        let mut statement = connection.prepare_cached(
             "SELECT start,end,text FROM user_terminal_output \
              WHERE terminal=?1 AND end>?2 AND start<?3 ORDER BY start LIMIT ?4",
         )?;

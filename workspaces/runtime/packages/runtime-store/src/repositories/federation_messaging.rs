@@ -144,7 +144,7 @@ impl FederationMessagingRepository {
             }
             _ => return Err(StoreError::RecordContract("federation batch table")),
         };
-        let mut stmt = db.prepare(sql)?;
+        let mut stmt = db.prepare_cached(sql)?;
         let rows = stmt
             .query_map(params![peer, now, MAX_RECORD_BYTES as i64], |r| {
                 Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?))

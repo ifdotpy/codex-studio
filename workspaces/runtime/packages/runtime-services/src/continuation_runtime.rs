@@ -443,7 +443,7 @@ fn auth_wait_ids(
     limit: usize,
 ) -> Result<Vec<(String, String)>> {
     let mut statement = tx
-        .prepare(
+        .prepare_cached(
             "SELECT id,agent FROM runtime_usage_resumes \
              WHERE json_extract(record,'$.status')='scheduled' \
                AND json_extract(record,'$.cause')='auth' \
@@ -572,7 +572,7 @@ fn auth_wait_ids_after(
     after_id: &str,
     limit: usize,
 ) -> Result<Vec<(String, String)>> {
-    let mut statement = tx.prepare("SELECT id,agent FROM runtime_usage_resumes WHERE json_extract(record,'$.status')='scheduled' AND json_extract(record,'$.cause')='auth' AND json_extract(record,'$.accountKey')=?1 AND json_extract(record,'$.proofAt') IS NULL AND id>?2 ORDER BY id LIMIT ?3")
+    let mut statement = tx.prepare_cached("SELECT id,agent FROM runtime_usage_resumes WHERE json_extract(record,'$.status')='scheduled' AND json_extract(record,'$.cause')='auth' AND json_extract(record,'$.accountKey')=?1 AND json_extract(record,'$.proofAt') IS NULL AND id>?2 ORDER BY id LIMIT ?3")
         .map_err(|error| ContinuationError::Store(studio_runtime_store::StoreError::from(error)))?;
     statement
         .query_map((account_key, after_id, limit as i64), |row| {

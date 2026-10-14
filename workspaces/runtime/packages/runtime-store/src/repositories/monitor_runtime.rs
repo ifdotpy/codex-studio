@@ -7,7 +7,7 @@ pub fn pending_approvals(
     connection: &Connection,
     monitor_id: &str,
 ) -> StoreResult<Vec<RequestRecord>> {
-    let mut query = connection.prepare("SELECT id FROM runtime_requests WHERE json_extract(record,'$.status')='pending' AND json_extract(record,'$.method')='monitor/approve' AND json_extract(record,'$.params.monitorId')=?1")?;
+    let mut query = connection.prepare_cached("SELECT id FROM runtime_requests WHERE json_extract(record,'$.status')='pending' AND json_extract(record,'$.method')='monitor/approve' AND json_extract(record,'$.params.monitorId')=?1")?;
     let ids = query
         .query_map([monitor_id], |row| row.get::<_, String>(0))?
         .collect::<Result<Vec<_>, _>>()?;
@@ -21,7 +21,7 @@ pub fn put(transaction: &Transaction<'_>, value: serde_json::Value) -> StoreResu
 }
 
 pub fn running_ids(connection: &Connection) -> StoreResult<Vec<String>> {
-    let mut query = connection.prepare("SELECT id FROM runtime_monitors WHERE json_extract(record,'$.status')='running' ORDER BY id LIMIT 64")?;
+    let mut query = connection.prepare_cached("SELECT id FROM runtime_monitors WHERE json_extract(record,'$.status')='running' ORDER BY id LIMIT 64")?;
     Ok(query
         .query_map([], |row| row.get(0))?
         .collect::<Result<Vec<_>, _>>()?)

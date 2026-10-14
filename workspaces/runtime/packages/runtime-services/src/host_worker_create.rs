@@ -491,7 +491,7 @@ fn recheck_parent_epoch(
         .and_then(Value::as_i64)
         .unwrap_or(DEFAULT_MAX_TEAM_AGENTS);
     let mut statement = transaction
-        .prepare("SELECT id,record FROM runtime_agents")
+        .prepare_cached("SELECT id,record FROM runtime_agents")
         .map_err(studio_runtime_store::StoreError::from)?;
     let records = statement
         .query_map([], |row| {

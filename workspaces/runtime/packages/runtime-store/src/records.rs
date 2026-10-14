@@ -500,7 +500,7 @@ impl<'connection, R: JsonRecord> Table<'connection, R> {
             "SELECT record FROM {} WHERE id = ?1{id_predicate}",
             quoted_table::<R>()
         );
-        let mut statement = self.connection.prepare(&sql)?;
+        let mut statement = self.connection.prepare_cached(&sql)?;
         let mut rows = statement.query(params_from_iter(values.iter()))?;
         let Some(row) = rows.next()? else {
             return Ok(None);
@@ -528,7 +528,7 @@ impl<'connection, R: JsonRecord> Table<'connection, R> {
             "SELECT record FROM {} WHERE id = ?1{id_predicate}",
             quoted_table::<R>()
         );
-        let mut statement = self.connection.prepare(&sql)?;
+        let mut statement = self.connection.prepare_cached(&sql)?;
         let mut rows = statement.query(params_from_iter(values.iter()))?;
         let Some(row) = rows.next()? else {
             return Ok(None);
@@ -554,7 +554,7 @@ impl<'connection, R: JsonRecord> Table<'connection, R> {
             quoted_table::<R>(),
             order.sql()
         );
-        let mut statement = self.connection.prepare(&sql)?;
+        let mut statement = self.connection.prepare_cached(&sql)?;
         let mut rows = statement.query(params_from_iter(values.iter()))?;
         let mut records = Vec::new();
         while let Some(row) = rows.next()? {
@@ -582,7 +582,7 @@ impl<'connection, R: JsonRecord> Table<'connection, R> {
             quoted_table::<R>(),
             order.sql()
         );
-        let mut statement = self.connection.prepare(&sql)?;
+        let mut statement = self.connection.prepare_cached(&sql)?;
         let mut rows = statement.query(params_from_iter(values.iter()))?;
         let mut records = Vec::new();
         while let Some(row) = rows.next()? {

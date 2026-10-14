@@ -171,7 +171,7 @@ pub fn recover_connection(
             tools::put(tx, &record)?;
             count += 1;
         }
-        let mut statement = tx.prepare("SELECT id FROM runtime_operation_receipts WHERE json_extract(result,'$.identity.context.account')=?1 AND json_extract(result,'$.identity.context.connection')=?2 AND json_extract(result,'$.delivery')='submitted'")?;
+        let mut statement = tx.prepare_cached("SELECT id FROM runtime_operation_receipts WHERE json_extract(result,'$.identity.context.account')=?1 AND json_extract(result,'$.identity.context.connection')=?2 AND json_extract(result,'$.delivery')='submitted'")?;
         let ids = statement.query_map([account, connection], |row| row.get::<_, String>(0))?.collect::<Result<Vec<_>, _>>()?;
         for id in ids {
             let mut reply = storage::read(tx, &id)?.ok_or(CallbackError::Unknown)?;

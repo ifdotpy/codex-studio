@@ -64,7 +64,7 @@ pub fn all(connection: &Connection, table: &'static str) -> StoreResult<Vec<Valu
         return Ok(Vec::new());
     }
     let mut statement =
-        connection.prepare(&format!("SELECT id,record FROM {table} ORDER BY rowid"))?;
+        connection.prepare_cached(&format!("SELECT id,record FROM {table} ORDER BY rowid"))?;
     statement
         .query_map([], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))

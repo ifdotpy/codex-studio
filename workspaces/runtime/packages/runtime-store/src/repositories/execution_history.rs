@@ -275,7 +275,7 @@ impl ExecutionHistoryRepository {
         status: &str,
         error: Option<&Value>,
     ) -> StoreResult<()> {
-        let mut stmt = tx.prepare("SELECT r.id,r.record FROM runtime_execution_runs r JOIN runtime_agents a ON a.id=r.agent WHERE r.agent=?1 AND r.turn=?2 AND r.account=COALESCE(json_extract(a.record,'$.accountKey'),'default') AND r.thread IS json_extract(a.record,'$.threadId') LIMIT 2")?;
+        let mut stmt = tx.prepare_cached("SELECT r.id,r.record FROM runtime_execution_runs r JOIN runtime_agents a ON a.id=r.agent WHERE r.agent=?1 AND r.turn=?2 AND r.account=COALESCE(json_extract(a.record,'$.accountKey'),'default') AND r.thread IS json_extract(a.record,'$.threadId') LIMIT 2")?;
         let rows = stmt
             .query_map(params![agent_id, turn_id], |r| {
                 Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))

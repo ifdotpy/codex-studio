@@ -103,7 +103,7 @@ impl ContinuationRepository {
         } else {
             None
         };
-        let mut statement=db.prepare("SELECT id,agent,kind,text,status,created,epoch,turn_id,error FROM runtime_events WHERE agent=?1 AND epoch=?2 AND status IN ('pending','reserved','dispatching','uncertain') ORDER BY created,rowid LIMIT 4097")?;
+        let mut statement=db.prepare_cached("SELECT id,agent,kind,text,status,created,epoch,turn_id,error FROM runtime_events WHERE agent=?1 AND epoch=?2 AND status IN ('pending','reserved','dispatching','uncertain') ORDER BY created,rowid LIMIT 4097")?;
         let events=statement.query_map(params![agent_id,agent.get("epoch").and_then(Value::as_i64)],|r|Ok(json!({"id":r.get::<_,String>(0)?,"agent":r.get::<_,String>(1)?,"kind":r.get::<_,String>(2)?,"text":r.get::<_,String>(3)?,"status":r.get::<_,String>(4)?,"created":r.get::<_,f64>(5)?,"epoch":r.get::<_,i64>(6)?,"turn_id":r.get::<_,Option<String>>(7)?,"error":r.get::<_,Option<String>>(8)?})))?.collect::<std::result::Result<Vec<_>,_>>()?;
         let mut metadata = serde_json::Map::new();
         let mut assets = serde_json::Map::new();
@@ -145,7 +145,7 @@ impl ContinuationRepository {
                 }
             }
         }
-        let mut statement=db.prepare("SELECT id FROM runtime_work WHERE json_extract(record,'$.owner')=?1 AND json_extract(record,'$.rootId')=?2 AND json_extract(record,'$.status') NOT IN ('accepted','cancelled') ORDER BY id LIMIT 4097")?;
+        let mut statement=db.prepare_cached("SELECT id FROM runtime_work WHERE json_extract(record,'$.owner')=?1 AND json_extract(record,'$.rootId')=?2 AND json_extract(record,'$.status') NOT IN ('accepted','cancelled') ORDER BY id LIMIT 4097")?;
         let claims = statement
             .query_map(
                 params![agent_id, agent.get("rootId").and_then(Value::as_str)],

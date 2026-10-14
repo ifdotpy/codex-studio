@@ -53,7 +53,7 @@ impl SchedulerRepository {
             });
         }
 
-        let mut account_statement = connection.prepare(&format!(
+        let mut account_statement = connection.prepare_cached(&format!(
             "{TARGETS} SELECT DISTINCT account FROM targets
              WHERE (pending OR recovery) AND account>?1 ORDER BY account LIMIT ?2"
         ))?;
@@ -69,7 +69,7 @@ impl SchedulerRepository {
             accounts = read_accounts("")?;
         }
 
-        let mut agent_statement = connection.prepare(&format!(
+        let mut agent_statement = connection.prepare_cached(&format!(
             "{TARGETS} SELECT id,epoch FROM targets
              WHERE pending AND account=?1 AND id>?2 ORDER BY id LIMIT ?3"
         ))?;
@@ -101,7 +101,7 @@ impl SchedulerRepository {
 
     /// Return queued local agents with pending events in the current epoch.
     pub fn pending_agents(connection: &Connection) -> StoreResult<Vec<(String, i64)>> {
-        let mut statement = connection.prepare(
+        let mut statement = connection.prepare_cached(
             "SELECT a.id,json_extract(a.record,'$.epoch') FROM runtime_agents a \
              WHERE json_extract(a.record,'$.status')='queued' \
              AND json_extract(a.record,'$.autoWake')=1 \
@@ -305,7 +305,7 @@ impl SchedulerRepository {
              FROM runtime_events e WHERE e.agent=?1 AND e.epoch=?2 AND e.status='pending' \
              ORDER BY e.created,e.rowid LIMIT ?3"
         };
-        let mut statement = transaction.prepare(sql)?;
+        let mut statement = transaction.prepare_cached(sql)?;
         let joined = if let Some(event_id) = radio_event {
             statement
                 .query_map(params![event_id, agent_id, epoch], |row| {
@@ -539,7 +539,7 @@ impl SchedulerRepository {
         if event_ids.is_empty() || event_ids.windows(2).any(|pair| pair[0] == pair[1]) {
             return Err(invalid_agent(agent_id));
         }
-        let mut statement = transaction.prepare(
+        let mut statement = transaction.prepare_cached(
             "SELECT id,agent,kind,text,status,created,epoch,turn_id,error FROM runtime_events \
              WHERE id IN (SELECT value FROM json_each(?1)) AND agent=?2 AND epoch=?3 ORDER BY created,rowid",
         )?;
@@ -585,7 +585,7 @@ impl SchedulerRepository {
             return Ok(true);
         }
         let payload = serde_json::to_string(&changes)?;
-        let mut update = transaction.prepare(
+        let mut update = transaction.prepare_cached(
             "UPDATE runtime_events SET status=json_extract((SELECT value FROM json_each(?1) WHERE key=runtime_events.id),'$.status'), \
              error=json_extract((SELECT value FROM json_each(?1) WHERE key=runtime_events.id),'$.error') \
              WHERE id IN (SELECT key FROM json_each(?1)) AND agent=?2 AND epoch=?3 \
@@ -692,7 +692,7 @@ pub(super) fn replay_claim(
     } else {
         ""
     };
-    let mut statement = tx.prepare(&format!("SELECT e.id,e.agent,e.kind,e.text,e.status,e.created,e.epoch,e.turn_id,e.error,{metadata_column} FROM json_each(?1) j JOIN runtime_events e ON e.id=json_extract(j.value,'$.id') {metadata_join} ORDER BY j.key"))?;
+    let mut statement = tx.prepare_cached(&format!("SELECT e.id,e.agent,e.kind,e.text,e.status,e.created,e.epoch,e.turn_id,e.error,{metadata_column} FROM json_each(?1) j JOIN runtime_events e ON e.id=json_extract(j.value,'$.id') {metadata_join} ORDER BY j.key"))?;
     let mut events = Vec::new();
     let mut metadata = BTreeMap::new();
     for row in statement.query_map([saved["inputIdentity"].to_string()], |r| {
@@ -1059,7 +1059,7 @@ pub(super) fn apply_preparation(
         .collect::<BTreeMap<_, _>>();
     if !changes.is_empty() {
         let payload = serde_json::to_string(&changes)?;
-        let mut statement = transaction.prepare(
+        let mut statement = transaction.prepare_cached(
             "UPDATE runtime_events SET status=json_extract((SELECT value FROM json_each(?1) WHERE key=runtime_events.id),'$.status'), \
              error=json_extract((SELECT value FROM json_each(?1) WHERE key=runtime_events.id),'$.error') \
              WHERE id IN (SELECT key FROM json_each(?1)) AND status='pending' RETURNING id",
@@ -1111,7 +1111,7 @@ pub(super) fn obsolete_work_review_ids(
             .map(|event| event.id.0.as_str())
             .collect::<Vec<_>>(),
     )?;
-    let mut statement = transaction.prepare(
+    let mut statement = transaction.prepare_cached(
         "SELECT e.id FROM runtime_events e \
          JOIN json_each(?1) selected ON selected.value=e.id \
          WHERE e.kind='work_review' AND json_valid(e.text) \

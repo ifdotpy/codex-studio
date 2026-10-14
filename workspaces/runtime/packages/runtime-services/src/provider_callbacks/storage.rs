@@ -345,7 +345,7 @@ pub fn retire_checkpointed(
     })
     .transpose()?
     .unwrap_or(0);
-    let mut stmt = tx.prepare("SELECT id FROM runtime_operation_receipts WHERE signature='provider-callback' AND json_extract(result,'$.identity.context.account')=?1 AND json_extract(result,'$.identity.context.generation')=?2 AND json_extract(result,'$.delivery')='written' AND (json_extract(result,'$.journalCursor')<=?3 OR json_extract(result,'$.legacyAdmission')=1) LIMIT 128")?;
+    let mut stmt = tx.prepare_cached("SELECT id FROM runtime_operation_receipts WHERE signature='provider-callback' AND json_extract(result,'$.identity.context.account')=?1 AND json_extract(result,'$.identity.context.generation')=?2 AND json_extract(result,'$.delivery')='written' AND (json_extract(result,'$.journalCursor')<=?3 OR json_extract(result,'$.legacyAdmission')=1) LIMIT 128")?;
     let ids = stmt
         .query_map(
             params![
@@ -380,7 +380,7 @@ pub fn retire_checkpointed(
     let remaining = 128usize.saturating_sub(ids.len());
     let mut resolutions = Vec::new();
     if remaining > 0 {
-        let mut stmt = tx.prepare("SELECT resolved.id FROM runtime_operation_receipts resolved WHERE resolved.signature='provider-callback' AND resolved.id LIKE '%:resolved' AND json_extract(resolved.result,'$.identity.context.account')=?1 AND json_extract(resolved.result,'$.identity.context.generation')=?2 AND (CAST(json_extract(resolved.result,'$.journalCursor') AS INTEGER)<=?3 OR CAST((SELECT json_extract(card.result,'$.journalCursor') FROM runtime_operation_receipts card WHERE card.id=substr(resolved.id,1,length(resolved.id)-9)||':card') AS INTEGER)<=?3) LIMIT ?4")?;
+        let mut stmt = tx.prepare_cached("SELECT resolved.id FROM runtime_operation_receipts resolved WHERE resolved.signature='provider-callback' AND resolved.id LIKE '%:resolved' AND json_extract(resolved.result,'$.identity.context.account')=?1 AND json_extract(resolved.result,'$.identity.context.generation')=?2 AND (CAST(json_extract(resolved.result,'$.journalCursor') AS INTEGER)<=?3 OR CAST((SELECT json_extract(card.result,'$.journalCursor') FROM runtime_operation_receipts card WHERE card.id=substr(resolved.id,1,length(resolved.id)-9)||':card') AS INTEGER)<=?3) LIMIT ?4")?;
         resolutions = stmt
             .query_map(
                 params![
@@ -520,7 +520,7 @@ pub fn prepared_replies(
 ) -> Result<Vec<Reply>, CallbackError> {
     store.transaction_with(|tx| {
         snapshot(tx, context)?.active()?;
-        let mut stmt = tx.prepare("SELECT id,result FROM runtime_operation_receipts WHERE signature='provider-callback' AND json_extract(result,'$.delivery')='prepared' AND json_extract(result,'$.identity.context.agent')=?1 LIMIT 129")?;
+        let mut stmt = tx.prepare_cached("SELECT id,result FROM runtime_operation_receipts WHERE signature='provider-callback' AND json_extract(result,'$.delivery')='prepared' AND json_extract(result,'$.identity.context.agent')=?1 LIMIT 129")?;
         let rows = stmt.query_map([&context.agent], |row| Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?)))?.collect::<Result<Vec<_>,_>>()?;
         if rows.len() > MAX_PENDING { return Err(CallbackError::Invalid("Too many prepared provider replies")); }
         let mut replies = Vec::new();

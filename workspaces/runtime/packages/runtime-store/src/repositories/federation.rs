@@ -180,7 +180,7 @@ impl FederationRepository {
             params![peer.to_string(), id],
         )?;
         let mut stmt =
-            tx.prepare("SELECT id,record FROM runtime_federation_outbox WHERE peer_id=?1")?;
+            tx.prepare_cached("SELECT id,record FROM runtime_federation_outbox WHERE peer_id=?1")?;
         let items = stmt
             .query_map([id], |r| {
                 Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
@@ -197,7 +197,7 @@ impl FederationRepository {
                 tx.execute("UPDATE runtime_chat_messages SET deliveries=json_set(deliveries,?1,'cancelled') WHERE id=?2",params![format!("$.remote:{id}"),out_id])?;
             }
         }
-        let mut stmt=tx.prepare("SELECT id,record FROM runtime_federation_rooms WHERE json_extract(record,'$.peerId')=?1")?;
+        let mut stmt=tx.prepare_cached("SELECT id,record FROM runtime_federation_rooms WHERE json_extract(record,'$.peerId')=?1")?;
         let rooms = stmt
             .query_map([id], |r| {
                 Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
@@ -563,7 +563,7 @@ fn project(id: &str, v: &Value, table: &str, fields: &[(&str, Kind)]) -> StoreRe
 }
 fn records(c: &Connection, t: &str, order: &str) -> StoreResult<Vec<(String, Value)>> {
     let q = format!("SELECT id,record FROM {t} {order}");
-    let mut s = c.prepare(&q)?;
+    let mut s = c.prepare_cached(&q)?;
     let rows = s.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
     rows.map(|r| {
         let (id, raw) = r?;

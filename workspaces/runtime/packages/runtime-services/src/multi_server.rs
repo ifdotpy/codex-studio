@@ -27,7 +27,7 @@ pub fn snapshot(store: &RuntimeStore, identity: &Value) -> Result<Value, MultiSe
     Ok(store.read_transaction(|tx| {
         let clients=project_records(tx,"runtime_access_clients")?;
         let discovered=project_records(tx,"runtime_access_discovered")?;
-        let invites=tx.prepare("SELECT id,record FROM runtime_access_invites ORDER BY rowid DESC LIMIT 100")?
+        let invites=tx.prepare_cached("SELECT id,record FROM runtime_access_invites ORDER BY rowid DESC LIMIT 100")?
             .query_map([],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?)))?
             .map(|r| { let (id,raw)=r?; let v=parse("runtime_access_invites",&id,&raw)?; let invite_id=v.get("inviteId").and_then(Value::as_str).ok_or_else(||invalid("runtime_access_invites",&id,"inviteId"))?; let expires=v.get("expires").and_then(Value::as_i64).ok_or_else(||invalid("runtime_access_invites",&id,"expires"))?; let created=v.get("created").and_then(Value::as_i64).ok_or_else(||invalid("runtime_access_invites",&id,"created"))?; let status=v.get("status").and_then(Value::as_str).ok_or_else(||invalid("runtime_access_invites",&id,"status"))?; if !["open","used"].contains(&status){return Err(invalid("runtime_access_invites",&id,"status"));} Ok(json!({"inviteId":invite_id,"expires":expires,"created":created,"status":status})) })
             .collect::<Result<Vec<_>,StoreError>>()?;
@@ -95,7 +95,7 @@ pub fn manage(
 
 fn project_records(tx: &rusqlite::Transaction<'_>, table: &str) -> Result<Vec<Value>, StoreError> {
     let q = format!("SELECT id,record FROM {table} ORDER BY id");
-    let mut st = tx.prepare(&q)?;
+    let mut st = tx.prepare_cached(&q)?;
     let rows = st.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
     rows.map(|row| {
         let (id, raw) = row?;

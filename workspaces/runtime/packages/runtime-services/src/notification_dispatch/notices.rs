@@ -589,7 +589,7 @@ pub(crate) fn account_notice(
         notices.retain(|notice| {
             notice.get("connectionId").is_some() && notice["accountKey"] != account
         });
-        let mut stmt = tx.prepare("SELECT id,record FROM runtime_native_notices WHERE json_extract(record,'$.accountKey')=?1 AND json_extract(record,'$.connectionId')=?2 ORDER BY rowid").map_err(StoreError::from)?;
+        let mut stmt = tx.prepare_cached("SELECT id,record FROM runtime_native_notices WHERE json_extract(record,'$.accountKey')=?1 AND json_extract(record,'$.connectionId')=?2 ORDER BY rowid").map_err(StoreError::from)?;
         for row in stmt
             .query_map(params![account, connection], |row| {
                 Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))

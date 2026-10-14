@@ -111,7 +111,7 @@ impl WorkspaceViewsRepository {
         let sql = format!(
             "SELECT id,record FROM {table} WHERE {field} IN ({placeholders}) ORDER BY rowid"
         );
-        let mut statement = connection.prepare(&sql)?;
+        let mut statement = connection.prepare_cached(&sql)?;
         let rows = statement.query_map(params_from_iter(agent_ids.iter()), |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
         })?;
@@ -144,7 +144,7 @@ impl WorkspaceViewsRepository {
              AND json_extract(t.record,'$.status')!='running' \
              ORDER BY json_extract(t.record,'$.created') DESC LIMIT 100)"
         );
-        let mut statement = connection.prepare(&sql)?;
+        let mut statement = connection.prepare_cached(&sql)?;
         let args = root
             .map(|root| {
                 vec![
@@ -184,7 +184,7 @@ impl WorkspaceViewsRepository {
             "SELECT id,record FROM runtime_monitors WHERE json_extract(record,'$.status') IN ('running','starting','approval') {agent_scope} \
              UNION ALL SELECT id,record FROM (SELECT id,record,created FROM ({terminal}) ORDER BY created DESC LIMIT 100)"
         );
-        let mut statement = connection.prepare(&sql)?;
+        let mut statement = connection.prepare_cached(&sql)?;
         let count = if root.is_some() { 5 } else { 0 };
         let args = std::iter::repeat_n(root.unwrap_or_default().to_owned(), count)
             .map(SqlValue::Text)
@@ -271,7 +271,7 @@ impl WorkspaceViewsRepository {
         args.push(SqlValue::Integer(
             i64::try_from(limit.saturating_add(1)).unwrap_or(i64::MAX),
         ));
-        let mut statement = connection.prepare(&sql)?;
+        let mut statement = connection.prepare_cached(&sql)?;
         statement
             .query_map(params_from_iter(args.iter()), |row| row.get::<_, String>(0))?
             .map(|row| row.map(|id| WorkspaceTaskRow { id }))
@@ -296,7 +296,7 @@ fn workspace_table(table: &str) -> bool {
 }
 
 fn read_records(connection: &Connection, table: &str) -> StoreResult<Vec<StoredRecord>> {
-    let mut statement = connection.prepare(&format!(
+    let mut statement = connection.prepare_cached(&format!(
         "SELECT id,record FROM {} ORDER BY rowid",
         table.replace('"', "\"\"")
     ))?;

@@ -24,7 +24,7 @@ pub fn delivery_receipts(
     }
     crate::event_write::checked_agent(connection, agent)
         .map_err(crate::coordination::event_write_error)?;
-    let mut statement = connection.prepare(
+    let mut statement = connection.prepare_cached(
         "SELECT e.id,e.status,e.error,m.record,i.id,i.record FROM runtime_events e
         LEFT JOIN runtime_event_meta m ON m.id=e.id
         LEFT JOIN runtime_items i ON i.agent=e.agent AND i.id=COALESCE(
@@ -100,7 +100,7 @@ pub fn chat_read(
             .filter_map(|a| a["id"].as_str())
             .collect::<BTreeSet<_>>();
         let rooms = records::all(connection, "runtime_rooms")?;
-        let mut selection = connection.prepare("WITH
+        let mut selection = connection.prepare_cached("WITH
             team_member AS (SELECT value AS id FROM json_each(?1)),
             peer_team AS (SELECT t.value AS team FROM json_each(?2) p, json_each(p.value,'$.peerTeams') t),
             room AS (SELECT value AS record FROM json_each(?3))
@@ -179,7 +179,7 @@ pub fn chat_read(
     }
     let mut messages = Vec::new();
     if !room_ids.is_empty() {
-        let mut statement = connection.prepare(&format!(
+        let mut statement = connection.prepare_cached(&format!(
             "SELECT seq,id,room,sender,text,created,deliveries FROM runtime_chat_messages
              WHERE room IN (SELECT value FROM json_each(?1))
              AND (?2 IS NULL OR seq<?2) AND (?3 IS NULL OR seq>?3)

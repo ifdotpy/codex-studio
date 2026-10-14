@@ -71,7 +71,7 @@ pub fn recover_on_startup(store: &RuntimeStore, now: f64) -> Result<StartupRecov
 
 fn recover_requests(tx: &Transaction<'_>) -> Result<usize, MonitorError> {
     let mut agent_statement = tx
-        .prepare("SELECT id,record FROM runtime_agents ORDER BY id")
+        .prepare_cached("SELECT id,record FROM runtime_agents ORDER BY id")
         .map_err(studio_runtime_store::StoreError::from)?;
     let agent_rows = agent_statement
         .query_map([], |row| {
@@ -91,7 +91,7 @@ fn recover_requests(tx: &Transaction<'_>) -> Result<usize, MonitorError> {
         }
     }
     let mut request_statement = tx
-        .prepare("SELECT id,record FROM runtime_requests ORDER BY id")
+        .prepare_cached("SELECT id,record FROM runtime_requests ORDER BY id")
         .map_err(studio_runtime_store::StoreError::from)?;
     let request_rows = request_statement
         .query_map([], |row| {
@@ -207,7 +207,7 @@ fn recover_active_monitors(tx: &Transaction<'_>, now: f64) -> Result<usize, Moni
         return Ok(0);
     }
     let mut statement = tx
-        .prepare("SELECT id,record FROM runtime_monitors ORDER BY id")
+        .prepare_cached("SELECT id,record FROM runtime_monitors ORDER BY id")
         .map_err(studio_runtime_store::StoreError::from)?;
     let rows = statement
         .query_map([], |row| {

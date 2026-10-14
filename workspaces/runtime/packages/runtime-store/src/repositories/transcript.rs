@@ -229,7 +229,7 @@ impl TranscriptRepository {
             if !table_exists(connection, "runtime_search_next")? {
                 return Ok(Vec::new());
             }
-            let mut statement = connection.prepare(
+            let mut statement = connection.prepare_cached(
                 "SELECT m.id,m.agent,m.kind FROM runtime_search_next \
                  JOIN runtime_search_next_meta m ON m.search_rowid=runtime_search_next.rowid \
                  JOIN runtime_items i ON i.id=m.id \
@@ -245,7 +245,7 @@ impl TranscriptRepository {
         if !table_exists(connection, "runtime_search")? {
             return Ok(Vec::new());
         }
-        let mut statement = connection.prepare(
+        let mut statement = connection.prepare_cached(
             "SELECT s.id,s.agent,s.kind FROM runtime_search s \
              JOIN runtime_items i ON i.id=s.id \
              WHERE runtime_search MATCH ?1 \
@@ -693,7 +693,7 @@ fn enrich_persisted_items(
     for chunk in completion_id_chunks.chunks(TRANSCRIPT_IN_QUERY_ID_CHUNK_SIZE) {
         let placeholders = vec!["?"; chunk.len()].join(",");
         let sql = format!("SELECT id FROM runtime_completed_turns WHERE id IN ({placeholders})");
-        let mut statement = connection.prepare(&sql)?;
+        let mut statement = connection.prepare_cached(&sql)?;
         completed_turns.extend(
             statement
                 .query_map(
@@ -810,7 +810,7 @@ fn enrich_persisted_items(
              FROM runtime_events e {metadata_join} \
              WHERE e.agent=? AND e.kind='user' AND e.id IN ({placeholders})"
         );
-        let mut statement = connection.prepare(&sql)?;
+        let mut statement = connection.prepare_cached(&sql)?;
         let mut values: Vec<rusqlite::types::Value> = vec![agent.to_owned().into()];
         values.extend(chunk.iter().map(|id| (*id).to_owned().into()));
         let rows = statement
@@ -1015,7 +1015,7 @@ fn transcript_pull_write(
     let mut metadata = payload.as_object().cloned().unwrap_or_default();
     metadata.remove("items");
     let mut current = transaction
-        .prepare(
+        .prepare_cached(
             "SELECT id,seq,hash,deleted FROM sync_entities WHERE collection=?1 ORDER BY rowid",
         )?
         .query_map([scope], |row| {
@@ -1090,7 +1090,7 @@ fn transcript_pull_write(
     }
 
     let pruned = transaction
-        .prepare(
+        .prepare_cached(
             "SELECT id,seq FROM sync_entities WHERE collection=?1 AND deleted=1 \
              AND id LIKE 'item:%' ORDER BY seq DESC LIMIT -1 OFFSET ?2",
         )?
@@ -1125,7 +1125,7 @@ fn transcript_pull_write(
     }
 
     current = transaction
-        .prepare(
+        .prepare_cached(
             "SELECT id,seq,hash,deleted FROM sync_entities WHERE collection=?1 ORDER BY rowid",
         )?
         .query_map([scope], |row| {
@@ -1173,7 +1173,7 @@ fn transcript_pull_write(
         vec![json!({"id":scope,"payload":"{}","seq":high,"_deleted":true})]
     } else if after < high {
         let changed = transaction
-            .prepare("SELECT id,hash,deleted FROM sync_entities WHERE collection=?1 AND seq>?2 AND id!='@floor' ORDER BY seq")?
+            .prepare_cached("SELECT id,hash,deleted FROM sync_entities WHERE collection=?1 AND seq>?2 AND id!='@floor' ORDER BY seq")?
             .query_map(params![scope, after], |row| {
                 Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, i64>(2)? != 0))
             })?
