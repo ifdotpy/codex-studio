@@ -4,7 +4,7 @@
 use crate::account_transfer::{
     Action, Command, Decision, EXECUTOR_REQUIRED, Snapshot, Ticket, TransferError,
 };
-use serde_json::{Value, json};
+use serde_json::Value;
 use studio_runtime_store::{
     AccountTransferRepository as Repository, AgentRepository, RuntimeStore, Transaction,
 };
@@ -112,13 +112,14 @@ pub fn reserve(
     ticket: &Ticket,
     method: &str,
     params: Value,
+    scope: Value,
     now: f64,
 ) -> Result<(), TransferError> {
     store.transaction_with_error(|tx| {
         check_durable_blockers(tx, &ticket.agent)?;
         let snapshot = load(tx, &ticket.operation)?;
-        let mut decision = snapshot.submit(ticket, method, params)?;
-        decision.operation["members"][&ticket.agent]["submittedAt"] = json!(now);
+        let decision =
+            snapshot.provider_intent(&ticket.agent, &ticket.request, scope, method, params)?;
         persist(tx, decision, now)?;
         Ok(())
     })
@@ -198,7 +199,18 @@ fn persist(tx: &Transaction<'_>, mut decision: Decision, now: f64) -> Result<Val
 /// Synchronous effect port, implemented by the account worker's bounded native
 /// request adapter. A failed wait is unknown, never evidence of non-execution.
 pub trait TransferTransport {
-    fn send(&self, ticket: &Ticket, method: &str, params: &Value) -> Option<Value>;
+    fn send(
+        &self,
+        ticket: &Ticket,
+        scope: &crate::account_session_runtime::ConnectionScope,
+        method: &str,
+        params: &Value,
+    ) -> TransferDispatch;
+}
+pub struct TransferDispatch {
+    pub receipt: Value,
+    pub result: Option<Value>,
+    pub certainty: &'static str,
 }
 #[derive(Debug, PartialEq, Eq)]
 pub enum DispatchOutcome {
@@ -211,18 +223,32 @@ pub fn send_once(
     store: &RuntimeStore,
     transport: &dyn TransferTransport,
     ticket: &Ticket,
+    scope: crate::account_session_runtime::ConnectionScope,
     method: &str,
     params: Value,
     now: f64,
 ) -> Result<DispatchOutcome, TransferError> {
-    reserve(store, ticket, method, params.clone(), now)?;
-    let result = transport.send(ticket, method, &params);
-    let known = result
-        .as_ref()
-        .and_then(|r| r.pointer("/thread/id"))
-        .and_then(Value::as_str)
-        .is_some_and(|s| !s.is_empty());
-    receive(store, ticket, result, now)?;
+    let scope_value = serde_json::to_value(&scope)
+        .map_err(|_| TransferError::Refused("Invalid provider scope"))?;
+    reserve(store, ticket, method, params.clone(), scope_value, now)?;
+    let dispatch = transport.send(ticket, &scope, method, &params);
+    let known = dispatch.certainty == "written"
+        && dispatch
+            .result
+            .as_ref()
+            .and_then(|r| r.pointer("/thread/id"))
+            .and_then(Value::as_str)
+            .is_some_and(|s| !s.is_empty());
+    provider_receipt(
+        store,
+        &ticket.operation,
+        &ticket.agent,
+        &ticket.request,
+        dispatch.receipt,
+        dispatch.result,
+        dispatch.certainty,
+        now,
+    )?;
     Ok(if known {
         DispatchOutcome::ReceiptSaved
     } else {
@@ -262,6 +288,52 @@ pub fn provider_intent(
         persist(
             tx,
             snapshot.provider_intent(agent, provider_operation, scope, method, params)?,
+            now,
+        )?;
+        Ok(())
+    })
+}
+
+pub fn provider_read_intent(
+    store: &RuntimeStore,
+    transfer: &str,
+    agent: &str,
+    operation: &str,
+    account: &str,
+    scope: Value,
+    method: &str,
+    params: Value,
+    now: f64,
+) -> Result<Option<Value>, TransferError> {
+    store.transaction_with_error(|tx| {
+        let snapshot = load(tx, transfer)?;
+        let prior = snapshot.operation()["members"][agent]["providerReadReceipts"][operation]
+            .as_object()
+            .filter(|receipt| receipt.get("certainty") == Some(&Value::String("written".into())))
+            .cloned()
+            .map(Value::Object);
+        let decision =
+            snapshot.provider_read_intent(agent, operation, account, scope, method, params)?;
+        persist(tx, decision, now)?;
+        Ok(prior)
+    })
+}
+
+pub fn provider_read_receipt(
+    store: &RuntimeStore,
+    transfer: &str,
+    agent: &str,
+    operation: &str,
+    receipt: Value,
+    result: Option<Value>,
+    certainty: &str,
+    now: f64,
+) -> Result<(), TransferError> {
+    store.transaction_with_error(|tx| {
+        let snapshot = load(tx, transfer)?;
+        persist(
+            tx,
+            snapshot.provider_read_receipt(agent, operation, receipt, result, certainty)?,
             now,
         )?;
         Ok(())
@@ -360,13 +432,13 @@ impl TransferPreparation {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TransferMethod {
     Start,
     Fork,
 }
 impl TransferMethod {
-    fn wire(self) -> &'static str {
+    pub(crate) fn wire(self) -> &'static str {
         match self {
             Self::Start => "thread/start",
             Self::Fork => "thread/fork",
@@ -375,6 +447,7 @@ impl TransferMethod {
 }
 pub struct PreparedTransfer {
     pub ticket: Ticket,
+    pub scope: crate::account_session_runtime::ConnectionScope,
     pub method: TransferMethod,
     pub params: Value,
 }
@@ -423,6 +496,7 @@ pub fn execute_member(
             store,
             executor,
             &prepared.ticket,
+            prepared.scope,
             prepared.method.wire(),
             prepared.params,
             now,

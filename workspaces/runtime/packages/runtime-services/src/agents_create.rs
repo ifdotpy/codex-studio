@@ -7,6 +7,7 @@
 //! source. The store-held identity from `origin/fix/rust-reads-no-writer` will
 //! provide the authoritative value once that change is merged.
 mod operations;
+pub(crate) use operations::DEFAULT_LEAD_MODEL;
 pub use operations::*;
 
 use rusqlite::{Connection, OptionalExtension};

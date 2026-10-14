@@ -91,7 +91,7 @@ pub struct Conversation {
     pub non_defaults: bool,
 }
 
-const DEFAULT_LEAD_MODEL: &str = "gpt-6-astra";
+pub(crate) const DEFAULT_LEAD_MODEL: &str = "gpt-6-astra";
 
 pub fn lead(context: &Context<'_>, request: Creation) -> Result<Value, OperationError> {
     create(context, request, true)

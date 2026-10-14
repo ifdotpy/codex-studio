@@ -498,6 +498,119 @@ impl Snapshot {
         Ok(self.decision(op, self.agents.clone(), vec![]))
     }
 
+    /// Journal a provider read independently from the final thread mutation.
+    /// An existing Written receipt is replayed, NotSent may retry the same
+    /// operation, and an intent without a receipt is held as uncertain.
+    pub fn provider_read_intent(
+        &self,
+        agent: &str,
+        operation: &str,
+        account: &str,
+        scope: Value,
+        method: &str,
+        params: Value,
+    ) -> Result<Decision, TransferError> {
+        let member = &self.operation["members"][agent];
+        if !self.pending()
+            || self.phase(agent)? != Phase::Reading
+            || operation.is_empty()
+            || account.is_empty()
+            || !matches!(method, "model/list" | "thread/read" | "thread/turns/list")
+            || !params.is_object()
+            || !scope.is_object()
+        {
+            return Err(TransferError::Refused(
+                "The transfer is not ready for a provider read",
+            ));
+        }
+        let intent = json!({"operation":operation,"account":account,"scope":scope,
+            "method":method,"params":params});
+        if let Some(intents) = member.get("providerReadIntents").and_then(Value::as_object) {
+            if let Some(saved) = intents.get(operation) {
+                if saved != &intent {
+                    return Err(TransferError::Refused("The provider read intent changed"));
+                }
+                let receipt = member
+                    .get("providerReadReceipts")
+                    .and_then(Value::as_object)
+                    .and_then(|receipts| receipts.get(operation));
+                match receipt.and_then(|saved| saved["certainty"].as_str()) {
+                    Some("written") => {
+                        return Ok(self.decision(
+                            self.operation.clone(),
+                            self.agents.clone(),
+                            vec![],
+                        ));
+                    }
+                    Some("not_sent") => {}
+                    Some("unknown") | None => {
+                        return Err(TransferError::Refused(
+                            "The provider read outcome is unknown; it was not repeated",
+                        ));
+                    }
+                    _ => return Err(invalid("account transfer", "/members/providerReadReceipts")),
+                }
+            } else {
+                let mut op = self.operation.clone();
+                op["members"][agent]["providerReadIntents"][operation] = intent;
+                return Ok(self.decision(op, self.agents.clone(), vec![]));
+            }
+        } else {
+            let mut op = self.operation.clone();
+            let mut intents = serde_json::Map::new();
+            intents.insert(operation.to_owned(), intent);
+            op["members"][agent]["providerReadIntents"] = Value::Object(intents);
+            return Ok(self.decision(op, self.agents.clone(), vec![]));
+        }
+        Ok(self.decision(self.operation.clone(), self.agents.clone(), vec![]))
+    }
+
+    pub fn provider_read_receipt(
+        &self,
+        agent: &str,
+        operation: &str,
+        receipt: Value,
+        result: Option<Value>,
+        certainty: &str,
+    ) -> Result<Decision, TransferError> {
+        let member = &self.operation["members"][agent];
+        let intent = member
+            .get("providerReadIntents")
+            .and_then(Value::as_object)
+            .and_then(|intents| intents.get(operation));
+        let existing = member
+            .get("providerReadReceipts")
+            .and_then(Value::as_object)
+            .and_then(|receipts| receipts.get(operation));
+        if existing == Some(&receipt) {
+            return Ok(self.decision(self.operation.clone(), self.agents.clone(), vec![]));
+        }
+        if self.phase(agent)? != Phase::Reading
+            || intent.is_none()
+            || !matches!(certainty, "written" | "not_sent" | "unknown")
+            || receipt["operation"] != operation
+            || receipt["scope"] != intent.unwrap()["scope"]
+            || receipt["certainty"] != certainty
+            || (certainty == "not_sent" && !receipt["ticket"].is_null())
+            || (certainty != "not_sent" && receipt["ticket"].is_null())
+            || (certainty == "written" && result.is_none())
+        {
+            return Err(TransferError::Refused(
+                "Provider read receipt does not match its intent",
+            ));
+        }
+        let mut op = self.operation.clone();
+        op["members"][agent]["providerReadReceipts"][operation] = json!({
+            "receipt":receipt,"result":result,"certainty":certainty
+        });
+        if certainty == "unknown" {
+            op["members"][agent]["phase"] = json!("unknown");
+            op["members"][agent]["error"] =
+                json!("Provider read outcome is unknown; no request was repeated");
+        }
+        Ok(self.decision(op, self.agents.clone(), vec![]))
+    }
+
     /// Freeze validated destination settings and an optional portable archive
     /// before any native thread mutation is authorized.
     pub fn prepared_member(
@@ -1396,5 +1509,102 @@ mod provider_receipt_tests {
                 )
                 .is_err()
         );
+    }
+
+    #[test]
+    fn provider_read_journal_replays_written_and_holds_uncertain_calls() {
+        let reading = after(snapshot().begin_read("agent").unwrap());
+        let intent = |snapshot: &Snapshot| {
+            snapshot.provider_read_intent(
+                "agent",
+                "account-transfer:transfer:agent:model-list:0",
+                "target",
+                json!({"account":"target","connection":"conn","generation":4}),
+                "model/list",
+                json!({"limit":100}),
+            )
+        };
+        let prepared = after(intent(&reading).unwrap());
+        let op_id = "account-transfer:transfer:agent:model-list:0";
+        let receipt = json!({"operation":op_id,"scope":{"account":"target","connection":"conn","generation":4},
+            "certainty":"written","ticket":{"generation":4,"id":"claude:4","method":"model/list"}});
+        let response = json!({"kind":"reply","value":{"data":[],"nextCursor":null}});
+        let recorded = after(
+            prepared
+                .provider_read_receipt(
+                    "agent",
+                    op_id,
+                    receipt.clone(),
+                    Some(response.clone()),
+                    "written",
+                )
+                .unwrap(),
+        );
+        assert_eq!(
+            recorded.operation["members"]["agent"]["providerReadIntents"][op_id]["params"]["limit"],
+            100
+        );
+        assert!(!intent(&recorded).unwrap().changed);
+        assert_eq!(
+            recorded.operation["members"]["agent"]["providerReadReceipts"][op_id]["result"],
+            response
+        );
+
+        let not_sent = after(
+            recorded
+                .provider_read_intent(
+                    "agent",
+                    "account-transfer:transfer:agent:thread-read",
+                    "source",
+                    json!({"account":"source","connection":"source-conn","generation":2}),
+                    "thread/read",
+                    json!({"threadId":"source-thread","includeTurns":false}),
+                )
+                .unwrap(),
+        );
+        let read_op = "account-transfer:transfer:agent:thread-read";
+        let not_sent_receipt = json!({"operation":read_op,"scope":{"account":"source","connection":"source-conn","generation":2},
+            "certainty":"not_sent","ticket":null});
+        let released = after(
+            not_sent
+                .provider_read_receipt("agent", read_op, not_sent_receipt, None, "not_sent")
+                .unwrap(),
+        );
+        assert!(!intent(&released).unwrap().changed);
+        assert!(
+            !released
+                .provider_read_intent(
+                    "agent",
+                    read_op,
+                    "source",
+                    json!({"account":"source","connection":"source-conn","generation":2}),
+                    "thread/read",
+                    json!({"threadId":"source-thread","includeTurns":false}),
+                )
+                .is_err()
+        );
+
+        let unknown = after(
+            released
+                .provider_read_intent(
+                    "agent",
+                    "account-transfer:transfer:agent:turns:0",
+                    "source",
+                    json!({"account":"source","connection":"source-conn","generation":2}),
+                    "thread/turns/list",
+                    json!({"threadId":"source-thread"}),
+                )
+                .unwrap(),
+        );
+        let unknown_op = "account-transfer:transfer:agent:turns:0";
+        let unknown_receipt = json!({"operation":unknown_op,"scope":{"account":"source","connection":"source-conn","generation":2},
+            "certainty":"unknown","ticket":{"generation":2,"id":5,"method":"thread/turns/list"}});
+        let held = after(
+            unknown
+                .provider_read_receipt("agent", unknown_op, unknown_receipt, None, "unknown")
+                .unwrap(),
+        );
+        assert_eq!(held.operation["members"]["agent"]["phase"], "unknown");
+        assert!(intent(&held).is_err());
     }
 }

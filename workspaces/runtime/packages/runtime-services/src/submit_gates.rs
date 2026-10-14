@@ -587,7 +587,9 @@ impl ExecutionSnapshot {
 pub struct ModelCapabilities {
     pub model: String,
     pub resolved_model: Option<String>,
+    pub is_default: bool,
     pub hidden: bool,
+    pub access_programs: Option<Vec<String>>,
     pub supported_efforts: Vec<String>,
     pub default_effort: Option<String>,
     pub priority: bool,

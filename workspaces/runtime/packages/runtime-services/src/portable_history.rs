@@ -443,17 +443,49 @@ pub fn export_history(
     let transaction = connection.transaction()?;
     let agent = AgentRepository::get(&transaction, &AgentId::from(input.agent_id.as_str()))?
         .ok_or(PortableHistoryError::SourceChanged)?;
-    let agent_value = agent.value();
-    let account_key = match agent_value.get("accountKey") {
-        None => "default",
-        Some(Value::String(account_key)) if !account_key.is_empty() => account_key,
-        _ => {
-            return Err(PortableHistoryError::InvalidArchive(
-                "stored account identity",
-            ));
+    let stored_agent = agent.value();
+    let mut agent_value = stored_agent.clone();
+    let lazy_transfer = stored_agent
+        .get("lazyAccountTransfer")
+        .filter(|value| value["id"].as_str() == Some(input.transfer_id.as_str()));
+    if let Some(lazy) = lazy_transfer {
+        let source = lazy
+            .get("sourceState")
+            .and_then(Value::as_object)
+            .ok_or(PortableHistoryError::SourceChanged)?;
+        for (key, value) in source {
+            agent_value[key] = value.clone();
+        }
+        agent_value["accountKey"] = lazy
+            .get("sourceAccountKey")
+            .cloned()
+            .ok_or(PortableHistoryError::SourceChanged)?;
+        agent_value["threadId"] = lazy.get("sourceThreadId").cloned().unwrap_or(Value::Null);
+    }
+    let account_key = if let Some(lazy) = lazy_transfer {
+        lazy.get("sourceAccountKey")
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+            .ok_or(PortableHistoryError::SourceChanged)?
+    } else {
+        match agent_value.get("accountKey") {
+            None => "default",
+            Some(Value::String(account_key)) if !account_key.is_empty() => account_key,
+            _ => {
+                return Err(PortableHistoryError::InvalidArchive(
+                    "stored account identity",
+                ));
+            }
         }
     };
-    let thread_id = optional_nonempty_string(&agent_value, "threadId")?;
+    let thread_id = if let Some(lazy) = lazy_transfer {
+        lazy.get("sourceThreadId")
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+            .map(str::to_owned)
+    } else {
+        optional_nonempty_string(&agent_value, "threadId")?
+    };
     if agent.id.0 != input.agent_id
         || account_key != input.account_key
         || agent.epoch != input.epoch

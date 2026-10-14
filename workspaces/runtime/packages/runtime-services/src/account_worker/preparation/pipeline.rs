@@ -66,7 +66,18 @@ fn catalog(
                             .get("resolvedModel")
                             .and_then(Value::as_str)
                             .map(str::to_owned),
+                        is_default: v.get("isDefault").and_then(Value::as_bool).unwrap_or(false),
                         hidden: v.get("hidden").and_then(Value::as_bool).unwrap_or(false),
+                        access_programs: v
+                            .pointer("/availableAccessPrograms/cyber")
+                            .and_then(Value::as_array)
+                            .map(|values| {
+                                values
+                                    .iter()
+                                    .filter_map(Value::as_str)
+                                    .map(str::to_owned)
+                                    .collect()
+                            }),
                         supported_efforts: v
                             .get("supportedReasoningEfforts")
                             .and_then(Value::as_array)
