@@ -329,8 +329,8 @@ fn send_to_descendant_is_followup_input_while_parent_and_broadcast_are_chat() {
     assert_eq!(chat_count, 1);
 }
 
-fn empty_runtime_ports() -> crate::provider_callbacks::ManagedToolRuntimePorts {
-    crate::provider_callbacks::ManagedToolRuntimePorts {
+fn empty_runtime_ports() -> crate::provider_callbacks::tools::ManagedToolRuntimePorts {
+    crate::provider_callbacks::tools::ManagedToolRuntimePorts {
         status_watch: None,
         child_creation: None,
         interrupt: None,

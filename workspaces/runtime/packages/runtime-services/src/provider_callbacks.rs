@@ -1,5 +1,9 @@
 //! Durable provider callbacks. Invoke once after journal admission, outside the
 //! journal transaction. No provider I/O occurs here; the account worker owns it.
+//!
+//! Managed monitor input uses the callback's stable tool request identity.
+//! HTTP monitor input has no caller identity; its retry contract remains an
+//! open owner decision and the HTTP entry point refuses it by name.
 mod cards;
 mod model;
 mod projection;
@@ -73,29 +77,7 @@ pub trait ManagedCreationAccountRead: Send + Sync {
     ) -> Result<ManagedAccountIdentity, ManagedCreationAccountError>;
 }
 
-/// One managed-tool operation port. Production adapters implement this in the
-/// final composition commit; tests can supply deterministic receipts.
-pub(crate) trait ManagedToolRuntimePort: Send + Sync {
-    fn dispatch(
-        &self,
-        store: &RuntimeStore,
-        actor: &crate::managed_host_tools::Actor,
-        tool: &str,
-        args: &Value,
-        request_id: &str,
-        now: f64,
-    ) -> Result<crate::managed_host_tools::DispatchedOperation, crate::managed_host_tools::Error>;
-}
-
-/// Explicit runtime capabilities for tools whose work must happen after the
-/// callback claim commits. An absent port is reported by its operation name.
-#[derive(Clone)]
-pub(crate) struct ManagedToolRuntimePorts {
-    pub(crate) status_watch: Option<std::sync::Arc<dyn ManagedToolRuntimePort>>,
-    pub(crate) child_creation: Option<std::sync::Arc<dyn ManagedToolRuntimePort>>,
-    pub(crate) interrupt: Option<std::sync::Arc<dyn ManagedToolRuntimePort>>,
-    pub(crate) monitor: Option<std::sync::Arc<dyn ManagedToolRuntimePort>>,
-}
+pub(crate) use tools::{ManagedToolRuntimePorts, MonitorPort};
 
 pub(crate) struct ManagedToolPortsConfig {
     pub(crate) wake: std::sync::Arc<tokio::sync::Notify>,
@@ -124,25 +106,6 @@ pub fn dispatch(
         now,
         &crate::managed_host_tools::UnavailablePorts,
     )
-}
-
-/// Callback entry for a retained host worker that owns the local service
-/// bundle. The account worker constructs this path after binding the callback
-/// to its live connection, thread and turn context.
-pub(crate) fn dispatch_with_managed_services(
-    store: &RuntimeStore,
-    context: &CallbackContext,
-    frame: &Frame,
-    now: f64,
-    runtime_ports: ManagedToolRuntimePorts,
-) -> Result<CallbackDecision, CallbackError> {
-    let Some(request) = model::Input::from_frame(frame)? else {
-        return Ok(CallbackDecision::Unsupported);
-    };
-    if request.method == "item/tool/call" {
-        return tools::dispatch_with_production_ports(store, context, &request, now, runtime_ports);
-    }
-    dispatch(store, context, frame, now)
 }
 
 /// Construct the real host bundle from the retained account callback path.

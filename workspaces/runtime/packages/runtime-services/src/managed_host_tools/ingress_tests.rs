@@ -9,7 +9,7 @@ use crate::managed_host_tools::{
 };
 use crate::provider_callbacks::{
     CallbackContext, CallbackDecision, CallbackError, ManagedToolPortsConfig,
-    ManagedToolRuntimePort, ManagedToolRuntimePorts, dispatch_with_managed_tools,
+    ManagedToolRuntimePorts, dispatch_with_managed_tools,
 };
 use rusqlite::types::ValueRef;
 use rusqlite::{Transaction, params};
@@ -339,27 +339,39 @@ fn post_commit_dispatch_saves_receipt_before_reply_and_replay_does_not_dispatch_
     assert_eq!(ports.dispatched.load(Ordering::SeqCst), 1);
 }
 
-struct ScriptedManagedPort {
+struct ScriptedMonitorPort {
     certainty: crate::managed_host_tools::DeliveryCertainty,
     calls: AtomicUsize,
-    request_ids: Mutex<Vec<String>>,
+    tickets: Mutex<Vec<String>>,
 }
 
-impl ManagedToolRuntimePort for ScriptedManagedPort {
-    fn dispatch(
+impl crate::provider_callbacks::MonitorPort for ScriptedMonitorPort {
+    fn create(
         &self,
         _: &RuntimeStore,
         _: &Actor,
-        _: &str,
         _: &Value,
-        request_id: &str,
+        _: &str,
+        _: f64,
+    ) -> Result<OperationResult, Error> {
+        Err(Error::Unavailable("test/unused-monitor-create"))
+    }
+
+    fn input(
+        &self,
+        _: &RuntimeStore,
+        _: &str,
+        _: i64,
+        _: &str,
+        ticket: &str,
+        _: &Value,
         _: f64,
     ) -> Result<crate::managed_host_tools::DispatchedOperation, Error> {
         self.calls.fetch_add(1, Ordering::SeqCst);
-        self.request_ids.lock().unwrap().push(request_id.to_owned());
+        self.tickets.lock().unwrap().push(ticket.to_owned());
         Ok(crate::managed_host_tools::DispatchedOperation {
             result: OperationResult {
-                value: json!({"requestId":request_id}),
+                value: json!({"ticket":ticket}),
                 signals: Vec::new(),
             },
             certainty: self.certainty,
@@ -370,74 +382,137 @@ impl ManagedToolRuntimePort for ScriptedManagedPort {
             },
         })
     }
+
+    fn cancel_monitor(&self, _: &str, _: &str, _: f64) -> Result<(), Error> {
+        Ok(())
+    }
 }
 
 fn managed_ports(
-    status_watch: Option<Arc<dyn ManagedToolRuntimePort>>,
-    child_creation: Option<Arc<dyn ManagedToolRuntimePort>>,
-    interrupt: Option<Arc<dyn ManagedToolRuntimePort>>,
-    monitor: Option<Arc<dyn ManagedToolRuntimePort>>,
+    monitor: Option<Arc<dyn crate::provider_callbacks::MonitorPort>>,
 ) -> ManagedToolPortsConfig {
     ManagedToolPortsConfig {
         wake: Arc::new(tokio::sync::Notify::new()),
         monitor_dispatch_wake: Arc::new(tokio::sync::Notify::new()),
         runtime_ports: ManagedToolRuntimePorts {
-            status_watch,
-            child_creation,
-            interrupt,
+            status_watch: None,
+            child_creation: None,
+            interrupt: None,
             monitor,
         },
     }
 }
 
+fn managed_monitor_id() -> String {
+    template().value["managedToolCases"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|case| case["tool"] == "orchestration_context")
+        .unwrap()["arguments"]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned()
+}
+
 #[test]
-fn managed_runtime_ports_preserve_delivery_certainty_identity_and_unknown_replay() {
+fn managed_monitor_input_checks_owner_and_preserves_delivery_receipts_on_replay() {
     for certainty in [
         crate::managed_host_tools::DeliveryCertainty::Written,
         crate::managed_host_tools::DeliveryCertainty::NotSent,
         crate::managed_host_tools::DeliveryCertainty::Unknown,
     ] {
         let (_root, store, context) = fixture();
-        let fake = Arc::new(ScriptedManagedPort {
+        let fake = Arc::new(ScriptedMonitorPort {
             certainty,
             calls: AtomicUsize::new(0),
-            request_ids: Mutex::new(Vec::new()),
+            tickets: Mutex::new(Vec::new()),
         });
-        let config = managed_ports(Some(fake.clone()), None, None, None);
         let frame = call(
             &context,
-            "stable-dispatch-id",
-            "orchestration_status",
-            json!({}),
+            "stable-monitor-input",
+            "orchestration_monitor_input",
+            json!({"monitor_id":managed_monitor_id(),"text":"hello"}),
         );
         let ports = crate::provider_callbacks::managed_tool_ports_with_runtime(
-            &store, &context, &frame, config,
+            &store,
+            &context,
+            &frame,
+            managed_ports(Some(fake.clone())),
         )
         .unwrap();
-        let first = dispatch_with_managed_tools(&store, &context, &frame, 20.0, &ports).unwrap();
-        assert!(matches!(first, CallbackDecision::Answer(_)));
-        let replay = dispatch_with_managed_tools(&store, &context, &frame, 21.0, &ports).unwrap();
-        assert!(matches!(replay, CallbackDecision::Answer(_)));
+        dispatch_with_managed_tools(&store, &context, &frame, 20.0, &ports).unwrap();
+        dispatch_with_managed_tools(&store, &context, &frame, 21.0, &ports).unwrap();
         assert_eq!(fake.calls.load(Ordering::SeqCst), 1);
         assert_eq!(
-            *fake.request_ids.lock().unwrap(),
-            ["thread-0:stable-dispatch-id"]
+            *fake.tickets.lock().unwrap(),
+            ["thread-0:stable-monitor-input"]
         );
-        let receipt = studio_runtime_store::system_reads::all(
+        let row = studio_runtime_store::system_reads::all(
             &store.read().unwrap(),
             "runtime_tool_requests",
         )
         .unwrap()
         .into_iter()
-        .find(|row| row["callId"] == "stable-dispatch-id")
+        .find(|row| row["callId"] == "stable-monitor-input")
         .unwrap();
         let expected = match certainty {
             crate::managed_host_tools::DeliveryCertainty::Written => "written",
             crate::managed_host_tools::DeliveryCertainty::NotSent => "not_sent",
             crate::managed_host_tools::DeliveryCertainty::Unknown => "unknown",
         };
-        assert_eq!(receipt["deliveryCertainty"], expected);
+        assert_eq!(row["deliveryCertainty"], expected);
     }
+
+    let (_root, store, _lead_context) = fixture();
+    let worker = &template().value["agents"][1];
+    let worker_context = CallbackContext {
+        agent: worker["id"].as_str().unwrap().to_owned(),
+        account: "default".into(),
+        connection: "connection".into(),
+        generation: 7,
+        epoch: worker["epoch"].as_u64().unwrap(),
+        thread: worker["threadId"].as_str().unwrap().to_owned(),
+        turn: worker["turnId"].as_str().unwrap().to_owned(),
+    };
+    let fake = Arc::new(ScriptedMonitorPort {
+        certainty: crate::managed_host_tools::DeliveryCertainty::Written,
+        calls: AtomicUsize::new(0),
+        tickets: Mutex::new(Vec::new()),
+    });
+    let before = application_table_snapshot(&store);
+    let frame = call(
+        &worker_context,
+        "foreign-monitor-input",
+        "orchestration_monitor_input",
+        json!({"monitor_id":managed_monitor_id(),"text":"no"}),
+    );
+    let ports = crate::provider_callbacks::managed_tool_ports_with_runtime(
+        &store,
+        &worker_context,
+        &frame,
+        managed_ports(Some(fake.clone())),
+    )
+    .unwrap();
+    let _ = dispatch_with_managed_tools(&store, &worker_context, &frame, 20.0, &ports);
+    assert_eq!(
+        fake.calls.load(Ordering::SeqCst),
+        0,
+        "foreign input reached runtime"
+    );
+    let after = application_table_snapshot(&store);
+    let before_monitor = before
+        .iter()
+        .find(|row| row.0 == "runtime_monitors")
+        .unwrap();
+    let after_monitor = after
+        .iter()
+        .find(|row| row.0 == "runtime_monitors")
+        .unwrap();
+    assert_eq!(
+        before_monitor, after_monitor,
+        "foreign input changed monitor state"
+    );
 }
 
 #[test]
@@ -461,7 +536,7 @@ fn each_missing_managed_runtime_port_refuses_without_domain_writes() {
         (
             "orchestration_monitor",
             json!({"command":"true"}),
-            "monitor-runtime/managed-tools",
+            "monitor-runtime/managed-create",
         ),
         (
             "orchestration_monitor_input",
@@ -477,7 +552,7 @@ fn each_missing_managed_runtime_port_refuses_without_domain_writes() {
             &store,
             &context,
             &frame,
-            managed_ports(None, None, None, None),
+            managed_ports(None),
         )
         .unwrap();
         let decision = dispatch_with_managed_tools(&store, &context, &frame, 20.0, &ports).unwrap();
@@ -730,7 +805,6 @@ fn named_refusals_leave_all_application_tables_unchanged() {
             "orchestration_monitor",
             json!({"command":"true"}),
             "workspace-state/monitor-admission",
-
         ),
         (
             "orchestration_monitor_input",

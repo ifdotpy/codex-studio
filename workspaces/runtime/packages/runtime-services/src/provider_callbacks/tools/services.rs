@@ -19,7 +19,7 @@ pub(crate) struct ProductionPorts {
     admission: crate::message_admission::PreparedAdmission,
     event_wake: std::sync::Arc<tokio::sync::Notify>,
     monitor_dispatch_wake: std::sync::Arc<tokio::sync::Notify>,
-    runtime_ports: crate::provider_callbacks::ManagedToolRuntimePorts,
+    runtime_ports: super::ManagedToolRuntimePorts,
 }
 
 pub(crate) struct ProductionPortsConfig {
@@ -28,7 +28,7 @@ pub(crate) struct ProductionPortsConfig {
     pub(crate) admission: crate::message_admission::PreparedAdmission,
     pub(crate) event_wake: std::sync::Arc<tokio::sync::Notify>,
     pub(crate) monitor_dispatch_wake: std::sync::Arc<tokio::sync::Notify>,
-    pub(crate) runtime_ports: crate::provider_callbacks::ManagedToolRuntimePorts,
+    pub(crate) runtime_ports: super::ManagedToolRuntimePorts,
 }
 
 impl ProductionPorts {
@@ -202,6 +202,22 @@ impl crate::managed_host_tools::ChildCreationPort for ProductionPorts {
 }
 
 impl crate::managed_host_tools::InterruptPort for ProductionPorts {
+    fn resolve_target(
+        &self,
+        tx: &Transaction<'_>,
+        _: &crate::managed_host_tools::Actor,
+        supplied: &str,
+    ) -> Result<String, crate::managed_host_tools::Error> {
+        let snapshot = super::super::storage::snapshot(tx, &self.context)
+            .map_err(|_| crate::managed_host_tools::Error::Stale)?;
+        messages::resolve_agent(tx, &snapshot, supplied).map_err(|error| match error {
+            CallbackError::Store(error) => crate::managed_host_tools::Error::Store(error),
+            CallbackError::Stored(_) => crate::managed_host_tools::Error::Stale,
+            CallbackError::Invalid(message) => crate::managed_host_tools::Error::Invalid(message),
+            _ => crate::managed_host_tools::Error::Invalid("Unknown managed agent"),
+        })
+    }
+
     fn interrupt_in_transaction(
         &self,
         _: &Transaction<'_>,
@@ -479,37 +495,15 @@ impl crate::managed_host_tools::PostCommitPort for ProductionPorts {
         Option<crate::managed_host_tools::DispatchedOperation>,
         crate::managed_host_tools::Error,
     > {
-        let (port, refusal) = match tool {
-            "orchestration_status" | "orchestration_watch" => (
-                self.runtime_ports.status_watch.as_deref(),
-                "model-directory/status-and-dispatch-capacity",
-            ),
-            "orchestration_spawn" | "orchestration_review" => (
-                self.runtime_ports.child_creation.as_deref(),
-                "agent-create/worker-driver",
-            ),
-            "orchestration_interrupt" => (
-                self.runtime_ports.interrupt.as_deref(),
-                "agent-lifecycle/production-ports",
-            ),
-            "orchestration_monitor" if args["action"].as_str() != Some("cancel") => (
-                self.runtime_ports.monitor.as_deref(),
-                "monitor-runtime/managed-tools",
-            ),
-            "orchestration_monitor_input" => (
-                self.runtime_ports.monitor.as_deref(),
-                "monitor-runtime/managed-input",
-            ),
-            _ => return Ok(None),
-        };
-        match port {
-            Some(port) => port
-                .dispatch(store, actor, tool, args, request_id, now)
-                .map(Some),
-            None => Ok(Some(not_sent(
-                crate::managed_host_tools::Error::Unavailable(refusal),
-            ))),
-        }
+        super::runtime_dispatch::dispatch(
+            store,
+            actor,
+            tool,
+            args,
+            request_id,
+            now,
+            &self.runtime_ports,
+        )
     }
 
     fn release(
@@ -526,19 +520,6 @@ impl crate::managed_host_tools::PostCommitPort for ProductionPorts {
             }
         }
         Ok(())
-    }
-}
-
-fn not_sent(
-    error: crate::managed_host_tools::Error,
-) -> crate::managed_host_tools::DispatchedOperation {
-    crate::managed_host_tools::DispatchedOperation {
-        result: crate::managed_host_tools::OperationResult {
-            value: json!(error.to_string()),
-            signals: Vec::new(),
-        },
-        certainty: crate::managed_host_tools::DeliveryCertainty::NotSent,
-        applied: Some(false),
     }
 }
 
@@ -888,274 +869,4 @@ fn page(rows: Vec<Value>, args: &Value, scope: Value) -> Result<Value, CallbackE
     Ok(
         json!({"apiVersion":2,"items":rows[offset..end],"total":rows.len(),"revision":revision,"nextCursor":cursor}),
     )
-}
-
-#[cfg(test)]
-fn account_identity_from_snapshot(
-    snapshot: &crate::account_policy::AccountsSnapshot,
-    account_key: &str,
-) -> Result<
-    crate::provider_callbacks::ManagedAccountIdentity,
-    crate::provider_callbacks::ManagedCreationAccountError,
-> {
-    let row = snapshot
-        .accounts
-        .iter()
-        .find(|row| row.get("id").and_then(Value::as_str) == Some(account_key))
-        .or_else(|| {
-            snapshot
-                .archived_accounts
-                .iter()
-                .find(|row| row.get("id").and_then(Value::as_str) == Some(account_key))
-        })
-        .ok_or(crate::provider_callbacks::ManagedCreationAccountError::Unknown)?;
-    if row.get("deleted").and_then(Value::as_bool) == Some(true) {
-        return Err(crate::provider_callbacks::ManagedCreationAccountError::Deleted);
-    }
-    if row.get("disconnected").and_then(Value::as_bool) == Some(true) {
-        return Err(crate::provider_callbacks::ManagedCreationAccountError::Disconnected);
-    }
-    let string_field = |name: &str| row.get(name).and_then(Value::as_str).map(str::to_owned);
-    Ok(crate::provider_callbacks::ManagedAccountIdentity {
-        provider: Some(string_field("provider").unwrap_or_else(|| "codex".to_owned())),
-        home: string_field("home"),
-        account_id: string_field("accountId"),
-        email: string_field("email"),
-    })
-}
-
-#[cfg(test)]
-fn validate_worker_account_selection(
-    snapshot: &crate::account_policy::AccountsSnapshot,
-    account_key: &str,
-    parent_account_key: &str,
-    status: crate::account_driver::AccountStatus,
-) -> Result<(), crate::provider_callbacks::ManagedCreationAccountError> {
-    if account_key == parent_account_key || status == crate::account_driver::AccountStatus::Ready {
-        return Ok(());
-    }
-    let can_attempt_native_proof = snapshot
-        .accounts
-        .iter()
-        .find(|row| row.get("id").and_then(Value::as_str) == Some(account_key))
-        .and_then(|row| row.get("canAttemptNativeProof"))
-        .and_then(Value::as_bool)
-        == Some(true);
-    if can_attempt_native_proof {
-        return Ok(());
-    }
-    Err(crate::provider_callbacks::ManagedCreationAccountError::SignInRequired)
-}
-
-#[cfg(test)]
-fn ordered_worker_account_candidates<'a>(
-    listing: &'a crate::provider_callbacks::ManagedCreationAccountListing,
-    parent_account_key: &str,
-    excluded_account_keys: &[String],
-    project_account_keys: Option<&[String]>,
-) -> Vec<&'a crate::provider_callbacks::ManagedCreationAccountCandidate> {
-    let mut seen = std::collections::HashSet::new();
-    let mut ordered = Vec::new();
-    for account_key in [
-        Some(parent_account_key),
-        listing.default_account_key.as_deref(),
-    ]
-    .into_iter()
-    .flatten()
-    .chain(
-        listing
-            .accounts
-            .iter()
-            .map(|candidate| candidate.account_key.as_str()),
-    ) {
-        if !seen.insert(account_key.to_owned())
-            || excluded_account_keys
-                .iter()
-                .any(|excluded| excluded == account_key)
-            || project_account_keys.is_some_and(|keys| {
-                !keys.is_empty() && !keys.iter().any(|allowed| allowed == account_key)
-            })
-        {
-            continue;
-        }
-        let Some(candidate) = listing
-            .accounts
-            .iter()
-            .find(|row| row.account_key == account_key)
-        else {
-            continue;
-        };
-        let is_parent = account_key == parent_account_key;
-        if candidate.disconnected
-            || candidate.deleted
-            || candidate.duplicate
-            || (!is_parent && !candidate.ready && !candidate.can_attempt_native_proof)
-        {
-            continue;
-        }
-        ordered.push(candidate);
-    }
-    ordered
-}
-
-#[cfg(test)]
-mod account_identity_tests {
-    use super::*;
-    use std::collections::HashSet;
-
-    fn candidate(
-        account_key: &str,
-        ready: bool,
-        can_attempt_native_proof: bool,
-    ) -> crate::provider_callbacks::ManagedCreationAccountCandidate {
-        crate::provider_callbacks::ManagedCreationAccountCandidate {
-            account_key: account_key.to_owned(),
-            identity: crate::provider_callbacks::ManagedAccountIdentity {
-                provider: Some("codex".to_owned()),
-                home: None,
-                account_id: None,
-                email: None,
-            },
-            ready,
-            can_attempt_native_proof,
-            disconnected: false,
-            deleted: false,
-            duplicate: false,
-        }
-    }
-
-    fn snapshot(accounts: Vec<Value>) -> crate::account_policy::AccountsSnapshot {
-        crate::account_policy::AccountsSnapshot {
-            accounts,
-            archived_accounts: Vec::new(),
-            default_account_key: Value::String("default".into()),
-            logins: Vec::new(),
-            known_account_keys: HashSet::new(),
-        }
-    }
-
-    #[test]
-    fn selected_account_identity_uses_account_driver_projection() {
-        let accounts = snapshot(vec![json!({
-            "id":"alternate",
-            "provider":"claude",
-            "home":"/profiles/claude",
-            "accountId":"claude-user",
-            "email":"worker@example.invalid",
-            "status":"ready"
-        })]);
-
-        let identity = account_identity_from_snapshot(&accounts, "alternate")
-            .expect("selected account identity");
-
-        assert_eq!(identity.provider.as_deref(), Some("claude"));
-        assert_eq!(identity.home.as_deref(), Some("/profiles/claude"));
-        assert_eq!(identity.account_id.as_deref(), Some("claude-user"));
-        assert_eq!(identity.email.as_deref(), Some("worker@example.invalid"));
-    }
-
-    #[test]
-    fn selected_account_identity_rejects_unknown_deleted_and_disconnected_profiles() {
-        let mut accounts = snapshot(vec![json!({"id":"offline", "disconnected":true})]);
-        accounts
-            .archived_accounts
-            .push(json!({"id":"deleted", "deleted":true}));
-
-        assert!(matches!(
-            account_identity_from_snapshot(&accounts, "missing"),
-            Err(crate::provider_callbacks::ManagedCreationAccountError::Unknown)
-        ));
-        assert!(matches!(
-            account_identity_from_snapshot(&accounts, "deleted"),
-            Err(crate::provider_callbacks::ManagedCreationAccountError::Deleted)
-        ));
-        assert!(matches!(
-            account_identity_from_snapshot(&accounts, "offline"),
-            Err(crate::provider_callbacks::ManagedCreationAccountError::Disconnected)
-        ));
-    }
-
-    #[test]
-    fn worker_account_selection_matches_python_readiness_policy() {
-        let accounts = snapshot(vec![
-            json!({"id":"parent", "status":"signedOut"}),
-            json!({"id":"ready", "status":"ready"}),
-            json!({"id":"proof", "status":"error", "canAttemptNativeProof":true}),
-            json!({"id":"signed-out", "status":"signedOut"}),
-        ]);
-        assert!(
-            validate_worker_account_selection(
-                &accounts,
-                "parent",
-                "parent",
-                crate::account_driver::AccountStatus::SignedOut,
-            )
-            .is_ok()
-        );
-        assert!(
-            validate_worker_account_selection(
-                &accounts,
-                "ready",
-                "parent",
-                crate::account_driver::AccountStatus::Ready,
-            )
-            .is_ok()
-        );
-        assert!(
-            validate_worker_account_selection(
-                &accounts,
-                "proof",
-                "parent",
-                crate::account_driver::AccountStatus::Error,
-            )
-            .is_ok()
-        );
-        assert!(matches!(
-            validate_worker_account_selection(
-                &accounts,
-                "signed-out",
-                "parent",
-                crate::account_driver::AccountStatus::SignedOut,
-            ),
-            Err(crate::provider_callbacks::ManagedCreationAccountError::SignInRequired)
-        ));
-    }
-
-    #[test]
-    fn implicit_worker_accounts_follow_python_order_and_filters() {
-        let mut duplicate = candidate("duplicate", true, false);
-        duplicate.duplicate = true;
-        let mut disconnected = candidate("disconnected", true, false);
-        disconnected.disconnected = true;
-        let listing = crate::provider_callbacks::ManagedCreationAccountListing {
-            default_account_key: Some("default".into()),
-            accounts: vec![
-                candidate("ready-later", true, false),
-                candidate("parent", false, false),
-                candidate("default", true, false),
-                candidate("native-proof", false, true),
-                candidate("excluded", true, false),
-                duplicate,
-                disconnected,
-                candidate("signed-out", false, false),
-            ],
-        };
-        let excluded = vec!["excluded".to_owned()];
-        let selected = ordered_worker_account_candidates(&listing, "parent", &excluded, None)
-            .into_iter()
-            .map(|candidate| candidate.account_key.as_str())
-            .collect::<Vec<_>>();
-
-        assert_eq!(
-            selected,
-            ["parent", "default", "ready-later", "native-proof"]
-        );
-        let project = vec!["native-proof".to_owned(), "ready-later".to_owned()];
-        let project_selected =
-            ordered_worker_account_candidates(&listing, "parent", &excluded, Some(&project))
-                .into_iter()
-                .map(|candidate| candidate.account_key.as_str())
-                .collect::<Vec<_>>();
-        assert_eq!(project_selected, ["ready-later", "native-proof"]);
-    }
 }

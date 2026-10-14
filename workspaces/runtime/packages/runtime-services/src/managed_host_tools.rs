@@ -227,6 +227,22 @@ pub(crate) trait SendPort {
 /// P10 lifecycle writes are staged in the callback transaction. The caller
 /// drains the committed lifecycle effects only after that outer transaction.
 pub(crate) trait InterruptPort {
+    /// Resolve a user-supplied visible agent ID or prefix before the descendant
+    /// scope check. Implementations must reject short and ambiguous prefixes.
+    fn resolve_target(
+        &self,
+        _: &Transaction<'_>,
+        _: &Actor,
+        supplied: &str,
+    ) -> Result<String, Error> {
+        if supplied.chars().count() < 8 {
+            return Err(Error::Invalid(
+                "Too short agent ID; use at least 8 characters",
+            ));
+        }
+        Ok(supplied.to_owned())
+    }
+
     fn interrupt_in_transaction(
         &self,
         tx: &Transaction<'_>,
@@ -577,8 +593,9 @@ pub(crate) fn execute(
         ManagedHostTool::Spawn => spawn(tx, actor, &call, now, ports)?,
         ManagedHostTool::Send => ports.send(tx, actor, &call.args, &call.request_id, now)?,
         ManagedHostTool::Interrupt => {
-            let target = required_text(&call.args, "agent_id")?;
-            if !is_descendant(tx, actor, target)? {
+            let supplied = required_text(&call.args, "agent_id")?;
+            let target = ports.resolve_target(tx, actor, supplied)?;
+            if !is_descendant(tx, actor, &target)? {
                 return Err(Error::Invalid("You can interrupt only your descendants"));
             }
             let reason = format!(
@@ -590,7 +607,7 @@ pub(crate) fn execute(
                     .unwrap_or(&actor.id)
             );
             let reason = reason.chars().take(160).collect::<String>();
-            ports.interrupt_in_transaction(tx, actor, target, &reason, &call.request_id, now)?
+            ports.interrupt_in_transaction(tx, actor, &target, &reason, &call.request_id, now)?
         }
         ManagedHostTool::Status => ports.status(tx, actor, &call.args)?,
         ManagedHostTool::Search => ports.search(tx, actor, &call.args)?,

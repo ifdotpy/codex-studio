@@ -5,7 +5,9 @@ use serde_json::{Value, json};
 use studio_runtime_providers::{RequestId, ResponseBody};
 use studio_runtime_store::{RuntimeStore, system_reads as records};
 
+mod runtime_dispatch;
 pub(crate) mod services;
+pub(crate) use runtime_dispatch::{ManagedToolRuntimePorts, MonitorPort};
 impl From<tool_requests::ToolRequestError> for CallbackError {
     fn from(error: tool_requests::ToolRequestError) -> Self {
         match error {
@@ -382,26 +384,6 @@ pub(super) fn dispatch_with_ports<P: crate::managed_host_tools::Ports>(
         })?;
     }
     Ok(decision)
-}
-
-pub(super) fn dispatch_with_production_ports(
-    store: &RuntimeStore,
-    context: &CallbackContext,
-    input: &Input,
-    now: f64,
-    runtime_ports: crate::provider_callbacks::ManagedToolRuntimePorts,
-) -> Result<CallbackDecision, CallbackError> {
-    let ports = production_ports(
-        store,
-        context,
-        input,
-        crate::provider_callbacks::ManagedToolPortsConfig {
-            wake: std::sync::Arc::new(tokio::sync::Notify::new()),
-            monitor_dispatch_wake: std::sync::Arc::new(tokio::sync::Notify::new()),
-            runtime_ports,
-        },
-    )?;
-    dispatch_with_ports(store, context, input, now, &ports)
 }
 
 pub(super) fn production_ports(
