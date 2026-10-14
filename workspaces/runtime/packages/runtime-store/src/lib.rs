@@ -480,10 +480,9 @@ impl RuntimeStore {
                     if changed {
                         self.committed_change_generation
                             .fetch_add(1, Ordering::Release);
-                        self.notify_commit();
                     }
                     let generation = self.committed_change_generation();
-                    Ok((value, generation))
+                    Ok((value, generation, changed))
                 }
                 Err(error) => {
                     // Dropping rolls back best-effort. Preserve the operation's
@@ -495,6 +494,12 @@ impl RuntimeStore {
         })();
         let hold = holding.map_or(Duration::ZERO, |started| started.elapsed());
         drop(writer);
+        let outcome = outcome.map(|(value, generation, changed)| {
+            if changed {
+                self.notify_commit();
+            }
+            (value, generation)
+        });
         if diagnostics_enabled {
             emit_diagnostic(StoreDiagnosticsEvent::WriterTransaction { wait, hold });
         }
@@ -782,9 +787,9 @@ mod commit_notification_tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     #[test]
-    fn commit_notifies_only_after_a_transaction_changes_rows() {
+    fn commit_notifies_after_releasing_writer_for_changed_rows() {
         let directory = tempfile::tempdir().expect("temporary state directory");
-        let store = RuntimeStore {
+        let store = Arc::new(RuntimeStore {
             root: directory.path().to_path_buf(),
             _runtime_lock: RuntimeLock::acquire(directory.path()).expect("runtime lock"),
             writer: Mutex::new(Connection::open_in_memory().expect("writer connection")),
@@ -794,10 +799,19 @@ mod commit_notification_tests {
             committed_change_generation: AtomicU64::new(0),
             last_entity_projection_state: Mutex::new(None),
             entity_projection_maintenance_lock: Mutex::new(()),
-        };
+        });
         let notifications = Arc::new(AtomicUsize::new(0));
         let notified = Arc::clone(&notifications);
+        let weak_store = Arc::downgrade(&store);
         store.set_commit_notifier(move || {
+            assert!(
+                weak_store
+                    .upgrade()
+                    .expect("store remains alive")
+                    .writer
+                    .try_lock()
+                    .is_ok()
+            );
             notified.fetch_add(1, Ordering::Relaxed);
         });
         let observer_notifications = Arc::new(AtomicUsize::new(0));
