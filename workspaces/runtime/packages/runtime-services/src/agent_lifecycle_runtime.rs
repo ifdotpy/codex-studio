@@ -117,6 +117,31 @@ pub fn execute(
     Ok(result)
 }
 
+/// Actor-bound managed interrupt. Authorization against the sender epoch and
+/// descendant tree occurs inside the same transaction that stages the stop.
+pub fn stop_by_agent(
+    store: &RuntimeStore,
+    sender: &str,
+    sender_epoch: i64,
+    target: &str,
+    descendants: bool,
+    now: f64,
+    ports: &dyn LifecyclePorts,
+) -> Result<Value, ManagementError> {
+    execute(
+        store,
+        &Action::Stop {
+            target: target.to_owned(),
+            descendants,
+            reason: None,
+            sender: Some(sender.to_owned()),
+            sender_epoch: Some(sender_epoch),
+        },
+        now,
+        ports,
+    )
+}
+
 /// Reserved worker integration calls this instead of its local epoch mutation.
 /// The caller owns commit and wakes/drains its existing effects only afterward.
 pub fn execute_in_transaction(

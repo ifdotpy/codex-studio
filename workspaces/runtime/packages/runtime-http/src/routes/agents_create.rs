@@ -243,11 +243,6 @@ async fn create_agent(
     State(state): State<HttpState>,
     ApiJson(body): ApiJson<generated::CreateAgentRequest>,
 ) -> Result<Json<Value>, ApiError> {
-    if state.store.is_none() && state.account_driver.is_none() {
-        return Err(operation_error(OperationError::Unavailable(
-            "account-driver/unavailable",
-        )));
-    }
     let request = Creation {
         intent: serde_json::to_value(&body).map_err(|_| ApiError::internal())?,
         catalog: body.model.is_some()

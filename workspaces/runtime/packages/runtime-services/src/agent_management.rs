@@ -56,6 +56,12 @@ pub enum Action {
     Stop {
         target: String,
         descendants: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        sender: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        sender_epoch: Option<i64>,
     },
     Delete {
         target: String,
@@ -287,6 +293,41 @@ impl ManagementSnapshot {
             )?)?;
         }
         Ok(target)
+    }
+    fn authorize_interrupt(
+        &self,
+        sender: &str,
+        epoch: i64,
+        target: &str,
+    ) -> Result<(&Agent, &Agent), ManagementError> {
+        let sender = self.agent(sender)?;
+        if sender.flag("deletedAt")
+            || sender.identity.auto_wake != Some(true)
+            || sender.identity.epoch != epoch
+        {
+            return Err(ManagementError::Invalid("Sender was stopped"));
+        }
+        let target_agent = self.agent(target)?;
+        if target_agent.identity.root_id != sender.identity.root_id
+            || target_agent.id() == sender.id()
+        {
+            return Err(ManagementError::Invalid(
+                "You can interrupt only your descendants",
+            ));
+        }
+        let mut current = target_agent;
+        let mut seen = BTreeSet::new();
+        while current.identity.parent_id.as_deref() != Some(sender.id()) {
+            if !seen.insert(current.id()) {
+                return Err(ManagementError::Invalid(
+                    "You can interrupt only your descendants",
+                ));
+            }
+            current = self.agent(current.identity.parent_id.as_deref().ok_or(
+                ManagementError::Invalid("You can interrupt only your descendants"),
+            )?)?;
+        }
+        Ok((sender, target_agent))
     }
     fn descendants(&self, target: &str, descendants: bool) -> Result<Vec<&Agent>, ManagementError> {
         self.agent(target)?;
@@ -585,8 +626,40 @@ fn decide_inner(
         Action::Stop {
             target,
             descendants,
-        } => stop(snapshot, target, *descendants, false, now, live),
-        Action::Delete { target } => stop(snapshot, target, true, true, now, live),
+            reason,
+            sender,
+            sender_epoch,
+        } => {
+            let reason = if let Some(sender) = sender {
+                let epoch = sender_epoch.ok_or(ManagementError::Invalid("senderEpoch"))?;
+                let (sender, _) = snapshot.authorize_interrupt(sender, epoch, target)?;
+                Some(
+                    format!(
+                        "Stopped by agent {}",
+                        sender
+                            .record
+                            .get("name")
+                            .and_then(Value::as_str)
+                            .unwrap_or(sender.id())
+                    )
+                    .chars()
+                    .take(160)
+                    .collect(),
+                )
+            } else {
+                reason.clone()
+            };
+            stop(
+                snapshot,
+                target,
+                *descendants,
+                false,
+                reason.as_deref(),
+                now,
+                live,
+            )
+        }
+        Action::Delete { target } => stop(snapshot, target, true, true, None, now, live),
         Action::Archive {
             actor,
             epoch,
@@ -625,6 +698,7 @@ fn stop(
     target: &str,
     descendants: bool,
     delete: bool,
+    reason: Option<&str>,
     now: f64,
     live: bool,
 ) -> Result<Decision, ManagementError> {
@@ -691,6 +765,17 @@ fn stop(
     } else {
         json!({"stopped":ids})
     };
+    let reason = if delete {
+        "Conversation deleted".to_owned()
+    } else if let Some(reason) = reason {
+        let reason = python_strip(reason);
+        if reason.is_empty() || reason.chars().count() > 160 {
+            return Err(ManagementError::Invalid("Invalid stop reason"));
+        }
+        reason.to_owned()
+    } else {
+        "Stopped by user".to_owned()
+    };
     let mut decision = Decision::result(result);
     for agent in agents {
         let mut record = agent.record.clone();
@@ -710,14 +795,7 @@ fn stop(
         object.insert("autoWake".to_owned(), json!(false));
         object.insert("epoch".to_owned(), json!(epoch));
         object.insert("status".to_owned(), json!("paused"));
-        object.insert(
-            "error".to_owned(),
-            json!(if delete {
-                "Conversation deleted"
-            } else {
-                "Stopped by user"
-            }),
-        );
+        object.insert("error".to_owned(), json!(reason.clone()));
         if delete && !agent.flag("deletedAt") {
             object.insert("deletedAt".to_owned(), json!(now));
         }

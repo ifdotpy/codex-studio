@@ -92,6 +92,43 @@ fn malformed_stored_lifecycle_identity_is_located() {
 }
 
 #[test]
+fn managed_interrupt_requires_current_sender_and_descendant_scope() {
+    let records: Records =
+        serde_json::from_value(corpus()[0]["records"].clone()).expect("lifecycle rows");
+    let snapshot = ManagementSnapshot::from_records(records).expect("snapshot");
+    let action = |sender_epoch| Action::Stop {
+        target: "worker".to_owned(),
+        descendants: true,
+        reason: None,
+        sender: Some("lead".to_owned()),
+        sender_epoch: Some(sender_epoch),
+    };
+    assert!(matches!(
+        decide(&snapshot, &action(2), 42.0),
+        Err(ManagementError::Invalid("Sender was stopped"))
+    ));
+    assert!(matches!(
+        decide(&snapshot, &action(3), 42.0),
+        Err(ManagementError::Unavailable(
+            "event-driver/child-stop-notification"
+        ))
+    ));
+    let foreign = Action::Stop {
+        target: "lead".to_owned(),
+        descendants: true,
+        reason: None,
+        sender: Some("worker".to_owned()),
+        sender_epoch: Some(8),
+    };
+    assert!(matches!(
+        decide(&snapshot, &foreign, 42.0),
+        Err(ManagementError::Invalid(
+            "You can interrupt only your descendants"
+        ))
+    ));
+}
+
+#[test]
 fn missing_native_and_workspace_effects_produce_no_decision() {
     let base = corpus().remove(0)["records"].clone();
     for (field, value, dependency) in [
