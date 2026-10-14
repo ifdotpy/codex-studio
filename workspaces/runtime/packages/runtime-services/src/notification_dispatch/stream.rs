@@ -310,23 +310,10 @@ impl NotificationStreamBuffer {
         }
         false
     }
-    pub(super) fn set_snapshot_base(&mut self, key: &StreamKey, hash: String) -> bool {
+    pub(super) fn set_flushed_base(&mut self, key: &StreamKey, hash: String) {
         if let Some(entry) = self.entries.iter_mut().find(|entry| &entry.key == key) {
             entry.base = Some(hash);
-            entry.pending.clear();
-            entry.count = 0;
-            entry.characters = 0;
-            return true;
-        }
-        false
-    }
-    pub(super) fn replace_unflushed_with_snapshot(&mut self, key: &StreamKey) {
-        if let Some(entry) = self.entries.iter_mut().find(|entry| &entry.key == key)
-            && !entry.flushed
-        {
-            entry.pending.clear();
-            entry.count = 0;
-            entry.characters = 0;
+            entry.flushed = true;
         }
     }
     pub(super) fn enqueue_delta(
@@ -414,7 +401,7 @@ impl NotificationStreamBuffer {
         delta: Option<&str>,
     ) -> Option<(String, u64, Value)> {
         let entry = self.entries.iter_mut().find(|entry| &entry.key == key)?;
-        if entry.count == 0 && entry.base.is_none() {
+        if entry.count == 0 {
             return None;
         }
         entry.flushed = true;
