@@ -238,6 +238,29 @@ fn oracle(root: &Path, request: Value) -> Value {
     serde_json::from_slice(&output.stdout).expect("oracle JSON")
 }
 
+#[cfg(not(target_os = "macos"))]
+#[test]
+fn image_readiness_refuses_with_python_message_without_workspace_writes() {
+    let fixture = Fixture::new();
+    fixture.patch("workspaceMode", json!("image"));
+    fixture.patch("imageWorkspace", json!(true));
+    let before = std::fs::read_dir(fixture.root.path())
+        .expect("fixture contents")
+        .map(|entry| entry.expect("entry").file_name())
+        .collect::<std::collections::BTreeSet<_>>();
+
+    let decision = prepare(&fixture.store, &fixture.id).expect("readiness decision");
+    assert!(matches!(decision, WorkspaceDecision::Refuse(refusal)
+        if refusal.to_string() == crate::image_workspace::PLATFORM_REFUSAL));
+
+    let after = std::fs::read_dir(fixture.root.path())
+        .expect("fixture contents after refusal")
+        .map(|entry| entry.expect("entry").file_name())
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(after, before);
+    assert!(!fixture.repo.join(".worktrees").exists());
+}
+
 #[test]
 fn creates_subproject_checkpoint_and_preserves_queued_input_and_source_index() {
     let fixture = Fixture::new();

@@ -67,7 +67,7 @@ pub struct WorktreePlan {
 
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum WorkspaceRefusal {
-    #[error("ImageWorkspaceUnsupported")]
+    #[error("Image workspaces require macOS ASIF. Use a Git worktree on this server")]
     ImageWorkspaceUnsupported,
     #[error("VmWorkspaceUnsupported")]
     VmWorkspaceUnsupported,
