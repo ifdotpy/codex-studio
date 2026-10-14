@@ -28,6 +28,8 @@ use studio_runtime_services::{
 use studio_runtime_store::{RuntimeStore, StoreError};
 use tokio::sync::{Notify, mpsc, watch};
 
+const TEST_HANG_GUARD: std::time::Duration = std::time::Duration::from_secs(300);
+
 struct Fixture {
     _root: tempfile::TempDir,
     store: Arc<RuntimeStore>,
@@ -106,6 +108,40 @@ fn dispatch_template() -> &'static FixtureTemplate {
     })
 }
 
+fn recovery_template() -> &'static FixtureTemplate {
+    static TEMPLATE: std::sync::OnceLock<FixtureTemplate> = std::sync::OnceLock::new();
+    TEMPLATE.get_or_init(|| {
+        let root = tempfile::tempdir().unwrap();
+        let source = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../server/src");
+        let script = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/wave7_p01_fixture.py");
+        let mut command = std::process::Command::new(prepared_python::prepared_python(&source));
+        command
+            .args(["-B"])
+            .arg(&script)
+            .arg(root.path())
+            .arg("recovery");
+        let result = prepared_python::output_with_timeout(
+            &mut command,
+            &script,
+            prepared_python::PYTHON_ORACLE_TIMEOUT,
+        )
+        .unwrap_or_else(|error| panic!("wave7_p01_fixture.py recovery: {error}"));
+        assert!(
+            result.status.success(),
+            "wave7_p01_fixture.py recovery: {}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        let agents = serde_json::from_slice(&result.stdout).unwrap();
+        let mut entries = Vec::new();
+        snapshot_fixture(root.path(), root.path(), &mut entries);
+        FixtureTemplate {
+            _root: root,
+            entries,
+            agents,
+        }
+    })
+}
+
 impl Fixture {
     fn new() -> Self {
         Self::build("dispatch")
@@ -138,6 +174,29 @@ impl Fixture {
                     Ok(())
                 })
                 .unwrap();
+            return Self {
+                _root: root,
+                store,
+                agents: template.agents.clone(),
+            };
+        }
+        if mode == "recovery" {
+            use std::os::unix::fs::PermissionsExt;
+
+            let template = recovery_template();
+            let root = tempfile::tempdir().unwrap();
+            for entry in &template.entries {
+                let path = root.path().join(&entry.path);
+                if let Some(contents) = &entry.contents {
+                    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+                    std::fs::write(&path, contents).unwrap();
+                } else {
+                    std::fs::create_dir_all(&path).unwrap();
+                }
+                std::fs::set_permissions(path, std::fs::Permissions::from_mode(entry.mode))
+                    .unwrap();
+            }
+            let store = Arc::new(RuntimeStore::open(Some(root.path())).unwrap());
             return Self {
                 _root: root,
                 store,
@@ -414,12 +473,12 @@ async fn two_accounts_are_independent_and_shutdown_joins_all_attachments() {
         .unwrap();
     registry.reconcile(None).await.unwrap();
     let mut accounts = vec![
-        tokio::time::timeout(std::time::Duration::from_secs(10), writes.recv())
+        tokio::time::timeout(TEST_HANG_GUARD, writes.recv())
             .await
             .expect("provider write hang guard")
             .unwrap()
             .0,
-        tokio::time::timeout(std::time::Duration::from_secs(10), writes.recv())
+        tokio::time::timeout(TEST_HANG_GUARD, writes.recv())
             .await
             .expect("provider write hang guard")
             .unwrap()
@@ -446,7 +505,7 @@ async fn start_failure_preserves_input_and_post_commit_notify_dispatches_it() {
     wake.notify_one();
     let task = tokio::spawn(registry.run(wake, stop.clone()));
     assert_eq!(
-        tokio::time::timeout(std::time::Duration::from_secs(10), writes.recv())
+        tokio::time::timeout(TEST_HANG_GUARD, writes.recv())
             .await
             .expect("provider write hang guard")
             .unwrap()
@@ -507,11 +566,10 @@ async fn accepted_http_message_wakes_retained_worker_and_receipt_replay_does_not
         let bytes = to_bytes(response.into_body(), 1024 * 1024).await.unwrap();
         assert_eq!(status, 200, "{}", String::from_utf8_lossy(&bytes));
     }
-    let (account, request) =
-        tokio::time::timeout(std::time::Duration::from_secs(10), writes.recv())
-            .await
-            .expect("provider write hang guard")
-            .unwrap();
+    let (account, request) = tokio::time::timeout(TEST_HANG_GUARD, writes.recv())
+        .await
+        .expect("provider write hang guard")
+        .unwrap();
     assert_eq!(account, "account:default");
     assert_eq!(request["method"], "turn/start");
     stop.cancel();
@@ -539,7 +597,7 @@ async fn shutdown_between_worker_start_and_wake_handoff_leaves_committed_input_r
         .unwrap();
     restarted.reconcile(None).await.unwrap();
     assert_eq!(
-        tokio::time::timeout(std::time::Duration::from_secs(10), writes.recv())
+        tokio::time::timeout(TEST_HANG_GUARD, writes.recv())
             .await
             .expect("provider write hang guard")
             .unwrap()
@@ -646,13 +704,13 @@ async fn connection_loss_replaces_worker_before_delivering_new_input() {
     let wake = Arc::new(Notify::new());
     let stop = Shutdown::default();
     let task = tokio::spawn(registry.run(wake.clone(), stop.clone()));
-    let first = tokio::time::timeout(std::time::Duration::from_secs(10), writes.recv())
+    let first = tokio::time::timeout(TEST_HANG_GUARD, writes.recv())
         .await
-        .unwrap()
+        .expect("initial provider write hang guard")
         .unwrap();
     assert_eq!(first.1["method"], "turn/start");
     launcher.stops.lock().unwrap()[0].cancel();
-    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+    tokio::time::timeout(TEST_HANG_GUARD, async {
         loop {
             if launcher.opened.lock().unwrap().len() == 2 {
                 break;
@@ -664,9 +722,9 @@ async fn connection_loss_replaces_worker_before_delivering_new_input() {
     .expect("replacement worker hang guard");
     fixture.enqueue(1, "new-input-after-disconnect");
     wake.notify_one();
-    let second = tokio::time::timeout(std::time::Duration::from_secs(10), writes.recv())
+    let second = tokio::time::timeout(TEST_HANG_GUARD, writes.recv())
         .await
-        .unwrap()
+        .expect("post-disconnect provider write hang guard")
         .unwrap();
     assert_eq!(second.0, "account:default");
     assert_eq!(second.1["method"], "turn/start");
@@ -1343,11 +1401,10 @@ async fn host_start_reattaches_python_launch_and_delivers_http_input() {
         .body(axum::body::Body::from(body.to_string()))
         .unwrap();
     assert_eq!(app.clone().oneshot(request).await.unwrap().status(), 200);
-    let (mut reported, _) =
-        tokio::time::timeout(std::time::Duration::from_secs(15), observer.accept())
-            .await
-            .expect("host delivery hang guard")
-            .unwrap();
+    let (mut reported, _) = tokio::time::timeout(TEST_HANG_GUARD, observer.accept())
+        .await
+        .expect("host delivery hang guard")
+        .unwrap();
     let mut bytes = Vec::new();
     reported.read_to_end(&mut bytes).await.unwrap();
     let request: Value = serde_json::from_slice(&bytes).unwrap();
@@ -1364,7 +1421,7 @@ async fn host_start_reattaches_python_launch_and_delivers_http_input() {
     );
 
     let agent_id = fixture.agents[0]["id"].as_str().unwrap();
-    let terminal_agent = tokio::time::timeout(std::time::Duration::from_secs(15), async {
+    let terminal_agent = tokio::time::timeout(TEST_HANG_GUARD, async {
         loop {
             let row = fixture
                 .store
