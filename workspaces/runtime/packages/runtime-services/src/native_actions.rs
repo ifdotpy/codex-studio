@@ -507,11 +507,21 @@ fn validate_provider_receipt(expected: &NativeRequest, receipt: &SessionReceipt)
     let method = Method::from_wire(&expected.method).ok_or(NativeError::Invalid("method"))?;
     match receipt.certainty {
         RequestCertainty::NotSent => {
-            if receipt.ticket.is_some()
-                || receipt.result.is_some()
-                || receipt.not_sent_reason.is_none()
-            {
+            if receipt.result.is_some() || receipt.not_sent_reason.is_none() {
                 return Err(NativeError::Changed);
+            }
+            if let Some(provider_ticket) = receipt.ticket.as_ref() {
+                let expected_id = format!(
+                    "retained:{}:{}",
+                    ticket.account,
+                    studio_runtime_store::sha256_hex(ticket.operation.as_bytes())
+                );
+                if provider_ticket.generation != ticket.generation
+                    || provider_ticket.method != method
+                    || provider_ticket.id != RequestId::String(expected_id)
+                {
+                    return Err(NativeError::Changed);
+                }
             }
         }
         RequestCertainty::Written | RequestCertainty::Unknown => {
@@ -660,12 +670,59 @@ fn should_repair_before_reserve(resume_reserved: bool) -> bool {
 
 #[cfg(test)]
 mod native_action_retry_tests {
-    use super::should_repair_before_reserve;
+    use super::{
+        NativeRequest, RequestCertainty, SessionReceipt, should_repair_before_reserve,
+        validate_provider_receipt,
+    };
+    use crate::{
+        account_session_runtime::{ConnectionScope, NotSentReason},
+        workspace_operations::ProviderTicket,
+    };
+    use serde_json::json;
+    use studio_runtime_providers::{Method, RequestId};
 
     #[test]
     fn preflight_repair_runs_only_for_new_admission() {
         assert!(should_repair_before_reserve(false));
         assert!(!should_repair_before_reserve(true));
+    }
+
+    #[test]
+    fn correlated_worker_not_sent_receipt_is_validated_for_retry() {
+        let request = NativeRequest {
+            ticket: ProviderTicket {
+                operation: "attempt".into(),
+                agent: "agent".into(),
+                epoch: 3,
+                account: "default".into(),
+                thread: Some("thread".into()),
+                connection: "connection".into(),
+                generation: 4,
+                request: "request".into(),
+            },
+            method: "thread/compact/start".into(),
+            params: json!({"threadId":"thread"}),
+        };
+        let receipt = SessionReceipt {
+            scope: ConnectionScope {
+                account: "default".into(),
+                connection: "connection".into(),
+                generation: 4,
+            },
+            operation: "attempt".into(),
+            ticket: Some(studio_runtime_providers::RequestTicket {
+                id: RequestId::String(format!(
+                    "retained:default:{}",
+                    studio_runtime_store::sha256_hex(b"attempt")
+                )),
+                generation: 4,
+                method: Method::from_wire("thread/compact/start").expect("known method"),
+            }),
+            certainty: RequestCertainty::NotSent,
+            result: None,
+            not_sent_reason: Some(NotSentReason::WorkerNotSent),
+        };
+        assert!(validate_provider_receipt(&request, &receipt).is_ok());
     }
 }
 
