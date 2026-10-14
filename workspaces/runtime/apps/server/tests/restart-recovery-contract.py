@@ -262,14 +262,25 @@ class RestartContract(fixture.ConnectionRecoveryContract):
                 expected = self.restart(supervisor=True)
                 connection = self.runtime.connection_ids['default']
                 checked = threading.Event()
+                lock_contended = threading.Event()
+                allow_retry = threading.Event()
                 finished = threading.Event()
                 original = self.runtime.connection_current
+                original_acquire = self.runtime.lock.acquire
                 errors = []
 
                 def observe(account, identity):
                     value = original(account, identity)
                     checked.set()
                     return value
+
+                def gate_contended_acquire(*args, **kwargs):
+                    acquired = original_acquire(*args, **kwargs)
+                    if (kwargs.get('blocking') is False and not acquired
+                            and threading.current_thread() is worker):
+                        lock_contended.set()
+                        self.assertTrue(allow_retry.wait(HANG_GUARD_SECONDS))
+                    return acquired
 
                 def restore():
                     try:
@@ -279,15 +290,20 @@ class RestartContract(fixture.ConnectionRecoveryContract):
                     finally:
                         finished.set()
 
-                with patch.object(self.runtime, 'connection_current', side_effect=observe):
+                with patch.object(self.runtime, 'connection_current', side_effect=observe), \
+                        patch.object(self.runtime.lock, 'acquire', side_effect=gate_contended_acquire):
                     with self.runtime.lock:
                         worker = threading.Thread(target=restore)
+                        allow_retry.clear()
+                        self.addCleanup(allow_retry.set)
                         worker.start()
                         self.assertTrue(checked.wait(HANG_GUARD_SECONDS))
+                        self.assertTrue(lock_contended.wait(HANG_GUARD_SECONDS))
                         if change == 'connection':
                             self.runtime.connection_ids['default'] = 'replacement-connection'
                         else:
                             self.runtime.closed = True
+                        allow_retry.set()
                     try:
                         self.assertTrue(finished.wait(HANG_GUARD_SECONDS))
                         self.assertEqual(errors, [])

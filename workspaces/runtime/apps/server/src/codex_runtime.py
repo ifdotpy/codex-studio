@@ -9,7 +9,7 @@ import base64
 import copy
 import concurrent.futures
 from dataclasses import dataclass
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from codex_file_lock import flock, LOCK_EX, LOCK_NB, LOCK_UN
 import json
 import logging
@@ -3974,7 +3974,18 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             return
         from codex_agent_modes import mode_fields
         now = time.time()
-        with self.notification_db() as db:
+        transaction = ExitStack()
+        try:
+            db = transaction.enter_context(self.notification_db())
+        except TimeoutError:
+            # Shutdown or connection replacement can win after the initial
+            # identity check but while notification_db waits for Runtime.lock.
+            # That callback is stale; do not turn an expected cancellation into
+            # a failed supervisor reattach.
+            if self.closed or not self.connection_current(account_key, connection_id):
+                return
+            raise
+        with transaction:
             if self.closed or not self.connection_current(account_key, connection_id):
                 return
             agents = db.execute("SELECT record FROM runtime_agents WHERE "
