@@ -98,8 +98,26 @@ fn catalog(case: &Value, now: Instant) -> Option<CatalogObservation> {
         },
         expires_at: now
             + Duration::from_secs(case["catalog"]["lifetime"].as_u64().expect("expiry")),
-        models: serde_json::from_value(case["catalog"]["models"].clone())
-            .expect("model capabilities"),
+        models: case["catalog"]["models"]
+            .as_array()
+            .expect("catalog models")
+            .iter()
+            .map(|model| {
+                // Python's provider catalogue exposes program grants by
+                // capability name; Runtime's cached Rust form stores only the
+                // cyber grant list used by the gate.
+                let mut projected = model.clone();
+                if let Some(programs) = model["access_programs"]["cyber"].as_array() {
+                    projected["access_programs"] = json!(programs
+                        .iter()
+                        .filter_map(Value::as_str)
+                        .collect::<Vec<_>>());
+                } else if model.get("access_programs").is_some() {
+                    projected["access_programs"] = Value::Null;
+                }
+                serde_json::from_value(projected).expect("model capabilities")
+            })
+            .collect(),
     })
 }
 fn rejection(error: impl serde::Serialize) -> Value {
