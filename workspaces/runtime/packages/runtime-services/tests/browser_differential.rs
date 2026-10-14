@@ -360,9 +360,20 @@ fn rust_response(case: &Value) -> (Value, Vec<Value>) {
     let closed = if (case["python"]["closed"] == true || name == "informational-response")
         && name != "fragment-target"
     {
-        runtime
-            .block_on(forwarder.wait_listeners_closed(&input().bridge_id))
-            .expect("callback-boundary listener closure notification")
+        let reason = runtime
+            .block_on(forwarder.wait_listener_close_reason(&input().bridge_id))
+            .expect("listener closure reason");
+        assert!(
+            matches!(
+                reason,
+                Some(
+                    studio_runtime_services::browser::ListenerCloseReason::CallbackComplete
+                        | studio_runtime_services::browser::ListenerCloseReason::RelayLimit
+                )
+            ),
+            "listener closed for a callback reason in case {name}: {reason:?}"
+        );
+        true
     } else {
         let refused = local_request(receipt.port, "GET", "/wrong", "");
         assert_eq!(response_value(&refused)["status"], 404);
