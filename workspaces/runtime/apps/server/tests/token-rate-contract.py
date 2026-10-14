@@ -48,6 +48,55 @@ spec.loader.exec_module(fixture)
 
 
 class RateContract(unittest.TestCase):
+    def test_long_turn_response_history_stops_admitting_unseen_ids_safely(self):
+        with patch.object(codex_token_rate, 'MAX_TURN_RESPONSE_HISTORY_ENTRIES', 3):
+            rate = TurnRate('long-turn', 0)
+            for index in range(3):
+                self.assertTrue(rate.response(10, index + 1, f'response-{index}'))
+
+            with self.assertLogs('codex_token_rate', level='WARNING') as captured:
+                self.assertFalse(rate.response(20, 4, 'response-overflow'))
+                self.assertFalse(rate.response(20, 5, 'response-overflow'))
+                for index in range(3, 100):
+                    self.assertFalse(rate.response(10, index + 3, f'response-{index}'))
+
+            self.assertEqual(len(captured.records), 1)
+            self.assertEqual(len(rate.messages), 3)
+            self.assertTrue(rate.message_history_saturated)
+            self.assertEqual(rate.actual, 30)
+
+            # Retained exact IDs remain correctable even after saturation.
+            self.assertTrue(rate.response(15, 200, 'response-1'))
+            self.assertEqual(rate.actual, 35)
+            self.assertFalse(rate.response(15, 201, 'response-1'))
+            self.assertEqual(rate.actual, 35)
+
+            # An authoritative cumulative total can still reconcile omitted IDs.
+            rate.reconcile(500)
+            self.assertEqual(rate.actual, 500)
+            next_turn = TurnRate('next-turn', 202)
+            self.assertFalse(next_turn.message_history_saturated)
+            self.assertEqual(next_turn.messages, {})
+
+    def test_saturated_history_still_accepts_cumulative_total_deltas(self):
+        with patch.object(codex_token_rate, 'MAX_TURN_RESPONSE_HISTORY_ENTRIES', 1):
+            rates = TokenRates(lambda: 0)
+            agent = {'id': 'worker', 'threadId': 'thread'}
+            rates.observe(agent, 'turn/started', {'turn': {'id': 'turn'}}, 'a', 'c', 0)
+            rate = rates.entries[('a', 'c', 'thread')]['rate']
+            self.assertTrue(rate.response(5, 1, 'retained-response'))
+            self.assertFalse(rate.response(7, 2, 'untracked-response'))
+            self.assertTrue(rate.message_history_saturated)
+
+            usage = {'total': {'outputTokens': 110}, 'last': {'outputTokens': 10}}
+            params = {'turnId': 'turn', 'tokenUsage': usage}
+            rates.observe(agent, 'thread/tokenUsage/updated', params, 'a', 'c', 3)
+            self.assertEqual(rate.actual, 10)
+            rates.observe(agent, 'thread/tokenUsage/updated', params, 'a', 'c', 4)
+            self.assertEqual(rate.actual, 10)
+            self.assertEqual(set(rate.messages), {'retained-response'})
+
+
     def test_request_cleanup_is_scoped_to_entry_and_turn(self):
         class NoGlobalIterationDict(dict):
             def items(self):

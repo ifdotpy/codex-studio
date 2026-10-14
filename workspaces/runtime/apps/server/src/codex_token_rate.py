@@ -15,6 +15,9 @@ MIN_DURATION = .25
 MAX_RATE = 1000.0
 MAX_RATE_ENTRIES = MAX_TOKEN_RATE_ENTRIES
 MAX_RESPONSE_RATE_CACHE_ENTRIES = 4096
+# Per-turn identities needed for correcting provider output. This is a separate
+# bound from the cross-turn response-rate cache, despite sharing its current size.
+MAX_TURN_RESPONSE_HISTORY_ENTRIES = 4096
 TOKEN_RATE_EXPIRY_SECONDS = 90
 TOKEN_RATE_PUBLICATION_DELAY_SECONDS = .05
 TOKEN_RATE_PUBLICATION_RETRY_SECONDS = 1.0
@@ -61,6 +64,8 @@ class TurnRate:
         self.estimated = False
         self.baseline = None
         self.messages = {}
+        self.message_history_saturated = False
+        self.message_history_saturation_logged = False
         self.timing_valid = timing_valid
         self.generation_started = now if timing_valid else None
         self.generation_elapsed = 0.0
@@ -124,6 +129,18 @@ class TurnRate:
         if not self.active or output is None:
             return False
         prior = self.messages.get(identity) if identity is not None else None
+        if (identity is not None and prior is None and
+                (self.message_history_saturated or
+                 len(self.messages) >= MAX_TURN_RESPONSE_HISTORY_ENTRIES)):
+            self.message_history_saturated = True
+            if not self.message_history_saturation_logged:
+                logging.getLogger(__name__).warning(
+                    'Token-rate correction history reached its %d identity limit; '
+                    'ignoring new response identities for turn %s',
+                    MAX_TURN_RESPONSE_HISTORY_ENTRIES, self.turn,
+                )
+                self.message_history_saturation_logged = True
+            return False
         if prior and output <= prior[0]:
             return False
         queued = bool(self.response_durations) and not prior
@@ -427,9 +444,12 @@ class TokenRates:
                         turn_output = (getattr(rate, 'segment_turn_base', 0)
                                        + max(0, total - rate.baseline))
                         delta = turn_output - rate.actual
-                        identity = response_id or ('total', total)
                         if delta > 0:
+                            identity = response_id or ('total', total)
                             self._response(rate, delta, now, identity, agent['id'], agent.get('threadId'))
+                        # The cumulative usage is authoritative even when a
+                        # saturated correction history cannot retain its identity.
+                        rate.reconcile(turn_output)
                     elif last is not None:
                         identity = response_id or ('last', (usage.get('last') or {}).get('totalTokens'), last)
                         self._response(rate, last, now, identity, agent['id'], agent.get('threadId'))
