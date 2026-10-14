@@ -65,11 +65,28 @@ pub fn dispatch_with_managed_services(
 
 /// Construct the real host bundle from the retained account callback path.
 /// Filesystem snapshots are prepared before the callback's writer transaction.
+#[cfg(test)]
 pub(crate) fn managed_tool_ports(
     store: &RuntimeStore,
     context: &CallbackContext,
     frame: &Frame,
     wake: std::sync::Arc<tokio::sync::Notify>,
+) -> Result<impl crate::managed_host_tools::Ports, CallbackError> {
+    managed_tool_ports_with_monitor_wake(
+        store,
+        context,
+        frame,
+        wake,
+        std::sync::Arc::new(tokio::sync::Notify::new()),
+    )
+}
+
+pub(crate) fn managed_tool_ports_with_monitor_wake(
+    store: &RuntimeStore,
+    context: &CallbackContext,
+    frame: &Frame,
+    wake: std::sync::Arc<tokio::sync::Notify>,
+    monitor_dispatch_wake: std::sync::Arc<tokio::sync::Notify>,
 ) -> Result<impl crate::managed_host_tools::Ports, CallbackError> {
     let Some(request) = model::Input::from_frame(frame)? else {
         return Err(CallbackError::Invalid("Expected a managed tool callback"));
@@ -77,7 +94,7 @@ pub(crate) fn managed_tool_ports(
     if request.method != "item/tool/call" {
         return Err(CallbackError::Invalid("Expected a managed tool callback"));
     }
-    tools::production_ports(store, context, &request, wake)
+    tools::production_ports(store, context, &request, wake, monitor_dispatch_wake)
 }
 
 /// Account workers with a retained host runtime pass its explicit staged-effect

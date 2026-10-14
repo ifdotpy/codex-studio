@@ -28,11 +28,29 @@ pub(crate) struct HostRuntime {
 }
 
 impl HostRuntime {
+    #[cfg(test)]
     pub async fn start(
         state: &mut HttpState,
         store: Arc<RuntimeStore>,
         accounts: Arc<AccountDriver>,
         native_path: Option<String>,
+    ) -> Result<Self, WorkerError> {
+        Self::start_with_monitor_wake(
+            state,
+            store,
+            accounts,
+            native_path,
+            Arc::new(tokio::sync::Notify::new()),
+        )
+        .await
+    }
+
+    pub async fn start_with_monitor_wake(
+        state: &mut HttpState,
+        store: Arc<RuntimeStore>,
+        accounts: Arc<AccountDriver>,
+        native_path: Option<String>,
+        monitor_dispatch_wake: Arc<tokio::sync::Notify>,
     ) -> Result<Self, WorkerError> {
         let mut nonce = [0_u8; 16];
         getrandom::fill(&mut nonce).map_err(|_| WorkerError::TaskFailed)?;
@@ -66,15 +84,38 @@ impl HostRuntime {
             resources,
             environment: std::env::vars().collect(),
         });
-        Self::with_launcher(store, launcher, state.event_wake_handle()).await
+        Self::with_launcher_and_monitor_wake(
+            store,
+            launcher,
+            state.event_wake_handle(),
+            monitor_dispatch_wake,
+        )
+        .await
     }
 
+    #[cfg(test)]
     pub async fn with_launcher(
         store: Arc<RuntimeStore>,
         launcher: Arc<dyn AccountLauncher>,
         wake: Arc<tokio::sync::Notify>,
     ) -> Result<Self, WorkerError> {
-        let registry = AccountRegistry::new(store, launcher).await?;
+        Self::with_launcher_and_monitor_wake(
+            store,
+            launcher,
+            wake,
+            Arc::new(tokio::sync::Notify::new()),
+        )
+        .await
+    }
+
+    pub async fn with_launcher_and_monitor_wake(
+        store: Arc<RuntimeStore>,
+        launcher: Arc<dyn AccountLauncher>,
+        wake: Arc<tokio::sync::Notify>,
+        monitor_dispatch_wake: Arc<tokio::sync::Notify>,
+    ) -> Result<Self, WorkerError> {
+        let registry =
+            AccountRegistry::new_with_monitor_wake(store, launcher, monitor_dispatch_wake).await?;
         let shutdown = Shutdown::default();
         let task = tokio::spawn(registry.run(wake, shutdown.clone()));
         Ok(Self { shutdown, task })

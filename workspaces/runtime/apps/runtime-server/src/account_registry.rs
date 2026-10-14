@@ -62,11 +62,21 @@ pub(crate) struct AccountRegistry {
 }
 
 impl AccountRegistry {
+    #[cfg(test)]
     pub async fn new(
         store: Arc<RuntimeStore>,
         launcher: Arc<dyn AccountLauncher>,
     ) -> Result<Self, WorkerError> {
+        Self::new_with_monitor_wake(store, launcher, Arc::new(Notify::new())).await
+    }
+
+    pub async fn new_with_monitor_wake(
+        store: Arc<RuntimeStore>,
+        launcher: Arc<dyn AccountLauncher>,
+        monitor_dispatch_wake: Arc<Notify>,
+    ) -> Result<Self, WorkerError> {
         let bridge = StoreBridge::new(store.clone()).await?;
+        bridge.set_monitor_dispatch_wake(monitor_dispatch_wake);
         Ok(Self {
             store,
             bridge,

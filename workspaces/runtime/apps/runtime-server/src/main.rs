@@ -180,12 +180,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         account_driver.clone(),
     )
     .await?;
+    let monitor_wake = state.event_wake_handle();
+    let monitor_runtime = Arc::new(
+        studio_runtime_services::monitor_runtime_wiring::MonitorRuntime::new(
+            Arc::clone(&store),
+            Arc::new(monitor_port::UnavailableMonitorPort),
+            Arc::clone(&monitor_wake),
+        ),
+    );
     #[cfg(unix)]
-    let runtime = match host_runtime::HostRuntime::start(
+    let runtime = match host_runtime::HostRuntime::start_with_monitor_wake(
         &mut state,
         Arc::clone(&store),
         account_driver,
         native_path,
+        monitor_runtime.dispatch_wake_handle(),
     )
     .await
     {
@@ -198,14 +207,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             return Err(error.into());
         }
     };
-    let monitor_wake = state.event_wake_handle();
-    let monitor_runtime = Arc::new(
-        studio_runtime_services::monitor_runtime_wiring::MonitorRuntime::new(
-            Arc::clone(&store),
-            Arc::new(monitor_port::UnavailableMonitorPort),
-            Arc::clone(&monitor_wake),
-        ),
-    );
     let lifecycle_ports: Arc<dyn studio_runtime_services::agent_lifecycle_runtime::LifecyclePorts> =
         Arc::new(
             studio_runtime_services::monitor_lifecycle::MonitorLifecyclePorts::new(

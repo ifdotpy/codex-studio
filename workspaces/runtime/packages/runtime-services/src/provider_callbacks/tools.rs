@@ -269,6 +269,7 @@ pub(super) fn dispatch_with_production_ports(
         context,
         input,
         std::sync::Arc::new(tokio::sync::Notify::new()),
+        std::sync::Arc::new(tokio::sync::Notify::new()),
     )?;
     dispatch_with_ports(store, context, input, now, &ports)
 }
@@ -278,6 +279,7 @@ pub(super) fn production_ports(
     context: &CallbackContext,
     input: &Input,
     wake: std::sync::Arc<tokio::sync::Notify>,
+    monitor_dispatch_wake: std::sync::Arc<tokio::sync::Notify>,
 ) -> Result<services::ProductionPorts, CallbackError> {
     let reader = store.read()?;
     let admission = crate::message_admission::PreparedAdmission::load(&reader, &context.agent)
@@ -292,6 +294,7 @@ pub(super) fn production_ports(
         room_directory,
         admission,
         wake,
+        monitor_dispatch_wake,
     ))
 }
 

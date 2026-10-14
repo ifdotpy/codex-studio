@@ -87,6 +87,7 @@ pub struct StoreBridge {
     preparation_slots: Arc<Semaphore>,
     accounts: Arc<std::sync::Mutex<BTreeSet<String>>>,
     event_wake: Arc<std::sync::RwLock<Arc<Notify>>>,
+    monitor_dispatch_wake: Arc<std::sync::RwLock<Arc<Notify>>>,
     #[cfg(test)]
     faults: Arc<tests::Faults>,
     #[cfg(test)]
@@ -100,6 +101,7 @@ impl StoreBridge {
             preparation_slots: Arc::new(Semaphore::new(2)),
             accounts: Arc::default(),
             event_wake: Arc::new(std::sync::RwLock::new(Arc::new(Notify::new()))),
+            monitor_dispatch_wake: Arc::new(std::sync::RwLock::new(Arc::new(Notify::new()))),
             #[cfg(test)]
             faults: Arc::default(),
             #[cfg(test)]
@@ -118,6 +120,18 @@ impl StoreBridge {
     }
     pub(crate) fn event_wake(&self) -> Arc<Notify> {
         self.event_wake
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+    pub fn set_monitor_dispatch_wake(&self, wake: Arc<Notify>) {
+        *self
+            .monitor_dispatch_wake
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = wake;
+    }
+    pub(crate) fn monitor_dispatch_wake(&self) -> Arc<Notify> {
+        self.monitor_dispatch_wake
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone()
@@ -1023,10 +1037,17 @@ impl Worker {
             let now = entry.received_at_ms as f64 / 1000.0;
             let frame = frame.clone();
             let wake = self.bridge.event_wake();
+            let monitor_dispatch_wake = self.bridge.monitor_dispatch_wake();
             if let Some(response) = self
                 .db("managed_tool_callback", move |store| {
                     Ok(callback::managed_response(
-                        store, &account, generation, &frame, now, wake,
+                        store,
+                        &account,
+                        generation,
+                        &frame,
+                        now,
+                        wake,
+                        monitor_dispatch_wake,
                     ))
                 })
                 .await?

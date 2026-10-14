@@ -18,6 +18,7 @@ pub(crate) struct ProductionPorts {
     room_directory: Option<crate::sync_entity_context::RoomDirectory>,
     admission: crate::message_admission::PreparedAdmission,
     event_wake: std::sync::Arc<tokio::sync::Notify>,
+    monitor_dispatch_wake: std::sync::Arc<tokio::sync::Notify>,
 }
 
 impl ProductionPorts {
@@ -26,12 +27,14 @@ impl ProductionPorts {
         room_directory: Option<crate::sync_entity_context::RoomDirectory>,
         admission: crate::message_admission::PreparedAdmission,
         event_wake: std::sync::Arc<tokio::sync::Notify>,
+        monitor_dispatch_wake: std::sync::Arc<tokio::sync::Notify>,
     ) -> Self {
         Self {
             context,
             room_directory,
             admission,
             event_wake,
+            monitor_dispatch_wake,
         }
     }
 }
@@ -463,17 +466,14 @@ impl crate::managed_host_tools::PostCommitPort for ProductionPorts {
         &self,
         signals: &[crate::managed_host_tools::WakeSignal],
     ) -> Result<(), crate::managed_host_tools::Error> {
-        if !signals.is_empty() {
-            // The account registry re-reads committed rows and wakes the owning
-            // worker. Lost notifications are harmless: startup and timer passes
-            // reconcile the same durable event intents.
-            // The `monitor-driver` owner is currently reachable only from the
-            // runtime server's MonitorRuntime::dispatch_wake_handle (the
-            // rust-leaves-2 main.rs composition); the account-worker callback
-            // constructor supplies only this registry wake. Wiring that handle
-            // into ProductionPorts remains an integration line when direct
-            // provider launch is composed on this branch.
-            self.event_wake.notify_one();
+        for signal in signals {
+            if signal.owner() == "monitor-driver" {
+                self.monitor_dispatch_wake.notify_one();
+            } else {
+                // The account registry re-reads committed rows and wakes the
+                // owning worker; durable intents are also recovered on ticks.
+                self.event_wake.notify_one();
+            }
         }
         Ok(())
     }

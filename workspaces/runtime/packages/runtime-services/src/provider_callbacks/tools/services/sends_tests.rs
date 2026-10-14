@@ -61,6 +61,7 @@ fn send(sender_index: usize, target: &str, id: &str) -> (tempfile::TempDir, Runt
         None,
         admission,
         std::sync::Arc::new(tokio::sync::Notify::new()),
+        std::sync::Arc::new(tokio::sync::Notify::new()),
     );
     let raw: String = store
         .read()
@@ -111,7 +112,13 @@ async fn production_release_notifies_the_registry_after_a_committed_send() {
         crate::message_admission::PreparedAdmission::load(&reader, &context.agent).unwrap();
     drop(reader);
     let wake = std::sync::Arc::new(tokio::sync::Notify::new());
-    let ports = ProductionPorts::new(context, None, admission, wake.clone());
+    let ports = ProductionPorts::new(
+        context,
+        None,
+        admission,
+        wake.clone(),
+        std::sync::Arc::new(tokio::sync::Notify::new()),
+    );
     let mut notified = Box::pin(wake.notified());
     assert!(futures_util::FutureExt::now_or_never(notified.as_mut()).is_none());
     let actor = crate::managed_host_tools::Actor::from_record(
@@ -145,6 +152,55 @@ async fn production_release_notifies_the_registry_after_a_committed_send() {
     ports.release(&staged.signals).unwrap();
     futures_util::FutureExt::now_or_never(notified.as_mut())
         .expect("released wake signal is delivered");
+}
+
+#[test]
+fn monitor_cancel_release_notifies_only_the_monitor_dispatcher() {
+    let oracle = template();
+    let directory = tempfile::tempdir().unwrap();
+    for name in ["canvas.sqlite3", "analytics.sqlite3"] {
+        std::fs::copy(
+            PathBuf::from(oracle["template"].as_str().unwrap()).join(name),
+            directory.path().join(name),
+        )
+        .unwrap();
+    }
+    let store = RuntimeStore::open(Some(directory.path())).unwrap();
+    let actor = oracle["agents"][0].clone();
+    let context = CallbackContext {
+        agent: actor["id"].as_str().unwrap().into(),
+        account: "default".into(),
+        connection: "connection".into(),
+        generation: 7,
+        epoch: actor["epoch"].as_u64().unwrap(),
+        thread: actor["threadId"].as_str().unwrap().into(),
+        turn: actor["turnId"].as_str().unwrap().into(),
+    };
+    let reader = store.read().unwrap();
+    let admission =
+        crate::message_admission::PreparedAdmission::load(&reader, &context.agent).unwrap();
+    drop(reader);
+    let event_wake = std::sync::Arc::new(tokio::sync::Notify::new());
+    let monitor_wake = std::sync::Arc::new(tokio::sync::Notify::new());
+    let ports = ProductionPorts::new(
+        context,
+        None,
+        admission,
+        event_wake.clone(),
+        monitor_wake.clone(),
+    );
+    let mut event_notified = Box::pin(event_wake.notified());
+    let mut monitor_notified = Box::pin(monitor_wake.notified());
+    assert!(futures_util::FutureExt::now_or_never(event_notified.as_mut()).is_none());
+    assert!(futures_util::FutureExt::now_or_never(monitor_notified.as_mut()).is_none());
+
+    ports
+        .release(&[crate::managed_host_tools::WakeSignal::new("monitor-driver")])
+        .unwrap();
+
+    assert!(futures_util::FutureExt::now_or_never(event_notified.as_mut()).is_none());
+    futures_util::FutureExt::now_or_never(monitor_notified.as_mut())
+        .expect("monitor cancellation wakes the dedicated dispatcher");
 }
 
 #[test]
