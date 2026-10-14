@@ -85,7 +85,11 @@ impl RetainedAccountSession for FakeSession {
     }
 
     fn request(&self, request: ProviderRequest) -> SessionFuture {
-        self.calls.fetch_add(1, Ordering::SeqCst);
+        // A missing scope models the broker's known NotSent response. Count
+        // only requests that would reach a retained provider connection.
+        if request.expected_scope.is_some() {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+        }
         let certainty = self.certainty;
         let result = self.result.clone();
         let unknown_error = self.unknown_error;
