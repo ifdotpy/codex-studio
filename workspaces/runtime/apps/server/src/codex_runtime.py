@@ -9146,7 +9146,10 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 # an unknown binding must never authorize the operation.
                 self.wait_for_tool_turn_binding(
                     account_key, connection_id, p.get("threadId"), p.get("turnId"))
-            with self.lock, self.db() as db:
+            with self.write_db() as db:
+                # Admit the writer before checking and claiming under Runtime.lock.
+                # Reuse this transaction so a nested claim cannot wait for another
+                # writer while retaining the state lock.
                 # Another callback can claim this request after reservation returns.
                 # Only the current receipt can prove that execution has not started.
                 record = self.tool_request(key, db)
@@ -9175,7 +9178,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                             {"type": "inputText", "text": error}]}, time.time())
                         self.finish_tool_request(key, result, outcome="not_applied", db=db)
                 elif result is None:
-                    claimed = self.begin_tool_request(key)
+                    claimed = self.begin_tool_request(key, db=db)
             if result is None:
                 if not claimed:
                     receipt = self.tool_request(key)

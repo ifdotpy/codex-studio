@@ -201,6 +201,7 @@ class RequestRuntime(RecordStore, Protocol):
     def tool_request_key(self, message: "JsonObject", account_key: str = "default") -> str: ...
     def tool_request(self, key: str | None, db: "sqlite3.Connection | None" = None) -> "ToolRequestRecord | None": ...
     def tool_result(self, db: "sqlite3.Connection", key: str) -> "JsonObject | None": ...
+    def begin_tool_request(self, key: str, db: "sqlite3.Connection | None" = None) -> bool: ...
     def finish_tool_request(self, key: str, result: "JsonObject", outcome: str | None = None,
                             db: "sqlite3.Connection | None" = None, *,
                             prepared_record: "ToolRequestRecord | None" = None) -> "ToolRequestRecord | None": ...
@@ -434,23 +435,26 @@ class RequestMixin:
                 self.put(db, "tool_requests", record)
             return record
 
-    def begin_tool_request(self: "RequestRuntime", key: str) -> bool:
-        with self.write_db() as db:
-            record = self.tool_request(key, db)
-            if not record:
-                return False
-            decision = _lifecycle(record, "ClaimDispatch")
-            if decision.kind != "Transitioned":
-                return False
-            now = time.time()
-            _apply_decision(record, decision)
-            record.update(updated=now, started=now)
-            record.setdefault("timing", {})["handlerStartedAt"] = time.monotonic_ns()
-            record["executionQueueDelayMs"] = max(0, now - record["created"]) * 1000
-            if "wireReceivedAt" in record:
-                record["queueDelayMs"] = max(0, now - record["wireReceivedAt"]) * 1000
-            self.put(db, "tool_requests", record)
-            return True
+    def begin_tool_request(self: "RequestRuntime", key: str,
+                           db: "sqlite3.Connection | None" = None) -> bool:
+        if db is None:
+            with self.write_db() as own:
+                return self.begin_tool_request(key, db=own)
+        record = self.tool_request(key, db)
+        if not record:
+            return False
+        decision = _lifecycle(record, "ClaimDispatch")
+        if decision.kind != "Transitioned":
+            return False
+        now = time.time()
+        _apply_decision(record, decision)
+        record.update(updated=now, started=now)
+        record.setdefault("timing", {})["handlerStartedAt"] = time.monotonic_ns()
+        record["executionQueueDelayMs"] = max(0, now - record["created"]) * 1000
+        if "wireReceivedAt" in record:
+            record["queueDelayMs"] = max(0, now - record["wireReceivedAt"]) * 1000
+        self.put(db, "tool_requests", record)
+        return True
 
     def finish_tool_request(self: "RequestRuntime", key: str, result: "JsonObject", outcome: str | None = None,
                             db: "sqlite3.Connection | None" = None, *,

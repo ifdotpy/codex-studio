@@ -10,6 +10,7 @@ from urllib.parse import quote
 from unittest.mock import Mock, patch
 
 from fastapi.testclient import TestClient
+from fastapi.routing import APIRoute
 from starlette.requests import Request
 
 from codex_project_folders import SidebarOrderConflict
@@ -55,6 +56,7 @@ class MainIntegrationTests(unittest.TestCase):
             rules=Mock()
         )
         context = ApiContext.for_schema()
+        self.context = context
         context.canvas.runtime = self.runtime
         context.remote = SimpleNamespace(request_origin=lambda *_args: "http://testserver")
         self.client = TestClient(create_app(context), headers={"X-Canvas-Token": context.token})
@@ -75,9 +77,9 @@ class MainIntegrationTests(unittest.TestCase):
         self.assertEqual(response.json(), {"error": "Sidebar order changed"})
 
     def test_sidebar_receipt_is_exact_even_when_workspace_sync_rows_changed(self) -> None:
-        context = self.client.app.state.api_context
+        context = self.context
         route = next(route for route in create_account_router(context).routes
-                     if route.path == '/api/projects' and 'POST' in route.methods)
+                     if isinstance(route, APIRoute) and route.path == '/api/projects' and 'POST' in (route.methods or set()))
         body = SidebarReorderRequest(action='reorder', request_id='order-sync-1',
                                      expected_revision=0, groups={'project': ['b', 'a']})
         receipt = {'revision': 1, 'groups': body.groups}

@@ -1373,11 +1373,106 @@ class RuntimeContract(unittest.TestCase):
             messages = self.runtime.transcript(a['id'])['items']
             self.assertTrue(any(i.get('pending') and i['text'] == 'Queued followup' for i in messages))
 
+    def test_dynamic_claim_waits_for_writer_without_runtime_lock_or_duplicate_spawn(self):
+        from contextlib import closing
+        import sqlite3
+        import codex_runtime
+
+        lead = self.lead()
+        message = {'id': 101, 'method': 'item/tool/call', 'params': {
+            'threadId': lead['threadId'], 'callId': 'writer-blocked-spawn', 'tool': 'orchestration_spawn',
+            'arguments': {'request_id': 'writer-blocked-spawn',
+                          'agents': [{'name': 'Single child', 'prompt': 'Wait', 'role': 'reviewer'}]}}}
+        key = self.runtime.tool_request_key(message)
+        request_thread = threading.current_thread()
+        writer_requested = threading.Event()
+        writer_held = threading.Event()
+        release_writer = threading.Event()
+        admission_busy = threading.Event()
+        writer_errors = []
+        original_reserve = self.runtime.reserve_tool_request
+        original_connect = codex_runtime.sqlite_connect
+
+        def reserve_before_claim(*args, **kwargs):
+            receipt = original_reserve(*args, **kwargs)
+            # The request dispatcher reserves first on this thread, then dynamic
+            # reserves on its executor. Hold a writer only after that reservation
+            # has committed, immediately before dynamic admission.
+            if threading.current_thread() is not request_thread and not writer_requested.is_set():
+                writer_requested.set()
+                if not writer_held.wait(HANG_GUARD_SECONDS):
+                    raise AssertionError('Fixture writer did not begin before the dynamic claim')
+            return receipt
+
+        def tracked_connect(*args, **kwargs):
+            db = original_connect(*args, **kwargs)
+            execute = db.execute
+
+            def observed(sql, parameters=(), /):
+                try:
+                    return execute(sql, parameters)
+                except sqlite3.OperationalError as error:
+                    if (writer_held.is_set() and not release_writer.is_set()
+                            and 'UPDATE main.runtime_supervisor_cursor SET sequence=sequence' in str(sql)
+                            and codex_runtime.sqlite_busy(error)):
+                        admission_busy.set()
+                    raise
+
+            db.execute = observed
+            return db
+
+        def hold_writer():
+            try:
+                if not writer_requested.wait(HANG_GUARD_SECONDS):
+                    raise AssertionError('Dynamic reservation did not request the fixture writer')
+                with closing(sqlite3.connect(self.runtime.db_path)) as db:
+                    db.execute('BEGIN IMMEDIATE')
+                    writer_held.set()
+                    if not release_writer.wait(HANG_GUARD_SECONDS):
+                        raise AssertionError('Fixture writer was not released')
+                    db.rollback()
+            except BaseException as error:
+                writer_errors.append(error)
+
+        writer = threading.Thread(target=hold_writer, daemon=True)
+        with patch.object(self.runtime, 'reserve_tool_request', reserve_before_claim), \
+                patch.object(codex_runtime, 'sqlite_connect', tracked_connect):
+            writer.start()
+            try:
+                self.runtime.server.request(message)
+                self.assertTrue(admission_busy.wait(HANG_GUARD_SECONDS))
+                acquired = self.runtime.lock.acquire(blocking=False)
+                self.assertTrue(acquired, 'Dynamic claim retained Runtime.lock while waiting for SQLite')
+                if acquired:
+                    self.runtime.lock.release()
+            finally:
+                release_writer.set()
+                writer.join(HANG_GUARD_SECONDS)
+            self.assertFalse(writer.is_alive())
+            self.assertEqual(writer_errors, [])
+            response = eventually(lambda: next((r for r in self.runtime.server.responses
+                                                if r['id'] == message['id']), None))
+            self.assertTrue(response['result']['success'], response)
+        self.assertEqual(self.runtime.tool_request(key)['outcome'], 'applied')
+        self.assertEqual(len(read_runtime_state(self.runtime)['agents']), 2)
+        # A lost response can replay the same command under a new wire call id.
+        replay = {**message, 'id': 102, 'params': {**message['params'], 'callId': 'writer-blocked-replay'}}
+        self.runtime.server.request(replay)
+        response = eventually(lambda: next((r for r in self.runtime.server.responses
+                                            if r['id'] == replay['id']), None))
+        self.assertTrue(response['result']['success'], response)
+        self.assertEqual(self.runtime.tool_request_key(replay), key)
+        self.assertEqual(len(read_runtime_state(self.runtime)['agents']), 2)
+
     def test_agent_interrupt_names_the_agent_not_the_user(self):
         lead = self.lead()
-        self.runtime.server.request({'id': 101, 'method': 'item/tool/call', 'params': {
+        spawn = {'id': 101, 'method': 'item/tool/call', 'params': {
             'threadId': lead['threadId'], 'callId': 'spawn-one', 'tool': 'orchestration_spawn',
-            'arguments': {'agents': [{'name': 'Stop target', 'prompt': 'Wait', 'role': 'reviewer'}]}}})
+            'arguments': {'agents': [{'name': 'Stop target', 'prompt': 'Wait', 'role': 'reviewer'}]}}}
+        self.runtime.server.request(spawn)
+        response = eventually(lambda: next((r for r in self.runtime.server.responses if r['id'] == spawn['id']), None))
+        self.assertTrue(response['result']['success'], response)
+        self.assertEqual(self.runtime.tool_request(self.runtime.tool_request_key(spawn))['outcome'], 'applied')
         eventually(lambda: len(read_runtime_state(self.runtime)['agents']) == 2)
         child = next(a for a in read_runtime_state(self.runtime)['agents'] if a['id'] != lead['id'])
         eventually(lambda: self.runtime.agent(child['id'])['status'] == 'running'
@@ -1388,7 +1483,9 @@ class RuntimeContract(unittest.TestCase):
             'arguments': {'agent_id': child['id']}}}
         key = self.runtime.tool_request_key(message)
         self.runtime.server.request(message)
-        eventually(lambda: (self.runtime.tool_request(key) or {}).get('outcome') == 'applied')
+        response = eventually(lambda: next((r for r in self.runtime.server.responses if r['id'] == message['id']), None))
+        self.assertTrue(response['result']['success'], response)
+        self.assertEqual(self.runtime.tool_request(key)['outcome'], 'applied')
         self.assertGreater(self.runtime.agent(child['id'])['epoch'], child['epoch'])
         self.assertEqual(self.runtime.agent(child['id'])['status'], 'paused')
         self.assertEqual(self.runtime.agent(child['id'])['error'], 'Stopped by agent ' + lead['name'])
