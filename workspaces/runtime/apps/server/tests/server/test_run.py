@@ -116,6 +116,11 @@ def _without_server_jobs_override():
 
 
 class ServerSuiteRunner(unittest.TestCase):
+    def test_subtest_result_ids_match_the_selected_test_method(self):
+        base = "studio_api.tests.test_shutdown.BackendShutdownTests.test_hard_deadline"
+        self.assertEqual(RUNNER._base_unittest_id(base), base)
+        self.assertEqual(RUNNER._base_unittest_id(f"{base} (mode='loop')"), base)
+
     def test_server_shards_partition_runnable_entries_stably(self):
         entries = [
             (f"suite-{index:02d}.py", "safe" if index % 2 else "component")

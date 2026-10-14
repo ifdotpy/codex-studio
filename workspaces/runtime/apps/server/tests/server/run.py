@@ -901,6 +901,11 @@ def _slice_test_ids(test_ids, count):
     return [test_ids[index::count] for index in range(count) if test_ids[index::count]]
 
 
+def _base_unittest_id(test_id):
+    """Map a unittest subtest result ID back to its selected test method."""
+    return test_id.partition(" ")[0]
+
+
 def _focused_suite_slice_count(relative, test_count, workers):
     """Bound focused test slices by the selected suite and focused worker plan."""
     if (relative in NEVER_SLICE_SUITES or is_http_boundary_suite(relative)
@@ -1767,7 +1772,7 @@ def _run_suites_locked(entries, opted_in, timeout, expensive_timeout, root=ROOT,
                 outcome_file = Path(environment["CODEX_SERVER_TEST_RESULT_FILE"])
                 records = ([json.loads(line) for line in outcome_file.read_text().splitlines()]
                            if outcome_file.exists() else [])
-                observed_ids = {record["id"] for record in records}
+                observed_ids = {_base_unittest_id(record["id"]) for record in records}
                 if observed_ids != set(expected_ids):
                     missing = sorted(set(expected_ids) - observed_ids)
                     extra = sorted(observed_ids - set(expected_ids))

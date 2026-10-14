@@ -669,6 +669,8 @@ class ShutdownDiagnosticContract(unittest.TestCase):
         runtime_module.Runtime = lambda _root: SimpleNamespace(close=lambda: order.append("runtime"))
         updates_module = ModuleType("codex_live_updates")
         updates_module.start = lambda _runtime: SimpleNamespace(close=lambda: order.append("updates"))
+        peer_link_module = ModuleType("codex_peer_link")
+        peer_link_module.start = lambda _runtime, _port: None
 
         def serve(**_kwargs):
             handlers[codex_canvas.signal.SIGTERM](codex_canvas.signal.SIGTERM, None)
@@ -686,7 +688,8 @@ class ShutdownDiagnosticContract(unittest.TestCase):
                 patch.object(codex_canvas.sys, "argv", ["codex-canvas"]), \
                 patch.object(codex_canvas.sys, "stderr", output), \
                 patch.object(codex_canvas.sys, "stdout", io.StringIO()):
-            codex_canvas.main()
+            with patch.dict(sys.modules, {"codex_peer_link": peer_link_module}):
+                codex_canvas.main()
         self.assertEqual(order, ["updates", "server", "runtime", "diagnostic"])
         record = json.loads(output.getvalue())
         self.assertEqual(record["event"], "backend_shutdown")
