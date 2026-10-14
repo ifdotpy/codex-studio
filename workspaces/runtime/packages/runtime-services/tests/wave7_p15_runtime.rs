@@ -1069,7 +1069,7 @@ fn output_queue_enforces_capacity_and_preserves_terminal_reserve_atomically() {
 }
 
 #[test]
-fn output_queue_enforces_byte_limit_and_keeps_room_for_probe_and_exit() {
+fn output_queue_enforces_byte_limit_and_keeps_room_for_terminal_receipts() {
     let root = fixtures::tempdir();
     let case = running(&fixtures::corpus(root.path()));
     let store = fixtures::store(root.path(), "output-byte-boundary");
@@ -1107,8 +1107,12 @@ fn output_queue_enforces_byte_limit_and_keeps_room_for_probe_and_exit() {
         studio_runtime_services::notification_dispatch::NotificationDispatchError::StreamCapacity
     ));
     let operation = serde_json::from_value(case["before"]["operation"].clone()).expect("operation");
-    monitor_event_queue::enqueue_probe(&store, id, &operation, 8, &json!({"ok":true}))
-        .expect("probe fits reserved byte capacity");
+    assert!(
+        monitor_event_queue::enqueue_probe(&store, id, &operation, 8, &json!({"ok":true}))
+            .expect_err("probe cannot consume terminal reserve")
+            .to_string()
+            .contains("queue is full")
+    );
     monitor_event_queue::enqueue_exit(&store, id, &operation, "exit:bytes", Some(0), None, 9.0)
         .expect("exit fits reserved byte capacity");
 }
