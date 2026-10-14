@@ -430,12 +430,16 @@ impl RuntimeStore {
                 .transaction_with_behavior(TransactionBehavior::Immediate)
                 .map_err(StoreError::from)
                 .map_err(E::from)?;
+            let initial_changes = transaction.total_changes();
             match operation(&transaction) {
                 Ok(value) => {
+                    let changed = transaction.total_changes() != initial_changes;
                     transaction
                         .commit()
                         .map_err(StoreError::CommitOutcomeUnknown)?;
-                    self.notify_commit();
+                    if changed {
+                        self.notify_commit();
+                    }
                     Ok(value)
                 }
                 Err(error) => {
@@ -677,5 +681,48 @@ mod diagnostics_hook_tests {
             })
             .expect("transaction succeeds with no observer");
         assert_eq!(EVENTS.load(Ordering::Relaxed), previous);
+    }
+}
+
+#[cfg(test)]
+mod commit_notification_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[test]
+    fn commit_notifies_only_after_a_transaction_changes_rows() {
+        let directory = tempfile::tempdir().expect("temporary state directory");
+        let store = RuntimeStore {
+            root: directory.path().to_path_buf(),
+            _runtime_lock: RuntimeLock::acquire(directory.path()).expect("runtime lock"),
+            writer: Mutex::new(Connection::open_in_memory().expect("writer connection")),
+            version_reader: Mutex::new(Connection::open_in_memory().expect("reader connection")),
+            identity_registry_path: directory.path().join("canvas.sqlite3"),
+            commit_notifier: Mutex::new(None),
+        };
+        let notifications = Arc::new(AtomicUsize::new(0));
+        let notified = Arc::clone(&notifications);
+        store.set_commit_notifier(move || {
+            notified.fetch_add(1, Ordering::Relaxed);
+        });
+        store
+            .writer
+            .lock()
+            .expect("writer mutex")
+            .execute_batch("CREATE TABLE values_table(value INTEGER);")
+            .expect("test table is created");
+
+        store
+            .transaction(|_| Ok(()))
+            .expect("no-op transaction succeeds");
+        assert_eq!(notifications.load(Ordering::Relaxed), 0);
+
+        store
+            .transaction(|transaction| {
+                transaction.execute("INSERT INTO values_table(value) VALUES (1)", [])?;
+                Ok(())
+            })
+            .expect("write transaction succeeds");
+        assert_eq!(notifications.load(Ordering::Relaxed), 1);
     }
 }

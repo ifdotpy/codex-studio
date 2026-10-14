@@ -705,7 +705,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn pending_resource_change_gets_a_turn_before_continuous_token_updates() {
+    async fn pending_resource_change_gets_a_turn_after_bounded_token_updates() {
         let hub = Arc::new(ChangeNotificationHub::new());
         let notifications = Arc::new(ResourceNotifications::new(hub.clone()));
         let token_hub = TokenRateHub::with_change_hub(hub.clone());
@@ -715,17 +715,24 @@ mod tests {
             notifications,
             vec![json!({"kind":"accounts"})],
         );
-        token_hub.publish(test_rates(1)).expect("first rate");
         hub.notify_one();
-        token_hub.publish(test_rates(2)).expect("second rate");
+        let mut state = state;
+        for rate in 1..=8 {
+            token_hub.publish(test_rates(rate)).expect("token rate");
+            let (token, next_state) = next_frame(state).await.expect("token event");
+            state = next_state;
+            let token = event_document(token).await;
+            assert_eq!(token["rates"]["agent"]["rate"].as_f64(), Some(rate as f64));
+        }
 
         let (resource, state) = next_frame(state).await.expect("resource event");
         let resource = event_document(resource).await;
         assert_eq!(resource["resources"], json!([{"kind":"accounts"}]));
 
+        token_hub.publish(test_rates(9)).expect("latest rate");
         let (token, _state) = next_frame(state).await.expect("latest token snapshot");
         let token = event_document(token).await;
-        assert_eq!(token["rates"]["agent"]["rate"].as_f64(), Some(2.0));
+        assert_eq!(token["rates"]["agent"]["rate"].as_f64(), Some(9.0));
     }
 
     #[test]
