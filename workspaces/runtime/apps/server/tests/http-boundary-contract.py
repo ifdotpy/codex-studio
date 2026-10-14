@@ -406,6 +406,9 @@ class RestartContractTests(TimedBoundaryTest):
         self.assertIn("Recovered output.", json.dumps(transcript.json()))
         methods = [frame.get("method") for frame in backend.received_provider_frames()]
         self.assertIn("turn/start", methods)
+        print(json.dumps({
+            "fakeProviderFrames": backend.received_provider_frames(),
+        }, sort_keys=True), flush=True)
 
     def test_accounts_returns_the_rust_catalog_registry_snapshot(self) -> None:
         response = self.backend.request("GET", "/api/accounts")
