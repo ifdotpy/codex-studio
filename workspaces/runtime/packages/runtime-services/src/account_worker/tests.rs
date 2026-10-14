@@ -255,7 +255,7 @@ fn template() -> (PathBuf, Value) {
     let (lock_ready, acquired_lock) = std::sync::mpsc::sync_channel(1);
     std::thread::spawn(move || {
         let result = lock.lock().map(|()| lock);
-        let _ = lock_ready.send(result);
+        lock_ready.send(result).ok();
     });
     let _lock = acquired_lock
         .recv_timeout(FIXTURE_LOCK_HANG_GUARD)
