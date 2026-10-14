@@ -10,40 +10,19 @@ from pathlib import Path
 import subprocess
 import sys
 import unittest
-from concurrent.futures import ThreadPoolExecutor
 import uuid
 
 from test_isolation import isolate_supervisor_environment
 
 isolate_supervisor_environment()
 
-from http_backend_harness import TimedHTTPContractTest, start_contract_backend, no_write_snapshot
+from http_backend_harness import (
+    TimedHTTPContractTest,
+    assert_read_succeeds_unchanged_under_writer,
+    no_write_snapshot,
+    start_contract_backend,
+)
 from sync_http_contract_support import prepare_sync_store_for_rust_contract
-
-
-
-def assert_read_succeeds_unchanged_under_writer(test_case, backend, path, headers):
-    baseline = backend.request("GET", path, headers=headers)
-    test_case.assertEqual(baseline.status, 200, baseline.body[:1000])
-    before = no_write_snapshot(backend.state)
-    database_path = backend.state / "canvas.sqlite3"
-    observer = sqlite3.connect(f"file:{database_path}?mode=ro", uri=True)
-    version = observer.execute("PRAGMA data_version").fetchone()[0]
-    writer = sqlite3.connect(database_path, timeout=0)
-    writer.execute("BEGIN IMMEDIATE")
-    pool = ThreadPoolExecutor(max_workers=1)
-    future = pool.submit(backend.request, "GET", path, headers=headers)
-    try:
-        response = future.result(timeout=3)
-        test_case.assertEqual(response.status, 200, response.body[:1000])
-        test_case.assertEqual(response.body, baseline.body)
-        test_case.assertEqual(no_write_snapshot(backend.state), before)
-        test_case.assertEqual(observer.execute("PRAGMA data_version").fetchone()[0], version)
-    finally:
-        writer.execute("ROLLBACK")
-        writer.close()
-        pool.shutdown(wait=True)
-        observer.close()
 
 
 class SyncDocumentsHTTPContract(TimedHTTPContractTest, unittest.TestCase):

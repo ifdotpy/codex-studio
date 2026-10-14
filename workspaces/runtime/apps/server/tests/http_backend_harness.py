@@ -17,6 +17,7 @@ import sys
 import threading
 import time
 import tempfile
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
 from typing import Any, Callable, TextIO
 from urllib.error import HTTPError, URLError
@@ -192,6 +193,37 @@ def no_write_snapshot(state: Path) -> tuple[object, ...]:
                 snapshots.append((table, retained_columns, tuple(retained_rows)))
             database_snapshots.append((database_path.name, tuple(snapshots)))
     return tuple(database_snapshots)
+
+
+def assert_read_succeeds_unchanged_under_writer(test_case, backend, path, headers) -> None:
+    """Prove an HTTP GET completes without taking SQLite's writer.
+
+    A direct same-thread check cannot work here: the route is reached over HTTP
+    and would block the test thread if it attempted BEGIN IMMEDIATE. The bounded
+    future wait is only a failure guard; response equality and database snapshots
+    are the success assertions.
+    """
+    baseline = backend.request("GET", path, headers=headers)
+    test_case.assertEqual(baseline.status, 200, baseline.body[:1000])
+    before = no_write_snapshot(backend.state)
+    database_path = backend.state / "canvas.sqlite3"
+    observer = sqlite3.connect(f"file:{database_path}?mode=ro", uri=True)
+    version = observer.execute("PRAGMA data_version").fetchone()[0]
+    writer = sqlite3.connect(database_path, timeout=0)
+    writer.execute("BEGIN IMMEDIATE")
+    pool = ThreadPoolExecutor(max_workers=1)
+    future = pool.submit(backend.request, "GET", path, headers=headers)
+    try:
+        response = future.result(timeout=3)
+        test_case.assertEqual(response.status, 200, response.body[:1000])
+        test_case.assertEqual(response.body, baseline.body)
+        test_case.assertEqual(no_write_snapshot(backend.state), before)
+        test_case.assertEqual(observer.execute("PRAGMA data_version").fetchone()[0], version)
+    finally:
+        writer.execute("ROLLBACK")
+        writer.close()
+        pool.shutdown(wait=True)
+        observer.close()
 
 
 @dataclass(frozen=True)
