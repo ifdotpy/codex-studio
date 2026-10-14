@@ -15,6 +15,7 @@ import subprocess
 import sys
 import tempfile
 import textwrap
+import threading
 import time
 import unittest
 from unittest.mock import patch
@@ -272,6 +273,18 @@ class ProviderReplay(unittest.TestCase):
                                 f"Claude bridge failed during AppServer startup: {error}; "
                                 f"child stderr:\n{app_server_stderr(root)}"
                             ) from error
+                        turn_completion_changed = threading.Event()
+                        original_put = runtime.put
+
+                        def signal_turn_completion(db, table, record, *args, **kwargs):
+                            original_put(db, table, record, *args, **kwargs)
+                            if (table == "agents" and record.get("id") == agent["id"]
+                                    and record.get("lastCompletedTurnStatus") in {
+                                        "completed", "failed", "interrupted",
+                                    }):
+                                turn_completion_changed.set()
+
+                        runtime.put = signal_turn_completion
                         nested_ids = []
                         if fixture.get("nestedDelegation"):
                             defaults = runtime.agent(agent["id"])["workerDefaults"]
@@ -322,8 +335,32 @@ class ProviderReplay(unittest.TestCase):
                                 return sent and observed and runtime.agent(agent["id"])["status"] == expected
                             eventually(lost_reply_replayed)
                         else:
-                            eventually(lambda: runtime.agent(agent["id"])["status"] in
-                                       {expected, "failed", "interrupted"})
+                            try:
+                                expected_turn_status = fixture.get("expectedTurnStatus")
+                                if expected_turn_status:
+                                    def turn_is_terminal():
+                                        return runtime.agent(agent["id"]).get(
+                                            "lastCompletedTurnStatus") in {
+                                                expected_turn_status, "failed", "interrupted",
+                                            }
+
+                                    eventually(
+                                        turn_is_terminal,
+                                        f"fixture {name} turn status",
+                                        wake_event=turn_completion_changed,
+                                        event_driven=True,
+                                    )
+                                else:
+                                    eventually(lambda: runtime.agent(agent["id"])["status"] in
+                                               {expected, "failed", "interrupted"})
+                            except AssertionError as error:
+                                states = [runtime.agent(key) for key in [agent["id"], *nested_ids]]
+                                raise AssertionError(
+                                    f"{error}; replay agents=" + json.dumps([
+                                        {key: state.get(key) for key in (
+                                            "id", "parentId", "status", "lastCompletedTurnStatus",
+                                            "turnId", "threadId", "inFlight")}
+                                        for state in states])) from error
                         if fixture.get("assert", {}).get("taskStatuses"):
                             required = set(fixture["assert"]["taskStatuses"])
                             def tasks_saved():
@@ -357,7 +394,13 @@ class ProviderReplay(unittest.TestCase):
                             child_items = ([json.loads(row[0]) for row in db.execute(
                                 "SELECT record FROM runtime_items WHERE agent=? ORDER BY created,id",
                                 (child["id"],))] if child else [])
-                        self.assertEqual(saved_agent["status"], expected, saved_agent)
+                        if fixture.get("expectedTurnStatus"):
+                            self.assertEqual(saved_agent.get("lastCompletedTurnStatus"),
+                                             fixture["expectedTurnStatus"], saved_agent)
+                            self.assertIn(saved_agent["status"], fixture.get(
+                                "allowedStatuses", [expected]), saved_agent)
+                        else:
+                            self.assertEqual(saved_agent["status"], expected, saved_agent)
                         self.assertTrue(events, "lead runtime_events must persist")
                         for expected_kind in fixture.get("assert", {}).get("eventKinds", []):
                             self.assertIn(expected_kind, [event["kind"] for event in events])

@@ -720,11 +720,25 @@ class BackendProcess:
             bootstrap_stdout.close()
 
     def _raise_backend_not_ready(self, reason: str, exit_status: int | None) -> None:
+        status_detail: str
+        if exit_status is None:
+            assert self._process is not None
+            try:
+                exit_status = self._process.wait(timeout=STOP_TIMEOUT_SECONDS)
+            except subprocess.TimeoutExpired:
+                status_detail = (
+                    f"child did not exit within the {STOP_TIMEOUT_SECONDS:g}s wait bound; "
+                    "exit status unavailable"
+                )
+            else:
+                status_detail = f"child exit status={exit_status}"
+        else:
+            status_detail = f"child exit status={exit_status}"
         stderr_tail = self.stderr or "<empty>"
         message = (
             f"Backend did not emit its ready line while waiting for state={self.state}: "
             f"{reason}; "
-            f"child exit status={exit_status}; stderr tail:\n{stderr_tail}"
+            f"{status_detail}; stderr tail:\n{stderr_tail}"
         )
         if "studio_operations_native" in stderr_tail:
             message += "\n" + self._native_module_setup_hint()

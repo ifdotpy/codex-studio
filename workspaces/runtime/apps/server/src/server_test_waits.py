@@ -28,6 +28,7 @@ def wait_for_condition(
     description: str = "condition",
     *,
     wake_event: threading.Event | None = None,
+    event_driven: bool = False,
     retry_exceptions: tuple[type[Exception], ...] = (),
     timeout_exception: type[Exception] = AssertionError,
 ) -> T:
@@ -35,6 +36,10 @@ def wait_for_condition(
     deadline = time.monotonic() + HANG_GUARD_SECONDS
     last_error: Exception | None = None
     while True:
+        if wake_event is not None and event_driven:
+            # Clear before checking so a concurrent update is either visible to
+            # the condition or leaves the event set for the wait below.
+            wake_event.clear()
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             detail = f"; last error={last_error!r}" if last_error is not None else ""
@@ -59,6 +64,8 @@ def wait_for_condition(
             continue
         if wake_event is None:
             time.sleep(min(POLL_INTERVAL_SECONDS, remaining))
+        elif event_driven:
+            wake_event.wait(remaining)
         else:
             wake_event.wait(min(POLL_INTERVAL_SECONDS, remaining))
             wake_event.clear()

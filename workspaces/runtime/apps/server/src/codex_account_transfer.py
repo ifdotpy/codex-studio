@@ -1260,7 +1260,8 @@ class AccountTransfers:
                 return None
         # Check native state first: it is cheap, and every later move of a
         # materialized imported thread stops here without hashing the archive.
-        native = self.source_history_missing(self.rt.accounts.home(source_account), thread_id)
+        # These proofs only read the profile's files. A changed login does not change them.
+        native = self.source_history_missing(self.rt.accounts.home(source_account, for_login=True), thread_id)
         if not native:
             return None
         if source_thread is not None:
@@ -1285,7 +1286,7 @@ class AccountTransfers:
                     or not member.get('error') or '[Errno 2]' not in str(member['error'])
                     or member.get('result') or member.get('nativeMethod')):
                 continue
-            proof = self.source_history_missing(self.rt.accounts.home(member['sourceAccountKey']),
+            proof = self.source_history_missing(self.rt.accounts.home(member['sourceAccountKey'], for_login=True),
                                                 thread_id, member['error'])
             if proof:
                 return op, member, proof

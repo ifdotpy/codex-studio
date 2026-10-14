@@ -31,7 +31,11 @@ export type ServerAccessState = {
     status: "paired" | "revoked";
     created?: number;
   }[];
-  settings?: { autoPair: boolean; aliases?: Record<string, string> };
+  settings?: {
+    autoPair: boolean;
+    autoUpdate?: boolean;
+    aliases?: Record<string, string>;
+  };
   servers: ServerAccessPeer[];
   invites: unknown[];
 };
@@ -42,6 +46,7 @@ export type ServerAccessRequest =
   | { action: "discover"; requestId: string }
   | { action: "ui_invite"; serverId: string; requestId: string }
   | { action: "settings"; autoPair: boolean; requestId: string }
+  | { action: "settings"; autoUpdate: boolean; requestId: string }
   | { action: "name"; serverId: string; label: string; requestId: string }
   | { action: "alias"; serverId: string; alias: string; requestId: string };
 export type ServerAccessResponse =

@@ -35,6 +35,21 @@ export default function DiscoveryPanel({
           Find servers now
         </ActionButton>
       </SettingsRow>
+      <SettingsRow
+        label={
+          <Switch
+            label="Install updates from paired servers"
+            checked={snapshot?.autoUpdate ?? true}
+            disabled={busy || !snapshot}
+            onChange={(event) =>
+              actions.setAutoUpdate(event.currentTarget.checked)
+            }
+          />
+        }
+        help="Installs a newer build that a paired server runs, signed by the same certificate. Waits for supervisor mode."
+      >
+        {null}
+      </SettingsRow>
       {error && (
         <p className="studio-preferences-error" role="alert">
           {error}

@@ -255,6 +255,21 @@ try {
     path.join(resources, "studio-install.json"),
     JSON.stringify({ mode: uiOnly ? "ui-only" : "combined" }),
   );
+  // Contents/Resources/studio-build.json: the build stamp that paired servers compare
+  // (docs/peer-updates.md). A greater builtAt is a newer build.
+  const buildStamp = path.join(stage, "studio-build.json");
+  const git = (...args) =>
+    execFileSync("git", args, { cwd: repositoryRoot, encoding: "utf8" }).trim();
+  await writeFile(
+    buildStamp,
+    JSON.stringify({
+      version: 1,
+      builtAt: Date.now() / 1000,
+      commit: git("rev-parse", "HEAD"),
+      commitTime: Number(git("log", "-1", "--format=%ct")),
+      branch: git("rev-parse", "--abbrev-ref", "HEAD"),
+    }),
+  );
   const output = await packager({
     dir: root,
     name: "Codex Studio",
@@ -272,9 +287,15 @@ try {
     extraResource: [
       resources,
       speech,
+      buildStamp,
       ...(uiOnly
         ? []
-        : [linuxVM, fsEvents, path.join(root, "recover_backend.py")]),
+        : [
+            linuxVM,
+            fsEvents,
+            path.join(root, "recover_backend.py"),
+            path.join(root, "install_update.py"),
+          ]),
     ],
     extendInfo: {
       NSMicrophoneUsageDescription:
@@ -288,8 +309,9 @@ try {
       /^\/node_modules($|\/)/,
       /^\/test\.mjs$/,
       /^\/multi-server-memory\.mjs$/,
-      /^\/(?:backend-test|recovery-test|recovery-renderer-test|renderer-recovery-test|window-state-test|package-test)\.(?:mjs|cjs|py)$/,
+      /^\/(?:backend-test|recovery-test|recovery-renderer-test|renderer-recovery-test|window-state-test|package-test|install-update-test)\.(?:mjs|cjs|py)$/,
       /^\/recover_backend\.py$/,
+      /^\/install_update\.py$/,
       /^\/__pycache__($|\/)/,
       /^\/package\.mjs$/,
       /^\/README\.md$/,

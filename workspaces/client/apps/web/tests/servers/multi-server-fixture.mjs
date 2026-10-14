@@ -335,7 +335,8 @@ export async function fixture(
         });
         return;
       }
-      if (body.action === "settings") autoPair = body.autoPair;
+      if (body.action === "settings" && typeof body.autoPair === "boolean")
+        autoPair = body.autoPair;
       if (body.action === "create_invite") {
         json({ invitation, expires: invitation.expires });
         return;

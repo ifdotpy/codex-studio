@@ -2,8 +2,9 @@
 #[path = "../support/prepared_python.rs"]
 mod prepared_python_support;
 use super::*;
-use std::io::Write;
-use std::process::{Command, Stdio};
+use std::io::{BufRead, BufReader, Write};
+use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+use std::sync::{Mutex, OnceLock};
 use studio_runtime_store::{AgentRecord, AgentRepository};
 
 fn fixture_parent() -> PathBuf {
@@ -53,7 +54,7 @@ impl Fixture {
         let id = if python {
             let actor = oracle(
                 root.path(),
-                json!({"command":"seed","root":state,"cwd":repo.join("project")}),
+                json!({"command":"seed","root":state,"cwd":repo.join("project"),"codexHome":root.path().join("codex")}),
             );
             actor["id"].as_str().expect("actor id").to_owned()
         } else {
@@ -200,42 +201,86 @@ fn command(cwd: &Path, args: &[&str]) -> String {
     );
     String::from_utf8(output.stdout).expect("UTF-8 Git")
 }
-fn oracle(root: &Path, request: Value) -> Value {
-    let python = prepared_python_support::prepared_python(
-        &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src"),
-    );
-    let script = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/turn_lifecycle/workspace_ready_oracle.py");
+struct OracleWorker {
+    _root: tempfile::TempDir,
+    child: Child,
+    stdin: ChildStdin,
+    stdout: BufReader<ChildStdout>,
+}
+
+impl OracleWorker {
+    fn start() -> Self {
+        let root = tempfile::Builder::new()
+            .prefix("workspace-oracle-worker-")
+            .tempdir_in(fixture_parent())
+            .expect("oracle worker root");
+        for name in ["home", "codex", "claude"] {
+            std::fs::create_dir_all(root.path().join(name)).expect("isolated worker home");
+        }
+        let python = prepared_python_support::prepared_python(
+            &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src"),
+        );
+        let script = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/turn_lifecycle/workspace_ready_oracle.py");
+        let mut child = Command::new(python)
+            .arg("-B")
+            .arg(script)
+            .env("HOME", root.path().join("home"))
+            .env("CODEX_HOME", root.path().join("codex"))
+            .env("CLAUDE_CONFIG_DIR", root.path().join("claude"))
+            .env("CODEX_BIN", "/bin/false")
+            .env("STUDIO_CLAUDE_BIN", "/bin/false")
+            .env("PATH", "/usr/local/bin:/usr/bin:/bin")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .expect("oracle worker starts");
+        let stdin = child.stdin.take().expect("oracle worker stdin");
+        let stdout = BufReader::new(child.stdout.take().expect("oracle worker stdout"));
+        Self {
+            _root: root,
+            child,
+            stdin,
+            stdout,
+        }
+    }
+
+    fn request(&mut self, request: Value) -> Value {
+        writeln!(
+            self.stdin,
+            "{}",
+            serde_json::to_string(&request).expect("serialize oracle request")
+        )
+        .expect("send oracle case");
+        self.stdin.flush().expect("flush oracle case");
+        let mut response = String::new();
+        let bytes = self
+            .stdout
+            .read_line(&mut response)
+            .expect("read oracle response");
+        assert!(
+            bytes > 0,
+            "oracle worker closed stdout: {:?}",
+            self.child.try_wait().expect("check oracle worker status")
+        );
+        serde_json::from_str(&response).expect("oracle JSON")
+    }
+}
+
+fn oracle(root: &Path, mut request: Value) -> Value {
     for name in ["home", "codex", "claude"] {
         std::fs::create_dir_all(root.join(name)).expect("isolated home");
     }
-    let mut child = Command::new(python)
-        .arg("-B")
-        .arg(script)
-        .env("HOME", root.join("home"))
-        .env("CODEX_HOME", root.join("codex"))
-        .env("CLAUDE_CONFIG_DIR", root.join("claude"))
-        .env("CODEX_BIN", "/bin/false")
-        .env("STUDIO_CLAUDE_BIN", "/bin/false")
-        .env("PATH", "/usr/local/bin:/usr/bin:/bin")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("oracle starts");
-    child
-        .stdin
-        .take()
-        .expect("stdin")
-        .write_all(request.to_string().as_bytes())
-        .expect("send oracle case");
-    let output = child.wait_with_output().expect("oracle exits");
-    assert!(
-        output.status.success(),
-        "oracle failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    serde_json::from_slice(&output.stdout).expect("oracle JSON")
+    if request["command"] == "seed" {
+        request["codexHome"] = json!(root.join("codex"));
+    }
+    static WORKER: OnceLock<Mutex<OracleWorker>> = OnceLock::new();
+    WORKER
+        .get_or_init(|| Mutex::new(OracleWorker::start()))
+        .lock()
+        .expect("oracle worker mutex")
+        .request(request)
 }
 
 #[test]
