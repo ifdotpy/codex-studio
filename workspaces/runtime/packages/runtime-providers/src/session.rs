@@ -148,7 +148,8 @@ impl PendingBook {
     /// Positive evidence of no send can retire even a deadline-unknown ticket.
     pub(crate) fn reject_unsent(&mut self, id: &RequestId) -> Result<(), BookError> {
         self.entries.remove(id).ok_or(BookError::UnknownId)?;
-        self.remember_settled(id.clone(), SettledKind::Cancelled);
+        // A proven-unsent request never reached the peer, so its caller may
+        // safely retry the same durable identity on this connection.
         Ok(())
     }
 

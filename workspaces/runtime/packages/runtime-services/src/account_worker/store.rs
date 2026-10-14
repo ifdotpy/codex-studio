@@ -47,6 +47,17 @@ pub(super) fn save(
     )?;
     Ok(())
 }
+pub(super) fn delete_receipt(
+    tx: &studio_runtime_store::Transaction<'_>,
+    operation: &str,
+    phase: &str,
+) -> Result<(), WorkerError> {
+    tx.execute(
+        "DELETE FROM runtime_operation_receipts WHERE id=?1",
+        [receipt_id(operation, phase)],
+    )?;
+    Ok(())
+}
 pub(super) fn record(request: &RecoveredRequest) -> Value {
     json!({"id":request.ticket.id,"generation":request.ticket.generation,"method":request.ticket.method.as_str(),"operation":request.operation_id.0,"thread":request.thread_id,"lightweight":request.lightweight,"deadline":request.deadline_ms,"unknown":request.unknown,"remoteId":request.remote_id})
 }

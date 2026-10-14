@@ -1,4 +1,4 @@
-use super::storage::{replay, submitted};
+use super::storage::{Replay, replay, submitted};
 use super::*;
 impl Worker {
     fn retained_scope(&self) -> ConnectionScope {
@@ -45,17 +45,18 @@ impl Worker {
         let prior = self
             .db("retained_replay", move |s| replay(s, &check))
             .await?;
-        match prior {
+        let retry_ticket = match prior {
             Err(error) => {
                 let _ignored = reply.send(Err(error));
                 return Ok(());
             }
-            Ok(Some(receipt)) => {
+            Ok(Replay::Return(receipt)) => {
                 let _ignored = reply.send(Ok(receipt));
                 return Ok(());
             }
-            Ok(None) => {}
-        }
+            Ok(Replay::Miss) => None,
+            Ok(Replay::Retry(ticket)) => Some(ticket),
+        };
         let control = self.control.clone();
         let remaining = tokio::time::Instant::from_std(request.deadline)
             .saturating_duration_since(tokio::time::Instant::now());
@@ -95,7 +96,7 @@ impl Worker {
         let save_call = call.clone();
         let authorized = self
             .db("retained_submitted", move |s| {
-                submitted(s, &save_call, &recovery)
+                submitted(s, &save_call, &recovery, retry_ticket.as_ref())
             })
             .await?;
         if let Err(error) = authorized {

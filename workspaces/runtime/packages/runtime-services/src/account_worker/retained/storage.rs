@@ -311,13 +311,13 @@ fn thread_started_for_actor(
 pub(super) fn replay(
     s: &RuntimeStore,
     call: &Call,
-) -> Result<Result<Option<SessionReceipt>, PortError>, WorkerError> {
+) -> Result<Result<Replay, PortError>, WorkerError> {
     s.transaction_with(|tx| {
         if !authorize(tx, call)? {
             return Ok(Err(PortError::Identity));
         }
         let Some(prior) = store::receipt(tx, &call.key(), "submitted")? else {
-            return Ok(Ok(None));
+            return Ok(Ok(Replay::Miss));
         };
         let prior_call: Call =
             serde_json::from_value(prior["call"].clone()).map_err(|_| WorkerError::Capacity)?;
@@ -349,11 +349,22 @@ pub(super) fn replay(
         } else {
             RequestResult::Unknown
         };
+        if result == RequestResult::NotSent {
+            return Ok(Ok(Replay::Retry(request.ticket)));
+        }
         // A committed operation may be inspected after the provider reconnects.
         // Return its original ticket and scope; this path only reads receipts and
         // never queues another provider write.
-        Ok(Ok(Some(prior_call.receipt(request.ticket, result))))
+        Ok(Ok(Replay::Return(
+            prior_call.receipt(request.ticket, result),
+        )))
     })
+}
+
+pub(super) enum Replay {
+    Miss,
+    Return(SessionReceipt),
+    Retry(studio_runtime_providers::RequestTicket),
 }
 
 fn same_replay_identity(prior: &Call, current: &Call) -> bool {
@@ -432,17 +443,51 @@ pub(super) fn submitted(
     s: &RuntimeStore,
     call: &Call,
     request: &RecoveredRequest,
+    retry_ticket: Option<&studio_runtime_providers::RequestTicket>,
 ) -> Result<Result<(), PortError>, WorkerError> {
     scheduler::lifecycle_transaction_with(s, |tx| {
         if !authorize(tx, call)? {
             return Ok(Err(PortError::Identity));
         }
-        store::save(
-            tx,
-            &call.key(),
-            "submitted",
-            json!({"call":call,"request":store::record(request)}),
-        )?;
+        if let Some(expected_ticket) = retry_ticket {
+            let Some(prior) = store::receipt(tx, &call.key(), "submitted")? else {
+                return Ok(Err(PortError::Identity));
+            };
+            let prior_call: Call =
+                serde_json::from_value(prior["call"].clone()).map_err(|_| WorkerError::Capacity)?;
+            if !same_replay_identity(&prior_call, call) {
+                return Ok(Err(PortError::Identity));
+            }
+            let prior_request = store::decode(&prior["request"])?;
+            let checkpoint =
+                store::checkpoint(tx, &prior_call.scope.account, prior_call.scope.generation)?;
+            let proven_not_sent = store::receipt(tx, &call.key(), "result")?.is_some_and(|saved| {
+                saved["result"] == json!(RequestResult::NotSent)
+                    && saved["cursor"]
+                        .as_u64()
+                        .is_some_and(|cursor| cursor <= checkpoint)
+            });
+            if prior_request.ticket != *expected_ticket
+                || request.ticket != *expected_ticket
+                || !proven_not_sent
+            {
+                return Ok(Err(PortError::Identity));
+            }
+            store::delete_receipt(tx, &call.key(), "result")?;
+            store::replace(
+                tx,
+                &call.key(),
+                "submitted",
+                json!({"call":call,"request":store::record(request)}),
+            )?;
+        } else {
+            store::save(
+                tx,
+                &call.key(),
+                "submitted",
+                json!({"call":call,"request":store::record(request)}),
+            )?;
+        }
         Ok(Ok(()))
     })
 }
