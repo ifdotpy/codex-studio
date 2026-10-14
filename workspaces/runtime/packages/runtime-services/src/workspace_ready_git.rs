@@ -295,7 +295,7 @@ fn observe(
     if unsupported(&context.actor).is_some()
         || !context.actor.auto_wake
         || context.actor.deleted_at.is_some()
-        || (!context.actor.worktree && context.actor.workspace_mode.as_deref() != Some("worktree"))
+        || !crate::workspace_ready::requires_worktree(&context.actor)
     {
         return Ok(context);
     }
