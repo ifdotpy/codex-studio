@@ -423,8 +423,20 @@ class SeedTests(unittest.TestCase):
         (self.root / "archive.tar").write_bytes(first)
         # The guest's own extraction worker, in its own process as in the VM.
         guest = Path(__file__).resolve().parents[2] / "vm-guest/upload.py"
-        subprocess.run([sys.executable, str(guest), str(self.root / "archive.tar"), str(self.root / "expanded"),
-                        hashlib.sha256(first).hexdigest()], check=True, capture_output=True,
+        # Extraction and checksum verification stay real. The guest's durability
+        # syscall must not flush every filesystem on the shared test host.
+        worker = """
+import os, runpy, sys
+from unittest.mock import patch
+sys.argv = sys.argv[1:]
+sys.path.insert(0, os.path.dirname(sys.argv[0]))
+with patch('os.sync') as sync:
+    runpy.run_path(sys.argv[0], run_name='__main__')
+sync.assert_called_once_with()
+"""
+        subprocess.run([sys.executable, "-c", worker, str(guest), str(self.root / "archive.tar"),
+                        str(self.root / "expanded"), hashlib.sha256(first).hexdigest()],
+                       check=True, capture_output=True, timeout=HANG_GUARD_SECONDS,
                        env={**os.environ, "CODEX_WORKSPACE_MIN_FREE_BYTES": "0"})
         self.assertEqual((self.root / "expanded/src/same.gn").read_bytes(), b"group" * 700)
         self.assertEqual(os.readlink(self.root / "expanded/src/link"), "BUILD.gn")
@@ -473,8 +485,6 @@ class SeedTests(unittest.TestCase):
         self.assertNotIn("project.import", [row[0] for row in self.client.calls])
         self.assertEqual([row[0] for row in self.client.calls].count("project.seed"), 1)
 
-
-class SeedRetryTests(SeedTests):
     def test_a_seed_that_failed_uncertainly_repeats_with_new_request_ids(self):
         # The guest answers a request ID with its saved answer, so the same ID would fail forever.
         self.client.seed_failures = 1
