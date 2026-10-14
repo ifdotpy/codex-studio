@@ -7,7 +7,7 @@ use std::{
     collections::BTreeMap,
     future::Future,
     pin::Pin,
-    sync::{Arc, RwLock},
+    sync::{Arc, Mutex, RwLock},
     time::Duration,
 };
 use studio_runtime_process::provider_seam::{OpenOptions, ProviderTaskFactory, Shutdown};
@@ -27,7 +27,7 @@ use studio_runtime_store::{
     AgentId, AgentRepository, AgentStatus, QueueEvent, QueueEventId, QueueEventRepository,
     RuntimeStore, SchedulerRepository,
 };
-use tokio::sync::{Notify, mpsc};
+use tokio::sync::{Notify, mpsc, oneshot};
 
 const MAX_ACCOUNTS: usize = 128;
 const WAKE_PAGE: usize = 32;
@@ -50,7 +50,18 @@ fn defer_wake(
 enum RegistryTrigger {
     Wake,
     Retry,
+    Ensure(EnsureRequest),
     WorkerExited(String, Result<(), WorkerError>),
+}
+
+struct EnsureRequest {
+    account: String,
+    response: oneshot::Sender<
+        Result<
+            studio_runtime_services::account_session_runtime::ConnectionScope,
+            studio_runtime_services::account_session_runtime::AccountSessionError,
+        >,
+    >,
 }
 
 pub(crate) type LaunchFuture<'a> =
@@ -78,11 +89,12 @@ pub(crate) struct AccountRegistry {
     radio_clock: Arc<dyn Fn() -> f64 + Send + Sync>,
     workers: BTreeMap<String, AccountHandle>,
     session_broker: AccountSessionBroker,
+    ensure_requests: mpsc::Receiver<EnsureRequest>,
     after_account: String,
     after_agent: BTreeMap<String, String>,
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub(crate) struct AccountSessionBroker {
     sessions: Arc<
         RwLock<
@@ -92,11 +104,38 @@ pub(crate) struct AccountSessionBroker {
             >,
         >,
     >,
+    ensure_sender: mpsc::Sender<EnsureRequest>,
+    ensure_receiver: Arc<Mutex<Option<mpsc::Receiver<EnsureRequest>>>>,
 }
 
 impl AccountSessionBroker {
     pub(crate) fn new() -> Self {
-        Self::default()
+        let (ensure_sender, ensure_receiver) = mpsc::channel(32);
+        Self {
+            sessions: Arc::default(),
+            ensure_sender,
+            ensure_receiver: Arc::new(Mutex::new(Some(ensure_receiver))),
+        }
+    }
+
+    fn take_ensure_receiver(&self) -> Result<mpsc::Receiver<EnsureRequest>, WorkerError> {
+        self.ensure_receiver
+            .lock()
+            .map_err(|_| WorkerError::TaskFailed)?
+            .take()
+            .ok_or(WorkerError::TaskFailed)
+    }
+
+    fn live_scope(
+        &self,
+        account: &str,
+    ) -> Option<studio_runtime_services::account_session_runtime::ConnectionScope> {
+        self.sessions
+            .read()
+            .ok()?
+            .get(account)
+            .filter(|session| session.is_live())
+            .map(|session| session.scope().clone())
     }
 
     pub(crate) fn callback_reply_port(
@@ -182,16 +221,32 @@ impl studio_runtime_services::callback_runtime::CallbackReplyPort for BrokerCall
 impl studio_runtime_services::account_session_runtime::RetainedAccountSession
     for AccountSessionBroker
 {
+    fn ensure_session(
+        &self,
+        account: String,
+    ) -> studio_runtime_services::account_session_runtime::SessionFutureScope {
+        use studio_runtime_services::account_session_runtime::AccountSessionError;
+        if let Some(scope) = self.live_scope(&account) {
+            return Box::pin(async move { Ok(scope) });
+        }
+        let sender = self.ensure_sender.clone();
+        Box::pin(async move {
+            let (response, receiver) = oneshot::channel();
+            sender
+                .send(EnsureRequest { account, response })
+                .await
+                .map_err(|_| AccountSessionError::Requires("provider-session/account-session"))?;
+            receiver
+                .await
+                .map_err(|_| AccountSessionError::Requires("provider-session/account-session"))?
+        })
+    }
+
     fn current_scope(
         &self,
         account: &str,
     ) -> Option<studio_runtime_services::account_session_runtime::ConnectionScope> {
-        self.sessions
-            .read()
-            .ok()?
-            .get(account)
-            .filter(|session| session.is_live())
-            .map(|session| session.scope().clone())
+        self.live_scope(account)
     }
 
     fn request(
@@ -496,6 +551,7 @@ impl AccountRegistry {
     ) -> Result<Self, WorkerError> {
         let bridge = StoreBridge::new(store.clone()).await?;
         bridge.set_monitor_dispatch_wake(monitor_dispatch_wake);
+        let ensure_requests = session_broker.take_ensure_receiver()?;
         Ok(Self {
             store,
             bridge,
@@ -503,6 +559,7 @@ impl AccountRegistry {
             radio_clock: Arc::new(event_time),
             workers: BTreeMap::new(),
             session_broker,
+            ensure_requests,
             after_account: String::new(),
             after_agent: BTreeMap::new(),
         })
@@ -546,6 +603,29 @@ impl AccountRegistry {
             .insert(account.to_owned(), worker.retained_session());
         self.workers.insert(account.to_owned(), worker);
         Ok(())
+    }
+
+    async fn ensure_account_session(
+        &mut self,
+        account: &str,
+    ) -> Result<studio_runtime_services::account_session_runtime::ConnectionScope, WorkerError>
+    {
+        if let Some(scope) = self.session_broker.live_scope(account) {
+            return Ok(scope);
+        }
+        if let Some(mut worker) = self.workers.remove(account) {
+            if let Ok(mut sessions) = self.session_broker.sessions.write() {
+                sessions.remove(account);
+            }
+            // A retained worker can lose its session before its join handle is
+            // observed by the registry select loop. Stop and reap it before
+            // starting the replacement so concurrent ensures still own one worker.
+            let _ = worker.shutdown().await;
+        }
+        self.start(account).await?;
+        self.session_broker
+            .live_scope(account)
+            .ok_or(WorkerError::Closed)
     }
 
     /// Startup and post-commit use the same persisted selection, so a crash
@@ -699,6 +779,7 @@ impl AccountRegistry {
                         exit.map(|(account, result)| RegistryTrigger::WorkerExited(account, result))
                     },
                     _ = wake.notified() => Some(RegistryTrigger::Wake),
+                    request = self.ensure_requests.recv() => request.map(RegistryTrigger::Ensure),
                     _ = tokio::time::sleep_until(retry_at) => Some(RegistryTrigger::Retry),
                 }
             };
@@ -712,6 +793,16 @@ impl AccountRegistry {
                         eprintln!("account worker ended: {error}");
                     }
                     // Do not reconnect in a hot loop after an unavailable provider.
+                    continue;
+                }
+                Some(RegistryTrigger::Ensure(request)) => {
+                    let response = match self.ensure_account_session(&request.account).await {
+                        Ok(scope) if scope.account == request.account => Ok(scope),
+                        _ => Err(studio_runtime_services::account_session_runtime::AccountSessionError::Requires(
+                            "provider-session/account-session",
+                        )),
+                    };
+                    let _ = request.response.send(response);
                     continue;
                 }
                 Some(RegistryTrigger::Wake)
