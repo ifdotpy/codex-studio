@@ -118,7 +118,7 @@ async fn connect_chat(
     Ok(Json(result))
 }
 
-async fn post_message(
+pub(super) async fn post_message(
     State(state): State<HttpState>,
     ApiJson(body): ApiJson<crate::generated::ManagedMessageBody>,
 ) -> Result<Json<Value>, ApiError> {

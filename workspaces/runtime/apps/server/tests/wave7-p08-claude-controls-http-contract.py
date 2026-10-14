@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
-"""The retained-session dependency stays explicit until the worker consumes it."""
+"""Claude session controls use a live retained session and durable receipts."""
 from __future__ import annotations
 
-import os
 from pathlib import Path
 import sys
 import unittest
@@ -30,9 +29,9 @@ class ClaudeControlsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             "X-Studio-API-Schema": self.backend.schema_hash,
         }
 
-    def test_every_unwired_action_refuses_without_writes(self):
+    def test_missing_agent_is_rejected_without_writes(self):
         # No agents or events exist, so no preparation or dispatch can race the
-        # snapshot. The shared helper owns all background-field exclusions.
+        # snapshot. Both backends validate the actor before any provider call.
         for action, arguments in (
             ("state", {}),
             ("commands", {}),
@@ -48,14 +47,8 @@ class ClaudeControlsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
                     body={"id": "missing", "action": action, **arguments},
                     headers=self.headers(),
                 )
-                if os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"):
-                    self.assertEqual(response.status, 501, response.body)
-                    self.assertEqual(response.json(), {
-                        "error": "Not implemented: requires provider-session/claude-controls"
-                    })
-                else:
-                    self.assertEqual(response.status, 400, response.body)
-                    self.assertEqual(response.json(), {"error": "Unknown managed agent"})
+                self.assertEqual(response.status, 400, response.body)
+                self.assertEqual(response.json(), {"error": "Unknown managed agent"})
                 self.assertEqual(no_write_snapshot(self.backend.state), before)
 
     def test_invalid_action_is_located_before_the_dependency(self):

@@ -204,7 +204,7 @@ class AccountLoginHTTPContract(unittest.TestCase):
             {"account_key": "z-first", "label": "permission check", "request_id": str(uuid.uuid4())},
         )
         assert_status(self, response, 200)
-        self.assertEqual(stat.S_IMODE(self.registry_path.stat().st_mode), 0o640)
+        self.assertEqual(stat.S_IMODE(self.registry_path.stat().st_mode), 0o600)
         self.assertEqual(stat.S_IMODE(self.registry_path.parent.stat().st_mode), before_directory_mode)
 
     @unittest.skipUnless(os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"), "Rust backend only")

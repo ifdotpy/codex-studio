@@ -194,6 +194,36 @@ impl studio_runtime_services::account_session_runtime::RetainedAccountSession
             .map(|session| session.scope().clone())
     }
 
+    fn claude_control_session(
+        &self,
+        account: &str,
+    ) -> Result<
+        Arc<dyn studio_runtime_services::claude_controls::service::ControlSession>,
+        studio_runtime_services::account_session_runtime::AccountSessionError,
+    > {
+        let session = self
+            .sessions
+            .read()
+            .ok()
+            .and_then(|sessions| sessions.get(account).cloned())
+            .filter(|session| session.is_live())
+            .ok_or(
+                studio_runtime_services::account_session_runtime::AccountSessionError::Requires(
+                    "provider-session/claude-controls",
+                ),
+            )?;
+        let port =
+            studio_runtime_services::account_worker::retained::consumers::ClaudePort::new(session)
+                .map_err(|_| {
+                    studio_runtime_services::account_session_runtime::AccountSessionError::Refused(
+                        "Claude account session is unavailable",
+                    )
+                })?;
+        Ok(Arc::new(
+            studio_runtime_services::claude_runtime::RetainedClaudeSession::new(Arc::new(port)),
+        ))
+    }
+
     fn request(
         &self,
         request: studio_runtime_services::account_session_runtime::ProviderRequest,
