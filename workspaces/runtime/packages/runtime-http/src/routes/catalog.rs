@@ -2,7 +2,6 @@
 
 use axum::Json;
 use axum::extract::State;
-use axum::http::StatusCode;
 
 use crate::error::ApiError;
 use crate::router::HttpState;
@@ -92,7 +91,7 @@ async fn limits(
         )
         .await
         .map_err(|_| ApiError::internal())?
-        .map_err(super::account_login::session_error)?;
+        .map_err(limits_session_error)?;
         return serde_json::from_value(response)
             .map(Json)
             .map_err(|_| ApiError::internal());
@@ -117,18 +116,27 @@ async fn limits(
     if snapshot.get("data").is_some_and(|data| !data.is_null()) {
         return Err(dependency_error()?);
     }
-    if !account_policy.has_account(account_key) {
-        return Err(ApiError::new(
-            StatusCode::BAD_REQUEST,
-            "Unknown Codex account",
-        ));
-    }
     Err(dependency_error()?)
 }
 
 fn dependency_error() -> Result<ApiError, ApiError> {
     dependency_unavailable("GET", "/api/limits", &LIMITS_DEPENDENCIES)
         .map_err(|_| ApiError::internal())
+}
+
+fn limits_session_error(
+    error: studio_runtime_services::account_session_runtime::AccountSessionError,
+) -> ApiError {
+    if matches!(
+        error,
+        studio_runtime_services::account_session_runtime::AccountSessionError::Requires(
+            "provider-session/account-session"
+        )
+    ) {
+        dependency_error().unwrap_or_else(|error| error)
+    } else {
+        super::account_login::session_error(error)
+    }
 }
 inventory::submit! {
     crate::routes::manifest::RouteModuleRegistration {
