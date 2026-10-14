@@ -119,35 +119,38 @@ async fn read_account_session_catalog(
             "model-list:{account}:{refresh_id}:{page_index}:{}",
             cursor.as_deref().unwrap_or("first")
         );
-        let request = tokio::task::spawn_blocking(move || {
-            use crate::account_session_runtime::{
-                ProviderRequest, ProviderResponse, RequestCertainty,
-            };
-            use std::time::Instant;
-            let receipt = session_clone
-                .provider_request(ProviderRequest {
-                    account: account_clone,
-                    operation: operation.clone(),
-                    actor: None,
-                    deleted_actor_session: None,
-                    expected_scope: Some(current_scope.clone()),
-                    method: studio_runtime_providers::Method::ModelList,
-                    params,
-                    deadline: Instant::now() + CATALOG_TIMEOUT,
-                })
-                .map_err(|_| ())?;
-            if receipt.scope != current_scope
-                || receipt.operation != operation
-                || receipt.certainty != RequestCertainty::Written
-                || receipt.ticket.is_none()
-            {
-                return Err(());
-            }
-            match receipt.result {
-                Some(ProviderResponse::Reply(value)) => Ok(value),
-                Some(ProviderResponse::Rejected(_)) | None => Err(()),
-            }
-        });
+        let request = studio_runtime_process::blocking_pool::spawn_blocking(
+            "runtime-services/model_catalog",
+            move || {
+                use crate::account_session_runtime::{
+                    ProviderRequest, ProviderResponse, RequestCertainty,
+                };
+                use std::time::Instant;
+                let receipt = session_clone
+                    .provider_request(ProviderRequest {
+                        account: account_clone,
+                        operation: operation.clone(),
+                        actor: None,
+                        deleted_actor_session: None,
+                        expected_scope: Some(current_scope.clone()),
+                        method: studio_runtime_providers::Method::ModelList,
+                        params,
+                        deadline: Instant::now() + CATALOG_TIMEOUT,
+                    })
+                    .map_err(|_| ())?;
+                if receipt.scope != current_scope
+                    || receipt.operation != operation
+                    || receipt.certainty != RequestCertainty::Written
+                    || receipt.ticket.is_none()
+                {
+                    return Err(());
+                }
+                match receipt.result {
+                    Some(ProviderResponse::Reply(value)) => Ok(value),
+                    Some(ProviderResponse::Rejected(_)) | None => Err(()),
+                }
+            },
+        );
         let response = tokio::select! {
             _ = Shutdown::cancelled(&mut shutdown) => return Err(()),
             result = tokio::time::timeout(CATALOG_TIMEOUT, request) => {
@@ -342,21 +345,25 @@ impl ModelCatalogService {
         // Own task-slot registration before marking the cache pending. If this
         // future is cancelled while waiting for the registry, no orphaned
         // pending entry can suppress future refresh attempts.
-        let mut tasks = self.0.tasks.lock().await;
-        if *self.0.stop.subscribe().borrow() {
-            return CatalogRead::Unavailable;
-        }
-        let mut index = 0;
-        while index < tasks.len() {
-            if tasks[index].is_finished() {
-                if let Err(error) = (&mut tasks[index]).await {
-                    *self.0.cleanup_error.lock().expect("catalog cleanup report") =
-                        Some(error.to_string());
+        loop {
+            let finished = {
+                let mut tasks = self.0.tasks.lock().await;
+                if *self.0.stop.subscribe().borrow() {
+                    return CatalogRead::Unavailable;
                 }
-                drop(tasks.remove(index));
-            } else {
-                index += 1;
+                tasks
+                    .iter()
+                    .position(tokio::task::JoinHandle::is_finished)
+                    .map(|index| tasks.swap_remove(index))
+            };
+            let Some(mut task) = finished else {
+                break;
+            };
+            if let Err(error) = (&mut task).await {
+                *self.0.cleanup_error.lock().expect("catalog cleanup report") =
+                    Some(error.to_string());
             }
+            drop(task);
         }
         // Registry acquisition and completed-task cleanup can suspend. Sample
         // freshness only after those waits so an entry cannot expire while this
@@ -428,7 +435,7 @@ impl ModelCatalogService {
             .lock()
             .expect("fixture factory")
             .clone();
-        tasks.push(tokio::spawn(async move {
+        self.0.tasks.lock().await.push(tokio::spawn(async move {
             #[cfg(test)]
             if let Some(factory) = refresh_factory {
                 let _permit = permit;
