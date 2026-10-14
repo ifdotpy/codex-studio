@@ -1,8 +1,10 @@
 #![allow(clippy::unwrap_used)]
 
 use super::*;
+use crate::provider_shared::{request_frame, response_value};
 use crate::transport::{MAX_FRAME_BYTES, read_frame, write_frame};
 use serde_json::Value;
+use std::collections::BTreeMap;
 use std::io::Cursor;
 
 #[test]
@@ -40,6 +42,32 @@ fn frame_codec_round_trips_compact_json_and_preserves_extensions() {
     assert_eq!(result.extra.get("newField"), Some(&Value::from(7)));
     let encoded_again = serde_json::to_value(result).unwrap();
     assert_eq!(encoded_again["newField"], 7);
+}
+
+#[test]
+fn typed_request_serialization_preserves_extensions_and_reserved_field_precedence() {
+    let mut extra = BTreeMap::new();
+    extra.insert("action".to_owned(), Value::String("wrong".to_owned()));
+    extra.insert("requestId".to_owned(), Value::from(999));
+    extra.insert("extension".to_owned(), Value::Bool(true));
+    let frame = request_frame(
+        SupervisorAction::Write,
+        17,
+        WriteRequest {
+            handle: SupervisorHandle("handle".to_owned()),
+            operation_id: OperationId("operation".to_owned()),
+            native_id: None,
+            message: serde_json::json!({"method":"initialize"}),
+            extra,
+        },
+    )
+    .unwrap();
+
+    let request: Value = serde_json::from_slice(&frame[..frame.len() - 1]).unwrap();
+    assert_eq!(request["action"], "write");
+    assert_eq!(request["requestId"], 17);
+    assert_eq!(request["handle"], "handle");
+    assert_eq!(request["extension"], true);
 }
 
 #[test]

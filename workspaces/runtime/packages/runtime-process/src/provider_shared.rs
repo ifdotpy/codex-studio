@@ -1,10 +1,14 @@
 //! Pure supervisor-v1 framing and retained-child launch policy shared by both adapters.
+use crate::protocol::{
+    AckRequest, AdminCloseHandleRequest, CursorRequest, FinishFallbackRequest, HandleRequest,
+    HealthRequest, OpenRequest, OperationStatusRequest, RetireCommandRequest, WriteRequest,
+};
 use crate::shared_values_generated::PROCESS_SUPERVISOR_PROTOCOL_VERSION;
 use crate::{BackendIdentity, OperationId, SupervisorAction, SupervisorError, SupervisorHandle};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::collections::BTreeMap;
-use std::io;
+use std::io::{self, Write};
 
 const BACKEND_ONLY_ENVIRONMENT: &[&str] = &[
     "CODEX_AGENTS_BACKEND_ID",
@@ -127,30 +131,131 @@ pub(crate) fn validate_handshake(response: &str) -> Result<(), SupervisorError> 
     }
 }
 
-pub(crate) fn request_value<R: Serialize>(
+struct RequestEnvelope<R> {
+    request: R,
+    action: String,
+    request_id: u64,
+}
+
+pub(crate) trait SupervisorRequest: Serialize {
+    fn has_handle(&self) -> bool;
+}
+
+impl<T: SupervisorRequest + ?Sized> SupervisorRequest for &T {
+    fn has_handle(&self) -> bool {
+        (**self).has_handle()
+    }
+}
+
+macro_rules! handle_request {
+    ($($request:ty),+ $(,)?) => {$ (
+        impl SupervisorRequest for $request {
+            fn has_handle(&self) -> bool { true }
+        }
+    )+ };
+}
+
+handle_request!(
+    AckRequest,
+    AdminCloseHandleRequest,
+    CursorRequest,
+    HandleRequest,
+    OpenRequest,
+    OperationStatusRequest,
+    RetireCommandRequest,
+    WriteRequest,
+);
+
+impl SupervisorRequest for HealthRequest {
+    fn has_handle(&self) -> bool {
+        false
+    }
+}
+
+impl SupervisorRequest for FinishFallbackRequest {
+    fn has_handle(&self) -> bool {
+        false
+    }
+}
+
+impl SupervisorRequest for Value {
+    fn has_handle(&self) -> bool {
+        self.as_object()
+            .is_some_and(|object| object.contains_key("handle"))
+    }
+}
+
+impl<R: Serialize> Serialize for RequestEnvelope<R> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        #[derive(Serialize)]
+        struct Fields<'a, R> {
+            #[serde(flatten)]
+            request: &'a R,
+            action: &'a str,
+            #[serde(rename = "requestId")]
+            request_id: u64,
+        }
+        Fields {
+            request: &self.request,
+            action: &self.action,
+            request_id: self.request_id,
+        }
+        .serialize(serializer)
+    }
+}
+
+struct BoundedFrameWriter {
+    bytes: Vec<u8>,
+}
+
+impl Write for BoundedFrameWriter {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        if self.bytes.len().saturating_add(bytes.len()) + 1 > crate::transport::MAX_FRAME_BYTES {
+            return Err(io::Error::other("supervisor request exceeds frame limit"));
+        }
+        self.bytes.extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+pub(crate) fn request_frame<R: SupervisorRequest>(
     action: SupervisorAction,
     request_id: u64,
     request: R,
-) -> Result<Value, SupervisorError> {
-    let mut value = serde_json::to_value(request)?;
-    let object = value
-        .as_object_mut()
-        .ok_or_else(|| SupervisorError::InvalidFrame("request must be an object".into()))?;
-    object.insert("requestId".into(), Value::from(request_id));
-    object.insert("action".into(), Value::from(action.to_string()));
+) -> Result<Vec<u8>, SupervisorError> {
     if !matches!(
         action,
         SupervisorAction::Health
             | SupervisorAction::FinishFallback
             | SupervisorAction::AdminCloseHandle
-    ) && !object.contains_key("handle")
+    ) && !request.has_handle()
     {
         return Err(SupervisorError::InvalidFrame(format!(
             "{} request requires handle",
             action
         )));
     }
-    Ok(value)
+    let mut writer = BoundedFrameWriter {
+        bytes: Vec::with_capacity(256),
+    };
+    let envelope = RequestEnvelope {
+        request,
+        action: action.to_string(),
+        request_id,
+    };
+    serde_json::to_writer(&mut writer, &envelope).map_err(|error| {
+        if error.is_io() {
+            SupervisorError::InvalidFrame("request exceeds 1 MiB".into())
+        } else {
+            SupervisorError::Json(error)
+        }
+    })?;
+    writer.bytes.push(b'\n');
+    Ok(writer.bytes)
 }
 
 pub(crate) fn response_value<O: for<'de> Deserialize<'de>>(

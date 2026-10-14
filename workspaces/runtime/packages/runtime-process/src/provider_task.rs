@@ -152,11 +152,11 @@ impl SupervisorProviderTaskFactory {
                 extra: Default::default(),
             };
             // Both validation and full wire-size validation precede all I/O.
-            serialize_frame(&request_value(
+            request_frame(
                 SupervisorAction::Open,
                 u64::MAX,
-                open_value(&open, options.launch.cwd.is_none())?,
-            )?)?;
+                open_wire_request(&open, options.launch.cwd.is_none()),
+            )?;
             let (commands, inbox) = mpsc::channel(LANE_CAPACITY);
             let (events, journal) = mpsc::channel(LANE_CAPACITY);
             let (state, status) = watch::channel(AttachmentStatus {
@@ -212,12 +212,30 @@ impl ProviderTaskFactory for SupervisorProviderTaskFactory {
     }
 }
 
-fn open_value(open: &OpenRequest, inherit_cwd: bool) -> Result<Value, AdapterError> {
-    let mut value = serde_json::to_value(open).map_err(|_| AdapterError::InvalidConfiguration)?;
-    if inherit_cwd {
-        value["cwd"] = Value::Null;
+#[derive(Serialize)]
+struct OpenWireRequest<'a> {
+    handle: &'a SupervisorHandle,
+    command: &'a [String],
+    env: &'a BTreeMap<String, String>,
+    cwd: Option<&'a str>,
+    #[serde(flatten)]
+    extra: &'a BTreeMap<String, Value>,
+}
+
+impl SupervisorRequest for OpenWireRequest<'_> {
+    fn has_handle(&self) -> bool {
+        true
     }
-    Ok(value)
+}
+
+fn open_wire_request(open: &OpenRequest, inherit_cwd: bool) -> OpenWireRequest<'_> {
+    OpenWireRequest {
+        handle: &open.handle,
+        command: &open.command,
+        env: &open.env,
+        cwd: (!inherit_cwd).then_some(open.cwd.as_str()),
+        extra: &open.extra,
+    }
 }
 
 async fn interruptible<T>(
@@ -282,7 +300,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Rpc<S> {
         }
     }
 
-    async fn call<R: Serialize, O: for<'de> Deserialize<'de>>(
+    async fn call<R: Serialize + SupervisorRequest, O: for<'de> Deserialize<'de>>(
         &mut self,
         action: SupervisorAction,
         request: R,
@@ -294,7 +312,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Rpc<S> {
             .checked_add(1)
             .ok_or(AdapterError::InvalidConfiguration)?;
         let request_id = self.sequence;
-        let bytes = serialize_frame(&request_value(action, request_id, request)?)?;
+        let bytes = request_frame(action, request_id, request)?;
         let response = interruptible(stop, self.exchange(&bytes)).await?;
         response_value(action, request_id, &response).map_err(Into::into)
     }
@@ -396,7 +414,7 @@ impl AdapterTask {
         }
         self.open_attempted = true;
         self.publish();
-        let open = open_value(&self.open, self.inherit_cwd)?;
+        let open = open_wire_request(&self.open, self.inherit_cwd);
         let opened: OpenResult = rpc
             .call(SupervisorAction::Open, open, &mut self.stop)
             .await?;
@@ -682,7 +700,7 @@ impl AdapterTask {
             extra: Default::default(),
         };
         // Serialization failures happen before send, so they are definitely unsent.
-        if serialize_frame(&request_value(SupervisorAction::Write, u64::MAX, &request)?).is_err() {
+        if request_frame(SupervisorAction::Write, u64::MAX, &request).is_err() {
             return Ok(CommandReceipt::NotSent);
         }
         let result: WriteResult = match rpc
