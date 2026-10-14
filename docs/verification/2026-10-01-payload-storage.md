@@ -2,7 +2,7 @@
 
 ## Scope and sample
 
-Measured on 2026-10-01 with `scripts/codex_payload_measure.py` against the live database using SQLite read-only mode. The database file measured 42,653,687,808 bytes and its filesystem had 48.33 GB free at measurement time. The sampler probes 500 evenly spaced rowids per table, reads only those records, parses the JSON, and reports UTF-8 serialized byte sizes. This is a sample, not a full scan. Approximate row counts below use each table's maximum rowid.
+Measured on 2026-10-01 against the live database using a SQLite read-only sampler. The database file measured 42,653,687,808 bytes and its filesystem had 48.33 GB free at measurement time. The sampler probes 500 evenly spaced rowids per table, reads only those records, parses the JSON, and reports UTF-8 serialized byte sizes. This is a sample, not a full scan. Approximate row counts below use each table's maximum rowid.
 
 The externalization cutoff is 65,536 bytes. The sample shows that checkpoint `items` is commonly large (p50 174 KB) and 69.9% of sampled values exceed the cutoff. In contrast, only about 3% of sampled tool payloads exceed it. A 64 KiB cutoff captures most checkpoint bytes while avoiding a filesystem object for the many small tool results. `runtime_items.text` is capped at about 24.8 KB in this sample and task `tail` at about 14 KB; both remain inline.
 
