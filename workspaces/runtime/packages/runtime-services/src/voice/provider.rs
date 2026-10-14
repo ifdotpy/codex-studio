@@ -78,6 +78,18 @@ pub struct VoiceDeleteSession {
     pub generation: u64,
 }
 
+/// Durable post-commit voice-stop work staged by an agent deletion
+/// transaction. `id` is also the broker authorization receipt key.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct VoiceDeleteIntent {
+    pub id: String,
+    pub agent_id: String,
+    pub epoch: i64,
+    pub sessions: Vec<VoiceDeleteSession>,
+}
+
+const DELETE_VOICE_RECEIPT_SIGNATURE: &str = "voice-agent-delete-v1";
+
 async fn request(provider: &dyn VoiceProviderPort, call: VoiceRpcCall) -> VoiceRequestReceipt {
     provider
         .request(
@@ -140,6 +152,72 @@ pub fn capture_delete_sessions(
     })
     .collect::<Result<Vec<_>, rusqlite::Error>>()
     .map_err(VoiceProviderError::from)
+}
+
+/// Stage post-commit provider stops in the same transaction that deletes an
+/// agent and its voice rows. The lifecycle transaction must call this before
+/// deleting voice sessions, commit the returned intent with the tombstone, then
+/// pass that intent to [`end_deleted_sessions`]. Existing receipts are replayed
+/// verbatim so a repeated delete cannot lose the original session identities.
+pub fn stage_delete_sessions(
+    transaction: &Connection,
+    agent_id: &str,
+) -> Result<VoiceDeleteIntent, VoiceProviderError> {
+    let agent = AgentRepository::get(transaction, &AgentId::from(agent_id))?
+        .filter(|agent| agent.id.0 == agent_id)
+        .ok_or(VoiceProviderError::ContextUnavailable)?;
+    let receipt_id = format!("agent-delete-voice:{agent_id}:{}", agent.epoch);
+    if let Some((signature, result)) = transaction
+        .query_row(
+            "SELECT signature,result FROM runtime_operation_receipts WHERE id=?1",
+            [&receipt_id],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+        )
+        .optional()?
+    {
+        let result: Value =
+            serde_json::from_str(&result).map_err(|_| VoiceProviderError::ContextChanged)?;
+        if signature != DELETE_VOICE_RECEIPT_SIGNATURE
+            || result.get("agent").and_then(Value::as_str) != Some(agent_id)
+            || result.get("epoch").and_then(Value::as_i64) != Some(agent.epoch)
+        {
+            return Err(VoiceProviderError::ContextChanged);
+        }
+        let sessions = serde_json::from_value(
+            result
+                .get("voiceEndSessions")
+                .cloned()
+                .ok_or(VoiceProviderError::ContextChanged)?,
+        )
+        .map_err(|_| VoiceProviderError::ContextChanged)?;
+        return Ok(VoiceDeleteIntent {
+            id: receipt_id,
+            agent_id: agent_id.to_owned(),
+            epoch: agent.epoch,
+            sessions,
+        });
+    }
+
+    let sessions = capture_delete_sessions(transaction, agent_id)?;
+    let result = json!({
+        "agent": agent_id,
+        "epoch": agent.epoch,
+        "voiceEndSessions": sessions,
+    });
+    transaction.execute(
+        "INSERT INTO runtime_operation_receipts(id,signature,result) VALUES(?1,?2,?3)",
+        rusqlite::params![
+            receipt_id,
+            DELETE_VOICE_RECEIPT_SIGNATURE,
+            result.to_string()
+        ],
+    )?;
+    Ok(VoiceDeleteIntent {
+        id: receipt_id,
+        agent_id: agent_id.to_owned(),
+        epoch: agent.epoch,
+        sessions,
+    })
 }
 
 /// Stop sessions captured by `capture_delete_sessions` after the deletion

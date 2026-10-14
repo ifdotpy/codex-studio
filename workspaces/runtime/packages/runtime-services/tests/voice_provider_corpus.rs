@@ -432,6 +432,58 @@ fn seeded_store() -> (tempfile::TempDir, RuntimeStore) {
     (root, store)
 }
 
+#[test]
+fn delete_voice_stop_intent_is_staged_before_voice_rows_are_removed() {
+    let (_root, store) = seeded_store();
+    let first = store
+        .transaction_with_error(|transaction| -> Result<_, voice::provider::VoiceProviderError> {
+            transaction.execute(
+                "UPDATE runtime_agents SET record=json_set(record,'$.deletedAt',1) WHERE id='agent'",
+                [],
+            )?;
+            transaction.execute(
+                "INSERT INTO voice_sessions(id,agent,created,native_thread,account_key,connection_id,state) \
+                 VALUES('delete-voice-session','agent',1,'thread','account','7','ready')",
+                [],
+            )?;
+            let intent = voice::provider::stage_delete_sessions(transaction, "agent")?;
+            transaction.execute("DELETE FROM voice_sessions WHERE agent='agent'", [])?;
+            Ok(intent)
+        })
+        .expect("deletion transaction stages voice stop before deleting its rows");
+    assert_eq!(first.id, "agent-delete-voice:agent:0");
+    assert_eq!(first.agent_id, "agent");
+    assert_eq!(first.epoch, 0);
+    assert_eq!(first.sessions.len(), 1);
+    assert_eq!(first.sessions[0].session_id, "delete-voice-session");
+    assert_eq!(first.sessions[0].generation, 7);
+
+    let replay = store
+        .transaction_with_error(
+            |transaction| -> Result<_, voice::provider::VoiceProviderError> {
+                voice::provider::stage_delete_sessions(transaction, "agent")
+            },
+        )
+        .expect("retry reuses the committed delete intent after voice rows are gone");
+    assert_eq!(replay, first);
+    let connection = store.read().expect("read staged deletion receipt");
+    let result: String = connection
+        .query_row(
+            "SELECT result FROM runtime_operation_receipts WHERE id='agent-delete-voice:agent:0'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("durable voice delete intent");
+    let result: serde_json::Value = serde_json::from_str(&result).expect("valid receipt JSON");
+    assert_eq!(result["agent"], "agent");
+    assert_eq!(result["epoch"], 0);
+    assert_eq!(
+        result["voiceEndSessions"][0]["sessionId"],
+        "delete-voice-session"
+    );
+    assert_eq!(result["voiceEndSessions"][0]["connectionId"], "7");
+}
+
 fn table_rows(connection: &rusqlite::Connection, table: &str, order: &str) -> serde_json::Value {
     let mut statement = connection
         .prepare(&format!("SELECT * FROM {table} ORDER BY {order}"))
