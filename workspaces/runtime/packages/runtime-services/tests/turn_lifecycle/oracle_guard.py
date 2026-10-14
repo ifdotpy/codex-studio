@@ -8,6 +8,7 @@ import ipaddress
 import os
 from pathlib import Path
 import pwd
+import socket
 import sys
 import tempfile
 import threading
