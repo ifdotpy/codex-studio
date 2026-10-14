@@ -21,7 +21,11 @@ isolate_supervisor_environment()
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from runtime_test_environment import make_runtime
 from codex_session_names import identity as native_name_identity
-from http_backend_harness import TimedHTTPContractTest, start_contract_backend
+from http_backend_harness import (
+    TimedHTTPContractTest,
+    assert_read_succeeds_unchanged_under_writer,
+    start_contract_backend,
+)
 
 
 def database_snapshot(path: Path):
@@ -117,6 +121,19 @@ class SystemReadsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             ],
         })
         self.assertEqual(database_snapshot(self.backend.state / "canvas.sqlite3"), before)
+
+    def test_local_identity_directory_read_succeeds_unchanged_under_writer(self):
+        identity = json.loads(
+            (self.backend.state / "multi-server" / "identity.json").read_text(
+                encoding="utf-8"
+            )
+        )["serverId"]
+        path = "/api/directories?" + urlencode(
+            {"server": identity, "path": str(self.root)}
+        )
+        assert_read_succeeds_unchanged_under_writer(
+            self, self.backend, path, self.headers()
+        )
 
     def test_directory_home_forms_non_strict_resolution_and_symlink(self):
         before = database_snapshot(self.backend.state / "canvas.sqlite3")

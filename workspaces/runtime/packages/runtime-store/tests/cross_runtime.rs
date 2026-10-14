@@ -551,7 +551,7 @@ fn server_identity_registry_is_shared_by_store_connections_and_scoped_to_databas
         (&*second_root, "server-second"),
     ] {
         let directory = root.join("multi-server");
-        std::fs::create_dir(&directory).expect("identity directory created");
+        std::fs::create_dir_all(&directory).expect("identity directory exists");
         std::fs::write(
             directory.join("identity.json"),
             format!(r#"{{"serverId":"{server_id}"}}"#),
