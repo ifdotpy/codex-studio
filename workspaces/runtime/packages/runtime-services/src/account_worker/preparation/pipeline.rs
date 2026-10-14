@@ -559,6 +559,9 @@ pub(crate) fn prepare_safety_retry(
         },
     )
     .map_err(|reason| refusal(format!("thread-preparation/{reason:?}")))?;
+    // Python's safety retry builds its turn/start map directly and omits cwd;
+    // cwd belongs to the preceding fork request only.
+    turn_params.remove("cwd");
     let thread_id = request.attempt_id.clone();
     let allowed_fork_keys = [
         "approvalPolicy",
