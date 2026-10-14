@@ -24,9 +24,11 @@ for line in sys.stdin:
         result = {"thread": {"id": request["params"]["threadId"]}}
     elif method == "turn/start":
         turn_count += 1
+        (root / "turn-count").write_text(str(turn_count), encoding="utf-8")
         with socket.socket(socket.AF_UNIX) as observer:
             observer.connect(str(root / "turn.sock"))
             observer.sendall((json.dumps({"pid": os.getpid(), "cwd": os.getcwd(), "count": turn_count,
+                                         "priority": os.getpriority(os.PRIO_PROCESS, 0),
                                          "request": request}) + "\n").encode())
         result = {"turn": {"id": "fixture-turn"}}
     elif method == "fixture/barrier":

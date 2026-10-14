@@ -672,6 +672,7 @@ fn python_launch(
     home: &std::path::Path,
     isolated: bool,
     executable: &str,
+    mode: &str,
 ) -> Value {
     use std::io::Write;
     let source = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../server/src");
@@ -683,7 +684,7 @@ fn python_launch(
         .stderr(std::process::Stdio::piped())
         .spawn()
         .unwrap();
-    child.stdin.take().unwrap().write_all(json!({"root":root,"environment":environment,"home":home,"isolated":isolated,"executable":executable}).to_string().as_bytes()).unwrap();
+    child.stdin.take().unwrap().write_all(json!({"root":root,"environment":environment,"home":home,"isolated":isolated,"executable":executable,"mode":mode}).to_string().as_bytes()).unwrap();
     let output = child.wait_with_output().unwrap();
     assert!(
         output.status.success(),
@@ -757,7 +758,14 @@ async fn every_launch_signature_field_matches_real_python_appserver() {
             ("CODEX_API_KEY".into(), "fixture-codex-key".into()),
             ("UNCHANGED".into(), "Unicode café".into()),
         ]);
-        let oracle = python_launch(root.path(), &environment, &home, isolated, "/fixture/codex");
+        let oracle = python_launch(
+            root.path(),
+            &environment,
+            &home,
+            isolated,
+            "/fixture/codex",
+            "supervisor",
+        );
         let launch = host_runtime::codex_launch(
             Some("/fixture/codex"),
             environment,
@@ -813,6 +821,54 @@ async fn every_launch_signature_field_matches_real_python_appserver() {
         );
         wire_send(&mut peer,json!({"requestId":open["requestId"],"result":{"resumed":false,"initResult":null,"acknowledged":0,"sequence":0,"generation":1,"returnCode":null,"pid":1}})).await;
         drop(preparing.await.unwrap());
+    }
+}
+
+#[test]
+fn direct_launch_command_and_environment_match_python() {
+    for isolated in [false, true] {
+        let root = tempfile::tempdir().unwrap();
+        let home = root.path().join("codex");
+        std::fs::create_dir(&home).unwrap();
+        let environment = BTreeMap::from([
+            ("HOME".into(), root.path().to_string_lossy().into_owned()),
+            ("CODEX_HOME".into(), home.to_string_lossy().into_owned()),
+            ("PATH".into(), "/usr/bin:/bin".into()),
+            ("CODEX_BACKEND_MARKER".into(), "backend-only".into()),
+            ("OPENAI_API_KEY".into(), "fixture-openai-key".into()),
+            ("CODEX_API_KEY".into(), "fixture-codex-key".into()),
+            ("UNCHANGED".into(), "Unicode café".into()),
+        ]);
+        let oracle = python_launch(
+            root.path(),
+            &environment,
+            &home,
+            isolated,
+            "/fixture/codex",
+            "direct",
+        );
+        let launch = host_runtime::codex_launch(
+            Some("/fixture/codex"),
+            environment,
+            home.to_string_lossy().into_owned(),
+            isolated,
+            root.path().into(),
+        );
+        assert_eq!(
+            serde_json::to_value(launch.command).unwrap(),
+            oracle["command"]
+        );
+        assert_eq!(
+            serde_json::to_value(launch.environment).unwrap(),
+            oracle["env"]
+        );
+        assert_eq!(
+            launch
+                .cwd
+                .as_ref()
+                .map(|path| path.to_string_lossy().into_owned()),
+            oracle["cwd"].as_str().map(str::to_owned)
+        );
     }
 }
 
@@ -1087,6 +1143,7 @@ async fn host_start_reattaches_python_launch_and_delivers_http_input() {
         &home,
         false,
         executable.to_str().unwrap(),
+        "supervisor",
     );
     let root = fixture._root.path().to_path_buf();
     let mut supervisor = tokio::task::spawn_blocking(move || {
@@ -1379,4 +1436,189 @@ async fn host_start_reattaches_python_launch_and_delivers_http_input() {
     tokio::task::spawn_blocking(move || drop(supervisor))
         .await
         .unwrap();
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn direct_launch_mode_completes_http_turn_and_reaps_child() {
+    use std::os::unix::fs::PermissionsExt;
+    use tokio::io::AsyncReadExt;
+    use tower::ServiceExt;
+    if std::env::var_os("STUDIO_W7_P01_DIRECT_CHILD").is_none() {
+        let output = tokio::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "direct_launch_mode_completes_http_turn_and_reaps_child",
+                "--nocapture",
+            ])
+            .env("STUDIO_W7_P01_DIRECT_CHILD", "1")
+            .env("STUDIO_W7_P01_COMPLETE_TURN", "1")
+            .env_remove("CODEX_AGENTS_SUPERVISOR_MODE")
+            .kill_on_drop(true)
+            .output()
+            .await
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+    let fixture = tokio::task::spawn_blocking(Fixture::new).await.unwrap();
+    let (accounts, home) = account_driver(fixture._root.path());
+    std::fs::write(
+        home.join("auth.json"),
+        json!({"OPENAI_API_KEY":"fixture-host-key"}).to_string(),
+    )
+    .unwrap();
+    let executable = fixture._root.path().join("provider");
+    std::fs::copy(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/wave7_p01_native_fixture.py"),
+        &executable,
+    )
+    .unwrap();
+    std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let observer = tokio::net::UnixListener::bind(fixture._root.path().join("turn.sock")).unwrap();
+    let mut state = studio_runtime_http::HttpState::new(
+        "fixture-token".into(),
+        "fixture".into(),
+        Some(executable.to_string_lossy().into_owned()),
+        fixture._root.path().to_string_lossy().into_owned(),
+        49171,
+        None,
+        Some(fixture.store.clone()),
+        None,
+    )
+    .with_account_driver(accounts.clone());
+    let runtime = host_runtime::HostRuntime::start(
+        &mut state,
+        fixture.store.clone(),
+        accounts,
+        Some(executable.to_string_lossy().into_owned()),
+    )
+    .await
+    .unwrap();
+    let app = studio_runtime_http::router(state.clone()).unwrap();
+    let agent_id = fixture.agents[0]["id"].as_str().unwrap();
+    let body = json!({"room":agent_id,"id":"65f07ce1-42b9-42a3-b42e-8710a0c54618","text":"direct mode turn"});
+    let mut changes = state.sync_changes_handle().subscribe();
+    let post = || {
+        axum::http::Request::builder()
+            .method("POST")
+            .uri("/api/messages")
+            .header("host", "127.0.0.1:49171")
+            .header("content-type", "application/json")
+            .header("x-canvas-token", "fixture-token")
+            .header(
+                studio_runtime_http::API_SCHEMA_HASH_HEADER,
+                studio_runtime_http::schema::api_schema_hash(),
+            )
+            .extension(axum::extract::ConnectInfo(
+                "127.0.0.1:12345".parse::<std::net::SocketAddr>().unwrap(),
+            ))
+            .body(axum::body::Body::from(body.to_string()))
+            .unwrap()
+    };
+    assert_eq!(app.clone().oneshot(post()).await.unwrap().status(), 200);
+    let (mut reported, _) =
+        tokio::time::timeout(std::time::Duration::from_secs(15), observer.accept())
+            .await
+            .expect("direct provider receives turn/start")
+            .unwrap();
+    let mut bytes = Vec::new();
+    reported.read_to_end(&mut bytes).await.unwrap();
+    let started: Value = serde_json::from_slice(&bytes).unwrap();
+    let pid = started["pid"].as_u64().unwrap() as u32;
+    assert_eq!(started["request"]["method"], "turn/start");
+    assert_eq!(started["count"], 1);
+    let expected_priority =
+        match studio_runtime_process::child_priority::ChildPriority::from_environment() {
+            studio_runtime_process::child_priority::ChildPriority::Background => 5,
+            studio_runtime_process::child_priority::ChildPriority::Normal => {
+                let output = std::process::Command::new("ps")
+                    .args(["-o", "ni=", "-p", &std::process::id().to_string()])
+                    .output()
+                    .expect("backend priority");
+                assert!(output.status.success());
+                String::from_utf8_lossy(&output.stdout)
+                    .trim()
+                    .parse::<i64>()
+                    .expect("numeric backend priority")
+            }
+        };
+    assert_eq!(
+        started["priority"].as_i64(),
+        Some(expected_priority),
+        "account provider uses the configured child priority"
+    );
+    let terminal = tokio::time::timeout(std::time::Duration::from_secs(15), async {
+        loop {
+            let row = fixture
+                .store
+                .read()
+                .unwrap()
+                .query_row(
+                    "SELECT record FROM runtime_agents WHERE id=?1",
+                    [agent_id],
+                    |row| row.get::<_, String>(0),
+                )
+                .unwrap();
+            let value: Value = serde_json::from_str(&row).unwrap();
+            if value["status"] == "completed" && value["inFlight"] != true {
+                break value;
+            }
+            changes
+                .changed()
+                .await
+                .expect("store publication remains open");
+        }
+    })
+    .await
+    .expect("provider streamed completion reaches runtime state");
+    assert_eq!(terminal["status"], "completed");
+    let transcript = app
+        .clone()
+        .oneshot(
+            axum::http::Request::builder()
+                .method("GET")
+                .uri(format!("/api/transcript?id={agent_id}"))
+                .header("host", "127.0.0.1:49171")
+                .header("x-canvas-token", "fixture-token")
+                .header(
+                    studio_runtime_http::API_SCHEMA_HASH_HEADER,
+                    studio_runtime_http::schema::api_schema_hash(),
+                )
+                .extension(axum::extract::ConnectInfo(
+                    "127.0.0.1:12345".parse::<std::net::SocketAddr>().unwrap(),
+                ))
+                .body(axum::body::Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(transcript.status(), 200);
+    let transcript: Value = serde_json::from_slice(
+        &axum::body::to_bytes(transcript.into_body(), 1_000_000)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert!(
+        transcript
+            .to_string()
+            .contains("fixture assistant response")
+    );
+    assert_eq!(app.clone().oneshot(post()).await.unwrap().status(), 200);
+    assert_eq!(
+        std::fs::read_to_string(fixture._root.path().join("turn-count")).unwrap(),
+        "1",
+        "duplicate HTTP post does not start another provider turn"
+    );
+    runtime_shutdown::close(runtime, &state).await.unwrap();
+    assert!(
+        !std::path::Path::new(&format!("/proc/{pid}")).exists(),
+        "backend shutdown terminates and reaps its direct provider"
+    );
 }

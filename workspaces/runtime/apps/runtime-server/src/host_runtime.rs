@@ -6,7 +6,9 @@ use std::{collections::BTreeMap, path::PathBuf, sync::Arc};
 use studio_runtime_http::HttpState;
 use studio_runtime_process::{
     BackendId, BackendIdentity, OperationId, ProviderHandle, ProviderLaunchSpec,
-    provider_seam::{OpenOptions, SessionClock, Shutdown},
+    child_priority::ChildPriority,
+    provider_direct::DirectProviderTaskFactory,
+    provider_seam::{OpenOptions, ProviderTaskFactory, SessionClock, Shutdown},
     provider_task::SupervisorProviderTaskFactory,
 };
 use studio_runtime_services::{
@@ -54,6 +56,9 @@ impl HostRuntime {
         });
         let launcher = Arc::new(HostLauncher {
             factory: SupervisorProviderTaskFactory::new(identity),
+            supervisor_mode: std::env::var("CODEX_AGENTS_SUPERVISOR_MODE")
+                .is_ok_and(|value| value == "1"),
+            child_priority: ChildPriority::from_environment(),
             accounts,
             root: store.root().to_owned(),
             native_path,
@@ -90,6 +95,8 @@ impl HostRuntime {
 
 struct HostLauncher {
     factory: SupervisorProviderTaskFactory,
+    supervisor_mode: bool,
+    child_priority: ChildPriority,
     accounts: Arc<AccountDriver>,
     root: PathBuf,
     native_path: Option<String>,
@@ -123,22 +130,33 @@ impl AccountLauncher for HostLauncher {
                 .read(&account, &resources.account_home, "codex", false)
                 .await;
             let clock = SessionClock::default();
-            let prepared = self
-                .factory
-                .prepare(
-                    ProviderHandle::for_account(&account),
-                    OpenOptions {
-                        clock: clock.clone(),
-                        launch: launch.clone(),
-                        expected_generation: None,
-                    },
-                    Shutdown::default(),
-                )
-                .await
-                .map_err(studio_runtime_services::provider_session_task::SessionTaskError::from)?;
-            let generation = prepared.generation();
+            let handle = ProviderHandle::for_account(&account);
+            let open = OpenOptions {
+                clock: clock.clone(),
+                launch: launch.clone(),
+                expected_generation: None,
+            };
+            let (factory, generation): (Arc<dyn ProviderTaskFactory>, _) = if self.supervisor_mode {
+                let prepared = self
+                    .factory
+                    .prepare(handle.clone(), open, Shutdown::default())
+                    .await
+                    .map_err(
+                        studio_runtime_services::provider_session_task::SessionTaskError::from,
+                    )?;
+                let generation = prepared.generation();
+                (Arc::new(prepared), generation)
+            } else {
+                let prepared = DirectProviderTaskFactory::new(self.child_priority)
+                    .prepare(handle.clone(), open, &Shutdown::default())
+                    .map_err(
+                        studio_runtime_services::provider_session_task::SessionTaskError::from,
+                    )?;
+                let generation = prepared.generation();
+                (Arc::new(prepared), generation)
+            };
             Ok(AccountLaunch {
-                factory: Arc::new(prepared),
+                factory,
                 options: OpenOptions {
                     clock,
                     launch,
