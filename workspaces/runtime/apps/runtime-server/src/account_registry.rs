@@ -358,6 +358,34 @@ impl studio_runtime_services::account_session_runtime::RetainedAccountSession
                 })
         })
     }
+
+    fn recover_connection(
+        &self,
+        account: String,
+        agent_id: String,
+    ) -> studio_runtime_services::account_session_runtime::RecoveryFuture {
+        let session = self
+            .sessions
+            .read()
+            .ok()
+            .and_then(|sessions| sessions.get(&account).cloned());
+        Box::pin(async move {
+            let Some(session) = session.filter(|session| session.is_live()) else {
+                return Err(
+                    studio_runtime_services::account_session_runtime::AccountSessionError::Unknown,
+                );
+            };
+            session.recover_connection(agent_id).await.map_err(|error| match error {
+                studio_runtime_services::account_worker::retained::PortError::Unknown => {
+                    studio_runtime_services::account_session_runtime::AccountSessionError::Unknown
+                }
+                studio_runtime_services::account_worker::retained::PortError::Identity => {
+                    studio_runtime_services::account_session_runtime::AccountSessionError::Refused("Provider session scope changed")
+                }
+                _ => studio_runtime_services::account_session_runtime::AccountSessionError::Refused("Connection recovery could not be started"),
+            })
+        })
+    }
 }
 
 fn not_sent_receipt(
