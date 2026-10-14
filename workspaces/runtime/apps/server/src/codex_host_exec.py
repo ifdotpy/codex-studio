@@ -153,7 +153,7 @@ def ensure_service(state_dir: Path | str) -> None:
                 print("host_exec: the service of an older build stays because " + kept, file=sys.stderr, flush=True)
                 return
         with (state / "host-exec.log").open("ab") as log:
-            child = subprocess.Popen([sys.executable, str(Path(__file__).with_name("codex_host_exec_server.py")), str(state)],
+            child = subprocess.Popen([sys.executable, "-B", str(Path(__file__).with_name("codex_host_exec_server.py")), str(state)],
                 stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True, close_fds=True)
         deadline = time.monotonic() + 10
         while time.monotonic() < deadline:
