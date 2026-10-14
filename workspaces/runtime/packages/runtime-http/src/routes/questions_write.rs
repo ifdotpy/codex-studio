@@ -1,7 +1,7 @@
 //! HTTP adapters for question delivery and durable complaint writes.
 
 use super::extractors::ApiJson;
-use super::manifest::{Dependency, OperationStatus, RouteGroup, dependency_unavailable, post};
+use super::manifest::{Dependency, OperationStatus, RouteGroup, post};
 use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
@@ -13,11 +13,9 @@ use studio_runtime_store::{RuntimeStore, Transaction};
 use crate::error::ApiError;
 use crate::router::HttpState;
 
-const QUESTION_ANSWER_DEPENDENCY: [Dependency; 1] =
-    [Dependency::new("provider-session/question-answer")];
+const CALLBACK_REPLY_DEPENDENCY: [Dependency; 1] = [Dependency::new("callback-runtime/reply-port")];
 
-const ANSWER_DEPENDENCIES: [Dependency; 4] = [
-    Dependency::new("provider-session/question-answer"),
+const ANSWER_DEPENDENCIES: [Dependency; 3] = [
     Dependency::new("question-answer/async-question"),
     Dependency::new("question-answer/browser-open"),
     Dependency::new("question-answer/monitor-approval"),
@@ -33,7 +31,7 @@ pub(crate) fn routes() -> RouteGroup {
         post("/api/complaints", OperationStatus::Implemented, complaints),
         post(
             "/api/questions/delete",
-            OperationStatus::partial(&QUESTION_ANSWER_DEPENDENCY),
+            OperationStatus::Implemented,
             delete_question,
         ),
         post(
@@ -48,10 +46,10 @@ async fn answer(
     State(state): State<HttpState>,
     ApiJson(body): ApiJson<crate::generated::AnswerBody>,
 ) -> Result<Json<Value>, ApiError> {
-    let runtime = state.callback_runtime.clone().ok_or_else(|| {
-        dependency_unavailable("POST", "/api/answer", &ANSWER_DEPENDENCIES)
-            .unwrap_or_else(|_| ApiError::internal())
-    })?;
+    let runtime = state
+        .callback_runtime
+        .clone()
+        .ok_or_else(|| ApiError::dependency(CALLBACK_REPLY_DEPENDENCY[0].name()))?;
     let id = body.id.clone();
     let data = serde_json::to_value(body).map_err(|_| ApiError::internal())?;
     let value = tokio::task::spawn_blocking(move || runtime.answer(&id, &data, callback_clock()?))
@@ -108,10 +106,10 @@ async fn delete_question(
     ApiJson(body): ApiJson<crate::generated::QuestionBody>,
 ) -> Result<Json<Value>, ApiError> {
     let id = body.id;
-    let runtime = state.callback_runtime.clone().ok_or_else(|| {
-        dependency_unavailable("POST", "/api/questions/delete", &QUESTION_ANSWER_DEPENDENCY)
-            .unwrap_or_else(|_| ApiError::internal())
-    })?;
+    let runtime = state
+        .callback_runtime
+        .clone()
+        .ok_or_else(|| ApiError::dependency(CALLBACK_REPLY_DEPENDENCY[0].name()))?;
     let value =
         tokio::task::spawn_blocking(move || runtime.delete_question(&id, callback_clock()?))
             .await
@@ -217,7 +215,7 @@ fn api_error(error: QuestionsWriteError) -> ApiError {
         QuestionsWriteError::Conflict(message) => ApiError::new(StatusCode::CONFLICT, message),
         QuestionsWriteError::QuestionAnswerUnavailable => ApiError::new(
             StatusCode::NOT_IMPLEMENTED,
-            "Not implemented: requires provider-session/question-answer",
+            "Not implemented: requires callback-runtime/reply-port",
         ),
         QuestionsWriteError::InvalidStoredObject { object, id } => ApiError::new(
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -241,6 +239,6 @@ inventory::submit! {
     crate::routes::manifest::RouteModuleRegistration {
         name: "questions_write",
         routes: Some(routes),
-        dependencies: &["provider-session/question-answer", "question-answer/async-question", "question-answer/browser-open", "question-answer/monitor-approval"],
+        dependencies: &["callback-runtime/reply-port", "question-answer/async-question", "question-answer/browser-open", "question-answer/monitor-approval"],
     }
 }

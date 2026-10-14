@@ -329,6 +329,11 @@ impl RetainedMonitorPort {
                 true,
             )
             .map_err(|_| MonitorError::Unavailable("provider-session/monitor-config"))?;
+        if config_receipt.operation != format!("monitor-config:{id}:{epoch}")
+            || config_receipt.scope != scope
+        {
+            return Err(MonitorError::Unavailable("provider-session/monitor-config"));
+        }
         let config = match config_receipt.result {
             Some(ProviderResponse::Reply(value))
                 if config_receipt.certainty == RequestCertainty::Written =>
