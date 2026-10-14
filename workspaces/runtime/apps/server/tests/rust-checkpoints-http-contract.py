@@ -578,11 +578,6 @@ class CheckpointsHTTPContract(unittest.TestCase):
         before = (no_write_snapshot(self.backend.state), checkpoint_refs(self.workspace))
         cases = (
             (
-                "/api/branch",
-                {"agent": AGENT_ID, "id": "branch-contract", "message_id": "branch-message"},
-                "Not implemented: requires provider-session/thread-fork",
-            ),
-            (
                 "/api/checkpoint/restore",
                 {
                     "agent": AGENT_ID,

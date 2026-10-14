@@ -52,6 +52,7 @@ def recorded_reply(method, request, thread_id=None, turn_id=None):
         thread_id = requested_thread
     value = value.replace("$threadId", thread_id or "replay-thread-1")
     value = value.replace("$turnId", turn_id or "replay-turn-1")
+    value = value.replace("$cwd", os.environ.get("CODEX_CANVAS_CWD", "."))
     value = value.replace("$model", request.get("params", {}).get("model", "fixture-model"))
     message = json.loads(value)
     return {"id": request["id"], **message}

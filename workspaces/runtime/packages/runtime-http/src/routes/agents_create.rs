@@ -275,6 +275,26 @@ async fn create_agent(
     })
     .await
 }
+
+/// Import uses the same creation admission, catalog validation and durable
+/// initial-event writer as POST /api/agents after it has built the transcript.
+pub(super) async fn create_imported_agent(
+    state: HttpState,
+    body: Value,
+) -> Result<Json<Value>, ApiError> {
+    let body: generated::CreateAgentRequest =
+        serde_json::from_value(body).map_err(|_| ApiError::internal())?;
+    create_agent(State(state), ApiJson(body)).await
+}
+
+pub(super) async fn create_branch_draft(
+    state: HttpState,
+    body: Value,
+) -> Result<Json<Value>, ApiError> {
+    let body: generated::CreateLeadRequest =
+        serde_json::from_value(body).map_err(|_| ApiError::internal())?;
+    create_lead(State(state), ApiJson(body)).await
+}
 async fn configure(
     State(state): State<HttpState>,
     ApiJson(body): ApiJson<generated::ConfigureRequest>,
