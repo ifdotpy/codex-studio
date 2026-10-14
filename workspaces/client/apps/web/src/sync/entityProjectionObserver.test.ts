@@ -107,7 +107,7 @@ it.each([2000, 20000])(
     expect(input.query).toHaveBeenCalledOnce();
     expect(input.read).toHaveBeenCalledTimes(initialReads + 1);
     expect(input.read).toHaveBeenLastCalledWith(
-      ["state:entities:ready", "entity:agent:0"],
+      ["state:entities:ready", "state:entities:complete", "entity:agent:0"],
       true,
     );
     stop();
@@ -312,5 +312,22 @@ it("discards a storage result when a reset marker arrives during the read", asyn
   input.emit(marker("ready", 3));
   await vi.advanceTimersByTimeAsync(100);
   expect(accept.mock.calls[1][0].threads).toEqual([{ id: "b", name: "b" }]);
+  stop();
+});
+
+it("marks a projection complete only after the last page of its first pull", async () => {
+  const input = source([row("a", 1)]);
+  const accept = vi.fn();
+  const stop = await observeEntityProjection(input.collection, accept, vi.fn());
+  await settle();
+  await vi.advanceTimersByTimeAsync(50);
+  expect(accept.mock.calls.at(-1)![0].entitiesComplete).toBe(false);
+  // The pull writes the complete marker after its last page; no entity changes with it.
+  input.emit({ id: "state:entities:complete", payload: "complete", seq: 2 });
+  await settle();
+  await vi.advanceTimersByTimeAsync(50);
+  const last = accept.mock.calls.at(-1)![0];
+  expect(last.entitiesComplete).toBe(true);
+  expect(last.threads).toEqual([{ id: "a", name: "a" }]);
   stop();
 });

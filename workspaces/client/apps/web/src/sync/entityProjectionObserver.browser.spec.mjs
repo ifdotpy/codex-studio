@@ -145,7 +145,8 @@ test("entity observer applies RxDB changes across tabs and resets before publica
     assert.equal(burst.queries, 1, JSON.stringify(burst));
     assert.equal(burst.unchanged, true);
     assert.equal(burst.storageReads, 1);
-    assert.equal(burst.readIds, 101);
+    // 100 changed rows, the ready marker and the complete marker in the same read.
+    assert.equal(burst.readIds, 102);
 
     const writer = await context.newPage();
     await writer.goto(`${origin}/observer-check`);

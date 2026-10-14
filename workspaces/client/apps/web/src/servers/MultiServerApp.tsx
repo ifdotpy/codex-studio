@@ -290,7 +290,7 @@ export default function MultiServerApp() {
     if (value.ready)
       readyWaiters.current.get(id)?.forEach((resolve) => resolve());
     setNavigation((old) => ({ ...old, [id]: value }));
-    if (value.ready) {
+    if (value.ready && value.alertsReady !== false) {
       const previous = notificationState.current.get(id);
       const alerts = value.alerts || [];
       const known = previous || {

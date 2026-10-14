@@ -27,6 +27,7 @@ export async function observeEntityProjection(
   let markerDirty = false;
   const pendingIds = new Set<string>();
   let published: Snapshot | null = null;
+  let publishedComplete = false;
   const publication = createFrameBatch(() => void publishCurrent());
   const publishCurrent = async () => {
     if (stopped || reading) return;
@@ -40,7 +41,7 @@ export async function observeEntityProjection(
       // BroadcastChannel can deliver old events after a reset. Events only mark
       // IDs dirty; the current durable row and marker determine what to show.
       const documents = await collection.storageInstance.findDocumentsById(
-        ["state:entities:ready", ...ids],
+        ["state:entities:ready", "state:entities:complete", ...ids],
         true,
       );
       if (stopped || current !== generation) return;
@@ -50,11 +51,21 @@ export async function observeEntityProjection(
       }
       updateMarker(documents.find((row) => row.id === "state:entities:ready"));
       if (current !== generation || !ready || !loaded) return;
-      const next = applyEntityChanges(projection, documents, true);
+      const completeRow = documents.find(
+        (row) => row.id === "state:entities:complete",
+      );
+      // The ready marker follows the first page of the first pull; this one its last page.
+      const complete =
+        !!completeRow &&
+        !completeRow._deleted &&
+        completeRow.payload === "complete";
+      const next =
+        applyEntityChanges(projection, documents, true) ?? projection.snapshot;
       retryCount = 0;
-      if (next && next !== published) {
+      if (next && (next !== published || complete !== publishedComplete)) {
         published = next;
-        accept(next);
+        publishedComplete = complete;
+        accept({ ...next, entitiesComplete: complete });
       }
     } catch (error) {
       if (stopped || current !== generation) return;
@@ -137,6 +148,8 @@ export async function observeEntityProjection(
     } else if (ready && row.id.startsWith("entity:")) {
       pendingIds.add(row.id);
       if (loaded) publication.schedule();
+    } else if (row.id === "state:entities:complete" && ready && loaded) {
+      publication.schedule();
     }
   });
   const stop = () => {

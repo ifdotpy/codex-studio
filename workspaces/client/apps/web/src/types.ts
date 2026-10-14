@@ -60,6 +60,8 @@ type ProjectionSnapshotFields = {
   edges: Edge[];
   /** The server's preference records by scope, as the entity projection holds them. */
   uiPreferences?: Record<string, components["schemas"]["UiPreferencesDto"]>;
+  /** False while the first sync pull of this projection still runs: records can be missing. */
+  entitiesComplete?: boolean;
 };
 
 export type Snapshot = ProjectionSnapshotFields & { runtime: SnapshotRuntime };
