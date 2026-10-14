@@ -130,6 +130,10 @@ impl RetainedSessionPort {
     }
 }
 fn validate(request: &SessionRequest) -> Result<(), PortError> {
+    let turn_view = request.params.get("itemsView").and_then(Value::as_str);
+    let turn_limit = request.params.get("limit").and_then(Value::as_u64);
+    let valid_turn_view = turn_view == Some("full")
+        || (turn_view == Some("notLoaded") && request.actor.is_some() && turn_limit == Some(1));
     if request
         .expected_scope
         .as_ref()
@@ -186,7 +190,9 @@ fn validate(request: &SessionRequest) -> Result<(), PortError> {
                 .unwrap_or(0)
                 > 20
                 || request.params.get("sortDirection").and_then(Value::as_str) != Some("desc")
-                || request.params.get("itemsView").and_then(Value::as_str) != Some("full")))
+                // full is used by codex_runtime.py import_thread;
+                // notLoaded is bounded in codex_safety_buffering.py.
+                || !valid_turn_view))
         || (request.method == Method::OperationStatus
             && !request
                 .params
@@ -240,3 +246,51 @@ mod storage;
 pub(super) use storage::recover;
 
 pub mod consumers;
+
+#[cfg(test)]
+mod validation_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn turns_request(items_view: &str, limit: u64, actor: bool) -> SessionRequest {
+        SessionRequest {
+            scope: ConnectionScope {
+                account: "default".into(),
+                connection: "fixture-connection".into(),
+                generation: 1,
+            },
+            expected_scope: None,
+            operation: "fixture-operation".into(),
+            actor: actor.then(|| RequestActor {
+                agent: "fixture-agent".into(),
+                epoch: 1,
+            }),
+            method: Method::ThreadTurnsList,
+            params: json!({
+                "threadId":"fixture-thread",
+                "limit":limit,
+                "sortDirection":"desc",
+                "itemsView":items_view
+            }),
+            deadline: std::time::Instant::now() + std::time::Duration::from_secs(1),
+        }
+    }
+
+    #[test]
+    fn only_safety_buffering_gets_bounded_not_loaded_turns() {
+        assert!(validate(&turns_request("notLoaded", 1, true)).is_ok());
+        assert_eq!(
+            validate(&turns_request("notLoaded", 2, true)),
+            Err(PortError::Invalid)
+        );
+        assert_eq!(
+            validate(&turns_request("notLoaded", 1, false)),
+            Err(PortError::Invalid)
+        );
+        assert!(validate(&turns_request("full", 20, false)).is_ok());
+        assert_eq!(
+            validate(&turns_request("full", 21, false)),
+            Err(PortError::Invalid)
+        );
+    }
+}
