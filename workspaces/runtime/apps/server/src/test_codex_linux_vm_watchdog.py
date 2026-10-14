@@ -97,7 +97,8 @@ class GuestSocket:
             return
         with channel:
             if self.mode == 'full':
-                return  # service.py client(): 32 clients, close at once without a byte
+                channel.makefile('rb').readline()
+                return  # Drain ping before the full service closes without a response byte.
             line = channel.makefile('rb').readline()
             if self.mode == 'answer':
                 request = json.loads(line)
