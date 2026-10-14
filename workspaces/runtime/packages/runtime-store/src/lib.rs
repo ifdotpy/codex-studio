@@ -319,6 +319,7 @@ impl RuntimeStore {
         };
         store.transaction(|transaction| {
             bootstrap::prepare_sync_schema(transaction)?;
+            bootstrap::prepare_runtime_event_indexes(transaction)?;
             feature_schema::prepare(transaction)?;
             schema::verify_bootstrap(transaction)
         })?;
