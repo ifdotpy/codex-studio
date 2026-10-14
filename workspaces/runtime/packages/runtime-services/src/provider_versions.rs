@@ -142,6 +142,9 @@ fn compare_version_text(installed: &str, available: &str) -> Option<Ordering> {
 pub struct ProviderProfile {
     pub account_key: String,
     pub provider: String,
+    /// Executable captured from the live session's launch options.
+    pub launched_binary: Option<String>,
+    /// Executable selected by the current account profile.
     pub configured_binary: Option<String>,
     /// Stable identity of the live server object captured with Python's `id(server)`.
     pub server_identity: String,
@@ -320,70 +323,112 @@ impl VersionProbe for SystemVersionProbe {
         profile: &ProviderProfile,
         deadline: Instant,
     ) -> Result<VersionFacts, ProviderPortError> {
-        let binary =
-            profile
-                .configured_binary
+        if profile.provider == "claude" {
+            let launched_binary = profile
+                .launched_binary
                 .as_deref()
-                .unwrap_or(match profile.provider.as_str() {
-                    "claude" => "claude",
-                    _ => "codex",
-                });
-        let environment =
-            crate::account_driver::claude::subscription_environment(std::env::vars_os().collect());
-        let mut command = CommandWrap::with_new(binary, |command| {
-            command
-                .arg("--version")
-                .stdin(std::process::Stdio::null())
-                .stdout(std::process::Stdio::piped())
-                .stderr(std::process::Stdio::null())
-                .env_clear()
-                .envs(environment);
-        });
-        #[cfg(unix)]
-        command.wrap(process_wrap::std::ProcessGroup::leader());
-        ChildPriority::Normal.apply_before_spawn(&mut command);
-        let mut child = command.spawn().map_err(|_| ProviderPortError)?;
-        let stdout = child.stdout().take().ok_or(ProviderPortError)?;
-        let reader = thread::spawn(move || {
-            use std::io::Read;
-            let mut output = Vec::new();
-            stdout.take(201).read_to_end(&mut output).map(|_| output)
-        });
-        let status = loop {
-            if Instant::now() >= deadline {
-                let _ignored = child.start_kill();
-                let _ignored = child.try_wait();
-                return Err(ProviderPortError);
-            }
-            if let Some(status) = child.try_wait().map_err(|_| ProviderPortError)? {
-                break status;
-            }
-            thread::park_timeout(Duration::from_millis(10));
-        };
-        let bytes = reader
-            .join()
-            .map_err(|_| ProviderPortError)?
-            .map_err(|_| ProviderPortError)?;
-        if !status.success() || bytes.len() > 200 {
-            return Err(ProviderPortError);
+                .ok_or(ProviderPortError)?;
+            let (installed_version, launched_error) =
+                match read_cli_version(launched_binary, deadline) {
+                    Ok(version) => (Some(version), None),
+                    Err(_) => (
+                        None,
+                        Some("Could not read the Claude Code executable version.".to_owned()),
+                    ),
+                };
+            let (configured_version, configured_error) = match profile.configured_binary.as_deref()
+            {
+                Some(binary) => match read_cli_version(binary, deadline) {
+                    Ok(version) => (Some(version), None),
+                    Err(_) => (
+                        None,
+                        Some(
+                            "Could not read the current Claude Code profile executable version."
+                                .to_owned(),
+                        ),
+                    ),
+                },
+                None => (
+                    None,
+                    Some("Claude Code executable was not found for this profile.".to_owned()),
+                ),
+            };
+            let available_version = configured_version.clone();
+            return Ok(VersionFacts {
+                running_version: None,
+                installed_version,
+                configured_version,
+                available_version,
+                error: launched_error.or(configured_error),
+                running_note: Some(
+                    "The exact version already running in Claude sessions is unknown.".into(),
+                ),
+            });
         }
-        let output = String::from_utf8(bytes).map_err(|_| ProviderPortError)?;
-        let version = output.trim().to_owned();
-        if parse_key(&version).is_none() {
-            return Err(ProviderPortError);
-        }
+        let default_binary = "codex";
+        let launched_binary = profile
+            .launched_binary
+            .as_deref()
+            .or(profile.configured_binary.as_deref())
+            .unwrap_or(default_binary);
+        let version = read_cli_version(launched_binary, deadline)?;
         Ok(VersionFacts {
-            // Claude's CLI executable is not the live session version. Python
-            // deliberately reports that session value as unknown.
-            running_version: (profile.provider != "claude").then(|| version.clone()),
+            running_version: Some(version.clone()),
             installed_version: Some(version),
             configured_version: None,
             available_version: None,
             error: None,
-            running_note: (profile.provider == "claude")
-                .then(|| "The exact version already running in Claude sessions is unknown.".into()),
+            running_note: None,
         })
     }
+}
+
+fn read_cli_version(binary: &str, deadline: Instant) -> Result<String, ProviderPortError> {
+    let environment =
+        crate::account_driver::claude::subscription_environment(std::env::vars_os().collect());
+    let mut command = CommandWrap::with_new(binary, |command| {
+        command
+            .arg("--version")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .env_clear()
+            .envs(environment);
+    });
+    #[cfg(unix)]
+    command.wrap(process_wrap::std::ProcessGroup::leader());
+    ChildPriority::Normal.apply_before_spawn(&mut command);
+    let mut child = command.spawn().map_err(|_| ProviderPortError)?;
+    let stdout = child.stdout().take().ok_or(ProviderPortError)?;
+    let reader = thread::spawn(move || {
+        use std::io::Read;
+        let mut output = Vec::new();
+        stdout.take(201).read_to_end(&mut output).map(|_| output)
+    });
+    let status = loop {
+        if Instant::now() >= deadline {
+            let _ignored = child.start_kill();
+            let _ignored = child.try_wait();
+            return Err(ProviderPortError);
+        }
+        if let Some(status) = child.try_wait().map_err(|_| ProviderPortError)? {
+            break status;
+        }
+        thread::park_timeout(Duration::from_millis(10));
+    };
+    let bytes = reader
+        .join()
+        .map_err(|_| ProviderPortError)?
+        .map_err(|_| ProviderPortError)?;
+    if !status.success() || bytes.len() > 200 {
+        return Err(ProviderPortError);
+    }
+    let output = String::from_utf8(bytes).map_err(|_| ProviderPortError)?;
+    let version = output.trim().to_owned();
+    if parse_key(&version).is_none() {
+        return Err(ProviderPortError);
+    }
+    Ok(version)
 }
 
 /// Unauthenticated npm registry adapter. Each exchange is bounded by its passed deadline.

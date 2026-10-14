@@ -279,7 +279,15 @@ fn provider_read(
 pub(crate) struct LiveProviderConnections {
     pub accounts: Arc<AccountDriver>,
     pub session: Arc<dyn AccountSessionPort>,
-    pub session_binaries: Arc<std::sync::Mutex<std::collections::BTreeMap<String, (u64, String)>>>,
+    pub session_binaries:
+        Arc<std::sync::Mutex<std::collections::BTreeMap<String, SessionExecutables>>>,
+}
+
+#[derive(Clone, Debug, Default)]
+pub(crate) struct SessionExecutables {
+    pub generation: u64,
+    pub codex: Option<String>,
+    pub claude: Option<String>,
 }
 
 impl ActiveProviderConnections for LiveProviderConnections {
@@ -308,12 +316,31 @@ impl ActiveProviderConnections for LiveProviderConnections {
                         .and_then(Value::as_str)
                         .filter(|path| !path.is_empty())
                         .map(str::to_owned)
+                        .or_else(|| configured_claude_binary())
                 } else {
-                    leased_session_binary(&self.session_binaries, &account_key, scope.generation)
+                    leased_session_binary(
+                        &self.session_binaries,
+                        &account_key,
+                        scope.generation,
+                        false,
+                    )
                 };
+                let launched_binary = leased_session_binary(
+                    &self.session_binaries,
+                    &account_key,
+                    scope.generation,
+                    provider == "claude",
+                );
+                // A Claude account without launch-time executable metadata is
+                // not a probeable retained session; never substitute today's
+                // profile setting for the binary used by that session.
+                if provider == "claude" && launched_binary.is_none() {
+                    return None;
+                }
                 Some(ProviderProfile {
                     account_key,
                     provider,
+                    launched_binary,
                     configured_binary,
                     server_identity: scope.connection,
                     connection_id: Some(scope.generation.to_string()),
@@ -324,12 +351,61 @@ impl ActiveProviderConnections for LiveProviderConnections {
 }
 
 fn leased_session_binary(
-    binaries: &std::sync::Mutex<std::collections::BTreeMap<String, (u64, String)>>,
+    binaries: &std::sync::Mutex<std::collections::BTreeMap<String, SessionExecutables>>,
     account: &str,
     generation: u64,
+    claude: bool,
 ) -> Option<String> {
-    let (leased_generation, binary) = binaries.lock().ok()?.get(account)?.clone();
-    (leased_generation == generation).then_some(binary)
+    let executables = binaries.lock().ok()?.get(account)?.clone();
+    if executables.generation != generation {
+        return None;
+    }
+    if claude {
+        executables.claude
+    } else {
+        executables.codex
+    }
+}
+
+fn configured_claude_binary() -> Option<String> {
+    let configured = std::env::var_os("STUDIO_CLAUDE_BIN");
+    let candidate = configured
+        .as_ref()
+        .map(PathBuf::from)
+        .filter(|path| path.components().count() > 1 && is_executable(path))
+        .or_else(|| {
+            let command = configured
+                .as_deref()
+                .unwrap_or(std::ffi::OsStr::new("claude"));
+            std::env::var_os("PATH").and_then(|paths| {
+                std::env::split_paths(&paths)
+                    .map(|directory| directory.join(command))
+                    .find(|path| is_executable(path))
+            })
+        })
+        .or_else(|| {
+            if configured.is_some() {
+                return None;
+            }
+            let path = std::env::var_os("HOME")
+                .map(PathBuf::from)?
+                .join(".local/bin/claude");
+            is_executable(&path).then_some(path)
+        })?;
+    Some(candidate.to_string_lossy().into_owned())
+}
+
+fn is_executable(path: &std::path::Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        path.metadata()
+            .is_ok_and(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
+    }
+    #[cfg(not(unix))]
+    {
+        path.is_file()
+    }
 }
 
 /// Uses the account's already-retained provider session. It never launches a
@@ -873,6 +949,9 @@ mod tests {
         let calls = session.requests.lock().expect("fixture request list");
         assert_eq!(calls[0].method, Method::ThreadStart);
         assert_eq!(calls[1].method, Method::TurnStart);
+        assert_eq!(calls[0].params["ephemeral"], true);
+        assert!(calls[0].params["cwd"].as_str().is_some());
+        assert_eq!(calls[0].params["model"], "claude-sonnet");
         assert_eq!(
             calls[1].params["clientUserMessageId"],
             json!(format!(
@@ -888,14 +967,25 @@ mod tests {
     fn version_probe_uses_binary_captured_for_live_session() {
         let binaries = Mutex::new(std::collections::BTreeMap::from([(
             "account-a".to_owned(),
-            (7, "/immutable/leased/codex".to_owned()),
+            super::SessionExecutables {
+                generation: 7,
+                codex: Some("/immutable/leased/codex".to_owned()),
+                claude: Some("/immutable/leased/claude".to_owned()),
+            },
         )]));
         assert_eq!(
-            leased_session_binary(&binaries, "account-a", 7).as_deref(),
+            leased_session_binary(&binaries, "account-a", 7, false).as_deref(),
             Some("/immutable/leased/codex")
         );
-        assert_eq!(leased_session_binary(&binaries, "account-a", 8), None);
-        assert_eq!(leased_session_binary(&binaries, "account-b", 7), None);
+        assert_eq!(
+            leased_session_binary(&binaries, "account-a", 7, true).as_deref(),
+            Some("/immutable/leased/claude")
+        );
+        assert_eq!(
+            leased_session_binary(&binaries, "account-a", 8, false),
+            None
+        );
+        assert_eq!(leased_session_binary(&binaries, "account-b", 7, true), None);
     }
 
     #[test]

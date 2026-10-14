@@ -153,7 +153,7 @@ impl HostRuntime {
         monitor_dispatch_wake: Arc<tokio::sync::Notify>,
         session_broker: AccountSessionBroker,
         native_runtime: Option<Arc<NativeRuntime>>,
-        session_binaries: Arc<Mutex<BTreeMap<String, (u64, String)>>>,
+        session_binaries: Arc<Mutex<BTreeMap<String, crate::provider_ports::SessionExecutables>>>,
     ) -> Result<Self, WorkerError> {
         let mut nonce = [0_u8; 16];
         getrandom::fill(&mut nonce).map_err(|_| WorkerError::TaskFailed)?;
@@ -295,7 +295,7 @@ struct HostLauncher {
     root: PathBuf,
     native_path: Option<String>,
     native_runtime: Option<Arc<NativeRuntime>>,
-    session_binaries: Arc<Mutex<BTreeMap<String, (u64, String)>>>,
+    session_binaries: Arc<Mutex<BTreeMap<String, crate::provider_ports::SessionExecutables>>>,
     resources: PreparationResources,
     environment: BTreeMap<String, String>,
 }
@@ -385,10 +385,15 @@ impl AccountLauncher for HostLauncher {
                 }) as Arc<dyn ProviderTaskFactory>,
                 None => factory,
             };
-            if let Some(executable) = executable
-                && let Ok(mut binaries) = self.session_binaries.lock()
-            {
-                binaries.insert(account.clone(), (generation.0, executable));
+            if let Ok(mut binaries) = self.session_binaries.lock() {
+                binaries.insert(
+                    account.clone(),
+                    crate::provider_ports::SessionExecutables {
+                        generation: generation.0,
+                        codex: executable,
+                        claude: None, // Claude launch must populate this with its leased executable.
+                    },
+                );
             }
             Ok(AccountLaunch {
                 factory,

@@ -179,6 +179,7 @@ fn update_warning_projection_preserves_python_ids_and_messages() {
     let profile = ProviderProfile {
         account_key: "default".into(),
         provider: "codex".into(),
+        launched_binary: None,
         configured_binary: None,
         server_identity: "server-1".into(),
         connection_id: Some("connection-1".into()),
@@ -230,6 +231,7 @@ fn active_connection_signature_tracks_server_and_connection_identity() {
     let profile = ProviderProfile {
         account_key: "connected".into(),
         provider: "codex".into(),
+        launched_binary: None,
         configured_binary: None,
         server_identity: "server-a".into(),
         connection_id: Some("connection-a".into()),
@@ -246,6 +248,42 @@ fn active_connection_signature_tracks_server_and_connection_identity() {
         connection_identity(&profile),
         connection_identity(&reconnected)
     );
+}
+
+#[cfg(unix)]
+#[test]
+fn claude_version_probe_uses_launch_binary_and_reports_configured_binary_separately() {
+    use super::SystemVersionProbe;
+    use crate::provider_versions::VersionProbe;
+    use std::{
+        os::unix::fs::PermissionsExt,
+        time::{Duration, Instant},
+    };
+
+    let temporary = tempfile::tempdir().expect("version probe fixture");
+    let launched = temporary.path().join("claude-launched");
+    let configured = temporary.path().join("claude-configured");
+    for (path, version) in [(&launched, "2.1.100"), (&configured, "2.1.200")] {
+        std::fs::write(path, format!("#!/bin/sh\nprintf '%s\\n' '{version}'\n"))
+            .expect("write fake version binary");
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
+            .expect("make fake version binary executable");
+    }
+    let profile = ProviderProfile {
+        account_key: "claude-profile".into(),
+        provider: "claude".into(),
+        launched_binary: Some(launched.to_string_lossy().into_owned()),
+        configured_binary: Some(configured.to_string_lossy().into_owned()),
+        server_identity: "server".into(),
+        connection_id: Some("generation-1".into()),
+    };
+    let facts = SystemVersionProbe
+        .probe(&profile, Instant::now() + Duration::from_secs(5))
+        .expect("both Claude executable versions");
+    assert_eq!(facts.running_version, None);
+    assert_eq!(facts.installed_version.as_deref(), Some("2.1.100"));
+    assert_eq!(facts.configured_version.as_deref(), Some("2.1.200"));
+    assert_eq!(facts.available_version.as_deref(), Some("2.1.200"));
 }
 
 #[test]
@@ -480,6 +518,7 @@ fn profile(account: &str, provider: &str, connection: &str) -> ProviderProfile {
     ProviderProfile {
         account_key: account.into(),
         provider: provider.into(),
+        launched_binary: None,
         configured_binary: None,
         server_identity: format!("server-{account}"),
         connection_id: Some(connection.into()),
