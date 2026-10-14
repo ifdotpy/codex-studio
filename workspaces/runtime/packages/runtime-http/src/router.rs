@@ -31,6 +31,8 @@ pub struct HttpState {
         Option<Arc<dyn studio_runtime_services::message_admission::MessageAdmission>>,
     pub(crate) callback_runtime:
         Option<Arc<studio_runtime_services::callback_runtime::CallbackRuntime>>,
+    pub(crate) project_secrets_guest:
+        Option<Arc<dyn studio_runtime_services::project_secrets::GuestRpc>>,
     pub account_session:
         Option<Arc<dyn studio_runtime_services::account_session_runtime::AccountSessionPort>>,
     pub claude_login: Option<Arc<studio_runtime_services::claude_login::service::LoginService>>,
@@ -106,6 +108,7 @@ impl HttpState {
         Self {
             message_admission: None,
             callback_runtime: None,
+            project_secrets_guest: None,
             account_session: None,
             account_driver: None,
             provider_versions: None,
@@ -150,6 +153,15 @@ impl HttpState {
         boundary: Arc<studio_runtime_services::multi_server_pairing::MultiServerBoundary>,
     ) -> Self {
         self.multi_server_boundary = Some(boundary);
+        self
+    }
+
+    /// Attach the Linux VM guest client used by project-secrets routes.
+    pub fn with_project_secrets_guest_rpc(
+        mut self,
+        guest: Arc<dyn studio_runtime_services::project_secrets::GuestRpc>,
+    ) -> Self {
+        self.project_secrets_guest = Some(guest);
         self
     }
 
