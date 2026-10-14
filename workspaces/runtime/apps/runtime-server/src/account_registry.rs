@@ -16,10 +16,16 @@ use studio_runtime_services::{
         AccountCommand, AccountHandle, StoreBridge, WorkerError, preparation::PreparationResources,
         start_account_worker_with_publication_sink,
     },
+    host_project_runtime::PreparedHost,
+    projects::ProjectsError,
     provider_session_task::SessionTaskConfig,
+    radio_runtime::{
+        self, Interrupt, InterruptOutcome, InterruptReceipt, InterruptTransport, RadioIngress,
+    },
 };
 use studio_runtime_store::{
-    AgentId, AgentRepository, AgentStatus, RuntimeStore, SchedulerRepository,
+    AgentId, AgentRepository, AgentStatus, QueueEvent, QueueEventId, QueueEventRepository,
+    RuntimeStore, SchedulerRepository,
 };
 use tokio::sync::{Notify, mpsc};
 
@@ -69,6 +75,7 @@ pub(crate) struct AccountRegistry {
     store: Arc<RuntimeStore>,
     bridge: StoreBridge,
     launcher: Arc<dyn AccountLauncher>,
+    radio_clock: Arc<dyn Fn() -> f64 + Send + Sync>,
     workers: BTreeMap<String, AccountHandle>,
     session_broker: AccountSessionBroker,
     after_account: String,
@@ -491,11 +498,28 @@ impl AccountRegistry {
             store,
             bridge,
             launcher,
+            radio_clock: Arc::new(event_time),
             workers: BTreeMap::new(),
             session_broker,
             after_account: String::new(),
             after_agent: BTreeMap::new(),
         })
+    }
+
+    #[cfg(test)]
+    pub fn set_radio_clock_for_test(&mut self, clock: Arc<dyn Fn() -> f64 + Send + Sync>) {
+        self.radio_clock = clock;
+    }
+
+    #[cfg(test)]
+    pub async fn close_worker_for_test(&mut self, account: &str) -> Result<(), WorkerError> {
+        let worker = self.workers.get_mut(account).ok_or(WorkerError::Closed)?;
+        worker.cancel();
+        let sender = worker.radio_interrupt_sender();
+        while !sender.is_closed() {
+            tokio::task::yield_now().await;
+        }
+        Ok(())
     }
 
     pub(crate) async fn start(&mut self, account: &str) -> Result<(), WorkerError> {
@@ -525,6 +549,7 @@ impl AccountRegistry {
     /// Startup and post-commit use the same persisted selection, so a crash
     /// between commit and notify cannot strand a queued event.
     pub async fn reconcile(&mut self, shutdown: Option<&Shutdown>) -> Result<(), WorkerError> {
+        self.tick_radio().await?;
         let stopped = || shutdown.is_some_and(|stop| *stop.subscribe().borrow());
         let store = self.store.clone();
         let after_account = self.after_account.clone();
@@ -587,6 +612,63 @@ impl AccountRegistry {
             }
         }
         failure.map_or(Ok(()), Err)
+    }
+
+    /// Python's codex_runtime.runtime_maintenance_tick calls codex_radio.tick(self, db)
+    /// before dispatch_candidates. Run it before ordinary event reconciliation so
+    /// its durable radio_turn events use the same retained account workers.
+    async fn tick_radio(&mut self) -> Result<(), WorkerError> {
+        let store = self.store.clone();
+        let has_rooms = tokio::task::spawn_blocking(move || -> Result<bool, WorkerError> {
+            let db = store.read()?;
+            db.query_row(
+                "SELECT EXISTS(SELECT 1 FROM runtime_rooms WHERE json_type(record,'$.radio')='object')",
+                [],
+                |row| row.get::<_, bool>(0),
+            )
+            .map_err(|error| WorkerError::Store(error.into()))
+        })
+        .await
+        .map_err(|_| WorkerError::TaskFailed)??;
+        if !has_rooms {
+            return Ok(());
+        }
+        let now = (self.radio_clock)();
+        let store = self.store.clone();
+        let effects = tokio::task::spawn_blocking(move || {
+            let prepared = PreparedHost::load(&store)?;
+            prepared.recheck_paths()?;
+            store.transaction_with(|tx| {
+                let mut ingress = RuntimeRadioIngress;
+                radio_runtime::tick(tx, &prepared, &mut ingress, now)
+            })
+        })
+        .await
+        .map_err(|_| WorkerError::TaskFailed)?
+        .map_err(|error| WorkerError::PreparationRefused(error.to_string()))?;
+
+        for effect in effects {
+            let account = effect
+                .agent
+                .get("accountKey")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("default");
+            let Some(worker) = self.workers.get(account) else {
+                continue;
+            };
+            let sender = worker.radio_interrupt_sender();
+            let store = self.store.clone();
+            let now = (self.radio_clock)();
+            tokio::task::spawn_blocking(move || {
+                let prepared = PreparedHost::load(&store)?;
+                let mut transport = RuntimeRadioInterrupt { sender };
+                radio_runtime::handoff_interrupt(&store, &prepared, &effect, &mut transport, now)
+            })
+            .await
+            .map_err(|_| WorkerError::TaskFailed)?
+            .map_err(|error| WorkerError::PreparationRefused(error.to_string()))?;
+        }
+        Ok(())
     }
 
     pub async fn run(mut self, wake: Arc<Notify>, shutdown: Shutdown) -> Result<(), WorkerError> {
@@ -687,6 +769,71 @@ pub(crate) fn target_page(
     let db = store.read()?;
     SchedulerRepository::account_wake_page(&db, after_account, after_agent, MAX_ACCOUNTS, WAKE_PAGE)
         .map_err(Into::into)
+}
+
+struct RuntimeRadioIngress;
+impl RadioIngress for RuntimeRadioIngress {
+    fn enqueue(
+        &mut self,
+        db: &rusqlite::Transaction<'_>,
+        agent: &str,
+        id: &str,
+        text: &str,
+        now: f64,
+    ) -> Result<(), ProjectsError> {
+        let record = AgentRepository::get(db, &AgentId::from(agent))?
+            .ok_or(ProjectsError::Invalid("radio participant missing"))?;
+        QueueEventRepository::put(
+            db,
+            &QueueEvent {
+                id: QueueEventId::from(id),
+                agent: AgentId::from(agent),
+                kind: "radio_turn".to_owned(),
+                text: text.to_owned(),
+                status: "pending".to_owned(),
+                created: now,
+                epoch: record.epoch,
+                turn_id: None,
+                error: None,
+            },
+        )?;
+        Ok(())
+    }
+}
+
+struct RuntimeRadioInterrupt {
+    sender: mpsc::Sender<AccountCommand>,
+}
+impl InterruptTransport for RuntimeRadioInterrupt {
+    fn dispatch(&mut self, effect: &Interrupt) -> Result<InterruptReceipt, ProjectsError> {
+        let agent = effect
+            .agent
+            .get("id")
+            .and_then(serde_json::Value::as_str)
+            .ok_or(ProjectsError::Invalid("radio participant missing"))?;
+        let thread = effect
+            .agent
+            .get("threadId")
+            .and_then(serde_json::Value::as_str)
+            .ok_or(ProjectsError::Invalid("radio thread missing"))?;
+        let command = AccountCommand::RadioInterrupt {
+            agent_id: agent.to_owned(),
+            thread_id: thread.to_owned(),
+            turn_id: effect.turn_id.clone(),
+        };
+        let outcome = if self.sender.try_send(command).is_ok() {
+            InterruptOutcome::Accepted
+        } else {
+            InterruptOutcome::Unknown
+        };
+        Ok(InterruptReceipt::new(effect.request_id.clone(), outcome))
+    }
+}
+
+fn event_time() -> f64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0.0, |duration| duration.as_secs_f64())
 }
 
 fn image_workspace_agents(

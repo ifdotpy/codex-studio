@@ -35,8 +35,6 @@ pub enum CheckpointsError {
     WrongAgent,
     #[error("This agent was deleted")]
     DeletedAgent,
-    #[error("Workspace checkpoint state is not initialized")]
-    MissingSchema,
     #[error("Studio Git checkpoints are unavailable for image workspaces")]
     ExecutionWorkspace,
     #[error("Workspace activity changed before checkpoint capture")]
@@ -80,9 +78,6 @@ pub fn capture_context(
     agent_id: &str,
 ) -> Result<WorkspaceSnapshot, CheckpointsError> {
     let connection = store.read()?;
-    if !CheckpointsRepository::tables_available(&connection)? {
-        return Err(CheckpointsError::MissingSchema);
-    }
     CheckpointsRepository::workspace_snapshot(&connection, agent_id)?
         .ok_or(CheckpointsError::UnknownAgent)
 }
@@ -93,16 +88,11 @@ pub fn preview_context(
     checkpoint_id: &str,
 ) -> Result<PreviewContext, CheckpointsError> {
     let connection = store.read()?;
-    if !CheckpointsRepository::checkpoint_table_available(&connection)? {
-        return Err(CheckpointsError::MissingSchema);
-    }
     let agent = CheckpointsRepository::agent(&connection, agent_id)?
         .ok_or(CheckpointsError::UnknownAgent)?;
     let checkpoint = CheckpointsRepository::checkpoint(&connection, checkpoint_id)?
         .ok_or(CheckpointsError::UnknownCheckpoint)?;
-    if let Some(owner) = checkpoint.record.get("agent").and_then(Value::as_str)
-        && owner != agent_id
-    {
+    if checkpoint.record.get("agent").and_then(Value::as_str) != Some(agent_id) {
         return Err(CheckpointsError::WrongAgent);
     }
     let recovery_expected_tree =
@@ -275,7 +265,7 @@ fn capture_reserved(
 }
 
 pub fn preview(store: &RuntimeStore, context: PreviewContext) -> Result<Value, CheckpointsError> {
-    ensure_agent_available(&context.agent)?;
+    ensure_agent_identity(&context.agent)?;
     let cwd = context
         .agent
         .record
@@ -333,22 +323,25 @@ pub fn preview(store: &RuntimeStore, context: PreviewContext) -> Result<Value, C
 pub(crate) fn ensure_agent_available(
     agent: &StoredCheckpointObject,
 ) -> Result<(), CheckpointsError> {
+    ensure_agent_identity(agent)?;
+    if is_image_workspace(agent) {
+        return Err(CheckpointsError::ExecutionWorkspace);
+    }
+    Ok(())
+}
+
+fn ensure_agent_identity(agent: &StoredCheckpointObject) -> Result<(), CheckpointsError> {
     if agent.record.get("id").and_then(Value::as_str) != Some(agent.id.as_str()) {
         return Err(invalid_agent(&agent.id));
     }
     if truthy(agent.record.get("deletedAt")) {
         return Err(CheckpointsError::DeletedAgent);
     }
-    if agent.record.get("imageWorkspace").and_then(Value::as_bool) == Some(true)
-        || agent.record.get("executionMode").and_then(Value::as_str) == Some("vm")
-        || matches!(
-            agent.record.get("workspaceMode").and_then(Value::as_str),
-            Some("image" | "layr")
-        )
-    {
-        return Err(CheckpointsError::ExecutionWorkspace);
-    }
     Ok(())
+}
+
+fn is_image_workspace(agent: &StoredCheckpointObject) -> bool {
+    agent.record.get("imageWorkspace").and_then(Value::as_bool) == Some(true)
 }
 
 pub(crate) fn ensure_workspace_idle(

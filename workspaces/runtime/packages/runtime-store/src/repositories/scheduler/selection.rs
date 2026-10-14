@@ -136,6 +136,7 @@ impl SchedulerRepository {
             attempt_created,
             limit,
             false,
+            None,
         )
     }
 
@@ -156,6 +157,31 @@ impl SchedulerRepository {
             attempt_created,
             limit,
             true,
+            None,
+        )
+    }
+
+    /// Claim exactly one radio turn selected by the runtime-services policy in
+    /// this transaction. The caller must authorize the event before invoking
+    /// this entry point; this method fences its pending identity and journals
+    /// the same durable attempt as the ordinary claim path.
+    pub fn claim_selected_radio_turn(
+        transaction: &Transaction<'_>,
+        agent_id: &str,
+        epoch: i64,
+        attempt_id: &str,
+        attempt_created: f64,
+        event_id: &str,
+    ) -> StoreResult<Option<ClaimedEvents>> {
+        Self::claim_selected(
+            transaction,
+            agent_id,
+            epoch,
+            attempt_id,
+            attempt_created,
+            1,
+            true,
+            Some(event_id),
         )
     }
 
@@ -168,6 +194,7 @@ impl SchedulerRepository {
         attempt_created: f64,
         limit: usize,
         preparation: bool,
+        radio_event: Option<&str>,
     ) -> StoreResult<Option<ClaimedEvents>> {
         let Some(mut agent) = load_agent(transaction, agent_id)? else {
             return Ok(None);
@@ -217,12 +244,14 @@ impl SchedulerRepository {
         }
 
         // Python gives radio turns priority over the ordinary queue prefix.
-        if transaction.query_row(
-            "SELECT EXISTS(SELECT 1 FROM runtime_events WHERE agent=?1 AND epoch=?2 \
+        if radio_event.is_none()
+            && transaction.query_row(
+                "SELECT EXISTS(SELECT 1 FROM runtime_events WHERE agent=?1 AND epoch=?2 \
              AND status='pending' AND kind IN ('radio','radio_turn'))",
-            params![agent_id, epoch],
-            |row| row.get::<_, bool>(0),
-        )? {
+                params![agent_id, epoch],
+                |row| row.get::<_, bool>(0),
+            )?
+        {
             return Ok(Some(refused(
                 &agent,
                 "radio-turn requires radio-policy".to_owned(),
@@ -257,7 +286,16 @@ impl SchedulerRepository {
                 )));
             }
         }
-        let sql = if has_metadata {
+        let sql = if let Some(_event_id) = radio_event {
+            if has_metadata {
+                "SELECT e.id,e.agent,e.kind,e.text,e.status,e.created,e.epoch,e.turn_id,e.error,m.record \
+                 FROM runtime_events e LEFT JOIN runtime_event_meta m ON m.id=e.id \
+                 WHERE e.id=?1 AND e.agent=?2 AND e.epoch=?3 AND e.status='pending' AND e.kind='radio_turn'"
+            } else {
+                "SELECT e.id,e.agent,e.kind,e.text,e.status,e.created,e.epoch,e.turn_id,e.error,NULL \
+                 FROM runtime_events e WHERE e.id=?1 AND e.agent=?2 AND e.epoch=?3 AND e.status='pending' AND e.kind='radio_turn'"
+            }
+        } else if has_metadata {
             "SELECT e.id,e.agent,e.kind,e.text,e.status,e.created,e.epoch,e.turn_id,e.error,m.record \
              FROM runtime_events e LEFT JOIN runtime_event_meta m ON m.id=e.id \
              WHERE e.agent=?1 AND e.epoch=?2 AND e.status='pending' \
@@ -268,13 +306,25 @@ impl SchedulerRepository {
              ORDER BY e.created,e.rowid LIMIT ?3"
         };
         let mut statement = transaction.prepare(sql)?;
-        let rows = statement.query_map(params![agent_id, epoch, prefix as i64], |row| {
-            Ok((
-                crate::QueueEventRepository::from_row(row)?,
-                row.get::<_, Option<String>>(9)?,
-            ))
-        })?;
-        let joined = rows.collect::<Result<Vec<_>, _>>()?;
+        let joined = if let Some(event_id) = radio_event {
+            statement
+                .query_map(params![event_id, agent_id, epoch], |row| {
+                    Ok((
+                        crate::QueueEventRepository::from_row(row)?,
+                        row.get::<_, Option<String>>(9)?,
+                    ))
+                })?
+                .collect::<Result<Vec<_>, _>>()?
+        } else {
+            statement
+                .query_map(params![agent_id, epoch, prefix as i64], |row| {
+                    Ok((
+                        crate::QueueEventRepository::from_row(row)?,
+                        row.get::<_, Option<String>>(9)?,
+                    ))
+                })?
+                .collect::<Result<Vec<_>, _>>()?
+        };
         drop(statement);
         if joined.is_empty() {
             return Ok(None);
@@ -313,7 +363,8 @@ impl SchedulerRepository {
         let obsolete_work = obsolete_work_review_ids(transaction, &agent, &events)?;
         let prepared =
             prepare_pending_batch(&agent, events, metadata, &complaints, &obsolete_work)?;
-        if !preparation
+        if radio_event.is_none()
+            && !preparation
             && let Some((kind, dependency)) = prepared.events.iter().find_map(|event| {
                 let dependency =
                     event_policy_dependency(&event.kind).or(match event.kind.as_str() {
@@ -329,7 +380,9 @@ impl SchedulerRepository {
                 format!("scheduler cannot claim {kind}: requires {dependency}"),
             )));
         }
-        let mut events = if preparation
+        let mut events = if radio_event.is_some() {
+            prepared.events.iter().take(1).cloned().collect()
+        } else if preparation
             && prepared
                 .events
                 .first()
@@ -340,7 +393,9 @@ impl SchedulerRepository {
             select_turn_batch(&prepared.events, &prepared.metadata, prefix)
         };
 
-        let unsupported = if agent.extra.get("pendingSettings").is_some_and(truthy) {
+        let unsupported = if radio_event.is_some() {
+            None
+        } else if agent.extra.get("pendingSettings").is_some_and(truthy) {
             Some("pendingSettings are not supported by the Rust turn driver; apply settings first.")
         } else if agent.extra.get("imageWorkspace").and_then(Value::as_bool) == Some(true)
             && agent

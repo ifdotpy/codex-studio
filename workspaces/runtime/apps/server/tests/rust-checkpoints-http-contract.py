@@ -538,6 +538,44 @@ class CheckpointsHTTPContract(unittest.TestCase):
                 (no_write_snapshot(backend.state), checkpoint_refs(self.workspace)), before
             )
 
+    def test_preview_refuses_checkpoint_with_missing_or_null_agent_without_writes(self) -> None:
+        backend = self.backend
+        database_path = backend.state / "canvas.sqlite3"
+        for owner in ("missing", "null"):
+            with closing(sqlite3.connect(database_path)) as database:
+                raw = database.execute(
+                    "SELECT record FROM runtime_checkpoints WHERE id=?",
+                    (self.initial_checkpoint_id,),
+                ).fetchone()[0]
+                checkpoint = json.loads(raw)
+                if owner == "missing":
+                    checkpoint.pop("agent", None)
+                else:
+                    checkpoint["agent"] = None
+                database.execute(
+                    "UPDATE runtime_checkpoints SET record=? WHERE id=?",
+                    (json.dumps(checkpoint), self.initial_checkpoint_id),
+                )
+                database.commit()
+            before = no_write_snapshot(backend.state)
+            try:
+                response = backend.request(
+                    "POST",
+                    "/api/checkpoint/preview",
+                    body={"agent": AGENT_ID, "checkpoint": self.initial_checkpoint_id},
+                    headers=self.headers(),
+                )
+                accepted_refusal_statuses = {400, 500} if not is_rust_backend() and owner == "missing" else {400}
+                self.assertIn(response.status, accepted_refusal_statuses, response.body[:1000])
+                self.assertEqual(no_write_snapshot(backend.state), before)
+            finally:
+                with closing(sqlite3.connect(database_path)) as database:
+                    database.execute(
+                        "UPDATE runtime_checkpoints SET record=? WHERE id=?",
+                        (raw, self.initial_checkpoint_id),
+                    )
+                    database.commit()
+
     @unittest.skipUnless(is_rust_backend(), "Stored Git option validation belongs to Rust")
     def test_preview_rejects_non_object_id_tree_without_writes(self) -> None:
         backend = self.backend
@@ -573,8 +611,8 @@ class CheckpointsHTTPContract(unittest.TestCase):
                 )
                 database.commit()
 
-    @unittest.skipUnless(is_rust_backend(), "Provider and execution 501s belong to Rust")
-    def test_provider_and_execution_dependencies_return_named_501_without_writes(self) -> None:
+    @unittest.skipUnless(is_rust_backend(), "Provider 501s belong to Rust")
+    def test_provider_dependencies_return_named_501_without_writes(self) -> None:
         before = (no_write_snapshot(self.backend.state), checkpoint_refs(self.workspace))
         cases = (
             (
@@ -591,16 +629,6 @@ class CheckpointsHTTPContract(unittest.TestCase):
                 },
                 "Not implemented: requires provider-session/thread-fork",
             ),
-            (
-                "/api/checkpoint",
-                {"agent": IMAGE_AGENT_ID},
-                "Not implemented: requires workspace-state/image-execution",
-            ),
-            (
-                "/api/checkpoint",
-                {"agent": VM_AGENT_ID},
-                "Not implemented: requires workspace-state/image-execution",
-            ),
         )
         for path, body, error in cases:
             response = self.backend.request("POST", path, body=body, headers=self.headers())
@@ -609,6 +637,29 @@ class CheckpointsHTTPContract(unittest.TestCase):
             self.assertEqual(
                 (no_write_snapshot(self.backend.state), checkpoint_refs(self.workspace)), before
             )
+
+    def test_image_checkpoint_refusal_matches_python_without_writes(self) -> None:
+        before = (no_write_snapshot(self.backend.state), checkpoint_refs(self.workspace))
+        response = self.backend.request(
+            "POST", "/api/checkpoint", body={"agent": IMAGE_AGENT_ID}, headers=self.headers()
+        )
+        self.assertEqual(response.status, 400, response.body[:1000])
+        self.assertEqual(
+            response.json()["error"], "Studio Git checkpoints are unavailable for image workspaces"
+        )
+        self.assertEqual(
+            (no_write_snapshot(self.backend.state), checkpoint_refs(self.workspace)), before
+        )
+
+    def test_vm_checkpoint_uses_local_git_workspace(self) -> None:
+        response = self.backend.request(
+            "POST",
+            "/api/checkpoint",
+            body={"agent": VM_AGENT_ID, "label": "VM local Git checkpoint"},
+            headers=self.headers(),
+        )
+        self.assertEqual(response.status, 200, response.body[:1000])
+        self.assertEqual(response.json()["agent"], VM_AGENT_ID)
 
     def test_crash_after_update_ref_leaves_dangling_ref_and_recovers_on_startup(self) -> None:
         backend = self.backend

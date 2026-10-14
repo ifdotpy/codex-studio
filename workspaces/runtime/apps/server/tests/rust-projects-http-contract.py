@@ -9,15 +9,17 @@ import os
 import hashlib
 import json
 import sqlite3
+import subprocess
 import sys
 import unittest
 from contextlib import closing
 from pathlib import Path
+from urllib.parse import urlencode
 
 SERVER_SRC = Path(__file__).resolve().parents[1] / "src"
 sys.path.insert(0, str(SERVER_SRC))
 
-from http_backend_harness import TimedHTTPContractTest, start_contract_backend
+from http_backend_harness import TimedHTTPContractTest, no_write_snapshot, start_contract_backend
 
 isolate_supervisor_environment()
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -74,6 +76,123 @@ class ProjectsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         self.assertEqual(project["name"], "Python written project")
         self.assertEqual(project["accountKey"], "default")
         self.assertEqual(project["accountRevision"], 1)
+
+    def test_local_project_location_info_uses_local_git_metadata(self) -> None:
+        query = urlencode({"project": str(self.backend.cwd), "server": "local", "path": str(self.backend.cwd)})
+        response = self.backend.request("GET", f"/api/project-locations?{query}", headers=self.headers())
+        self.assertEqual(response.status, 200, response.body[:1000])
+        self.assertEqual(response.json()["matches"], [])
+        self.assertIn("gitHead", response.json())
+        self.assertIn("gitOrigin", response.json())
+
+    @staticmethod
+    def _git_repo(path: Path, origin: str) -> None:
+        path.mkdir(parents=True, exist_ok=True)
+        subprocess.run(
+            ["git", "init", "-q", str(path)], check=True, timeout=30
+        )
+        subprocess.run(
+            ["git", "-C", str(path), "config", "remote.origin.url", origin],
+            check=True,
+            timeout=30,
+        )
+
+    def test_matches_includes_unregistered_cwd_and_visible_git_children(self) -> None:
+        source = self.backend.cwd
+        origin = "https://example.invalid/w9-projects.git"
+        subprocess.run(
+            ["git", "-C", str(source), "config", "remote.origin.url", origin],
+            check=True,
+            timeout=30,
+        )
+        parent = self.backend.root / "matches-cwd"
+        parent.mkdir()
+        self._git_repo(parent, origin)
+        sharp_s = parent / "ßeta"
+        self._git_repo(sharp_s, origin)
+        tango = parent / "tango"
+        self._git_repo(tango, origin)
+        child = parent / "unregistered-child"
+        self._git_repo(child, origin)
+        query = urlencode(
+            {"project": str(source), "server": "local", "action": "matches", "path": str(parent)}
+        )
+        response = self.backend.request(
+            "GET", f"/api/project-locations?{query}", headers=self.headers()
+        )
+        self.assertEqual(response.status, 200, response.body[:1000])
+        rows = response.json()["matches"]
+        self.assertEqual(
+            [row["path"] for row in rows],
+            [
+                str(source.resolve()),
+                str(parent.resolve()),
+                str(sharp_s.resolve()),
+                str(tango.resolve()),
+                str(child.resolve()),
+            ],
+        )
+        self.assertEqual(rows[1]["projectId"], str(parent.resolve()))
+
+    def test_local_alias_selects_local_server_location_not_first(self) -> None:
+        local = self.backend.root / "local-location"
+        remote = self.backend.root / "remote-location"
+        local.mkdir()
+        registered = self.backend.request(
+            "POST",
+            "/api/projects",
+            body={"path": str(local), "name": "Local alias fixture"},
+            headers=self.headers(),
+        )
+        self.assertEqual(registered.status, 200, registered.body[:1000])
+        project_id = registered.json()["id"]
+        original = self._project_record(project_id)
+        local_origin = "https://example.invalid/local.git"
+        remote_origin = "https://example.invalid/remote.git"
+        self._git_repo(local, local_origin)
+        self._git_repo(remote, remote_origin)
+        local_server = registered.json()["homeServerId"]
+        changed = dict(original)
+        changed["locations"] = [
+            {"serverId": "paired-remote", "path": str(remote), "projectId": project_id},
+            {"serverId": local_server, "path": str(local), "projectId": project_id},
+        ]
+        with closing(sqlite3.connect(self.backend.state / "canvas.sqlite3")) as db:
+            db.execute(
+                "UPDATE runtime_projects SET record=? WHERE id=?",
+                (json.dumps(changed), project_id),
+            )
+            db.commit()
+        try:
+            query = urlencode({"project": project_id, "server": "local"})
+            response = self.backend.request(
+                "GET", f"/api/project-locations?{query}", headers=self.headers()
+            )
+            self.assertEqual(response.status, 200, response.body[:1000])
+            self.assertEqual(response.json()["gitOrigin"], "example.invalid/local")
+        finally:
+            with closing(sqlite3.connect(self.backend.state / "canvas.sqlite3")) as db:
+                db.execute(
+                    "UPDATE runtime_projects SET record=? WHERE id=?",
+                    (json.dumps(original), project_id),
+                )
+                db.commit()
+            self.backend.request(
+                "POST",
+                "/api/projects",
+                body={"action": "remove", "path": project_id},
+                headers=self.headers(),
+            )
+
+    def test_remote_project_location_query_refuses_without_writing(self) -> None:
+        before = no_write_snapshot(self.backend.state)
+        query = urlencode({"project": str(self.backend.cwd), "server": "remote-server"})
+        response = self.backend.request("GET", f"/api/project-locations?{query}", headers=self.headers())
+        expected = 501 if os.environ.get("STUDIO_HTTP_BACKEND_COMMAND") else 403
+        self.assertEqual(response.status, expected, response.body[:1000])
+        if expected == 501:
+            self.assertIn("cross-server-driver/project-location-read", response.json()["error"])
+        self.assertEqual(no_write_snapshot(self.backend.state), before)
 
     def test_register_and_remove_project_updates_storage_and_sync_projection(self) -> None:
         folder = self.backend.root / "project-register"
@@ -165,6 +284,26 @@ class ProjectsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         self.assertEqual(project["workerEnvironment"], "host")
         self.assertEqual(project["workerEnvironmentRevision"], 1)
         self.assertEqual(self._project_record(project["id"])["workerEnvironment"], "host")
+
+    def test_linux_worker_environment_refuses_without_writing(self) -> None:
+        before = no_write_snapshot(self.backend.state)
+        response = self.backend.request(
+            "POST",
+            "/api/projects",
+            body={
+                "action": "set_worker_environment",
+                "path": str(self.backend.cwd),
+                "environment": "linux",
+                "expected_revision": 0,
+            },
+            headers=self.headers(),
+        )
+        self.assertEqual(response.status, 400, response.body[:1000])
+        self.assertEqual(
+            response.json()["error"],
+            "Choose a layr chat to run agents in the VM",
+        )
+        self.assertEqual(no_write_snapshot(self.backend.state), before)
 
     def test_set_account_adds_default_to_existing_project_account_keys(self) -> None:
         from codex_runtime import Runtime

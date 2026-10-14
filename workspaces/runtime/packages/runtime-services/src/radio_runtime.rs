@@ -45,13 +45,10 @@ pub(crate) fn publish_room(
     state::publish_room(db, value, prepared)
 }
 
-/// HTTP may expose only operations with a composed consumer. P01 replaces this
-/// call with manage once its retained scheduler drives tick and Interrupt effects.
+/// HTTP path after the runtime-server registry wires the retained scheduler and
+/// post-commit interrupt transport.
 pub fn manage_http(store: &RuntimeStore, body: &Value) -> Result<Value, ProjectsError> {
-    if matches!(body["radio_action"].as_str(), Some("send" | "pass")) {
-        return Err(ProjectsError::Requires("workspace-state/peer-radio"));
-    }
-    manage_command(store, body, false)
+    manage_command(store, body, true)
 }
 
 /// Local open/send/pass/stop; direct creation is injected separately by P02.

@@ -298,7 +298,9 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
     },
     ("GET", "/api/multi-server/v1/identity"): {"primary": {"expected": "501"}},
     ("GET", "/api/multi-server/v1/status"): {"primary": {"expected": "501"}},
-    ("GET", "/api/project-locations"): {"primary": {"expected": "501"}},
+    ("GET", "/api/project-locations"): {
+        "primary": {"query": {"project": "ledger-missing-project", "server": "local"}, "expected": "400"},
+    },
     ("GET", "/api/search/item"): {
         "primary": {"query": {"id": "$agent", "message_id": "$item"}, "expected": "2xx"},
     },

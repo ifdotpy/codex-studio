@@ -257,7 +257,23 @@ pub(super) fn claim(
     let mut bytes = [0u8; 16];
     getrandom::fill(&mut bytes).map_err(|_| WorkerError::TaskFailed)?;
     let attempt = studio_runtime_store::sha256_hex(&bytes);
-    scheduler::lifecycle_transaction_with(store, |tx| {
+    let has_radio_turn = store.read()?.query_row(
+        "SELECT EXISTS(SELECT 1 FROM runtime_events WHERE agent=?1 AND epoch=?2 \
+         AND status='pending' AND kind='radio_turn')",
+        rusqlite::params![agent, epoch],
+        |row| row.get::<_, bool>(0),
+    )?;
+    let prepared = if has_radio_turn {
+        let prepared = crate::host_project_runtime::PreparedHost::load(store)
+            .map_err(|error| WorkerError::PreparationRefused(error.to_string()))?;
+        prepared
+            .recheck_paths()
+            .map_err(|error| WorkerError::PreparationRefused(error.to_string()))?;
+        Some(prepared)
+    } else {
+        None
+    };
+    scheduler::lifecycle_transaction_with(store, |tx| -> Result<Option<TurnIntent>, WorkerError> {
         let record = AgentRepository::get(tx, &AgentId::from(agent))?;
         if record.as_ref().is_none_or(|a| account_key(a) != account) {
             return Ok(None);
@@ -289,6 +305,50 @@ pub(super) fn claim(
                     )
             });
         let attempt = pending.and_then(|a| a["id"].as_str()).unwrap_or(&attempt);
+        if let Some(prepared) = &prepared {
+            prepared
+                .recheck(tx)
+                .map_err(|error| WorkerError::PreparationRefused(error.to_string()))?;
+            let mut statement = tx.prepare(
+                "SELECT id,agent,kind,text,status,created,epoch,turn_id,error FROM runtime_events \
+                 WHERE agent=?1 AND epoch=?2 AND status='pending' ORDER BY created,rowid",
+            )?;
+            let events = statement
+                .query_map(rusqlite::params![agent, epoch], |row| {
+                    Ok(studio_runtime_store::QueueEvent {
+                        id: studio_runtime_store::QueueEventId(row.get(0)?),
+                        agent: studio_runtime_store::AgentId(row.get(1)?),
+                        kind: row.get(2)?,
+                        text: row.get(3)?,
+                        status: row.get(4)?,
+                        created: row.get(5)?,
+                        epoch: row.get(6)?,
+                        turn_id: row.get(7)?,
+                        error: row.get(8)?,
+                    })
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
+            drop(statement);
+            let selected = crate::radio_runtime::select_pending(
+                tx,
+                prepared,
+                &record.as_ref().ok_or(WorkerError::Closed)?.value(),
+                &events,
+                now(),
+            )
+            .map_err(|error| WorkerError::PreparationRefused(error.to_string()))?;
+            if let Some(event) = selected.first().filter(|event| event.kind == "radio_turn") {
+                return scheduler::claim_radio_turn_in_transaction(
+                    tx,
+                    agent,
+                    epoch,
+                    attempt,
+                    now(),
+                    &event.id.0,
+                )
+                .map_err(Into::into);
+            }
+        }
         match scheduler::claim_preparation_in_transaction(tx, agent, epoch, attempt, now()) {
             Ok(intent) => Ok(intent),
             Err(scheduler::SchedulerError::PolicyRefused(reason)) => {
@@ -910,6 +970,7 @@ pub(super) fn interrupt_intent(
                     cwd: None,
                     model: None,
                     events: vec![],
+                    radio_authorized: false,
                 },
                 a.epoch,
             )

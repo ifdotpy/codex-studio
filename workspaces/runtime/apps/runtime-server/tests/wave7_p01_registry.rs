@@ -9,6 +9,7 @@ use account_registry::{AccountLaunch, AccountLauncher, AccountRegistry, LaunchFu
 use serde_json::{Value, json};
 use std::{
     collections::BTreeMap,
+    fs,
     path::PathBuf,
     sync::{
         Arc, Mutex,
@@ -194,6 +195,7 @@ struct Scripted {
     active: Arc<AtomicUsize>,
     writes: mpsc::UnboundedSender<(String, Value)>,
     unknown_writes: bool,
+    record_resumes: bool,
     failures: AtomicUsize,
     stops: Arc<Mutex<Vec<Shutdown>>>,
     opened_notice: Arc<Notify>,
@@ -213,6 +215,7 @@ impl AccountLauncher for Scripted {
                 active: self.active.clone(),
                 writes: self.writes.clone(),
                 unknown_writes: self.unknown_writes,
+                record_resumes: self.record_resumes,
                 stops: self.stops.clone(),
                 opened_notice: self.opened_notice.clone(),
             });
@@ -256,6 +259,7 @@ struct WireFactory {
     active: Arc<AtomicUsize>,
     writes: mpsc::UnboundedSender<(String, Value)>,
     unknown_writes: bool,
+    record_resumes: bool,
 }
 impl ProviderTaskFactory for WireFactory {
     fn open(&self, handle: ProviderHandle, _: OpenOptions, shutdown: Shutdown) -> OpenFuture<'_> {
@@ -266,6 +270,7 @@ impl ProviderTaskFactory for WireFactory {
         let active = self.active.clone();
         let writes = self.writes.clone();
         let unknown_writes = self.unknown_writes;
+        let record_resumes = self.record_resumes;
         Box::pin(async move {
             let (commands, mut inbox) = mpsc::channel::<AdapterCommand>(16);
             let (events, journal) = mpsc::channel(16);
@@ -283,7 +288,7 @@ impl ProviderTaskFactory for WireFactory {
             });
             let mut stop = shutdown.subscribe();
             let task = tokio::spawn(async move {
-                let _status = status;
+                let status = status;
                 let mut sequence = 0;
                 loop {
                     let command = tokio::select! { biased; _=Shutdown::cancelled(&mut stop)=>break, c=inbox.recv()=>match c { Some(c)=>c,None=>break } };
@@ -299,18 +304,12 @@ impl ProviderTaskFactory for WireFactory {
                                     remote_id: None,
                                     duplicate: false,
                                 },
-                                Some("thread/resume") => {
-                                    sequence += 1;
-                                    events.send(JournalEntry {
-                                        received_at_ms: 0,
-                                        cursor: EventCursor(sequence),
-                                        generation: Generation(7),
-                                        payload: JournalPayload::Frame(Frame::Response {
-                                            id: serde_json::from_value::<RequestId>(write.message()["id"].clone()).unwrap(),
-                                            body: ResponseBody::Result(json!({"thread":{"id":write.message()["params"]["threadId"]}})),
-                                            fields: Default::default(),
-                                        }),
-                                    }).await.unwrap();
+                                Some("thread/resume" | "thread/start") => {
+                                    if record_resumes {
+                                        writes
+                                            .send((handle.as_str().into(), write.message().clone()))
+                                            .unwrap();
+                                    }
                                     CommandReceipt::Written {
                                         remote_id: Some(sequence),
                                         duplicate: false,
@@ -332,6 +331,51 @@ impl ProviderTaskFactory for WireFactory {
                                 }
                             };
                             let _ignored = reply.send(receipt);
+                            if record_resumes
+                                && matches!(
+                                    write.message()["method"].as_str(),
+                                    Some("thread/resume" | "thread/start")
+                                )
+                            {
+                                let _ = observed.await;
+                                status.send_modify(|current| {
+                                    current.initialization = InitializationStatus::Ready;
+                                });
+                                let thread_id = write.message()["params"]["threadId"].clone();
+                                sequence += 1;
+                                events.send(JournalEntry {
+                                    received_at_ms: 0,
+                                    cursor: EventCursor(sequence),
+                                    generation: Generation(7),
+                                    payload: JournalPayload::Frame(Frame::Notification(
+                                        studio_runtime_providers::NotificationFrame {
+                                            method: studio_runtime_providers::Method::ThreadStatusChanged,
+                                            params: Some(json!({"threadId":thread_id,"status":{"type":"idle"}})),
+                                            fields: Default::default(),
+                                        },
+                                    )),
+                                }).await.unwrap();
+                                sequence += 1;
+                                events
+                                    .send(JournalEntry {
+                                        received_at_ms: 0,
+                                        cursor: EventCursor(sequence),
+                                        generation: Generation(7),
+                                        payload: JournalPayload::Frame(Frame::Response {
+                                            id: serde_json::from_value::<RequestId>(
+                                                write.message()["id"].clone(),
+                                            )
+                                            .unwrap(),
+                                            body: ResponseBody::Result(
+                                                json!({"thread":{"id":thread_id}}),
+                                            ),
+                                            fields: Default::default(),
+                                        }),
+                                    })
+                                    .await
+                                    .unwrap();
+                                continue;
+                            }
                             tokio::select! { biased; _=Shutdown::cancelled(&mut stop)=>break, _=observed=>{} }
                         }
                         AdapterCommand::Ack { cursor, reply } => {
@@ -358,6 +402,12 @@ fn scripted() -> (Arc<Scripted>, mpsc::UnboundedReceiver<(String, Value)>) {
 fn scripted_with_unknown_writes(
     unknown_writes: bool,
 ) -> (Arc<Scripted>, mpsc::UnboundedReceiver<(String, Value)>) {
+    scripted_with_resume_recording(unknown_writes, false)
+}
+fn scripted_with_resume_recording(
+    unknown_writes: bool,
+    record_resumes: bool,
+) -> (Arc<Scripted>, mpsc::UnboundedReceiver<(String, Value)>) {
     let (writes, rx) = mpsc::unbounded_channel();
     (
         Arc::new(Scripted {
@@ -365,12 +415,340 @@ fn scripted_with_unknown_writes(
             active: Arc::default(),
             writes,
             unknown_writes,
+            record_resumes,
             failures: AtomicUsize::new(0),
             stops: Arc::default(),
             opened_notice: Arc::default(),
         }),
         rx,
     )
+}
+
+fn radio_snapshot(root: &std::path::Path, mode: &str) -> Value {
+    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let source = manifest.join("../server/src");
+    let script = r#"
+import importlib.util, json, pathlib, sqlite3, sys
+from unittest.mock import patch
+root = pathlib.Path(sys.argv[1])
+mode = sys.argv[3]
+tests = pathlib.Path(sys.argv[2])
+sys.path.insert(0, str(tests))
+spec = importlib.util.spec_from_file_location('radio_fixture', tests / 'radio-contract.py')
+fixture = importlib.util.module_from_spec(spec); spec.loader.exec_module(fixture)
+radio = fixture.Radio('test_two_replies_share_all_text_and_stop')
+radio.setUp()
+try:
+    for key in ('a', 'b', 'c', 'd'):
+        status = 'queued' if mode == 'queue' and key == 'a' else 'idle'
+        radio.mutate_agent(key, epoch=1, name=key, status=status, inFlight=False, events=0,
+                           provider='codex', model='fake-model', role='orchestrator', depth=0,
+                           prompt='', worktree=False, accountKey='default', autoWake=True,
+                           nativeEffort=None, threadId='native-' + key)
+    radio.action('send', text='question', request_id='seed-send')
+    if mode == 'interrupt':
+        radio.tick()
+        active = radio.room()['radio']['active']
+        radio.mutate_agent('a', inFlight=True, status='running', turnId='turn',
+                           startAttempt=dict(id='fixture-attempt', events=[active['eventId']], epoch=1, submitted=True,
+                                             threadId='native-a', observedTurnId='turn'))
+        with radio.runtime.db() as db:
+            db.execute("UPDATE runtime_events SET status='delivered',turn_id='turn'")
+        radio.action('stop')
+    tables = ('agents','projects','rooms','events','chat_messages','requests',
+              'completed_turns','items','operation_receipts','sync_entities','sidebar_order')
+    mapping = {'sync_entities':'sync_entities','sidebar_order':'runtime_sidebar_order'}
+    snapshot = {}
+    with radio.runtime.db() as db:
+        for table in tables:
+            actual = mapping.get(table, 'runtime_' + table)
+            try:
+                snapshot[table] = [dict(row) for row in db.execute('SELECT * FROM ' + actual)]
+            except sqlite3.OperationalError as error:
+                if 'no such table' not in str(error): raise
+    print(json.dumps(snapshot))
+finally:
+    radio.doCleanups()
+"#;
+    let mut command = std::process::Command::new(prepared_python::prepared_python(&source));
+    command
+        .arg("-c")
+        .arg(script)
+        .arg(root)
+        .arg(manifest.join("../server/tests"))
+        .arg(mode);
+    let output = prepared_python::output_with_timeout(
+        &mut command,
+        &manifest.join("tests/wave7_p01_radio_fixture.py"),
+        std::time::Duration::from_secs(30),
+    )
+    .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    serde_json::from_slice::<Value>(&output.stdout).unwrap()
+}
+
+fn radio_interrupt_snapshot(root: &std::path::Path) -> Value {
+    radio_snapshot(root, "interrupt")
+}
+
+fn radio_queue_snapshot(root: &std::path::Path) -> Value {
+    radio_snapshot(root, "queue")
+}
+
+fn seed_radio_interrupt(fixture: &Fixture, snapshot: &Value) {
+    let project_root = fixture._root.path().join("radio-project");
+    fs::create_dir_all(&project_root).unwrap();
+    std::process::Command::new("git")
+        .args(["init", "-q"])
+        .current_dir(&project_root)
+        .status()
+        .unwrap();
+    let identity = fixture.store.root().join("multi-server");
+    fs::create_dir_all(&identity).unwrap();
+    fs::write(
+        identity.join("identity.json"),
+        r#"{"serverId":"local-test","label":"fixture","publicKey":"fixture"}"#,
+    )
+    .unwrap();
+    fixture
+        .store
+        .set_local_server_id(Some("local-test".to_owned()))
+        .unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&identity, fs::Permissions::from_mode(0o700)).unwrap();
+        fs::set_permissions(
+            identity.join("identity.json"),
+            fs::Permissions::from_mode(0o600),
+        )
+        .unwrap();
+    }
+    fixture
+        .store
+        .transaction(|db| {
+            for (table, rows) in snapshot.as_object().unwrap() {
+                let table_name = match table.as_str() {
+                    "sync_entities" => "sync_entities".to_owned(),
+                    "sidebar_order" => "runtime_sidebar_order".to_owned(),
+                    _ => format!("runtime_{table}"),
+                };
+                db.execute(&format!("DELETE FROM {table_name}"), [])?;
+                for row in rows.as_array().unwrap() {
+                    let mut row = row.clone();
+                    if table == "projects" {
+                        let record: Value =
+                            serde_json::from_str(row["record"].as_str().unwrap()).unwrap();
+                        let mut record = record;
+                        record["id"] = json!(project_root.to_string_lossy());
+                        record["path"] = json!(project_root.to_string_lossy());
+                        if let Some(locations) = record["locations"].as_array_mut() {
+                            for location in locations {
+                                location["path"] = json!(project_root.to_string_lossy());
+                            }
+                        }
+                        row["id"] = json!(project_root.to_string_lossy());
+                        row["record"] = json!(record.to_string());
+                    }
+                    if table == "agents" {
+                        let mut record: Value =
+                            serde_json::from_str(row["record"].as_str().unwrap()).unwrap();
+                        record["cwd"] = json!(project_root.to_string_lossy());
+                        if record.get("projectId").is_some() {
+                            record["projectId"] = json!(project_root.to_string_lossy());
+                        }
+                        row["record"] = json!(record.to_string());
+                    }
+                    if table == "rooms" {
+                        let mut record: Value =
+                            serde_json::from_str(row["record"].as_str().unwrap()).unwrap();
+                        record["projectPath"] = json!(project_root.to_string_lossy());
+                        row["record"] = json!(record.to_string());
+                    }
+                    let fields = row.as_object().unwrap();
+                    let names = fields.keys().cloned().collect::<Vec<_>>().join(",");
+                    let placeholders = vec!["?"; fields.len()].join(",");
+                    let values = fields
+                        .values()
+                        .map(|value| match value {
+                            Value::Null => rusqlite::types::Value::Null,
+                            Value::String(value) => rusqlite::types::Value::Text(value.clone()),
+                            Value::Number(value) if value.is_i64() => {
+                                rusqlite::types::Value::Integer(value.as_i64().unwrap())
+                            }
+                            Value::Number(value) => {
+                                rusqlite::types::Value::Real(value.as_f64().unwrap())
+                            }
+                            _ => panic!("unsupported radio fixture SQL value"),
+                        })
+                        .collect::<Vec<_>>();
+                    db.execute(
+                        &format!("INSERT INTO {table_name}({names}) VALUES({placeholders})"),
+                        rusqlite::params_from_iter(values),
+                    )?;
+                }
+            }
+            Ok(())
+        })
+        .unwrap();
+}
+
+#[tokio::test]
+async fn production_reconcile_delivers_radio_interrupt_once_with_deterministic_clock() {
+    let fixture = tokio::task::spawn_blocking(Fixture::new).await.unwrap();
+    let scratch = tempfile::tempdir().unwrap();
+    let snapshot = radio_interrupt_snapshot(scratch.path());
+    seed_radio_interrupt(&fixture, &snapshot);
+    let (launcher, _writes) = scripted();
+    let mut registry = AccountRegistry::new(fixture.store.clone(), launcher)
+        .await
+        .unwrap();
+    registry.set_radio_clock_for_test(Arc::new(|| 1_000.0));
+    registry.start("default").await.unwrap();
+
+    registry.reconcile(None).await.unwrap();
+    let room = || {
+        let db = fixture.store.read().unwrap();
+        let raw: String = db
+            .query_row("SELECT record FROM runtime_rooms LIMIT 1", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        serde_json::from_str::<Value>(&raw).unwrap()
+    };
+    let delivered = room();
+    assert_eq!(delivered["radio"]["status"], "stopping");
+    assert_eq!(delivered["radio"]["active"]["interruptState"], "accepted");
+    registry.reconcile(None).await.unwrap();
+    let replay = room();
+    assert_eq!(replay["radio"]["revision"], delivered["radio"]["revision"]);
+    assert_eq!(replay["radio"]["active"]["interruptState"], "accepted");
+    registry.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn production_reconcile_admits_radio_queue_event_to_retained_worker() {
+    let fixture = tokio::task::spawn_blocking(Fixture::new).await.unwrap();
+    let scratch = tempfile::tempdir().unwrap();
+    let snapshot = radio_queue_snapshot(scratch.path());
+    seed_radio_interrupt(&fixture, &snapshot);
+    let (launcher, mut writes) = scripted_with_resume_recording(true, true);
+    let mut registry = AccountRegistry::new(fixture.store.clone(), launcher.clone())
+        .await
+        .unwrap();
+    registry.set_radio_clock_for_test(Arc::new(|| 2_000_000_000.0));
+
+    registry.reconcile(None).await.unwrap();
+    let received = tokio::time::timeout(std::time::Duration::from_secs(10), writes.recv()).await;
+    if received.is_err() {
+        let db = fixture.store.read().unwrap();
+        let event: (String, Option<String>) = db
+            .query_row(
+                "SELECT status,error FROM runtime_events WHERE kind='radio_turn'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        let agent: String = db
+            .query_row(
+                "SELECT record FROM runtime_agents WHERE id='a'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        panic!("radio queue worker delivery timed out; event={event:?}; agent={agent}");
+    }
+    let (resume_account, resume) = received.unwrap().expect("retained worker provider write");
+    assert_eq!(resume_account, "account:default");
+    assert!(matches!(
+        resume["method"].as_str(),
+        Some("thread/resume" | "thread/start")
+    ));
+    let turn_write = tokio::time::timeout(std::time::Duration::from_secs(10), writes.recv()).await;
+    if turn_write.is_err() {
+        let db = fixture.store.read().unwrap();
+        let mut statement = db
+            .prepare("SELECT id,result FROM runtime_operation_receipts ORDER BY rowid DESC LIMIT 8")
+            .unwrap();
+        let receipts = statement
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        panic!("radio turn provider write timed out after resume; receipts={receipts:?}");
+    }
+    let (account, write) = turn_write.unwrap().expect("retained worker turn write");
+    assert_eq!(account, "account:default");
+    assert_eq!(write["method"], "turn/start");
+    let db = fixture.store.read().unwrap();
+    let (event_id, kind, status): (String, String, String) = db
+        .query_row(
+            "SELECT id,kind,status FROM runtime_events WHERE kind='radio_turn'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(kind, "radio_turn");
+    assert!(event_id.starts_with("radio-turn:"));
+    assert!(matches!(status.as_str(), "dispatching" | "uncertain"));
+    drop(db);
+
+    registry.reconcile(None).await.unwrap();
+    assert!(
+        writes.try_recv().is_err(),
+        "radio queue event was sent twice"
+    );
+    drop(registry);
+    let mut restarted = AccountRegistry::new(fixture.store.clone(), launcher)
+        .await
+        .unwrap();
+    restarted.reconcile(None).await.unwrap();
+    assert!(
+        writes.try_recv().is_err(),
+        "unknown radio turn must not be resent after worker restart"
+    );
+    restarted.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn production_reconcile_keeps_closed_worker_interrupt_unknown_without_resending() {
+    let fixture = tokio::task::spawn_blocking(Fixture::new).await.unwrap();
+    let scratch = tempfile::tempdir().unwrap();
+    let snapshot = radio_interrupt_snapshot(scratch.path());
+    seed_radio_interrupt(&fixture, &snapshot);
+    let (launcher, _writes) = scripted();
+    let mut registry = AccountRegistry::new(fixture.store.clone(), launcher)
+        .await
+        .unwrap();
+    registry.set_radio_clock_for_test(Arc::new(|| 1_000.0));
+    registry.start("default").await.unwrap();
+    registry.close_worker_for_test("default").await.unwrap();
+
+    registry.reconcile(None).await.unwrap();
+    let room = || {
+        let db = fixture.store.read().unwrap();
+        let raw: String = db
+            .query_row("SELECT record FROM runtime_rooms LIMIT 1", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        serde_json::from_str::<Value>(&raw).unwrap()
+    };
+    let unknown = room();
+    assert_eq!(unknown["radio"]["status"], "stopping");
+    assert_eq!(unknown["radio"]["active"]["interruptState"], "unknown");
+    let revision = unknown["radio"]["revision"].clone();
+    registry.reconcile(None).await.unwrap();
+    let replay = room();
+    assert_eq!(replay["radio"]["revision"], revision);
+    assert_eq!(replay["radio"]["active"]["interruptState"], "unknown");
+    drop(registry);
 }
 
 #[tokio::test]

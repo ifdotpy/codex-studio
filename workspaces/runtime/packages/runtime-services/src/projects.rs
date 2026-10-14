@@ -3,12 +3,14 @@
 use crate::event_write::{EventWriteError, python_json, python_strip, read_receipt, save_receipt};
 use crate::host_project_runtime::PreparedHost;
 use serde_json::{Value, json};
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 use studio_runtime_store::{
     ProjectsRepository, RuntimeStore, StoreError, SyncDocumentsRepository, sha256_hex,
 };
 use thiserror::Error;
+use unicode_casefold::UnicodeCaseFold;
 use uuid::Uuid;
 
 pub(crate) mod operations;
@@ -21,6 +23,8 @@ pub enum ProjectsError {
     Invalid(&'static str),
     #[error("conflict: {0}")]
     Conflict(&'static str),
+    #[error("bad request: {0}")]
+    BadRequest(&'static str),
     #[error("not implemented: requires {0}")]
     Requires(&'static str),
     #[error("invalid stored {table} record {id}")]
@@ -42,6 +46,218 @@ pub fn list(store: &RuntimeStore) -> Result<Value, ProjectsError> {
     Ok(json!({"items": items}))
 }
 
+/// Read this server's project-location metadata. A request for a paired server
+/// remains owned by the cross-server transport adapter.
+pub fn location_query(store: &RuntimeStore, query: &Value) -> Result<Value, ProjectsError> {
+    let project_id = query
+        .get("project")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty() && value.chars().count() <= 4096)
+        .ok_or(ProjectsError::BadRequest("Select an existing project"))?;
+    let server = query
+        .get("server")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty() && value.chars().count() <= 128)
+        .ok_or(ProjectsError::BadRequest("The server ID is invalid"))?;
+    let local_server_id = store.local_server_id()?;
+    let server_id = if server == "local" {
+        local_server_id.as_deref().ok_or(ProjectsError::BadRequest(
+            "The local server ID is unavailable",
+        ))?
+    } else {
+        server
+    };
+    if local_server_id.as_deref() != Some(server_id) {
+        return Err(ProjectsError::Requires(
+            "cross-server-driver/project-location-read",
+        ));
+    }
+    let project = {
+        let db = store.read()?;
+        ProjectsRepository::get(&db, project_id)?.map(|(_, value)| value)
+    }
+    .ok_or(ProjectsError::BadRequest("Select an existing project"))?;
+    if query.get("action").and_then(Value::as_str) == Some("matches") {
+        let origin = project
+            .get("locations")
+            .and_then(Value::as_array)
+            .and_then(|rows| {
+                rows.iter()
+                    .find_map(|row| row.get("gitOrigin").and_then(Value::as_str))
+            })
+            .map(str::to_owned)
+            .or_else(|| {
+                project
+                    .get("path")
+                    .and_then(Value::as_str)
+                    .filter(|path| !path.starts_with("project:"))
+                    .and_then(|path| git_origin(std::path::Path::new(path)))
+            });
+        let Some(origin) = origin else {
+            return Ok(json!({"matches":[]}));
+        };
+        let db = store.read()?;
+        let mut candidates = Vec::new();
+        let mut seen = BTreeSet::new();
+        for (id, candidate) in ProjectsRepository::list(&db)? {
+            let Some(path) = candidate
+                .get("path")
+                .and_then(Value::as_str)
+                .filter(|path| !path.starts_with("project:"))
+            else {
+                continue;
+            };
+            if seen.insert(path.to_owned()) {
+                candidates.push(json!({"projectId":id,"path":path,"name":candidate.get("name")}));
+            }
+        }
+        if let Some(cwd) = query
+            .get("path")
+            .and_then(Value::as_str)
+            .filter(|p| !p.is_empty())
+        {
+            let cwd = expand_home(cwd)
+                .canonicalize()
+                .map_err(|_| ProjectsError::BadRequest("This directory is unavailable"))?;
+            if !cwd.is_dir() {
+                return Err(ProjectsError::BadRequest("This directory is unavailable"));
+            }
+            let mut children = std::fs::read_dir(&cwd)
+                .map_err(|_| ProjectsError::BadRequest("This directory is unavailable"))?
+                .filter_map(Result::ok)
+                .filter_map(|entry| {
+                    let path = entry.path();
+                    (path.is_dir() && path.join(".git").exists()).then_some(path)
+                })
+                .collect::<Vec<_>>();
+            children.sort_by_key(|path| {
+                path.file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .case_fold()
+                    .collect::<String>()
+            });
+            children.truncate(50);
+            if cwd.join(".git").exists() {
+                children.insert(0, cwd.clone());
+            }
+            for path in children {
+                let text = path.to_string_lossy().into_owned();
+                if seen.insert(text.clone()) {
+                    candidates.push(json!({"projectId":text,"path":text,"name":path.file_name().map(|n|n.to_string_lossy().into_owned()).unwrap_or_default()}));
+                }
+            }
+        }
+        let matches = candidates
+            .into_iter()
+            .filter(|row| {
+                row["path"]
+                    .as_str()
+                    .and_then(|path| git_origin(Path::new(path)))
+                    .as_deref()
+                    == Some(origin.as_str())
+            })
+            .collect::<Vec<_>>();
+        return Ok(json!({"matches":matches}));
+    }
+    let path = query
+        .get("path")
+        .and_then(Value::as_str)
+        .filter(|path| !path.is_empty())
+        .or_else(|| {
+            project
+                .get("locations")
+                .and_then(Value::as_array)
+                .and_then(|rows| {
+                    rows.iter().find(|row| {
+                        row.get("serverId")
+                            .and_then(Value::as_str)
+                            .is_some_and(|id| id == server_id)
+                    })
+                })
+                .and_then(|row| row.get("path").and_then(Value::as_str))
+        })
+        .ok_or(ProjectsError::BadRequest(
+            "This server has no folder for the project",
+        ))?;
+    if path.chars().count() > 4096 {
+        return Err(ProjectsError::BadRequest("a folder path is invalid"));
+    }
+    let directory = std::path::Path::new(path)
+        .canonicalize()
+        .map_err(|_| ProjectsError::BadRequest("This directory is unavailable"))?;
+    if !directory.is_dir() {
+        return Err(ProjectsError::BadRequest("This directory is unavailable"));
+    }
+    let head = git_read(&directory, &["rev-parse", "--verify", "HEAD"])
+        .filter(|value| value.len() == 40 || value.len() == 64)
+        .map(|value| value[..8].to_owned());
+    Ok(json!({"gitHead":head,"gitOrigin":git_origin(&directory),"matches":[]}))
+}
+
+fn expand_home(path: &str) -> PathBuf {
+    if (path == "~" || path.starts_with("~/"))
+        && let Some(home) = std::env::var_os("HOME")
+    {
+        let mut expanded = PathBuf::from(home);
+        if path.len() > 2 {
+            expanded.push(&path[2..]);
+        }
+        return expanded;
+    }
+    PathBuf::from(path)
+}
+
+fn git_read(directory: &std::path::Path, args: &[&str]) -> Option<String> {
+    let cwd = directory.as_os_str();
+    let output = crate::bounded_child::run_without_git_environment(crate::bounded_child::Request {
+        program: std::ffi::OsStr::new("git"),
+        cwd,
+        args,
+        environment: &[("GIT_TERMINAL_PROMPT", "0"), ("GIT_CONFIG_NOSYSTEM", "1")],
+        input: None,
+        stdout_limit: 4096,
+        stderr_limit: 1024,
+        timeout: std::time::Duration::from_secs(10),
+    })
+    .ok()?;
+    if output.stdout.truncated {
+        return None;
+    }
+    Some(
+        String::from_utf8_lossy(&output.stdout.bytes)
+            .trim()
+            .to_owned(),
+    )
+}
+
+fn git_origin(directory: &std::path::Path) -> Option<String> {
+    let value = git_read(directory, &["config", "--get", "remote.origin.url"])?;
+    if value.is_empty() || value.chars().count() > 4096 {
+        return None;
+    }
+    if let Ok(url) = url::Url::parse(&value) {
+        if !["http", "https", "ssh", "git"].contains(&url.scheme()) {
+            return None;
+        }
+        let host = url.host_str()?.to_ascii_lowercase();
+        let repository = url
+            .path()
+            .trim_matches('/')
+            .strip_suffix(".git")
+            .unwrap_or(url.path().trim_matches('/'));
+        return (!repository.is_empty()).then(|| format!("{host}/{repository}"));
+    }
+    let (_, remote) = value.rsplit_once('@').unwrap_or(("", value.as_str()));
+    let (host, repository) = remote.split_once(':')?;
+    let repository = repository
+        .trim_matches('/')
+        .strip_suffix(".git")
+        .unwrap_or(repository.trim_matches('/'));
+    (!host.is_empty() && !repository.is_empty())
+        .then(|| format!("{}/{repository}", host.to_ascii_lowercase()))
+}
+
 pub fn write_dependency(body: &Value) -> Option<&'static str> {
     let action = body
         .get("action")
@@ -55,10 +271,6 @@ pub fn write_dependency(body: &Value) -> Option<&'static str> {
         Some("cross-server-driver/project-registration")
     } else if matches!(action, "add_location" | "remove_location") {
         Some("cross-server-driver/project-location-write")
-    } else if action == "set_worker_environment"
-        && body.get("environment").and_then(Value::as_str) == Some("linux")
-    {
-        Some("workspace-state/worker-environment")
     } else {
         None
     }
@@ -456,8 +668,8 @@ fn set_worker_environment(
         .filter(|environment| matches!(*environment, "host" | "linux"))
         .ok_or(ProjectsError::Invalid("worker environment is invalid"))?;
     if environment == "linux" {
-        return Err(ProjectsError::Requires(
-            "workspace-state/worker-environment",
+        return Err(ProjectsError::BadRequest(
+            "Choose a layr chat to run agents in the VM",
         ));
     }
     let path = project_key(body.get("path"), true)?;
