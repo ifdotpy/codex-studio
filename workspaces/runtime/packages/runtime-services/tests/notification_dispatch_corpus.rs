@@ -1037,7 +1037,10 @@ fn corpus(full: bool, runtime_effects: bool) {
         let actual =
             oracle.call(json!({"command":"snapshot","module":"notification_dispatch","root":rust}));
         if case["python_only_contract"] == true {
-            assert!(error.is_none(), "{id}: Python-only notification contract: {error:?}");
+            assert!(
+                error.is_none(),
+                "{id}: Python-only notification contract: {error:?}"
+            );
             report.push(json!({"id":id,"contract":"Python-only tool-turn waiter wake","differences":[],"error":null,
                 "seconds":{"seed":seeded,"apply":applied-seeded,"snapshot":started.elapsed().as_secs_f64()-applied}}));
             green += 1;
