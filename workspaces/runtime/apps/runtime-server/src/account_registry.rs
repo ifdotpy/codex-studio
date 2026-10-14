@@ -8,7 +8,7 @@ use std::{
     future::Future,
     pin::Pin,
     sync::{Arc, RwLock},
-    time::Duration,
+    time::{Duration, Instant},
 };
 use studio_runtime_process::provider_seam::{OpenOptions, ProviderTaskFactory, Shutdown};
 use studio_runtime_services::{
@@ -69,6 +69,8 @@ pub(crate) struct AccountRegistry {
     launcher: Arc<dyn AccountLauncher>,
     workers: BTreeMap<String, AccountHandle>,
     session_broker: AccountSessionBroker,
+    last_accepted_archive_tick: Option<Instant>,
+    accepted_archive_tick_enabled: bool,
     after_account: String,
     after_agent: BTreeMap<String, String>,
 }
@@ -495,12 +497,18 @@ impl AccountRegistry {
     ) -> Result<Self, WorkerError> {
         let bridge = StoreBridge::new(store.clone()).await?;
         bridge.set_monitor_dispatch_wake(monitor_dispatch_wake);
+        // The HTTP differential harness compares the synchronous work write
+        // boundary; the retry dispatcher has its own injected-clock tests.
+        let accepted_archive_tick_enabled =
+            std::env::var_os("STUDIO_TEST_DISABLE_ACCEPTED_ARCHIVE_TICK").is_none();
         Ok(Self {
             store,
             bridge,
             launcher,
             workers: BTreeMap::new(),
             session_broker,
+            last_accepted_archive_tick: None,
+            accepted_archive_tick_enabled,
             after_account: String::new(),
             after_agent: BTreeMap::new(),
         })
@@ -532,6 +540,29 @@ impl AccountRegistry {
     /// Startup and post-commit use the same persisted selection, so a crash
     /// between commit and notify cannot strand a queued event.
     pub async fn reconcile(&mut self, shutdown: Option<&Shutdown>) -> Result<(), WorkerError> {
+        let archive_tick_at = Instant::now();
+        if self.accepted_archive_tick_enabled
+            && studio_runtime_services::work_write::accepted_archive_tick_due(
+                self.last_accepted_archive_tick,
+                archive_tick_at,
+            )
+        {
+            self.last_accepted_archive_tick = Some(archive_tick_at);
+            let archive_store = self.store.clone();
+            let archive_now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs_f64();
+            tokio::task::spawn_blocking(move || {
+                studio_runtime_services::work_write::accepted_archive_tick(
+                    &archive_store,
+                    archive_now,
+                )
+            })
+            .await
+            .map_err(|_| WorkerError::TaskFailed)?
+            .map_err(|_| WorkerError::TaskFailed)?;
+        }
         let stopped = || shutdown.is_some_and(|stop| *stop.subscribe().borrow());
         let store = self.store.clone();
         let after_account = self.after_account.clone();
