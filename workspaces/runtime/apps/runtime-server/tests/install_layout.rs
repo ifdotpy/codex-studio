@@ -50,8 +50,31 @@ async fn installed_binary_uses_python_from_prefix_without_a_source_tree() {
         .map(|directory| directory.join("python3"))
         .find(|path| path.is_file())
         .expect("python3 is available in the build environment");
-    for name in ["codex_python.py", "codex_layout.py", "codex_cache_paths.py"] {
+    for name in [
+        "codex_python.py",
+        "codex_layout.py",
+        "codex_cache_paths.py",
+        "codex_progress_layout.py",
+    ] {
         fs::copy(source.join(name), scripts.join(name)).unwrap();
+    }
+    let skills = workspace.join(".agents/skills");
+    for name in [
+        "codex-orchestrator/SKILL.md",
+        "codex-orchestrator/references/native-role.md",
+        "codex-orchestrator/references/legacy-move-role.md",
+        "codex-subagent/SKILL.md",
+        "codex-subagent/references/native-role.md",
+    ] {
+        let target = skills.join(name);
+        fs::create_dir_all(target.parent().unwrap()).unwrap();
+        fs::copy(
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../../../.agents/skills")
+                .join(name),
+            target,
+        )
+        .unwrap();
     }
     fs::copy(
         source.join("../../../../../requirements.txt"),

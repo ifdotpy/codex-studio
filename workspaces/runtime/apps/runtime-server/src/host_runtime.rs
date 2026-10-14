@@ -33,6 +33,10 @@ const CLAUDE_BRIDGE_RELATIVE: &str = "workspaces/providers/apps/claude-bridge";
 pub(crate) struct InstallRoot(PathBuf);
 
 impl InstallRoot {
+    pub(crate) fn workspace_root(&self) -> &Path {
+        &self.0
+    }
+
     fn server_source(&self) -> PathBuf {
         let packaged = self.0.join("scripts");
         if packaged.join("codex_python.py").is_file() {
@@ -115,8 +119,16 @@ impl HostRuntime {
         )
         .await?;
         let catalog = state.model_catalog_handle();
+        let resource_root = install_root.workspace_root().to_owned();
+        let server_source = install_root.server_source();
         let resources = tokio::task::spawn_blocking(move || {
-            PreparationResources::bundled(String::new(), catalog, python)
+            PreparationResources::bundled_at(
+                String::new(),
+                catalog,
+                python,
+                resource_root,
+                server_source,
+            )
         })
         .await
         .map_err(|_| WorkerError::TaskFailed)??;
