@@ -167,6 +167,24 @@ class PortableTransfers(unittest.TestCase):
         self.assertEqual(self.agent()['accountHistory'][-1]['provider'], 'claude')
         self.t.copy_patch.target.copy_history.assert_not_called()
 
+    def test_a_claude_source_whose_login_changed_still_transfers_its_history(self):
+        # 2026-10-14: ~/.claude was signed in to another account, so claude-local was
+        # "changed" and the transfer of its chat stayed blocked. Reading local history is safe.
+        self.providers.update(default='claude', **{self.t.other_key: 'codex'})
+        self.t.set_agent(self.aid, provider='claude', model='sonnet', effort='high')
+        error = "This profile's account changed. Restore its original login or add a separate profile."
+        typed = self.rt.accounts.get
+        self.rt.accounts.get = lambda key: ({**typed(key), 'status': 'changed', 'error': error}
+                                            if key == 'default' else typed(key))
+        with self.assertRaisesRegex(ValueError, 'account changed'):
+            self.rt.connect('default')
+        op = self.submit()
+        self.finish(op)
+        self.assertEqual(self.agent()['provider'], 'codex')
+        # A new turn on the changed profile is still refused.
+        with self.assertRaisesRegex(ValueError, 'account changed'):
+            self.rt.connect('default')
+
     def test_claude_profiles_preserve_supported_model_and_pending_choice(self):
         self.providers['default'] = 'claude'
         self.t.set_agent(self.aid, provider='claude', model='sonnet', effort='high',

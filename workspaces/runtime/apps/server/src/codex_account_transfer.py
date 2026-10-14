@@ -831,7 +831,7 @@ class AccountTransfers:
             from codex_native_tools import account_reserved
             if account_reserved(rt, target) or account_reserved(rt, source_key):
                 raise RuntimeError('Waiting for the account tool catalog update')
-            source = rt.connect(source_key) if source_thread else None
+            source = rt.connect(source_key, history_read=True) if source_thread else None
             server = rt.connect(target)
             catalog = rt.catalog(target)
             resolved = self.destination_settings(snapshot, target, catalog)
@@ -1389,7 +1389,7 @@ class AccountTransfers:
         try:
             # Confirm that the native thread has no turns. A successful empty
             # page is sufficient; only the exact missing-rollout errors qualify.
-            verifier = rt.connect(source_account) if source_history_missing else server
+            verifier = rt.connect(source_account, history_read=True) if source_history_missing else server
             try:
                 native = verifier.call('thread/read', {'threadId':thread_id, 'includeTurns':False}, timeout=10)
                 thread = native.get('thread') if isinstance(native, dict) else None
@@ -1572,7 +1572,7 @@ class AccountTransfers:
                     proof_changed = True
                     empty_connection = None
                 else:
-                    empty_connection = self.rt.connect(source_key)
+                    empty_connection = self.rt.connect(source_key, history_read=True)
             else:
                 empty_connection = None
         if proof_changed:
@@ -1609,7 +1609,7 @@ class AccountTransfers:
                 return False
             return True
         assert before is not None
-        source = self.rt.connect(source_key)
+        source = self.rt.connect(source_key, history_read=True)
         after = source.call('thread/read', {'threadId': before['id'], 'includeTurns': False}, timeout=10)['thread']
         if (after.get('status', {}).get('type') not in {'idle', 'notLoaded', 'systemError'}
                 or not self.same_native_history(before, after)):
@@ -1696,7 +1696,7 @@ class AccountTransfers:
             source = None
             source_empty_proof = None
             if a.get('threadId'):
-                source = rt.connect(a.get('accountKey', 'default'))
+                source = rt.connect(a.get('accountKey', 'default'), history_read=True)
                 native, source_empty_proof = self.read_transfer_source(source, aid, a['threadId'], portable)
                 if source_empty_proof is not None:
                     # A prior exact thread/start receipt proves the source began
