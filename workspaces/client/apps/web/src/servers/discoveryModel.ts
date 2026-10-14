@@ -16,11 +16,13 @@ export type DiscoverySnapshot = {
   localLabel?: string;
   localOrigin?: string | null;
   autoPair: boolean;
+  autoUpdate: boolean;
   servers: DiscoveredServer[];
 };
 export type DiscoveryActions = {
   find: () => void;
   setAutoPair: (enabled: boolean) => void;
+  setAutoUpdate: (enabled: boolean) => void;
 };
 
 import type { ServerAccessState } from "./accessContract";
@@ -34,6 +36,8 @@ export function discoverySnapshot(
     localLabel: state.identity.label,
     localOrigin: state.identity.origin,
     autoPair: state.settings.autoPair,
+    // Updates from a paired server are on by default (docs/peer-updates.md).
+    autoUpdate: state.settings.autoUpdate ?? true,
     aliases: state.settings.aliases,
     servers: state.servers
       .filter(
