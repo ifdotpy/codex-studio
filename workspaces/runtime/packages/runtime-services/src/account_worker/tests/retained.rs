@@ -117,10 +117,7 @@ async fn actorless_account_read_only_allows_non_refreshing_voice_shape() {
     refresh.expected_scope = Some(port.scope().clone());
     refresh.method = Method::AccountRead;
     refresh.params = json!({"refreshToken":true});
-    assert_eq!(
-        port.request(refresh).await.unwrap_err(),
-        PortError::Invalid
-    );
+    assert_eq!(port.request(refresh).await.unwrap_err(), PortError::Invalid);
     assert!(peer.writes.try_recv().is_err());
     worker.shutdown().await.unwrap();
 }
