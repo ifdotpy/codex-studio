@@ -1074,8 +1074,10 @@ class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         self.rust_only()
         body = {"id": str(uuid.uuid4()), "cwd": str(self.backend.cwd), "prompt": "Task", "maxAgents": 64}
         self.post("/api/agents", body)
+        self.await_background_quiescence(body["id"])
         self.quiesce_fixture_agent(body["id"])
         variations = {**REVIEW_CORPUS["replayChanges"], "cwd": str(self.backend.root), "parent": self.agent_id}
+        self.await_background_quiescence(self.agent_id)
         for field, value in variations.items():
             with self.subTest(field=field):
                 before = self.snapshot_no_write()
