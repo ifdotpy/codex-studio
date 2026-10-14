@@ -196,8 +196,10 @@ class MutationSyncEnvelopeHTTPContract(TimedHTTPContractTest, unittest.TestCase)
         self.assertNotIn("_syncEntities", response.json())
         self.assertNotIn("_syncEntitiesAfter", response.json())
 
-    @unittest.skipUnless(os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"), "Rust named refusal")
-    def test_named_501_has_no_envelope(self) -> None:
+    @unittest.skipUnless(os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"), "Rust mutation failure")
+    def test_invalid_native_action_has_no_envelope(self) -> None:
+        # The native-action consumer is present; the unknown agent is rejected
+        # with a client error, whose body must never receive a success envelope.
         response = self.post(
             "/api/action",
             {
@@ -206,8 +208,7 @@ class MutationSyncEnvelopeHTTPContract(TimedHTTPContractTest, unittest.TestCase)
                 "request_id": "sync-envelope-native-action",
             },
         )
-        self.assertEqual(response.status, 501, response.body)
-        self.assertIn("Not implemented: requires ", response.json()["error"])
+        self.assertEqual(response.status, 400, response.body)
         self.assertNotIn("_syncEntities", response.json())
         self.assertNotIn("_syncEntitiesAfter", response.json())
 

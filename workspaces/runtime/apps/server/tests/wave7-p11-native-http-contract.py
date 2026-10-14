@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Native operation edges retain named refusals until their owner is connected."""
+"""Native operation edges preserve invalid-input refusals without writes."""
 from __future__ import annotations
 
 from test_isolation import isolate_supervisor_environment
@@ -58,18 +58,22 @@ class NativeHTTPContract(TimedHTTPContractTest, unittest.TestCase):
                 self.assertEqual(response.json(), {"id": self.ids[name], "repair": None})
             self.assertEqual(no_write_snapshot(self.backend.state), before)
 
-    def test_missing_consumers_refuse_without_writes(self):
+    def test_branch_validation_and_restore_dependency_refuse_without_writes(self):
+        # /api/branch has a Rust provider-session consumer now, and Python
+        # implements branch_conversation; a missing transcript item is 400.
+        # Restore still requires the unported thread-fork consumer on Rust.
         cases = [
-            ("/api/branch", {"agent": self.ids["empty"], "message_id": "missing", "id": "branch-request"}, "provider-session/thread-fork"),
-            ("/api/checkpoint/restore", {"agent": self.ids["empty"], "checkpoint": "missing", "expectedTree": "tree"}, "provider-session/thread-fork"),
+            ("/api/branch", {"agent": self.ids["empty"], "message_id": "missing", "id": "branch-request"}, 400),
+            ("/api/checkpoint/restore", {"agent": self.ids["empty"], "checkpoint": "missing", "expectedTree": "tree"}, 501),
         ]
-        for path, body, dependency in cases:
+        for path, body, expected_status in cases:
             with self.subTest(path=path, action=body.get("action")):
                 before = no_write_snapshot(self.backend.state)
                 response = self.post(path, body)
                 if os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"):
-                    self.assertEqual(response.status, 501, response.body)
-                    self.assertEqual(response.json(), {"error": "Not implemented: requires " + dependency})
+                    self.assertEqual(response.status, expected_status, response.body)
+                    if expected_status == 501:
+                        self.assertEqual(response.json(), {"error": "Not implemented: requires provider-session/thread-fork"})
                 else:
                     self.assertEqual(response.status, 400, response.body)
                 self.assertEqual(no_write_snapshot(self.backend.state), before)

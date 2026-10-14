@@ -77,14 +77,12 @@ class LifecycleHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             self.assertEqual(response.status, 400, response.body)
             self.assertEqual(no_write_snapshot(self.backend.state), before)
 
-    def test_missing_native_consumer_preserves_quiescent_state(self):
+    def test_native_action_for_missing_agent_preserves_quiescent_state(self):
+        # Native action is implemented; an unknown agent follows the Python
+        # owner's invalid-request path instead of reporting a missing consumer.
         before = no_write_snapshot(self.backend.state)
         response = self.post("/api/action", {"id": "missing-p10-agent", "action": "compact", "request_id": "p10-native"})
-        if os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"):
-            self.assertEqual(response.status, 501, response.body)
-            self.assertEqual(response.json(), {"error": "Not implemented: requires account-worker/native-action"})
-        else:
-            self.assertEqual(response.status, 400, response.body)
+        self.assertEqual(response.status, 400, response.body)
         self.assertEqual(no_write_snapshot(self.backend.state), before)
 
 

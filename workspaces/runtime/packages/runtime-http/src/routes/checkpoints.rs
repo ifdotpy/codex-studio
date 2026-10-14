@@ -45,11 +45,9 @@ pub(crate) async fn capture(
     let result = studio_runtime_process::blocking_pool::spawn_blocking(
         "runtime-http/routes/checkpoints",
         move || {
-            let snapshot = checkpoints::capture_context(&store, &body.agent)
-                .map_err(|error| map_error(error, "/api/checkpoint"))?;
+            let snapshot = checkpoints::capture_context(&store, &body.agent).map_err(map_error)?;
             let label = body.label.unwrap_or_else(|| "Checkpoint".to_owned());
-            let record = checkpoints::capture(&store, snapshot, &label)
-                .map_err(|error| map_error(error, "/api/checkpoint"))?;
+            let record = checkpoints::capture(&store, snapshot, &label).map_err(map_error)?;
             super::generated_json::<crate::generated::CheckpointCaptureResponse>(record)
         },
     )
@@ -67,9 +65,8 @@ pub(crate) async fn preview(
         "runtime-http/routes/checkpoints",
         move || {
             let context = checkpoints::preview_context(&store, &body.agent, &body.checkpoint)
-                .map_err(|error| map_error(error, "/api/checkpoint/preview"))?;
-            let value = checkpoints::preview(&store, context)
-                .map_err(|error| map_error(error, "/api/checkpoint/preview"))?;
+                .map_err(map_error)?;
+            let value = checkpoints::preview(&store, context).map_err(map_error)?;
             super::generated_json::<crate::generated::CheckpointPreviewResponse>(value)
         },
     )
@@ -87,7 +84,7 @@ pub(crate) async fn restore(
     )
 }
 
-fn map_error(error: CheckpointsError, path: &'static str) -> ApiError {
+fn map_error(error: CheckpointsError) -> ApiError {
     match error {
         CheckpointsError::UnknownAgent => {
             ApiError::new(StatusCode::BAD_REQUEST, "Unknown managed agent")
@@ -102,10 +99,10 @@ fn map_error(error: CheckpointsError, path: &'static str) -> ApiError {
         CheckpointsError::DeletedAgent => {
             ApiError::new(StatusCode::BAD_REQUEST, "This agent was deleted")
         }
-        CheckpointsError::ExecutionWorkspace => {
-            dependency_unavailable("POST", path, &IMAGE_DEPENDENCIES)
-                .unwrap_or_else(|_| ApiError::internal())
-        }
+        CheckpointsError::ExecutionWorkspace => ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "Studio Git checkpoints are unavailable for image workspaces",
+        ),
         CheckpointsError::ActivityChanged => ApiError::new(
             StatusCode::BAD_REQUEST,
             "Workspace activity changed before checkpoint capture",

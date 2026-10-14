@@ -204,6 +204,48 @@ async fn native_action(
         action,
         context,
     };
+    // Invalid local state must be rejected before checking whether the provider
+    // request consumer is connected, matching Python's read-only preconditions.
+    let preflight_store = state.store.clone().ok_or_else(ApiError::internal)?;
+    let preflight_request = request.clone();
+    studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-http/routes/agent_management",
+        move || {
+            let connection = preflight_store.read().map_err(ApiError::stored)?;
+            let agent = AgentRepository::get(
+                &connection,
+                &AgentId::from(preflight_request.agent.as_str()),
+            )
+            .map_err(ApiError::stored)?
+            .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "Unknown managed agent"))?;
+            let agent = agent.value();
+            if agent
+                .get("threadId")
+                .and_then(Value::as_str)
+                .is_none_or(str::is_empty)
+            {
+                return Err(ApiError::new(
+                    StatusCode::BAD_REQUEST,
+                    "This agent has no active conversation",
+                ));
+            }
+            if agent.get("autoWake") != Some(&Value::Bool(true))
+                || agent.get("inFlight") == Some(&Value::Bool(true))
+                || matches!(
+                    agent.get("status").and_then(Value::as_str),
+                    Some("queued" | "starting" | "running" | "approval")
+                )
+            {
+                return Err(ApiError::new(
+                    StatusCode::BAD_REQUEST,
+                    "This agent is not ready for a native action",
+                ));
+            }
+            Ok::<(), ApiError>(())
+        },
+    )
+    .await
+    .map_err(|_| ApiError::internal())??;
     let repair = repair.map(|Extension(port)| port).ok_or_else(|| {
         ApiError::new(
             StatusCode::NOT_IMPLEMENTED,

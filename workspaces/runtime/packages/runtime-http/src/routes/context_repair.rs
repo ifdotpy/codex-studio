@@ -29,6 +29,11 @@ async fn repair(
     let result = studio_runtime_process::blocking_pool::spawn_blocking(
         "runtime-http/routes/context_repair",
         move || {
+            match context_repair::repair_idle(&store, &id) {
+                Ok(result) => return Ok(result),
+                Err(RepairError::RewriteUnavailable) => {}
+                Err(error) => return Err(error),
+            }
             let driver = driver.ok_or(RepairError::AccountSession)?;
             let broker = broker.ok_or(RepairError::AccountSession)?;
             let connection = store.read()?;
