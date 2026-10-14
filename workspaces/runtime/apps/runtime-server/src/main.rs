@@ -322,6 +322,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 monitor_runtime.dispatch_wake_handle(),
                 Arc::clone(&monitor_wake),
                 Arc::clone(&account_session),
+                state.voice_request_port_handle(),
             ),
         );
     if let Err(error) = studio_runtime_services::agent_lifecycle_runtime::LifecyclePorts::committed(

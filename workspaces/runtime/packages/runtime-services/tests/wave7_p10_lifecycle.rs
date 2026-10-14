@@ -217,6 +217,10 @@ impl InterruptFixture {
     }
 }
 impl LifecyclePorts for InterruptFixture {
+    fn stage_voice_delete(&self, _: &Transaction<'_>, _: &str) -> Result<(), ManagementError> {
+        Ok(())
+    }
+
     fn committed(&self) -> Result<(), ManagementError> {
         Ok(())
     }
@@ -553,6 +557,7 @@ fn production_interrupt_is_durable_post_commit_and_retry_coalesces_after_rollbac
                 Arc::new(Notify::new()),
                 Arc::new(Notify::new()),
                 broker.clone(),
+                None,
             );
             let action: Action = serde_json::from_value(case["action"].clone()).expect("action");
             assert!(
@@ -644,6 +649,7 @@ fn production_child_notification_matches_python_corpus() {
         Arc::new(Notify::new()),
         Arc::new(Notify::new()),
         Arc::new(NoBroker),
+        None,
     );
     let action: Action = serde_json::from_value(case["action"].clone()).expect("action");
     assert_eq!(
@@ -731,6 +737,7 @@ fn production_restart_scan_settles_durable_deleted_agent_state() {
         Arc::new(Notify::new()),
         Arc::new(Notify::new()),
         Arc::new(NoBroker),
+        None,
     );
     ports.committed().expect("restart reconciliation");
     let settled_state = state(&store);
@@ -746,6 +753,168 @@ fn production_restart_scan_settles_durable_deleted_agent_state() {
     assert_eq!(settled["activity"], Value::Null);
     assert_eq!(settled["activeTools"], json!([]));
     assert_eq!(settled["startAttempt"]["activeAtReservation"], false);
+}
+
+#[tokio::test]
+async fn composed_delete_stages_voice_sessions_before_rows_are_removed_and_stops_after_commit() {
+    use studio_runtime_services::voice_runtime::{
+        Method, VoiceConnectionScope, VoiceFuture, VoiceReply, VoiceRequestPort,
+        VoiceRequestReceipt, VoiceWriteCertainty,
+    };
+
+    struct RecordingVoice {
+        store: Arc<RuntimeStore>,
+        calls: Mutex<Vec<String>>,
+        dispatched_after_commit: Mutex<Vec<bool>>,
+        called: Notify,
+    }
+    impl VoiceRequestPort for RecordingVoice {
+        fn prepare<'a>(
+            &'a self,
+            _: &'a str,
+            _: &'a str,
+            _: &'a str,
+            _: &'a str,
+            _: i64,
+        ) -> VoiceFuture<'a, Result<VoiceConnectionScope, VoiceWriteCertainty>> {
+            Box::pin(async { Err(VoiceWriteCertainty::NotSent) })
+        }
+
+        fn request<'a>(
+            &'a self,
+            _: VoiceConnectionScope,
+            operation_id: String,
+            _: Method,
+            _: Value,
+            _: std::time::Instant,
+        ) -> VoiceFuture<'a, VoiceRequestReceipt> {
+            let deleted = self
+                .store
+                .read()
+                .and_then(|db| {
+                    db.query_row(
+                        "SELECT COUNT(*) FROM voice_sessions WHERE id='delete-voice'",
+                        [],
+                        |row| row.get::<_, i64>(0),
+                    )
+                    .map_err(studio_runtime_store::StoreError::from)
+                })
+                .is_ok_and(|count| count == 0);
+            self.dispatched_after_commit
+                .lock()
+                .expect("dispatched lock")
+                .push(deleted);
+            self.calls.lock().expect("calls lock").push(operation_id);
+            self.called.notify_one();
+            Box::pin(async {
+                VoiceRequestReceipt {
+                    certainty: VoiceWriteCertainty::Written,
+                }
+            })
+        }
+
+        fn reply<'a>(
+            &'a self,
+            _: VoiceConnectionScope,
+            _: String,
+            _: VoiceReply,
+            _: std::time::Instant,
+        ) -> VoiceFuture<'a, VoiceRequestReceipt> {
+            Box::pin(async {
+                VoiceRequestReceipt {
+                    certainty: VoiceWriteCertainty::NotSent,
+                }
+            })
+        }
+    }
+
+    struct NoBroker;
+    impl AccountSessionPort for NoBroker {}
+
+    let case = cases()
+        .into_iter()
+        .find(|case| case["name"] == "delete")
+        .expect("Python delete case");
+    let root = tempfile::tempdir().expect("root");
+    template(root.path());
+    let store = Arc::new(RuntimeStore::open(Some(root.path())).expect("open"));
+    seed(
+        &store,
+        serde_json::from_value(case["records"].clone()).expect("Python rows"),
+    );
+    store
+        .transaction(|tx| {
+            tx.execute(
+                "UPDATE runtime_agents SET record=json_set(record,'$.threadId','voice-thread','$.accountKey','voice-account') WHERE id='lead'",
+                [],
+            )?;
+            tx.execute(
+                "INSERT INTO voice_sessions(id,agent,created,native_thread,account_key,connection_id,state) \
+                 VALUES('delete-voice','lead',1,'voice-thread','voice-account','7','connecting')",
+                [],
+            )?;
+            Ok(())
+        })
+        .expect("voice row seed");
+    let voice = Arc::new(RecordingVoice {
+        store: Arc::clone(&store),
+        calls: Mutex::new(Vec::new()),
+        dispatched_after_commit: Mutex::new(Vec::new()),
+        called: Notify::new(),
+    });
+    let voice_port: Arc<dyn VoiceRequestPort> = voice.clone();
+    let ports = ProductionLifecyclePorts::new(
+        Arc::clone(&store),
+        Arc::new(Notify::new()),
+        Arc::new(Notify::new()),
+        Arc::new(NoBroker),
+        Some(voice_port),
+    );
+
+    ports
+        .execute(
+            &Action::Delete {
+                target: "lead".to_owned(),
+            },
+            case["now"].as_f64().expect("delete timestamp"),
+        )
+        .expect("delete commits and dispatches voice stop");
+    tokio::time::timeout(std::time::Duration::from_secs(2), voice.called.notified())
+        .await
+        .expect("post-commit voice stop dispatched");
+
+    assert_eq!(
+        voice.calls.lock().expect("calls lock").as_slice(),
+        ["voice:delete-stop:delete-voice"]
+    );
+    assert_eq!(
+        voice
+            .dispatched_after_commit
+            .lock()
+            .expect("dispatch boundary lock")
+            .as_slice(),
+        [true]
+    );
+    let reader = store.read().expect("read committed delete");
+    let saved: String = reader
+        .query_row(
+            "SELECT result FROM runtime_operation_receipts WHERE id LIKE 'agent-delete-voice:lead:%'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("durable voice deletion intent");
+    let saved: Value = serde_json::from_str(&saved).expect("intent JSON");
+    assert_eq!(saved["voiceEndSessions"][0]["sessionId"], "delete-voice");
+    assert_eq!(
+        reader
+            .query_row(
+                "SELECT COUNT(*) FROM voice_sessions WHERE agent='lead'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .expect("voice rows deleted"),
+        0
+    );
 }
 
 #[test]
@@ -778,6 +947,7 @@ fn production_interrupt_requires_in_flight_active_turn() {
         Arc::new(Notify::new()),
         Arc::new(Notify::new()),
         Arc::new(NoBroker),
+        None,
     );
     let action: Action = serde_json::from_value(case["action"].clone()).expect("action");
     ports
@@ -847,6 +1017,7 @@ fn production_unknown_interrupt_is_never_resent_on_repeated_stop() {
         Arc::new(Notify::new()),
         Arc::new(Notify::new()),
         broker.clone(),
+        None,
     );
     let action: Action = serde_json::from_value(case["action"].clone()).expect("action");
     ports

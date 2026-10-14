@@ -373,13 +373,14 @@ impl ManagementSnapshot {
         Ok(())
     }
     fn refuse_live(&self, agent: &Agent) -> Result<(), ManagementError> {
-        self.stop_effects(agent, &mut Vec::new(), false)
+        self.stop_effects(agent, &mut Vec::new(), false, false)
     }
     fn stop_effects(
         &self,
         agent: &Agent,
         effects: &mut Vec<LifecycleEffectKind>,
         live: bool,
+        deleting: bool,
     ) -> Result<(), ManagementError> {
         let mut stage = |kind: LifecycleEffectKind| {
             if !live {
@@ -447,7 +448,8 @@ impl ManagementSnapshot {
         }
         if self.voice_sessions.iter().any(|session| {
             session.agent == agent.id() && session.state.is_some() && session.ended.is_none()
-        }) {
+        }) && (!deleting || !live)
+        {
             return Err(ManagementError::Unavailable("voice-driver/agent-stop"));
         }
         Ok(())
@@ -715,7 +717,7 @@ fn stop(
     let mut required = BTreeMap::new();
     for agent in &agents {
         let mut effects = Vec::new();
-        snapshot.stop_effects(agent, &mut effects, live)?;
+        snapshot.stop_effects(agent, &mut effects, live, delete)?;
         if delete {
             workspace_dependency(agent)?;
             // Python only schedules image cleanup for non-removed workspaces

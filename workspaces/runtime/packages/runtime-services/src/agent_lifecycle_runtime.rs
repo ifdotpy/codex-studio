@@ -80,6 +80,29 @@ impl LifecycleEffect {
 pub trait LifecyclePorts: Send + Sync {
     fn stage(&self, tx: &Transaction<'_>, effect: &LifecycleEffect) -> Result<(), ManagementError>;
 
+    /// Save the provider stop identities before delete removes voice-session
+    /// rows. Implementations dispatch them only after the transaction commits.
+    fn stage_voice_delete(
+        &self,
+        tx: &Transaction<'_>,
+        agent_id: &str,
+    ) -> Result<(), ManagementError> {
+        let has_sessions = tx
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM voice_sessions \
+             WHERE agent=?1 AND ended IS NULL AND native_thread IS NOT NULL \
+             AND native_thread != '' AND connection_id IS NOT NULL AND connection_id != '')",
+                [agent_id],
+                |row| row.get::<_, bool>(0),
+            )
+            .map_err(studio_runtime_store::StoreError::from)?;
+        if has_sessions {
+            Err(ManagementError::Unavailable("voice-driver/agent-stop"))
+        } else {
+            Ok(())
+        }
+    }
+
     /// Wake the retained owners to drain their committed effects. This is not
     /// another Stop command and must not increment epochs or resend Unknown IO.
     fn committed(&self) -> Result<(), ManagementError>;

@@ -484,6 +484,74 @@ fn delete_voice_stop_intent_is_staged_before_voice_rows_are_removed() {
     assert_eq!(result["voiceEndSessions"][0]["connectionId"], "7");
 }
 
+#[tokio::test]
+async fn eight_not_sent_delete_stops_leave_the_intent_durable_and_pending() {
+    let (_root, store) = seeded_store();
+    store
+        .transaction_with_error(|transaction| -> Result<(), voice::provider::VoiceProviderError> {
+            transaction.execute(
+                "INSERT INTO voice_sessions(id,agent,created,native_thread,account_key,connection_id,state) \
+                 VALUES('delete-retry-session','agent',1,'thread','account','7','ready')",
+                [],
+            )?;
+            voice::provider::stage_delete_sessions(transaction, "agent")?;
+            transaction.execute("DELETE FROM voice_sessions WHERE agent='agent'", [])?;
+            Ok(())
+        })
+        .expect("stage voice stop before removing its session row");
+    let store = Arc::new(store);
+    let provider = Arc::new(ReceiptProvider {
+        certainty: VoiceWriteCertainty::NotSent,
+        calls: Mutex::new(Vec::new()),
+    });
+    let intent_id = "agent-delete-voice:agent:0".to_owned();
+
+    for _ in 0..8 {
+        let intent = voice::provider::pending_delete_intents(&store)
+            .expect("load pending durable stop")
+            .into_iter()
+            .find(|intent| intent.id == intent_id)
+            .expect("NotSent keeps the delete intent pending");
+        assert_eq!(intent.sessions.len(), 1);
+        voice::provider::end_deleted_sessions_tracked(
+            Arc::clone(&store),
+            Arc::clone(&provider) as Arc<dyn VoiceProviderPort>,
+            intent.id,
+            intent.sessions,
+            10.0,
+        )
+        .await
+        .expect("persist each proven-unsent result for retry");
+    }
+
+    let still_pending = voice::provider::pending_delete_intents(&store)
+        .expect("reload durable retry")
+        .into_iter()
+        .find(|intent| intent.id == intent_id)
+        .expect("retry cap leaves the intent for a later startup/lifecycle pass");
+    assert_eq!(still_pending.sessions.len(), 1);
+    assert_eq!(still_pending.sessions[0].session_id, "delete-retry-session");
+    let connection = store.read().expect("read persisted retry state");
+    let raw: String = connection
+        .query_row(
+            "SELECT result FROM runtime_operation_receipts WHERE id=?1",
+            [&intent_id],
+            |row| row.get(0),
+        )
+        .expect("delete intent remains in the receipt table");
+    let result: serde_json::Value = serde_json::from_str(&raw).expect("valid receipt");
+    assert_eq!(
+        result["voiceEndResults"]["delete-retry-session"],
+        "not_sent"
+    );
+    let calls = provider.calls.lock().expect("provider call log");
+    assert_eq!(calls.len(), 8);
+    assert!(calls.iter().all(|(operation, method)| {
+        operation == "voice:delete-stop:delete-retry-session"
+            && *method == Method::ThreadRealtimeStop
+    }));
+}
+
 fn table_rows(connection: &rusqlite::Connection, table: &str, order: &str) -> serde_json::Value {
     let mut statement = connection
         .prepare(&format!("SELECT * FROM {table} ORDER BY {order}"))

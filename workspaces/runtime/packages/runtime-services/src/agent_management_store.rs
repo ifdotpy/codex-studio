@@ -193,18 +193,25 @@ fn execute_decision(
     for agent in &decision.cancel_pending {
         repository::cancel_pending(transaction, agent)?;
     }
+    if let Some(ports) = ports {
+        for effect in &decision.effects {
+            ports.stage(transaction, effect)?;
+        }
+    }
     if matches!(action, Action::Delete { .. }) {
         let deleted = decision.result["deleted"]
             .as_array()
             .ok_or(ManagementError::Invalid("Invalid deletion decision"))?;
         for agent in deleted.iter().filter_map(Value::as_str) {
+            if let Some(ports) = ports {
+                // Save exact provider/session identity before deleting the
+                // voice rows; committed() dispatches this durable intent later.
+                ports.stage_voice_delete(transaction, agent)?;
+            }
             studio_runtime_store::VoiceRepository::delete_agent(transaction, agent)?;
         }
     }
-    if let Some(ports) = ports {
-        for effect in &decision.effects {
-            ports.stage(transaction, effect)?;
-        }
+    if ports.is_some() {
         // An adapter cannot resume or replace an agent stopped by this action.
         for write in &decision.writes {
             if write.table != "runtime_agents" {

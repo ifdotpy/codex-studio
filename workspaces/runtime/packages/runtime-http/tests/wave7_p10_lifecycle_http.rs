@@ -142,6 +142,7 @@ async fn production_lifecycle_bundle_interrupts_active_turn_through_http_route()
         Arc::new(Notify::new()),
         Arc::new(Notify::new()),
         broker.clone(),
+        None,
     ));
     let state = HttpState::new(
         "fixture-token".into(),

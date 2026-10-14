@@ -220,6 +220,102 @@ pub fn stage_delete_sessions(
     })
 }
 
+/// Load durable agent-deletion voice-stop intents for post-commit delivery or
+/// restart recovery. The receipt identity and signature are checked before any
+/// provider request can be constructed.
+pub fn pending_delete_intents(
+    store: &RuntimeStore,
+) -> Result<Vec<VoiceDeleteIntent>, VoiceProviderError> {
+    let connection = store.read()?;
+    let mut statement = connection.prepare(
+        "SELECT id,signature,result FROM runtime_operation_receipts \
+         WHERE id >= 'agent-delete-voice:' AND id < 'agent-delete-voice;' ORDER BY id",
+    )?;
+    let rows = statement.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+        ))
+    })?;
+    let mut intents = Vec::new();
+    for row in rows {
+        let (id, signature, raw) = row?;
+        let result: Value =
+            serde_json::from_str(&raw).map_err(|_| VoiceProviderError::ContextChanged)?;
+        let agent_id = result
+            .get("agent")
+            .and_then(Value::as_str)
+            .filter(|agent| !agent.is_empty())
+            .ok_or(VoiceProviderError::ContextChanged)?;
+        let epoch = result
+            .get("epoch")
+            .and_then(Value::as_i64)
+            .filter(|epoch| *epoch >= 0)
+            .ok_or(VoiceProviderError::ContextChanged)?;
+        if signature != DELETE_VOICE_RECEIPT_SIGNATURE
+            || id != format!("agent-delete-voice:{agent_id}:{epoch}")
+        {
+            return Err(VoiceProviderError::ContextChanged);
+        }
+        let sessions: Vec<VoiceDeleteSession> = serde_json::from_value(
+            result
+                .get("voiceEndSessions")
+                .cloned()
+                .ok_or(VoiceProviderError::ContextChanged)?,
+        )
+        .map_err(|_| VoiceProviderError::ContextChanged)?;
+        if sessions
+            .iter()
+            .any(|session| session.agent_id != agent_id || session.epoch != epoch)
+        {
+            return Err(VoiceProviderError::ContextChanged);
+        }
+        let sessions = pending_voice_delete_sessions(
+            sessions,
+            result.get("voiceEndResults").and_then(Value::as_object),
+        )?;
+        intents.push(VoiceDeleteIntent {
+            id,
+            agent_id: agent_id.to_owned(),
+            epoch,
+            sessions,
+        });
+    }
+    Ok(intents)
+}
+
+fn pending_voice_delete_sessions(
+    sessions: Vec<VoiceDeleteSession>,
+    delivered: Option<&serde_json::Map<String, Value>>,
+) -> Result<Vec<VoiceDeleteSession>, VoiceProviderError> {
+    if let Some(delivered) = delivered {
+        for (session_id, status) in delivered {
+            if !sessions
+                .iter()
+                .any(|session| &session.session_id == session_id)
+                || !matches!(
+                    status.as_str(),
+                    Some("written" | "unknown" | "rejected" | "not_sent")
+                )
+            {
+                return Err(VoiceProviderError::ContextChanged);
+            }
+        }
+    }
+    Ok(sessions
+        .into_iter()
+        .filter(|session| {
+            matches!(
+                delivered
+                    .and_then(|results| results.get(&session.session_id))
+                    .and_then(Value::as_str),
+                None | Some("not_sent")
+            )
+        })
+        .collect())
+}
+
 /// Stop sessions captured by `capture_delete_sessions` after the deletion
 /// transaction commits. Stable operation identities let the broker replay a
 /// saved result and keep Unknown outcomes from being resent.
@@ -273,6 +369,64 @@ pub async fn end_deleted_sessions(
         );
     }
     Ok(receipts)
+}
+
+/// Deliver deletion stops while recording each receipt's certainty. Missing
+/// entries remain retryable after a crash; a proven NotSent can retry, while
+/// Written, Unknown, and Rejected are terminal for this operation identity.
+pub async fn end_deleted_sessions_tracked(
+    store: std::sync::Arc<RuntimeStore>,
+    provider: std::sync::Arc<dyn VoiceProviderPort>,
+    deletion_intent_id: String,
+    sessions: Vec<VoiceDeleteSession>,
+    now: f64,
+) -> Result<(), VoiceProviderError> {
+    for session in sessions {
+        let session_id = session.session_id.clone();
+        let receipts = end_deleted_sessions(
+            std::sync::Arc::clone(&provider),
+            deletion_intent_id.clone(),
+            vec![session],
+            now,
+        )
+        .await?;
+        let certainty = receipts
+            .first()
+            .map(|receipt| receipt.certainty)
+            .ok_or(VoiceProviderError::ContextChanged)?;
+        let status = match certainty {
+            VoiceWriteCertainty::Written => "written",
+            VoiceWriteCertainty::NotSent => "not_sent",
+            VoiceWriteCertainty::Unknown => "unknown",
+            VoiceWriteCertainty::Rejected => "rejected",
+        };
+        store.transaction_with_error(|tx| -> Result<(), VoiceProviderError> {
+            let mut result: Value = serde_json::from_str(&tx.query_row(
+                "SELECT result FROM runtime_operation_receipts WHERE id=?1 AND signature=?2",
+                rusqlite::params![deletion_intent_id, DELETE_VOICE_RECEIPT_SIGNATURE],
+                |row| row.get::<_, String>(0),
+            )?)
+            .map_err(|_| VoiceProviderError::ContextChanged)?;
+            let results = result
+                .as_object_mut()
+                .ok_or(VoiceProviderError::ContextChanged)?
+                .entry("voiceEndResults")
+                .or_insert_with(|| json!({}))
+                .as_object_mut()
+                .ok_or(VoiceProviderError::ContextChanged)?;
+            results.insert(session_id.clone(), Value::String(status.to_owned()));
+            tx.execute(
+                "UPDATE runtime_operation_receipts SET result=?2 WHERE id=?1 AND signature=?3",
+                rusqlite::params![
+                    deletion_intent_id,
+                    result.to_string(),
+                    DELETE_VOICE_RECEIPT_SIGNATURE
+                ],
+            )?;
+            Ok(())
+        })?;
+    }
+    Ok(())
 }
 
 /// Stop all current account/thread voice sessions for an agent. Use this for
@@ -2006,6 +2160,39 @@ mod tests {
         );
         drop(held);
         same_rx.await.expect("same-session guard releases");
+    }
+
+    #[test]
+    fn completed_delete_stops_are_not_requeued_but_not_sent_stops_are() {
+        let sessions = ["written", "unknown", "rejected", "not-sent", "pending"]
+            .into_iter()
+            .map(|session_id| VoiceDeleteSession {
+                session_id: session_id.to_owned(),
+                agent_id: "agent".to_owned(),
+                epoch: 3,
+                account_key: "account".to_owned(),
+                thread_id: "thread".to_owned(),
+                connection_id: "connection".to_owned(),
+                generation: 1,
+            })
+            .collect::<Vec<_>>();
+        let delivered = serde_json::from_value::<serde_json::Map<String, Value>>(json!({
+            "written": "written",
+            "unknown": "unknown",
+            "rejected": "rejected",
+            "not-sent": "not_sent",
+        }))
+        .expect("valid delivery result map");
+
+        let pending = pending_voice_delete_sessions(sessions, Some(&delivered))
+            .expect("valid saved outcomes");
+        assert_eq!(
+            pending
+                .iter()
+                .map(|session| session.session_id.as_str())
+                .collect::<Vec<_>>(),
+            ["not-sent", "pending"]
+        );
     }
 
     #[test]

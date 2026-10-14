@@ -38,6 +38,7 @@ use crate::{
 };
 
 const INTERRUPT_TIMEOUT: Duration = Duration::from_secs(10);
+const VOICE_DELETE_RETRY_ATTEMPTS: usize = 8;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum InterruptWriteResult {
@@ -64,7 +65,9 @@ pub struct ProductionLifecyclePorts {
     monitor_wake: Arc<Notify>,
     lifecycle_wake: Arc<Notify>,
     interrupt_broker: Arc<dyn AccountSessionPort>,
+    voice_provider: Option<Arc<dyn crate::voice_runtime::VoiceRequestPort>>,
     prepared: Mutex<Vec<InterruptRequest>>,
+    voice_dispatching: Arc<Mutex<HashSet<String>>>,
 }
 
 impl ProductionLifecyclePorts {
@@ -73,6 +76,7 @@ impl ProductionLifecyclePorts {
         monitor_wake: Arc<Notify>,
         lifecycle_wake: Arc<Notify>,
         interrupt_broker: Arc<dyn AccountSessionPort>,
+        voice_provider: Option<Arc<dyn crate::voice_runtime::VoiceRequestPort>>,
     ) -> Self {
         let ports = Self {
             store,
@@ -80,7 +84,9 @@ impl ProductionLifecyclePorts {
             monitor_wake,
             lifecycle_wake,
             interrupt_broker,
+            voice_provider,
             prepared: Mutex::new(Vec::new()),
+            voice_dispatching: Arc::new(Mutex::new(HashSet::new())),
         };
         // Startup callers invoke committed() to reconcile durable tombstones;
         // execute() also retries reconciliation before accepting a new action.
@@ -365,16 +371,115 @@ impl LifecyclePorts for ProductionLifecyclePorts {
         }
     }
 
+    fn stage_voice_delete(
+        &self,
+        tx: &Transaction<'_>,
+        agent_id: &str,
+    ) -> Result<(), ManagementError> {
+        let intent = crate::voice::provider::stage_delete_sessions(tx, agent_id)
+            .map_err(|_| ManagementError::Invalid("Invalid voice deletion intent"))?;
+        if !intent.sessions.is_empty() && self.voice_provider.is_none() {
+            return Err(ManagementError::Unavailable("voice-driver/agent-stop"));
+        }
+        Ok(())
+    }
+
     fn committed(&self) -> Result<(), ManagementError> {
         self.monitor_wake.notify_one();
         self.lifecycle_wake.notify_one();
         self.reconcile_deleted_tombstones()?;
         self.dispatch_prepared()?;
         self.reconcile_deleted_tombstones()?;
+        self.dispatch_deleted_voice_sessions()?;
         crate::workspace_cleanup_runtime::reconcile_pending_cleanup(&self.store)
             .map_err(|_| ManagementError::Unavailable("workspace-state/agent-lifecycle"))?;
         Ok(())
     }
+}
+
+impl ProductionLifecyclePorts {
+    fn dispatch_deleted_voice_sessions(&self) -> Result<(), ManagementError> {
+        let intents = crate::voice::provider::pending_delete_intents(&self.store)
+            .map_err(|_| ManagementError::Invalid("Invalid voice deletion intent"))?;
+        if intents.is_empty() {
+            return Ok(());
+        }
+        let Some(provider) = self.voice_provider.clone() else {
+            return if intents.iter().all(|intent| intent.sessions.is_empty()) {
+                Ok(())
+            } else {
+                Err(ManagementError::Unavailable("voice-driver/agent-stop"))
+            };
+        };
+        let handle = tokio::runtime::Handle::try_current()
+            .map_err(|_| ManagementError::Unavailable("voice-driver/agent-stop"))?;
+        for intent in intents {
+            if intent.sessions.is_empty() {
+                continue;
+            }
+            let already_dispatching = !self
+                .voice_dispatching
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .insert(intent.id.clone());
+            if already_dispatching {
+                continue;
+            }
+            let provider = Arc::clone(&provider);
+            let store = Arc::clone(&self.store);
+            let dispatching = Arc::clone(&self.voice_dispatching);
+            handle.spawn(async move {
+                // A checkpointed worker NotSent currently replays without a
+                // transport send. Broker task 850207d8 enables safe same-call
+                // retry; keep this receipt pending until that broker lands.
+                for attempt in 0..VOICE_DELETE_RETRY_ATTEMPTS {
+                    let pending = match crate::voice::provider::pending_delete_intents(&store) {
+                        Ok(intents) => intents
+                            .into_iter()
+                            .find(|pending| pending.id == intent.id)
+                            .filter(|pending| !pending.sessions.is_empty()),
+                        Err(error) => {
+                            eprintln!("deleted voice sessions remain pending: {error}");
+                            if attempt + 1 < VOICE_DELETE_RETRY_ATTEMPTS {
+                                tokio::time::sleep(voice_delete_retry_delay(attempt)).await;
+                            }
+                            continue;
+                        }
+                    };
+                    let Some(pending) = pending else {
+                        break;
+                    };
+                    let now = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|duration| duration.as_secs_f64())
+                        .unwrap_or(0.0);
+                    if let Err(error) = crate::voice::provider::end_deleted_sessions_tracked(
+                        Arc::clone(&store),
+                        Arc::clone(&provider),
+                        pending.id,
+                        pending.sessions,
+                        now,
+                    )
+                    .await
+                    {
+                        eprintln!("deleted voice sessions remain pending: {error}");
+                    }
+                    if attempt + 1 < VOICE_DELETE_RETRY_ATTEMPTS {
+                        tokio::time::sleep(voice_delete_retry_delay(attempt)).await;
+                    }
+                }
+                dispatching
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .remove(&intent.id);
+            });
+        }
+        Ok(())
+    }
+}
+
+fn voice_delete_retry_delay(attempt: usize) -> Duration {
+    Duration::from_millis(100_u64.saturating_mul(1_u64 << attempt.min(4)))
 }
 
 fn cancel_resume(tx: &Transaction<'_>, effect: &LifecycleEffect) -> Result<(), ManagementError> {
@@ -729,6 +834,14 @@ fn truthy(value: Option<&Value>) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn deleted_voice_retry_is_bounded_and_caps_backoff() {
+        assert_eq!(VOICE_DELETE_RETRY_ATTEMPTS, 8);
+        assert_eq!(voice_delete_retry_delay(0), Duration::from_millis(100));
+        assert_eq!(voice_delete_retry_delay(4), Duration::from_millis(1_600));
+        assert_eq!(voice_delete_retry_delay(7), Duration::from_millis(1_600));
+    }
     use crate::account_session_runtime::{NotSentReason, SessionReceipt};
     use studio_runtime_providers::{RequestId, RequestTicket};
 
