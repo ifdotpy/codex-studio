@@ -84,7 +84,8 @@ impl ProductionLifecyclePorts {
         };
         // A tombstone and unsettled fields are the durable reconciliation
         // intent. Scan on construction so process restart cannot lose it.
-        let _ = ports.reconcile_deleted_tombstones();
+        // Constructors stay infallible; execute retries and surfaces storage errors.
+        ports.reconcile_deleted_tombstones().unwrap_or(());
         ports
     }
 
