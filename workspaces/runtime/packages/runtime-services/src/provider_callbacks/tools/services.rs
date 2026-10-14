@@ -509,6 +509,13 @@ impl crate::managed_host_tools::PostCommitPort for ProductionPorts {
             return Ok(Some(written(value, Vec::new())));
         }
         if tool == "orchestration_watch" {
+            if matches!(args["action"].as_str(), Some("pause" | "delete"))
+                && self.monitor_runtime.is_none()
+            {
+                return Ok(Some(not_sent(crate::managed_host_tools::Error::Unavailable(
+                    "monitor-runtime/rule-cancel",
+                ))));
+            }
             let result = crate::managed_status_watch::rules(
                 store,
                 actor_id,
@@ -624,6 +631,11 @@ impl crate::managed_host_tools::PostCommitPort for ProductionPorts {
             }));
         }
         if tool == "orchestration_monitor" && args["action"].as_str() != Some("cancel") {
+            if self.monitor_runtime.is_none() {
+                return Ok(Some(not_sent(crate::managed_host_tools::Error::Unavailable(
+                    "monitor-runtime/managed-create",
+                ))));
+            }
             let actor_record = _actor.record();
             let cwd = actor_record
                 .extra
