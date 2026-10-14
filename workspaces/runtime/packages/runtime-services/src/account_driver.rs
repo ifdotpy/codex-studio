@@ -2144,6 +2144,33 @@ mod tests {
     use super::*;
     const PLACEHOLDER_KEY: &str = "placeholder-secret-do-not-persist";
 
+    #[cfg(unix)]
+    #[test]
+    fn claude_profile_binary_path_precedes_environment_override() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = tempfile::tempdir().expect("isolated Claude binary fixture");
+        let profile_binary = directory.path().join("profile-claude");
+        let override_binary = directory.path().join("override-claude");
+        for binary in [&profile_binary, &override_binary] {
+            fs::write(binary, "#!/bin/sh\nexit 0\n").expect("write fake executable");
+            fs::set_permissions(binary, fs::Permissions::from_mode(0o700))
+                .expect("make fake executable runnable");
+        }
+        let environment = BTreeMap::from([(
+            OsStr::new(CLAUDE_BIN_OVERRIDE).to_owned(),
+            override_binary.as_os_str().to_owned(),
+        )]);
+        let profile = serde_json::json!({
+            "claudeOptions": {"binaryPath": profile_binary.to_string_lossy()}
+        });
+
+        assert_eq!(
+            claude::resolve_claude_binary_with_environment(&profile, &environment),
+            Some(profile_binary.to_string_lossy().into_owned()),
+        );
+    }
+
     #[test]
     fn codex_metadata_requires_strict_unpadded_base64url_jwt_payloads() {
         let metadata = |payload: &str| {

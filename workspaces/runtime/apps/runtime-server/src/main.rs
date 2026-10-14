@@ -8,14 +8,18 @@ mod host_runtime;
 mod io_runtime;
 mod monitor_port;
 mod multi_server_owner;
+mod native_probe;
+mod provider_ports;
 #[cfg(unix)]
 mod runtime_shutdown;
+use std::collections::BTreeMap;
 use std::env;
 use std::fs::File;
 use std::io::Read;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::Mutex;
 
 use axum::Extension;
 use studio_runtime_http::{HttpState, router};
@@ -122,12 +126,63 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         })
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from(&state_dir).join("cache"));
+    let native_runtime = Arc::new(studio_runtime_services::native_runtime::NativeRuntime::new(
+        &state_root,
+        Arc::new(native_probe::SystemCompatibilityProbe::new(
+            tokio::runtime::Handle::current(),
+        )),
+    )?);
+    let runtime_for_check = Arc::clone(&native_runtime);
+    let discovery = native_discovery_inputs(native_path.as_deref());
+    if let Some(platform) = native_platform() {
+        match tokio::task::spawn_blocking(move || runtime_for_check.check(discovery, platform))
+            .await
+        {
+            Ok(Ok(_)) => {}
+            Ok(Err(error)) => eprintln!("native runtime compatibility check failed: {error}"),
+            Err(_) => eprintln!("native runtime compatibility check task failed"),
+        }
+    } else {
+        eprintln!("native runtime compatibility check skipped: unsupported platform");
+    }
+    let home = env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(&state_dir));
+    let base_home = env::var_os("CODEX_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home.join(".codex"));
+    let account_session_broker = account_registry::AccountSessionBroker::new();
+    let retained_session: Arc<
+        dyn studio_runtime_services::account_session_runtime::RetainedAccountSession,
+    > = Arc::new(account_session_broker.clone());
+    let account_session: Arc<
+        dyn studio_runtime_services::account_session_runtime::AccountSessionPort,
+    > = Arc::new(
+        studio_runtime_services::account_session_runtime::AccountSessionRuntime::new(
+            account_driver.clone(),
+            Some(retained_session),
+            tokio::runtime::Handle::current(),
+            PathBuf::from(&state_dir).join("accounts"),
+            base_home,
+            home,
+        )
+        .with_limits(account_policy.clone()),
+    );
+    let session_binaries = Arc::new(Mutex::new(BTreeMap::<
+        String,
+        provider_ports::SessionExecutables,
+    >::new()));
+    let active_connections = Arc::new(provider_ports::LiveProviderConnections {
+        accounts: account_driver.clone(),
+        session: Arc::clone(&account_session),
+        session_binaries: Arc::clone(&session_binaries),
+    });
     let provider_versions =
         studio_runtime_services::provider_versions::ProviderVersionMonitor::start(
             studio_runtime_services::provider_versions::runtime_provider_version_store(
                 store.clone(),
             ),
-            None,
+            Some(active_connections),
             cache_root.join("provider-upstream-releases-v1.json"),
             Arc::new(studio_runtime_services::provider_versions::SystemVersionProbe),
             Arc::new(studio_runtime_services::provider_versions::NpmReleaseFetcher),
@@ -171,23 +226,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         state = state.with_multi_server_boundary(Arc::new(boundary));
     }
     account_driver.recover_codex_logins()?;
-    let home = env::var_os("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(&state_dir));
-    let base_home = env::var_os("CODEX_HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| home.join(".codex"));
-    state.account_session = Some(Arc::new(
-        studio_runtime_services::account_session_runtime::AccountSessionRuntime::new(
-            account_driver.clone(),
-            None,
-            tokio::runtime::Handle::current(),
-            PathBuf::from(&state_dir).join("accounts"),
-            base_home,
-            home,
-        )
-        .with_limits(account_policy),
-    ));
+    state = state.with_native_runtime(Arc::clone(&native_runtime));
+    state.account_session = Some(Arc::clone(&account_session));
+    state = state
+        .with_title_request_port(Arc::new(provider_ports::ProviderTitleRequestPort::new(
+            Arc::clone(&account_session),
+        )))
+        .with_diagnostics_provider(Arc::new(provider_ports::ProviderDiagnostics {
+            accounts: account_driver.clone(),
+            session: Arc::clone(&account_session),
+            store: Arc::clone(&store),
+        }))
+        .with_diagnostics_supervisor(Arc::new(provider_ports::SupervisorDiagnostics {
+            mode: env::var("CODEX_AGENTS_SUPERVISOR_MODE").is_ok_and(|value| value == "1"),
+            fallback: env::var("CODEX_AGENTS_SUPERVISOR_FALLBACK")
+                .is_ok_and(|value| value == "1"),
+            notice: env::var("CODEX_AGENTS_SUPERVISOR_FALLBACK")
+                .is_ok_and(|value| value == "1")
+                .then(|| "The process supervisor stopped unexpectedly. Studio applied normal recovery to turns, monitors, and terminals with reduced restart protection; accepted or uncertain operations were not resubmitted.".to_owned()),
+            state_dir: PathBuf::from(&state_dir),
+        }));
     #[cfg(unix)]
     let io_runtime = Arc::new(io_runtime::IoRuntime::start(store.clone())?);
     #[cfg(unix)]
@@ -213,13 +271,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             Arc::clone(&monitor_wake),
         ),
     );
+    state = state.open_app_server_log();
     #[cfg(unix)]
-    let runtime = match host_runtime::HostRuntime::start_with_monitor_wake(
+    let runtime = match host_runtime::HostRuntime::start_with_monitor_wake_and_native_runtime(
         &mut state,
         Arc::clone(&store),
         account_driver,
         native_path,
         monitor_runtime.dispatch_wake_handle(),
+        account_session_broker,
+        Some(Arc::clone(&native_runtime)),
+        Arc::clone(&session_binaries),
     )
     .await
     {
@@ -365,6 +427,65 @@ async fn shutdown_io_runtime(
     let result = tokio::task::spawn_blocking(move || runtime.shutdown()).await?;
     result?;
     Ok(())
+}
+
+fn native_discovery_inputs(
+    explicit: Option<&str>,
+) -> studio_runtime_services::provider_binaries::DiscoveryInputs {
+    use studio_runtime_services::provider_binaries::DiscoveryInputs;
+
+    let pinned_path = env::var_os("CODEX_AGENTS_NATIVE_RUNTIME_PIN").map(PathBuf::from);
+    if pinned_path.is_some() {
+        return DiscoveryInputs {
+            pinned_path,
+            ..DiscoveryInputs::default()
+        };
+    }
+    let mut candidates = Vec::new();
+    if let Some(value) = explicit {
+        let path = PathBuf::from(value);
+        if path.components().count() > 1 {
+            candidates.push(path);
+        } else if let Some(found) = env::var_os("PATH").and_then(|path| {
+            env::split_paths(&path)
+                .map(|entry| entry.join(value))
+                .find(|candidate| candidate.is_file())
+        }) {
+            candidates.push(found);
+        }
+    }
+    let path_entries = env::var_os("PATH")
+        .map(|path| env::split_paths(&path).collect::<Vec<_>>())
+        .unwrap_or_default()
+        .into_iter()
+        .map(|entry| entry.join("codex"))
+        .filter(|candidate| candidate.is_file())
+        .collect();
+    #[cfg(target_os = "macos")]
+    let chatgpt_bundle = Some(PathBuf::from(
+        "/Applications/ChatGPT.app/Contents/Resources/codex",
+    ));
+    #[cfg(not(target_os = "macos"))]
+    let chatgpt_bundle = None;
+    DiscoveryInputs {
+        explicit_path: candidates.first().cloned(),
+        path_entries,
+        chatgpt_bundle,
+        ..DiscoveryInputs::default()
+    }
+}
+
+fn native_platform() -> Option<studio_runtime_services::provider_binaries::NativePlatform> {
+    use studio_runtime_services::provider_binaries::NativePlatform;
+    match (std::env::consts::OS, std::env::consts::ARCH) {
+        ("linux", "x86_64") => Some(NativePlatform::LinuxX64),
+        ("linux", "aarch64") => Some(NativePlatform::LinuxArm64),
+        ("macos", "x86_64") => Some(NativePlatform::MacX64),
+        ("macos", "aarch64") => Some(NativePlatform::MacArm64),
+        ("windows", "x86_64") => Some(NativePlatform::WindowsX64),
+        ("windows", "aarch64") => Some(NativePlatform::WindowsArm64),
+        _ => None,
+    }
 }
 
 fn parse_port(mut args: impl Iterator<Item = String>) -> Result<u16, Box<dyn std::error::Error>> {

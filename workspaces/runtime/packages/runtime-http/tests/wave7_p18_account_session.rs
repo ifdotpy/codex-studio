@@ -12,11 +12,12 @@ use std::{
     },
 };
 use studio_runtime_http::{HttpState, router};
+use studio_runtime_providers::{Method, RequestId, RequestTicket};
 use studio_runtime_services::{
     account_driver::AccountDriver,
     account_session_runtime::{
-        AccountSessionError, AccountSessionRuntime, ConnectionScope, RequestCertainty,
-        RetainedAccountSession, SessionFuture, SessionReceipt,
+        AccountSessionRuntime, ConnectionScope, ProviderRequest, ProviderResponse,
+        RequestCertainty, RetainedAccountSession, SessionFuture, SessionReceipt,
     },
 };
 use tower::ServiceExt;
@@ -29,46 +30,46 @@ struct Session {
     foreign: bool,
 }
 impl RetainedAccountSession for Session {
-    fn scope(&self, account: &str, _: bool) -> Result<ConnectionScope, AccountSessionError> {
-        Ok(ConnectionScope {
-            account: account.into(),
-            connection: "fixture-connection".into(),
-        })
-    }
-    fn request(
-        &self,
-        mut scope: ConnectionScope,
-        operation: String,
-        method: &'static str,
-        params: Value,
-        deadline: tokio::time::Instant,
-    ) -> SessionFuture {
+    fn request(&self, request: ProviderRequest) -> SessionFuture {
         self.calls.fetch_add(1, Ordering::SeqCst);
-        assert!(deadline > tokio::time::Instant::now());
+        assert!(request.deadline > std::time::Instant::now());
         let registry: Value =
             serde_json::from_slice(&std::fs::read(&self.path).expect("durable registry"))
                 .expect("JSON");
-        let result = if method == "account/login/start" {
+        let result = if request.method == Method::AccountLoginStart {
             assert_eq!(registry["logins"][ID]["status"], "starting");
-            assert_eq!(params, json!({"type":"chatgptDeviceCode"}));
+            assert_eq!(request.params, json!({"type":"chatgptDeviceCode"}));
             json!({"type":"chatgptDeviceCode","loginId":"native","verificationUrl":"https://example.invalid/device","userCode":"fixture"})
         } else {
-            assert_eq!(method, "account/login/cancel");
+            assert_eq!(request.method, Method::AccountLoginCancel);
             assert_eq!(registry["logins"][ID]["status"], "uncertain");
-            assert_eq!(params, json!({"loginId":"native"}));
+            assert_eq!(request.params, json!({"loginId":"native"}));
             json!({"status":"canceled"})
+        };
+        let mut scope = ConnectionScope {
+            account: request.account.clone(),
+            connection: "fixture-connection".into(),
+            generation: 1,
         };
         if self.foreign {
             scope.connection = "foreign".into();
         }
         let certainty = self.certainty;
+        let operation = request.operation;
+        let method = request.method;
         Box::pin(async move {
-            SessionReceipt {
+            Ok(SessionReceipt {
                 scope,
                 operation,
+                ticket: Some(RequestTicket {
+                    generation: 1,
+                    id: RequestId::String("fixture".into()),
+                    method,
+                }),
                 certainty,
-                result: Some(result),
-            }
+                result: Some(ProviderResponse::Reply(result)),
+                not_sent_reason: None,
+            })
         })
     }
 }

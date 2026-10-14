@@ -1,20 +1,97 @@
 use super::*;
 pub(super) fn authorize(tx: &rusqlite::Transaction<'_>, call: &Call) -> Result<bool, WorkerError> {
-    let Some(agent) = AgentRepository::get(tx, &AgentId::from(call.actor.agent.as_str()))? else {
+    let Some(actor) = call.actor.as_ref() else {
+        return Ok(match call.method.as_str() {
+            "thread/list" => call.params.get("threadId").is_none(),
+            "thread/loaded/list" | "model/list" | "claude/diagnostics" => true,
+            "thread/read" => {
+                call.params
+                    .get("threadId")
+                    .and_then(Value::as_str)
+                    .is_some_and(|id| !id.is_empty())
+                    && call
+                        .params
+                        .get("includeTurns")
+                        .is_none_or(|value| value == &json!(false))
+            }
+            "thread/turns/list" => {
+                call.params
+                    .get("threadId")
+                    .and_then(Value::as_str)
+                    .is_some_and(|id| !id.is_empty())
+                    && call
+                        .params
+                        .get("limit")
+                        .and_then(Value::as_u64)
+                        .is_some_and(|limit| limit <= 20)
+                    && call.params.get("sortDirection").and_then(Value::as_str) == Some("desc")
+                    && call.params.get("itemsView").and_then(Value::as_str) == Some("full")
+            }
+            "operationStatus" => call
+                .params
+                .get("operationId")
+                .and_then(Value::as_str)
+                .is_some_and(|id| id.starts_with("monitor:") && id.len() > "monitor:".len()),
+            _ => false,
+        });
+    };
+    let Some(agent_record) = AgentRepository::get(tx, &AgentId::from(actor.agent.as_str()))? else {
         return Ok(false);
     };
-    Ok(agent.epoch == call.actor.epoch
-        && agent
-            .extra
-            .get("accountKey")
-            .and_then(Value::as_str)
-            .unwrap_or("default")
-            == call.scope.account
-        && !studio_runtime_store::truthy(agent.extra.get("deletedAt"))
-        && agent.extra.get("deleted") != Some(&json!(true))
-        && call.params["threadId"].as_str().is_some_and(|thread| {
-            agent.extra.get("threadId").and_then(Value::as_str) == Some(thread)
-        }))
+    let common_identity = agent_record
+        .extra
+        .get("accountKey")
+        .and_then(Value::as_str)
+        .unwrap_or("default")
+        == call.scope.account
+        && !studio_runtime_store::truthy(agent_record.extra.get("deletedAt"))
+        && agent_record.extra.get("deleted") != Some(&json!(true));
+    let actor_identity = common_identity && agent_record.epoch == actor.epoch;
+    // Stop commits the next epoch before asking the retained provider session
+    // to interrupt the previous turn. Permit only that exact prior epoch for
+    // turn/interrupt, while the agent is no longer eligible to wake.
+    let stopped_turn_interrupt = common_identity
+        && call.method == "turn/interrupt"
+        && actor.epoch.checked_add(1) == Some(agent_record.epoch)
+        && agent_record.extra.get("autoWake") == Some(&json!(false));
+    let thread_matches = call.params["threadId"].as_str().is_some_and(|thread| {
+        agent_record.extra.get("threadId").and_then(Value::as_str) == Some(thread)
+    });
+    let thread_start = call.method == "thread/start" && call.params.get("threadId").is_none();
+    let ephemeral_turn = if call.method == "turn/start" {
+        match call.params["threadId"].as_str() {
+            Some(thread) => thread_started_for_actor(tx, call, thread)?,
+            None => false,
+        }
+    } else {
+        false
+    };
+    Ok((actor_identity || stopped_turn_interrupt)
+        && (thread_matches || thread_start || ephemeral_turn))
+}
+
+fn thread_started_for_actor(
+    tx: &rusqlite::Transaction<'_>,
+    call: &Call,
+    thread: &str,
+) -> Result<bool, WorkerError> {
+    let Some(actor) = call.actor.as_ref() else {
+        return Ok(false);
+    };
+    let prefix = format!("account-worker:retained:{}:", call.scope.account);
+    let exists: i64 = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM runtime_operation_receipts submitted JOIN runtime_operation_receipts result ON result.id=substr(submitted.id,1,length(submitted.id)-10)||':result' WHERE submitted.id>=?1 AND submitted.id<?2 AND substr(submitted.id,-10)=':submitted' AND json_extract(submitted.result,'$.call.method')='thread/start' AND json_extract(submitted.result,'$.call.actor.agent')=?3 AND json_extract(submitted.result,'$.call.actor.epoch')=?4 AND json_extract(submitted.result,'$.call.scope.generation')=?5 AND json_extract(result.result,'$.result.Reply.thread.id')=?6 AND json_extract(result.result,'$.result.Reply.thread.id') IS NOT NULL)",
+        rusqlite::params![
+            prefix,
+            format!("{prefix}~"),
+            actor.agent,
+            actor.epoch,
+            i64::try_from(call.scope.generation).map_err(|_| WorkerError::Capacity)?,
+            thread,
+        ],
+        |row| row.get(0),
+    )?;
+    Ok(exists != 0)
 }
 pub(super) fn replay(
     s: &RuntimeStore,

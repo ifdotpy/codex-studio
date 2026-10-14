@@ -2130,6 +2130,7 @@ dependencies = [
  "futures-util",
  "getrandom 0.3.4",
  "serde_json",
+ "sha2",
  "studio-runtime-http",
  "studio-runtime-process",
  "studio-runtime-providers",

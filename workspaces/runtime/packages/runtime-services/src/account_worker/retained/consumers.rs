@@ -74,12 +74,13 @@ impl ClaudeSessionPort for ClaudePort {
                 .port
                 .request(SessionRequest {
                     scope: self.port.scope().clone(),
+                    expected_scope: None,
                     operation,
-                    actor: RequestActor {
+                    actor: Some(RequestActor {
                         agent: call.identity.scope.agent.clone(),
                         epoch: i64::try_from(call.identity.scope.epoch)
                             .map_err(|_| ControlError::Changed)?,
-                    },
+                    }),
                     method: call.identity.method,
                     params: call.params,
                     deadline: (tokio::time::Instant::now() + std::time::Duration::from_secs(20))
@@ -166,7 +167,8 @@ impl crate::recovery_runtime::RetainedHistory for HistoryPort {
             .runtime
             .block_on(self.port.request(SessionRequest {
                 scope: scope.clone(),
-                actor: self.actor.clone(),
+                expected_scope: None,
+                actor: Some(self.actor.clone()),
                 operation,
                 method: Method::from_wire(method.as_str()).ok_or(HistoryError::Unsupported)?,
                 params,

@@ -23,6 +23,9 @@ pub struct PreparationResources {
     pub python_executable: PathBuf,
     pub claude_account_pin: Value,
     pub account_driver: Option<Arc<crate::account_driver::AccountDriver>>,
+    /// The host's registry-backed session surface for preparation calls that
+    /// need to coordinate another live account.
+    pub account_session: Option<Arc<dyn crate::account_session_runtime::AccountSessionPort>>,
 }
 impl PreparationResources {
     pub fn bundled(
@@ -101,7 +104,16 @@ impl PreparationResources {
             server_source_root,
             claude_account_pin: Value::Null,
             account_driver: None,
+            account_session: None,
         })
+    }
+
+    pub fn with_account_session(
+        mut self,
+        account_session: Option<Arc<dyn crate::account_session_runtime::AccountSessionPort>>,
+    ) -> Self {
+        self.account_session = account_session;
+        self
     }
 }
 pub(super) fn decode<T: DeserializeOwned>(value: Value, location: &str) -> Result<T, WorkerError> {

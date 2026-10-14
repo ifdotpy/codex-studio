@@ -65,9 +65,11 @@ const LOCK_SAMPLE_LIMIT: usize = 512;
 const ROUTE_SAMPLE_LIMIT: usize = 2048;
 const SITE_LIMIT: usize = 256;
 
-/// Provider-owned snapshot required to fill the diagnostics schema's account
-/// and loaded-thread fields. Implementations must return cached/local state;
-/// diagnostics must not initiate native provider requests.
+/// Provider-owned snapshot required to fill the diagnostics schema's account,
+/// loaded-thread, and queue fields. Implementations may issue bounded read-only
+/// requests through already-retained provider sessions; they must never launch
+/// a CLI, open another connection, or perform a provider mutation. The HTTP
+/// caller invokes this on a blocking pool.
 pub trait ProviderDiagnosticsPort: Send + Sync {
     fn snapshot(&self) -> ProviderDiagnosticsSnapshot;
 }

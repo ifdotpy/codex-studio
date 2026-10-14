@@ -1,12 +1,14 @@
 //! Binary composition of retained account sessions. The supervisor is an
 //! independently installed service; backend shutdown never takes its children.
-use crate::account_registry::{AccountLaunch, AccountLauncher, AccountRegistry, LaunchFuture};
+use crate::account_registry::{
+    AccountLaunch, AccountLauncher, AccountRegistry, AccountSessionBroker, LaunchFuture,
+};
 use serde_json::json;
 use std::{
     collections::BTreeMap,
     env,
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{Arc, Mutex},
 };
 use studio_runtime_http::HttpState;
 use studio_runtime_process::{
@@ -20,6 +22,7 @@ use studio_runtime_services::{
     account_driver::{AccountDriver, AccountStatus, AuthMetadata, AuthStatus, ProviderAuthReader},
     account_worker::{WorkerError, preparation::PreparationResources},
     claude_bridge::{BridgeSnapshot, ResolvedBridge},
+    native_runtime::{NativeExecutableLease, NativeRuntime},
     provider_session_task::SessionTaskConfig,
     thread_prepare::{CatalogSnapshot, CatalogSource},
 };
@@ -115,16 +118,43 @@ impl HostRuntime {
             accounts,
             native_path,
             Arc::new(tokio::sync::Notify::new()),
+            AccountSessionBroker::new(),
         )
         .await
     }
 
+    #[cfg(test)]
     pub async fn start_with_monitor_wake(
         state: &mut HttpState,
         store: Arc<RuntimeStore>,
         accounts: Arc<AccountDriver>,
         native_path: Option<String>,
         monitor_dispatch_wake: Arc<tokio::sync::Notify>,
+        session_broker: AccountSessionBroker,
+    ) -> Result<Self, WorkerError> {
+        Self::start_with_monitor_wake_and_native_runtime(
+            state,
+            store,
+            accounts,
+            native_path,
+            monitor_dispatch_wake,
+            session_broker,
+            None,
+            Arc::new(Mutex::new(BTreeMap::new())),
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn start_with_monitor_wake_and_native_runtime(
+        state: &mut HttpState,
+        store: Arc<RuntimeStore>,
+        accounts: Arc<AccountDriver>,
+        native_path: Option<String>,
+        monitor_dispatch_wake: Arc<tokio::sync::Notify>,
+        session_broker: AccountSessionBroker,
+        native_runtime: Option<Arc<NativeRuntime>>,
+        session_binaries: Arc<Mutex<BTreeMap<String, crate::provider_ports::SessionExecutables>>>,
     ) -> Result<Self, WorkerError> {
         let mut nonce = [0_u8; 16];
         getrandom::fill(&mut nonce).map_err(|_| WorkerError::TaskFailed)?;
@@ -157,12 +187,22 @@ impl HostRuntime {
         .map_err(|_| WorkerError::TaskFailed)??;
         resources.account_driver = Some(accounts.clone());
         let claude_bridge_dir = install_root.claude_bridge_dir();
-        *state = state.clone().with_tool_catalog(CatalogSnapshot {
-            source: CatalogSource::Current,
-            definitions: resources.tools.clone(),
-            saved_thread_id: None,
-            saved_digest: None,
-        });
+        let resources = resources.with_account_session(state.account_session.clone());
+        let callback_runtime = Arc::new(
+            studio_runtime_services::callback_runtime::CallbackRuntime::new(
+                store.clone(),
+                session_broker.callback_reply_port(tokio::runtime::Handle::current()),
+            ),
+        );
+        *state = state
+            .clone()
+            .with_tool_catalog(CatalogSnapshot {
+                source: CatalogSource::Current,
+                definitions: resources.tools.clone(),
+                saved_thread_id: None,
+                saved_digest: None,
+            })
+            .with_callback_runtime(callback_runtime);
         let launcher = Arc::new(HostLauncher {
             factory: SupervisorProviderTaskFactory::new(identity),
             supervisor_mode: std::env::var("CODEX_AGENTS_SUPERVISOR_MODE")
@@ -172,6 +212,8 @@ impl HostRuntime {
             store: store.clone(),
             root: store.root().to_owned(),
             native_path,
+            native_runtime,
+            session_binaries,
             resources,
             claude_bridge_dir,
             publication_sink: Arc::new(
@@ -184,11 +226,12 @@ impl HostRuntime {
             ),
             environment: std::env::vars().collect(),
         });
-        Self::with_launcher_and_monitor_wake(
+        Self::with_launcher_broker(
             store,
             launcher,
             state.event_wake_handle(),
             monitor_dispatch_wake,
+            session_broker,
         )
         .await
     }
@@ -216,8 +259,30 @@ impl HostRuntime {
         wake: Arc<tokio::sync::Notify>,
         monitor_dispatch_wake: Arc<tokio::sync::Notify>,
     ) -> Result<Self, WorkerError> {
-        let registry =
-            AccountRegistry::new_with_monitor_wake(store, launcher, monitor_dispatch_wake).await?;
+        Self::with_launcher_broker(
+            store,
+            launcher,
+            wake,
+            monitor_dispatch_wake,
+            AccountSessionBroker::new(),
+        )
+        .await
+    }
+
+    async fn with_launcher_broker(
+        store: Arc<RuntimeStore>,
+        launcher: Arc<dyn AccountLauncher>,
+        wake: Arc<tokio::sync::Notify>,
+        monitor_dispatch_wake: Arc<tokio::sync::Notify>,
+        session_broker: AccountSessionBroker,
+    ) -> Result<Self, WorkerError> {
+        let registry = AccountRegistry::new_with_broker(
+            store,
+            launcher,
+            monitor_dispatch_wake,
+            session_broker,
+        )
+        .await?;
         let shutdown = Shutdown::default();
         let task = tokio::spawn(registry.run(wake, shutdown.clone()));
         Ok(Self { shutdown, task })
@@ -245,6 +310,8 @@ struct HostLauncher {
     store: Arc<RuntimeStore>,
     root: PathBuf,
     native_path: Option<String>,
+    native_runtime: Option<Arc<NativeRuntime>>,
+    session_binaries: Arc<Mutex<BTreeMap<String, crate::provider_ports::SessionExecutables>>>,
     resources: PreparationResources,
     claude_bridge_dir: PathBuf,
     publication_sink:
@@ -272,21 +339,49 @@ impl AccountLauncher for HostLauncher {
                     .map_err(|_| {
                         WorkerError::PreparationRefused("account-driver/unavailable".into())
                     })?;
-            let launch = if let Some(profile) = claude_profile {
-                claude_launch(
+            let (launch, executable, claude_executable, lease) = if let Some(profile) =
+                claude_profile
+            {
+                let (launch, executable) = claude_launch_with_executable(
                     profile,
                     &self.claude_bridge_dir,
                     self.root.clone(),
                     self.environment.clone(),
-                )?
+                )?;
+                (
+                    launch,
+                    None,
+                    Some(executable.to_string_lossy().into_owned()),
+                    None,
+                )
             } else {
-                codex_launch(
-                    self.native_path.as_deref(),
+                let lease = if let Some(runtime) = &self.native_runtime {
+                    let status = runtime.read_state().map_err(|_| {
+                        WorkerError::PreparationRefused("native-runtime/status-read".into())
+                    })?;
+                    if status.as_ref().and_then(|state| state.selected()).is_some() {
+                        Some(runtime.retain_selected().map_err(|_| {
+                            WorkerError::PreparationRefused("native-runtime/selected-lease".into())
+                        })?)
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+                let executable = lease
+                    .as_ref()
+                    .and_then(|lease| lease.path().to_str())
+                    .map(str::to_owned)
+                    .or_else(|| self.native_path.clone());
+                let launch = codex_launch(
+                    executable.as_deref(),
                     self.environment.clone(),
                     home,
                     isolated,
                     self.root.clone(),
-                )
+                );
+                (launch, executable, None, lease)
             };
             // Existing catalog refresh owns its bounded one-off child; both
             // HTTP reads and preparation observe this same retained service.
@@ -329,6 +424,23 @@ impl AccountLauncher for HostLauncher {
                 debug_assert_eq!(generation, prepared.generation());
                 (Arc::new(prepared), generation)
             };
+            let factory = match lease {
+                Some(lease) => Arc::new(LeasedProviderTaskFactory {
+                    inner: factory,
+                    _lease: lease,
+                }) as Arc<dyn ProviderTaskFactory>,
+                None => factory,
+            };
+            if let Ok(mut binaries) = self.session_binaries.lock() {
+                binaries.insert(
+                    account.clone(),
+                    crate::provider_ports::SessionExecutables {
+                        generation: generation.0,
+                        codex: executable,
+                        claude: claude_executable,
+                    },
+                );
+            }
             Ok(AccountLaunch {
                 factory,
                 options: OpenOptions {
@@ -352,6 +464,24 @@ impl AccountLauncher for HostLauncher {
                 publication_sink: Arc::clone(&self.publication_sink),
             })
         })
+    }
+}
+
+/// Keeps the selected immutable native bundle alive as long as the retained
+/// account session factory can still launch or serve that provider session.
+struct LeasedProviderTaskFactory {
+    inner: Arc<dyn ProviderTaskFactory>,
+    _lease: NativeExecutableLease,
+}
+
+impl ProviderTaskFactory for LeasedProviderTaskFactory {
+    fn open(
+        &self,
+        handle: ProviderHandle,
+        options: OpenOptions,
+        shutdown: Shutdown,
+    ) -> studio_runtime_process::provider_seam::OpenFuture<'_> {
+        self.inner.open(handle, options, shutdown)
     }
 }
 
@@ -406,7 +536,7 @@ async fn resolve_python(
 
 pub(crate) fn codex_launch(
     native_path: Option<&str>,
-    mut environment: BTreeMap<String, String>,
+    environment: BTreeMap<String, String>,
     home: String,
     isolated: bool,
     root: PathBuf,
@@ -654,8 +784,17 @@ pub(crate) fn claude_launch(
     profile: serde_json::Value,
     bridge_dir: &Path,
     root: PathBuf,
-    mut environment: BTreeMap<String, String>,
+    environment: BTreeMap<String, String>,
 ) -> Result<ProviderLaunchSpec, WorkerError> {
+    claude_launch_with_executable(profile, bridge_dir, root, environment).map(|(launch, _)| launch)
+}
+
+fn claude_launch_with_executable(
+    profile: serde_json::Value,
+    bridge_dir: &Path,
+    root: PathBuf,
+    mut environment: BTreeMap<String, String>,
+) -> Result<(ProviderLaunchSpec, PathBuf), WorkerError> {
     let account_id = profile
         .get("accountId")
         .and_then(serde_json::Value::as_str)
@@ -734,11 +873,11 @@ pub(crate) fn claude_launch(
     };
     let snapshot = BridgeSnapshot::from_record(profile)
         .map_err(|error| WorkerError::PreparationRefused(error.to_string()))?;
-    snapshot
+    let launch = snapshot
         .launch(
             ResolvedBridge {
                 node,
-                executable: claude,
+                executable: claude.clone(),
                 bridge,
                 root,
                 sdk_present,
@@ -746,7 +885,8 @@ pub(crate) fn claude_launch(
             &metadata,
             std::mem::take(&mut environment),
         )
-        .map_err(|error| WorkerError::PreparationRefused(error.to_string()))
+        .map_err(|error| WorkerError::PreparationRefused(error.to_string()))?;
+    Ok((launch, claude))
 }
 
 fn executable(configured: &str, path: Option<&str>) -> Option<PathBuf> {
