@@ -364,10 +364,25 @@ pub fn maintain_monitor_window(
     if !table_exists(transaction, "runtime_monitors")? {
         return Ok(());
     }
-    let records = stored_records(transaction, "runtime_monitors")?
-        .into_iter()
-        .map(|(_, raw)| serde_json::from_str::<Value>(&raw))
+    let mut records = Vec::new();
+    let mut preserved_invalid_monitor_ids = BTreeSet::new();
+    let mut statement =
+        transaction.prepare("SELECT id,record FROM runtime_monitors ORDER BY rowid")?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?
         .collect::<Result<Vec<_>, _>>()?;
+    drop(statement);
+    for (id, raw) in rows {
+        match serde_json::from_str::<Value>(&raw) {
+            Ok(record) if record.is_object() => records.push(record),
+            _ => {
+                eprintln!("monitor projection recovery skipped row id={id}: invalid record");
+                preserved_invalid_monitor_ids.insert(id);
+            }
+        }
+    }
     let mut kept = BTreeMap::<String, Value>::new();
     for status in ["running", "starting", "approval"] {
         for record in records
@@ -395,18 +410,36 @@ pub fn maintain_monitor_window(
             kept.insert(id.to_owned(), record);
         }
     }
-    let agents = stored_records(transaction, "runtime_agents")?
-        .into_iter()
-        .map(|(id, raw)| {
-            let record: Value = serde_json::from_str(&raw)?;
-            Ok((id, record.get("deletedAt").is_none_or(Value::is_null)))
-        })
-        .collect::<Result<BTreeMap<_, _>, serde_json::Error>>()?;
-    let mut kept_ids = BTreeSet::new();
+    let mut agents = BTreeMap::new();
+    let mut invalid_agent_ids = BTreeSet::new();
+    let mut statement =
+        transaction.prepare("SELECT id,record FROM runtime_agents ORDER BY rowid")?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    drop(statement);
+    for (id, raw) in rows {
+        match serde_json::from_str::<Value>(&raw) {
+            Ok(record) if record.is_object() => {
+                agents.insert(id, record.get("deletedAt").is_none_or(Value::is_null));
+            }
+            _ => {
+                eprintln!("monitor projection recovery skipped owner row id={id}: invalid record");
+                invalid_agent_ids.insert(id);
+            }
+        }
+    }
+    let mut kept_ids = preserved_invalid_monitor_ids;
     for (id, record) in kept {
-        let active_owner = record
-            .get("agent")
-            .and_then(Value::as_str)
+        let owner = record.get("agent").and_then(Value::as_str);
+        if owner.is_some_and(|agent| invalid_agent_ids.contains(agent)) {
+            eprintln!("monitor projection recovery skipped row id={id}: invalid owner record");
+            kept_ids.insert(id);
+            continue;
+        }
+        let active_owner = owner
             .and_then(|agent| agents.get(agent))
             .copied()
             .unwrap_or(false);

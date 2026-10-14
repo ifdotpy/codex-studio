@@ -85,7 +85,14 @@ pub fn recover_on_startup(store: &RuntimeStore) -> Result<usize, SchedulerError>
         .and_then(|bytes| crate::account_policy::decode_registry(&bytes).ok())
         .map(|(value, _)| value);
     Ok(lifecycle_transaction(store, |transaction| {
-        let unsubmitted = SchedulerRepository::recover_unsubmitted(transaction)?;
+        let unsubmitted = match SchedulerRepository::recover_unsubmitted(transaction) {
+            Ok(recovered) => recovered,
+            Err(StoreError::InvalidSyncObject { scope, id }) if scope == "runtime_agents" => {
+                eprintln!("scheduler startup skipped malformed reservation row id={id}");
+                0
+            }
+            Err(error) => return Err(error),
+        };
         let submitted = SchedulerRepository::recover_submitted(transaction)?;
         clear_startup_agent_state(transaction, account_registry.as_ref())?;
         Ok(unsubmitted + submitted)

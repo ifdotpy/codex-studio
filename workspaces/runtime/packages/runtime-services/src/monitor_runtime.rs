@@ -1,11 +1,14 @@
 //! Synchronous monitor consumer: ownership checks and all row writes share one transaction.
 //! Native I/O is returned as an effect, and must run only after a successful commit.
+//! Startup recovery for remote-owned monitors records its owner exit event locally as
+//! `stored_only`; that row claims no delivery and is not resent. The remote owner is not notified
+//! until `cross-server/remote-events` lands.
 
 use serde_json::{Value, json};
 use studio_runtime_store::{
     AgentId, AgentRecord, AgentRepository, EventWriteRepository, MonitorsRepository, QueueEvent,
-    QueueEventId, RuntimeStore, SyncDocumentsRepository, Table, Transaction,
-    monitor_runtime as repository,
+    QueueEventId, RequestRecord, RuntimeStore, SchedulerRepository, SyncDocumentsRepository, Table,
+    Transaction, monitor_runtime as repository,
 };
 
 use crate::event_write::{self, python_json};
@@ -15,6 +18,296 @@ use crate::monitor_policy::{
 
 pub const SESSION_DEPENDENCY: &str = "provider-session/monitor-commands";
 pub const RULE_DEPENDENCY: &str = "rule-driver/monitor-finish";
+pub const REMOTE_EVENTS_DEPENDENCY: &str = "cross-server/remote-events";
+const STARTUP_RECEIPT_BATCH: usize = 64;
+const RESTART_EVENT_ERROR: &str = "Server restarted before delivery acknowledgement";
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct StartupRecovery {
+    pub receipts: usize,
+    pub requests: usize,
+    pub events: usize,
+    pub monitors: usize,
+}
+
+/// Recover durable monitor results first, then expire requests and mark only
+/// monitors with no surviving process as lost. All row and projection writes
+/// share one transaction; result files are handled before that transaction.
+pub fn recover_on_startup(store: &RuntimeStore, now: f64) -> Result<StartupRecovery, MonitorError> {
+    if !now.is_finite() || now < 0.0 {
+        return Err(MonitorError::Refused("Invalid startup recovery clock"));
+    }
+    let mut recovery = StartupRecovery::default();
+    loop {
+        let count = crate::monitor_receipts::recover_pending(store, STARTUP_RECEIPT_BATCH)?;
+        recovery.receipts += count;
+        if count < STARTUP_RECEIPT_BATCH {
+            break;
+        }
+    }
+    let (requests, events, monitors) = store.transaction_with::<_, MonitorError>(|tx| {
+        // Use the scheduler's canonical exact-batch validator. The general
+        // event pass below owns only the claims left after that operation.
+        if let Err(error) = SchedulerRepository::recover_unsubmitted(tx) {
+            match error {
+                studio_runtime_store::StoreError::InvalidSyncObject { scope, id }
+                    if scope == "runtime_agents" =>
+                {
+                    eprintln!("startup scheduler reservation skipped row id={id}: invalid batch");
+                }
+                error => return Err(MonitorError::Store(error)),
+            }
+        }
+        let requests = recover_requests(tx)?;
+        let events = recover_uncovered_events(tx)?;
+        let monitors = recover_active_monitors(tx, now)?;
+        Ok((requests, events, monitors))
+    })?;
+    recovery.requests = requests;
+    recovery.events = events;
+    recovery.monitors = monitors;
+    Ok(recovery)
+}
+
+fn recover_requests(tx: &Transaction<'_>) -> Result<usize, MonitorError> {
+    let mut agent_statement = tx
+        .prepare("SELECT id,record FROM runtime_agents ORDER BY id")
+        .map_err(studio_runtime_store::StoreError::from)?;
+    let agent_rows = agent_statement
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
+        .map_err(studio_runtime_store::StoreError::from)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(studio_runtime_store::StoreError::from)?;
+    drop(agent_statement);
+    let mut agents = std::collections::BTreeMap::new();
+    for (id, raw) in agent_rows {
+        match serde_json::from_str::<Value>(&raw) {
+            Ok(agent) if agent.is_object() => {
+                agents.insert(id, agent);
+            }
+            _ => eprintln!("startup request recovery skipped owner row id={id}: invalid record"),
+        }
+    }
+    let mut request_statement = tx
+        .prepare("SELECT id,record FROM runtime_requests ORDER BY id")
+        .map_err(studio_runtime_store::StoreError::from)?;
+    let request_rows = request_statement
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
+        .map_err(studio_runtime_store::StoreError::from)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(studio_runtime_store::StoreError::from)?;
+    drop(request_statement);
+    let mut count = 0;
+    for (id, raw) in request_rows {
+        let mut value = match serde_json::from_str::<Value>(&raw) {
+            Ok(value) if value.is_object() => value,
+            _ => {
+                eprintln!("startup request recovery skipped row id={id}: invalid record");
+                continue;
+            }
+        };
+        match value.get("status").and_then(Value::as_str) {
+            Some("answering") => {
+                value["status"] = json!("uncertain");
+                value["answerError"] = json!("Server restarted before answer delivery completed");
+            }
+            Some("pending") if !retained_question(&value, &agents) => {
+                value["status"] = json!("expired");
+            }
+            _ => continue,
+        }
+        let request = match RequestRecord::from_value(value) {
+            Ok(request) => request,
+            Err(error) => {
+                eprintln!("startup request recovery skipped row id={id}: {error}");
+                continue;
+            }
+        };
+        tx.execute_batch("SAVEPOINT startup_request_recovery_row")
+            .map_err(studio_runtime_store::StoreError::from)?;
+        let apply = (|| {
+            Table::<RequestRecord>::new(tx).put(&request)?;
+            let view = crate::sync_views::project_persisted_record("request", request.value())
+                .ok_or(MonitorError::Refused("Invalid request projection"))?;
+            SyncDocumentsRepository::put_entity(
+                tx,
+                "request",
+                request.id(),
+                view,
+                request.value()["status"] != "pending",
+            )?;
+            Ok::<(), MonitorError>(())
+        })();
+        if let Err(error) = apply {
+            tx.execute_batch(
+                "ROLLBACK TO startup_request_recovery_row; RELEASE startup_request_recovery_row",
+            )
+            .map_err(studio_runtime_store::StoreError::from)?;
+            if startup_store_failure(&error) {
+                return Err(error);
+            }
+            eprintln!("startup request recovery skipped row id={id}: {error}");
+            continue;
+        }
+        tx.execute_batch("RELEASE startup_request_recovery_row")
+            .map_err(studio_runtime_store::StoreError::from)?;
+        count += 1;
+    }
+    Ok(count)
+}
+
+fn retained_question(request: &Value, agents: &std::collections::BTreeMap<String, Value>) -> bool {
+    if request.get("method").and_then(Value::as_str) != Some("agent/asyncQuestion") {
+        return false;
+    }
+    let Some(agent) = request
+        .get("agent")
+        .and_then(Value::as_str)
+        .and_then(|id| agents.get(id))
+    else {
+        return false;
+    };
+    let same_epoch = agent.get("epoch") == request.get("epoch");
+    if event_write::truthy(agent.get("deletedAt")) || !same_epoch {
+        return false;
+    }
+    if event_write::truthy(agent.get("autoWake")) {
+        return true;
+    }
+    agent.get("restartRecovery").is_some_and(|marker| {
+        marker.get("stage").and_then(Value::as_str) == Some("pending")
+            && event_write::truthy(marker.get("autoWake"))
+            && marker.get("epoch") == agent.get("epoch")
+    })
+}
+
+fn recover_uncovered_events(tx: &Transaction<'_>) -> Result<usize, MonitorError> {
+    // Exact unsubmitted batches were handled by SchedulerRepository above.
+    // Every claim still present has no validated scheduler ownership.
+    Ok(tx
+        .execute(
+            "UPDATE runtime_events AS e SET status='uncertain',error=?1 \
+         WHERE e.status IN ('reserved','dispatching')",
+            [RESTART_EVENT_ERROR],
+        )
+        .map_err(studio_runtime_store::StoreError::from)?)
+}
+
+fn recover_active_monitors(tx: &Transaction<'_>, now: f64) -> Result<usize, MonitorError> {
+    let exists: bool = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='runtime_monitors')",
+        [],
+        |row| row.get(0),
+    ).map_err(studio_runtime_store::StoreError::from)?;
+    if !exists {
+        return Ok(0);
+    }
+    let mut statement = tx
+        .prepare("SELECT id,record FROM runtime_monitors ORDER BY id")
+        .map_err(studio_runtime_store::StoreError::from)?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
+        .map_err(studio_runtime_store::StoreError::from)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(studio_runtime_store::StoreError::from)?;
+    drop(statement);
+    let mut ids = Vec::new();
+    for (id, raw) in rows {
+        match serde_json::from_str::<Value>(&raw) {
+            Ok(record)
+                if matches!(
+                    record.get("status").and_then(Value::as_str),
+                    Some("running" | "starting" | "approval")
+                ) =>
+            {
+                ids.push(id);
+            }
+            Ok(_) => {}
+            Err(_) => eprintln!("startup monitor recovery skipped row id={id}: invalid record"),
+        }
+    }
+    let mut recovered = 0;
+    for id in &ids {
+        let result = (|| {
+            let (snapshot, actor) = snapshot(tx, id)?;
+            let decision = policy::restart_loss(&snapshot)?;
+            let remote = event_write::truthy(actor.extra.get("remoteWorker"))
+                || event_write::truthy(actor.extra.get("remoteAnchor"));
+            if remote {
+                // Python startup marks remote-owned monitors lost and still
+                // writes the owner event; bypass the request-time remote guard.
+                for effect in &decision.effects {
+                    if let Effect::ExitEvent { wake } = effect {
+                        exit_event(tx, &actor, &decision.record, *wake, now)?;
+                    }
+                }
+                tx.execute(
+                    "UPDATE runtime_events SET status='stored_only' WHERE id=?1 AND status='pending'",
+                    [format!("monitor:{id}")],
+                )
+                .map_err(studio_runtime_store::StoreError::from)?;
+                MonitorSnapshot::checked(
+                    decision.record.clone(),
+                    serde_json::to_value(&actor).map_err(studio_runtime_store::StoreError::from)?,
+                )?;
+                repository::put(tx, decision.record)?;
+                crate::sync_policy::maintain_monitor_window(tx, &|_, _, view, deleted| {
+                    deleted
+                        || studio_runtime_schema::validate("MonitorEntityDto", view)
+                            .unwrap_or(false)
+                })?;
+            } else {
+                apply(tx, &snapshot, &actor, &decision, now)?;
+            }
+            Ok::<(), MonitorError>(())
+        })();
+        if let Err(error) = result {
+            if startup_store_failure(&error) {
+                return Err(error);
+            }
+            eprintln!("startup monitor recovery skipped row id={id}: {error}");
+            continue;
+        }
+        recovered += 1;
+    }
+    Ok(recovered)
+}
+
+pub(crate) fn startup_store_failure(error: &MonitorError) -> bool {
+    fn store_failure(error: &studio_runtime_store::StoreError) -> bool {
+        matches!(
+            error,
+            studio_runtime_store::StoreError::Sqlite(_)
+                | studio_runtime_store::StoreError::CommitOutcomeUnknown(_)
+                | studio_runtime_store::StoreError::WriterPoisoned
+                | studio_runtime_store::StoreError::StateDirectory(_)
+                | studio_runtime_store::StoreError::AlreadyOwned
+                | studio_runtime_store::StoreError::MissingDatabase(_)
+                | studio_runtime_store::StoreError::UnsafeStateDirectory
+                | studio_runtime_store::StoreError::SchemaMismatch(_)
+                | studio_runtime_store::StoreError::SchemaObjectMismatch { .. }
+        )
+    }
+    match error {
+        MonitorError::Store(error) => store_failure(error),
+        MonitorError::Event(crate::event_write::EventWriteError::Store(error)) => {
+            store_failure(error)
+        }
+        MonitorError::Rules(crate::rules_tick::RulesTickError::Store(error)) => {
+            store_failure(error)
+        }
+        MonitorError::Rules(crate::rules_tick::RulesTickError::Event(
+            crate::event_write::EventWriteError::Store(error),
+        )) => store_failure(error),
+        _ => false,
+    }
+}
 
 pub fn snapshot(
     transaction: &Transaction<'_>,

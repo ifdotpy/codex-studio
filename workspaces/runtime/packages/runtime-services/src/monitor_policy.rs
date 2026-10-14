@@ -766,6 +766,45 @@ pub struct ReattachProof {
     pub current_connection: String,
 }
 
+/// Preserve the submitted command as an unknown outcome when its owning
+/// supervisor did not survive the backend restart.
+pub fn restart_loss(snapshot: &MonitorSnapshot) -> Result<Decision, MonitorError> {
+    let status = snapshot
+        .record
+        .get("status")
+        .and_then(Value::as_str)
+        .ok_or_else(|| MonitorError::InvalidStored {
+            id: snapshot.id().to_owned(),
+            location: "status".into(),
+        })?;
+    if !matches!(status, "running" | "starting" | "approval") {
+        return Err(MonitorError::Refused("Monitor is not active"));
+    }
+    let mut recovery = serde_json::Map::from_iter([
+        ("accountKey".into(), json!(snapshot.actor.account_key)),
+        ("epoch".into(), json!(snapshot.actor.epoch)),
+        ("status".into(), json!(status)),
+    ]);
+    for key in ["error", "finished"] {
+        recovery.insert(
+            key.into(),
+            snapshot.record.get(key).cloned().unwrap_or(Value::Null),
+        );
+    }
+    let mut decision = snapshot.decision();
+    decision.record["reattachRecovery"] = Value::Object(recovery);
+    decision.record["status"] = json!("lost");
+    decision.record["error"] = json!("Server restarted. Command outcome unknown; not rerun.");
+    if !snapshot
+        .record
+        .get("ruleId")
+        .is_some_and(|rule| !rule.is_null() && rule.as_str().is_none_or(|value| !value.is_empty()))
+    {
+        decision.effects.push(Effect::ExitEvent { wake: true });
+    }
+    Ok(decision)
+}
+
 pub fn reattach(
     snapshot: &MonitorSnapshot,
     proof: &ReattachProof,

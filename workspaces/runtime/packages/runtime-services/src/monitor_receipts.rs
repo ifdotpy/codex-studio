@@ -6,9 +6,20 @@ use serde::{Deserialize, Serialize};
 use std::fs::{self, File};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use studio_runtime_store::RuntimeStore;
 
 const RECEIPT_BYTES: u64 = 128 * 1024;
+static RECOVERY_WARNING_REPORTED: AtomicBool = AtomicBool::new(false);
+
+fn report_recovery_warning(path: &Path, error: impl std::fmt::Display) {
+    if !RECOVERY_WARNING_REPORTED.swap(true, Ordering::Relaxed) {
+        eprintln!(
+            "monitor receipt recovery skipped {}: {error}",
+            path.display()
+        );
+    }
+}
 
 #[derive(Clone, Deserialize, Serialize)]
 pub struct ResultReceipt {
@@ -140,7 +151,7 @@ pub fn recover(store: &RuntimeStore, keys: &[String]) -> Vec<(String, Result<(),
 }
 
 /// Bounded startup/timer recovery, including receipts for already terminal rows.
-/// A corrupt receipt stops this batch visibly and is retained for diagnosis.
+/// Invalid or unreadable receipts are retained and logged while the batch continues.
 pub fn recover_pending(store: &RuntimeStore, limit: usize) -> Result<usize, MonitorError> {
     if limit == 0 {
         return Ok(0);
@@ -148,19 +159,35 @@ pub fn recover_pending(store: &RuntimeStore, limit: usize) -> Result<usize, Moni
     let directory = store.root().join("monitor-results");
     match fs::symlink_metadata(&directory) {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(0),
-        Err(error) => return Err(error.into()),
+        Err(error) => {
+            report_recovery_warning(&directory, error);
+            return Ok(0);
+        }
         Ok(metadata) if !metadata.is_dir() => {
-            return Err(MonitorError::InvalidResultReceipt("directory"));
+            report_recovery_warning(&directory, "not a directory");
+            return Ok(0);
         }
         Ok(_) => {}
     }
     let mut recovered = 0;
-    let mut entries = fs::read_dir(directory)?;
-    for _ in 0..64 {
-        let Some(entry) = entries.next() else {
-            return Ok(recovered);
+    let mut entries = match fs::read_dir(&directory) {
+        Ok(entries) => entries,
+        Err(error) => {
+            report_recovery_warning(&directory, error);
+            return Ok(0);
+        }
+    };
+    let mut scanned = 0;
+    while scanned < 64 {
+        let Some(entry) = entries.next() else { break };
+        scanned += 1;
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(error) => {
+                report_recovery_warning(&directory, error);
+                continue;
+            }
         };
-        let entry = entry?;
         if entry
             .path()
             .extension()
@@ -168,19 +195,34 @@ pub fn recover_pending(store: &RuntimeStore, limit: usize) -> Result<usize, Moni
         {
             continue;
         }
-        let receipt = read(&entry.path(), None)?;
+        let receipt = match read(&entry.path(), None) {
+            Ok(receipt) => receipt,
+            Err(error) => {
+                report_recovery_warning(&entry.path(), error);
+                continue;
+            }
+        };
         if entry.path() != path(store.root(), &receipt.key) {
-            return Err(MonitorError::InvalidResultReceipt("identity"));
+            report_recovery_warning(&entry.path(), "invalid identity");
+            continue;
         }
-        restore(store, &receipt)?;
-        acknowledge(store.root(), &receipt.key)?;
+        if let Err(error) = restore(store, &receipt) {
+            if crate::monitor_runtime::startup_store_failure(&error) {
+                return Err(error);
+            }
+            report_recovery_warning(&entry.path(), error);
+            continue;
+        }
+        if let Err(error) = acknowledge(store.root(), &receipt.key) {
+            report_recovery_warning(&entry.path(), error);
+        }
         recovered += 1;
         if recovered >= limit.min(64) {
             return Ok(recovered);
         }
     }
-    if entries.next().is_some() {
-        return Err(MonitorError::InvalidResultReceipt("scan bound"));
+    if scanned == 64 && entries.next().is_some() {
+        report_recovery_warning(&directory, "scan reached the 64-file bound");
     }
     Ok(recovered)
 }
