@@ -2696,7 +2696,10 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     # transaction owns the writer, this wait must not block
                     # unrelated runtime state access.
                     with self.db(busy_timeout=_WRITE_ADMISSION_BUSY_TIMEOUT_MS) as db:
-                        db.execute("BEGIN IMMEDIATE")
+                        # Reusable callback connections attach analytics. A
+                        # BEGIN IMMEDIATE would reserve every attached writer;
+                        # this zero-row UPDATE claims only the main writer.
+                        db.execute("UPDATE main.runtime_supervisor_cursor SET sequence=sequence WHERE handle='' ")
                         lock_acquired = self.lock.acquire(blocking=False)
                         if not lock_acquired:
                             # No callback work has run, so this transaction is

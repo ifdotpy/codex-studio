@@ -959,6 +959,7 @@ def sync_event_window(db: sqlite3.Connection, *, full: bool = True) -> int:
     marker = db.execute("SELECT value FROM sync_entity_meta WHERE key='event_window_seq'").fetchone()
     if not full and marker and int(marker[0]) == changed:
         return 0
+    register_functions(db)
     backfill, retire, stamp = event_window_statements(full=full)
     _ensure_sequence_transaction(db)
     db.execute(backfill)

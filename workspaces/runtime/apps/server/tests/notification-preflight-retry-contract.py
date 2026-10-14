@@ -72,7 +72,7 @@ class NotificationPreflightRetry(unittest.TestCase):
                     try:
                         return original_execute(sql, parameters)
                     except sqlite3.OperationalError as error:
-                        if (str(sql) == "BEGIN IMMEDIATE"
+                        if ("UPDATE main.runtime_supervisor_cursor SET sequence=sequence" in str(sql)
                                 and codex_runtime.sqlite_busy(error)):
                             busy_preflight.set()
                         raise

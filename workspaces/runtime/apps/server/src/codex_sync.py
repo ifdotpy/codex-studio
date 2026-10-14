@@ -28,6 +28,7 @@ class SyncStore:
         self.runtime = runtime
         self.canvas = canvas
         self._entity_prune_lock = threading.Lock()
+        self._entity_prepare_lock = threading.RLock()
         self.entity_prune_status = {"status": "idle", "updated": time.time(), "deleted": 0}
         # Transcript reads stay serial within their stripe. Entity reads use
         # SQLite snapshots without these stripes.
@@ -420,22 +421,37 @@ class SyncStore:
         db.execute('INSERT OR REPLACE INTO sync_documents(seq,scope,id,payload,deleted) VALUES (?,?,?,?,?)',
                    (sequence, scope, key, encoded, int(deleted)))
 
+    def prepare_runtime(self) -> None:
+        """Prepare an attached Runtime once before either listener accepts requests."""
+        prepare_lock = self.__dict__.setdefault('_entity_prepare_lock', threading.RLock())
+        with prepare_lock:
+            if self.runtime is not getattr(self, '_prepared_runtime', None):
+                self.prepare_entities()
+
     def prepare_entities(self) -> None:
         """Repair stored projections during startup, before HTTP readers run."""
         from codex_sync_entities import seed, sync_task_window, sync_event_window, sync_monitor_window
-        # A freshly created Canvas has no Runtime tables yet. Attach-time
-        # preparation installs their revision triggers before requests begin.
-        self._ensure_versions(force=self.runtime is not getattr(self, '_prepared_runtime', None))
-        with self.connection("SyncStore.prepare_entities") as db:
-            db.execute('BEGIN IMMEDIATE')
-            seed(db, runtime_owner=self.runtime, canvas_owner=self.canvas)
-            # Finish legacy task-window migration here. GETs must never take
-            # responsibility for retiring another batch of stored DTOs.
-            while sync_task_window(db):
-                pass
-            sync_event_window(db)
-            sync_monitor_window(db)
-        self._prepared_runtime = self.runtime
+        prepare_lock = self.__dict__.setdefault('_entity_prepare_lock', threading.RLock())
+        with prepare_lock:
+            # A freshly created Canvas has no Runtime tables yet. Attach-time
+            # preparation installs their revision triggers before requests begin.
+            self._ensure_versions(force=self.runtime is not getattr(self, '_prepared_runtime', None))
+            with self.connection("SyncStore.prepare_entities") as db:
+                db.execute('BEGIN IMMEDIATE')
+                # Standalone Canvas listeners can expose account/cost reads with
+                # a partial runtime. They seed stored DTOs without claiming the
+                # full Runtime's derived organization views are available.
+                runtime_owner = self.runtime if all(callable(getattr(self.runtime, method, None)) for method in (
+                    'agent_entity_view', 'room_entity_view', 'complaint_entity_view', 'workspace_entity_view',
+                )) else None
+                seed(db, runtime_owner=runtime_owner, canvas_owner=self.canvas)
+                # Finish legacy task-window migration here. GETs must never take
+                # responsibility for retiring another batch of stored DTOs.
+                while sync_task_window(db):
+                    pass
+                sync_event_window(db)
+                sync_monitor_window(db)
+            self._prepared_runtime = self.runtime
 
     def maintain_entities(self) -> None:
         """Schedule bounded tombstone cleanup from runtime maintenance, never a GET."""

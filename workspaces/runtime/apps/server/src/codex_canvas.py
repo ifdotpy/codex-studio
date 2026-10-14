@@ -734,9 +734,6 @@ def main():
             return
         runtime = Runtime(canvas.root)
         canvas.runtime = runtime
-        # Upgrade views that require the Runtime before either listener accepts
-        # requests. Entity GETs read committed projections and never repair them.
-        server._context.sync().prepare_entities()
         if server.unix_server:
             unix_thread = threading.Thread(target=server.unix_server.serve_forever,
                                            kwargs={"poll_interval": 0.5,

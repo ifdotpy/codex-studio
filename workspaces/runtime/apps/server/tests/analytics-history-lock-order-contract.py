@@ -80,7 +80,7 @@ class HistoryLockOrder(unittest.TestCase):
         original = history.budget_capture
         original_execute = codex_sqlite.InstrumentedConnection.execute
         def execute(db, sql, parameters=()):
-            if threading.current_thread() is worker and sql == 'BEGIN IMMEDIATE':
+            if threading.current_thread() is worker and sql.startswith('UPDATE main.runtime_supervisor_cursor'):
                 self.assertFalse(self.runtime.lock._is_owned())
                 entered.set()
             return original_execute(db, sql, parameters)

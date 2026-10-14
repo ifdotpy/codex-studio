@@ -269,6 +269,21 @@ class EntityReadLockContract(unittest.TestCase):
                 with self.connect() as db:
                     self.assertIsNotNone(db.execute('SELECT value FROM sync_entity_meta WHERE key=?', (marker,)).fetchone())
 
+    def test_partial_runtime_uses_stored_dtos_and_attach_prepares_once(self):
+        from types import SimpleNamespace
+        partial = SimpleNamespace(lock=object())
+        store = SyncStore(self.connect, lambda _key: {}, runtime=partial, canvas=self.canvas_view)
+        response = store.pull('state:entities:v1', fresh=True)
+        self.assertEqual(self.values(response)['entity:agent:owner']['name'], 'Owner')
+        # Listener startup sees the same attachment from two shared contexts.
+        # Once a full Runtime arrives, only the first listener repairs its views.
+        store.runtime = self.runtime_view
+        with patch.object(store, 'prepare_entities', wraps=store.prepare_entities) as prepare:
+            store.prepare_runtime()
+            store.prepare_runtime()
+        self.assertEqual(prepare.call_count, 1)
+        self.assertIs(store._prepared_runtime, self.runtime_view)
+
     def test_attach_prepares_revision_triggers_for_new_runtime_tables(self):
         path = Path(self.temp.name) / 'brand-new.sqlite3'
         @contextmanager

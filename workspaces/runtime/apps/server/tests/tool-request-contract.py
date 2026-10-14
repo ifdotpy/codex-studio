@@ -41,6 +41,7 @@ class Ledger(RequestMixin):
             db.executescript('''
                 CREATE TABLE IF NOT EXISTS runtime_agents(id TEXT PRIMARY KEY, record TEXT);
                 CREATE TABLE IF NOT EXISTS runtime_tool_results(id TEXT PRIMARY KEY, result TEXT);
+                CREATE TABLE IF NOT EXISTS runtime_supervisor_cursor(handle TEXT PRIMARY KEY, sequence INTEGER NOT NULL);
             ''')
             self.setup_tool_requests(db)
 
@@ -127,7 +128,7 @@ class RequestContract(unittest.TestCase):
                         try:
                             return self.db.execute(sql, parameters)
                         except sqlite3.OperationalError:
-                            if sql == "BEGIN IMMEDIATE":
+                            if "UPDATE main.runtime_supervisor_cursor SET sequence=sequence" in sql:
                                 busy.set()
                             raise
 
