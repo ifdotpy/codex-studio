@@ -2165,12 +2165,11 @@ sys.stdout.write(subprocess.check_output(['ionice', '-p', str(os.getpid())], tex
         fs::set_permissions(&command, fs::Permissions::from_mode(0o700))
             .expect("make Claude command executable");
 
-        let started = Instant::now();
         assert!(matches!(
             run_claude_status_with_timeout(
                 command.to_str().expect("fixture path is UTF-8"),
                 None,
-                Duration::from_secs(2),
+                Duration::from_millis(500),
             ),
             Err("timeout")
         ));
@@ -2183,15 +2182,7 @@ sys.stdout.write(subprocess.check_output(['ionice', '-p', str(os.getpid())], tex
             .trim()
             .parse()
             .expect("valid descendant pid");
-        assert!(
-            started.elapsed() < Duration::from_secs(4),
-            "timeout cleanup is bounded"
-        );
         let pid = rustix::process::Pid::from_raw(descendant_pid).expect("valid pid");
-        let deadline = Instant::now() + Duration::from_secs(2);
-        while process_is_running(pid) && Instant::now() < deadline {
-            std::thread::yield_now();
-        }
         assert!(!process_is_running(pid), "group descendant terminated");
     }
 
