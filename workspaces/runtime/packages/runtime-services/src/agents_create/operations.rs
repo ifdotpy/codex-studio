@@ -23,8 +23,12 @@ pub struct Context<'a> {
 pub enum OperationError {
     #[error("{0}")]
     Invalid(&'static str),
+    #[error("{0}")]
+    PlatformRefusal(&'static str),
     #[error("Not implemented: requires {0}")]
     Unavailable(&'static str),
+    #[error("Image workspace failed: {0}")]
+    Workspace(String),
     #[error(transparent)]
     Create(#[from] CreateError),
     #[error(transparent)]
@@ -180,9 +184,13 @@ fn create(
         }
         return create_child(context, &request, &id, &intent, &validate);
     }
-    if workspace != "worktree" {
+    if workspace == "image" && !cfg!(target_os = "macos") {
+        return Err(OperationError::PlatformRefusal(
+            crate::image_workspace::PLATFORM_REFUSAL,
+        ));
+    }
+    if workspace != "worktree" && workspace != "image" {
         return Err(OperationError::Unavailable(match workspace {
-            "image" => "workspace-state/image-workspace",
             "layr" => "workspace-state/vm-workspace",
             _ => return Err(OperationError::Invalid("Unknown workspace mode")),
         }));
@@ -407,7 +415,7 @@ fn create(
     ]
     .iter()
     .any(|field| request.intent.get(*field).is_some());
-    mutate(context, |tx| {
+    let result = mutate(context, |tx| {
         if let Some(existing) = replay(tx)? {
             return Ok(sync_projection(tx, &existing)?);
         }
@@ -440,6 +448,9 @@ fn create(
             }
             reused["cwd"] = json!(cwd);
             reused["hostProjectPath"] = json!(cwd);
+            if workspace == "image" {
+                set_image_workspace_fields(&mut reused, &cwd);
+            }
             reused["accountKey"] = json!(account);
             reused["executionSettingsAccountKey"] = json!(account);
             reused["yoloMode"] = json!(yolo);
@@ -500,7 +511,12 @@ fn create(
         Ok(super::create_agent_with_identity(
             tx, &id, prompt, record, created, validate,
         )?)
-    })
+    })?;
+    #[cfg(target_os = "macos")]
+    if workspace == "image" {
+        provision_image_workspace(&result, &id)?;
+    }
+    Ok(result)
 }
 
 fn create_child(
@@ -559,15 +575,15 @@ fn create_child(
         ));
     }
     let workspace = request.workspace.as_deref().unwrap_or("worktree");
-    if workspace == "image" {
-        return Err(OperationError::Unavailable(
-            "workspace-state/image-workspace",
+    if workspace == "image" && !cfg!(target_os = "macos") {
+        return Err(OperationError::PlatformRefusal(
+            crate::image_workspace::PLATFORM_REFUSAL,
         ));
     }
     if workspace == "layr" {
         return Err(OperationError::Unavailable("workspace-state/vm-workspace"));
     }
-    if workspace != "worktree" {
+    if workspace != "worktree" && workspace != "image" {
         return Err(OperationError::Invalid("Unknown workspace mode"));
     }
     let cwd = parent
@@ -664,6 +680,9 @@ fn create_child(
     )?;
     let checked = crate::host_worker_create::persisted_record(&draft)?;
     let mut record = checked.value();
+    if workspace == "image" {
+        set_image_workspace_fields(&mut record, cwd);
+    }
     record["creationIntent"] = intent.clone();
     record["provider"] = json!(provider);
     record["yoloMode"] = root.get("yoloMode").cloned().unwrap_or(json!(true));
@@ -681,7 +700,7 @@ fn create_child(
         .get("task_id")
         .and_then(Value::as_str)
         .map(str::to_owned);
-    mutate(context, |tx| {
+    let result = mutate(context, |tx| {
         crate::host_worker_create::recheck_worker(tx, &draft, epoch, &identity)?;
         let result = super::create_agent_with_identity(tx, id, prompt, record, created, validate)?;
         if let Some(task_id) = &task_id {
@@ -695,7 +714,39 @@ fn create_child(
                 .map_err(|_| OperationError::Invalid("Work item assignment was rejected"))?;
         }
         Ok(result)
-    })
+    })?;
+    #[cfg(target_os = "macos")]
+    if workspace == "image" {
+        provision_image_workspace(&result, id)?;
+    }
+    Ok(result)
+}
+
+/// Record image intent so readiness can remount the durable ASIF state. On macOS,
+/// `provision_image_workspace` mirrors `codex_workspace_images.create_workspace`.
+fn set_image_workspace_fields(record: &mut Value, root: &str) {
+    record["workspaceMode"] = json!("image");
+    record["imageWorkspace"] = json!(true);
+    record["imageWorkspaceReady"] = json!(false);
+    record["imageWorkspacePhase"] = json!("creating");
+    record["imageWorkspaceRepo"] = json!(root);
+    record["workspaceBackend"] = json!("asif");
+}
+
+#[cfg(target_os = "macos")]
+fn provision_image_workspace(result: &Value, fallback_id: &str) -> Result<(), OperationError> {
+    let id = result
+        .get("id")
+        .and_then(Value::as_str)
+        .unwrap_or(fallback_id);
+    let root = result
+        .get("imageWorkspaceRepo")
+        .or_else(|| result.get("cwd"))
+        .and_then(Value::as_str)
+        .ok_or(OperationError::Internal)?;
+    crate::image_workspace::create_workspace(PathBuf::from(root).as_path(), id)
+        .map(|_| ())
+        .map_err(|error| OperationError::Workspace(error.to_string()))
 }
 
 pub fn configure(context: &Context<'_>, request: Configuration) -> Result<Value, OperationError> {
@@ -1784,6 +1835,9 @@ pub(crate) fn build_agent_record(
     if draft {
         record["quickCreate"] = json!(true);
         record["quickCreateRequest"] = json!(quick_create_signature);
+    }
+    if workspace_mode == "image" {
+        set_image_workspace_fields(&mut record, cwd);
     }
     record
 }
