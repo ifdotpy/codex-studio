@@ -7,6 +7,7 @@ synthetic forbidden directory beneath the caller's disposable temporary root.
 import os
 from pathlib import Path
 import pwd
+import shutil
 import sys
 import tempfile
 import threading
@@ -75,6 +76,28 @@ class OracleGuard:
 
 
 def install_guard(*, block_processes=False):
+    # Give every oracle process private provider homes and scratch space even
+    # when the CI parent intentionally supplies no application environment.
+    isolated = tempfile.TemporaryDirectory(prefix="runtime-oracle-", dir="/var/tmp")
+    root = Path(isolated.name)
+    for variable, directory in (
+        ("HOME", "home"),
+        ("CODEX_HOME", "codex-home"),
+        ("CLAUDE_CONFIG_DIR", "claude-config"),
+        ("TMPDIR", "tmp"),
+    ):
+        path = root / directory
+        path.mkdir()
+        os.environ[variable] = str(path)
+    node = shutil.which("node")
+    if node:
+        os.environ["CODEX_NODE"] = node
+    else:
+        os.environ.pop("CODEX_NODE", None)
+    # Retain the TemporaryDirectory for the full lifetime of this oracle.
+    global _ISOLATED_ORACLE_ENV
+    _ISOLATED_ORACLE_ENV = isolated
+
     # Initialize the runtime guard's physical forbidden roots before the oracle
     # rejects even metadata resolution beneath those roots. Later imports reuse it.
     tests = Path(__file__).resolve().parents[4] / "apps/server/tests"

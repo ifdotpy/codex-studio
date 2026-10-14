@@ -13,6 +13,7 @@ struct Oracle {
     child: Child,
     input: ChildStdin,
     output: BufReader<ChildStdout>,
+    _environment: python_test_support::IsolatedTestEnvironment,
 }
 
 impl Oracle {
@@ -20,14 +21,10 @@ impl Oracle {
         let python = python_test_support::prepared_python(
             &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src"),
         );
-        for key in ["HOME", "CODEX_HOME", "CLAUDE_CONFIG_DIR"] {
-            assert!(
-                std::env::var(key)
-                    .expect("disposable environment")
-                    .starts_with("/var/tmp/")
-            );
-        }
-        let mut child = Command::new(python)
+        let environment = python_test_support::IsolatedTestEnvironment::new();
+        let mut command = Command::new(python);
+        environment.apply(&mut command);
+        let mut child = command
             .arg("-B")
             .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/radio_policy/oracle.py"))
             .stdin(Stdio::piped())
@@ -39,6 +36,7 @@ impl Oracle {
             input: child.stdin.take().expect("oracle stdin"),
             output: BufReader::new(child.stdout.take().expect("oracle stdout")),
             child,
+            _environment: environment,
         }
     }
 
@@ -57,12 +55,26 @@ impl Oracle {
 
 impl Drop for Oracle {
     fn drop(&mut self) {
-        if self.child.try_wait().expect("check oracle exit").is_some() {
-            return;
+        let graceful =
+            writeln!(self.input, "{{\"close\":true}}").is_ok() && self.input.flush().is_ok();
+        if graceful {
+            if let Err(error) = self.child.wait() {
+                eprintln!("could not reap radio oracle during teardown: {error}");
+            }
+        } else {
+            match self.child.try_wait() {
+                Ok(Some(_)) => {}
+                Ok(None) => match self.child.kill() {
+                    Ok(()) => {
+                        if let Err(error) = self.child.wait() {
+                            eprintln!("could not reap radio oracle: {error}");
+                        }
+                    }
+                    Err(error) => eprintln!("could not stop radio oracle: {error}"),
+                },
+                Err(error) => eprintln!("could not inspect radio oracle: {error}"),
+            }
         }
-        let _ignored = writeln!(self.input, "{{\"close\":true}}");
-        let _ignored = self.input.flush();
-        assert!(self.child.wait().expect("reap oracle").success());
     }
 }
 

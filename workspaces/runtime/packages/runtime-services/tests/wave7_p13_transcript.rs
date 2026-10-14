@@ -12,15 +12,18 @@ use studio_runtime_store::RuntimeStore;
 #[test]
 fn python_turn_readers_survive_restart_with_identical_cursors_and_receipts() {
     let root = tempfile::tempdir().expect("isolated state");
+    let environment = prepared_python::IsolatedTestEnvironment::new();
     let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let output = Command::new(prepared_python::prepared_python(
+    let mut command = Command::new(prepared_python::prepared_python(
         &manifest.join("../../apps/server/src"),
-    ))
-    .arg(manifest.join("tests/wave7_p13_transcript/oracle.py"))
-    .arg(root.path())
-    .env("PYTHONDONTWRITEBYTECODE", "1")
-    .output()
-    .expect("oracle");
+    ));
+    environment.apply(&mut command);
+    let output = command
+        .arg(manifest.join("tests/wave7_p13_transcript/oracle.py"))
+        .arg(root.path())
+        .env("PYTHONDONTWRITEBYTECODE", "1")
+        .output()
+        .expect("oracle");
     assert!(
         output.status.success(),
         "{}",

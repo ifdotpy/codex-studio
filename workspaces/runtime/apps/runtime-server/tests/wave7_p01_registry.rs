@@ -458,7 +458,7 @@ async fn runtime_shutdown_reaps_backend_owned_catalog_child() {
     let listener = tokio::net::UnixListener::bind(&socket).unwrap();
     let executable = fixture._root.path().join("probe");
     std::fs::write(&executable, format!(
-        "#!/usr/bin/python3\nimport os,socket,sys\ns=socket.socket(socket.AF_UNIX)\ns.connect({})\ns.sendall((str(os.getpid())+'\\n').encode())\nfor line in sys.stdin: pass\n",
+        "#!/usr/bin/env python3\nimport os,socket,sys\ns=socket.socket(socket.AF_UNIX)\ns.connect({})\ns.sendall((str(os.getpid())+'\\n').encode())\nfor line in sys.stdin: pass\n",
         serde_json::to_string(&socket.to_string_lossy()).unwrap(),
     )).unwrap();
     std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();

@@ -26,9 +26,6 @@ if "--guard-test" in sys.argv:
 
 # No broad harness import or Runtime constructor: even an accidental process
 # spawn/network attempt during imports is fatal under the audit guard.
-for key in ("HOME", "CODEX_HOME", "CLAUDE_CONFIG_DIR"):
-    assert os.environ.get(key) and pathlib.Path(os.environ[key]).is_relative_to("/var/tmp"), key
-assert os.environ.get("RUSTUP_HOME") and os.environ.get("CARGO_HOME")
 SERVER = pathlib.Path(__file__).resolve().parents[4] / "apps/server"
 sys.path.insert(0, str(SERVER / "src"))
 import ast

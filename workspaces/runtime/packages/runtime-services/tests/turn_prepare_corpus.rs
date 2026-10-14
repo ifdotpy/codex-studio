@@ -13,13 +13,17 @@ struct Oracle {
     child: Child,
     input: ChildStdin,
     output: BufReader<ChildStdout>,
+    _environment: prepared_python::IsolatedTestEnvironment,
 }
 impl Oracle {
     fn new() -> Self {
         let python = prepared_python::prepared_python(
             &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src"),
         );
-        let mut child = Command::new(python)
+        let environment = prepared_python::IsolatedTestEnvironment::new();
+        let mut command = Command::new(python);
+        environment.apply(&mut command);
+        let mut child = command
             .arg("-B")
             .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/turn_prepare/oracle.py"))
             .stdin(Stdio::piped())
@@ -33,6 +37,7 @@ impl Oracle {
             child,
             input,
             output,
+            _environment: environment,
         }
     }
     fn call(&mut self, value: Value) -> Value {
@@ -48,9 +53,22 @@ impl Oracle {
 }
 impl Drop for Oracle {
     fn drop(&mut self) {
-        let _ignored = writeln!(self.input, "{{\"command\":\"close\"}}");
-        let _ignored = self.input.flush();
-        self.child.wait().expect("reap oracle");
+        let graceful =
+            writeln!(self.input, "{{\"command\":\"close\"}}").is_ok() && self.input.flush().is_ok();
+        if graceful {
+            if let Err(error) = self.child.wait() {
+                eprintln!("could not reap turn-preparation oracle during teardown: {error}");
+            }
+        } else {
+            if let Err(error) = self.child.kill()
+                && error.kind() != std::io::ErrorKind::InvalidInput
+            {
+                eprintln!("could not stop turn-preparation oracle: {error}");
+            }
+            if let Err(error) = self.child.wait() {
+                eprintln!("could not reap turn-preparation oracle: {error}");
+            }
+        }
     }
 }
 

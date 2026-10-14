@@ -1,17 +1,64 @@
 use std::{
     io::{Read, Seek, SeekFrom},
-    process::{Command, Output, Stdio},
+    process::{Child, Command, Output, Stdio},
     time::{Duration, Instant},
 };
 
 const PYTHON_ORACLE_TIMEOUT: Duration = Duration::from_secs(60);
+
+#[allow(dead_code)]
+pub(crate) struct IsolatedTestEnvironment {
+    root: tempfile::TempDir,
+}
+
+#[allow(dead_code)]
+impl IsolatedTestEnvironment {
+    pub(crate) fn new() -> Self {
+        Self {
+            root: tempfile::Builder::new()
+                .prefix("runtime-test-")
+                .tempdir_in("/var/tmp")
+                .expect("isolated test tempdir"),
+        }
+    }
+
+    pub(crate) fn apply(&self, command: &mut Command) {
+        let root = self.root.path();
+        for (name, directory) in [
+            ("HOME", "home"),
+            ("CODEX_HOME", "codex-home"),
+            ("CLAUDE_CONFIG_DIR", "claude-config"),
+            ("TMPDIR", "tmp"),
+        ] {
+            let path = root.join(directory);
+            std::fs::create_dir_all(&path).expect("create isolated test directory");
+            command.env(name, path);
+        }
+    }
+}
+
+fn terminate_child(child: &mut Child, label: &std::path::Path) -> Result<(), String> {
+    if let Err(error) = child.kill()
+        && error.kind() != std::io::ErrorKind::InvalidInput
+    {
+        return Err(format!(
+            "{}: could not stop Python oracle: {error}",
+            label.display()
+        ));
+    }
+    child
+        .wait()
+        .map(|_| ())
+        .map_err(|error| format!("{}: could not reap Python oracle: {error}", label.display()))
+}
 
 pub(crate) fn output_with_timeout(
     command: &mut Command,
     label: &std::path::Path,
     timeout: Duration,
 ) -> Result<Output, String> {
-    let label = label.display();
+    let path = label;
+    let label = path.display();
     let mut stdout = tempfile::tempfile().map_err(|error| format!("{label}: {error}"))?;
     let mut stderr = tempfile::tempfile().map_err(|error| format!("{label}: {error}"))?;
     command
@@ -36,19 +83,21 @@ pub(crate) fn output_with_timeout(
                 std::thread::sleep(Duration::from_millis(10));
             }
             Ok(None) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(format!(
+                let timeout_error = format!(
                     "{label}: Python oracle exceeded {} second timeout",
                     timeout.as_secs()
-                ));
+                );
+                return match terminate_child(&mut child, path) {
+                    Ok(()) => Err(timeout_error),
+                    Err(cleanup_error) => Err(format!("{timeout_error}; {cleanup_error}")),
+                };
             }
             Err(error) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(format!(
-                    "{label}: could not wait for Python oracle: {error}"
-                ));
+                let wait_error = format!("{label}: could not wait for Python oracle: {error}");
+                return match terminate_child(&mut child, path) {
+                    Ok(()) => Err(wait_error),
+                    Err(cleanup_error) => Err(format!("{wait_error}; {cleanup_error}")),
+                };
             }
         }
     };

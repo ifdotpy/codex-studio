@@ -53,7 +53,7 @@ class PythonResolutionTests(unittest.TestCase):
         )
 
     def test_bootstrap_help_runs_with_oldest_available_system_python(self) -> None:
-        candidates = [Path("/usr/bin/python3"), Path(shutil.which("python3") or sys.executable)]
+        candidates = [Path(shutil.which("python3") or sys.executable), Path(sys.executable)]
         runtimes = []
         for candidate in candidates:
             if not candidate.is_file():

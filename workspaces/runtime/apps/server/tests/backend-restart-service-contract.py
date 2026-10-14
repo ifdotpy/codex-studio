@@ -189,7 +189,7 @@ class RestartService(unittest.TestCase):
         self.assertEqual(self.calls, [])
 
     def test_registered_job_can_retain_its_previous_interpreter(self):
-        self.registered_arguments = ['/usr/bin/python3', *self.arguments[1:]]
+        self.registered_arguments = [sys.executable, *self.arguments[1:]]
         with patch('os.access', return_value=True):
             self.execute()
         self.kill.assert_called_once_with(self.before['pid'], signal.SIGTERM)

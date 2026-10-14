@@ -12,13 +12,17 @@ struct Oracle {
     child: Child,
     input: ChildStdin,
     output: BufReader<ChildStdout>,
+    _environment: prepared_python::IsolatedTestEnvironment,
 }
 impl Oracle {
     fn new() -> Self {
         let python = prepared_python::prepared_python(
             &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src"),
         );
-        let mut child = Command::new(python)
+        let environment = prepared_python::IsolatedTestEnvironment::new();
+        let mut command = Command::new(python);
+        environment.apply(&mut command);
+        let mut child = command
             .arg("-B")
             .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/thread_prepare/oracle.py"))
             .stdin(Stdio::piped())
@@ -30,6 +34,7 @@ impl Oracle {
             input: child.stdin.take().expect("stdin"),
             output: BufReader::new(child.stdout.take().expect("stdout")),
             child,
+            _environment: environment,
         }
     }
     fn call(&mut self, value: Value) -> Value {
@@ -44,9 +49,17 @@ impl Oracle {
 }
 impl Drop for Oracle {
     fn drop(&mut self) {
-        let _ignored = writeln!(self.input, "{{\"command\":\"close\"}}");
-        let _ignored = self.input.flush();
-        self.child.wait().expect("reap oracle");
+        let graceful =
+            writeln!(self.input, "{{\"command\":\"close\"}}").is_ok() && self.input.flush().is_ok();
+        if !graceful
+            && let Err(error) = self.child.kill()
+            && error.kind() != std::io::ErrorKind::InvalidInput
+        {
+            eprintln!("could not stop thread-preparation oracle: {error}");
+        }
+        if let Err(error) = self.child.wait() {
+            eprintln!("could not reap thread-preparation oracle: {error}");
+        }
     }
 }
 fn baseline() -> Value {
@@ -475,7 +488,10 @@ fn oracle_guard_blocks_content_metadata_processes_and_network() {
     let python = prepared_python::prepared_python(
         &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src"),
     );
-    let result = Command::new(python)
+    let environment = prepared_python::IsolatedTestEnvironment::new();
+    let mut command = Command::new(python);
+    environment.apply(&mut command);
+    let result = command
         .arg("-B")
         .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/thread_prepare/oracle.py"))
         .arg("--guard-test")
@@ -654,7 +670,10 @@ fn oracle_boundary_guards_detect_enclosing_control_flow_changes() {
     let python = prepared_python::prepared_python(
         &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src"),
     );
-    let result = Command::new(python)
+    let environment = prepared_python::IsolatedTestEnvironment::new();
+    let mut command = Command::new(python);
+    environment.apply(&mut command);
+    let result = command
         .arg("-B")
         .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/thread_prepare/oracle.py"))
         .arg("--boundary-test")

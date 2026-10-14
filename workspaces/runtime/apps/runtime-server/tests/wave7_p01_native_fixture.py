@@ -1,4 +1,4 @@
-#!/usr/bin/python3
+#!/usr/bin/env python3
 """Bounded scripted provider: retain stdin and report only turn/start to its owner."""
 import json
 import os
