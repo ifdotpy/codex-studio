@@ -468,10 +468,16 @@ mod diagnostics_http_tests {
             .oneshot(diagnostics_request())
             .await
             .expect("HTTP response");
-        assert_eq!(response.status(), StatusCode::NOT_IMPLEMENTED);
+        let status = response.status();
         let body = to_bytes(response.into_body(), 64 * 1024)
             .await
             .expect("bounded error response");
+        assert_eq!(
+            status,
+            StatusCode::NOT_IMPLEMENTED,
+            "unexpected diagnostics response: {}",
+            String::from_utf8_lossy(&body)
+        );
         let value: Value = serde_json::from_slice(&body).expect("JSON error response");
         assert!(
             Registry::compile(&[("GET".to_owned(), "/api/diagnostics".to_owned())])
