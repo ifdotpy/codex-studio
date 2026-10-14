@@ -29,6 +29,13 @@ pub struct PreparedNativeAction {
     pub settings: serde_json::Value,
 }
 
+/// Complete native `thread/start` parameters from the shared preparation
+/// pipeline, including developer context, tool definitions, and permissions.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PreparedNativeThread {
+    pub params: serde_json::Value,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct SafetyRetryPreparation {
     pub agent_id: String,
@@ -71,6 +78,16 @@ pub fn prepare_native_action(
     generation: u64,
 ) -> Result<PreparedNativeAction, WorkerError> {
     pipeline::prepare_native_action(store, resources, agent_id, attempt_id, generation)
+}
+
+pub fn prepare_native_thread(
+    store: &RuntimeStore,
+    resources: &PreparationResources,
+    agent_id: &str,
+    attempt_id: &str,
+    generation: u64,
+) -> Result<PreparedNativeThread, WorkerError> {
+    pipeline::prepare_native_thread(store, resources, agent_id, attempt_id, generation)
 }
 
 pub fn prepare_safety_retry(
