@@ -8,15 +8,526 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use rusqlite::OptionalExtension;
 use serde_json::{Value, json};
 use studio_runtime_store::{
-    AgentId, AgentRecord, AgentRepository, Transaction, WorkItemsRepository,
+    AgentId, AgentRecord, AgentRepository, Connection, EventWriteRepository, RuntimeStore,
+    Transaction, WorkItemsRepository,
 };
 
 use crate::event_write::{self, EventWriteError as Error};
 use thiserror::Error;
 
 static GENERATED_WORK_ID: AtomicU64 = AtomicU64::new(0);
+const ACCEPTED_ARCHIVE_PAGE_SIZE: usize = 16;
+const ACCEPTED_ARCHIVE_BASE_DELAY_SECONDS: u64 = 2;
+const ACCEPTED_ARCHIVE_MAX_DELAY_SECONDS: u64 = 60;
+const ACCEPTED_ARCHIVE_MAX_BACKOFF_EXPONENT: u64 = 6;
+
+/// Check whether a submitted commit is on local main without contacting a remote.
+/// Repositories with an origin are kept for the separately scheduled remote check.
+pub fn accepted_revision_is_on_local_main(repository: &str, revision: &str) -> bool {
+    use std::ffi::OsStr;
+    use std::time::Duration;
+
+    if !(7..=64).contains(&revision.len()) || !revision.bytes().all(|byte| byte.is_ascii_hexdigit())
+    {
+        return false;
+    }
+    let run_git = |args: &[&str]| {
+        crate::bounded_child::run_without_git_environment(crate::bounded_child::Request {
+            program: OsStr::new("git"),
+            cwd: OsStr::new(repository),
+            args,
+            environment: &[],
+            input: None,
+            stdout_limit: 256,
+            stderr_limit: 256,
+            timeout: Duration::from_secs(2),
+        })
+        .ok()
+        .map(|output| output.stdout.bytes)
+    };
+    let submitted_ref = format!("{revision}^{{commit}}");
+    let Some(submitted) = run_git(&["rev-parse", "--verify", "--end-of-options", &submitted_ref])
+    else {
+        return false;
+    };
+    let submitted = String::from_utf8_lossy(&submitted).trim().to_owned();
+    let Some(remotes) = run_git(&["remote"]) else {
+        return false;
+    };
+    if String::from_utf8_lossy(&remotes)
+        .lines()
+        .any(|remote| remote == "origin")
+    {
+        return false;
+    }
+    let Some(main) = run_git(&["rev-parse", "--verify", "refs/heads/main^{commit}"]) else {
+        return false;
+    };
+    let main = String::from_utf8_lossy(&main).trim().to_owned();
+    run_git(&["merge-base", "--is-ancestor", &submitted, &main]).is_some()
+}
+
+/// Identify repositories whose accepted-result main check needs remote transport.
+pub fn repository_has_origin(repository: &str) -> bool {
+    use std::ffi::OsStr;
+    use std::time::Duration;
+
+    crate::bounded_child::run_without_git_environment(crate::bounded_child::Request {
+        program: OsStr::new("git"),
+        cwd: OsStr::new(repository),
+        args: &["remote"],
+        environment: &[],
+        input: None,
+        stdout_limit: 256,
+        stderr_limit: 256,
+        timeout: Duration::from_secs(2),
+    })
+    .ok()
+    .is_some_and(|output| {
+        String::from_utf8_lossy(&output.stdout.bytes)
+            .lines()
+            .any(|remote| remote == "origin")
+    })
+}
+
+/// Retry accepted-result archives whose Python-compatible retry deadline has
+/// elapsed. `now` is injected so scheduling and exponential backoff are
+/// deterministic in tests. Pending/unknown receipts are reconciled against the
+/// target before any retry; a known retryable response may be retried with the
+/// same intent identity and target.
+pub fn accepted_archive_tick(store: &RuntimeStore, now: f64) -> Result<usize, WorkWriteError> {
+    let due = {
+        let connection = store.read()?;
+        accepted_archive_due_records(&connection, now)?
+    };
+    let mut handled = 0;
+    for (task_id, encoded_intent) in due {
+        let intent: Value = serde_json::from_str(&encoded_intent)
+            .map_err(studio_runtime_store::StoreError::from)?;
+        let connection = store.read()?;
+        let Some(encoded_work) = WorkItemsRepository::work_record(&connection, &task_id)? else {
+            continue;
+        };
+        let work = encoded_work;
+        drop(connection);
+        if work["status"] != "accepted" {
+            continue;
+        }
+        let intent_id = intent["intentId"].as_str().unwrap_or_default().to_owned();
+        let owner_id = work["owner"].as_str().unwrap_or_default().to_owned();
+        let root_id = work["rootId"].as_str().unwrap_or_default().to_owned();
+        if intent_id.is_empty() || owner_id.is_empty() || root_id.is_empty() {
+            continue;
+        }
+        let receipt_id = format!("work-archive:{intent_id}");
+        let mut dispatch_actor_epoch = 0_i64;
+        let mut prior_status = String::new();
+        let should_dispatch =
+            store.transaction_with_error(|tx| -> Result<bool, WorkWriteError> {
+                let current = WorkItemsRepository::work_record(tx, &task_id)?
+                    .ok_or(Error::InvalidRequest("Unknown work item"))?;
+                if current["status"] != "accepted"
+                    || current["owner"] != owner_id
+                    || current["rootId"] != root_id
+                    || !matches!(
+                        intent["status"].as_str(),
+                        Some("pending" | "retryable" | "unknown")
+                    )
+                    || intent["nextAttemptAt"].as_f64().unwrap_or(0.0) > now
+                {
+                    return Ok(false);
+                }
+                let receipt = tx
+                    .query_row(
+                        "SELECT result FROM runtime_operation_receipts WHERE id=?1",
+                        [&receipt_id],
+                        |row| row.get::<_, String>(0),
+                    )
+                    .optional()
+                    .map_err(studio_runtime_store::StoreError::from)?;
+                let mut receipt = if let Some(receipt) = receipt {
+                    let receipt: Value = serde_json::from_str(&receipt)
+                        .map_err(studio_runtime_store::StoreError::from)?;
+                    if !matches!(
+                        receipt["status"].as_str(),
+                        Some("pending" | "retryable" | "unknown")
+                    ) || receipt["nextAttemptAt"].as_f64().unwrap_or(0.0) > now
+                    {
+                        return Ok(false);
+                    }
+                    prior_status = receipt["status"].as_str().unwrap_or_default().to_owned();
+                    dispatch_actor_epoch = receipt["actorEpoch"].as_i64().unwrap_or_default();
+                    receipt
+                } else {
+                    json!({"status":"pending","taskId":task_id,"intentId":intent_id,
+                        "actor":root_id,"target":owner_id,"attempts":0,"created":now})
+                };
+                let actor_epoch = if dispatch_actor_epoch == 0 {
+                    AgentRepository::get(tx, &AgentId::from(root_id.as_str()))?
+                        .map(|actor| actor.epoch)
+                        .unwrap_or_default()
+                } else {
+                    dispatch_actor_epoch
+                };
+                dispatch_actor_epoch = actor_epoch;
+                receipt["status"] = json!("unknown");
+                receipt["actorEpoch"] = json!(actor_epoch);
+                receipt["attemptStartedAt"] = json!(now);
+                tx.execute(
+                    "INSERT INTO runtime_operation_receipts(id,signature,result) VALUES (?1,?2,?3) \
+                 ON CONFLICT(id) DO UPDATE SET result=excluded.result",
+                    rusqlite::params![receipt_id, "accepted-archive-v1", receipt.to_string()],
+                )
+                .map_err(studio_runtime_store::StoreError::from)?;
+                Ok(true)
+            })?;
+        if !should_dispatch {
+            continue;
+        }
+
+        let preflight = {
+            let connection = store.read()?;
+            accepted_archive_preflight(
+                &connection,
+                &task_id,
+                &work,
+                &intent,
+                &owner_id,
+                &root_id,
+                dispatch_actor_epoch,
+            )?
+        };
+        let outcome = match preflight {
+            Some(value) => Ok(value),
+            None if prior_status == "unknown" => Ok(json!({
+                "status":"kept",
+                "reason":"The accepted archive outcome is unconfirmed",
+            })),
+            None => crate::agent_management_store::execute(
+                store,
+                &crate::agent_management::Action::Archive {
+                    actor: root_id.clone(),
+                    epoch: dispatch_actor_epoch,
+                    target: owner_id.clone(),
+                    reason: "Accepted task result is on main".to_owned(),
+                    unassign_work: false,
+                },
+                now,
+            ),
+        };
+        let (receipt_status, archive, retryable) = match outcome {
+            Ok(value) => {
+                let retryable = value["retryable"] == true
+                    || value["status"] == "blocked"
+                    || value["cleanupPending"] == true;
+                let receipt_status = if retryable {
+                    "retryable"
+                } else if value["status"] == "archived" {
+                    "complete"
+                } else {
+                    "terminal"
+                };
+                (receipt_status, value, retryable)
+            }
+            Err(error) => (
+                "unknown",
+                json!({"status":"kept","reason":format!("The archive check failed: {error}")}),
+                false,
+            ),
+        };
+        store.transaction_with_error(|tx| -> Result<(), WorkWriteError> {
+            let Some(mut current) = WorkItemsRepository::work_record(tx, &task_id)? else {
+                return Ok(());
+            };
+            if current["status"] != "accepted"
+                || current["owner"] != owner_id
+                || current["rootId"] != root_id
+            {
+                return Ok(());
+            }
+            let attempts = intent["attempts"].as_u64().unwrap_or_default();
+            let next_attempt = attempts + 1;
+            let delay = if retryable {
+                ACCEPTED_ARCHIVE_BASE_DELAY_SECONDS
+                    .pow(next_attempt.min(ACCEPTED_ARCHIVE_MAX_BACKOFF_EXPONENT) as u32)
+                    .min(ACCEPTED_ARCHIVE_MAX_DELAY_SECONDS)
+            } else {
+                ACCEPTED_ARCHIVE_MAX_DELAY_SECONDS
+            };
+            if receipt_status != "unknown" {
+                current["archive"] = archive.clone();
+            }
+            if retryable {
+                let mut row_intent = current.get("archiveIntent").cloned().unwrap_or_else(|| {
+                    json!({
+                        "id":intent_id,"status":"pending","owner":owner_id,"attempts":0,
+                        "created":intent.get("created").and_then(Value::as_f64).unwrap_or(now),
+                    })
+                });
+                row_intent["status"] = json!("pending");
+                row_intent["attempts"] = json!(next_attempt);
+                row_intent["nextAttemptAt"] = json!(now + delay as f64);
+                row_intent["lastOutcome"] = archive.clone();
+                row_intent["updated"] = json!(now);
+                current["archiveIntent"] = row_intent;
+            } else if receipt_status == "unknown" {
+                if let Some(mut row_intent) = current.get("archiveIntent").cloned() {
+                    row_intent["nextAttemptAt"] =
+                        json!(now + ACCEPTED_ARCHIVE_MAX_DELAY_SECONDS as f64);
+                    current["archiveIntent"] = row_intent;
+                }
+            } else if let Some(mut row_intent) = current.get("archiveIntent").cloned() {
+                row_intent["status"] = json!(if receipt_status == "complete" {
+                    "complete"
+                } else {
+                    "terminal"
+                });
+                row_intent["updated"] = json!(now);
+                row_intent["outcome"] = archive.clone();
+                current["archiveIntent"] = row_intent;
+            }
+            WorkItemsRepository::update_work(tx, &task_id, &current)?;
+            let mut final_intent = intent.clone();
+            final_intent["status"] = json!(if retryable { "pending" } else { receipt_status });
+            final_intent["attempts"] = json!(next_attempt);
+            final_intent["nextAttemptAt"] = json!(now + delay as f64);
+            final_intent["lastOutcome"] = archive.clone();
+            final_intent["updated"] = json!(now);
+            final_intent["actorEpoch"] = json!(dispatch_actor_epoch);
+            if !retryable {
+                final_intent["outcome"] = archive.clone();
+            }
+            tx.execute(
+                "UPDATE runtime_operation_receipts SET result=?1 WHERE id=?2",
+                rusqlite::params![final_intent.to_string(), receipt_id],
+            )
+            .map_err(studio_runtime_store::StoreError::from)?;
+            Ok(())
+        })?;
+        handled += 1;
+    }
+    Ok(handled)
+}
+
+/// Match Python's one-second maintenance cadence without coupling retry
+/// deadlines to the monotonic clock used to throttle the tick itself.
+pub fn accepted_archive_tick_due(
+    last: Option<std::time::Instant>,
+    now: std::time::Instant,
+) -> bool {
+    last.is_none_or(|last| now.saturating_duration_since(last) >= std::time::Duration::from_secs(1))
+}
+
+/// Persist uncertainty before the synchronous accept route attempts an archive
+/// effect. A later tick reconciles the target before replaying the same tuple.
+pub fn begin_accepted_archive_attempt(
+    store: &RuntimeStore,
+    task_id: &str,
+    now: f64,
+) -> Result<(), WorkWriteError> {
+    store.transaction_with_error(|tx| -> Result<(), WorkWriteError> {
+        let work = WorkItemsRepository::work_record(tx, task_id)?
+            .ok_or(Error::InvalidRequest("Unknown work item"))?;
+        if work["status"] != "accepted" {
+            return Err(Error::InvalidRequest("Work item is not accepted").into());
+        }
+        let result_id = work["decisions"]
+            .as_array()
+            .and_then(|items| items.last())
+            .and_then(|decision| decision["resultId"].as_str())
+            .ok_or(Error::InvalidRequest("Accepted result is missing"))?;
+        let receipt_id = format!("work-archive:{task_id}:{result_id}");
+        let raw = tx
+            .query_row(
+                "SELECT result FROM runtime_operation_receipts WHERE id=?1 AND signature='accepted-archive-v1'",
+                [&receipt_id],
+                |row| row.get::<_, String>(0),
+            )
+            .map_err(studio_runtime_store::StoreError::from)?;
+        let mut intent: Value = serde_json::from_str(&raw)
+            .map_err(studio_runtime_store::StoreError::from)?;
+        if !matches!(intent["status"].as_str(), Some("pending" | "retryable")) {
+            return Err(Error::InvalidRequest("Archive attempt is not dispatchable").into());
+        }
+        intent["status"] = json!("unknown");
+        intent["attemptStartedAt"] = json!(now);
+        intent["nextAttemptAt"] = json!(now + ACCEPTED_ARCHIVE_MAX_DELAY_SECONDS as f64);
+        tx.execute(
+            "UPDATE runtime_operation_receipts SET result=?1 WHERE id=?2",
+            rusqlite::params![intent.to_string(), receipt_id],
+        )
+        .map_err(studio_runtime_store::StoreError::from)?;
+        Ok(())
+    })?;
+    Ok(())
+}
+
+/// Reconcile the target and accepted result before replaying a lifecycle archive.
+/// A canonical archive marker proves the prior effect committed; cleanupPending
+/// or a conflicting marker is held without repeating cleanup effects.
+fn accepted_archive_preflight(
+    connection: &Connection,
+    task_id: &str,
+    work: &Value,
+    intent: &Value,
+    owner_id: &str,
+    root_id: &str,
+    actor_epoch: i64,
+) -> Result<Option<Value>, WorkWriteError> {
+    let Some(actor) = AgentRepository::get(connection, &AgentId::from(root_id))? else {
+        return Ok(Some(
+            json!({"status":"kept","reason":"The archive actor changed"}),
+        ));
+    };
+    if actor.epoch != actor_epoch
+        || actor
+            .extra
+            .get("deletedAt")
+            .is_some_and(|value| !value.is_null())
+    {
+        return Ok(Some(
+            json!({"status":"kept","reason":"The archive actor changed"}),
+        ));
+    }
+    let Some(owner) = AgentRepository::get(connection, &AgentId::from(owner_id))? else {
+        return Ok(Some(
+            json!({"status":"kept","reason":"The accepted task owner changed"}),
+        ));
+    };
+    let owner_value = owner.value();
+    if owner_value
+        .get("remoteWorker")
+        .is_some_and(|value| event_write::truthy(Some(value)))
+    {
+        return Ok(Some(
+            json!({"status":"kept","reason":"The remote worker workspace requires review on its own server"}),
+        ));
+    }
+    let Some(result) = work["results"].as_array().and_then(|items| items.last()) else {
+        return Ok(Some(
+            json!({"status":"kept","reason":"The accepted task result is missing"}),
+        ));
+    };
+    let Some(result_id) = result["id"].as_str() else {
+        return Ok(Some(
+            json!({"status":"kept","reason":"The accepted task result is missing"}),
+        ));
+    };
+    if intent["intentId"] != format!("{task_id}:{result_id}")
+        || work["owner"] != owner_id
+        || work["rootId"] != root_id
+    {
+        return Ok(Some(
+            json!({"status":"kept","reason":"The accepted task owner or result changed"}),
+        ));
+    }
+
+    let archive_marker = owner_value.get("agentArchive").unwrap_or(&Value::Null);
+    if !archive_marker.is_null() {
+        let canonical = archive_marker["by"] == root_id
+            && archive_marker["reason"] == "Accepted task result is on main"
+            && archive_marker["epoch"] == owner.epoch
+            && archive_marker.get("at") == owner_value.get("deletedAt")
+            && archive_marker["at"].as_f64().unwrap_or_default()
+                >= intent["created"].as_f64().unwrap_or_default()
+            && archive_marker["cleanupPending"] == false
+            && !event_write::truthy(archive_marker.get("cleanupPending"));
+        if !canonical {
+            return Ok(Some(json!({
+                "status":"kept",
+                "reason":"The accepted archive outcome is unconfirmed",
+                "cleanupPending":event_write::truthy(archive_marker.get("cleanupPending")),
+            })));
+        }
+        let cleaned = owner_value
+            .get("cleanedWorktree")
+            .filter(|value| !value.is_null());
+        let worktree = if cleaned.is_some_and(|value| event_write::truthy(value.get("missing"))) {
+            json!({"state":"missing","reason":cleaned.and_then(|v| v.get("note")),"bytes":0})
+        } else if let Some(cleaned) = cleaned {
+            json!({"state":"removed","bytes":cleaned.get("bytes")})
+        } else if event_write::truthy(owner_value.get("worktreeReady")) {
+            json!({"state":"kept","reason":"The archived worktree remains","bytes":0})
+        } else {
+            json!({"state":"none","bytes":0})
+        };
+        return Ok(Some(json!({"status":"archived","worktree":worktree})));
+    }
+
+    let mut statement = connection
+        .prepare(
+            "SELECT id FROM runtime_work WHERE json_extract(record,'$.owner')=?1 \
+             AND id<>?2 AND json_extract(record,'$.status') NOT IN ('accepted','cancelled') \
+             ORDER BY id LIMIT 20",
+        )
+        .map_err(studio_runtime_store::StoreError::from)?;
+    let open_tasks = statement
+        .query_map([owner_id, task_id], |row| row.get::<_, String>(0))
+        .map_err(studio_runtime_store::StoreError::from)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(studio_runtime_store::StoreError::from)?;
+    if !open_tasks.is_empty() {
+        return Ok(Some(
+            json!({"status":"kept","reason":"The owner has another open task",
+            "tasks":open_tasks,"retryable":true}),
+        ));
+    }
+
+    if owner_value.get("executionMode").and_then(Value::as_str) == Some("vm") {
+        if !vm_merge_confirmed(
+            connection,
+            task_id,
+            result_id,
+            result["revision"].as_str().unwrap_or_default(),
+        )? {
+            return Ok(Some(
+                json!({"status":"kept","reason":"The layr result merge is not confirmed"}),
+            ));
+        }
+    } else {
+        let revision = result["revision"].as_str().unwrap_or_default();
+        let cwd = owner_value
+            .get("cwd")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        if cwd.is_empty() || !accepted_revision_is_on_local_main(cwd, revision) {
+            let remote = !cwd.is_empty() && repository_has_origin(cwd);
+            let reason = if remote {
+                "Remote-origin main verification requires cross-server/remote-transport"
+            } else {
+                "The result commit is not reachable from local main"
+            };
+            return Ok(Some(json!({"status":"kept","reason":reason})));
+        }
+    }
+    Ok(None)
+}
+
+fn accepted_archive_due_records(
+    connection: &Connection,
+    now: f64,
+) -> Result<Vec<(String, String)>, WorkWriteError> {
+    let mut statement = connection
+        .prepare(
+            "SELECT json_extract(result,'$.taskId'),result FROM runtime_operation_receipts \
+         WHERE signature='accepted-archive-v1' \
+           AND json_extract(result,'$.status') IN ('pending','retryable','unknown') \
+           AND COALESCE(json_extract(result,'$.nextAttemptAt'),0)<=?1 \
+         ORDER BY COALESCE(json_extract(result,'$.nextAttemptAt'),0),id LIMIT ?2",
+        )
+        .map_err(studio_runtime_store::StoreError::from)?;
+    Ok(statement
+        .query_map(
+            rusqlite::params![now, ACCEPTED_ARCHIVE_PAGE_SIZE as i64],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+        )
+        .map_err(studio_runtime_store::StoreError::from)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(studio_runtime_store::StoreError::from)?)
+}
 
 pub struct CreateWork {
     pub actor_id: String,
@@ -54,6 +565,7 @@ pub enum WorkMutation {
     },
 }
 
+#[derive(Clone)]
 pub struct SubmitWork {
     pub task_id: String,
     pub version: Option<i64>,
@@ -62,6 +574,191 @@ pub struct SubmitWork {
     pub revision: String,
     pub files: Vec<String>,
     pub state_dir: PathBuf,
+    pub vm_evidence: Option<Value>,
+    pub vm_evidence_request_id: Option<String>,
+}
+
+pub struct VmSubmissionCall {
+    pub owner_id: String,
+    pub revision: String,
+    pub request_id: String,
+}
+
+fn vm_intent_id(kind: &str, task_id: &str) -> String {
+    format!("work-write-vm-intent:{kind}:{task_id}")
+}
+
+fn read_vm_intent(
+    connection: &Connection,
+    kind: &str,
+    task_id: &str,
+) -> Result<Option<Value>, WorkWriteError> {
+    let encoded = connection
+        .query_row(
+            "SELECT result FROM runtime_operation_receipts WHERE id=?1",
+            [vm_intent_id(kind, task_id)],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(studio_runtime_store::StoreError::from)?;
+    let decoded = encoded
+        .map(|value| serde_json::from_str(&value).map_err(studio_runtime_store::StoreError::from))
+        .transpose()?;
+    Ok(decoded)
+}
+
+fn write_vm_intent(
+    tx: &Transaction<'_>,
+    kind: &str,
+    task_id: &str,
+    intent: &Value,
+) -> Result<(), WorkWriteError> {
+    tx.execute(
+        "INSERT INTO runtime_operation_receipts(id,signature,result) VALUES (?1,?2,?3) \
+         ON CONFLICT(id) DO UPDATE SET signature=excluded.signature,result=excluded.result",
+        rusqlite::params![
+            vm_intent_id(kind, task_id),
+            "work-write-vm-intent-v1",
+            intent.to_string()
+        ],
+    )
+    .map_err(studio_runtime_store::StoreError::from)?;
+    Ok(())
+}
+
+pub enum VmSubmissionPreparation {
+    NotVm,
+    Replay,
+    Evidence { evidence: Value, request_id: String },
+    Call(VmSubmissionCall),
+}
+
+/// Persist an exact layr evidence request before contacting the guest. A pending
+/// or unknown request is never sent again; completed evidence can be replayed.
+pub fn prepare_vm_submission(
+    store: &RuntimeStore,
+    agent_id: &str,
+    request_id: Option<&str>,
+    signature: &str,
+    input: &SubmitWork,
+) -> Result<VmSubmissionPreparation, WorkWriteError> {
+    store.transaction_with_error(|tx| {
+        let agent = event_write::checked_agent(tx, agent_id)?;
+        if event_write::read_receipt(
+            tx,
+            request_id,
+            signature,
+            "runtime_work",
+            request_id.unwrap_or(agent_id),
+            |value| {
+                value
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .is_some_and(|id| WorkItemsRepository::validate_work(tx, id, value).is_ok())
+            },
+        )?
+        .is_some()
+        {
+            return Ok(VmSubmissionPreparation::Replay);
+        }
+        let work = load_work(tx, &agent.root_id.0, &input.task_id, input.version)?;
+        if !matches!(work["status"].as_str(), Some("running" | "ready" | "blocked" | "review")) {
+            return Err(Error::InvalidRequest("This result is already accepted").into());
+        }
+        if !blocked_by(&work, &dependency_statuses(tx, &work)?).is_empty() {
+            return Err(Error::InvalidRequest("Dependencies have not been accepted").into());
+        }
+        text(&input.result, false)?;
+        text(&input.checks, false)?;
+        let revision = python_bounded_text(&input.revision, 200)?;
+        if input.files.len() > 50 || input.files.iter().any(|path| path.chars().count() > 4096) {
+            return Err(Error::InvalidRequest("Supply up to 50 file paths").into());
+        }
+        let owner_id = work["owner"].as_str().unwrap_or(&agent.id.0);
+        let owner = event_write::checked_agent(tx, owner_id)?;
+        validate_submission_files(&owner, &input.files)?;
+        if owner.extra.get("executionMode").and_then(Value::as_str) != Some("vm") {
+            return Ok(VmSubmissionPreparation::NotVm);
+        }
+        let rpc_id = format!("layr-evidence:{owner_id}:{revision}");
+        if let Some(intent) = read_vm_intent(tx, "submission", &input.task_id)? {
+            match intent.get("status").and_then(Value::as_str) {
+                Some("pending" | "unknown") => {
+                    return Err(Error::Conflict(
+                        "A prior layr evidence request has an unknown outcome; inspect it before retrying",
+                    )
+                    .into());
+                }
+                _ if intent.get("requestId").and_then(Value::as_str)
+                    == Some(rpc_id.as_str()) =>
+                {
+                    match intent.get("status").and_then(Value::as_str) {
+                    Some("completed") => {
+                        if intent.get("owner").and_then(Value::as_str) == Some(owner_id)
+                            && intent.get("version") == Some(&work["version"])
+                            && intent.get("revision").and_then(Value::as_str)
+                                == Some(revision.as_str())
+                        {
+                            if let Some(evidence) = intent.get("evidence") {
+                                return Ok(VmSubmissionPreparation::Evidence {
+                                    evidence: evidence.clone(),
+                                    request_id: rpc_id.clone(),
+                                });
+                            }
+                        }
+                    }
+                    _ => {}
+                    }
+                }
+                _ => {}
+            }
+        }
+        let intent = json!({
+            "status":"pending",
+            "requestId":rpc_id,
+            "taskId":input.task_id,
+            "owner":owner_id,
+            "revision":revision,
+            "version":work["version"],
+            "created":event_write::unix_time()?,
+        });
+        write_vm_intent(tx, "submission", &input.task_id, &intent)?;
+        Ok(VmSubmissionPreparation::Call(VmSubmissionCall {
+            owner_id: owner_id.to_owned(),
+            revision,
+            request_id: rpc_id,
+        }))
+    })
+}
+
+/// Record the guest's terminal response before the normal work submission write.
+/// A lost response is persisted as unknown and can never trigger an automatic resend.
+pub fn finish_vm_submission(
+    store: &RuntimeStore,
+    task_id: &str,
+    request_id: &str,
+    outcome: Result<Value, bool>,
+) -> Result<Option<Value>, WorkWriteError> {
+    store.transaction_with_error(|tx| {
+        WorkItemsRepository::work_record(tx, task_id)?
+            .ok_or(Error::InvalidRequest("Unknown work item"))?;
+        let mut intent = read_vm_intent(tx, "submission", task_id)?
+            .filter(|value| value.get("requestId").and_then(Value::as_str) == Some(request_id))
+            .ok_or(Error::Conflict("The layr evidence intent changed"))?;
+        match outcome {
+            Ok(evidence) => {
+                intent["status"] = json!("completed");
+                intent["evidence"] = evidence.clone();
+                write_vm_intent(tx, "submission", task_id, &intent)?;
+                Ok(Some(evidence))
+            }
+            Err(uncertain) => {
+                intent["status"] = json!(if uncertain { "unknown" } else { "not_sent" });
+                write_vm_intent(tx, "submission", task_id, &intent)?;
+                Ok(None)
+            }
+        }
+    })
 }
 
 pub struct ClaimWork {
@@ -74,6 +771,201 @@ pub struct AcceptWork {
     pub task_id: String,
     pub version: Option<i64>,
     pub reason: String,
+    pub merged_result_id: Option<String>,
+}
+
+pub struct VmMergeCall {
+    pub lead_id: String,
+    pub owner_id: String,
+    pub result_id: String,
+    pub revision: String,
+    pub request_id: String,
+}
+
+pub enum VmAcceptPreparation {
+    NotVm,
+    Merged(String),
+    Call(VmMergeCall),
+}
+
+/// Persist a merge intent before calling the VM guest. Pending or unknown
+/// identities are never resent; a completed exact merge can be replayed.
+pub fn prepare_vm_accept(
+    store: &RuntimeStore,
+    agent_id: &str,
+    task_id: &str,
+    version: Option<i64>,
+    request_id: Option<&str>,
+    signature: &str,
+    reason: &str,
+) -> Result<VmAcceptPreparation, WorkWriteError> {
+    store.transaction_with_error(|tx| {
+        let lead = event_write::checked_agent(tx, agent_id)?;
+        if lead.extra.get("executionMode").and_then(Value::as_str) != Some("vm") {
+            return Ok(VmAcceptPreparation::NotVm);
+        }
+        if lead.extra.get("isLead") != Some(&Value::Bool(true)) || lead.root_id.0 != agent_id {
+            return Err(
+                Error::InvalidRequest("Only the active lead can accept a layr result").into(),
+            );
+        }
+        let work = load_work(tx, &lead.root_id.0, task_id, version)?;
+        if work["status"] != "review" {
+            return Ok(VmAcceptPreparation::NotVm);
+        }
+        let owner_id = work["owner"].as_str().unwrap_or_default().to_owned();
+        let owner = event_write::checked_agent(tx, &owner_id)?;
+        if owner.extra.get("executionMode").and_then(Value::as_str) != Some("vm") {
+            return Ok(VmAcceptPreparation::NotVm);
+        }
+        // Validate the acceptance and all dependent recipients before the guest
+        // merge. Python's WorkMixin refuses unsupported remote recipients while
+        // applying accept; the VM merge must not happen before that refusal.
+        let statuses = dependency_statuses(tx, &work)?;
+        let now = event_write::unix_time()?;
+        decide_accept(
+            WorkSnapshot {
+                record: &work,
+                dependency_statuses: &statuses,
+            },
+            reason,
+            agent_id,
+            now,
+        )?;
+        for row in WorkItemsRepository::dependent_work(tx, &lead.root_id.0, task_id)? {
+            let dependent = WorkItemsRepository::work_record(tx, &row.id)?
+                .ok_or_else(|| invalid("runtime_work", &row.id))?;
+            let mut dependent_statuses = dependency_statuses(tx, &dependent)?;
+            dependent_statuses.insert(task_id.to_owned(), "accepted".to_owned());
+            if blocked_by(&dependent, &dependent_statuses).is_empty()
+                && let Some(dependent_owner) = dependent["owner"].as_str()
+            {
+                let recipient = AgentRepository::get(tx, &AgentId::from(dependent_owner))?
+                    .ok_or_else(|| invalid("runtime_agents", dependent_owner))?;
+                event_write::refuse_remote(&recipient)?;
+            }
+        }
+        if let Some(request_id) = request_id.filter(|id| !id.is_empty()) {
+            // Reserve the canonical HTTP identity so every work mutation sees
+            // this in-flight VM action before any other request can reuse it.
+            let reservation_id = request_id;
+            if let Some(receipt) = EventWriteRepository::receipt(tx, reservation_id)? {
+                if receipt.signature != signature {
+                    return Err(Error::Conflict("This request id has different content").into());
+                }
+                let reservation: Value = serde_json::from_str(&receipt.result)
+                    .map_err(|_| invalid("runtime_operation_receipts", reservation_id))?;
+                if reservation["vmAcceptReservation"] != true
+                    || reservation["taskId"] != task_id
+                    || reservation["agentId"] != agent_id
+                {
+                    return Err(Error::Conflict("This request id has different content").into());
+                }
+            } else {
+                EventWriteRepository::put_receipt(
+                    tx,
+                    reservation_id,
+                    signature,
+                    &json!({
+                        "vmAcceptReservation":true,
+                        "taskId":task_id,
+                        "agentId":agent_id,
+                        "status":"reserved"
+                    })
+                    .to_string(),
+                )?;
+            }
+        }
+        if lead.extra.get("layrProjectId") != owner.extra.get("layrProjectId") {
+            return Err(Error::InvalidRequest("The result belongs to another layr project").into());
+        }
+        let result = work["results"]
+            .as_array()
+            .and_then(|items| items.last())
+            .ok_or_else(|| invalid("runtime_work", task_id))?;
+        let result_id = result["id"]
+            .as_str()
+            .ok_or_else(|| invalid("runtime_work", task_id))?
+            .to_owned();
+        let revision = result["revision"]
+            .as_str()
+            .ok_or_else(|| invalid("runtime_work", task_id))?
+            .to_owned();
+        let rpc_id = format!("layr-accept:{result_id}");
+        if let Some(intent) = read_vm_intent(tx, "merge", task_id)? {
+            if matches!(
+                intent.get("status").and_then(Value::as_str),
+                Some("pending" | "unknown")
+            ) {
+                return Err(Error::Conflict(
+                    "The prior layr merge outcome is unknown; inspect it before retrying",
+                )
+                .into());
+            }
+            if intent.get("requestId").and_then(Value::as_str) == Some(rpc_id.as_str()) {
+                match intent.get("status").and_then(Value::as_str) {
+                    Some("completed") => {
+                        return Ok(VmAcceptPreparation::Merged(result_id.to_owned()));
+                    }
+                    _ => {}
+                }
+            }
+        }
+        let intent = json!({
+            "status":"pending",
+            "requestId":rpc_id,
+            "taskId":task_id,
+            "resultId":result_id,
+            "revision":revision,
+            "owner":owner_id,
+            "created":event_write::unix_time()?,
+        });
+        write_vm_intent(tx, "merge", task_id, &intent)?;
+        Ok(VmAcceptPreparation::Call(VmMergeCall {
+            lead_id: lead.id.0,
+            owner_id,
+            result_id,
+            revision,
+            request_id: rpc_id,
+        }))
+    })
+}
+
+pub fn finish_vm_accept(
+    store: &RuntimeStore,
+    task_id: &str,
+    request_id: &str,
+    uncertain: Option<bool>,
+) -> Result<(), WorkWriteError> {
+    store.transaction_with_error(|tx| {
+        WorkItemsRepository::work_record(tx, task_id)?
+            .ok_or(Error::InvalidRequest("Unknown work item"))?;
+        let mut intent = read_vm_intent(tx, "merge", task_id)?
+            .filter(|value| value.get("requestId").and_then(Value::as_str) == Some(request_id))
+            .ok_or(Error::Conflict("The layr merge intent changed"))?;
+        if let Some(uncertain) = uncertain {
+            intent["status"] = json!(if uncertain { "unknown" } else { "not_sent" });
+        } else {
+            intent["status"] = json!("completed");
+        }
+        write_vm_intent(tx, "merge", task_id, &intent)?;
+        Ok(())
+    })
+}
+
+/// Verify the exact accepted result has a durable successful guest merge.
+pub fn vm_merge_confirmed(
+    connection: &Connection,
+    task_id: &str,
+    result_id: &str,
+    revision: &str,
+) -> Result<bool, WorkWriteError> {
+    let Some(intent) = read_vm_intent(connection, "merge", task_id)? else {
+        return Ok(false);
+    };
+    Ok(intent["status"] == "completed"
+        && intent["resultId"] == result_id
+        && intent["revision"] == revision)
 }
 
 pub enum WorkWrite {
@@ -117,6 +1009,45 @@ pub enum WorkWriteError {
     NotImplemented(&'static str),
 }
 
+/// Read and validate an idempotency receipt before an external VM side effect.
+pub fn read_work_receipt(
+    store: &RuntimeStore,
+    agent_id: &str,
+    request_id: Option<&str>,
+    signature: &str,
+) -> Result<Option<Value>, WorkWriteError> {
+    let Some(request_id) = request_id.filter(|id| !id.is_empty()) else {
+        return Ok(None);
+    };
+    let connection = store.read()?;
+    let agent = AgentRepository::get(&connection, &AgentId::from(agent_id))?
+        .ok_or(Error::InvalidRequest("Invalid request"))?;
+    if agent.id.0 != agent_id || event_write::truthy(agent.extra.get("deletedAt")) {
+        return Err(Error::InvalidRequest("Invalid request").into());
+    }
+    let Some(receipt) = EventWriteRepository::receipt(&connection, request_id)? else {
+        return Ok(None);
+    };
+    if receipt.signature != signature {
+        return Err(Error::Conflict("This request id has different content").into());
+    }
+    let value: Value = serde_json::from_str(&receipt.result)
+        .map_err(|_| invalid("runtime_operation_receipts", request_id))?;
+    if value.get("vmAcceptReservation") == Some(&Value::Bool(true)) {
+        // The matching VM accept continues through preparation and replaces
+        // this reservation with its normal work receipt after the guest reply.
+        return Ok(None);
+    }
+    let Some(id) = value.get("id").and_then(Value::as_str) else {
+        return Err(invalid("runtime_work", request_id).into());
+    };
+    if value.get("rootId").and_then(Value::as_str) != Some(agent.root_id.0.as_str()) {
+        return Err(Error::InvalidRequest("Invalid request").into());
+    }
+    WorkItemsRepository::validate_work(&connection, id, &value).map_err(WorkWriteError::Store)?;
+    Ok(Some(value))
+}
+
 pub fn write(
     tx: &Transaction<'_>,
     agent_id: &str,
@@ -155,19 +1086,55 @@ fn write_internal(
     } else {
         None
     };
-    if let Some(record) = event_write::read_receipt(
-        tx,
-        request_id,
-        signature,
-        "runtime_work",
-        request_id.unwrap_or(agent_id),
-        |value| {
-            value
-                .get("id")
-                .and_then(Value::as_str)
-                .is_some_and(|id| WorkItemsRepository::validate_work(tx, id, value).is_ok())
-        },
-    )? {
+    let reserved_vm_accept = if let Some(request_id) = request_id.filter(|id| !id.is_empty()) {
+        if let Some(receipt) = EventWriteRepository::receipt(tx, request_id)? {
+            let value: Value = serde_json::from_str(&receipt.result)
+                .map_err(|_| invalid("runtime_operation_receipts", request_id))?;
+            if value.get("vmAcceptReservation") == Some(&Value::Bool(true)) {
+                if receipt.signature != signature {
+                    return Err(Error::Conflict("This request id has different content").into());
+                }
+                let matches_accept = match &command {
+                    WorkWrite::Accept(input) => {
+                        value.get("taskId").and_then(Value::as_str) == Some(input.task_id.as_str())
+                            && value.get("agentId").and_then(Value::as_str)
+                                == Some(agent.id.0.as_str())
+                    }
+                    _ => false,
+                };
+                if !matches_accept {
+                    return Err(Error::Conflict("This request id has different content").into());
+                }
+                tx.execute(
+                    "DELETE FROM runtime_operation_receipts WHERE id=?1 AND signature=?2",
+                    rusqlite::params![request_id, signature],
+                )
+                .map_err(studio_runtime_store::StoreError::from)?;
+                true
+            } else {
+                false
+            }
+        } else {
+            false
+        }
+    } else {
+        false
+    };
+    if !reserved_vm_accept
+        && let Some(record) = event_write::read_receipt(
+            tx,
+            request_id,
+            signature,
+            "runtime_work",
+            request_id.unwrap_or(agent_id),
+            |value| {
+                value
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .is_some_and(|id| WorkItemsRepository::validate_work(tx, id, value).is_ok())
+            },
+        )?
+    {
         return Ok(WorkWriteResult {
             artifact: if matches!(&command, WorkWrite::Submit(_)) {
                 let WorkWrite::Submit(input) = &command else {
@@ -657,6 +1624,18 @@ fn decide_submit(
         "created": now,
         "resultFile": path.to_string_lossy(),
     });
+    if let Some(evidence) = &input.vm_evidence {
+        let normalized_revision = python_bounded_text(&input.revision, 200)?;
+        if evidence["layrStateId"] != normalized_revision
+            || evidence["layrProjectId"].as_str().is_none()
+            || evidence["layrLine"].as_str().is_none()
+        {
+            return Err(Error::InvalidRequest("Submit the exact layr state ID"));
+        }
+        result["layrProjectId"] = evidence["layrProjectId"].clone();
+        result["layrLine"] = evidence["layrLine"].clone();
+        result["layrStateId"] = evidence["layrStateId"].clone();
+    }
     if let Some(identity) = identity {
         result["runId"] = json!(identity.0);
         result["attemptId"] = json!(identity.1);
@@ -854,14 +1833,21 @@ fn create(
         "results": [], "decisions": [], "createdBy": actor_id,
     });
     let view = single_view(tx, &work)?;
-    assignment_needed(agent, owner, true, is_ready(&view))?;
     if !WorkItemsRepository::put_work(tx, &id, &work)? {
         return Err(Error::Conflict("Work item already exists"));
+    }
+    let mut event_inserted = false;
+    if let Some(owner) = owner.filter(|owner| *owner != agent.root_id.0)
+        && is_ready(&view)
+    {
+        let recipient = AgentRepository::get(tx, &AgentId::from(owner))?
+            .ok_or_else(|| invalid("runtime_agents", owner))?;
+        event_inserted = queue_assignment(tx, &recipient, &work)?;
     }
     event_write::save_receipt(tx, request_id, signature, &view)?;
     Ok(WorkWriteResult {
         record: view,
-        event_inserted: false,
+        event_inserted,
         artifact: None,
     })
 }
@@ -904,6 +1890,7 @@ fn mutate(
     let owner = work["owner"].as_str().map(str::to_owned);
     let previous_ready = is_ready(&single_view(tx, &work)?);
     let mut wake = false;
+    let mut assignment_owner = None;
 
     match mutation {
         WorkMutation::Update {
@@ -956,7 +1943,12 @@ fn mutate(
             let current_owner = work["owner"].as_str();
             let changed = current_owner != owner.as_deref();
             let ready = is_ready(&view);
-            assignment_needed(agent, current_owner, changed || !previous_ready, ready)?;
+            if ready
+                && (changed || !previous_ready)
+                && current_owner.is_some_and(|owner| owner != agent.root_id.0)
+            {
+                assignment_owner = current_owner.map(str::to_owned);
+            }
             if let Some(previous_owner) = owner.as_deref()
                 && (changed || previous_ready != ready)
             {
@@ -1054,6 +2046,11 @@ fn mutate(
     work["version"] = json!(version + 1);
     work["updated"] = json!(event_write::unix_time()?);
     WorkItemsRepository::update_work(tx, &task_id, &work)?;
+    if let Some(owner_id) = assignment_owner {
+        let recipient = AgentRepository::get(tx, &AgentId::from(owner_id.as_str()))?
+            .ok_or_else(|| invalid("runtime_agents", &owner_id))?;
+        wake |= queue_assignment(tx, &recipient, &work)?;
+    }
     let view = single_view(tx, &work)?;
     event_write::save_receipt(tx, request_id, signature, &view)?;
     Ok(WorkWriteResult {
@@ -1118,10 +2115,32 @@ fn submit(
     if submitter.root_id != agent.root_id {
         return Err(invalid("runtime_agents", submitter_id).into());
     }
+    validate_submission_files(&submitter, &input.files)?;
     if submitter.extra.get("executionMode").and_then(Value::as_str) == Some("vm") {
-        return Err(WorkWriteError::NotImplemented(
-            "workspace-state/submission-files",
-        ));
+        let Some(request_id) = input.vm_evidence_request_id.as_deref() else {
+            return Err(Error::Conflict(
+                "Layr submission evidence must be checked before saving the result",
+            )
+            .into());
+        };
+        let Some(intent) = read_vm_intent(tx, "submission", &input.task_id)? else {
+            return Err(
+                Error::Conflict("Layr submission evidence changed before it was saved").into(),
+            );
+        };
+        let revision = python_bounded_text(&input.revision, 200)?;
+        if input.vm_evidence.is_none()
+            || intent.get("status").and_then(Value::as_str) != Some("completed")
+            || intent.get("requestId").and_then(Value::as_str) != Some(request_id)
+            || intent.get("owner").and_then(Value::as_str) != Some(submitter_id)
+            || intent.get("version") != Some(&work["version"])
+            || intent.get("revision").and_then(Value::as_str) != Some(revision.as_str())
+            || intent.get("evidence") != input.vm_evidence.as_ref()
+        {
+            return Err(
+                Error::Conflict("Layr submission evidence changed before it was saved").into(),
+            );
+        }
     }
     event_write::refuse_remote(&submitter)?;
     let statuses = dependency_statuses(tx, &work)?;
@@ -1182,13 +2201,23 @@ fn accept(
         return Err(Error::InvalidRequest("Only the lead can accept or reject a result").into());
     }
     let work = load_work(tx, &agent.root_id.0, &input.task_id, input.version)?;
-    if work["owner"]
-        .as_str()
-        .is_some_and(|owner| owner != agent.root_id.0)
+    if let Some(owner_id) = work["owner"].as_str()
+        && owner_id != agent.root_id.0
     {
-        return Err(WorkWriteError::NotImplemented(
-            "workspace-state/agent-archive",
-        ));
+        let owner = event_write::checked_agent(tx, owner_id)?;
+        if owner.extra.get("executionMode").and_then(Value::as_str) == Some("vm") {
+            let latest_result_id = work["results"]
+                .as_array()
+                .and_then(|items| items.last())
+                .and_then(|result| result["id"].as_str())
+                .ok_or_else(|| invalid("runtime_work", &input.task_id))?;
+            if input.merged_result_id.as_deref() != Some(latest_result_id) {
+                return Err(Error::Conflict(
+                    "The layr result must be merged before it can be accepted",
+                )
+                .into());
+            }
+        }
     }
     let statuses = dependency_statuses(tx, &work)?;
     let now = event_write::unix_time()?;
@@ -1267,9 +2296,29 @@ fn accept(
             now,
         )?;
     }
+    let archive_owner = work["owner"]
+        .as_str()
+        .filter(|owner| *owner != agent.root_id.0);
+    if let Some(owner) = archive_owner {
+        let archive_intent_id = format!("{}:{result_id}", input.task_id);
+        tx.execute(
+            "INSERT INTO runtime_operation_receipts(id,signature,result) VALUES (?1,?2,?3) \
+             ON CONFLICT(id) DO NOTHING",
+            rusqlite::params![
+                format!("work-archive:{archive_intent_id}"),
+                "accepted-archive-v1",
+                json!({"status":"pending","taskId":input.task_id,
+                    "intentId":archive_intent_id,"actor":agent.root_id.0,"actorEpoch":root.epoch,
+                    "target":owner,"attempts":0,"created":now,
+                    "nextAttemptAt":now + ACCEPTED_ARCHIVE_MAX_DELAY_SECONDS as f64})
+                .to_string()
+            ],
+        )
+        .map_err(studio_runtime_store::StoreError::from)?;
+    }
     WorkItemsRepository::update_work(tx, &input.task_id, &updated)?;
     let mut record = single_view(tx, &updated)?;
-    record["archivePending"] = json!(false);
+    record["archivePending"] = json!(archive_owner.is_some());
     event_write::save_receipt(tx, request_id, signature, &record)?;
     Ok(WorkWriteResult {
         record,
@@ -1348,6 +2397,30 @@ fn push_decision(work: &mut Value, decision: Value) -> Result<(), Error> {
         .ok_or_else(|| invalid("runtime_work", &id))?
         .push(decision);
     Ok(())
+}
+
+pub fn work_item_view(
+    connection: &Connection,
+    work: &Value,
+) -> studio_runtime_store::StoreResult<Value> {
+    let mut statuses = BTreeMap::new();
+    if let (Some(id), Some(status)) = (work["id"].as_str(), work["status"].as_str()) {
+        statuses.insert(id.to_owned(), status.to_owned());
+    }
+    for dependency in work["dependencies"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+    {
+        if let Some(value) = WorkItemsRepository::work_record(connection, dependency)?
+            && value["rootId"] == work["rootId"]
+            && let (Some(id), Some(status)) = (value["id"].as_str(), value["status"].as_str())
+        {
+            statuses.insert(id.to_owned(), status.to_owned());
+        }
+    }
+    Ok(crate::work_policy::work_item_view(work, &statuses))
 }
 
 fn single_view(tx: &Transaction<'_>, work: &Value) -> Result<Value, Error> {
@@ -1436,16 +2509,36 @@ fn check_owner(
     Ok(())
 }
 
-fn assignment_needed(
-    agent: &AgentRecord,
-    owner: Option<&str>,
-    changed: bool,
-    ready: bool,
-) -> Result<(), Error> {
-    if owner.is_some_and(|owner| owner != agent.root_id.0) && ready && changed {
-        return Err(Error::WorkerAssignmentUnavailable);
-    }
-    Ok(())
+fn queue_assignment(
+    tx: &Transaction<'_>,
+    recipient: &AgentRecord,
+    work: &Value,
+) -> Result<bool, Error> {
+    let id = work["id"]
+        .as_str()
+        .ok_or_else(|| invalid("runtime_work", "<invalid>"))?;
+    let version = work["version"]
+        .as_i64()
+        .ok_or_else(|| invalid("runtime_work", id))?;
+    let title = work["title"]
+        .as_str()
+        .ok_or_else(|| invalid("runtime_work", id))?;
+    let updated = work["updated"]
+        .as_f64()
+        .ok_or_else(|| invalid("runtime_work", id))?;
+    event_write::enqueue_recovery_event(
+        tx,
+        recipient,
+        format!("work-ready:{id}:assignment:{version}"),
+        "work_ready",
+        json!({
+            "task":id,
+            "title":title,
+            "description":work.get("description").cloned().unwrap_or_else(|| json!(""))
+        })
+        .to_string(),
+        updated,
+    )
 }
 
 fn root_agent(tx: &Transaction<'_>, agent: &AgentRecord) -> Result<AgentRecord, Error> {
@@ -1475,6 +2568,57 @@ fn text(value: &str, empty: bool) -> Result<String, Error> {
         return Err(Error::InvalidRequest("Invalid request"));
     }
     Ok(value.to_owned())
+}
+
+fn validate_submission_files(agent: &AgentRecord, files: &[String]) -> Result<(), Error> {
+    if files.len() > 50 || files.iter().any(|path| path.chars().count() > 4096) {
+        return Err(Error::InvalidRequest("Supply up to 50 file paths"));
+    }
+    if files.is_empty() {
+        return Ok(());
+    }
+    let cwd = agent
+        .extra
+        .get("cwd")
+        .and_then(Value::as_str)
+        .filter(|cwd| !cwd.is_empty())
+        .ok_or_else(|| invalid("runtime_agents", &agent.id.0))?;
+    for raw_path in files {
+        let path = python_bounded_text(raw_path, 4096)?;
+        let expanded = if path == "~" || path.starts_with("~/") {
+            let home = std::env::var_os("HOME").ok_or(Error::InvalidRequest("Invalid request"))?;
+            PathBuf::from(home).join(
+                path.strip_prefix('~')
+                    .unwrap_or_default()
+                    .trim_start_matches('/'),
+            )
+        } else {
+            PathBuf::from(path)
+        };
+        let candidate = if expanded.is_absolute() {
+            expanded
+        } else {
+            Path::new(cwd).join(expanded)
+        };
+        weakly_canonicalize(&candidate).map_err(|_| Error::InvalidRequest("Invalid request"))?;
+    }
+    Ok(())
+}
+
+fn weakly_canonicalize(path: &Path) -> std::io::Result<PathBuf> {
+    match path.canonicalize() {
+        Ok(path) => Ok(path),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            let Some(name) = path.file_name() else {
+                return Err(error);
+            };
+            let parent = path
+                .parent()
+                .ok_or_else(|| std::io::Error::other("missing parent"))?;
+            Ok(weakly_canonicalize(parent)?.join(name))
+        }
+        Err(error) => Err(error),
+    }
 }
 
 fn python_bounded_text(value: &str, maximum: usize) -> Result<String, Error> {
@@ -1605,7 +2749,8 @@ mod actor_tests {
     use super::SubmitWork;
     use super::{
         AcceptWork, ClaimWork, CreateWork, WorkActorWrite, WorkMutation, WorkWrite, WorkWriteError,
-        write_action_as_agent, write_as_agent,
+        accepted_archive_due_records, accepted_archive_tick_due, write_action_as_agent,
+        write_as_agent,
     };
     use rusqlite::Connection;
     use serde_json::{Value, json};
@@ -1653,6 +2798,8 @@ mod actor_tests {
                 revision: "abc1234".to_owned(),
                 files: vec![],
                 state_dir: std::env::temp_dir(),
+                vm_evidence: None,
+                vm_evidence_request_id: None,
             }),
         );
         assert!(matches!(
@@ -1672,6 +2819,125 @@ mod actor_tests {
             .expect("work row inserts");
     }
 
+    #[test]
+    fn accepted_archive_due_selection_uses_injected_clock() {
+        let connection = database();
+        let pending = work("archive-due", Some("worker"), "accepted", json!([]));
+        insert_work(&connection, &pending);
+        connection
+            .execute(
+                "INSERT INTO runtime_operation_receipts(id,signature,result) VALUES (?1,?2,?3)",
+                rusqlite::params![
+                    "work-archive:archive-due:result-1",
+                    "accepted-archive-v1",
+                    json!({"taskId":"archive-due","intentId":"archive-due:result-1",
+                    "status":"pending","nextAttemptAt":120.0})
+                    .to_string()
+                ],
+            )
+            .expect("archive intent receipt inserts");
+
+        assert!(
+            accepted_archive_due_records(&connection, 119.999)
+                .expect("before deadline query succeeds")
+                .is_empty()
+        );
+        let due =
+            accepted_archive_due_records(&connection, 120.0).expect("deadline query succeeds");
+        assert_eq!(due.len(), 1);
+        assert_eq!(due[0].0, "archive-due");
+        assert_eq!(
+            serde_json::from_str::<Value>(&due[0].1).expect("receipt JSON")["intentId"],
+            "archive-due:result-1"
+        );
+    }
+
+    #[test]
+    fn accepted_archive_tick_matches_one_second_maintenance_cadence() {
+        let start = std::time::Instant::now();
+        assert!(accepted_archive_tick_due(None, start));
+        assert!(!accepted_archive_tick_due(
+            Some(start),
+            start + std::time::Duration::from_millis(999)
+        ));
+        assert!(accepted_archive_tick_due(
+            Some(start),
+            start + std::time::Duration::from_secs(1)
+        ));
+    }
+
+    #[test]
+    fn assigning_ready_work_persists_a_stable_worker_notification() {
+        let mut connection = database();
+        let tx = connection.transaction().expect("transaction starts");
+        let created = write_as_agent(
+            &tx,
+            "lead",
+            "lead",
+            None,
+            "create-assigned-work",
+            WorkActorWrite::Create(CreateWork {
+                actor_id: "lead".to_owned(),
+                title: "Assigned task".to_owned(),
+                description: "Do the task".to_owned(),
+                owner: Some("worker".to_owned()),
+                status: None,
+                dependencies: vec![],
+            }),
+        )
+        .expect("assigned task creates");
+        assert_eq!(created.record["version"], 1);
+        assert!(created.event_inserted);
+        let task_id = created.record["id"].as_str().expect("task ID");
+        assert_eq!(
+            events(&tx),
+            vec![(
+                format!("work-ready:{task_id}:assignment:1"),
+                "worker".to_owned(),
+                "work_ready".to_owned(),
+            )]
+        );
+        tx.commit().expect("transaction commits");
+    }
+
+    #[test]
+    fn assigning_existing_ready_work_queues_the_new_owner() {
+        let mut connection = database();
+        insert_work(
+            &connection,
+            &work("reassign", Some("lead"), "ready", json!([])),
+        );
+        let tx = connection.transaction().expect("transaction starts");
+        let updated = write_as_agent(
+            &tx,
+            "lead",
+            "lead",
+            None,
+            "reassign-ready-work",
+            WorkActorWrite::Mutate(WorkMutation::Update {
+                task_id: "reassign".to_owned(),
+                version: Some(2),
+                title: None,
+                description: None,
+                owner: Some(Some("worker".to_owned())),
+                status: None,
+                dependencies: None,
+            }),
+        )
+        .expect("task updates");
+        assert_eq!(updated.record["version"], 3);
+        assert!(updated.event_inserted);
+        assert_eq!(
+            events(&tx),
+            vec![(
+                "work-ready:reassign:assignment:3".to_owned(),
+                "worker".to_owned(),
+                "work_ready".to_owned(),
+            )]
+        );
+        tx.commit().expect("transaction commits");
+    }
+
     fn events(connection: &Connection) -> Vec<(String, String, String)> {
         let mut statement = connection
             .prepare("SELECT id,agent,kind FROM runtime_events ORDER BY id")
@@ -1687,6 +2953,87 @@ mod actor_tests {
         json!({"id":id,"rootId":"lead","owner":owner,"status":status,"title":id,
             "description":"","created":1.0,"updated":1.0,"version":2,
             "dependencies":[],"results":results,"decisions":[],"createdBy":"worker"})
+    }
+
+    #[test]
+    fn vm_evidence_is_rejected_when_assignment_changes_before_commit() {
+        let mut connection = database();
+        for id in ["worker", "replacement-worker"] {
+            let record = json!({
+                "id":id,"rootId":"lead","epoch":2,"status":"running","autoWake":true,
+                "inFlight":true,"agentMode":"multi","concurrency":8,"executionMode":"vm",
+                "layrProjectId":"project","layrLine":id
+            });
+            connection
+                .execute(
+                    "UPDATE runtime_agents SET record=?1 WHERE id=?2",
+                    rusqlite::params![record.to_string(), id],
+                )
+                .expect("agent becomes a VM worker");
+            if id == "replacement-worker" {
+                connection
+                    .execute(
+                        "INSERT INTO runtime_agents VALUES (?1,?2)",
+                        rusqlite::params![id, record.to_string()],
+                    )
+                    .expect("replacement worker inserts");
+            }
+        }
+        let mut current = work(
+            "vm-owner-race",
+            Some("replacement-worker"),
+            "running",
+            json!([]),
+        );
+        current["version"] = json!(3);
+        insert_work(&connection, &current);
+        let request_id = "layr-evidence:worker:state-1";
+        let intent = json!({
+            "status":"completed","requestId":request_id,"taskId":"vm-owner-race",
+            "owner":"worker","revision":"state-1","version":2,
+            "evidence":{"layrProjectId":"project","layrLine":"worker","layrStateId":"state-1"}
+        });
+        connection
+            .execute(
+                "INSERT INTO runtime_operation_receipts(id,signature,result) VALUES (?1,?2,?3)",
+                rusqlite::params![
+                    super::vm_intent_id("submission", "vm-owner-race"),
+                    "work-write-vm-intent-v1",
+                    intent.to_string()
+                ],
+            )
+            .expect("completed guest evidence intent inserts");
+
+        let tx = connection.transaction().expect("transaction starts");
+        let result = super::write(
+            &tx,
+            "lead",
+            Some("vm-owner-race-submit"),
+            "request-signature",
+            WorkWrite::Submit(super::SubmitWork {
+                task_id: "vm-owner-race".to_owned(),
+                version: None,
+                result: "result".to_owned(),
+                checks: "checks".to_owned(),
+                revision: "state-1".to_owned(),
+                files: vec![],
+                state_dir: std::env::temp_dir(),
+                vm_evidence: Some(intent["evidence"].clone()),
+                vm_evidence_request_id: Some(request_id.to_owned()),
+            }),
+        );
+        assert!(matches!(result, Err(WorkWriteError::Event(_))));
+        let saved = WorkItemsRepository::work_record(&tx, "vm-owner-race")
+            .expect("work row reads")
+            .expect("work row remains");
+        assert_eq!(saved["owner"], "replacement-worker");
+        assert!(
+            saved["results"]
+                .as_array()
+                .expect("results array")
+                .is_empty()
+        );
+        tx.rollback().expect("transaction rolls back");
     }
 
     #[test]
@@ -1864,6 +3211,7 @@ mod actor_tests {
                 task_id: "accept".to_owned(),
                 version: Some(2),
                 reason: "verified".to_owned(),
+                merged_result_id: None,
             }),
         )
         .expect("lead acceptance succeeds");
@@ -1977,6 +3325,8 @@ mod actor_tests {
                 revision: "abc1234".to_owned(),
                 files: vec![],
                 state_dir: std::env::temp_dir(),
+                vm_evidence: None,
+                vm_evidence_request_id: None,
             }),
         )
         .expect("worker submission succeeds");
@@ -2019,6 +3369,8 @@ mod actor_tests {
                 revision: "abc1234".to_owned(),
                 files: vec![],
                 state_dir: std::env::temp_dir(),
+                vm_evidence: None,
+                vm_evidence_request_id: None,
             }),
         )
         .expect("lead submission succeeds");

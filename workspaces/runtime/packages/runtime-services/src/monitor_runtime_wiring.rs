@@ -24,6 +24,7 @@ use crate::monitor_policy::{
     Input, InputOutcome, MonitorError, MonitorSnapshot, Operation, ReattachProof,
 };
 use crate::monitor_receipts::{self, ResultReceipt};
+use crate::rules_engine::RuleCheck;
 use crate::{event_write, monitor_runtime, rules_tick};
 
 const BATCH: usize = 64;
@@ -123,6 +124,37 @@ impl MonitorRuntime {
     /// Handle used by committed lifecycle adapters to wake cancellation dispatch.
     pub fn dispatch_wake_handle(&self) -> Arc<Notify> {
         Arc::clone(&self.dispatch_wake)
+    }
+
+    /// Submit rule checks reserved by a committed event transaction. A lost or
+    /// uncertain native submission is left to the monitor port's receipt logic.
+    pub fn submit_event_checks(
+        &self,
+        checks: &[RuleCheck],
+        now: f64,
+    ) -> Result<usize, MonitorError> {
+        let mut submitted = 0;
+        for check in checks {
+            match rules_tick::submit_check(&self.store, check, now, self.port.as_ref()) {
+                Ok(true) => submitted += 1,
+                Ok(false) => {}
+                Err(error) => {
+                    // The event transaction already committed the exact launch intent.
+                    // Restart recovery from the first row so this saved identity is
+                    // reconciled on the next tick; it will never invent a fresh command.
+                    let mut scan = self
+                        .scan
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    scan.rule = 0;
+                    scan.recovering_rules = true;
+                    drop(scan);
+                    self.dispatch_wake.notify_one();
+                    return Err(error.into());
+                }
+            }
+        }
+        Ok(submitted)
     }
 
     /// Last timer failure, cleared after a successful tick. The host can inspect

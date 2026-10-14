@@ -6,9 +6,12 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import socket
 import sqlite3
+import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from contextlib import closing
 from pathlib import Path
@@ -39,6 +42,11 @@ def quiet_runtime(state):
     class QuietRuntime(_fixture.Runtime):
         def schedule(self):
             pass
+
+        def _queue_accepted_archive(self, task_id, intent_id):
+            # The Rust route returns before its delayed maintenance retry. Keep
+            # Python's WorkMixin intent at the same post-write boundary.
+            pass
     return make_runtime(QuietRuntime, state, _fixture.FakeServer)
 
 
@@ -46,6 +54,125 @@ def fixture_connection(path: Path):
     database = sqlite3.connect(path)
     register_functions(database)
     return database
+
+
+class FakeLayrGuest:
+    """Python WorkMixin oracle for the two VM work guest requests."""
+
+    def __init__(self):
+        self.calls = []
+
+    def request(self, method, params, request_id=None, timeout=None):
+        self.calls.append((method, params, request_id, timeout))
+        if method == "line.evidence":
+            return {
+                "projectId": "work-write-project",
+                "line": "work-write-worker-line",
+                "stateId": params["stateId"],
+            }
+        if method == "line.merge":
+            return {"stateId": params["expectedStateId"], "reviewedStateId": params["expectedStateId"]}
+        if method in {"line.remove", "agent.release"}:
+            return {"state": "removed"}
+        raise AssertionError(f"Unexpected fake Layr method: {method}")
+
+
+class FakeLayrSocket:
+    """Disposable Unix JSON-RPC endpoint kept outside the guarded oracle process."""
+
+    SERVER = r'''import json, socket, sqlite3, sys
+path, config_path, calls_path, database_path, ready_path = sys.argv[1:]
+try: __import__('os').unlink(path)
+except FileNotFoundError: pass
+listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+listener.bind(path)
+listener.listen()
+open(ready_path, 'w', encoding='utf-8').write('ready')
+while True:
+    connection, _ = listener.accept()
+    with connection:
+        frame = bytearray()
+        while b'\n' not in frame:
+            part = connection.recv(65536)
+            if not part: break
+            frame.extend(part)
+        if b'\n' not in frame: continue
+        request = json.loads(bytes(frame).split(b'\n', 1)[0])
+        method, params = request['method'], request['params']
+        kind = 'submission' if method == 'line.evidence' else 'merge'
+        with sqlite3.connect(database_path) as db:
+            row = db.execute('SELECT result FROM runtime_operation_receipts WHERE id LIKE ? AND json_extract(result,\'$.requestId\') = ?',
+                             ('work-write-vm-intent:%s:%%' % kind, request['id'])).fetchone()
+        intent_status = json.loads(row[0])['status'] if row else None
+        with open(calls_path, 'a', encoding='utf-8') as output:
+            output.write(json.dumps({**request, 'intentStatus': intent_status}) + '\n')
+        try:
+            config = json.load(open(config_path, encoding='utf-8'))
+        except FileNotFoundError: config = {}
+        if config.get('dropNext') == method:
+            json.dump({}, open(config_path, 'w', encoding='utf-8'))
+            continue
+        if method == 'line.evidence':
+            result = {'projectId':'work-write-project', 'line':'work-write-worker-line',
+                      'stateId':params['stateId']}
+        elif method == 'line.merge':
+            state_id = params['expectedStateId']
+            result = {'stateId':state_id, 'reviewedStateId':state_id}
+        else: raise AssertionError('unexpected method: ' + method)
+        connection.sendall(json.dumps({'id':request['id'], 'result':result}).encode() + b'\n')
+'''
+
+    def __init__(self, path: Path, database_path: Path):
+        self.path = path
+        self.config_path = path.with_name("fake-guest-config.json")
+        self.calls_path = path.with_name("fake-guest-calls.jsonl")
+        self.ready_path = path.with_name("fake-guest-ready")
+        self.stderr_path = path.with_name("fake-guest-stderr.log")
+        self.database_path = database_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        self.calls_path.unlink(missing_ok=True)
+        self.ready_path.unlink(missing_ok=True)
+        self.stderr_path.unlink(missing_ok=True)
+        self.config_path.write_text("{}", encoding="utf-8")
+        server_script = path.with_name("fake-guest-server.py")
+        server_script.write_text(self.SERVER, encoding="utf-8")
+        stderr = self.stderr_path.open("w", encoding="utf-8")
+        self.process = subprocess.Popen(
+            [os.environ.get("CODEX_AGENTS_PYTHON", sys.executable), "-B", str(server_script), str(path), str(self.config_path),
+             str(self.calls_path), str(self.database_path), str(self.ready_path)],
+            cwd=str(path.parent), stdout=subprocess.DEVNULL, stderr=stderr,
+        )
+        stderr.close()
+        deadline = time.monotonic() + 5
+        while not self.ready_path.exists():
+            if self.process.poll() is not None:
+                detail = self.stderr_path.read_text(encoding="utf-8", errors="replace")
+                raise RuntimeError(
+                    "fake guest exited before binding its Unix socket: " + detail[-2000:]
+                )
+            if time.monotonic() >= deadline:
+                self.process.terminate()
+                self.process.wait(timeout=2)
+                raise RuntimeError("fake guest did not bind its Unix socket")
+            time.sleep(0.01)
+
+    @property
+    def calls(self):
+        if not self.calls_path.exists():
+            return []
+        return [json.loads(line) for line in self.calls_path.read_text(encoding="utf-8").splitlines()]
+
+    def drop_next(self, method):
+        self.config_path.write_text(json.dumps({"dropNext": method}), encoding="utf-8")
+
+    def close(self):
+        self.process.terminate()
+        try:
+            self.process.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            self.process.kill()
+            self.process.wait(timeout=2)
+        self.path.unlink(missing_ok=True)
 
 
 def pause_agent(backend, agent_id: str) -> None:
@@ -82,6 +209,10 @@ def start_backend_with_seeded_agents(test_case):
     test_case.addClassCleanup(backend.close)
     backend.create_codex_replay("restart-mid-turn-supervisor-replay.json")
     agent_ids = seed_agents(backend)
+    if os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"):
+        # Match quiet_runtime(), which deliberately leaves archive retry timing
+        # to the focused maintenance tests instead of this differential contract.
+        os.environ["STUDIO_TEST_DISABLE_ACCEPTED_ARCHIVE_TICK"] = "1"
     ready = backend.start()
     backend.ready_samples.append(ready)
     return backend, agent_ids
@@ -97,12 +228,19 @@ def _normal(value, work_ids=None, aliases=None, field=None):
         return value
     if isinstance(value, (list, tuple)):
         normalized = [_normal(item, work_ids, aliases, field) for item in value]
+        if field == "tasks" and all(isinstance(item, str) for item in normalized):
+            normalized.sort()
         return normalized if isinstance(value, list) else tuple(normalized)
     if isinstance(value, dict):
         result = {}
         for key, item in value.items():
             if key in {"created", "updated", "enqueuedAt"}:
                 continue
+            if key == "nextAttemptAt" and isinstance(item, (int, float)):
+                updated = value.get("updated")
+                if isinstance(updated, (int, float)):
+                    result[key] = round(item - updated, 1)
+                    continue
             result[key] = _normal(item, work_ids, aliases, key)
         return result
     return value
@@ -125,7 +263,16 @@ def snapshot(state: Path):
                           "restartRecovery", "connectionRecovery", "worktreePreparation"):
                 record.pop(field, None)
             agents.append((identity, _normal(record)))
-        receipts = [(identity, signature, _normal(json.loads(result), work_ids)) for identity, signature, result in database.execute("SELECT id,signature,result FROM runtime_operation_receipts ORDER BY id")]
+        receipts = []
+        archive_receipts = []
+        for identity, signature, result in database.execute(
+            "SELECT id,signature,result FROM runtime_operation_receipts ORDER BY id"
+        ):
+            record = _normal(json.loads(result), work_ids)
+            if signature == "accepted-archive-v1":
+                archive_receipts.append((identity, signature, record))
+            elif not identity.startswith("work-write-vm-intent:"):
+                receipts.append((identity, signature, record))
         events = []
         for row in database.execute("SELECT id,agent,kind,text,status,created,epoch,turn_id,error FROM runtime_events"):
             identity, agent, kind, body, status, created, epoch, turn_id, error = row
@@ -145,6 +292,10 @@ def snapshot(state: Path):
             "runtime_work": normalized_work,
             "runtime_agents": agents,
             "runtime_operation_receipts": receipts,
+            # Rust's durable retry receipt has no Python-side table analogue;
+            # assert its contract separately while comparing all Python-visible
+            # rows, events, responses, and the complete work records.
+            "accepted_archive_receipts": archive_receipts,
             "runtime_events": events,
             "runtime_event_meta": event_meta,
             "_work_ids": work_ids,
@@ -157,7 +308,7 @@ def normalize_event_id(identity, work_ids, aliases):
         parts[1] = aliases.get(parts[1], parts[1])
     elif len(parts) >= 3 and parts[0] in {"work-decision", "work-released"}:
         parts[1] = work_ids.get(parts[1], parts[1])
-    elif len(parts) == 3 and parts[0] == "work-ready":
+    elif len(parts) >= 3 and parts[0] == "work-ready":
         parts[1] = work_ids.get(parts[1], parts[1])
         parts[2] = work_ids.get(parts[2], parts[2])
     return ":".join(parts)
@@ -166,6 +317,8 @@ def normalize_event_id(identity, work_ids, aliases):
 def compare_snapshots(expected_state, actual_state, aliases):
     actual_work_ids = actual_state.pop("_work_ids")
     expected_work_ids = expected_state.pop("_work_ids")
+    actual_state.pop("accepted_archive_receipts", None)
+    expected_state.pop("accepted_archive_receipts", None)
     actual_state = _normal(actual_state, actual_work_ids, aliases)
     expected_state = _normal(expected_state, expected_work_ids, aliases)
     for state, work_ids in ((actual_state, actual_work_ids), (expected_state, expected_work_ids)):
@@ -183,7 +336,7 @@ def compare_snapshots(expected_state, actual_state, aliases):
     return actual_state, expected_state
 
 
-def reference_action(backend, agent_id: str, body: dict):
+def reference_action(backend, agent_id: str, body: dict, *, guest=None):
     """Run the Python writer on a byte-for-byte database copy of the input state."""
     with tempfile.TemporaryDirectory(prefix="work-write-python-ref-") as directory:
         state = Path(directory) / "state"
@@ -192,6 +345,8 @@ def reference_action(backend, agent_id: str, body: dict):
             source.backup(target)
         runtime = quiet_runtime(state)
         try:
+            if guest is not None:
+                runtime._linux_vm_client = guest
             result = runtime.work_action(agent_id, {"agent": agent_id, **body}, body.get("id"))
         finally:
             runtime.close()
@@ -358,6 +513,30 @@ class WorkWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             worker = json.loads(row[0])
             worker.update(executionMode="native", workspaceMode="worktree", environment="host")
             database.execute("UPDATE runtime_agents SET record=? WHERE id=?", (json.dumps(worker), self.worker_id))
+
+    def configure_vm_agents(self):
+        originals = []
+        with closing(fixture_connection(self.backend.state / "canvas.sqlite3")) as database, database:
+            for agent_id, line in ((self.agent_id, "main"), (self.worker_id, "work-write-worker-line")):
+                row = database.execute(
+                    "SELECT record FROM runtime_agents WHERE id=?", (agent_id,),
+                ).fetchone()
+                original = json.loads(row[0])
+                originals.append((agent_id, original))
+                agent = dict(original)
+                agent.update(executionMode="vm", workspaceMode="layr", environment="linux",
+                             layrProjectId="work-write-project", layrLine=line, layrReady=True)
+                database.execute(
+                    "UPDATE runtime_agents SET record=? WHERE id=?", (json.dumps(agent), agent_id),
+                )
+        self.addCleanup(self.restore_agent_records, originals)
+
+    def restore_agent_records(self, records):
+        with closing(fixture_connection(self.backend.state / "canvas.sqlite3")) as database, database:
+            for agent_id, record in records:
+                database.execute(
+                    "UPDATE runtime_agents SET record=? WHERE id=?", (json.dumps(record), agent_id),
+                )
 
     def headers(self):
         return {"Origin": self.backend.origin or "", "X-Canvas-Token": self.backend.session["token"], "X-Studio-API-Schema": self.backend.schema_hash}
@@ -634,34 +813,42 @@ class WorkWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
     def test_accept_remote_dependent_is_501_and_atomic(self):
         if not os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"):
             self.skipTest("the Python backend routes remote work through federation")
-        review = python_action(self.backend, self.agent_id, {
-            "action": "create", "title": "Remote dependent review", "owner": self.agent_id,
+        self.configure_vm_agents()
+        review_response = self.post({
+            "action": "create", "title": "Remote dependent review", "owner": self.worker_id,
         })
-        claim = python_action(self.backend, self.agent_id, {
-            "action": "claim", "task_id": review["id"], "owner": self.agent_id,
+        self.assertEqual(review_response.status, 200, review_response.body[:1000])
+        review = review_response.json()
+        guest = FakeLayrSocket(self.backend.vm_state / "guest.sock", self.backend.state / "canvas.sqlite3")
+        self.addCleanup(guest.close)
+        submission = self.post_as(self.worker_id, {
+            "action": "submit", "task_id": review["id"], "version": review["version"],
+            "result": "review me", "checks": "checked", "revision": "vm-remote-dependent",
+            "id": "vm-remote-dependent-submit",
         })
-        submitted = python_action(self.backend, self.agent_id, {
-            "action": "submit", "task_id": review["id"], "version": claim["version"],
-            "result": "review me", "checks": "checked", "revision": "abc1234",
-        })
-        dependent = python_action(self.backend, self.agent_id, {
+        self.assertEqual(submission.status, 200, submission.body[:1000])
+        dependent_response = self.post({
             "action": "create", "title": "Remote dependent", "owner": self.worker_id,
             "status": "blocked", "dependencies": [review["id"]],
         })
+        self.assertEqual(dependent_response.status, 200, dependent_response.body[:1000])
+        dependent = dependent_response.json()
         with closing(fixture_connection(self.backend.state / "canvas.sqlite3")) as database, database:
             row = database.execute("SELECT record FROM runtime_agents WHERE id=?", (self.worker_id,)).fetchone()
             worker = json.loads(row[0])
             worker["remoteWorker"] = {"server": "remote-server", "link": "remote-link"}
             database.execute("UPDATE runtime_agents SET record=? WHERE id=?", (json.dumps(worker), self.worker_id))
         body = {
-            "action": "accept", "task_id": review["id"], "version": submitted["version"],
+            "action": "accept", "task_id": review["id"], "version": submission.json()["version"],
             "result": "verified", "id": "remote-dependent-accept",
         }
         before = snapshot(self.backend.state)
+        calls_before_accept = len(guest.calls)
         refused = self.post(body)
         self.assertEqual(refused.status, 501, refused.body[:1000])
         self.assertEqual(refused.json().get("error"), "Not implemented: requires cross-server/remote-events")
         self.assertEqual(snapshot(self.backend.state), before)
+        self.assertEqual(len(guest.calls), calls_before_accept)
         with closing(fixture_connection(self.backend.state / "canvas.sqlite3")) as database, database:
             row = database.execute("SELECT record FROM runtime_agents WHERE id=?", (self.worker_id,)).fetchone()
             worker = json.loads(row[0])
@@ -669,6 +856,7 @@ class WorkWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             database.execute("UPDATE runtime_agents SET record=? WHERE id=?", (json.dumps(worker), self.worker_id))
         accepted = self.post(body)
         self.assertEqual(accepted.status, 200, accepted.body[:1000])
+        self.assertEqual(sum(call["method"] == "line.merge" for call in guest.calls), 1)
         replay = self.post(body)
         self.assertEqual(replay.status, 200, replay.body[:1000])
         self.assertEqual(
@@ -723,6 +911,346 @@ class WorkWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         self.assertEqual(response.status, 400, response.body[:1000])
         self.assertEqual(response.json().get("error"), expected_error)
         self.assertEqual(snapshot(self.backend.state), before)
+
+    def test_vm_submission_accept_parity_and_unknown_intents_survive_restart(self):
+        if not os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"):
+            self.skipTest("the Python backend uses the in-process fake guest contract")
+        with closing(fixture_connection(self.backend.state / "canvas.sqlite3")) as database, database:
+            for agent_id, line in ((self.agent_id, "main"), (self.worker_id, "work-write-worker-line")):
+                row = database.execute("SELECT record FROM runtime_agents WHERE id=?", (agent_id,)).fetchone()
+                agent = json.loads(row[0])
+                agent.update(executionMode="vm", workspaceMode="layr", environment="linux",
+                             layrProjectId="work-write-project", layrLine=line, layrReady=True)
+                database.execute("UPDATE runtime_agents SET record=? WHERE id=?", (json.dumps(agent), agent_id))
+
+        task = self.assert_matches_python({"action": "create", "title": "VM evidence oracle",
+                                           "owner": self.worker_id, "id": "vm-evidence-create"})
+        guest = FakeLayrSocket(self.backend.vm_state / "guest.sock", self.backend.state / "canvas.sqlite3")
+        self.addCleanup(guest.close)
+        submit = {"action": "submit", "task_id": task["id"], "version": task["version"],
+                  "result": "exact VM result", "checks": "fake guest passed", "revision": "vm-state-1",
+                  "files": [], "id": "vm-evidence-submit"}
+        expected_submit_guest = FakeLayrGuest()
+        expected_submit, expected_state = reference_action(
+            self.backend, self.worker_id, submit, guest=expected_submit_guest)
+        actual_submit = self.post_as(self.worker_id, submit)
+        self.assertEqual(actual_submit.status, 200, actual_submit.body[:1000])
+        actual_state = snapshot(self.backend.state)
+        with closing(fixture_connection(self.backend.state / "canvas.sqlite3")) as database:
+            intent = json.loads(database.execute(
+                "SELECT result FROM runtime_operation_receipts WHERE id=?",
+                (f"work-write-vm-intent:submission:{task['id']}",),
+            ).fetchone()[0])
+        self.assertEqual(intent["status"], "completed")
+        self.assertEqual(intent["requestId"],
+                         "layr-evidence:" + self.worker_id + ":vm-state-1")
+        aliases = result_id_aliases(expected_state, actual_state)
+        self.assertEqual(normal_result(actual_submit.json(), aliases),
+                         normal_result(expected_submit, aliases))
+        self.assertEqual([call[0] for call in expected_submit_guest.calls], ["line.evidence"])
+        actual_state, expected_state = compare_snapshots(expected_state, actual_state, aliases)
+        self.assertEqual(actual_state, expected_state)
+
+        accept = {"action": "accept", "task_id": task["id"], "version": actual_submit.json()["version"],
+                  "result": "verified on VM", "id": "vm-merge-accept"}
+        expected_guest = FakeLayrGuest()
+        expected_accept, expected_state = reference_action(
+            self.backend, self.agent_id, accept, guest=expected_guest)
+        actual_accept = self.post(accept)
+        self.assertEqual(actual_accept.status, 200, actual_accept.body[:1000])
+        actual_accept_fields = set(actual_accept.json()) - {"_syncEntities", "_syncEntitiesAfter"}
+        self.assertEqual(actual_accept_fields, set(expected_accept),
+                         f"accept result fields differ: actual={sorted(actual_accept_fields)}, expected={sorted(expected_accept)}")
+        actual_state = snapshot(self.backend.state)
+        rust_work = actual_state["runtime_work"][-1][1]
+        expected_work = expected_state["runtime_work"][-1][1]
+        self.assertEqual(rust_work.get("archiveIntent"), expected_work.get("archiveIntent"))
+        archive_receipts = [
+            item for item in actual_state["accepted_archive_receipts"]
+            if item[2].get("taskId") == task["id"]
+        ]
+        self.assertEqual(len(archive_receipts), 1)
+        archive_receipt = archive_receipts[0][2]
+        self.assertEqual(archive_receipt["taskId"], task["id"])
+        self.assertEqual(archive_receipt["intentId"], task["id"] + ":" + actual_accept.json()["results"][-1]["id"])
+        self.assertEqual(archive_receipt["actor"], self.agent_id)
+        self.assertEqual(archive_receipt["target"], self.worker_id)
+        self.assertIn(archive_receipt["status"], {"unknown", "pending", "retryable", "terminal", "complete"})
+        with closing(fixture_connection(self.backend.state / "canvas.sqlite3")) as database:
+            intent = json.loads(database.execute(
+                "SELECT result FROM runtime_operation_receipts WHERE id=?",
+                (f"work-write-vm-intent:merge:{task['id']}",),
+            ).fetchone()[0])
+        self.assertEqual(intent["status"], "completed")
+        self.assertEqual(intent["requestId"],
+                         "layr-accept:" + actual_accept.json()["results"][-1]["id"])
+        aliases = result_id_aliases(expected_state, actual_state)
+        self.maxDiff = None
+        self.assertEqual(normal_result(actual_accept.json(), aliases),
+                         normal_result(expected_accept, aliases))
+        actual_state, expected_state = compare_snapshots(expected_state, actual_state, aliases)
+        self.assertEqual(actual_state, expected_state)
+        self.assertEqual([call["intentStatus"] for call in guest.calls], ["pending", "pending"])
+        self.assertEqual([call["method"] for call in guest.calls], ["line.evidence", "line.merge"])
+        self.assertEqual(guest.calls[0]["id"], "layr-evidence:" + self.worker_id + ":vm-state-1")
+        self.assertEqual(guest.calls[1]["id"], intent["requestId"])
+        self.assertEqual([call[0] for call in expected_guest.calls], ["line.merge"])
+        self.assertEqual(expected_guest.calls[0][2],
+                         "layr-accept:" + expected_accept["results"][-1]["id"])
+        completed_call_count = len(guest.calls)
+        replay_submit = self.post_as(self.worker_id, submit)
+        replay_accept = self.post(accept)
+        self.assertEqual(replay_submit.status, 200, replay_submit.body[:1000])
+        self.assertEqual(replay_accept.status, 200, replay_accept.body[:1000])
+        self.assertEqual(len(guest.calls), completed_call_count)
+
+        before_intent = self.assert_matches_python({"action": "create", "title": "Before intent oracle",
+                                                   "owner": self.worker_id, "id": "vm-before-intent-create"})
+        before_intent_body = {"action": "submit", "task_id": before_intent["id"],
+                              "version": before_intent["version"], "result": "blocked before intent",
+                              "checks": "injected", "revision": "vm-state-before-intent",
+                              "id": "vm-before-intent-submit"}
+        before_intent_snapshot = snapshot(self.backend.state)
+        with closing(fixture_connection(self.backend.state / "canvas.sqlite3")) as database, database:
+            database.execute("""CREATE TRIGGER fail_vm_intent BEFORE INSERT ON runtime_operation_receipts
+                WHEN NEW.id LIKE 'work-write-vm-intent:submission:%'
+                BEGIN SELECT RAISE(ABORT,'injected VM intent failure'); END""")
+        call_count = len(guest.calls)
+        refused_before_intent = self.post_as(self.worker_id, before_intent_body)
+        self.assertNotEqual(refused_before_intent.status, 200, refused_before_intent.body[:1000])
+        self.assertEqual(snapshot(self.backend.state), before_intent_snapshot)
+        self.assertEqual(len(guest.calls), call_count)
+        with closing(fixture_connection(self.backend.state / "canvas.sqlite3")) as database, database:
+            database.execute("DROP TRIGGER fail_vm_intent")
+
+        after_guest = self.assert_matches_python({"action": "create", "title": "After guest oracle",
+                                                  "owner": self.worker_id, "id": "vm-after-guest-create"})
+        after_guest_body = {"action": "submit", "task_id": after_guest["id"],
+                            "version": after_guest["version"], "result": "guest completed",
+                            "checks": "fail completion write", "revision": "vm-state-after-guest",
+                            "id": "vm-after-guest-submit"}
+        with closing(fixture_connection(self.backend.state / "canvas.sqlite3")) as database, database:
+            database.execute("""CREATE TRIGGER fail_vm_completion BEFORE UPDATE ON runtime_operation_receipts
+                WHEN NEW.id LIKE 'work-write-vm-intent:submission:%'
+                 AND json_extract(NEW.result,'$.status')='completed'
+                BEGIN SELECT RAISE(ABORT,'injected VM completion failure'); END""")
+        call_count = len(guest.calls)
+        failed_completion = self.post_as(self.worker_id, after_guest_body)
+        self.assertNotEqual(failed_completion.status, 200, failed_completion.body[:1000])
+        self.assertEqual(guest.calls[call_count]["method"], "line.evidence")
+        with closing(fixture_connection(self.backend.state / "canvas.sqlite3")) as database:
+            row = database.execute("SELECT result FROM runtime_operation_receipts WHERE id=?",
+                                   (f"work-write-vm-intent:submission:{after_guest['id']}",)).fetchone()
+        self.assertEqual(json.loads(row[0])["status"], "pending")
+        with closing(fixture_connection(self.backend.state / "canvas.sqlite3")) as database, database:
+            database.execute("DROP TRIGGER fail_vm_completion")
+        pending_snapshot = snapshot(self.backend.state)
+        self.assertIn(self.post_as(self.worker_id, after_guest_body).status, (400, 409))
+        self.assertEqual(snapshot(self.backend.state), pending_snapshot)
+        self.assertEqual(len(guest.calls), call_count + 1)
+        self.backend.stop()
+        self.backend.start()
+        self.assertIn(self.post_as(self.worker_id, after_guest_body).status, (400, 409))
+        self.assertEqual(snapshot(self.backend.state), pending_snapshot)
+        self.assertEqual(len(guest.calls), call_count + 1)
+
+        guest.drop_next("line.evidence")
+        unknown = self.assert_matches_python({"action": "create", "title": "Unknown evidence oracle",
+                                             "owner": self.worker_id, "id": "vm-unknown-create"})
+        unknown_submit = {"action": "submit", "task_id": unknown["id"], "version": unknown["version"],
+                          "result": "unknown evidence", "checks": "lost reply", "revision": "vm-state-unknown",
+                          "id": "vm-unknown-submit"}
+        call_count = len(guest.calls)
+        failed = self.post_as(self.worker_id, unknown_submit)
+        self.assertEqual(failed.status, 502, failed.body[:1000])
+        self.assertEqual(guest.calls[call_count]["method"], "line.evidence")
+        with closing(fixture_connection(self.backend.state / "canvas.sqlite3")) as database:
+            row = database.execute("SELECT result FROM runtime_operation_receipts WHERE id=?",
+                                   (f"work-write-vm-intent:submission:{unknown['id']}",)).fetchone()
+        self.assertEqual(json.loads(row[0])["status"], "unknown")
+        before_retry = snapshot(self.backend.state)
+        retry = self.post_as(self.worker_id, unknown_submit)
+        self.assertIn(retry.status, (400, 409))
+        self.assertEqual(snapshot(self.backend.state), before_retry)
+        self.assertEqual(len(guest.calls), call_count + 1)
+        self.backend.stop()
+        self.backend.start()
+        after_restart = self.post_as(self.worker_id, unknown_submit)
+        self.assertIn(after_restart.status, (400, 409))
+        self.assertEqual(snapshot(self.backend.state), before_retry)
+        self.assertEqual(len(guest.calls), call_count + 1)
+
+        merge_task = self.assert_matches_python({"action": "create", "title": "Unknown merge oracle",
+                                                "owner": self.worker_id, "id": "vm-merge-unknown-create"})
+        merge_submit = self.post_as(self.worker_id, {
+            "action": "submit", "task_id": merge_task["id"], "version": merge_task["version"],
+            "result": "merge unknown", "checks": "evidence ok", "revision": "vm-state-merge-unknown",
+            "id": "vm-merge-unknown-submit",
+        })
+        self.assertEqual(merge_submit.status, 200, merge_submit.body[:1000])
+        guest.drop_next("line.merge")
+        merge_accept = {"action": "accept", "task_id": merge_task["id"],
+                        "version": merge_submit.json()["version"], "result": "merge test",
+                        "id": "vm-merge-unknown-accept"}
+        call_count = len(guest.calls)
+        failed_merge = self.post(merge_accept)
+        self.assertEqual(failed_merge.status, 502, failed_merge.body[:1000])
+        self.assertEqual(guest.calls[call_count]["method"], "line.merge")
+        with closing(fixture_connection(self.backend.state / "canvas.sqlite3")) as database:
+            row = database.execute("SELECT result FROM runtime_operation_receipts WHERE id=?",
+                                   (f"work-write-vm-intent:merge:{merge_task['id']}",)).fetchone()
+        self.assertEqual(json.loads(row[0])["status"], "unknown")
+        before_merge_retry = snapshot(self.backend.state)
+        self.assertIn(self.post(merge_accept).status, (400, 409))
+        self.assertEqual(snapshot(self.backend.state), before_merge_retry)
+        self.assertEqual(len(guest.calls), call_count + 1)
+        replacement = self.post_as(self.worker_id, {
+            "action": "submit", "task_id": merge_task["id"],
+            "version": merge_submit.json()["version"], "result": "replacement result",
+            "checks": "replacement evidence", "revision": "vm-state-merge-replacement",
+            "id": "vm-merge-unknown-replacement-submit",
+        })
+        self.assertEqual(replacement.status, 200, replacement.body[:1000])
+        before_replacement_accept = snapshot(self.backend.state)
+        replacement_accept_body = {
+            "action": "accept", "task_id": merge_task["id"],
+            "version": replacement.json()["version"], "result": "new acceptance",
+            "id": "vm-merge-unknown-replacement-accept",
+        }
+        replacement_accept = self.post(replacement_accept_body)
+        self.assertIn(replacement_accept.status, (400, 409))
+        self.assertEqual(snapshot(self.backend.state), before_replacement_accept)
+        self.assertEqual(len(guest.calls), call_count + 2)  # one fresh evidence request, no second merge
+        with closing(fixture_connection(self.backend.state / "canvas.sqlite3")) as database:
+            row = database.execute(
+                "SELECT result FROM runtime_operation_receipts WHERE id=?",
+                (f"work-write-vm-intent:merge:{merge_task['id']}",),
+            ).fetchone()
+        self.assertEqual(json.loads(row[0])["status"], "unknown")
+        self.backend.stop()
+        self.backend.start()
+        self.assertIn(self.post(replacement_accept_body).status, (400, 409))
+        self.assertEqual(snapshot(self.backend.state), before_replacement_accept)
+        self.assertEqual(len(guest.calls), call_count + 2)
+
+
+    def test_vm_blank_accept_refuses_before_guest_merge(self):
+        if not os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"):
+            self.skipTest("the Python backend uses the in-process fake guest contract")
+        self.configure_vm_agents()
+
+        task = self.post({"action": "create", "title": "Blank VM accept", "owner": self.worker_id})
+        self.assertEqual(task.status, 200, task.body[:1000])
+        guest = FakeLayrSocket(self.backend.vm_state / "guest.sock", self.backend.state / "canvas.sqlite3")
+        self.addCleanup(guest.close)
+        submission = self.post_as(self.worker_id, {
+            "action": "submit", "task_id": task.json()["id"], "version": task.json()["version"],
+            "result": "verified result", "checks": "checks passed", "revision": "vm-blank-state",
+            "id": "vm-blank-submit",
+        })
+        self.assertEqual(submission.status, 200, submission.body[:1000])
+        self.assertEqual([call["method"] for call in guest.calls], ["line.evidence"])
+
+        # Python's codex_work.WorkMixin validates text_field(result) before merge_result.
+        blank_accept = {
+            "action": "accept", "task_id": task.json()["id"],
+            "version": submission.json()["version"], "result": "\u001c", "id": "vm-blank-accept",
+        }
+        before = snapshot(self.backend.state)
+        response = self.post(blank_accept)
+        self.assertEqual(response.status, 400, response.body[:1000])
+        self.assertEqual(response.json().get("error"), "Field must not be empty")
+        self.assertEqual(snapshot(self.backend.state), before)
+        self.assertEqual([call["method"] for call in guest.calls], ["line.evidence"])
+
+    def test_vm_nonlead_accept_does_not_reserve_or_send_a_merge(self):
+        if not os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"):
+            self.skipTest("the Python backend uses the in-process fake guest contract")
+        self.configure_vm_agents()
+
+        task = self.post({"action": "create", "title": "Non-lead VM accept", "owner": self.worker_id})
+        self.assertEqual(task.status, 200, task.body[:1000])
+        guest = FakeLayrSocket(self.backend.vm_state / "guest.sock", self.backend.state / "canvas.sqlite3")
+        self.addCleanup(guest.close)
+        submission = self.post_as(self.worker_id, {
+            "action": "submit", "task_id": task.json()["id"], "version": task.json()["version"],
+            "result": "verified result", "checks": "checks passed", "revision": "vm-nonlead-state",
+            "id": "vm-nonlead-submit",
+        })
+        self.assertEqual(submission.status, 200, submission.body[:1000])
+
+        # Python codex_work.WorkMixin checks isLead and rootId before merge_result.
+        accept = {
+            "action": "accept", "task_id": task.json()["id"],
+            "version": submission.json()["version"], "result": "reviewed", "id": "vm-nonlead-accept",
+        }
+        before = snapshot(self.backend.state)
+        rejected = self.post_as(self.worker_id, accept)
+        self.assertEqual(rejected.status, 400, rejected.body[:1000])
+        self.assertEqual(snapshot(self.backend.state), before)
+        with closing(fixture_connection(self.backend.state / "canvas.sqlite3")) as database:
+            reservation = database.execute(
+                "SELECT 1 FROM runtime_operation_receipts WHERE id=?", (accept["id"],)
+            ).fetchone()
+        self.assertIsNone(reservation)
+        self.assertEqual([call["method"] for call in guest.calls], ["line.evidence"])
+
+        # Reusing the unreserved canonical identity as the actual lead succeeds.
+        accepted = self.post(accept)
+        self.assertEqual(accepted.status, 200, accepted.body[:1000])
+        self.assertEqual([call["method"] for call in guest.calls], ["line.evidence", "line.merge"])
+
+    def test_vm_accept_request_identity_is_reserved_before_guest_merge(self):
+        if not os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"):
+            self.skipTest("the Python backend uses the in-process fake guest contract")
+        self.configure_vm_agents()
+
+        tasks = []
+        guest = FakeLayrSocket(self.backend.vm_state / "guest.sock", self.backend.state / "canvas.sqlite3")
+        self.addCleanup(guest.close)
+        for index in range(2):
+            created = self.post({"action": "create", "title": f"VM identity {index}",
+                                 "owner": self.worker_id})
+            self.assertEqual(created.status, 200, created.body[:1000])
+            submitted = self.post_as(self.worker_id, {
+                "action": "submit", "task_id": created.json()["id"],
+                "version": created.json()["version"], "result": f"result {index}",
+                "checks": "checks", "revision": f"vm-identity-{index}",
+                "id": f"vm-identity-submit-{index}",
+            })
+            self.assertEqual(submitted.status, 200, submitted.body[:1000])
+            tasks.append((created.json()["id"], submitted.json()["version"]))
+
+        request_id = "vm-accept-shared-request-id"
+        first = self.post({"action": "accept", "task_id": tasks[0][0],
+                           "version": tasks[0][1], "result": "accept first", "id": request_id})
+        self.assertEqual(first.status, 200, first.body[:1000])
+        merge_count = sum(call["method"] == "line.merge" for call in guest.calls)
+        self.assertEqual(merge_count, 1)
+
+        # Simulate the interval after the durable VM reservation is committed but
+        # before the HTTP result receipt is published. The canonical receipt must
+        # fence every work mutation that tries to reuse this HTTP id.
+        with closing(fixture_connection(self.backend.state / "canvas.sqlite3")) as database, database:
+            reservation = {
+                "vmAcceptReservation": True, "taskId": tasks[0][0],
+                "agentId": self.agent_id, "status": "reserved",
+            }
+            database.execute(
+                "UPDATE runtime_operation_receipts SET result=? WHERE id=?",
+                (json.dumps(reservation, separators=(",", ":")), request_id),
+            )
+        before_reuse = snapshot(self.backend.state)
+        reused = self.post({"action": "create", "title": "Request id collision",
+                            "owner": self.worker_id, "id": request_id})
+        self.assertEqual(reused.status, 400, reused.body[:1000])
+        self.assertEqual(reused.json().get("error"), "This request id has different content")
+        self.assertEqual(snapshot(self.backend.state), before_reuse)
+        conflict = self.post({"action": "accept", "task_id": tasks[1][0],
+                              "version": tasks[1][1], "result": "accept second", "id": request_id})
+        self.assertEqual(conflict.status, 400, conflict.body[:1000])
+        self.assertEqual(conflict.json().get("error"), "This request id has different content")
+        self.assertEqual(sum(call["method"] == "line.merge" for call in guest.calls), merge_count)
 
     def test_claim_submit_accept_validation_edges_are_no_write(self):
         item = python_action(self.backend, self.agent_id, {"action": "create", "title": "Validation oracle"})
@@ -994,14 +1522,10 @@ class WorkWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         self.assertEqual(snapshot(self.backend.state), after_submit)
         before_archive = snapshot(self.backend.state)
         worker_accept = self.post({"action": "accept", "task_id": worker_id, "result": "Verified"})
-        if os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"):
-            self.assertEqual(worker_accept.status, 501, worker_accept.body[:1000])
-            self.assertEqual(worker_accept.json().get("error"), "Not implemented: requires workspace-state/agent-archive")
-            self.assertEqual(snapshot(self.backend.state), before_archive)
-        else:
-            self.assertEqual(worker_accept.status, 200, worker_accept.body[:1000])
-            self.assertEqual(worker_accept.json()["status"], "accepted")
-            self.assertEqual(worker_accept.json()["archive"]["status"], "kept")
+        self.assertEqual(worker_accept.status, 200, worker_accept.body[:1000])
+        self.assertEqual(worker_accept.json()["status"], "accepted")
+        self.assertEqual(worker_accept.json()["archive"]["status"], "kept")
+        self.assertNotEqual(snapshot(self.backend.state), before_archive)
 
         lead_task = self.post({"action": "create", "title": "Lead submission"})
         self.assertEqual(lead_task.status, 200, lead_task.body[:1000])
@@ -1032,14 +1556,19 @@ class WorkWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
                 row = database.execute("SELECT record FROM runtime_agents WHERE id=?", (self.worker_id,)).fetchone()
                 worker = json.loads(row[0]); worker["executionMode"] = "vm"
                 database.execute("UPDATE runtime_agents SET record=? WHERE id=?", (json.dumps(worker), self.worker_id))
-            before_vm_submit = snapshot(self.backend.state)
             vm_submit = self.post_as(self.worker_id, {
                 "action": "submit", "task_id": vm_id, "result": "VM result",
                 "checks": "Contract passed", "revision": "abc1234",
             })
-            self.assertEqual(vm_submit.status, 501, vm_submit.body[:1000])
-            self.assertEqual(vm_submit.json().get("error"), "Not implemented: requires workspace-state/submission-files")
-            self.assertEqual(snapshot(self.backend.state), before_vm_submit)
+            self.assertEqual(vm_submit.status, 502, vm_submit.body[:1000])
+            self.assertIn("Layr evidence request failed", vm_submit.json().get("error", ""))
+            with closing(fixture_connection(self.backend.state / "canvas.sqlite3")) as database:
+                row = database.execute(
+                    "SELECT result FROM runtime_operation_receipts WHERE id=?",
+                    (f"work-write-vm-intent:submission:{vm_id}",),
+                ).fetchone()
+            self.assertIsNotNone(row)
+            self.assertIn(json.loads(row[0]).get("status"), {"not_sent", "unknown"})
 
     def test_refusals_stale_versions_deleted_agent_and_failure_roll_back_all_tables(self):
         created = self.post({"action": "create", "title": "Refusal target"})
@@ -1049,18 +1578,18 @@ class WorkWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         stale = self.post(body)
         self.assertEqual(stale.status, 400, stale.body[:1000])
         self.assertEqual(no_write_snapshot(self.backend.state), before)
-        cases = ()
-        if os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"):
-            cases = (
-                ({"action": "create", "title": "Assigned", "owner": self.worker_id}, "worker-driver/work-assignment"),
-                ({"action": "update", "task_id": created.json()["id"], "owner": self.worker_id}, "worker-driver/work-assignment"),
-            )
-        for body, dependency in cases:
-            before = no_write_snapshot(self.backend.state)
-            response = self.post(body)
-            self.assertEqual(response.status, 501, response.body[:1000])
-            self.assertEqual(response.json().get("error"), f"Not implemented: requires {dependency}")
-            self.assertEqual(no_write_snapshot(self.backend.state), before)
+        assigned = self.assert_matches_python({
+            "action": "create", "title": "Assigned", "owner": self.worker_id,
+            "id": "assigned-work-create",
+        })
+        self.assertEqual(assigned["owner"], self.worker_id)
+        self.assertEqual(
+            self.assert_matches_python({
+                "action": "update", "task_id": created.json()["id"],
+                "version": 1, "owner": self.worker_id, "id": "assigned-work-update",
+            })["owner"],
+            self.worker_id,
+        )
         cancel = {"action": "cancel", "task_id": created.json()["id"], "reason": " "}
         before = no_write_snapshot(self.backend.state)
         refused = self.post(cancel)

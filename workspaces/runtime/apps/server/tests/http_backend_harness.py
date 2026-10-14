@@ -282,6 +282,8 @@ class BackendProcess:
         if self.scratch_root not in self.root.parents:
             raise RuntimeError("Backend state escaped the runner scratch root")
         self.state = self._directory("state")
+        self.vm_state = self.scratch_root.parent / f"vm-{self.root.name[-8:]}"
+        self.vm_state.mkdir(parents=True, exist_ok=True)
         self.home = self._directory("home")
         self.codex_home = self._directory("codex-home")
         self.claude_home = self._directory("claude-home")
@@ -368,9 +370,15 @@ class BackendProcess:
                        "LC_CTYPE",
                        # setup-python needs its shared-library directory on Linux.
                        "LD_LIBRARY_PATH",
+                       # Work-write's Rust HTTP contract mirrors its quiet Python oracle.
+                       "STUDIO_TEST_DISABLE_ACCEPTED_ARCHIVE_TICK",
                        "STUDIO_TEST_FORBIDDEN_ROOTS", "STUDIO_TEST_GUARD_REPORT"}
             or key.startswith("GIT_CONFIG_")
         }
+        if os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"):
+            # The Rust differential contract compares the immediate work-write
+            # boundary; retry scheduling is covered by the archive maintenance tests.
+            environment["STUDIO_TEST_DISABLE_ACCEPTED_ARCHIVE_TICK"] = "1"
         # These settings select the Python test default. Never leak them to a
         # caller-supplied backend command.
         environment.pop("CODEX_AGENTS_PYTHON", None)
@@ -400,6 +408,10 @@ class BackendProcess:
             "ALL_PROXY": "http://127.0.0.1:9",
             "NO_PROXY": "127.0.0.1,localhost",
         }
+        if os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"):
+            # Keep Unix socket paths below sockaddr_un limits while isolating
+            # each Rust backend's disposable VM endpoint outside its state tree.
+            values["CODEX_LINUX_VM_STATE_DIR"] = str(self.vm_state)
         # Match Python provider tests by default. Discovery tests can opt out to
         # exercise the no-Claude path without exposing a host executable.
         if self._claude_bin is not None:

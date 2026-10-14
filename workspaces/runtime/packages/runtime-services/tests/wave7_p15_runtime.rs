@@ -62,7 +62,7 @@ fn delivery(case: &Value, cursor: &str, event: MonitorEvent) -> Delivery {
     }
 }
 
-fn due_rule_case() -> Value {
+fn rule_case(name: &str) -> Value {
     let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
     let python = prepared_python_support::prepared_python(&manifest.join("../../apps/server/src"));
     let output = Command::new(python)
@@ -78,8 +78,12 @@ fn due_rule_case() -> Value {
     serde_json::from_slice::<Vec<Value>>(&output.stdout)
         .expect("rules oracle JSON")
         .into_iter()
-        .find(|case| case["name"] == "interval-boundary--1")
-        .expect("due interval rule case")
+        .find(|case| case["name"] == name)
+        .unwrap_or_else(|| panic!("rules oracle case {name}"))
+}
+
+fn due_rule_case() -> Value {
+    rule_case("interval-boundary--1")
 }
 
 #[test]
@@ -264,6 +268,74 @@ fn transient_rule_submit_failure_reconciles_the_saved_launch_identity() {
     assert_eq!(
         serde_json::to_value(&launches[0]).expect("check JSON"),
         reserved
+    );
+}
+
+#[test]
+fn event_submission_failure_recovers_the_committed_launch_intent() {
+    use studio_runtime_services::rules_tick::{self, RuleEvent};
+
+    let root = fixtures::tempdir();
+    let monitor_cases = fixtures::corpus(root.path());
+    let store = Arc::new(fixtures::store(root.path(), "event-rule-retry"));
+    fixtures::seed(&store, &running(&monitor_cases));
+    let event_case = rule_case("event-work_review");
+    let event = event_case["event"].clone();
+    let owner = AgentRecord::from_value(event_case["owner"].clone()).expect("event owner");
+    let mut event_rule = event_case["rule"].clone();
+    event_rule["event"] = event["kind"].clone();
+    event_rule["command"] = json!("printf marker");
+    let rule = RuleRecord::from_value(event_rule).expect("event rule");
+    let check = store
+        .transaction_with::<_, rules_tick::RulesTickError>(|tx| {
+            AgentRepository::put(tx, &owner)?;
+            RulesRepository::put(tx, &rule)?;
+            let (_, checks) = rules_tick::event_in_transaction(
+                tx,
+                RuleEvent {
+                    agent_id: "owner",
+                    kind: event["kind"].as_str().expect("event kind"),
+                    text: event["text"].as_str().expect("event text"),
+                    key: event["key"].as_str().expect("event key"),
+                    now: event_case["now"].as_f64().expect("event time"),
+                },
+                0,
+                true,
+            )?;
+            Ok(checks.into_iter().next().expect("event launch check"))
+        })
+        .expect("event transaction commits its launch intent");
+    let reserved = rule_record(&store, &check.rule_id)["launchIntent"].clone();
+
+    let port = Arc::new(Port::default());
+    let runtime = runtime(&store, &port);
+    assert!(
+        runtime
+            .submit_event_checks(
+                std::slice::from_ref(&check),
+                event_case["now"].as_f64().expect("event time")
+            )
+            .is_err()
+    );
+    assert_eq!(rule_record(&store, &check.rule_id)["inFlight"], true);
+    assert!(port.rule_checks.lock().expect("rule checks").is_empty());
+
+    *port.rule_available.lock().expect("rule availability") = true;
+    *port
+        .reconcile_not_submitted
+        .lock()
+        .expect("rule reconciliation") = true;
+    runtime
+        .tick(event_case["now"].as_f64().expect("event time") + 1.0)
+        .expect("tick recovers committed event launch");
+    assert_eq!(
+        rule_record(&store, &check.rule_id)["launchIntent"],
+        reserved,
+        "recovery retains the exact persisted request identity"
+    );
+    assert_eq!(
+        port.rule_checks.lock().expect("rule checks").as_slice(),
+        &[check]
     );
 }
 
