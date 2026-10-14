@@ -1074,23 +1074,6 @@
     {
       "closures": [
         {
-          "closes": "origin/feat/wave7-p18-account-catalog",
-          "kind": "accepted_branch",
-          "owner": "P18"
-        },
-        {
-          "closes": "R5",
-          "kind": "external_or_scope",
-          "owner": "R5"
-        }
-      ],
-      "dependency": "provider-session/native-accounts",
-      "operation_count": 1,
-      "operations": ["GET /api/diagnostics"]
-    },
-    {
-      "closures": [
-        {
           "closes": "R4",
           "kind": "external_or_scope",
           "owner": "R4"
@@ -1188,79 +1171,7 @@
           "owner": "R5"
         }
       ],
-      "dependency": "runtime-http/request-metrics",
-      "operation_count": 1,
-      "operations": ["GET /api/diagnostics"]
-    },
-    {
-      "closures": [
-        {
-          "closes": "R5",
-          "kind": "external_or_scope",
-          "owner": "R5"
-        }
-      ],
-      "dependency": "runtime-process/analytics-capture",
-      "operation_count": 1,
-      "operations": ["GET /api/diagnostics"]
-    },
-    {
-      "closures": [
-        {
-          "closes": "R5",
-          "kind": "external_or_scope",
-          "owner": "R5"
-        }
-      ],
-      "dependency": "runtime-process/host-resources",
-      "operation_count": 1,
-      "operations": ["GET /api/diagnostics"]
-    },
-    {
-      "closures": [
-        {
-          "closes": "R5",
-          "kind": "external_or_scope",
-          "owner": "R5"
-        }
-      ],
-      "dependency": "runtime-process/live-queues",
-      "operation_count": 1,
-      "operations": ["GET /api/diagnostics"]
-    },
-    {
-      "closures": [
-        {
-          "closes": "R5",
-          "kind": "external_or_scope",
-          "owner": "R5"
-        }
-      ],
-      "dependency": "runtime-process/lock-samples",
-      "operation_count": 1,
-      "operations": ["GET /api/diagnostics"]
-    },
-    {
-      "closures": [
-        {
-          "closes": "R5",
-          "kind": "external_or_scope",
-          "owner": "R5"
-        }
-      ],
       "dependency": "runtime-process/process-tree",
-      "operation_count": 1,
-      "operations": ["GET /api/diagnostics"]
-    },
-    {
-      "closures": [
-        {
-          "closes": "R5",
-          "kind": "external_or_scope",
-          "owner": "R5"
-        }
-      ],
-      "dependency": "runtime-process/resource-attribution",
       "operation_count": 1,
       "operations": ["GET /api/diagnostics"]
     },
@@ -1290,18 +1201,6 @@
         }
       ],
       "dependency": "runtime-process/supervisor-status",
-      "operation_count": 1,
-      "operations": ["GET /api/diagnostics"]
-    },
-    {
-      "closures": [
-        {
-          "closes": "R5",
-          "kind": "external_or_scope",
-          "owner": "R5"
-        }
-      ],
-      "dependency": "runtime-store/sqlite-contention",
       "operation_count": 1,
       "operations": ["GET /api/diagnostics"]
     },
@@ -1508,7 +1407,7 @@
   ],
   "counts": {
     "implemented": 79,
-    "named_dependencies": 106,
+    "named_dependencies": 98,
     "not_registered": 12,
     "partial": 69,
     "total": 160
@@ -1581,17 +1480,9 @@
     },
     {
       "dependencies": [
-        "provider-session/native-accounts",
-        "runtime-http/request-metrics",
-        "runtime-process/analytics-capture",
-        "runtime-process/host-resources",
-        "runtime-process/live-queues",
-        "runtime-process/lock-samples",
         "runtime-process/process-tree",
-        "runtime-process/resource-attribution",
         "runtime-process/studio-loaded-threads",
-        "runtime-process/supervisor-status",
-        "runtime-store/sqlite-contention"
+        "runtime-process/supervisor-status"
       ],
       "operation": "GET /api/diagnostics",
       "status": "partial"

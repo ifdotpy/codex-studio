@@ -170,6 +170,15 @@ pub struct RuntimeNotificationPostCommitSink {
 
 impl NotificationPostCommitSink for RuntimeNotificationPostCommitSink {
     fn publish(&self, effect: &NotificationPostCommit) -> Result<(), NotificationDispatchError> {
+        if let NotificationPostCommit::Recovered { identity, .. } = effect {
+            self.resources
+                .publish_once(&serde_json::json!({
+                    "requestId": format!("recovered-provider-publication:{identity}"),
+                    "resources": [{"kind":"state"}],
+                }))
+                .map_err(|_| NotificationDispatchError::Dependency("sync/resources/publication"))?;
+            return Ok(());
+        }
         match effect {
             NotificationPostCommit::TokenRateStream(_)
             | NotificationPostCommit::TokenRateAssociation(_)
@@ -189,6 +198,9 @@ impl NotificationPostCommitSink for RuntimeNotificationPostCommitSink {
             } => {
                 self.capture_analytics(effect, observation, Some(metrics))?;
             }
+            NotificationPostCommit::Recovered { .. } => {
+                return Err(NotificationDispatchError::InvalidNotification);
+            }
         };
         let observation = match effect {
             NotificationPostCommit::Analytics { observation, .. }
@@ -196,6 +208,9 @@ impl NotificationPostCommitSink for RuntimeNotificationPostCommitSink {
             | NotificationPostCommit::TokenRateStream(observation)
             | NotificationPostCommit::TokenRateAssociation(observation)
             | NotificationPostCommit::TokenRateUsage(observation) => observation,
+            NotificationPostCommit::Recovered { .. } => {
+                return Err(NotificationDispatchError::InvalidNotification);
+            }
         };
         let delivery = &observation.delivery;
         let kind = match effect {
@@ -204,6 +219,9 @@ impl NotificationPostCommitSink for RuntimeNotificationPostCommitSink {
             NotificationPostCommit::TokenRateStream(_) => "tokenRateStream",
             NotificationPostCommit::TokenRateAssociation(_) => "tokenRateAssociation",
             NotificationPostCommit::TokenRateUsage(_) => "tokenRateUsage",
+            NotificationPostCommit::Recovered { .. } => {
+                return Err(NotificationDispatchError::InvalidNotification);
+            }
         };
         let request = serde_json::json!({
             "requestId": format!("provider-publication:{}:{}:{}:{kind}", delivery.provider_handle, delivery.generation, delivery.cursor),
@@ -241,6 +259,9 @@ impl RuntimeNotificationPostCommitSink {
             NotificationPostCommit::AnalyticsStream { .. } => {
                 return Err(NotificationDispatchError::InvalidNotification);
             }
+            NotificationPostCommit::Recovered { .. } => {
+                return Err(NotificationDispatchError::InvalidNotification);
+            }
         };
         let kind = match effect {
             NotificationPostCommit::Analytics { .. } => "analytics",
@@ -248,6 +269,9 @@ impl RuntimeNotificationPostCommitSink {
             NotificationPostCommit::TokenRateAssociation(_) => "tokenRateAssociation",
             NotificationPostCommit::TokenRateUsage(_) => "tokenRateUsage",
             NotificationPostCommit::AnalyticsStream { .. } => {
+                return Err(NotificationDispatchError::InvalidNotification);
+            }
+            NotificationPostCommit::Recovered { .. } => {
                 return Err(NotificationDispatchError::InvalidNotification);
             }
         };

@@ -669,7 +669,12 @@ class WorkWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             database.execute("UPDATE runtime_agents SET record=? WHERE id=?", (json.dumps(worker), self.worker_id))
         accepted = self.post(body)
         self.assertEqual(accepted.status, 200, accepted.body[:1000])
-        self.assertEqual(self.post(body).json(), accepted.json())
+        replay = self.post(body)
+        self.assertEqual(replay.status, 200, replay.body[:1000])
+        self.assertEqual(
+            normal_result(replay.json()),
+            normal_result(accepted.json()),
+        )
         with closing(sqlite3.connect(self.backend.state / "canvas.sqlite3")) as database:
             rows = database.execute(
                 "SELECT id FROM runtime_events WHERE kind='work_ready' AND json_extract(text,'$.task')=?",

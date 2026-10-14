@@ -78,6 +78,7 @@ impl AccountRegistry {
         Self::new_with_monitor_wake(store, launcher, Arc::new(Notify::new())).await
     }
 
+    #[cfg(any(unix, test))]
     pub async fn new_with_monitor_wake(
         store: Arc<RuntimeStore>,
         launcher: Arc<dyn AccountLauncher>,

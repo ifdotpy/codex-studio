@@ -312,6 +312,15 @@ class MonitorsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         with sqlite3.connect(backend.state / "canvas.sqlite3") as database:
             database.execute("DELETE FROM runtime_rules")
             database.execute("DELETE FROM runtime_monitors WHERE json_extract(record,'$.status') != 'completed'")
+            row = database.execute(
+                "SELECT record FROM runtime_agents WHERE id='monitor-contract-agent'"
+            ).fetchone()
+            agent = json.loads(row[0])
+            agent["autoWake"] = False
+            database.execute(
+                "UPDATE runtime_agents SET record=? WHERE id='monitor-contract-agent'",
+                (json.dumps(agent),),
+            )
         backend.start()
         self.backend = backend
 
@@ -405,6 +414,17 @@ class MonitorsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
     @unittest.skipUnless(os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"), "Rust backend only")
     def test_active_rule_check_refusal_is_named_and_writes_nothing(self) -> None:
         backend = self.backend
+        with sqlite3.connect(backend.state / "canvas.sqlite3") as database:
+            row = database.execute(
+                "SELECT record FROM runtime_monitors WHERE id='active-check'"
+            ).fetchone()
+            self.assertIsNotNone(row)
+            monitor = json.loads(row[0])
+            monitor.update(status="running", ruleId="active-rule")
+            database.execute(
+                "UPDATE runtime_monitors SET record=? WHERE id='active-check'",
+                (json.dumps(monitor),),
+            )
         before = no_write_snapshot(backend.state)
         response = backend.request(
             "POST",

@@ -135,10 +135,7 @@ class WorkItemsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         self.assertEqual(len(changed.json()["items"]), 2)
 
     @unittest.skipUnless(os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"), "Rust backend only")
-    def test_partial_writes_refuse_without_writing(self):
-        cases = (
-            ("POST", "/api/organization", {"id": self.agent_id, "pinned": True}, "workspace-state/organization-effects"),
-        )
+    def test_invalid_queue_writes_refuse_and_organization_effects_commit(self):
         before = no_write_snapshot(self.backend.state)
         for body in (
             {"agent": self.agent_id, "action": "cancel", "id": None},
@@ -150,15 +147,15 @@ class WorkItemsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             self.assertEqual(invalid_queue.status, 400, invalid_queue.body[:1000])
             self.assertEqual(invalid_queue.json(), {"error": "Invalid request", "location": ["body"]})
             self.assertEqual(no_write_snapshot(self.backend.state), before)
-        for method, path, body, dependency in cases:
-            with self.subTest(path=path):
-                response = self.backend.request(method, path, body=body, headers=self._headers())
-                self.assertEqual(response.status, 501, response.body[:1000])
-                self.assertEqual(
-                    response.json(),
-                    {"error": f"Not implemented: requires {dependency}"},
-                )
-                self.assertEqual(no_write_snapshot(self.backend.state), before)
+        self.assertEqual(no_write_snapshot(self.backend.state), before)
+        response = self.backend.request(
+            "POST", "/api/organization",
+            body={"id": self.agent_id, "pinned": True}, headers=self._headers(),
+        )
+        self.assertEqual(response.status, 200, response.body[:1000])
+        self.assertEqual(response.json()["id"], self.agent_id)
+        self.assertIs(response.json()["pinned"], True)
+        self.assertNotEqual(no_write_snapshot(self.backend.state), before)
 
     def test_cancel_without_message_identity_is_refused_without_writing(self):
         before = no_write_snapshot(self.backend.state)

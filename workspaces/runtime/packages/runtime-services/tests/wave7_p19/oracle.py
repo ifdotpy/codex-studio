@@ -20,7 +20,11 @@ fixture = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(fixture)
 import codex_radio as radio
 import codex_peer_conversion as conversion
-from codex_sync_entities import project as project_entity_view, put as sync_entity_put
+from codex_sync_entities import (
+    patch as sync_entity_patch,
+    project as project_entity_view,
+    put as sync_entity_put,
+)
 from types import SimpleNamespace
 
 TABLES = ("agents", "projects", "rooms", "events", "chat_messages", "requests", "completed_turns", "items", "operation_receipts", "sync_entities", "sidebar_order", "work", "plans", "annotations", "complaints", "event_meta", "rules")
@@ -219,7 +223,12 @@ def case(name, mode, configure=None, extra=None):
                 if mode == "project" and body.get("action") == "reorder":
                     with f.runtime.db() as db:
                         order = db.execute("SELECT record FROM runtime_sidebar_order WHERE id='current'").fetchone()
-                        sync_entity_put(db, "workspace", "current", {"id": "current", "sidebarOrder": json.loads(order[0]) if order else None})
+                        sync_entity_patch(
+                            db,
+                            "workspace",
+                            "current",
+                            {"sidebarOrder": json.loads(order[0]) if order else None},
+                        )
             after = snapshot(f.runtime)
             project_changed_events(before, after)
             return dict(name=name, mode=mode, body=body, before=before, after=after, result=result, error=error, drafts=drafts)

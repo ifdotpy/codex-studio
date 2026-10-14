@@ -390,7 +390,19 @@ class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         result = response.json()
         self.assertEqual(result["deleted"], [victim_id])
         if os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"):
-            self.assertEqual(result, {"deleted": [victim_id]})
+            self.assertEqual(result["_syncEntitiesAfter"], result["_syncEntities"][0]["seq"] - 1)
+            self.assertEqual(
+                result["_syncEntities"][0],
+                {
+                    "_deleted": True,
+                    "id": f"entity:agent:{victim_id}",
+                    "payload": json.dumps(
+                        {"collection": "agent", "id": victim_id, "value": {}},
+                        separators=(",", ":"),
+                    ),
+                    "seq": result["_syncEntities"][0]["seq"],
+                },
+            )
         else:
             self.assertEqual(result["_syncEntitiesAfter"], result["_syncEntities"][0]["seq"] - 1)
             self.assertEqual(
@@ -1015,8 +1027,15 @@ class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
                 body = {"id": self.agent_id} if path in ("/api/configure", "/api/conversation") else {"id": str(uuid.uuid4()), "cwd": str(self.backend.cwd)}
                 if path == "/api/agents":
                     body["prompt"] = "Task"
-                if preferences.get("model") == "gpt-6-astra" or preferences == {"effort": None}:
+                if preferences == {"effort": None}:
                     self.post(path, {**body, **preferences}, 200)
+                elif preferences.get("model") == "gpt-6-astra":
+                    before = no_write_snapshot(self.backend.state)
+                    self.assertEqual(
+                        self.post(path, {**body, **preferences}, 501)["error"],
+                        "Not implemented: requires provider-session/model-list",
+                    )
+                    self.assertEqual(no_write_snapshot(self.backend.state), before)
                 else:
                     before = no_write_snapshot(self.backend.state)
                     self.assertEqual(self.post(path, {**body, **preferences}, 501)["error"], "Not implemented: requires " + dependency)

@@ -209,6 +209,7 @@ impl HostRuntime {
         .await
     }
 
+    #[cfg(any(unix, test))]
     pub async fn with_launcher_and_monitor_wake(
         store: Arc<RuntimeStore>,
         launcher: Arc<dyn AccountLauncher>,

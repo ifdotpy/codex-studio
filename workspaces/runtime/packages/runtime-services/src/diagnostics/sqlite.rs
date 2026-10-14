@@ -96,64 +96,76 @@ impl Default for SqliteState {
 
 /// Observe one serialized store transaction for the SQLite contention view.
 pub fn record_store_transaction(wait: Duration, hold: Duration) {
+    let _ = try_with_state(state(), |state| {
+        record_store_transaction_in_state(state, wait, hold);
+    });
+}
+
+fn record_store_transaction_in_state(state: &mut SqliteState, wait: Duration, hold: Duration) {
     let wait_ms = wait.as_secs_f64() * 1000.0;
     let hold_ms = hold.as_secs_f64() * 1000.0;
-    let _ = try_with_state(state(), |state| {
-        state.transaction_count = state.transaction_count.saturating_add(1);
-        state.long_transactions = state
-            .long_transactions
-            .saturating_add(u64::from(hold_ms >= LONG_TRANSACTION_MS));
-        if wait_ms >= WRITE_WAIT_MS {
-            state.write_waits = state.write_waits.saturating_add(1);
-            state.write_wait_ms += wait_ms;
-        }
-        if wait_ms >= WRITE_WAIT_MS {
-            state
-                .write_wait_durations_ms
-                .record(wait.as_millis().min(u128::from(u64::MAX)) as u64);
-        }
-        state.longest_transaction_ms = state.longest_transaction_ms.max(hold_ms);
+    state.transaction_count = state.transaction_count.saturating_add(1);
+    state.long_transactions = state
+        .long_transactions
+        .saturating_add(u64::from(hold_ms >= LONG_TRANSACTION_MS));
+    if wait_ms >= WRITE_WAIT_MS {
+        state.write_waits = state.write_waits.saturating_add(1);
+        state.write_wait_ms += wait_ms;
+    }
+    if wait_ms >= WRITE_WAIT_MS {
         state
-            .transaction_durations_ms
-            .record(hold.as_millis().min(u128::from(u64::MAX)) as u64);
-        if hold >= SLOW_TRANSACTION
-            && let Some(thread_id) = native_thread_id()
-        {
-            let elapsed_seconds = hold.as_secs_f64();
-            let finished_at = epoch_seconds();
-            let entry = json!({
-                "id": format!("rust:{}:{}", std::process::id(), NEXT_ID.fetch_add(1, Ordering::Relaxed)),
-                "pid": std::process::id(),
-                "site": "runtime_store.writer_transaction",
-                "database": DatabaseKind::Canvas,
-                "threadId": thread_id,
-                "nativeThreadId": thread_id,
-                "threadName": "runtime",
-                "originFrames": [],
-                "firstStatement": SqliteStatement::Begin,
-                "originRecorded": false,
-                "startedAtMonotonic": process_monotonic_seconds() - elapsed_seconds,
-                "startedAt": finished_at - elapsed_seconds,
-                "finishedAt": finished_at,
-                "durationMs": elapsed_seconds * 1000.0,
-                "observations": [],
-                "state": "ended",
-            });
-            push_history(state, entry);
-        }
-    });
+            .write_wait_durations_ms
+            .record(wait.as_millis().min(u128::from(u64::MAX)) as u64);
+    }
+    state.longest_transaction_ms = state.longest_transaction_ms.max(hold_ms);
+    state
+        .transaction_durations_ms
+        .record(hold.as_millis().min(u128::from(u64::MAX)) as u64);
+    if hold >= SLOW_TRANSACTION
+        && let Some(thread_id) = native_thread_id()
+    {
+        let elapsed_seconds = hold.as_secs_f64();
+        let finished_at = epoch_seconds();
+        let entry = json!({
+            "id": format!("rust:{}:{}", std::process::id(), NEXT_ID.fetch_add(1, Ordering::Relaxed)),
+            "pid": std::process::id(),
+            "site": "runtime_store.writer_transaction",
+            "database": DatabaseKind::Canvas,
+            "threadId": thread_id,
+            "nativeThreadId": thread_id,
+            "threadName": "runtime",
+            "originFrames": [],
+            "firstStatement": SqliteStatement::Begin,
+            "originRecorded": false,
+            "startedAtMonotonic": process_monotonic_seconds() - elapsed_seconds,
+            "startedAt": finished_at - elapsed_seconds,
+            "finishedAt": finished_at,
+            "durationMs": elapsed_seconds * 1000.0,
+            "observations": [],
+            "state": "ended",
+        });
+        push_history(state, entry);
+    }
 }
 
 /// Accept one rusqlite profile event without retaining its SQL text.
 pub fn record_sqlite_profile(database: DatabaseKind, elapsed: Duration) {
     let _ = try_with_state(state(), |state| {
-        let (count, samples) = state
-            .profile_by_database
-            .entry(database)
-            .or_insert_with(|| (0, Ring::new(HISTORY_LIMIT)));
-        *count = count.saturating_add(1);
-        samples.record(elapsed.as_millis().min(u128::from(u64::MAX)) as u64);
+        record_sqlite_profile_in_state(state, database, elapsed);
     });
+}
+
+fn record_sqlite_profile_in_state(
+    state: &mut SqliteState,
+    database: DatabaseKind,
+    elapsed: Duration,
+) {
+    let (count, samples) = state
+        .profile_by_database
+        .entry(database)
+        .or_insert_with(|| (0, Ring::new(HISTORY_LIMIT)));
+    *count = count.saturating_add(1);
+    samples.record(elapsed.as_millis().min(u128::from(u64::MAX)) as u64);
 }
 
 fn push_history(state: &mut SqliteState, entry: Value) {
@@ -225,16 +237,24 @@ pub fn sqlite_history() -> Value {
         "activeTracking": {"tracked": 0, "limit": ACTIVE_LIMIT, "untrackedStarts": 0},
     });
     let _ = try_with_state(state(), |state| {
-        result["coverageStartedAt"] = json!(state.coverage_started_at);
-        result["recent"] = json!(state.recent);
-        result["longest"] = json!(state.longest);
-        result["activeTracking"] = json!({
+        result = sqlite_history_from_state(state);
+    });
+    result
+}
+
+fn sqlite_history_from_state(state: &SqliteState) -> Value {
+    json!({
+        "coverageStartedAt": state.coverage_started_at,
+        "thresholdMs": SLOW_TRANSACTION.as_millis(),
+        "recent": state.recent,
+        "longest": state.longest,
+        "journal": {"status": "notWritten"},
+        "activeTracking": {
             "tracked": state.active.len(),
             "limit": ACTIVE_LIMIT,
             "untrackedStarts": state.untracked,
-        });
-    });
-    result
+        },
+    })
 }
 
 /// Build the committed OpenAPI `SqliteContention` shape from store-owned
@@ -333,13 +353,9 @@ mod tests {
 
     #[test]
     fn transaction_record_contains_only_closed_metadata() {
-        // The process-global collector is deliberately nonblocking, so other
-        // parallel tests may make this sample unavailable.
-        if let Some(token) = begin_sqlite_transaction(DatabaseKind::Canvas, SqliteStatement::Update)
-        {
-            finish_sqlite_transaction(token, TransactionOutcome::Committed);
-        }
-        let value = sqlite_history();
+        let mut state = SqliteState::default();
+        record_store_transaction_in_state(&mut state, Duration::ZERO, Duration::from_secs(2));
+        let value = sqlite_history_from_state(&state);
         let text = value.to_string();
         assert!(!text.contains("SELECT"));
         assert!(!text.contains("home"));
@@ -349,21 +365,31 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn slow_statements_do_not_masquerade_as_slow_transactions() {
+        let mut state = SqliteState::default();
         for _ in 0..=HISTORY_LIMIT {
-            record_sqlite_profile(DatabaseKind::Canvas, Duration::from_secs(2));
+            record_sqlite_profile_in_state(
+                &mut state,
+                DatabaseKind::Canvas,
+                Duration::from_secs(2),
+            );
         }
-        let history = sqlite_history();
+        let history = sqlite_history_from_state(&state);
         let recent = history["recent"].as_array().expect("slow profile history");
         assert!(recent.is_empty());
         assert!(history["longest"].as_array().expect("longest").is_empty());
+        assert_eq!(
+            state.profile_by_database[&DatabaseKind::Canvas].0,
+            HISTORY_LIMIT as u64 + 1
+        );
     }
 
     #[test]
     fn actual_writer_transactions_fill_only_bounded_slow_history() {
+        let mut state = SqliteState::default();
         for _ in 0..=HISTORY_LIMIT {
-            record_store_transaction(Duration::ZERO, Duration::from_secs(2));
+            record_store_transaction_in_state(&mut state, Duration::ZERO, Duration::from_secs(2));
         }
-        let history = sqlite_history();
+        let history = sqlite_history_from_state(&state);
         let recent = history["recent"]
             .as_array()
             .expect("slow transaction history");

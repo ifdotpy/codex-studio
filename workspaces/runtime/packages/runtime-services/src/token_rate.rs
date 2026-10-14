@@ -192,7 +192,9 @@ impl TokenRateHub {
         &self,
         effect: NotificationPostCommit,
     ) -> Result<bool, TokenRateError> {
-        let observation = effect_observation(&effect);
+        let Some(observation) = effect_observation(&effect) else {
+            return Err(TokenRateError::Unavailable);
+        };
         let agent = observation
             .agent
             .as_ref()
@@ -205,6 +207,7 @@ impl TokenRateHub {
             NotificationPostCommit::AnalyticsStream { .. } => 2,
             NotificationPostCommit::TokenRateStream(_) => 4,
             NotificationPostCommit::TokenRateAssociation(_) => 8,
+            NotificationPostCommit::Recovered { .. } => return Err(TokenRateError::Unavailable),
         };
         let snapshot = {
             let mut projector = self
@@ -265,13 +268,14 @@ impl TokenRateHub {
     }
 }
 
-fn effect_observation(effect: &NotificationPostCommit) -> &NotificationObservation {
+fn effect_observation(effect: &NotificationPostCommit) -> Option<&NotificationObservation> {
     match effect {
         NotificationPostCommit::Analytics { observation, .. }
         | NotificationPostCommit::AnalyticsStream { observation, .. }
         | NotificationPostCommit::TokenRateStream(observation)
         | NotificationPostCommit::TokenRateAssociation(observation)
-        | NotificationPostCommit::TokenRateUsage(observation) => observation,
+        | NotificationPostCommit::TokenRateUsage(observation) => Some(observation),
+        NotificationPostCommit::Recovered { .. } => None,
     }
 }
 
@@ -359,6 +363,7 @@ fn project_effect(
             _ => {}
         },
         NotificationPostCommit::AnalyticsStream { .. } => {}
+        NotificationPostCommit::Recovered { .. } => {}
     }
 }
 

@@ -217,9 +217,9 @@ async fn create_lead(
 ) -> Result<Json<Value>, ApiError> {
     let request = Creation {
         intent: serde_json::to_value(&body).map_err(|_| ApiError::internal())?,
-        catalog: body.effort.is_some()
-            || body.fast_mode.is_some()
-            || body.daybreak_enabled.is_some()
+        catalog: body.effort.as_ref().is_some_and(Option::is_some)
+            || body.fast_mode.as_ref().is_some_and(Option::is_some)
+            || body.daybreak_enabled.as_ref().is_some_and(Option::is_some)
             || body.model.as_ref().is_some_and(Option::is_some),
         worker_catalog: body.worker_defaults.is_some() || body.review_defaults.is_some(),
         project_binding: body.project_id.flatten().is_some()
@@ -250,10 +250,10 @@ async fn create_agent(
     }
     let request = Creation {
         intent: serde_json::to_value(&body).map_err(|_| ApiError::internal())?,
-        catalog: body.model.is_some()
-            || body.effort.is_some()
-            || body.fast_mode.is_some()
-            || body.daybreak_enabled.is_some(),
+        catalog: body.model.as_ref().is_some_and(Option::is_some)
+            || body.effort.as_ref().is_some_and(Option::is_some)
+            || body.fast_mode.as_ref().is_some_and(Option::is_some)
+            || body.daybreak_enabled.as_ref().is_some_and(Option::is_some),
         worker_catalog: body.worker_defaults.is_some(),
         id: body.id.flatten(),
         cwd: body.cwd,

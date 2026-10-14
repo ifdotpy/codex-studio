@@ -323,12 +323,20 @@ impl ProjectsRepository {
              ON CONFLICT(id) DO UPDATE SET record=excluded.record",
             [serde_json::to_string(value)?],
         )?;
-        SyncDocumentsRepository::patch_entity(
-            transaction,
-            "workspace",
-            "current",
-            json!({"sidebarOrder":value}),
+        let workspace_exists = transaction.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sync_entities \
+             WHERE collection='workspace' AND id='current' AND deleted=0)",
+            [],
+            |row| row.get::<_, bool>(0),
         )?;
+        if workspace_exists {
+            SyncDocumentsRepository::patch_entity(
+                transaction,
+                "workspace",
+                "current",
+                json!({"sidebarOrder":value}),
+            )?;
+        }
         Ok(())
     }
 }

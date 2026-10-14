@@ -149,10 +149,15 @@ impl NotificationPostCommitSink for RecordingSink {
             | NotificationPostCommit::TokenRateUsage(observation)
             | NotificationPostCommit::Analytics { observation, .. }
             | NotificationPostCommit::AnalyticsStream { observation, .. } => {
-                observation.delivery.cursor
+                Some(observation.delivery.cursor)
             }
+            // Recovered effects have a stable identity but no provider cursor;
+            // the cursor failure injector does not apply to that lane.
+            NotificationPostCommit::Recovered { .. } => None,
         };
-        if *self.fail_cursor.lock().expect("failure state") == Some(cursor) {
+        if cursor.is_some_and(|cursor| {
+            *self.fail_cursor.lock().expect("failure state") == Some(cursor)
+        }) {
             return Err(
                 crate::notification_dispatch::NotificationDispatchError::Dependency(
                     "test/publication-sink",
