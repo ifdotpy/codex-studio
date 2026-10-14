@@ -144,11 +144,6 @@ fn missing_native_and_workspace_effects_produce_no_decision() {
             "cross-server/agent-management",
         ),
         (
-            "capacityRetry",
-            json!({"id":"retry"}),
-            "usage-policy/agent-stop",
-        ),
-        (
             "imageWorkspaceReady",
             json!(true),
             "workspace-state/agent-lifecycle",

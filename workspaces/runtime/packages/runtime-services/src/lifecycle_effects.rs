@@ -91,9 +91,19 @@ impl ProductionLifecyclePorts {
     pub fn execute(&self, action: &Action, now: f64) -> Result<Value, ManagementError> {
         let reader = self.store.read()?;
         let rooms = crate::sync_entity_context::RoomDirectory::prepare(&reader)?;
+        let projects = studio_runtime_store::ProjectsRepository::list(&reader)?;
+        let vault_snapshot =
+            crate::sync_policy::ProjectVaultSnapshot::capture(self.store.root(), &projects);
         drop(reader);
         let result = self.store.transaction_with_error(|tx| {
-            crate::agent_management_store::execute_with_ports(tx, action, now, &rooms, self)
+            crate::agent_management_store::execute_with_ports(
+                tx,
+                action,
+                now,
+                &rooms,
+                &vault_snapshot,
+                self,
+            )
         })?;
         self.committed()?;
         Ok(result)

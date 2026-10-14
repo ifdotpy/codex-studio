@@ -146,17 +146,9 @@ struct Work {
     record: Value,
 }
 
-#[derive(Deserialize)]
-struct VoiceSession {
-    agent: String,
-    state: Option<String>,
-    ended: Option<f64>,
-}
-
 pub struct ManagementSnapshot {
     agents: Vec<Agent>,
     work: Vec<Work>,
-    voice_sessions: Vec<VoiceSession>,
     tables: BTreeMap<String, Vec<Value>>,
 }
 
@@ -196,7 +188,6 @@ impl ManagementSnapshot {
     pub fn from_records(records: Records) -> Result<Self, ManagementError> {
         let mut agents = Vec::new();
         let mut work = Vec::new();
-        let mut voice_sessions = Vec::new();
         for (table, rows) in &records.tables {
             if rows.len() > MAX_ROWS {
                 return Err(ManagementError::Unavailable(
@@ -222,10 +213,6 @@ impl ManagementSnapshot {
                 {
                     return Err(invalid());
                 }
-                if table == "voice_sessions" {
-                    voice_sessions
-                        .push(serde_json::from_value(row.clone()).map_err(|_| invalid())?);
-                }
                 if table == "runtime_work" {
                     work.push(Work {
                         identity: serde_json::from_value(row.clone()).map_err(|_| invalid())?,
@@ -243,7 +230,6 @@ impl ManagementSnapshot {
         Ok(Self {
             agents,
             work,
-            voice_sessions,
             tables: records.tables,
         })
     }
@@ -388,16 +374,31 @@ impl ManagementSnapshot {
             effects.push(kind);
             Ok(())
         };
-        if agent.active()
-            || [
-                "threadId",
-                "turnId",
-                "startAttempt",
-                "workspaceOperation",
-                "accountTransferId",
-            ]
-            .iter()
-            .any(|key| agent.flag(key))
+        let capacity_retry_is_local = agent
+            .record
+            .pointer("/capacityRetry/id")
+            .and_then(Value::as_str)
+            .zip(
+                agent
+                    .record
+                    .pointer("/startAttempt/capacityRetryId")
+                    .and_then(Value::as_str),
+            )
+            .is_some_and(|(retry_id, attempt_retry_id)| {
+                retry_id == attempt_retry_id
+                    && agent.record.pointer("/startAttempt/submitted") == Some(&Value::Bool(false))
+            });
+        if !capacity_retry_is_local
+            && (agent.active()
+                || [
+                    "threadId",
+                    "turnId",
+                    "startAttempt",
+                    "workspaceOperation",
+                    "accountTransferId",
+                ]
+                .iter()
+                .any(|key| agent.flag(key)))
         {
             stage(LifecycleEffectKind::Interrupt)?;
         }
@@ -409,13 +410,12 @@ impl ManagementSnapshot {
                 "cross-server/agent-management",
             ));
         }
-        if agent.flag("capacityRetry")
-            || agent
-                .record
-                .get("usageResume")
-                .and_then(|r| r.get("status"))
-                .and_then(Value::as_str)
-                .is_some_and(|s| matches!(s, "scheduled" | "started"))
+        if agent
+            .record
+            .get("usageResume")
+            .and_then(|r| r.get("status"))
+            .and_then(Value::as_str)
+            .is_some_and(|s| matches!(s, "scheduled" | "started"))
         {
             stage(LifecycleEffectKind::CancelResume)?;
         }
@@ -426,22 +426,7 @@ impl ManagementSnapshot {
         {
             stage(LifecycleEffectKind::CancelMonitors)?;
         }
-        if self.voice_sessions.iter().any(|session| {
-            session.agent == agent.id() && session.state.is_some() && session.ended.is_none()
-        }) {
-            return Err(ManagementError::Unavailable("voice-driver/agent-stop"));
-        }
         Ok(())
-    }
-    fn has_voice_data(&self, agent: &Agent) -> bool {
-        [
-            "voice_sessions",
-            "voice_records",
-            "voice_deliveries",
-            "voice_approvals",
-        ]
-        .iter()
-        .any(|table| !self.owned(table, "agent", agent.id()).is_empty())
     }
     fn blockers(&self, agent: &Agent, unassign: bool) -> Vec<Value> {
         let mut blocks = Vec::new();
@@ -707,10 +692,6 @@ fn stop(
     for agent in &agents {
         let mut effects = Vec::new();
         snapshot.stop_effects(agent, &mut effects, live)?;
-        // Deletion also removes saved voice data; stop only ends open sessions.
-        if delete && snapshot.has_voice_data(agent) {
-            return Err(ManagementError::Unavailable("voice-driver/agent-stop"));
-        }
         if delete {
             workspace_dependency(agent)?;
             // Python only schedules image cleanup for non-removed workspaces
