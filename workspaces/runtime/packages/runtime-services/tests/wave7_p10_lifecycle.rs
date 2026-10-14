@@ -332,7 +332,7 @@ fn assert_records(store: &RuntimeStore, case: &Value) {
 #[test]
 fn python_stop_corpus_complete_records_and_exact_descendants() {
     let cases = cases();
-    assert_eq!(cases.len(), 19);
+    assert_eq!(cases.len(), 20);
     let base = tempfile::tempdir().expect("template");
     template(base.path());
     for case in cases {
@@ -701,7 +701,7 @@ fn production_restart_scan_settles_durable_deleted_agent_state() {
     deleted["inFlight"] = json!(true);
     deleted["turnId"] = json!("turn-running");
     deleted["activity"] = json!({"at":case["now"]});
-    deleted["activeTools"] = json!(["tool"]);
+    deleted["activeTools"] = json!([{"name":"tool"}]);
     deleted["startAttempt"]["activeAtReservation"] = json!(true);
 
     let root = tempfile::tempdir().expect("root");
