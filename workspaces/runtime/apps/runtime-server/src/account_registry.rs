@@ -107,11 +107,37 @@ impl AccountRegistry {
                 .await
                 .map_err(|_| WorkerError::TaskFailed)??;
         let mut failure = None;
-        for (account, agents) in targets {
+        for (account, pending_agents) in targets {
             if stopped() {
                 break;
             }
             self.after_account.clone_from(&account);
+            let image_agents = image_workspace_agents(&self.store, &pending_agents)?;
+            for agent_id in &image_agents {
+                self.after_agent.insert(account.clone(), agent_id.clone());
+                eprintln!(
+                    "account registry refused agent {agent_id}: workspace-state/image-execution"
+                );
+            }
+            let agents = pending_agents
+                .into_iter()
+                .filter(|(agent_id, _)| !image_agents.contains(agent_id))
+                .collect::<Vec<_>>();
+            let image_recovery =
+                agents.is_empty() && has_image_workspace_recovery(&self.store, &account)?;
+            // An image-only pending page must not start an account provider
+            // outside the workspace image's shared mount namespace.
+            if agents.is_empty()
+                && (!image_agents.is_empty() || image_recovery)
+                && !self.workers.contains_key(&account)
+            {
+                if image_recovery {
+                    eprintln!(
+                        "account registry refused recovery for account {account}: workspace-state/image-execution"
+                    );
+                }
+                continue;
+            }
             if let Err(error) = self.start(&account).await {
                 failure.get_or_insert(error);
                 continue;
@@ -232,6 +258,52 @@ pub(crate) fn target_page(
     let db = store.read()?;
     SchedulerRepository::account_wake_page(&db, after_account, after_agent, MAX_ACCOUNTS, WAKE_PAGE)
         .map_err(Into::into)
+}
+
+fn image_workspace_agents(
+    store: &RuntimeStore,
+    agents: &[(String, i64)],
+) -> Result<std::collections::BTreeSet<String>, WorkerError> {
+    let db = store.read()?;
+    let mut image_agents = std::collections::BTreeSet::new();
+    for (agent_id, _) in agents {
+        let mode = db.query_row(
+            "SELECT json_extract(record,'$.workspaceMode') FROM runtime_agents WHERE id=?1",
+            [agent_id],
+            |row| row.get::<_, Option<String>>(0),
+        )?;
+        if mode.as_deref() == Some("image") {
+            image_agents.insert(agent_id.clone());
+        }
+    }
+    Ok(image_agents)
+}
+
+fn has_image_workspace_recovery(store: &RuntimeStore, account: &str) -> Result<bool, WorkerError> {
+    let db = store.read()?;
+    Ok(db.query_row(
+        "SELECT EXISTS(
+          SELECT 1 FROM runtime_agents a
+          WHERE COALESCE(json_extract(a.record,'$.accountKey'),'default')=?1
+            AND json_extract(a.record,'$.workspaceMode')='image'
+            AND json_extract(a.record,'$.deletedAt') IS NULL
+            AND COALESCE(json_extract(a.record,'$.remoteWorker'),0)=0
+            AND COALESCE(json_extract(a.record,'$.remoteAnchor'),0)=0
+            AND ((COALESCE(json_extract(a.record,'$.provider'),'codex')='codex'
+                  AND json_extract(a.record,'$.startAttempt.submitted')=1
+                  AND json_extract(a.record,'$.startAttempt.connectionGeneration') IS NOT NULL
+                  AND json_extract(a.record,'$.status') IN ('starting','running','waiting','paused','interrupted'))
+              OR (json_type(a.record,'$.disconnectRecovery')='object' AND (
+                  COALESCE(json_extract(a.record,'$.status'),'') NOT IN ('completed','waiting','paused','parked')
+                  OR json_extract(a.record,'$.disconnectRecovery.stage') IS NOT NULL))
+              OR (json_type(a.record,'$.restartRecovery')='object' AND (
+                  COALESCE(json_extract(a.record,'$.status'),'') NOT IN ('completed','waiting','paused','parked')
+                  OR COALESCE(json_extract(a.record,'$.restartRecovery.stage'),'')
+                     NOT IN ('finished','continued','reattached','input_restored'))))
+        )",
+        [account],
+        |row| row.get(0),
+    )?)
 }
 
 #[cfg(test)]

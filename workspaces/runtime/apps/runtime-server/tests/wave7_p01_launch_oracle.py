@@ -27,11 +27,22 @@ def capture(root, handle, command, env, cwd=None, **_kwargs):
                          signature=Supervisor.signature(command, env, cwd))))
     raise Captured()
 
-with patch.dict(os.environ, request["environment"], clear=True), patch("codex_process_supervisor.attach", capture):
+def capture_direct(command, **kwargs):
+    print(json.dumps(dict(command=command, env=kwargs["env"], cwd=kwargs.get("cwd"))))
+    raise Captured()
+
+with patch.dict(os.environ, request["environment"], clear=True):
     try:
-        AppServer(root / "native", lambda *_: None, lambda *_: None, lambda *_: None,
-                  home=request["home"], isolated=request["isolated"],
-                  executable=request["executable"], supervisor_handle="account:default",
-                  supervisor_root=root)
+        if request.get("mode") == "direct":
+            with patch("subprocess.Popen", capture_direct):
+                AppServer(root / "native", lambda *_: None, lambda *_: None, lambda *_: None,
+                          home=request["home"], isolated=request["isolated"],
+                          executable=request["executable"])
+        else:
+            with patch("codex_process_supervisor.attach", capture):
+                AppServer(root / "native", lambda *_: None, lambda *_: None, lambda *_: None,
+                          home=request["home"], isolated=request["isolated"],
+                          executable=request["executable"], supervisor_handle="account:default",
+                          supervisor_root=root)
     except Captured:
         pass

@@ -5,8 +5,10 @@ use serde_json::json;
 use std::{collections::BTreeMap, path::PathBuf, sync::Arc};
 use studio_runtime_http::HttpState;
 use studio_runtime_process::{
-    BackendId, BackendIdentity, OperationId, ProviderHandle, ProviderLaunchSpec,
-    provider_seam::{OpenOptions, SessionClock, Shutdown},
+    BackendId, BackendIdentity, Generation, OperationId, ProviderHandle, ProviderLaunchSpec,
+    child_priority::ChildPriority,
+    provider_direct::DirectProviderTaskFactory,
+    provider_seam::{OpenOptions, ProviderTaskFactory, SessionClock, Shutdown},
     provider_task::SupervisorProviderTaskFactory,
 };
 use studio_runtime_services::{
@@ -54,7 +56,11 @@ impl HostRuntime {
         });
         let launcher = Arc::new(HostLauncher {
             factory: SupervisorProviderTaskFactory::new(identity),
+            supervisor_mode: std::env::var("CODEX_AGENTS_SUPERVISOR_MODE")
+                .is_ok_and(|value| value == "1"),
+            child_priority: ChildPriority::from_environment(),
             accounts,
+            store: store.clone(),
             root: store.root().to_owned(),
             native_path,
             resources,
@@ -90,7 +96,10 @@ impl HostRuntime {
 
 struct HostLauncher {
     factory: SupervisorProviderTaskFactory,
+    supervisor_mode: bool,
+    child_priority: ChildPriority,
     accounts: Arc<AccountDriver>,
+    store: Arc<RuntimeStore>,
     root: PathBuf,
     native_path: Option<String>,
     resources: PreparationResources,
@@ -123,22 +132,41 @@ impl AccountLauncher for HostLauncher {
                 .read(&account, &resources.account_home, "codex", false)
                 .await;
             let clock = SessionClock::default();
-            let prepared = self
-                .factory
-                .prepare(
-                    ProviderHandle::for_account(&account),
-                    OpenOptions {
-                        clock: clock.clone(),
-                        launch: launch.clone(),
-                        expected_generation: None,
-                    },
-                    Shutdown::default(),
-                )
-                .await
-                .map_err(studio_runtime_services::provider_session_task::SessionTaskError::from)?;
-            let generation = prepared.generation();
+            let handle = ProviderHandle::for_account(&account);
+            let open = OpenOptions {
+                clock: clock.clone(),
+                launch: launch.clone(),
+                expected_generation: None,
+            };
+            let (factory, generation): (Arc<dyn ProviderTaskFactory>, _) = if self.supervisor_mode {
+                let prepared = self
+                    .factory
+                    .prepare(handle.clone(), open, Shutdown::default())
+                    .await
+                    .map_err(
+                        studio_runtime_services::provider_session_task::SessionTaskError::from,
+                    )?;
+                let generation = prepared.generation();
+                (Arc::new(prepared), generation)
+            } else {
+                let generation = next_direct_generation(&self.store, &account)?;
+                let prepared = DirectProviderTaskFactory::new(self.child_priority)
+                    .prepare(
+                        handle.clone(),
+                        OpenOptions {
+                            expected_generation: Some(generation),
+                            ..open
+                        },
+                        &Shutdown::default(),
+                    )
+                    .map_err(
+                        studio_runtime_services::provider_session_task::SessionTaskError::from,
+                    )?;
+                debug_assert_eq!(generation, prepared.generation());
+                (Arc::new(prepared), generation)
+            };
             Ok(AccountLaunch {
-                factory: Arc::new(prepared),
+                factory,
                 options: OpenOptions {
                     clock,
                     launch,
@@ -215,6 +243,65 @@ pub(crate) fn codex_launch(
         environment.remove("CODEX_API_KEY");
     }
     ProviderLaunchSpec::new(command, environment, root).with_inherited_cwd()
+}
+
+fn next_direct_generation(store: &RuntimeStore, account: &str) -> Result<Generation, WorkerError> {
+    store.transaction_with(|tx| {
+        let invalid = || {
+            WorkerError::PreparationRefused("account-worker/direct-generation".into())
+        };
+        let counter_id = format!("account-worker:direct-generation:{account}:next");
+        let counter_exists = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM runtime_operation_receipts WHERE id=?1)",
+            [&counter_id],
+            |row| row.get::<_, bool>(0),
+        )?;
+        let mut latest = if counter_exists {
+            let raw = tx.query_row(
+                "SELECT result FROM runtime_operation_receipts WHERE id=?1",
+                [&counter_id],
+                |row| row.get::<_, String>(0),
+            )?;
+            serde_json::from_str::<u64>(&raw).map_err(|_| invalid())?
+        } else {
+            0
+        };
+        for kind in ["cursor", "journal", "callback", "recovery", "account"] {
+            let prefix = format!("account-worker:{kind}:{account}:");
+            let upper = format!("{prefix}~");
+            let mut query = tx.prepare(
+                "SELECT id,result FROM runtime_operation_receipts WHERE id>=?1 AND id<?2",
+            )?;
+            let rows = query
+                .query_map((prefix.as_str(), upper.as_str()), |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
+            for (id, raw) in rows {
+                let value: serde_json::Value = serde_json::from_str(&raw).map_err(|_| invalid())?;
+                let generation = if kind == "account" {
+                    value
+                        .pointer("/request/generation")
+                        .or_else(|| value.get("generation"))
+                        .and_then(serde_json::Value::as_u64)
+                } else {
+                    id.strip_prefix(&prefix)
+                        .and_then(|tail| tail.split(':').next())
+                        .and_then(|number| number.parse::<u64>().ok())
+                };
+                if let Some(generation) = generation {
+                    latest = latest.max(generation);
+                }
+            }
+        }
+        let next = latest.checked_add(1).ok_or_else(invalid)?;
+        let result = serde_json::to_string(&next).map_err(|_| invalid())?;
+        tx.execute(
+            "INSERT INTO runtime_operation_receipts(id,signature,result) VALUES(?1,'direct-provider-generation',?2) ON CONFLICT(id) DO UPDATE SET result=excluded.result",
+            (counter_id.as_str(), result.as_str()),
+        )?;
+        Ok(Generation(next))
+    })
 }
 
 pub(crate) fn account_home<R: ProviderAuthReader>(
