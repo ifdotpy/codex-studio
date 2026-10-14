@@ -19,6 +19,11 @@ pub(crate) struct ProductionPorts {
     admission: crate::message_admission::PreparedAdmission,
     event_wake: std::sync::Arc<tokio::sync::Notify>,
     monitor_dispatch_wake: std::sync::Arc<tokio::sync::Notify>,
+    monitor_runtime: Option<std::sync::Arc<crate::monitor_runtime_wiring::MonitorRuntime>>,
+    account_session: Option<std::sync::Arc<dyn crate::account_session_runtime::AccountSessionPort>>,
+    account_identity_read:
+        Option<std::sync::Arc<dyn crate::provider_callbacks::ManagedCreationAccountRead>>,
+    lifecycle_ports: Option<std::sync::Arc<dyn crate::agent_lifecycle_runtime::LifecyclePorts>>,
 }
 
 impl ProductionPorts {
@@ -27,14 +32,18 @@ impl ProductionPorts {
         room_directory: Option<crate::sync_entity_context::RoomDirectory>,
         admission: crate::message_admission::PreparedAdmission,
         event_wake: std::sync::Arc<tokio::sync::Notify>,
-        monitor_dispatch_wake: std::sync::Arc<tokio::sync::Notify>,
+        runtime_ports: crate::provider_callbacks::ManagedToolRuntimePorts,
     ) -> Self {
         Self {
             context,
             room_directory,
             admission,
             event_wake,
-            monitor_dispatch_wake,
+            monitor_dispatch_wake: runtime_ports.monitor_dispatch_wake,
+            monitor_runtime: runtime_ports.monitor_runtime,
+            account_session: runtime_ports.account_session,
+            account_identity_read: runtime_ports.account_identity_read,
+            lifecycle_ports: runtime_ports.lifecycle_ports,
         }
     }
 }
@@ -462,6 +471,270 @@ impl crate::native_review::ReviewCreator for UnavailableReviewCreator {
     }
 }
 impl crate::managed_host_tools::PostCommitPort for ProductionPorts {
+    fn dispatch_managed(
+        &self,
+        store: &studio_runtime_store::RuntimeStore,
+        _actor: &crate::managed_host_tools::Actor,
+        tool: &str,
+        args: &Value,
+        request_id: &str,
+        now: f64,
+    ) -> Result<
+        Option<crate::managed_host_tools::DispatchedOperation>,
+        crate::managed_host_tools::Error,
+    > {
+        let actor_id = _actor.record().id.0.as_str();
+        let actor_epoch = _actor.record().epoch;
+        let extra = &_actor.record().extra;
+        let remote_origin = studio_runtime_store::truthy(extra.get("remoteOrigin"));
+        let moved_from = studio_runtime_store::truthy(extra.get("movedFrom"));
+        if remote_origin
+            && (tool == "orchestration_status"
+                || (moved_from
+                    && matches!(tool, "orchestration_interrupt" | "orchestration_spawn")))
+        {
+            // Preserve Runtime.dynamic's multi-server branches; the transaction
+            // dispatcher below returns the named remote-transport refusal.
+            return Ok(None);
+        }
+        if tool == "orchestration_status" {
+            let value = crate::managed_status_watch::model_directory(
+                store,
+                actor_id,
+                actor_epoch as u64,
+                args,
+                now,
+            )
+            .map_err(status_service_error)?;
+            return Ok(Some(written(value, Vec::new())));
+        }
+        if tool == "orchestration_watch" {
+            let result = crate::managed_status_watch::rules(
+                store,
+                actor_id,
+                actor_epoch as u64,
+                Some(args),
+                request_id,
+                now,
+                &crate::managed_status_watch::LocalRuleWatchFiles,
+            )
+            .map_err(rules_service_error)?;
+            if !result.cancel_monitor_ids.is_empty() {
+                let runtime = self.monitor_runtime.as_ref().ok_or(
+                    crate::managed_host_tools::Error::Unavailable("monitor-runtime/rule-cancel"),
+                )?;
+                for monitor_id in result.cancel_monitor_ids {
+                    runtime
+                        .cancel(&monitor_id, Some(actor_id), now)
+                        .map_err(|_| {
+                            crate::managed_host_tools::Error::Unavailable(
+                                "monitor-runtime/rule-cancel",
+                            )
+                        })?;
+                }
+            }
+            return Ok(Some(written(result.value, Vec::new())));
+        }
+        if matches!(tool, "orchestration_spawn" | "orchestration_review") {
+            let Some(session) = self.account_session.as_ref() else {
+                return Ok(Some(not_sent(
+                    crate::managed_host_tools::Error::Unavailable("provider-session/model-list"),
+                )));
+            };
+            let environment = CallbackCreationEnvironment::new(
+                _actor,
+                session.clone(),
+                self.account_identity_read.clone(),
+                request_id,
+            );
+            let result = if tool == "orchestration_spawn" {
+                crate::managed_child_create::spawn_agents(
+                    store,
+                    _actor,
+                    args,
+                    request_id,
+                    now,
+                    &environment,
+                )
+            } else {
+                crate::managed_child_create::request_review(
+                    store,
+                    _actor,
+                    args,
+                    request_id,
+                    now,
+                    &environment,
+                )
+            }
+            .map_err(child_create_error)?;
+            return Ok(Some(written(result.value, result.signals)));
+        }
+        if tool == "orchestration_interrupt" {
+            let Some(lifecycle) = self.lifecycle_ports.as_deref() else {
+                return Ok(Some(not_sent(
+                    crate::managed_host_tools::Error::Unavailable(
+                        "agent-lifecycle/production-ports",
+                    ),
+                )));
+            };
+            let target =
+                args["agent_id"]
+                    .as_str()
+                    .ok_or(crate::managed_host_tools::Error::Invalid(
+                        "Supply agent_id for orchestration_interrupt",
+                    ))?;
+            let stopped = crate::agent_lifecycle_runtime::stop_by_agent(
+                store,
+                actor_id,
+                actor_epoch,
+                target,
+                false,
+                now,
+                lifecycle,
+            );
+            return Ok(Some(match stopped {
+                Ok(value) => written(value, Vec::new()),
+                Err(crate::agent_management::ManagementError::Store(
+                    studio_runtime_store::StoreError::RecordContract(_),
+                )) => crate::managed_host_tools::DispatchedOperation {
+                    result: crate::managed_host_tools::OperationResult {
+                        value: json!({"requestId":request_id,"outcome":"unknown","recovery":"Read orchestration_request with this requestId. Do not repeat the mutation with a new id."}),
+                        signals: Vec::new(),
+                    },
+                    certainty: crate::managed_host_tools::DeliveryCertainty::Unknown,
+                    applied: None,
+                },
+                Err(error) => {
+                    let error = match error {
+                        crate::agent_management::ManagementError::Invalid(message) => {
+                            crate::managed_host_tools::Error::Invalid(message)
+                        }
+                        crate::agent_management::ManagementError::Unavailable(name) => {
+                            crate::managed_host_tools::Error::Unavailable(name)
+                        }
+                        crate::agent_management::ManagementError::Stored { .. } => {
+                            crate::managed_host_tools::Error::Stale
+                        }
+                        crate::agent_management::ManagementError::Store(error) => {
+                            crate::managed_host_tools::Error::Store(error)
+                        }
+                    };
+                    return Err(error);
+                }
+            }));
+        }
+        if tool == "orchestration_monitor" && args["action"].as_str() != Some("cancel") {
+            let actor_record = _actor.record();
+            let cwd = actor_record
+                .extra
+                .get("cwd")
+                .and_then(Value::as_str)
+                .ok_or(crate::managed_host_tools::Error::Unavailable(
+                    "workspace-state/monitor-admission",
+                ))?;
+            let canonical = std::fs::canonicalize(cwd).map_err(|_| {
+                crate::managed_host_tools::Error::Invalid("Select a project directory")
+            })?;
+            if !canonical.is_dir() {
+                return Err(crate::managed_host_tools::Error::Invalid(
+                    "Select a project directory",
+                ));
+            }
+            let workspace = MonitorWorkspaceAdmission {
+                actor_id: actor_id.to_owned(),
+                epoch: actor_epoch,
+                cwd: canonical.to_string_lossy().into_owned(),
+            };
+            let request = args.clone();
+            let log_root = store.root().join("monitor-logs");
+            let log_root = log_root.to_string_lossy().into_owned();
+            let admission = crate::monitor_runtime::MonitorAdmission {
+                actor_id,
+                epoch: actor_epoch,
+                request_id,
+                request: &request,
+                log_root: &log_root,
+            };
+            let value = store
+                .transaction_with(|tx| {
+                    crate::monitor_runtime::create_in_transaction(tx, &admission, &workspace, now)
+                })
+                .map_err(monitor_service_error)?;
+            let signals = if value["status"] == "starting" {
+                vec![crate::managed_host_tools::WakeSignal::new("monitor-driver")]
+            } else {
+                Vec::new()
+            };
+            return Ok(Some(written(value, signals)));
+        }
+        if tool != "orchestration_monitor_input" {
+            return Ok(None);
+        }
+        let Some(runtime) = self.monitor_runtime.as_ref() else {
+            return Ok(Some(not_sent(
+                crate::managed_host_tools::Error::Unavailable("monitor-runtime/managed-input"),
+            )));
+        };
+        let monitor_id =
+            args["monitor_id"]
+                .as_str()
+                .ok_or(crate::managed_host_tools::Error::Invalid(
+                    "Missing monitor_id",
+                ))?;
+        let input: crate::monitor_policy::Input = serde_json::from_value(args.clone())
+            .map_err(|_| crate::managed_host_tools::Error::Invalid("Invalid monitor input"))?;
+        let submitted = runtime.input(monitor_id, request_id, &input, now);
+        let connection = store.read()?;
+        let record =
+            studio_runtime_store::system_reads::get(&connection, "runtime_monitors", monitor_id)?
+                .ok_or(crate::managed_host_tools::Error::Invalid("Unknown monitor"))?;
+        let receipt = if record
+            .pointer("/lastInputAttempt/id")
+            .and_then(Value::as_str)
+            == Some(request_id)
+        {
+            Some(&record["lastInputAttempt"])
+        } else if record.pointer("/inputAttempt/id").and_then(Value::as_str) == Some(request_id) {
+            Some(&record["inputAttempt"])
+        } else {
+            None
+        };
+        let (certainty, applied, value) = match receipt {
+            Some(receipt) if receipt["status"] == "acknowledged" => (
+                crate::managed_host_tools::DeliveryCertainty::Written,
+                Some(true),
+                receipt
+                    .get("response")
+                    .cloned()
+                    .or_else(|| submitted.ok())
+                    .unwrap_or(Value::Null),
+            ),
+            Some(receipt) if receipt["status"] == "failed" => (
+                crate::managed_host_tools::DeliveryCertainty::NotSent,
+                Some(false),
+                json!("Monitor input was rejected"),
+            ),
+            Some(_) => (
+                crate::managed_host_tools::DeliveryCertainty::Unknown,
+                None,
+                json!("Monitor input outcome unknown; do not repeat it"),
+            ),
+            None => (
+                crate::managed_host_tools::DeliveryCertainty::NotSent,
+                Some(false),
+                json!("Monitor input was not submitted"),
+            ),
+        };
+        Ok(Some(crate::managed_host_tools::DispatchedOperation {
+            result: crate::managed_host_tools::OperationResult {
+                value,
+                signals: Vec::new(),
+            },
+            certainty,
+            applied,
+        }))
+    }
+
     fn release(
         &self,
         signals: &[crate::managed_host_tools::WakeSignal],
@@ -476,6 +749,711 @@ impl crate::managed_host_tools::PostCommitPort for ProductionPorts {
             }
         }
         Ok(())
+    }
+}
+
+struct MonitorWorkspaceAdmission {
+    actor_id: String,
+    epoch: i64,
+    cwd: String,
+}
+
+struct CallbackCreationEnvironment<'a> {
+    actor: &'a crate::managed_host_tools::Actor,
+    account_identity_read:
+        Option<std::sync::Arc<dyn crate::provider_callbacks::ManagedCreationAccountRead>>,
+    catalog: CallbackCreationCatalog,
+}
+
+impl<'a> CallbackCreationEnvironment<'a> {
+    fn new(
+        actor: &'a crate::managed_host_tools::Actor,
+        session: std::sync::Arc<dyn crate::account_session_runtime::AccountSessionPort>,
+        account_identity_read: Option<
+            std::sync::Arc<dyn crate::provider_callbacks::ManagedCreationAccountRead>,
+        >,
+        request_id: &str,
+    ) -> Self {
+        Self {
+            actor,
+            account_identity_read,
+            catalog: CallbackCreationCatalog {
+                session,
+                request_id: request_id.to_owned(),
+            },
+        }
+    }
+
+    fn select_worker_account(
+        &self,
+        parent_account_key: &str,
+        requested_account_key: Option<&str>,
+        default_account_key: Option<&str>,
+        model: &str,
+        excluded_account_keys: &[String],
+        project_account_keys: Option<&[String]>,
+    ) -> Result<
+        (String, crate::host_worker_create::AccountIdentity),
+        crate::managed_host_tools::Error,
+    > {
+        use crate::agents_create::CreateError;
+        use crate::host_worker_create::CreationCatalog as _;
+
+        // AccountRegistry starts workers from its persisted reconciliation
+        // queue; callbacks have no ensure-session handle. Keep eligible
+        // accounts without a live session as the named ModelList capability
+        // gap rather than launching a worker from this service.
+        let accounts = self.account_identity_read.as_ref().ok_or(
+            crate::managed_host_tools::Error::Unavailable("account-driver/managed-child-account"),
+        )?;
+        let selected_default = default_account_key.filter(|key| !key.is_empty());
+        if selected_default.is_some()
+            && requested_account_key.is_some()
+            && requested_account_key != selected_default
+        {
+            return Err(crate::managed_host_tools::Error::Invalid(
+                "Use the subagent account selected in chat settings",
+            ));
+        }
+        let explicit = requested_account_key.or(selected_default);
+        if let Some(account_key) = explicit {
+            validate_selected_worker_account(
+                account_key,
+                excluded_account_keys,
+                project_account_keys,
+            )?;
+            let identity = accounts
+                .resolve_identity(account_key, parent_account_key)
+                .map_err(managed_creation_account_error)?;
+            if self.catalog.session.current_scope(account_key).is_none() {
+                return Err(crate::managed_host_tools::Error::Unavailable(
+                    "provider-session/model-list",
+                ));
+            }
+            self.catalog
+                .resolve(account_key, &identity, model, None, false, false)
+                .map_err(map_worker_catalog_error)?;
+            return Ok((account_key.to_owned(), identity));
+        }
+
+        let listing = accounts
+            .worker_accounts()
+            .map_err(managed_creation_account_error)?;
+        let candidates = ordered_worker_account_candidates(
+            &listing,
+            parent_account_key,
+            excluded_account_keys,
+            project_account_keys,
+        );
+        if candidates.is_empty() {
+            return Err(crate::managed_host_tools::Error::Invalid(
+                if project_account_keys.is_some_and(|keys| !keys.is_empty()) {
+                    "No worker account is available: this chat disables all accounts and this project account selection"
+                } else {
+                    "No worker account is available: this chat disables all accounts"
+                },
+            ));
+        }
+        let provider = worker_model_provider(model);
+        let mut saw_live_session = false;
+        for candidate in candidates {
+            let account_key = candidate.account_key.as_str();
+            if provider.is_some_and(|provider| {
+                candidate.identity.provider.as_deref().unwrap_or("codex") != provider
+            }) {
+                continue;
+            }
+            if self.catalog.session.current_scope(account_key).is_none() {
+                continue;
+            }
+            saw_live_session = true;
+            match self
+                .catalog
+                .resolve(account_key, &candidate.identity, model, None, false, false)
+            {
+                Ok(_) => return Ok((account_key.to_owned(), candidate.identity.clone())),
+                Err(CreateError::CapabilityUnavailable(_))
+                | Err(CreateError::InvalidCreation("model is unavailable")) => continue,
+                Err(error) => return Err(map_worker_catalog_error(error)),
+            }
+        }
+        if !saw_live_session {
+            return Err(crate::managed_host_tools::Error::Unavailable(
+                "provider-session/model-list",
+            ));
+        }
+        Err(crate::managed_host_tools::Error::Invalid(
+            "This model is not available for the selected worker accounts",
+        ))
+    }
+}
+
+fn ordered_worker_account_candidates<'a>(
+    listing: &'a crate::provider_callbacks::ManagedCreationAccountListing,
+    parent_account_key: &str,
+    excluded_account_keys: &[String],
+    project_account_keys: Option<&[String]>,
+) -> Vec<&'a crate::provider_callbacks::ManagedCreationAccountCandidate> {
+    let mut seen = std::collections::HashSet::new();
+    let mut ordered = Vec::new();
+    for account_key in [
+        Some(parent_account_key),
+        listing.default_account_key.as_deref(),
+    ]
+    .into_iter()
+    .flatten()
+    .chain(
+        listing
+            .accounts
+            .iter()
+            .map(|candidate| candidate.account_key.as_str()),
+    ) {
+        if !seen.insert(account_key.to_owned())
+            || excluded_account_keys
+                .iter()
+                .any(|excluded| excluded == account_key)
+            || project_account_keys.is_some_and(|keys| {
+                !keys.is_empty() && !keys.iter().any(|allowed| allowed == account_key)
+            })
+        {
+            continue;
+        }
+        let Some(candidate) = listing
+            .accounts
+            .iter()
+            .find(|candidate| candidate.account_key == account_key)
+        else {
+            continue;
+        };
+        let is_parent = account_key == parent_account_key;
+        if candidate.disconnected
+            || candidate.deleted
+            || candidate.duplicate
+            || (!is_parent && !candidate.ready && !candidate.can_attempt_native_proof)
+        {
+            continue;
+        }
+        ordered.push(candidate);
+    }
+    ordered
+}
+
+fn validate_selected_worker_account(
+    account_key: &str,
+    excluded_account_keys: &[String],
+    project_account_keys: Option<&[String]>,
+) -> Result<(), crate::managed_host_tools::Error> {
+    if account_key.is_empty() {
+        return Err(crate::managed_host_tools::Error::Invalid(
+            "Select an available worker account",
+        ));
+    }
+    if excluded_account_keys
+        .iter()
+        .any(|excluded| excluded == account_key)
+    {
+        return Err(crate::managed_host_tools::Error::Invalid(
+            "This account is disabled for this chat",
+        ));
+    }
+    if project_account_keys
+        .is_some_and(|keys| !keys.is_empty() && !keys.iter().any(|allowed| allowed == account_key))
+    {
+        return Err(crate::managed_host_tools::Error::Invalid(
+            "Select a worker account of this project",
+        ));
+    }
+    Ok(())
+}
+
+fn worker_model_provider(model: &str) -> Option<&'static str> {
+    if model.starts_with("gpt-") {
+        Some("codex")
+    } else if matches!(model, "default" | "sonnet" | "opus" | "haiku")
+        || model.starts_with("claude-")
+    {
+        Some("claude")
+    } else {
+        None
+    }
+}
+
+fn map_worker_catalog_error(
+    error: crate::agents_create::CreateError,
+) -> crate::managed_host_tools::Error {
+    match error {
+        crate::agents_create::CreateError::CapabilityUnavailable(capability) => {
+            crate::managed_host_tools::Error::Unavailable(capability)
+        }
+        crate::agents_create::CreateError::InvalidCreation(message) => {
+            crate::managed_host_tools::Error::Invalid(message)
+        }
+        crate::agents_create::CreateError::Store(error) => {
+            crate::managed_host_tools::Error::Store(error)
+        }
+        _ => {
+            crate::managed_host_tools::Error::Unavailable("provider-session/managed-child-account")
+        }
+    }
+}
+
+impl crate::managed_child_create::ManagedCreationEnvironment for CallbackCreationEnvironment<'_> {
+    fn select_worker_account(
+        &self,
+        parent_account_key: &str,
+        requested_account_key: Option<&str>,
+        default_account_key: Option<&str>,
+        model: &str,
+        excluded_account_keys: &[String],
+        project_account_keys: Option<&[String]>,
+    ) -> Result<
+        (String, crate::host_worker_create::AccountIdentity),
+        crate::managed_host_tools::Error,
+    > {
+        CallbackCreationEnvironment::select_worker_account(
+            self,
+            parent_account_key,
+            requested_account_key,
+            default_account_key,
+            model,
+            excluded_account_keys,
+            project_account_keys,
+        )
+    }
+
+    fn catalog(&self) -> &dyn crate::host_worker_create::CreationCatalog {
+        &self.catalog
+    }
+
+    fn prepare_workspace(
+        &self,
+        _actor: &crate::managed_host_tools::Actor,
+        args: &Value,
+        _request_id: &str,
+    ) -> Result<
+        Box<dyn crate::monitor_runtime::WorkspaceAdmission + Send + Sync>,
+        crate::managed_host_tools::Error,
+    > {
+        let record = self.actor.record();
+        let cwd = record.extra.get("cwd").and_then(Value::as_str).ok_or(
+            crate::managed_host_tools::Error::Unavailable("workspace-state/child-admission"),
+        )?;
+        if args
+            .get("cwd")
+            .and_then(Value::as_str)
+            .is_some_and(|path| path != cwd)
+        {
+            return Err(crate::managed_host_tools::Error::Unavailable(
+                "workspace-state/alternate-child-directory",
+            ));
+        }
+        let workspace = args
+            .get("workspace")
+            .and_then(Value::as_str)
+            .unwrap_or("worktree");
+        if workspace == "image" {
+            return Err(crate::managed_host_tools::Error::Unavailable(
+                "workspace-state/image-workspace",
+            ));
+        }
+        if !matches!(workspace, "shared" | "worktree") {
+            return Err(crate::managed_host_tools::Error::Invalid(
+                "Invalid workspace mode",
+            ));
+        }
+        let canonical = std::fs::canonicalize(cwd)
+            .map_err(|_| crate::managed_host_tools::Error::Invalid("Select a project directory"))?;
+        if !canonical.is_dir() || canonical.to_string_lossy() != cwd {
+            return Err(crate::managed_host_tools::Error::Invalid(
+                "Select a project directory",
+            ));
+        }
+        Ok(Box::new(ChildWorkspaceAdmission {
+            actor_id: record.id.0.clone(),
+            epoch: record.epoch,
+            root_id: record.root_id.0.clone(),
+            cwd: cwd.to_owned(),
+        }))
+    }
+}
+
+fn account_identity_from_snapshot(
+    snapshot: &crate::account_policy::AccountsSnapshot,
+    account_key: &str,
+) -> Result<
+    crate::host_worker_create::AccountIdentity,
+    crate::provider_callbacks::ManagedCreationAccountError,
+> {
+    let row = snapshot
+        .accounts
+        .iter()
+        .find(|row| row.get("id").and_then(Value::as_str) == Some(account_key))
+        .or_else(|| {
+            snapshot
+                .archived_accounts
+                .iter()
+                .find(|row| row.get("id").and_then(Value::as_str) == Some(account_key))
+        })
+        .ok_or(crate::provider_callbacks::ManagedCreationAccountError::Unknown)?;
+    if row.get("deleted").and_then(Value::as_bool) == Some(true) {
+        return Err(crate::provider_callbacks::ManagedCreationAccountError::Deleted);
+    }
+    if row.get("disconnected").and_then(Value::as_bool) == Some(true) {
+        return Err(crate::provider_callbacks::ManagedCreationAccountError::Disconnected);
+    }
+    Ok(account_identity_from_row(row))
+}
+
+fn account_identity_from_row(row: &Value) -> crate::host_worker_create::AccountIdentity {
+    let string_field = |name: &str| row.get(name).and_then(Value::as_str).map(str::to_owned);
+    crate::host_worker_create::AccountIdentity {
+        provider: Some(string_field("provider").unwrap_or_else(|| "codex".into())),
+        home: string_field("home"),
+        account_id: string_field("accountId"),
+        email: string_field("email"),
+    }
+}
+
+/// Matches `codex_worker_accounts.resolve`: a different explicit account must
+/// be ready, with only the AccountDriver's native-proof eligibility as an
+/// exception.
+fn validate_worker_account_selection(
+    snapshot: &crate::account_policy::AccountsSnapshot,
+    account_key: &str,
+    parent_account_key: &str,
+    status: crate::account_driver::AccountStatus,
+) -> Result<(), crate::provider_callbacks::ManagedCreationAccountError> {
+    if account_key == parent_account_key || status == crate::account_driver::AccountStatus::Ready {
+        return Ok(());
+    }
+    let can_attempt_native_proof = snapshot
+        .accounts
+        .iter()
+        .find(|row| row.get("id").and_then(Value::as_str) == Some(account_key))
+        .and_then(|row| row.get("canAttemptNativeProof"))
+        .and_then(Value::as_bool)
+        == Some(true);
+    if can_attempt_native_proof {
+        return Ok(());
+    }
+    Err(crate::provider_callbacks::ManagedCreationAccountError::SignInRequired)
+}
+
+impl crate::provider_callbacks::ManagedCreationAccountRead
+    for crate::account_driver::AccountDriver
+{
+    fn worker_accounts(
+        &self,
+    ) -> Result<
+        crate::provider_callbacks::ManagedCreationAccountListing,
+        crate::provider_callbacks::ManagedCreationAccountError,
+    > {
+        let snapshot = self
+            .listing_snapshot()
+            .map_err(|_| crate::provider_callbacks::ManagedCreationAccountError::Unavailable)?;
+        let default_account_key = snapshot.default_account_key.as_str().map(str::to_owned);
+        let accounts = snapshot
+            .accounts
+            .iter()
+            .filter_map(|row| {
+                let account_key = row.get("id")?.as_str()?.to_owned();
+                Some(crate::provider_callbacks::ManagedCreationAccountCandidate {
+                    identity: account_identity_from_row(row),
+                    ready: row.get("status").and_then(Value::as_str) == Some("ready"),
+                    can_attempt_native_proof: row
+                        .get("canAttemptNativeProof")
+                        .and_then(Value::as_bool)
+                        == Some(true),
+                    disconnected: row.get("disconnected").and_then(Value::as_bool) == Some(true),
+                    deleted: row.get("deleted").and_then(Value::as_bool) == Some(true),
+                    duplicate: event_write::truthy(row.get("duplicateOf")),
+                    account_key,
+                })
+            })
+            .collect();
+        Ok(crate::provider_callbacks::ManagedCreationAccountListing {
+            default_account_key,
+            accounts,
+        })
+    }
+
+    fn resolve_identity(
+        &self,
+        account_key: &str,
+        parent_account_key: &str,
+    ) -> Result<
+        crate::host_worker_create::AccountIdentity,
+        crate::provider_callbacks::ManagedCreationAccountError,
+    > {
+        let status = self.get(account_key).map_err(|error| match error {
+            crate::account_driver::AccountDriverError::UnknownAccount => {
+                crate::provider_callbacks::ManagedCreationAccountError::Unknown
+            }
+            _ => crate::provider_callbacks::ManagedCreationAccountError::Unavailable,
+        })?;
+        let snapshot = self
+            .snapshot()
+            .map_err(|_| crate::provider_callbacks::ManagedCreationAccountError::Unavailable)?;
+        let identity = account_identity_from_snapshot(&snapshot, account_key)?;
+        validate_worker_account_selection(&snapshot, account_key, parent_account_key, status)?;
+        Ok(identity)
+    }
+}
+
+fn managed_creation_account_error(
+    error: crate::provider_callbacks::ManagedCreationAccountError,
+) -> crate::managed_host_tools::Error {
+    use crate::provider_callbacks::ManagedCreationAccountError as E;
+    match error {
+        E::Unknown => crate::managed_host_tools::Error::Invalid("Unknown account"),
+        E::Deleted => crate::managed_host_tools::Error::Invalid(
+            "This account was deleted. Select another account for new chats",
+        ),
+        E::Disconnected => crate::managed_host_tools::Error::Invalid(
+            "Reconnect this account before creating a chat",
+        ),
+        E::SignInRequired => crate::managed_host_tools::Error::Invalid(
+            "Sign in to the worker account before creating a worker",
+        ),
+        E::Unavailable => {
+            crate::managed_host_tools::Error::Unavailable("account-driver/managed-child-account")
+        }
+    }
+}
+
+struct ChildWorkspaceAdmission {
+    actor_id: String,
+    epoch: i64,
+    root_id: String,
+    cwd: String,
+}
+
+impl crate::monitor_runtime::WorkspaceAdmission for ChildWorkspaceAdmission {
+    fn check(
+        &self,
+        _tx: &Transaction<'_>,
+        actor: &studio_runtime_store::AgentRecord,
+    ) -> Result<(), crate::monitor_policy::MonitorError> {
+        if actor.id.0 != self.actor_id
+            || actor.epoch != self.epoch
+            || actor.root_id.0 != self.root_id
+            || actor.extra.get("cwd").and_then(Value::as_str) != Some(self.cwd.as_str())
+        {
+            return Err(crate::monitor_policy::MonitorError::Refused(
+                "Workspace changed during child preparation",
+            ));
+        }
+        Ok(())
+    }
+}
+
+struct CallbackCreationCatalog {
+    session: std::sync::Arc<dyn crate::account_session_runtime::AccountSessionPort>,
+    request_id: String,
+}
+
+impl crate::host_worker_create::CreationCatalog for CallbackCreationCatalog {
+    fn resolve(
+        &self,
+        account_key: &str,
+        _account: &crate::host_worker_create::AccountIdentity,
+        model: &str,
+        effort: Option<&str>,
+        fast_mode: bool,
+        daybreak_enabled: bool,
+    ) -> Result<crate::host_worker_create::ExecutionSettings, crate::agents_create::CreateError>
+    {
+        use crate::account_session_runtime::{ProviderRequest, ProviderResponse, RequestCertainty};
+        let scope = self.session.current_scope(account_key).ok_or(
+            crate::agents_create::CreateError::CapabilityUnavailable("provider-session/model-list"),
+        )?;
+        let operation = format!("managed-create:{}:models:{}", self.request_id, account_key);
+        let receipt = self
+            .session
+            .provider_request(ProviderRequest {
+                account: account_key.to_owned(),
+                operation,
+                actor: None,
+                expected_scope: Some(scope),
+                method: studio_runtime_providers::Method::ModelList,
+                params: json!({"includeHidden":true}),
+                deadline: std::time::Instant::now() + std::time::Duration::from_secs(20),
+                deleted_actor_session: None,
+            })
+            .map_err(|_| {
+                crate::agents_create::CreateError::CapabilityUnavailable(
+                    "provider-session/model-list",
+                )
+            })?;
+        if receipt.certainty != RequestCertainty::Written {
+            return Err(crate::agents_create::CreateError::CapabilityUnavailable(
+                "provider-session/model-list",
+            ));
+        }
+        let response = match receipt.result {
+            Some(ProviderResponse::Reply(value)) => value,
+            _ => {
+                return Err(crate::agents_create::CreateError::CapabilityUnavailable(
+                    "provider-session/model-list",
+                ));
+            }
+        };
+        let rows = response.get("data").and_then(Value::as_array).ok_or(
+            crate::agents_create::CreateError::CapabilityUnavailable("provider-session/model-list"),
+        )?;
+        let row = rows
+            .iter()
+            .find(|row| {
+                row.get("hidden").and_then(Value::as_bool) != Some(true)
+                    && (row.get("model").and_then(Value::as_str) == Some(model)
+                        || row.get("resolvedModel").and_then(Value::as_str) == Some(model))
+            })
+            .ok_or(crate::agents_create::CreateError::InvalidCreation(
+                "model is unavailable",
+            ))?;
+        let efforts = row
+            .get("supportedReasoningEfforts")
+            .and_then(Value::as_array)
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(|item| item.get("reasoningEffort").and_then(Value::as_str))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let selected_effort = effort
+            .or_else(|| row.get("defaultReasoningEffort").and_then(Value::as_str))
+            .unwrap_or("medium");
+        if !efforts.is_empty() && !efforts.contains(&selected_effort) {
+            return Err(crate::agents_create::CreateError::InvalidCreation(
+                "reasoning effort is unsupported",
+            ));
+        }
+        let priority = row
+            .get("serviceTiers")
+            .and_then(Value::as_array)
+            .is_some_and(|tiers| tiers.iter().any(|tier| tier["id"] == "priority"));
+        if fast_mode && !priority {
+            return Err(crate::agents_create::CreateError::InvalidCreation(
+                "fast mode is unavailable for this model",
+            ));
+        }
+        Ok(crate::host_worker_create::ExecutionSettings {
+            model: row
+                .get("resolvedModel")
+                .and_then(Value::as_str)
+                .unwrap_or(model)
+                .to_owned(),
+            effort: Some(selected_effort.to_owned()),
+            native_effort: selected_effort.to_owned(),
+            fast_mode,
+            daybreak_enabled,
+            cyber_access_program: if daybreak_enabled {
+                "daybreak"
+            } else {
+                "standard"
+            }
+            .into(),
+        })
+    }
+}
+
+fn child_create_error(
+    error: crate::managed_child_create::Error,
+) -> crate::managed_host_tools::Error {
+    use crate::managed_child_create::Error as E;
+    match error {
+        E::Managed(error) => error,
+        E::Store(error) => crate::managed_host_tools::Error::Store(error),
+        E::Refused => crate::managed_host_tools::Error::Invalid("Child creation was refused"),
+        E::Unavailable(name) => crate::managed_host_tools::Error::Unavailable(name),
+    }
+}
+
+impl crate::monitor_runtime::WorkspaceAdmission for MonitorWorkspaceAdmission {
+    fn check(
+        &self,
+        _tx: &Transaction<'_>,
+        actor: &studio_runtime_store::AgentRecord,
+    ) -> Result<(), crate::monitor_policy::MonitorError> {
+        if actor.id.0 != self.actor_id
+            || actor.epoch != self.epoch
+            || actor.extra.get("cwd").and_then(Value::as_str) != Some(self.cwd.as_str())
+            || actor.extra.get("autoWake") != Some(&Value::Bool(true))
+        {
+            return Err(crate::monitor_policy::MonitorError::Refused(
+                "Monitor workspace changed during preparation",
+            ));
+        }
+        Ok(())
+    }
+}
+
+fn monitor_service_error(
+    error: crate::monitor_policy::MonitorError,
+) -> crate::managed_host_tools::Error {
+    use crate::monitor_policy::MonitorError as M;
+    match error {
+        M::Store(error) => crate::managed_host_tools::Error::Store(error),
+        M::Unavailable(name) => crate::managed_host_tools::Error::Unavailable(name),
+        M::Event(crate::event_write::EventWriteError::Store(error)) => {
+            crate::managed_host_tools::Error::Store(error)
+        }
+        _ => crate::managed_host_tools::Error::Invalid("Monitor creation was refused"),
+    }
+}
+
+fn written(
+    value: Value,
+    signals: Vec<crate::managed_host_tools::WakeSignal>,
+) -> crate::managed_host_tools::DispatchedOperation {
+    crate::managed_host_tools::DispatchedOperation {
+        result: crate::managed_host_tools::OperationResult { value, signals },
+        certainty: crate::managed_host_tools::DeliveryCertainty::Written,
+        applied: Some(true),
+    }
+}
+
+fn not_sent(
+    error: crate::managed_host_tools::Error,
+) -> crate::managed_host_tools::DispatchedOperation {
+    crate::managed_host_tools::DispatchedOperation {
+        result: crate::managed_host_tools::OperationResult {
+            value: json!(error.to_string()),
+            signals: Vec::new(),
+        },
+        certainty: crate::managed_host_tools::DeliveryCertainty::NotSent,
+        applied: Some(false),
+    }
+}
+
+fn status_service_error(
+    error: crate::managed_status_watch::StatusError,
+) -> crate::managed_host_tools::Error {
+    use crate::managed_status_watch::StatusError as E;
+    match error {
+        E::Store(error) => crate::managed_host_tools::Error::Store(error),
+        E::Sqlite(error) => crate::managed_host_tools::Error::Sqlite(error),
+        E::Stale => crate::managed_host_tools::Error::Stale,
+        E::InvalidArguments | E::InvalidCursor | E::InvalidConcurrency => {
+            crate::managed_host_tools::Error::Invalid("Status arguments were refused")
+        }
+        E::Json(_) => crate::managed_host_tools::Error::Stale,
+    }
+}
+
+fn rules_service_error(
+    error: crate::managed_status_watch::RulesServiceError,
+) -> crate::managed_host_tools::Error {
+    use crate::managed_status_watch::RulesServiceError as E;
+    match error {
+        E::Store(error) => crate::managed_host_tools::Error::Store(error),
+        E::Sqlite(error) => crate::managed_host_tools::Error::Sqlite(error),
+        E::Engine(_) | E::Invalid(_) | E::UnknownAction | E::FilePath => {
+            crate::managed_host_tools::Error::Invalid("Watch arguments were refused")
+        }
+        E::Stale => crate::managed_host_tools::Error::Stale,
+        E::Json(_) => crate::managed_host_tools::Error::Stale,
     }
 }
 
@@ -699,7 +1677,7 @@ pub(super) fn execute(
     })
 }
 
-fn managed_error(error: crate::managed_host_tools::Error) -> CallbackError {
+pub(super) fn managed_error(error: crate::managed_host_tools::Error) -> CallbackError {
     use crate::managed_host_tools::Error as E;
     match error {
         E::Invalid(message) => CallbackError::Invalid(message),
@@ -825,4 +1803,166 @@ fn page(rows: Vec<Value>, args: &Value, scope: Value) -> Result<Value, CallbackE
     Ok(
         json!({"apiVersion":2,"items":rows[offset..end],"total":rows.len(),"revision":revision,"nextCursor":cursor}),
     )
+}
+
+#[cfg(test)]
+mod account_identity_tests {
+    use super::*;
+    use std::collections::HashSet;
+
+    fn candidate(
+        account_key: &str,
+        ready: bool,
+        can_attempt_native_proof: bool,
+    ) -> crate::provider_callbacks::ManagedCreationAccountCandidate {
+        crate::provider_callbacks::ManagedCreationAccountCandidate {
+            account_key: account_key.to_owned(),
+            identity: crate::host_worker_create::AccountIdentity {
+                provider: Some("codex".to_owned()),
+                home: None,
+                account_id: None,
+                email: None,
+            },
+            ready,
+            can_attempt_native_proof,
+            disconnected: false,
+            deleted: false,
+            duplicate: false,
+        }
+    }
+
+    fn snapshot(accounts: Vec<Value>) -> crate::account_policy::AccountsSnapshot {
+        crate::account_policy::AccountsSnapshot {
+            accounts,
+            archived_accounts: Vec::new(),
+            default_account_key: Value::String("default".into()),
+            logins: Vec::new(),
+            known_account_keys: HashSet::new(),
+        }
+    }
+
+    #[test]
+    fn selected_account_identity_uses_account_driver_projection() {
+        let accounts = snapshot(vec![json!({
+            "id":"alternate",
+            "provider":"claude",
+            "home":"/profiles/claude",
+            "accountId":"claude-user",
+            "email":"worker@example.invalid",
+            "status":"ready"
+        })]);
+
+        let identity = account_identity_from_snapshot(&accounts, "alternate")
+            .expect("selected account identity");
+
+        assert_eq!(identity.provider.as_deref(), Some("claude"));
+        assert_eq!(identity.home.as_deref(), Some("/profiles/claude"));
+        assert_eq!(identity.account_id.as_deref(), Some("claude-user"));
+        assert_eq!(identity.email.as_deref(), Some("worker@example.invalid"));
+    }
+
+    #[test]
+    fn selected_account_identity_rejects_unknown_deleted_and_disconnected_profiles() {
+        let mut accounts = snapshot(vec![json!({"id":"offline", "disconnected":true})]);
+        accounts
+            .archived_accounts
+            .push(json!({"id":"deleted", "deleted":true}));
+
+        assert!(matches!(
+            account_identity_from_snapshot(&accounts, "missing"),
+            Err(crate::provider_callbacks::ManagedCreationAccountError::Unknown)
+        ));
+        assert!(matches!(
+            account_identity_from_snapshot(&accounts, "deleted"),
+            Err(crate::provider_callbacks::ManagedCreationAccountError::Deleted)
+        ));
+        assert!(matches!(
+            account_identity_from_snapshot(&accounts, "offline"),
+            Err(crate::provider_callbacks::ManagedCreationAccountError::Disconnected)
+        ));
+    }
+
+    #[test]
+    fn worker_account_selection_matches_python_readiness_policy() {
+        let accounts = snapshot(vec![
+            json!({"id":"parent", "status":"signedOut"}),
+            json!({"id":"ready", "status":"ready"}),
+            json!({"id":"proof", "status":"error", "canAttemptNativeProof":true}),
+            json!({"id":"signed-out", "status":"signedOut"}),
+        ]);
+        assert!(
+            validate_worker_account_selection(
+                &accounts,
+                "parent",
+                "parent",
+                crate::account_driver::AccountStatus::SignedOut,
+            )
+            .is_ok()
+        );
+        assert!(
+            validate_worker_account_selection(
+                &accounts,
+                "ready",
+                "parent",
+                crate::account_driver::AccountStatus::Ready,
+            )
+            .is_ok()
+        );
+        assert!(
+            validate_worker_account_selection(
+                &accounts,
+                "proof",
+                "parent",
+                crate::account_driver::AccountStatus::Error,
+            )
+            .is_ok()
+        );
+        assert!(matches!(
+            validate_worker_account_selection(
+                &accounts,
+                "signed-out",
+                "parent",
+                crate::account_driver::AccountStatus::SignedOut,
+            ),
+            Err(crate::provider_callbacks::ManagedCreationAccountError::SignInRequired)
+        ));
+    }
+
+    #[test]
+    fn implicit_worker_accounts_follow_python_order_and_filters() {
+        let mut duplicate = candidate("duplicate", true, false);
+        duplicate.duplicate = true;
+        let mut disconnected = candidate("disconnected", true, false);
+        disconnected.disconnected = true;
+        let listing = crate::provider_callbacks::ManagedCreationAccountListing {
+            default_account_key: Some("default".into()),
+            accounts: vec![
+                candidate("ready-later", true, false),
+                candidate("parent", false, false),
+                candidate("default", true, false),
+                candidate("native-proof", false, true),
+                candidate("excluded", true, false),
+                duplicate,
+                disconnected,
+                candidate("signed-out", false, false),
+            ],
+        };
+        let excluded = vec!["excluded".to_owned()];
+        let selected = ordered_worker_account_candidates(&listing, "parent", &excluded, None)
+            .into_iter()
+            .map(|candidate| candidate.account_key.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            selected,
+            ["parent", "default", "ready-later", "native-proof"]
+        );
+        let project = vec!["native-proof".to_owned(), "ready-later".to_owned()];
+        let project_selected =
+            ordered_worker_account_candidates(&listing, "parent", &excluded, Some(&project))
+                .into_iter()
+                .map(|candidate| candidate.account_key.as_str())
+                .collect::<Vec<_>>();
+        assert_eq!(project_selected, ["ready-later", "native-proof"]);
+    }
 }

@@ -62,7 +62,13 @@ fn send(sender_index: usize, target: &str, id: &str) -> (tempfile::TempDir, Runt
         None,
         admission,
         std::sync::Arc::new(tokio::sync::Notify::new()),
-        std::sync::Arc::new(tokio::sync::Notify::new()),
+        crate::provider_callbacks::ManagedToolRuntimePorts {
+            monitor_dispatch_wake: std::sync::Arc::new(tokio::sync::Notify::new()),
+            monitor_runtime: None,
+            account_session: None,
+            account_identity_read: None,
+            lifecycle_ports: None,
+        },
     );
     let raw: String = store
         .read()
@@ -118,7 +124,13 @@ async fn production_release_notifies_the_registry_after_a_committed_send() {
         None,
         admission,
         wake.clone(),
-        std::sync::Arc::new(tokio::sync::Notify::new()),
+        crate::provider_callbacks::ManagedToolRuntimePorts {
+            monitor_dispatch_wake: std::sync::Arc::new(tokio::sync::Notify::new()),
+            monitor_runtime: None,
+            account_session: None,
+            account_identity_read: None,
+            lifecycle_ports: None,
+        },
     );
     let mut notified = Box::pin(wake.notified());
     assert!(futures_util::FutureExt::now_or_never(notified.as_mut()).is_none());
@@ -188,7 +200,13 @@ fn monitor_cancel_release_notifies_only_the_monitor_dispatcher() {
         None,
         admission,
         event_wake.clone(),
-        monitor_wake.clone(),
+        crate::provider_callbacks::ManagedToolRuntimePorts {
+            monitor_dispatch_wake: monitor_wake.clone(),
+            monitor_runtime: None,
+            account_session: None,
+            account_identity_read: None,
+            lifecycle_ports: None,
+        },
     );
     let mut event_notified = Box::pin(event_wake.notified());
     let mut monitor_notified = Box::pin(monitor_wake.notified());

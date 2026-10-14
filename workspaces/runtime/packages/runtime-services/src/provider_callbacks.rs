@@ -22,6 +22,59 @@ pub use storage::{
 use studio_runtime_providers::{Frame, ResponseBody};
 use studio_runtime_store::RuntimeStore;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ManagedCreationAccountError {
+    Unknown,
+    Deleted,
+    Disconnected,
+    SignInRequired,
+    Unavailable,
+}
+
+#[derive(Clone, Debug)]
+pub struct ManagedCreationAccountCandidate {
+    pub account_key: String,
+    pub identity: crate::host_worker_create::AccountIdentity,
+    pub ready: bool,
+    pub can_attempt_native_proof: bool,
+    pub disconnected: bool,
+    pub deleted: bool,
+    pub duplicate: bool,
+}
+
+#[derive(Clone, Debug)]
+pub struct ManagedCreationAccountListing {
+    pub default_account_key: Option<String>,
+    pub accounts: Vec<ManagedCreationAccountCandidate>,
+}
+
+/// Narrow account read port used by managed child creation. The runtime server
+/// adapts AccountDriver here; callback code does not receive its mutation
+/// surface or credential material.
+pub trait ManagedCreationAccountRead: Send + Sync {
+    fn worker_accounts(&self)
+    -> Result<ManagedCreationAccountListing, ManagedCreationAccountError>;
+
+    fn resolve_identity(
+        &self,
+        account_key: &str,
+        parent_account_key: &str,
+    ) -> Result<crate::host_worker_create::AccountIdentity, ManagedCreationAccountError>;
+}
+
+/// Runtime-owned capabilities injected into managed tool callback services.
+#[derive(Clone)]
+pub(crate) struct ManagedToolRuntimePorts {
+    pub(crate) monitor_dispatch_wake: std::sync::Arc<tokio::sync::Notify>,
+    pub(crate) monitor_runtime:
+        Option<std::sync::Arc<crate::monitor_runtime_wiring::MonitorRuntime>>,
+    pub(crate) account_session:
+        Option<std::sync::Arc<dyn crate::account_session_runtime::AccountSessionPort>>,
+    pub(crate) account_identity_read: Option<std::sync::Arc<dyn ManagedCreationAccountRead>>,
+    pub(crate) lifecycle_ports:
+        Option<std::sync::Arc<dyn crate::agent_lifecycle_runtime::LifecyclePorts>>,
+}
+
 /// This is deliberately pure: journal bookkeeping may call it repeatedly.
 pub fn is_callback(frame: &Frame) -> bool {
     matches!(frame, Frame::Request(_))
@@ -53,12 +106,13 @@ pub fn dispatch_with_managed_services(
     context: &CallbackContext,
     frame: &Frame,
     now: f64,
+    runtime_ports: ManagedToolRuntimePorts,
 ) -> Result<CallbackDecision, CallbackError> {
     let Some(request) = model::Input::from_frame(frame)? else {
         return Ok(CallbackDecision::Unsupported);
     };
     if request.method == "item/tool/call" {
-        return tools::dispatch_with_production_ports(store, context, &request, now);
+        return tools::dispatch_with_production_ports(store, context, &request, now, runtime_ports);
     }
     dispatch(store, context, frame, now)
 }
@@ -81,6 +135,7 @@ pub(crate) fn managed_tool_ports(
     )
 }
 
+#[cfg(test)]
 pub(crate) fn managed_tool_ports_with_monitor_wake(
     store: &RuntimeStore,
     context: &CallbackContext,
@@ -88,13 +143,35 @@ pub(crate) fn managed_tool_ports_with_monitor_wake(
     wake: std::sync::Arc<tokio::sync::Notify>,
     monitor_dispatch_wake: std::sync::Arc<tokio::sync::Notify>,
 ) -> Result<impl crate::managed_host_tools::Ports, CallbackError> {
+    managed_tool_ports_with_runtime(
+        store,
+        context,
+        frame,
+        wake,
+        ManagedToolRuntimePorts {
+            monitor_dispatch_wake,
+            monitor_runtime: None,
+            account_session: None,
+            account_identity_read: None,
+            lifecycle_ports: None,
+        },
+    )
+}
+
+pub(crate) fn managed_tool_ports_with_runtime(
+    store: &RuntimeStore,
+    context: &CallbackContext,
+    frame: &Frame,
+    wake: std::sync::Arc<tokio::sync::Notify>,
+    runtime_ports: ManagedToolRuntimePorts,
+) -> Result<impl crate::managed_host_tools::Ports, CallbackError> {
     let Some(request) = model::Input::from_frame(frame)? else {
         return Err(CallbackError::Invalid("Expected a managed tool callback"));
     };
     if request.method != "item/tool/call" {
         return Err(CallbackError::Invalid("Expected a managed tool callback"));
     }
-    tools::production_ports(store, context, &request, wake, monitor_dispatch_wake)
+    tools::production_ports(store, context, &request, wake, runtime_ports)
 }
 
 /// Account workers with a retained host runtime pass its explicit staged-effect

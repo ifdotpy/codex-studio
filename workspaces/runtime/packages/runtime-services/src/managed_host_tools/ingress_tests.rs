@@ -90,7 +90,9 @@ struct PortBundle {
     staged: AtomicUsize,
     released: AtomicUsize,
     skip_release: AtomicBool,
-    fail_reply_save: AtomicBool,
+    fail_release: AtomicBool,
+    dispatch_status: AtomicBool,
+    dispatched: AtomicUsize,
 }
 
 impl PortBundle {
@@ -197,9 +199,6 @@ impl StatusPort for PortBundle {
         args: &Value,
     ) -> Result<OperationResult, Error> {
         let result = self.stage(tx, "status", "status", args.clone())?;
-        if self.fail_reply_save.load(Ordering::SeqCst) {
-            tx.execute_batch("DROP TABLE runtime_tool_results")?;
-        }
         Ok(result)
     }
 }
@@ -277,12 +276,66 @@ impl ReviewPort for PortBundle {
 }
 
 impl PostCommitPort for PortBundle {
+    fn dispatch_managed(
+        &self,
+        _: &RuntimeStore,
+        _: &Actor,
+        tool: &str,
+        _: &Value,
+        _: &str,
+        _: f64,
+    ) -> Result<Option<crate::managed_host_tools::DispatchedOperation>, Error> {
+        if tool != "orchestration_status" || !self.dispatch_status.load(Ordering::SeqCst) {
+            return Ok(None);
+        }
+        self.dispatched.fetch_add(1, Ordering::SeqCst);
+        Ok(Some(crate::managed_host_tools::DispatchedOperation {
+            result: OperationResult {
+                value: json!({"status":"dispatched"}),
+                signals: vec![WakeSignal::new("event-driver/test-dispatch")],
+            },
+            certainty: crate::managed_host_tools::DeliveryCertainty::Written,
+            applied: Some(true),
+        }))
+    }
+
     fn release(&self, signals: &[WakeSignal]) -> Result<(), Error> {
+        if self.fail_release.load(Ordering::SeqCst) {
+            return Err(Error::Unavailable("test/post-commit-dispatch"));
+        }
         if !self.skip_release.load(Ordering::SeqCst) {
             self.released.fetch_add(signals.len(), Ordering::SeqCst);
         }
         Ok(())
     }
+}
+
+#[test]
+fn post_commit_dispatch_saves_receipt_before_reply_and_replay_does_not_dispatch_again() {
+    let (_root, store, context) = fixture();
+    let ports = PortBundle::default();
+    ports.dispatch_status.store(true, Ordering::SeqCst);
+    ports.fail_release.store(true, Ordering::SeqCst);
+    let frame = call(
+        &context,
+        "post-commit-status",
+        "orchestration_status",
+        json!({}),
+    );
+    assert!(dispatch_with_managed_tools(&store, &context, &frame, 20.0, &ports).is_err());
+    assert_eq!(ports.dispatched.load(Ordering::SeqCst), 1);
+    let connection = store.read().unwrap();
+    let receipt = studio_runtime_store::system_reads::all(&connection, "runtime_tool_requests")
+        .unwrap()
+        .into_iter()
+        .find(|row| row["callId"] == "post-commit-status")
+        .unwrap();
+    assert_eq!(receipt["deliveryCertainty"], "written");
+
+    ports.fail_release.store(false, Ordering::SeqCst);
+    let replay = dispatch_with_managed_tools(&store, &context, &frame, 21.0, &ports).unwrap();
+    assert!(matches!(replay, CallbackDecision::Answer(_)));
+    assert_eq!(ports.dispatched.load(Ordering::SeqCst), 1);
 }
 
 fn call(context: &CallbackContext, rpc: &str, tool: &str, args: Value) -> Frame {
@@ -1144,10 +1197,10 @@ fn every_managed_tool_runs_through_provider_callback_dispatch() {
 }
 
 #[test]
-fn failed_final_transaction_rolls_back_intent_and_does_not_release() {
+fn post_commit_failure_replays_saved_result_before_callback_reply() {
     let (_root, store, context) = fixture();
     let ports = PortBundle::default();
-    ports.fail_reply_save.store(true, Ordering::SeqCst);
+    ports.fail_release.store(true, Ordering::SeqCst);
     let frame = call(
         &context,
         "rollback-status",
@@ -1157,7 +1210,13 @@ fn failed_final_transaction_rolls_back_intent_and_does_not_release() {
     assert!(dispatch_with_managed_tools(&store, &context, &frame, 20.0, &ports).is_err());
     assert_eq!(ports.staged.load(Ordering::SeqCst), 1);
     assert_eq!(ports.released.load(Ordering::SeqCst), 0);
-    assert_eq!(intent_count(&store, "status"), 0);
+    assert_eq!(intent_count(&store, "status"), 1);
+
+    ports.fail_release.store(false, Ordering::SeqCst);
+    let replay = dispatch_with_managed_tools(&store, &context, &frame, 21.0, &ports).unwrap();
+    assert!(matches!(replay, CallbackDecision::Answer(_)));
+    assert_eq!(ports.staged.load(Ordering::SeqCst), 1);
+    assert_eq!(intent_count(&store, "status"), 1);
 }
 
 #[test]
