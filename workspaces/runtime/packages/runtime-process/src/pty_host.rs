@@ -10,7 +10,6 @@
 use std::collections::BTreeMap;
 use std::ffi::{OsStr, OsString};
 use std::io::{Read, Write};
-use std::os::fd::AsFd;
 use std::path::Path;
 use std::process::{Child, ExitStatus};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -42,8 +41,6 @@ pub enum PtyHostError {
     Lock,
     #[error("could not signal terminal process group: {0}")]
     Signal(rustix::io::Errno),
-    #[error("terminal input write timed out; delivery is uncertain")]
-    InputTimeout,
 }
 
 /// A restart-verifiable identity for a PTY session leader.
@@ -379,23 +376,15 @@ impl PtyHost for LocalPtyHost {
     }
 
     fn write(&self, session: &mut Self::Session, bytes: &[u8]) -> Result<(), Self::Error> {
-        let master = session.0.master.as_ref();
-        write_bounded(master, bytes, Instant::now() + Duration::from_secs(2))?;
-        let mut master = master;
+        let mut master = session.0.master.as_ref();
+        master.write_all(bytes)?;
         master.flush()?;
         Ok(())
     }
 
     fn read(&self, session: &mut Self::Session, buffer: &mut [u8]) -> Result<usize, Self::Error> {
         let mut master = session.0.master.as_ref();
-        loop {
-            match master.read(buffer) {
-                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                    std::thread::sleep(Duration::from_millis(10));
-                }
-                result => return result.map_err(PtyHostError::Io),
-            }
-        }
+        master.read(buffer).map_err(PtyHostError::Io)
     }
 
     fn wait(&self, session: &mut Self::Session) -> Result<Option<i32>, Self::Error> {
@@ -414,29 +403,6 @@ impl PtyHost for LocalPtyHost {
         drop(session);
         outcome
     }
-}
-
-fn write_bounded(master: &Pty, bytes: &[u8], deadline: Instant) -> Result<(), PtyHostError> {
-    let flags = rustix::fs::fcntl_getfl(master.as_fd()).map_err(std::io::Error::from)?;
-    rustix::fs::fcntl_setfl(master.as_fd(), flags | rustix::fs::OFlags::NONBLOCK)
-        .map_err(std::io::Error::from)?;
-    let mut master = master;
-    let mut written = 0;
-    while written < bytes.len() {
-        match master.write(&bytes[written..]) {
-            Ok(0) => return Err(PtyHostError::InputTimeout),
-            Ok(count) => written += count,
-            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                if Instant::now() >= deadline {
-                    return Err(PtyHostError::InputTimeout);
-                }
-                std::thread::sleep(Duration::from_millis(10));
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
-            Err(error) => return Err(PtyHostError::Io(error)),
-        }
-    }
-    Ok(())
 }
 
 impl PtySession {
@@ -733,37 +699,7 @@ mod tests {
     use std::sync::mpsc;
     use std::thread;
 
-    use super::{LocalPtyHost, PtyHost, PtyHostError, write_bounded};
-
-    #[test]
-    fn backpressured_terminal_input_returns_uncertain_instead_of_blocking() {
-        let root = std::env::temp_dir().join(format!("pty-backpressure-{}", std::process::id()));
-        std::fs::create_dir_all(&root).expect("create temporary working directory");
-        let host = LocalPtyHost;
-        let command = [
-            "/bin/sh".to_owned(),
-            "-c".to_owned(),
-            "stty raw -echo; printf READY; sleep 10".to_owned(),
-        ];
-        let mut session = host.open(&command, &root, &[]).expect("open test PTY");
-        let mut output = Vec::new();
-        while !output.windows(5).any(|window| window == b"READY") {
-            let mut buffer = [0; 128];
-            let count = host.read(&mut session, &mut buffer).expect("read READY");
-            assert_ne!(count, 0, "test shell exited before READY");
-            output.extend_from_slice(&buffer[..count]);
-        }
-        let master = session.0.master.as_ref();
-        let error = write_bounded(
-            master,
-            &[b'x'; 64 * 1024],
-            std::time::Instant::now() + std::time::Duration::from_millis(50),
-        )
-        .expect_err("non-reading shell must time out with uncertain delivery");
-        assert!(matches!(error, PtyHostError::InputTimeout));
-        host.close(session).expect("close test PTY");
-        std::fs::remove_dir_all(root).expect("remove temporary working directory");
-    }
+    use super::{LocalPtyHost, PtyHost};
 
     struct ReleaseGate(Option<mpsc::Sender<()>>);
 

@@ -1,7 +1,9 @@
 //! Temporary stdio children behind the async provider seam. A task owns the
 //! process group through bounded cleanup even if its caller drops. A reap timeout
 //! reports the child identity; it does not prove termination or cap surviving children.
-use crate::{child_priority::ChildPriority, operational_log::OperationalLog, provider_seam::*, *};
+use crate::{
+    child_priority::ChildPriority, operational_log::OperationalLog, provider_seam::*, *,
+};
 use process_wrap::tokio::{CommandWrap, ProcessGroup};
 use std::{io, process::Stdio};
 use studio_runtime_providers::{DecodedJournalPayload, decode_journal_entry};

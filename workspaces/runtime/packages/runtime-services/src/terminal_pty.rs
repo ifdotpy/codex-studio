@@ -12,8 +12,7 @@ use std::time::Duration;
 use base64::Engine as _;
 use serde_json::{Value, json};
 use studio_runtime_process::{
-    LocalPtyHost, PtyHost, PtyHostError, PtyIdentity, PtySession, cleanup_orphan,
-    terminal_environment,
+    LocalPtyHost, PtyHost, PtyIdentity, PtySession, cleanup_orphan, terminal_environment,
 };
 
 use crate::terminal_driver::{
@@ -280,10 +279,7 @@ impl TerminalSession for PtyTerminalSession {
                 self.with_session(id, |session| {
                     self.host
                         .write(session, &bytes)
-                        .map_err(|error| match error {
-                            PtyHostError::InputTimeout => SessionError::UnknownOutcome,
-                            _ => SessionError::Disconnected,
-                        })
+                        .map_err(|_| SessionError::Disconnected)
                 })?;
                 Ok(json!({"ok":true}))
             }
@@ -338,13 +334,8 @@ impl TerminalSession for PtyTerminalSession {
         if identity.is_null() {
             return Ok(false);
         }
-        // Only a complete, typed identity can authorize signalling a persisted
-        // process. Python restart recovery marks these rows exited without
-        // interpreting this Rust-only metadata, so an invalid legacy value is
-        // left untouched at the OS boundary and reconciled as unavailable.
-        let Ok(identity) = serde_json::from_value::<PtyIdentity>(identity.clone()) else {
-            return Ok(false);
-        };
+        let identity = serde_json::from_value::<PtyIdentity>(identity.clone())
+            .map_err(|_| SessionError::Rejected)?;
         cleanup_persisted_identity(&identity)
     }
 }
@@ -463,16 +454,6 @@ mod tests {
             .prefix("terminal-pty-")
             .tempdir_in(root)
             .expect("temporary terminal cwd")
-    }
-
-    #[test]
-    fn malformed_persisted_identity_is_not_signaled_and_does_not_block_recovery() {
-        let adapter = PtyTerminalSession::new();
-
-        assert_eq!(
-            adapter.cleanup_orphan(&json!({"pid":"malformed"})),
-            Ok(false)
-        );
     }
 
     #[test]
