@@ -334,7 +334,53 @@ fn startup_remote_owned_monitor_is_recovered_without_aborting() {
     assert!(
         QueueEventRepository::get(&connection, &QueueEventId::from(format!("monitor:{id}")))
             .expect("read remote monitor exit")
-            .is_some()
+            .is_some_and(|event| event.status == "stored_only")
+    );
+}
+
+#[test]
+fn malformed_monitor_row_is_skipped_while_other_rows_are_recovered() {
+    let root = fixtures::tempdir();
+    let cases = fixtures::corpus(root.path());
+    let case = running(&cases);
+    let id = case["before"]["id"]
+        .as_str()
+        .expect("monitor id")
+        .to_owned();
+    let store = fixtures::store(root.path(), "malformed-monitor-startup");
+    fixtures::seed(&store, &case);
+    store
+        .transaction(|tx| {
+            tx.execute(
+                "INSERT INTO runtime_monitors(id,record) VALUES('unexpected-monitor',?1)",
+                [json!({"id":"unexpected-monitor","status":"running"}).to_string()],
+            )?;
+            Ok(())
+        })
+        .expect("seed malformed monitor row");
+
+    let report = monitor_runtime::recover_on_startup(&store, 2000.0)
+        .expect("skip one invalid row and continue startup");
+
+    assert_eq!(report.monitors, 1);
+    let connection = store.read().expect("read recovered monitors");
+    assert_eq!(
+        MonitorsRepository::get(&connection, &id)
+            .expect("read valid monitor")
+            .expect("valid monitor exists")
+            .value()["status"],
+        "lost"
+    );
+    let unexpected: String = connection
+        .query_row(
+            "SELECT record FROM runtime_monitors WHERE id='unexpected-monitor'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("malformed row remains unchanged");
+    assert_eq!(
+        serde_json::from_str::<Value>(&unexpected).expect("unexpected row JSON")["status"],
+        "running"
     );
 }
 
