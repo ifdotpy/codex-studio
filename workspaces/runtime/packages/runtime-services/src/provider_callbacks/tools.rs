@@ -10,11 +10,10 @@ mod runtime_ports;
 pub(crate) mod services;
 pub(crate) use runtime_dispatch::ManagedToolRuntimePorts;
 #[cfg(test)]
-pub(crate) use runtime_dispatch::{MonitorCancelPort, MonitorInputPort};
+pub(crate) use runtime_dispatch::MonitorInputRequest;
 #[cfg(test)]
-pub(crate) use runtime_dispatch::{
-    MonitorInputRequest, WorkerAccountSelection, select_worker_account,
-};
+pub(crate) use runtime_dispatch::{MonitorCancelPort, MonitorInputPort};
+pub use runtime_dispatch::{WorkerAccountSelection, select_worker_account};
 pub use runtime_ports::ManagedToolRuntime;
 impl From<tool_requests::ToolRequestError> for CallbackError {
     fn from(error: tool_requests::ToolRequestError) -> Self {

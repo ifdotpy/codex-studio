@@ -7,30 +7,29 @@
 use serde_json::{Value, json};
 use studio_runtime_store::RuntimeStore;
 
+use crate::managed_child_create::ManagedCreationEnvironmentError as CreationError;
 use crate::managed_host_tools::{
     Actor, DeliveryCertainty, DispatchedOperation, Error, OperationResult, WakeSignal,
 };
 
-#[cfg(test)]
-pub(crate) struct WorkerAccountSelection<'a> {
-    pub(crate) accounts: &'a dyn crate::provider_callbacks::ManagedCreationAccountRead,
-    pub(crate) parent_account_key: &'a str,
-    pub(crate) requested_account_key: Option<&'a str>,
-    pub(crate) default_account_key: Option<&'a str>,
-    pub(crate) model: &'a str,
-    pub(crate) excluded_account_keys: &'a [String],
-    pub(crate) project_account_keys: Option<&'a [String]>,
-    pub(crate) model_available: &'a mut dyn FnMut(
+pub struct WorkerAccountSelection<'a> {
+    pub accounts: &'a dyn crate::provider_callbacks::ManagedCreationAccountRead,
+    pub parent_account_key: &'a str,
+    pub requested_account_key: Option<&'a str>,
+    pub default_account_key: Option<&'a str>,
+    pub model: &'a str,
+    pub excluded_account_keys: &'a [String],
+    pub project_account_keys: Option<&'a [String]>,
+    pub model_available: &'a mut dyn FnMut(
         &str,
         &crate::provider_callbacks::ManagedAccountIdentity,
         &str,
-    ) -> Result<bool, Error>,
+    ) -> Result<bool, CreationError>,
 }
 
-#[cfg(test)]
-pub(crate) fn select_worker_account(
+pub fn select_worker_account(
     request: WorkerAccountSelection<'_>,
-) -> Result<(String, crate::provider_callbacks::ManagedAccountIdentity), Error> {
+) -> Result<(String, crate::provider_callbacks::ManagedAccountIdentity), CreationError> {
     let WorkerAccountSelection {
         accounts,
         parent_account_key,
@@ -46,7 +45,7 @@ pub(crate) fn select_worker_account(
         && requested_account_key.is_some()
         && requested_account_key != selected_default
     {
-        return Err(Error::Invalid(
+        return Err(CreationError::Invalid(
             "Use the subagent account selected in chat settings",
         ));
     }
@@ -56,7 +55,7 @@ pub(crate) fn select_worker_account(
             .resolve_identity(account_key, parent_account_key)
             .map_err(account_read_error)?;
         if !model_available(account_key, &identity, model)? {
-            return Err(Error::Invalid(
+            return Err(CreationError::Invalid(
                 "This model is not available for the selected worker accounts",
             ));
         }
@@ -85,55 +84,60 @@ pub(crate) fn select_worker_account(
                 return Ok((candidate.account_key.clone(), candidate.identity.clone()));
             }
             Ok(false) => saw_catalog = true,
-            Err(Error::Unavailable("provider-session/model-list")) => {}
+            Err(CreationError::Unavailable("provider-session/model-list")) => {}
             Err(error) => return Err(error),
         }
     }
     if !saw_eligible || saw_catalog {
-        return Err(Error::Invalid(
+        return Err(CreationError::Invalid(
             "This model is not available for the selected worker accounts",
         ));
     }
-    Err(Error::Unavailable("provider-session/model-list"))
+    Err(CreationError::Unavailable("provider-session/model-list"))
 }
 
-#[cfg(test)]
-fn account_read_error(error: crate::provider_callbacks::ManagedCreationAccountError) -> Error {
+fn account_read_error(
+    error: crate::provider_callbacks::ManagedCreationAccountError,
+) -> CreationError {
     use crate::provider_callbacks::ManagedCreationAccountError as AccountError;
     match error {
-        AccountError::Unknown => Error::Invalid("Unknown worker account"),
-        AccountError::Deleted => Error::Invalid("This worker account was deleted"),
+        AccountError::Unknown => CreationError::Invalid("Unknown worker account"),
+        AccountError::Deleted => CreationError::Invalid("This worker account was deleted"),
         AccountError::Disconnected => {
-            Error::Invalid("Sign in to the worker account before creating a worker")
+            CreationError::Invalid("Sign in to the worker account before creating a worker")
         }
         AccountError::SignInRequired => {
-            Error::Invalid("Sign in to the worker account before creating a worker")
+            CreationError::Invalid("Sign in to the worker account before creating a worker")
         }
-        AccountError::Unavailable => Error::Unavailable("account-driver/managed-child-account"),
+        AccountError::Unavailable => {
+            CreationError::Unavailable("account-driver/managed-child-account")
+        }
     }
 }
 
-#[cfg(test)]
 fn validate_selected_account(
     account_key: &str,
     excluded: &[String],
     project_keys: Option<&[String]>,
-) -> Result<(), Error> {
+) -> Result<(), CreationError> {
     if account_key.is_empty() {
-        return Err(Error::Invalid("Select an available worker account"));
+        return Err(CreationError::Invalid("Select an available worker account"));
     }
     if excluded.iter().any(|key| key == account_key) {
-        return Err(Error::Invalid("This account is disabled for this chat"));
+        return Err(CreationError::Invalid(
+            "This account is disabled for this chat",
+        ));
     }
     if project_keys
         .is_some_and(|keys| !keys.is_empty() && !keys.iter().any(|key| key == account_key))
     {
-        return Err(Error::Invalid("Select a worker account of this project"));
+        return Err(CreationError::Invalid(
+            "Select a worker account of this project",
+        ));
     }
     Ok(())
 }
 
-#[cfg(test)]
 fn ordered_worker_account_candidates<'a>(
     listing: &'a crate::provider_callbacks::ManagedCreationAccountListing,
     parent: &str,
@@ -171,7 +175,6 @@ fn ordered_worker_account_candidates<'a>(
     ordered
 }
 
-#[cfg(test)]
 fn worker_model_provider(model: &str) -> Option<&'static str> {
     if model.starts_with("gpt-") {
         Some("codex")
@@ -229,6 +232,17 @@ pub(crate) trait ChildCreationPort: Send + Sync {
     ) -> Result<OperationResult, Error>;
 }
 
+pub(crate) trait MonitorCreatePort: Send + Sync {
+    fn create(
+        &self,
+        store: &RuntimeStore,
+        actor: &Actor,
+        args: &Value,
+        request_id: &str,
+        now: f64,
+    ) -> Result<Value, Error>;
+}
+
 pub(crate) trait InterruptPort: Send + Sync {
     fn stop_by_agent(
         &self,
@@ -263,6 +277,7 @@ pub(crate) trait MonitorCancelPort: Send + Sync {
 pub(crate) struct ManagedToolRuntimePorts {
     pub(crate) status_watch: Option<std::sync::Arc<dyn StatusWatchPort>>,
     pub(crate) child_creation: Option<std::sync::Arc<dyn ChildCreationPort>>,
+    pub(crate) monitor_create: Option<std::sync::Arc<dyn MonitorCreatePort>>,
     pub(crate) interrupt: Option<std::sync::Arc<dyn InterruptPort>>,
     pub(crate) monitor_input: Option<std::sync::Arc<dyn MonitorInputPort>>,
     pub(crate) monitor_cancel: Option<std::sync::Arc<dyn MonitorCancelPort>>,
@@ -358,9 +373,15 @@ pub(super) fn dispatch(request: DispatchRequest<'_>) -> Result<Option<Dispatched
             port.stop_by_agent(store, actor, &target, request_id, now)?
         }
         "orchestration_monitor" if args["action"].as_str() != Some("cancel") => {
-            return Ok(Some(not_sent(Error::Unavailable(
-                "workspace-state/monitor-admission",
-            ))));
+            let Some(port) = ports.monitor_create.as_ref() else {
+                return Ok(Some(not_sent(Error::Unavailable(
+                    "workspace-state/monitor-admission",
+                ))));
+            };
+            written(
+                port.create(store, actor, args, request_id, now)?,
+                Vec::new(),
+            )
         }
         "orchestration_monitor_input" => {
             let Some(port) = ports.monitor_input.as_ref() else {

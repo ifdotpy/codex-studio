@@ -10,6 +10,9 @@ mod projection;
 mod recovery;
 mod storage;
 pub(crate) mod tools;
+pub use crate::managed_child_create::{
+    ManagedCreationEnvironment, ManagedCreationEnvironmentError,
+};
 pub use cards::{
     AnswerAuthority, answer, answer_value, expire, prepare_delete, prepare_user_answer, resolve,
 };
@@ -80,9 +83,10 @@ pub trait ManagedCreationAccountRead: Send + Sync {
 pub use tools::ManagedToolRuntime;
 pub(crate) use tools::ManagedToolRuntimePorts;
 #[cfg(test)]
-pub(crate) use tools::{MonitorCancelPort, MonitorInputPort};
+pub(crate) use tools::MonitorInputRequest;
 #[cfg(test)]
-pub(crate) use tools::{MonitorInputRequest, WorkerAccountSelection, select_worker_account};
+pub(crate) use tools::{MonitorCancelPort, MonitorInputPort};
+pub use tools::{WorkerAccountSelection, select_worker_account};
 
 pub(crate) struct ManagedToolPortsConfig {
     pub(crate) wake: std::sync::Arc<tokio::sync::Notify>,
@@ -149,6 +153,7 @@ pub(crate) fn managed_tool_ports_with_monitor_wake(
             runtime_ports: ManagedToolRuntimePorts {
                 status_watch: None,
                 child_creation: None,
+                monitor_create: None,
                 interrupt: None,
                 monitor_input: None,
                 monitor_cancel: None,
@@ -186,6 +191,7 @@ pub(crate) fn managed_tool_ports_with_bundle(
             .unwrap_or_else(|| ManagedToolRuntimePorts {
                 status_watch: None,
                 child_creation: None,
+                monitor_create: None,
                 interrupt: None,
                 monitor_input: None,
                 monitor_cancel: None,

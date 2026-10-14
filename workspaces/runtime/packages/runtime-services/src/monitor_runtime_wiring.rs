@@ -125,6 +125,11 @@ impl MonitorRuntime {
         Arc::clone(&self.dispatch_wake)
     }
 
+    /// Wake the monitor tick after a managed creation transaction commits.
+    pub fn wake_tick(&self) {
+        self.wake.notify_one();
+    }
+
     /// Last timer failure, cleared after a successful tick. The host can inspect
     /// this while the consumer retries transient transport and storage failures.
     pub fn last_tick_error(&self) -> Option<String> {

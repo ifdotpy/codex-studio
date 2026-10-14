@@ -6,8 +6,8 @@ use serde_json::{Value, json};
 use studio_runtime_store::RuntimeStore;
 
 use super::runtime_dispatch::{
-    ManagedToolRuntimePorts, MonitorCancelPort, MonitorInputPort, RulesActionResult,
-    StatusWatchPort,
+    ChildCreationPort, ManagedToolRuntimePorts, MonitorCancelPort, MonitorCreatePort,
+    MonitorInputPort, RulesActionResult, StatusWatchPort,
 };
 use crate::managed_host_tools::{
     Actor, DeliveryCertainty, DispatchedOperation, Error, OperationResult,
@@ -15,8 +15,8 @@ use crate::managed_host_tools::{
 
 /// Runtime services available to retained managed-tool callbacks.
 ///
-/// Child creation is absent until the combined host composition can supply P02
-/// workspace admission and a production `ManagedCreationEnvironment`.
+/// Host composition supplies account/catalog reads and P02 workspace admission
+/// through a production `ManagedCreationEnvironment`.
 pub struct ManagedToolRuntime {
     ports: ManagedToolRuntimePorts,
 }
@@ -26,10 +26,37 @@ impl ManagedToolRuntime {
         monitor: Arc<crate::monitor_runtime_wiring::MonitorRuntime>,
         lifecycle: Arc<dyn crate::agent_lifecycle_runtime::LifecyclePorts>,
     ) -> Arc<Self> {
+        Self::with_optional_creation(monitor, lifecycle, None)
+    }
+
+    pub fn with_creation(
+        monitor: Arc<crate::monitor_runtime_wiring::MonitorRuntime>,
+        lifecycle: Arc<dyn crate::agent_lifecycle_runtime::LifecyclePorts>,
+        environment: Arc<dyn crate::managed_child_create::ManagedCreationEnvironment>,
+    ) -> Arc<Self> {
+        Self::with_optional_creation(monitor, lifecycle, Some(environment))
+    }
+
+    fn with_optional_creation(
+        monitor: Arc<crate::monitor_runtime_wiring::MonitorRuntime>,
+        lifecycle: Arc<dyn crate::agent_lifecycle_runtime::LifecyclePorts>,
+        environment: Option<Arc<dyn crate::managed_child_create::ManagedCreationEnvironment>>,
+    ) -> Arc<Self> {
+        let child_creation = environment.as_ref().map(|environment| {
+            Arc::new(ManagedChildCreationAdapter(Arc::clone(environment)))
+                as Arc<dyn ChildCreationPort>
+        });
+        let monitor_create = environment.map(|environment| {
+            Arc::new(ManagedMonitorCreateAdapter {
+                environment,
+                runtime: Arc::clone(&monitor),
+            }) as Arc<dyn MonitorCreatePort>
+        });
         Arc::new(Self {
             ports: ManagedToolRuntimePorts {
                 status_watch: Some(Arc::new(ManagedStatusWatchAdapter)),
-                child_creation: None,
+                child_creation,
+                monitor_create,
                 interrupt: Some(Arc::new(ManagedInterruptAdapter { lifecycle })),
                 monitor_input: Some(Arc::new(ManagedMonitorInputAdapter {
                     runtime: Arc::clone(&monitor),
@@ -41,6 +68,111 @@ impl ManagedToolRuntime {
 
     pub(crate) fn ports(&self) -> ManagedToolRuntimePorts {
         self.ports.clone()
+    }
+}
+
+struct ManagedChildCreationAdapter(
+    Arc<dyn crate::managed_child_create::ManagedCreationEnvironment>,
+);
+
+impl ChildCreationPort for ManagedChildCreationAdapter {
+    fn spawn(
+        &self,
+        store: &RuntimeStore,
+        actor: &Actor,
+        args: &Value,
+        request_id: &str,
+        now: f64,
+    ) -> Result<OperationResult, Error> {
+        crate::managed_child_create::spawn_agents(
+            store,
+            actor,
+            args,
+            request_id,
+            now,
+            self.0.as_ref(),
+        )
+        .map_err(child_creation_error)
+    }
+
+    fn review(
+        &self,
+        store: &RuntimeStore,
+        actor: &Actor,
+        args: &Value,
+        request_id: &str,
+        now: f64,
+    ) -> Result<OperationResult, Error> {
+        crate::managed_child_create::request_review(
+            store,
+            actor,
+            args,
+            request_id,
+            now,
+            self.0.as_ref(),
+        )
+        .map_err(child_creation_error)
+    }
+}
+
+struct ManagedMonitorCreateAdapter {
+    environment: Arc<dyn crate::managed_child_create::ManagedCreationEnvironment>,
+    runtime: Arc<crate::monitor_runtime_wiring::MonitorRuntime>,
+}
+
+impl MonitorCreatePort for ManagedMonitorCreateAdapter {
+    fn create(
+        &self,
+        store: &RuntimeStore,
+        actor: &Actor,
+        args: &Value,
+        request_id: &str,
+        now: f64,
+    ) -> Result<Value, Error> {
+        let workspace = self
+            .environment
+            .prepare_workspace(store, actor.record(), args, request_id)
+            .map_err(|error| match error {
+                crate::managed_child_create::ManagedCreationEnvironmentError::Invalid(message) => {
+                    Error::Invalid(message)
+                }
+                crate::managed_child_create::ManagedCreationEnvironmentError::Unavailable(name) => {
+                    Error::Unavailable(name)
+                }
+            })?;
+        let log_root = store.root().join("monitor-logs");
+        let log_root = log_root
+            .to_str()
+            .ok_or(Error::Invalid("Monitor log directory is invalid"))?;
+        let admission = crate::monitor_runtime::MonitorAdmission {
+            actor_id: actor.record().id.0.as_str(),
+            epoch: actor.record().epoch,
+            request_id,
+            request: args,
+            log_root,
+        };
+        let value = store
+            .transaction_with(|tx| {
+                crate::monitor_runtime::create_in_transaction(
+                    tx,
+                    &admission,
+                    workspace.as_ref(),
+                    now,
+                )
+            })
+            .map_err(monitor_error)?;
+        self.runtime.wake_tick();
+        Ok(value)
+    }
+}
+
+fn child_creation_error(error: crate::managed_child_create::Error) -> Error {
+    use crate::managed_child_create::Error as E;
+    match error {
+        E::Managed(error) => error,
+        E::Store(error) => Error::Store(error),
+        E::Unavailable(name) => Error::Unavailable(name),
+        E::Refused => Error::Invalid("Managed child creation was refused"),
     }
 }
 

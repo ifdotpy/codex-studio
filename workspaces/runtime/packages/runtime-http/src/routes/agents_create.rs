@@ -12,11 +12,281 @@ use studio_runtime_services::host_worker_create::{
 };
 use studio_runtime_services::model_catalog::ModelListPort;
 
-struct RouteCreationCatalog<'a> {
-    service: &'a studio_runtime_services::model_catalog::ModelCatalogService,
+/// Compose the same fresh model admission and P02 host snapshot used by agent
+/// creation for managed Spawn, Review, and monitor admission.
+pub fn managed_creation_environment(
+    accounts: std::sync::Arc<studio_runtime_services::account_driver::AccountDriver>,
+    catalog: studio_runtime_services::model_catalog::ModelCatalogService,
+) -> std::sync::Arc<dyn studio_runtime_services::provider_callbacks::ManagedCreationEnvironment> {
+    std::sync::Arc::new(ManagedCreationEnvironment {
+        accounts,
+        catalog: RouteCreationCatalog { service: catalog },
+    })
 }
 
-impl CreationCatalog for RouteCreationCatalog<'_> {
+struct ManagedCreationEnvironment {
+    accounts: std::sync::Arc<studio_runtime_services::account_driver::AccountDriver>,
+    catalog: RouteCreationCatalog,
+}
+
+impl studio_runtime_services::provider_callbacks::ManagedCreationEnvironment
+    for ManagedCreationEnvironment
+{
+    fn select_worker_account(
+        &self,
+        parent_account_key: &str,
+        requested_account_key: Option<&str>,
+        default_account_key: Option<&str>,
+        model: &str,
+        excluded_account_keys: &[String],
+        project_account_keys: Option<&[String]>,
+    ) -> Result<
+        (
+            String,
+            studio_runtime_services::host_worker_create::AccountIdentity,
+        ),
+        studio_runtime_services::provider_callbacks::ManagedCreationEnvironmentError,
+    > {
+        use studio_runtime_services::provider_callbacks::{
+            ManagedAccountIdentity, WorkerAccountSelection, select_worker_account,
+        };
+        let accounts = DriverManagedAccountRead(self.accounts.as_ref());
+        let mut model_available = |key: &str, identity: &ManagedAccountIdentity, model: &str| {
+            let account = host_account_identity(identity);
+            match self
+                .catalog
+                .resolve(key, &account, model, None, false, false)
+            {
+                Ok(_) => Ok(true),
+                Err(
+                    studio_runtime_services::agents_create::CreateError::CapabilityUnavailable(
+                        name,
+                    ),
+                ) => Err(studio_runtime_services::provider_callbacks::ManagedCreationEnvironmentError::Unavailable(name)),
+                Err(studio_runtime_services::agents_create::CreateError::InvalidCreation(_)) => {
+                    Ok(false)
+                }
+                Err(_) => Err(studio_runtime_services::provider_callbacks::ManagedCreationEnvironmentError::Invalid(
+                    "Worker account admission was refused",
+                )),
+            }
+        };
+        let (key, identity) = select_worker_account(WorkerAccountSelection {
+            accounts: &accounts,
+            parent_account_key,
+            requested_account_key,
+            default_account_key,
+            model,
+            excluded_account_keys,
+            project_account_keys,
+            model_available: &mut model_available,
+        })?;
+        Ok((key, host_account_identity(&identity)))
+    }
+
+    fn catalog(&self) -> &dyn CreationCatalog {
+        &self.catalog
+    }
+
+    fn prepare_workspace(
+        &self,
+        store: &studio_runtime_store::RuntimeStore,
+        actor: &studio_runtime_store::AgentRecord,
+        args: &Value,
+        _request_id: &str,
+    ) -> Result<
+        Box<dyn studio_runtime_services::monitor_runtime::WorkspaceAdmission + Send + Sync>,
+        studio_runtime_services::provider_callbacks::ManagedCreationEnvironmentError,
+    > {
+        let id = actor.id.0.clone();
+        let epoch = actor.epoch;
+        let cwd = actor.extra.get("cwd").and_then(Value::as_str).ok_or(
+            studio_runtime_services::provider_callbacks::ManagedCreationEnvironmentError::Invalid(
+                "Select a project directory",
+            ),
+        )?;
+        let mode = args
+            .get("workspace")
+            .and_then(Value::as_str)
+            .or_else(|| actor.extra.get("workspaceMode").and_then(Value::as_str))
+            .unwrap_or("shared");
+        if !matches!(mode, "shared" | "worktree") {
+            return Err(studio_runtime_services::provider_callbacks::ManagedCreationEnvironmentError::Unavailable(if mode == "image" {
+                "workspace-state/image-workspace"
+            } else {
+                "workspace-state/vm-workspace"
+            }));
+        }
+        let prepared = studio_runtime_services::host_project_runtime::PreparedHost::load(store)
+            .map_err(|_| studio_runtime_services::provider_callbacks::ManagedCreationEnvironmentError::Unavailable("workspace-state/host-preparation"))?;
+        prepared
+            .recheck_paths()
+            .map_err(|_| studio_runtime_services::provider_callbacks::ManagedCreationEnvironmentError::Unavailable("workspace-state/host-preparation"))?;
+        Ok(Box::new(PreparedManagedWorkspace {
+            id,
+            epoch,
+            cwd: cwd.to_owned(),
+            prepared,
+        }))
+    }
+}
+
+struct DriverManagedAccountRead<'a>(&'a studio_runtime_services::account_driver::AccountDriver);
+
+impl studio_runtime_services::provider_callbacks::ManagedCreationAccountRead
+    for DriverManagedAccountRead<'_>
+{
+    fn worker_accounts(
+        &self,
+    ) -> Result<
+        studio_runtime_services::provider_callbacks::ManagedCreationAccountListing,
+        studio_runtime_services::provider_callbacks::ManagedCreationAccountError,
+    > {
+        use studio_runtime_services::provider_callbacks::{
+            ManagedAccountIdentity, ManagedCreationAccountCandidate as Candidate,
+            ManagedCreationAccountListing,
+        };
+        let snapshot = self.0.listing_snapshot().map_err(account_read_error)?;
+        let accounts = snapshot
+            .accounts
+            .iter()
+            .filter_map(|row| {
+                let key = row.get("id")?.as_str()?.to_owned();
+                Some(Candidate {
+                    account_key: key,
+                    identity: ManagedAccountIdentity {
+                        provider: row
+                            .get("provider")
+                            .and_then(Value::as_str)
+                            .map(str::to_owned),
+                        home: row.get("home").and_then(Value::as_str).map(str::to_owned),
+                        account_id: row
+                            .get("accountId")
+                            .and_then(Value::as_str)
+                            .map(str::to_owned),
+                        email: row.get("email").and_then(Value::as_str).map(str::to_owned),
+                    },
+                    ready: row.get("status").and_then(Value::as_str) == Some("ready"),
+                    can_attempt_native_proof: row
+                        .get("canAttemptNativeProof")
+                        .and_then(Value::as_bool)
+                        == Some(true),
+                    disconnected: row.get("disconnected").and_then(Value::as_bool) == Some(true),
+                    deleted: row.get("deleted").and_then(Value::as_bool) == Some(true),
+                    duplicate: row.get("duplicateOf").and_then(Value::as_str).is_some(),
+                })
+            })
+            .collect();
+        let default = snapshot.default_account_key.as_str().map(str::to_owned);
+        Ok(ManagedCreationAccountListing {
+            default_account_key: default,
+            accounts,
+        })
+    }
+
+    fn resolve_identity(
+        &self,
+        account_key: &str,
+        _parent_account_key: &str,
+    ) -> Result<
+        studio_runtime_services::provider_callbacks::ManagedAccountIdentity,
+        studio_runtime_services::provider_callbacks::ManagedCreationAccountError,
+    > {
+        let snapshot = self.0.listing_snapshot().map_err(account_read_error)?;
+        let row = snapshot
+            .accounts
+            .iter()
+            .find(|row| row.get("id").and_then(Value::as_str) == Some(account_key))
+            .ok_or(
+                studio_runtime_services::provider_callbacks::ManagedCreationAccountError::Unknown,
+            )?;
+        if row.get("deleted").and_then(Value::as_bool) == Some(true) {
+            return Err(
+                studio_runtime_services::provider_callbacks::ManagedCreationAccountError::Deleted,
+            );
+        }
+        if row.get("disconnected").and_then(Value::as_bool) == Some(true) {
+            return Err(studio_runtime_services::provider_callbacks::ManagedCreationAccountError::Disconnected);
+        }
+        Ok(
+            studio_runtime_services::provider_callbacks::ManagedAccountIdentity {
+                provider: row
+                    .get("provider")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned),
+                home: row.get("home").and_then(Value::as_str).map(str::to_owned),
+                account_id: row
+                    .get("accountId")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned),
+                email: row.get("email").and_then(Value::as_str).map(str::to_owned),
+            },
+        )
+    }
+}
+
+fn account_read_error(
+    error: studio_runtime_services::account_driver::AccountDriverError,
+) -> studio_runtime_services::provider_callbacks::ManagedCreationAccountError {
+    use studio_runtime_services::{
+        account_driver::AccountDriverError as E,
+        provider_callbacks::ManagedCreationAccountError as M,
+    };
+    match error {
+        E::UnknownAccount => M::Unknown,
+        E::DeletedAccount => M::Deleted,
+        E::SignInRequired => M::SignInRequired,
+        _ => M::Unavailable,
+    }
+}
+
+fn host_account_identity(
+    identity: &studio_runtime_services::provider_callbacks::ManagedAccountIdentity,
+) -> studio_runtime_services::host_worker_create::AccountIdentity {
+    studio_runtime_services::host_worker_create::AccountIdentity {
+        provider: identity.provider.clone(),
+        home: identity.home.clone(),
+        account_id: identity.account_id.clone(),
+        email: identity.email.clone(),
+    }
+}
+
+struct PreparedManagedWorkspace {
+    id: String,
+    epoch: i64,
+    cwd: String,
+    prepared: studio_runtime_services::host_project_runtime::PreparedHost,
+}
+
+impl studio_runtime_services::monitor_runtime::WorkspaceAdmission for PreparedManagedWorkspace {
+    fn check(
+        &self,
+        tx: &studio_runtime_store::Transaction<'_>,
+        actor: &studio_runtime_store::AgentRecord,
+    ) -> Result<(), studio_runtime_services::monitor_policy::MonitorError> {
+        if actor.id.0 != self.id
+            || actor.epoch != self.epoch
+            || actor.extra.get("cwd").and_then(Value::as_str) != Some(self.cwd.as_str())
+        {
+            return Err(
+                studio_runtime_services::monitor_policy::MonitorError::Refused(
+                    "Workspace changed during preparation",
+                ),
+            );
+        }
+        self.prepared.recheck(tx).map_err(|_| {
+            studio_runtime_services::monitor_policy::MonitorError::Refused(
+                "Workspace changed during preparation",
+            )
+        })
+    }
+}
+
+struct RouteCreationCatalog {
+    service: studio_runtime_services::model_catalog::ModelCatalogService,
+}
+
+impl CreationCatalog for RouteCreationCatalog {
     fn resolve(
         &self,
         account_key: &str,
@@ -179,7 +449,7 @@ async fn dispatch<T: serde::de::DeserializeOwned + serde::Serialize>(
     let result = tokio::task::spawn_blocking(move || {
         let store = state.store.as_deref().ok_or_else(ApiError::internal)?;
         let catalog = RouteCreationCatalog {
-            service: &state.model_catalog,
+            service: state.model_catalog.clone(),
         };
         let context = Context {
             store,

@@ -980,7 +980,7 @@ pub trait WorkspaceAdmission {
 pub fn create_in_transaction(
     tx: &Transaction<'_>,
     admission: &MonitorAdmission<'_>,
-    workspace: &impl WorkspaceAdmission,
+    workspace: &dyn WorkspaceAdmission,
     now: f64,
 ) -> Result<Value, MonitorError> {
     let MonitorAdmission {

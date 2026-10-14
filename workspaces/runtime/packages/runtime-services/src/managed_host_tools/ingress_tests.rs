@@ -675,7 +675,11 @@ fn unavailable_provider_model_list_refuses_without_callback_writes() {
     let before = callback_intent_snapshot(&store);
     let mut unavailable =
         |_: &str, _: &crate::provider_callbacks::ManagedAccountIdentity, _: &str| {
-            Err(Error::Unavailable("provider-session/model-list"))
+            Err(
+                crate::managed_child_create::ManagedCreationEnvironmentError::Unavailable(
+                    "provider-session/model-list",
+                ),
+            )
         };
     let result = crate::provider_callbacks::select_worker_account(
         crate::provider_callbacks::WorkerAccountSelection {
@@ -691,7 +695,11 @@ fn unavailable_provider_model_list_refuses_without_callback_writes() {
     );
     assert!(matches!(
         result,
-        Err(Error::Unavailable("provider-session/model-list"))
+        Err(
+            crate::managed_child_create::ManagedCreationEnvironmentError::Unavailable(
+                "provider-session/model-list",
+            )
+        )
     ));
     assert_eq!(callback_intent_snapshot(&store), before);
 }
@@ -721,6 +729,7 @@ fn managed_ports(
         runtime_ports: ManagedToolRuntimePorts {
             status_watch: None,
             child_creation: None,
+            monitor_create: None,
             interrupt: None,
             monitor_input,
             monitor_cancel,
@@ -1208,6 +1217,7 @@ fn named_refusals_leave_all_application_tables_unchanged() {
 #[test]
 fn managed_monitor_create_persists_one_start_intent_and_replays_exactly() {
     let (_root, store, context) = fixture();
+    let store = Arc::new(store);
     let frame = call(
         &context,
         "managed-monitor-create",
@@ -1215,8 +1225,31 @@ fn managed_monitor_create_persists_one_start_intent_and_replays_exactly() {
         json!({"command":"printf managed-monitor","wake_on":"exit"}),
     );
     let wake = std::sync::Arc::new(tokio::sync::Notify::new());
-    let ports =
-        crate::provider_callbacks::managed_tool_ports(&store, &context, &frame, wake).unwrap();
+    let monitor_port: Arc<dyn crate::monitor_runtime_wiring::MonitorPort> =
+        Arc::new(ScriptedRetainedMonitorPort {
+            certainty: crate::managed_host_tools::DeliveryCertainty::Written,
+            calls: AtomicUsize::new(0),
+            tickets: Mutex::new(Vec::new()),
+        });
+    let monitor = Arc::new(crate::monitor_runtime_wiring::MonitorRuntime::new(
+        Arc::clone(&store),
+        monitor_port,
+        Arc::new(tokio::sync::Notify::new()),
+    ));
+    let runtime = crate::provider_callbacks::ManagedToolRuntime::with_creation(
+        monitor,
+        Arc::new(NoopLifecyclePorts),
+        Arc::new(CreationEnvironment),
+    );
+    let ports = crate::provider_callbacks::managed_tool_ports_with_bundle(
+        &store,
+        &context,
+        &frame,
+        wake,
+        Arc::new(tokio::sync::Notify::new()),
+        Some(&runtime),
+    )
+    .unwrap();
     let count_before: i64 = store
         .read()
         .unwrap()
@@ -1233,23 +1266,28 @@ fn managed_monitor_create_persists_one_start_intent_and_replays_exactly() {
             row.get(0)
         })
         .unwrap();
-    if count == count_before {
-        assert!(format!("{first:?}").contains("workspace-state/monitor-admission"));
-    } else {
-        // Target behavior once the workspace-state/monitor-admission P02 gap
-        // is composed: persist one starting intent and replay it exactly.
-        assert_eq!(count, count_before + 1);
-        let saved: Value = serde_json::from_str(
-            &store.read().unwrap().query_row(
+    assert_eq!(count, count_before + 1);
+    let saved: Value = serde_json::from_str(
+        &store
+            .read()
+            .unwrap()
+            .query_row(
                 "SELECT record FROM runtime_monitors WHERE json_extract(record, '$.command')=?1",
-                ["printf managed-monitor"], |row| row.get::<_, String>(0),
-            ).unwrap(),
-        ).unwrap();
-        assert!(matches!(
-            saved["status"].as_str(),
-            Some("starting" | "approval")
-        ));
-    }
+                ["printf managed-monitor"],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap(),
+    )
+    .unwrap();
+    assert!(matches!(
+        saved["status"].as_str(),
+        Some("starting" | "approval")
+    ));
+    assert!(
+        saved["requestId"]
+            .as_str()
+            .is_some_and(|id| id.ends_with(":managed-monitor-create"))
+    );
 
     let replay = dispatch_with_managed_tools(&store, &context, &frame, 21.0, &ports).unwrap();
     assert!(matches!(replay, CallbackDecision::Answer(_)));
@@ -1260,15 +1298,21 @@ fn managed_monitor_create_persists_one_start_intent_and_replays_exactly() {
             row.get(0)
         })
         .unwrap();
-    if count == count_before {
-        assert_eq!(
-            replayed_count, count_before,
-            "refusal replay wrote a monitor"
-        );
-    } else {
-        // Preserve exact replay coverage with the start-intent target.
-        assert_eq!(replayed_count, count_before + 1);
-    }
+    assert_eq!(replayed_count, count_before + 1);
+    let replayed: Value = serde_json::from_str(
+        &store
+            .read()
+            .unwrap()
+            .query_row(
+                "SELECT record FROM runtime_monitors WHERE id=?1",
+                [saved["id"].as_str().unwrap()],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(replayed, saved);
+    assert_eq!(replay, first);
 }
 
 #[test]
@@ -2011,11 +2055,18 @@ impl crate::managed_child_create::ManagedCreationEnvironment for CreationEnviron
         model: &str,
         excluded_account_keys: &[String],
         project_account_keys: Option<&[String]>,
-    ) -> Result<(String, crate::host_worker_create::AccountIdentity), Error> {
+    ) -> Result<
+        (String, crate::host_worker_create::AccountIdentity),
+        crate::managed_child_create::ManagedCreationEnvironmentError,
+    > {
         if requested_account_key
             .is_some_and(|key| default_account_key.is_some_and(|default| default != key))
         {
-            return Err(Error::Invalid("Worker account differs from team defaults"));
+            return Err(
+                crate::managed_child_create::ManagedCreationEnvironmentError::Invalid(
+                    "Worker account differs from team defaults",
+                ),
+            );
         }
         let key = requested_account_key
             .or(default_account_key)
@@ -2031,7 +2082,11 @@ impl crate::managed_child_create::ManagedCreationEnvironment for CreationEnviron
                 !keys.is_empty() && !keys.iter().any(|candidate| candidate == key)
             })
         {
-            return Err(Error::Invalid("Select a worker account of this project"));
+            return Err(
+                crate::managed_child_create::ManagedCreationEnvironmentError::Invalid(
+                    "Select a worker account of this project",
+                ),
+            );
         }
         let provider = if model.starts_with("claude-")
             || ["default", "sonnet", "opus", "haiku"].contains(&model)
@@ -2055,10 +2110,14 @@ impl crate::managed_child_create::ManagedCreationEnvironment for CreationEnviron
     }
     fn prepare_workspace(
         &self,
-        _: &Actor,
+        _: &RuntimeStore,
+        _: &studio_runtime_store::AgentRecord,
         _: &Value,
         _: &str,
-    ) -> Result<Box<dyn crate::monitor_runtime::WorkspaceAdmission + Send + Sync>, Error> {
+    ) -> Result<
+        Box<dyn crate::monitor_runtime::WorkspaceAdmission + Send + Sync>,
+        crate::managed_child_create::ManagedCreationEnvironmentError,
+    > {
         Ok(Box::new(AllowWorkspace))
     }
 }
