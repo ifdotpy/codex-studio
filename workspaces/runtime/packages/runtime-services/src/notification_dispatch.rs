@@ -205,6 +205,17 @@ pub fn record_user_submission(
     })
 }
 
+/// Transaction-aware read/respond service for model-authored complaints.
+pub(crate) fn agent_complaint_action(
+    tx: &Transaction<'_>,
+    agent: &Value,
+    args: &Value,
+    request_id: &str,
+    now: f64,
+) -> Result<Value, NotificationDispatchError> {
+    questions::agent_complaint_action(tx, agent, args, request_id, now)
+}
+
 /// Stored outcome and a staged connection-buffer replacement.
 #[derive(Clone, Debug, PartialEq)]
 pub struct NotificationDispatchResult {
