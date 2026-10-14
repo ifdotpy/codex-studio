@@ -383,7 +383,7 @@ impl WorkItemsRepository {
     ) -> StoreResult<Vec<StoredQueueEvent>> {
         let mut statement = connection.prepare(
             "SELECT id,kind,text,status,created,error FROM runtime_events \
-             WHERE agent=?1 AND epoch=?2 AND status='pending' \
+             WHERE agent=?1 AND epoch=?2 AND status IN ('pending','reserved') \
              AND kind IN ('user','followup') ORDER BY created,rowid",
         )?;
         let rows = statement.query_map(params![agent, epoch], |row| {
@@ -397,9 +397,14 @@ impl WorkItemsRepository {
             let (text, text_valid) = row
                 .get::<_, String>(2)
                 .map_or_else(|_| (String::new(), false), |value| (value, true));
-            let (status, status_valid) = row
+            let (mut status, status_valid) = row
                 .get::<_, String>(3)
                 .map_or_else(|_| (String::new(), false), |value| (value, true));
+            // Rust reserves accepted events internally before provider
+            // submission; Python keeps these visible as pending in /api/queue.
+            if status == "reserved" {
+                status = "pending".to_owned();
+            }
             let (created, created_valid) = row
                 .get::<_, f64>(4)
                 .map_or_else(|_| (f64::NAN, false), |value| (value, value.is_finite()));
@@ -495,6 +500,18 @@ mod tests {
                 .expect("empty queue")
                 .is_empty()
         );
+        connection
+            .execute(
+                "INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch,error) \
+                 VALUES ('reserved-user','agent-a','user','held','reserved',1.0,0,NULL)",
+                [],
+            )
+            .expect("reserved event inserts");
+        let queue = WorkItemsRepository::queue(&connection, "agent-a", 0)
+            .expect("reserved event remains visible");
+        assert_eq!(queue.len(), 1);
+        assert_eq!(queue[0].id, "reserved-user");
+        assert_eq!(queue[0].status, "pending");
     }
 
     #[test]

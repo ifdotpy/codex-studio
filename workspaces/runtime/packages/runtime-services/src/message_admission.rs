@@ -168,6 +168,12 @@ impl<'a> MessageIngressAdmission<'a> {
             Some(agent) => {
                 let root = AgentRepository::get(connection, &agent.root_id)?;
                 if root.as_ref().is_some_and(|root| {
+                    root.extra.get("tokenBudget").and_then(Value::as_u64) == Some(0)
+                }) {
+                    // A zero budget is already reached from the durable zero
+                    // lifetime floor; provider history cannot change the denial.
+                    BTreeMap::new()
+                } else if root.as_ref().is_some_and(|root| {
                     root.extra
                         .get("tokenBudget")
                         .is_some_and(|budget| !budget.is_null())
