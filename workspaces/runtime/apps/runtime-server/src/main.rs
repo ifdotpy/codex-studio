@@ -167,7 +167,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .with_limits(account_policy.clone()),
     );
-    let session_binaries = Arc::new(Mutex::new(BTreeMap::<String, (u64, String)>::new()));
+    let session_binaries = Arc::new(Mutex::new(BTreeMap::<
+        String,
+        provider_ports::SessionExecutables,
+    >::new()));
     let active_connections = Arc::new(provider_ports::LiveProviderConnections {
         accounts: account_driver.clone(),
         session: Arc::clone(&account_session),
