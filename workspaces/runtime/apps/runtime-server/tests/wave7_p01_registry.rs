@@ -253,6 +253,8 @@ struct Scripted {
     active: Arc<AtomicUsize>,
     writes: mpsc::UnboundedSender<(String, Value)>,
     unknown_writes: bool,
+    unknown_first_launch_only: bool,
+    launches: AtomicUsize,
     failures: AtomicUsize,
     stops: Arc<Mutex<Vec<Shutdown>>>,
     opened_notice: Arc<Notify>,
@@ -267,11 +269,14 @@ impl AccountLauncher for Scripted {
             {
                 return Err(WorkerError::TaskFailed);
             }
+            let launch = self.launches.fetch_add(1, Ordering::SeqCst);
+            let unknown_writes =
+                self.unknown_writes && (!self.unknown_first_launch_only || launch == 0);
             let factory = Arc::new(WireFactory {
                 opened: self.opened.clone(),
                 active: self.active.clone(),
                 writes: self.writes.clone(),
-                unknown_writes: self.unknown_writes,
+                unknown_writes,
                 stops: self.stops.clone(),
                 opened_notice: self.opened_notice.clone(),
             });
@@ -349,6 +354,7 @@ impl ProviderTaskFactory for WireFactory {
                             reply,
                             observed,
                         } => {
+                            let mut observed_message = None;
                             let receipt = match write.message()["method"].as_str() {
                                 Some("initialize") => CommandReceipt::CachedInitialize(json!({})),
                                 Some("initialized") => CommandReceipt::Written {
@@ -373,9 +379,7 @@ impl ProviderTaskFactory for WireFactory {
                                     }
                                 }
                                 _ => {
-                                    writes
-                                        .send((handle.as_str().into(), write.message().clone()))
-                                        .unwrap();
+                                    observed_message = Some(write.message().clone());
                                     if unknown_writes {
                                         // This mode models a lost acceptance response.
                                         CommandReceipt::Unknown
@@ -388,7 +392,18 @@ impl ProviderTaskFactory for WireFactory {
                                 }
                             };
                             let _ignored = reply.send(receipt);
-                            tokio::select! { biased; _=Shutdown::cancelled(&mut stop)=>break, _=observed=>{} }
+                            let observed = tokio::select! {
+                                biased;
+                                result = observed => result.is_ok(),
+                                _ = Shutdown::cancelled(&mut stop) => false,
+                            };
+                            if observed {
+                                if let Some(message) = observed_message {
+                                    writes.send((handle.as_str().into(), message)).unwrap();
+                                }
+                            } else {
+                                break;
+                            }
                         }
                         AdapterCommand::Ack { cursor, reply } => {
                             let _ignored = reply.send(CommandReceipt::Acknowledged(cursor));
@@ -414,6 +429,16 @@ fn scripted() -> (Arc<Scripted>, mpsc::UnboundedReceiver<(String, Value)>) {
 fn scripted_with_unknown_writes(
     unknown_writes: bool,
 ) -> (Arc<Scripted>, mpsc::UnboundedReceiver<(String, Value)>) {
+    scripted_with_unknown_write_policy(unknown_writes, false)
+}
+fn scripted_with_unknown_first_launch() -> (Arc<Scripted>, mpsc::UnboundedReceiver<(String, Value)>)
+{
+    scripted_with_unknown_write_policy(true, true)
+}
+fn scripted_with_unknown_write_policy(
+    unknown_writes: bool,
+    unknown_first_launch_only: bool,
+) -> (Arc<Scripted>, mpsc::UnboundedReceiver<(String, Value)>) {
     let (writes, rx) = mpsc::unbounded_channel();
     (
         Arc::new(Scripted {
@@ -421,6 +446,8 @@ fn scripted_with_unknown_writes(
             active: Arc::default(),
             writes,
             unknown_writes,
+            unknown_first_launch_only,
+            launches: AtomicUsize::new(0),
             failures: AtomicUsize::new(0),
             stops: Arc::default(),
             opened_notice: Arc::default(),
@@ -473,12 +500,12 @@ async fn two_accounts_are_independent_and_shutdown_joins_all_attachments() {
         .unwrap();
     registry.reconcile(None).await.unwrap();
     let mut accounts = vec![
-        tokio::time::timeout(TEST_HANG_GUARD, writes.recv())
+        tokio::time::timeout(std::time::Duration::from_secs(10), writes.recv())
             .await
             .expect("provider write hang guard")
             .unwrap()
             .0,
-        tokio::time::timeout(TEST_HANG_GUARD, writes.recv())
+        tokio::time::timeout(std::time::Duration::from_secs(10), writes.recv())
             .await
             .expect("provider write hang guard")
             .unwrap()
@@ -494,7 +521,7 @@ async fn two_accounts_are_independent_and_shutdown_joins_all_attachments() {
 async fn start_failure_preserves_input_and_post_commit_notify_dispatches_it() {
     let fixture = tokio::task::spawn_blocking(Fixture::new).await.unwrap();
     fixture.enqueue(0, "retry-start");
-    let (launcher, mut writes) = scripted();
+    let (launcher, mut writes) = scripted_with_unknown_writes(false);
     launcher.failures.store(1, Ordering::SeqCst);
     let mut registry = AccountRegistry::new(fixture.store.clone(), launcher.clone())
         .await
@@ -513,7 +540,11 @@ async fn start_failure_preserves_input_and_post_commit_notify_dispatches_it() {
         "account:default"
     );
     stop.cancel();
-    task.await.unwrap().unwrap();
+    tokio::time::timeout(TEST_HANG_GUARD, task)
+        .await
+        .expect("account registry shutdown hang guard")
+        .unwrap()
+        .unwrap();
     assert_eq!(launcher.active.load(Ordering::SeqCst), 0);
 }
 
@@ -538,7 +569,7 @@ async fn accepted_http_message_wakes_retained_worker_and_receipt_replay_does_not
     );
     let wake = state.event_wake_handle();
     let app = studio_runtime_http::router(state.clone()).unwrap();
-    let (launcher, mut writes) = scripted();
+    let (launcher, mut writes) = scripted_with_unknown_writes(false);
     let registry = AccountRegistry::new(fixture.store.clone(), launcher.clone())
         .await
         .unwrap();
@@ -573,7 +604,11 @@ async fn accepted_http_message_wakes_retained_worker_and_receipt_replay_does_not
     assert_eq!(account, "account:default");
     assert_eq!(request["method"], "turn/start");
     stop.cancel();
-    task.await.unwrap().unwrap();
+    tokio::time::timeout(TEST_HANG_GUARD, task)
+        .await
+        .expect("account registry shutdown hang guard")
+        .unwrap()
+        .unwrap();
     assert_eq!(launcher.opened.lock().unwrap().len(), 1);
     assert!(writes.try_recv().is_err());
     assert_eq!(launcher.active.load(Ordering::SeqCst), 0);
@@ -584,12 +619,15 @@ async fn accepted_http_message_wakes_retained_worker_and_receipt_replay_does_not
 async fn shutdown_between_worker_start_and_wake_handoff_leaves_committed_input_recoverable() {
     let fixture = tokio::task::spawn_blocking(Fixture::new).await.unwrap();
     fixture.enqueue(0, "before-wake-handoff");
-    let (launcher, mut writes) = scripted();
+    let (launcher, mut writes) = scripted_with_unknown_writes(false);
     let mut registry = AccountRegistry::new(fixture.store.clone(), launcher.clone())
         .await
         .unwrap();
     registry.start("default").await.unwrap();
-    registry.shutdown().await.unwrap();
+    tokio::time::timeout(TEST_HANG_GUARD, registry.shutdown())
+        .await
+        .expect("initial registry shutdown hang guard")
+        .unwrap();
     assert!(writes.try_recv().is_err());
     assert_eq!(launcher.active.load(Ordering::SeqCst), 0);
     let mut restarted = AccountRegistry::new(fixture.store.clone(), launcher.clone())
@@ -604,7 +642,10 @@ async fn shutdown_between_worker_start_and_wake_handoff_leaves_committed_input_r
             .0,
         "account:default"
     );
-    restarted.shutdown().await.unwrap();
+    tokio::time::timeout(TEST_HANG_GUARD, restarted.shutdown())
+        .await
+        .expect("restarted registry shutdown hang guard")
+        .unwrap();
     assert!(writes.try_recv().is_err());
 }
 
@@ -697,7 +738,7 @@ async fn connection_loss_replaces_worker_before_delivering_new_input() {
         Ok(())
     }).unwrap();
     fixture.enqueue(0, "unknown-before-disconnect");
-    let (launcher, mut writes) = scripted();
+    let (launcher, mut writes) = scripted_with_unknown_first_launch();
     let registry = AccountRegistry::new(fixture.store.clone(), launcher.clone())
         .await
         .unwrap();
@@ -733,7 +774,11 @@ async fn connection_loss_replaces_worker_before_delivering_new_input() {
         second.1["params"]["threadId"]
     );
     stop.cancel();
-    task.await.unwrap().unwrap();
+    tokio::time::timeout(TEST_HANG_GUARD, task)
+        .await
+        .expect("account registry shutdown hang guard")
+        .unwrap()
+        .unwrap();
     assert_eq!(launcher.opened.lock().unwrap().len(), 2);
     assert_eq!(launcher.active.load(Ordering::SeqCst), 0);
     assert!(
