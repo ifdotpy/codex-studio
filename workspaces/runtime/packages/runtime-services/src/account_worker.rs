@@ -878,7 +878,6 @@ impl Worker {
             return Ok(());
         }
         self.pending.insert(id.clone(), context);
-        let control = self.control.clone();
         let admission = control.submit(prepared);
         #[cfg(test)]
         let faults = self.bridge.faults.clone();

@@ -29,6 +29,8 @@ pub struct TurnIntent {
     pub cwd: Option<String>,
     pub model: Option<String>,
     pub events: Vec<TurnEvent>,
+    #[serde(default)]
+    pub radio_authorized: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -542,6 +544,63 @@ pub(crate) fn claim_preparation_in_transaction(
     )
 }
 
+pub(crate) fn claim_radio_turn_in_transaction(
+    transaction: &rusqlite::Transaction<'_>,
+    agent_id: &str,
+    epoch: i64,
+    attempt_id: &str,
+    attempt_created: f64,
+    event_id: &str,
+) -> Result<Option<TurnIntent>, SchedulerError> {
+    if !attempt_created.is_finite() {
+        return Err(SchedulerError::InvalidAttemptTimestamp);
+    }
+    let claimed = SchedulerRepository::claim_selected_radio_turn(
+        transaction,
+        agent_id,
+        epoch,
+        attempt_id,
+        attempt_created,
+        event_id,
+    )?;
+    let Some(claimed) = claimed else {
+        return Ok(None);
+    };
+    if let Some(reason) = claimed.refusal_reason {
+        return Err(SchedulerError::PolicyRefused(reason));
+    }
+    let field = |key| claimed.agent.extra.get(key).and_then(Value::as_str);
+    let intent = TurnIntent {
+        agent_id: agent_id.to_owned(),
+        epoch,
+        attempt_id: attempt_id.to_owned(),
+        account_key: field("accountKey").unwrap_or("default").to_owned(),
+        provider: field("provider").unwrap_or("codex").to_owned(),
+        thread_id: field("threadId").map(str::to_owned),
+        cwd: field("cwd").map(str::to_owned),
+        model: field("model").map(str::to_owned),
+        events: claimed
+            .events
+            .iter()
+            .map(|event| TurnEvent {
+                id: event.id.0.clone(),
+                kind: event.kind.clone(),
+                text: event.text.clone(),
+                created: event.created,
+                epoch: event.epoch,
+                error: event.error.clone(),
+                metadata: claimed
+                    .metadata
+                    .get(&event.id.0)
+                    .cloned()
+                    .unwrap_or_else(|| serde_json::json!({})),
+            })
+            .collect(),
+        radio_authorized: true,
+    };
+    Ok(Some(intent))
+}
+
 fn claim_intent_selected(
     transaction: &rusqlite::Transaction<'_>,
     agent_id: &str,
@@ -596,6 +655,7 @@ fn claim_intent_selected(
                     .unwrap_or_else(|| serde_json::json!({})),
             })
             .collect(),
+        radio_authorized: false,
     };
     Ok(Some(intent))
 }

@@ -2181,6 +2181,7 @@ dependencies = [
  "tempfile",
  "thiserror",
  "tokio",
+ "unicode-casefold",
  "ureq",
  "url",
  "uuid",
@@ -2438,6 +2439,12 @@ name = "unicase"
 version = "2.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "357cc3acc6a036009fd6c973ed009037c732d60d0b4f6c673e9041497482a28f"
+
+[[package]]
+name = "unicode-casefold"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b7f66b1c8f8caa2ab31dc6d3f35386f16efdab89668f93411e565ac368908e8f"
 
 [[package]]
 name = "unicode-general-category"

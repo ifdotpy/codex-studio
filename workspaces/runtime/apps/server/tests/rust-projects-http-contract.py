@@ -108,6 +108,10 @@ class ProjectsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         parent = self.backend.root / "matches-cwd"
         parent.mkdir()
         self._git_repo(parent, origin)
+        sharp_s = parent / "ßeta"
+        self._git_repo(sharp_s, origin)
+        tango = parent / "tango"
+        self._git_repo(tango, origin)
         child = parent / "unregistered-child"
         self._git_repo(child, origin)
         query = urlencode(
@@ -120,7 +124,13 @@ class ProjectsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         rows = response.json()["matches"]
         self.assertEqual(
             [row["path"] for row in rows],
-            [str(source.resolve()), str(parent.resolve()), str(child.resolve())],
+            [
+                str(source.resolve()),
+                str(parent.resolve()),
+                str(sharp_s.resolve()),
+                str(tango.resolve()),
+                str(child.resolve()),
+            ],
         )
         self.assertEqual(rows[1]["projectId"], str(parent.resolve()))
 

@@ -66,6 +66,7 @@ fn original_submission(
             .get("assets")
             .cloned()
             .ok_or_else(|| invalid(agent))?,
+        radio_authorized: false,
     })
 }
 

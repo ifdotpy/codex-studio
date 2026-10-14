@@ -450,6 +450,7 @@ async fn cold_and_expired_catalogs_hold_the_attempt_without_failing_it() {
                         error: event.error,
                         metadata,
                     }],
+                    radio_authorized: false,
                 };
                 drop(read_tx);
                 drop(db);

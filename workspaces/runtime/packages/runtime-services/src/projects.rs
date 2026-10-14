@@ -10,6 +10,7 @@ use studio_runtime_store::{
     ProjectsRepository, RuntimeStore, StoreError, SyncDocumentsRepository, sha256_hex,
 };
 use thiserror::Error;
+use unicode_casefold::UnicodeCaseFold;
 use uuid::Uuid;
 
 pub(crate) mod operations;
@@ -133,7 +134,8 @@ pub fn location_query(store: &RuntimeStore, query: &Value) -> Result<Value, Proj
                 path.file_name()
                     .unwrap_or_default()
                     .to_string_lossy()
-                    .to_lowercase()
+                    .case_fold()
+                    .collect::<String>()
             });
             children.truncate(50);
             if cwd.join(".git").exists() {

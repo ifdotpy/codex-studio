@@ -88,6 +88,7 @@ pub struct PreparedSubmission {
     pub text: String,
     pub inputs: Vec<SubmittedInput>,
     pub assets: Value,
+    pub radio_authorized: bool,
 }
 
 #[derive(Debug, Error)]
@@ -2213,6 +2214,7 @@ mod tests {
                 },
             ],
             assets: json!([{"id":"asset-1","name":"file.txt"}]),
+            radio_authorized: false,
         };
         let transaction = connection
             .transaction()
@@ -2296,6 +2298,7 @@ mod tests {
                 assets: json!([]),
             }],
             assets: json!([]),
+            radio_authorized: false,
         };
         let transaction = connection
             .transaction()

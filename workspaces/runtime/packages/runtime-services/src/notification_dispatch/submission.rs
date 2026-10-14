@@ -80,6 +80,7 @@ pub(super) fn validate_submission(
             &input.kind,
             &input.text,
             meta.as_ref(),
+            submission.radio_authorized,
         )?;
     }
     let mut expected_asset_ids = Vec::new();
@@ -102,9 +103,14 @@ fn validate_submission_policy(
     kind: &str,
     text: &str,
     metadata: Option<&Value>,
+    radio_authorized: bool,
 ) -> Result<(), NotificationDispatchError> {
     if kind == "radio_turn" {
-        return Err(NotificationDispatchError::Dependency("radio-policy"));
+        return if radio_authorized {
+            Ok(())
+        } else {
+            Err(NotificationDispatchError::Dependency("radio-policy"))
+        };
     }
     if matches!(
         kind,
