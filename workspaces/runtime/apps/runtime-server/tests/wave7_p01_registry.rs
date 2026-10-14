@@ -1008,12 +1008,37 @@ async fn production_reconcile_admits_radio_queue_event_to_retained_worker() {
         writes.try_recv().is_err(),
         "radio queue event was sent twice"
     );
+    let status_before_restart: String = fixture
+        .store
+        .read()
+        .unwrap()
+        .query_row(
+            "SELECT status FROM runtime_events WHERE id=?1",
+            [&event_id],
+            |row| row.get(0),
+        )
+        .unwrap();
     drop(registry);
     let mut restarted =
         AccountRegistry::new(fixture.store.clone(), launcher, test_registry_config())
             .await
             .unwrap();
-    restarted.reconcile(None).await.unwrap();
+    let recovery = restarted.reconcile(None).await;
+    assert!(
+        matches!(recovery, Err(WorkerError::PreparationRefused(_))),
+        "startup recovery changing an agent fence must refuse the queued radio turn"
+    );
+    let status_after_recovery: String = fixture
+        .store
+        .read()
+        .unwrap()
+        .query_row(
+            "SELECT status FROM runtime_events WHERE id=?1",
+            [&event_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(status_after_recovery, status_before_restart);
     assert!(
         writes.try_recv().is_err(),
         "unknown radio turn must not be resent after worker restart"
@@ -2852,7 +2877,7 @@ async fn rust_direct_claude_launch_runs_the_scripted_bridge_turn() {
             let record: Value = serde_json::from_str(&raw).unwrap();
             if record["status"] == "interrupted"
                 && record["autoWake"] == false
-                && record["restartRecovery"]["stage"] == "pending"
+                && record["restartRecovery"]["stage"] == "held"
             {
                 break record;
             }
@@ -2868,7 +2893,18 @@ async fn rust_direct_claude_launch_runs_the_scripted_bridge_turn() {
     });
     assert_eq!(held["status"], "interrupted");
     assert_eq!(held["autoWake"], false);
-    assert_eq!(held["restartRecovery"]["stage"], "pending");
+    assert_eq!(held["restartRecovery"]["stage"], "held");
+    let second_event_status: String = fixture
+        .store
+        .read()
+        .unwrap()
+        .query_row(
+            "SELECT status FROM runtime_events WHERE id='a19e61c8-6156-4874-b8d8-9111b0a49fc4'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(second_event_status, "uncertain");
     runtime_shutdown::close(restarted, &restarted_state)
         .await
         .unwrap();
