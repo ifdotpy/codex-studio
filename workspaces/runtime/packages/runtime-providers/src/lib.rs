@@ -2,7 +2,6 @@
 //!
 //! Provider sessions are pure state machines; a thin caller owns split byte I/O.
 
-mod callback_queue_limit_generated;
 mod codec;
 mod connection;
 mod session;
