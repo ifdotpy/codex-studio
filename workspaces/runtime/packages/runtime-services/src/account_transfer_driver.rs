@@ -638,7 +638,7 @@ pub(crate) fn provider_read_receipt(
 
 /// Persist the provider's exact ticket and certainty before adopting any returned
 /// thread. Unknown stays held; only a proven NotSent receipt can be retried.
-pub(crate) struct ProviderReceipt<'a> {
+pub struct ProviderReceipt<'a> {
     pub operation: &'a str,
     pub agent: &'a str,
     pub provider_operation: &'a str,
@@ -647,7 +647,7 @@ pub(crate) struct ProviderReceipt<'a> {
     pub certainty: &'a str,
 }
 
-pub(crate) fn provider_receipt(
+pub fn provider_receipt(
     store: &RuntimeStore,
     receipt: ProviderReceipt<'_>,
     now: f64,

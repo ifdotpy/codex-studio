@@ -466,6 +466,7 @@ impl Snapshot {
                 "The transfer is not ready for provider submission",
             ));
         }
+        validate_source_for_submission(member, self.agent(agent)?)?;
         let intent = json!({"operation":operation,"scope":scope,"method":method,"params":params});
         if let Some(saved) = member.get("providerIntent") {
             if saved == &intent {
@@ -880,37 +881,7 @@ impl Snapshot {
             return Err(TransferError::Refused("Invalid native transfer request"));
         }
         let agent = &self.agents[id];
-        if flag(agent, "inFlight")
-            || matches!(
-                agent["status"].as_str(),
-                Some("running" | "starting" | "approval")
-            )
-            || truthy(agent.get("workspaceOperation"))
-        {
-            return Err(TransferError::Refused(
-                "Waiting for the current turn or workspace operation",
-            ));
-        }
-        let source = m
-            .get("source")
-            .and_then(Value::as_object)
-            .ok_or_else(|| invalid("account transfer", "/members/source"))?;
-        if source.is_empty()
-            || source
-                .iter()
-                .any(|(field, value)| agent.get(field).unwrap_or(&Value::Null) != value)
-            || m.get("settings") != Some(&settings_snapshot(agent))
-            || agent.get("pendingSettings").unwrap_or(&Value::Null)
-                != m.get("pendingSettings").unwrap_or(&Value::Null)
-            || agent
-                .get("pendingSettingsAccountKey")
-                .unwrap_or(&Value::Null)
-                != m.get("pendingSettingsAccountKey").unwrap_or(&Value::Null)
-        {
-            return Err(TransferError::Refused(
-                "Agent state changed during transfer. Its original session is preserved.",
-            ));
-        }
+        validate_source_for_submission(m, agent)?;
         let mut op = self.operation.clone();
         let m = &mut op["members"][id];
         m["phase"] = json!(if flag(m, "lazy") {
@@ -1362,6 +1333,43 @@ fn settings_snapshot(agent: &Value) -> Value {
     }
     result["provider"] = agent.get("provider").cloned().unwrap_or(json!("codex"));
     result
+}
+
+fn validate_source_for_submission(member: &Value, agent: &Value) -> Result<(), TransferError> {
+    if flag(agent, "inFlight")
+        || matches!(
+            agent["status"].as_str(),
+            Some("running" | "starting" | "approval")
+        )
+        || truthy(agent.get("workspaceOperation"))
+    {
+        return Err(TransferError::Refused(
+            "Waiting for the current turn or workspace operation",
+        ));
+    }
+    let source = member
+        .get("source")
+        .and_then(Value::as_object)
+        .ok_or_else(|| invalid("account transfer", "/members/source"))?;
+    if source.is_empty()
+        || source
+            .iter()
+            .any(|(field, value)| agent.get(field).unwrap_or(&Value::Null) != value)
+        || member.get("settings") != Some(&settings_snapshot(agent))
+        || agent.get("pendingSettings").unwrap_or(&Value::Null)
+            != member.get("pendingSettings").unwrap_or(&Value::Null)
+        || agent
+            .get("pendingSettingsAccountKey")
+            .unwrap_or(&Value::Null)
+            != member
+                .get("pendingSettingsAccountKey")
+                .unwrap_or(&Value::Null)
+    {
+        return Err(TransferError::Refused(
+            "Agent state changed during transfer. Its original session is preserved.",
+        ));
+    }
+    Ok(())
 }
 
 #[cfg(test)]

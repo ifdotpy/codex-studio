@@ -15,8 +15,8 @@ use studio_runtime_services::{
     account_session_runtime::ConnectionScope,
     account_transfer::{Ticket, TransferError},
     account_transfer_driver::{
-        self as driver, DispatchOutcome, PreparedTransfer, TransferDispatch, TransferExecutor,
-        TransferMethod, TransferPreparation, TransferTransport,
+        self as driver, DispatchOutcome, PreparedTransfer, ProviderReceipt, TransferDispatch,
+        TransferExecutor, TransferMethod, TransferPreparation, TransferTransport,
     },
 };
 use studio_runtime_store::{AccountTransferRepository, RuntimeStore};
@@ -68,6 +68,14 @@ fn ticket() -> Ticket {
         request: "exact-native-request".into(),
     }
 }
+fn exact_receipt(ticket: &Ticket, scope: &ConnectionScope, certainty: &str) -> Value {
+    json!({
+        "operation": ticket.request,
+        "scope": scope,
+        "certainty": certainty,
+        "ticket": {"generation": scope.generation, "id": "fixture", "method": "thread/fork"},
+    })
+}
 #[derive(Clone, Copy)]
 enum Behavior {
     Success,
@@ -88,7 +96,7 @@ impl TransferTransport for Executor<'_> {
         ticket: &Ticket,
         scope: &ConnectionScope,
         method: &str,
-        _: &Value,
+        params: &Value,
     ) -> TransferDispatch {
         self.calls.fetch_add(1, Ordering::SeqCst);
         self.store
@@ -96,12 +104,18 @@ impl TransferTransport for Executor<'_> {
             .expect("transport is outside transaction");
         let stored = operation(self.store);
         assert_eq!(stored["members"]["lead"]["phase"], "submitted");
-        assert_eq!(stored["members"]["lead"]["transportTicket"], json!(ticket));
+        assert_eq!(
+            stored["members"]["lead"]["providerIntent"]["operation"],
+            ticket.request
+        );
+        assert_eq!(stored["members"]["lead"]["nativeMethod"], method);
+        assert_eq!(stored["members"]["lead"]["nativeParams"], params.clone());
         let lost_response = matches!(self.behavior, Behavior::LostResponse);
+        let certainty = if lost_response { "unknown" } else { "written" };
         TransferDispatch {
-            receipt: json!({"ticket":ticket,"scope":scope,"method":method}),
+            receipt: exact_receipt(ticket, scope, certainty),
             result: (!lost_response).then(|| json!({"thread":{"id":"destination-thread"}})),
-            certainty: if lost_response { "unknown" } else { "written" },
+            certainty,
         }
     }
 }
@@ -180,42 +194,59 @@ fn executor_commits_intent_before_effect_and_never_resends_after_restart() {
         };
         assert!(driver::execute_member(&store, &executor, OPERATION, "lead", 13.0).is_err());
         assert_eq!(executor.calls.load(Ordering::SeqCst), 0);
-        driver::receive(
+        let scope = ConnectionScope {
+            account: "target".into(),
+            connection: "retained-connection".into(),
+            generation: 1,
+        };
+        let late = exact_receipt(&ticket(), &scope, "written");
+        driver::provider_receipt(
             &store,
-            &ticket(),
-            Some(json!({"thread":{"id":"destination-thread"}})),
+            ProviderReceipt {
+                operation: OPERATION,
+                agent: "lead",
+                provider_operation: "exact-native-request",
+                receipt: late.clone(),
+                result: Some(json!({"thread":{"id":"destination-thread"}})),
+                certainty: "written",
+            },
             14.0,
         )
         .expect("late exact receipt");
         let saved = operation(&store);
-        driver::receive(
+        driver::provider_receipt(
             &store,
-            &ticket(),
-            Some(json!({"thread":{"id":"destination-thread"}})),
+            ProviderReceipt {
+                operation: OPERATION,
+                agent: "lead",
+                provider_operation: "exact-native-request",
+                receipt: late,
+                result: Some(json!({"thread":{"id":"destination-thread"}})),
+                certainty: "written",
+            },
             15.0,
         )
         .expect("same receipt");
         assert_eq!(operation(&store), saved);
-        for field in [
-            "operation",
-            "agent",
-            "epoch",
-            "account",
-            "connection",
-            "request",
-        ] {
-            let mut foreign = json!(ticket());
-            foreign[field] = if field == "epoch" {
-                json!(4)
-            } else {
-                json!("foreign")
-            };
+        for field in ["operation", "connection", "request"] {
+            let mut receipt = exact_receipt(&ticket(), &scope, "written");
+            match field {
+                "operation" => receipt["operation"] = json!("foreign-operation"),
+                "connection" => receipt["scope"]["connection"] = json!("foreign-connection"),
+                _ => receipt["ticket"]["id"] = json!("foreign-request"),
+            }
             assert!(
-                driver::receive(
+                driver::provider_receipt(
                     &store,
-                    &serde_json::from_value(foreign).expect("ticket"),
-                    Some(json!({"thread":{"id":"foreign"}})),
-                    16.0
+                    ProviderReceipt {
+                        operation: OPERATION,
+                        agent: "lead",
+                        provider_operation: "exact-native-request",
+                        receipt,
+                        result: Some(json!({"thread":{"id":"foreign"}})),
+                        certainty: "written",
+                    },
+                    16.0,
                 )
                 .is_err()
             );
