@@ -38,6 +38,7 @@ def run_fixture(mode: str) -> None:
 
     runtime_module = ModuleType("codex_runtime")
     updates_module = ModuleType("codex_live_updates")
+    peer_link_module = ModuleType("codex_peer_link")
     listeners: list[Any] = []
 
     def make_runtime(_root: object) -> Any:
@@ -48,13 +49,22 @@ def run_fixture(mode: str) -> None:
         return SimpleNamespace(close=close_runtime, lock=threading.RLock())
 
     setattr(runtime_module, "Runtime", make_runtime)
+    setattr(peer_link_module, "start", lambda _runtime, _port: None)
 
     def start_updates(_runtime: object) -> None:
-        print(json.dumps({"ready": listeners[0].server_port}), flush=True)
+        return None
 
     setattr(updates_module, "start", start_updates)
     original_factory = cast(Callable[..., Any], codex_canvas.make_server)
     original_send = cast(Callable[..., Any], RequestResponseCycle.send)
+    original_startup = cast(Callable[..., Any], studio_api.server._StudioUvicornServer.startup)
+
+    async def startup(server: Any, sockets: Any = None) -> None:
+        await original_startup(server, sockets=sockets)
+        # The bound TCP socket can accept connections before Uvicorn's event
+        # loop is serving them. Publish readiness only after Uvicorn startup.
+        if listeners and server is listeners[0].server:
+            print(json.dumps({"ready": listeners[0].server_port}), flush=True)
 
     def make_server(*args: Any, **kwargs: Any) -> Any:
         server = original_factory(*args, **kwargs)
@@ -81,11 +91,13 @@ def run_fixture(mode: str) -> None:
 
     with patch.dict(sys.modules, {"codex_runtime": runtime_module, "codex_live_updates": updates_module}), \
             patch.object(codex_canvas, "make_server", make_server), \
+            patch.object(studio_api.server._StudioUvicornServer, "startup", startup), \
             patch.object(codex_canvas, "SHUTDOWN_TIMEOUT_SECONDS", 1.5, create=True), \
             patch.object(studio_api.server, "GRACEFUL_SHUTDOWN_TIMEOUT_SECONDS", 0.3, create=True), \
             patch.object(RequestResponseCycle, "send", send_response), \
             patch.object(sys, "argv", ["codex-canvas", "--port", "0"]):
-        codex_canvas.main()
+        with patch.dict(sys.modules, {"codex_peer_link": peer_link_module}):
+            codex_canvas.main()
 
 
 class BackendShutdownTests(unittest.TestCase):
