@@ -155,11 +155,18 @@ pub(crate) async fn pull(
         let reader = store.read().map_err(map_sync_store_error)?;
         let rooms = studio_runtime_services::sync_entity_context::RoomDirectory::prepare(&reader)
             .map_err(map_sync_store_error)?;
+        let projects = studio_runtime_store::ProjectsRepository::list(&reader)
+            .map_err(map_sync_store_error)?;
+        let vault_snapshot = sync_policy::ProjectVaultSnapshot::capture(
+            std::path::Path::new(&state_dir),
+            &projects,
+        );
         match store.read_transaction(|transaction| {
             pull_entities(
                 transaction,
                 &state_dir,
                 project_server_id.as_deref(),
+                &vault_snapshot,
                 &rooms,
                 after,
                 limit,
@@ -181,6 +188,7 @@ pub(crate) async fn pull(
                             transaction,
                             &state_dir,
                             project_server_id.as_deref(),
+                            &vault_snapshot,
                             &rooms,
                             after,
                             limit,
@@ -326,6 +334,7 @@ fn pull_entities(
     transaction: &Transaction<'_>,
     state_dir: &str,
     project_server_id: Option<&str>,
+    vault_snapshot: &sync_policy::ProjectVaultSnapshot,
     rooms: &studio_runtime_services::sync_entity_context::RoomDirectory,
     after: i64,
     limit: i64,
@@ -345,6 +354,7 @@ fn pull_entities(
         transaction,
         state_dir,
         project_server_id,
+        vault_snapshot,
         rooms,
         |collection, id, value, deleted| {
             validate_entity_envelope(

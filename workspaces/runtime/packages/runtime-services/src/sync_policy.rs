@@ -26,12 +26,77 @@ const MONITOR_TERMINAL_WINDOW: usize = 100;
 const MONITOR_FINAL_WINDOW: usize = 100;
 const TASK_RETIRE_BATCH: usize = 100;
 
+/// Filesystem vault views captured before opening a projection write transaction.
+#[derive(Clone, Debug, Default)]
+pub struct ProjectVaultSnapshot {
+    projects: BTreeMap<String, Value>,
+    views: BTreeMap<String, Result<Option<Value>, (&'static str, String)>>,
+}
+
+impl ProjectVaultSnapshot {
+    /// Read each project's cached vault record before the caller starts its store transaction.
+    pub fn capture(state_dir: &Path, projects: &[(String, Value)]) -> Self {
+        let vm_state_dir = crate::vault::linux_vm_state_dir(state_dir);
+        let mut snapshot = Self::default();
+        for (id, project) in projects {
+            snapshot.projects.insert(id.clone(), project.clone());
+            let Some(source) = project_vault_source(project) else {
+                snapshot.views.insert(id.clone(), Ok(None));
+                continue;
+            };
+            let project_id = sha256_hex(source.as_bytes());
+            let view = crate::vault::view(&vm_state_dir, &project_id).map_err(|error| {
+                let object = match error {
+                    crate::vault::VaultError::InvalidStoredRecord(object) => object,
+                    _ => "vault project id",
+                };
+                (object, project_id)
+            });
+            snapshot.views.insert(id.clone(), view);
+        }
+        snapshot
+    }
+
+    fn recheck(&self, transaction: &Transaction<'_>) -> StoreResult<()> {
+        let current = stored_records(transaction, "runtime_projects")?;
+        if current.len() != self.projects.len()
+            || current.into_iter().any(|(id, raw)| {
+                serde_json::from_str::<Value>(&raw).ok().as_ref() != self.projects.get(&id)
+            })
+        {
+            return Err(StoreError::RecordContract(
+                "project records changed after cached vault views were read",
+            ));
+        }
+        Ok(())
+    }
+
+    fn view(&self, id: &str, project: &Value) -> StoreResult<Option<Value>> {
+        if self.projects.get(id) != Some(project) {
+            return Err(StoreError::RecordContract(
+                "project record changed after its cached vault view was read",
+            ));
+        }
+        match self.views.get(id) {
+            Some(Ok(view)) => Ok(view.clone()),
+            Some(Err((object, project_id))) => Err(StoreError::InvalidStoredRecord {
+                object,
+                id: project_id.clone(),
+            }),
+            None => Err(StoreError::RecordContract(
+                "cached vault view is missing for a persisted project",
+            )),
+        }
+    }
+}
+
 /// Rebuild renderer entity projections from persisted records in the caller's
 /// transaction. Re-running this operation preserves unchanged entity
 /// sequences because the repository compares canonical payloads before write.
 pub fn maintain_entity_projections(
     transaction: &Transaction<'_>,
     _state_dir: &str,
+    vault_snapshot: &ProjectVaultSnapshot,
     rooms: &crate::sync_entity_context::RoomDirectory,
     validate_projection: impl Fn(&str, &str, &Value, bool) -> bool,
 ) -> StoreResult<()> {
@@ -41,6 +106,7 @@ pub fn maintain_entity_projections(
         transaction,
         _state_dir,
         project_server_id.as_deref(),
+        vault_snapshot,
         rooms,
         validate_projection,
     )
@@ -50,6 +116,7 @@ pub fn maintain_entity_projections_with_server_id(
     transaction: &Transaction<'_>,
     state_dir: &str,
     project_server_id: Option<&str>,
+    vault_snapshot: &ProjectVaultSnapshot,
     rooms: &crate::sync_entity_context::RoomDirectory,
     validate_projection: impl Fn(&str, &str, &Value, bool) -> bool,
 ) -> StoreResult<()> {
@@ -67,6 +134,7 @@ pub fn maintain_entity_projections_with_server_id(
     ] {
         let _ = stored_records(transaction, table)?;
     }
+    vault_snapshot.recheck(transaction)?;
     maintain_peer_team_entities(transaction, &validate_projection)?;
     let mut current_rooms = BTreeSet::new();
     for (table, collection) in [
@@ -123,7 +191,7 @@ pub fn maintain_entity_projections_with_server_id(
                         value.get("state").and_then(Value::as_str) == Some("ready")
                     });
                     let cached_vault = if readiness_is_ready {
-                        project_vault_view(state_dir, &record)
+                        vault_snapshot.view(&id, &record)?
                     } else {
                         None
                     };
@@ -205,15 +273,15 @@ pub fn maintain_entity_projections_with_server_id(
     Ok(())
 }
 
-/// Cached counterpart to Python's `codex_vm_agents.project_vault`; it never refreshes VM status.
-fn project_vault_view(state_dir: &str, project: &Value) -> Option<Value> {
+/// Identity selected by Python's `codex_vm_agents.project_vault` projection.
+fn project_vault_source(project: &Value) -> Option<&str> {
     let aliases = project.get("projectAliases").and_then(Value::as_array);
     let logical_id = aliases
         .and_then(|aliases| aliases.first())
         .and_then(|alias| alias.get("projectId"))
         .and_then(Value::as_str)
         .filter(|id| !id.is_empty());
-    let source = logical_id
+    logical_id
         .or_else(|| {
             project
                 .get("id")
@@ -225,11 +293,7 @@ fn project_vault_view(state_dir: &str, project: &Value) -> Option<Value> {
                 .get("path")
                 .and_then(Value::as_str)
                 .filter(|id| !id.is_empty())
-        })?;
-    let project_id = sha256_hex(source.as_bytes());
-    crate::vault::view(Path::new(state_dir), &project_id)
-        .ok()
-        .flatten()
+        })
 }
 
 fn put_projection(
@@ -1237,31 +1301,40 @@ mod tests {
     }
 
     #[test]
-    fn maintained_project_projection_reads_cached_vault_view_matching_python_corpus() {
+    fn maintained_project_projection_matches_python_vault_corpus_and_surfaces_bad_records() {
         let cases: Vec<Value> =
             serde_json::from_str(include_str!("../tests/vault/project-view-cases.json"))
                 .expect("project vault corpus");
-        let case = &cases[0];
-        let root = tempfile::tempdir().expect("isolated state directory");
-        let store = RuntimeStore::open(Some(root.path())).expect("open isolated runtime store");
-        let project_id = case["projectId"].as_str().unwrap();
-        let folder = store.root().join("layr-projects").join(project_id);
-        fs::create_dir_all(&folder).unwrap();
-        for (name, value) in case["records"].as_object().unwrap() {
-            fs::write(folder.join(name), serde_json::to_vec(value).unwrap()).unwrap();
-        }
-        let workspace = root.path().join("workspace");
-        fs::create_dir(&workspace).unwrap();
-        let mut project = case["project"].clone();
-        project["path"] = json!(workspace.to_string_lossy());
-        let mut prior = project.clone();
-        prior["layrReadiness"] = json!({"state":"ready"});
-        prior["layrSync"] = json!({"state":"ok"});
-        prior["vault"] = json!({"state":"stale"});
+        for case in cases {
+            let root = tempfile::tempdir().expect("isolated state directory");
+            let store = RuntimeStore::open(Some(root.path())).expect("open isolated runtime store");
+            let project_id = case["projectId"].as_str().expect("fixture project id");
+            let folder = store.root().join("linux-vm/layr-projects").join(project_id);
+            fs::create_dir_all(&folder).unwrap();
+            for (name, value) in case["records"].as_object().unwrap() {
+                fs::write(folder.join(name), serde_json::to_vec(value).unwrap()).unwrap();
+            }
+            if let Some(records) = case.get("rawRecords").and_then(Value::as_object) {
+                for (name, contents) in records {
+                    fs::write(folder.join(name), contents.as_str().unwrap()).unwrap();
+                }
+            }
+            let workspace = root.path().join("workspace");
+            fs::create_dir(&workspace).unwrap();
+            let mut project = case["project"].clone();
+            project["path"] = json!(workspace.to_string_lossy());
+            let prior = project.clone();
+            let snapshot = ProjectVaultSnapshot::capture(
+                store.root(),
+                &[(project["id"].as_str().unwrap().to_owned(), project.clone())],
+            );
 
-        store
-            .transaction(|transaction| {
+            let result = store.transaction(|transaction| {
                 ProjectsRepository::put_project(transaction, &project)?;
+                let mut prior = prior;
+                prior["layrReadiness"] = json!({"state":"ready"});
+                prior["layrSync"] = json!({"state":"ok"});
+                prior["vault"] = json!({"state":"stale"});
                 SyncDocumentsRepository::put_entity(
                     transaction,
                     "project",
@@ -1275,6 +1348,7 @@ mod tests {
                     transaction,
                     &state_dir,
                     None,
+                    &snapshot,
                     &rooms,
                     |_, _, _, _| true,
                 )?;
@@ -1286,7 +1360,18 @@ mod tests {
                 let payload: Value = serde_json::from_str(&payload)?;
                 assert_eq!(payload["value"]["vault"], case["expected"]);
                 Ok(())
-            })
-            .expect("maintain project projection");
+            });
+            if case.get("expectedError").is_some() {
+                assert!(matches!(
+                    result,
+                    Err(StoreError::InvalidStoredRecord {
+                        object: "vault.json",
+                        id,
+                    }) if id == project_id
+                ));
+            } else {
+                result.expect("maintain project projection");
+            }
+        }
     }
 }

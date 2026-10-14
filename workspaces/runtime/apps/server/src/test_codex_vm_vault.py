@@ -88,8 +88,14 @@ class Reports(unittest.TestCase):
             folder.mkdir(parents=True)
             for name, value in case['records'].items():
                 (folder / name).write_text(json.dumps(value))
+            for name, contents in case.get('rawRecords', {}).items():
+                (folder / name).write_text(contents)
             with patch('codex_linux_workspaces.client', return_value=SimpleNamespace(state_dir=self.state)):
-                self.assertEqual(project_vault(None, case['project']), case['expected'])
+                if 'expectedError' in case:
+                    with self.assertRaises(KeyError):
+                        project_vault(None, case['project'])
+                else:
+                    self.assertEqual(project_vault(None, case['project']), case['expected'])
 
     def test_the_desk_link_needs_an_https_site(self) -> None:
         folder = project(self.state, 'p')

@@ -2,11 +2,25 @@
 //! separate effect boundaries; paper words and private key material are never read here.
 
 use serde_json::{Map, Value, json};
+use std::collections::BTreeMap;
+use std::ffi::{OsStr, OsString};
 use std::fs;
 use std::path::{Component, Path, PathBuf};
+use std::time::Duration;
 use thiserror::Error;
 
 const DEFAULT_VAULT_REGION: &str = "eu-central-1";
+pub const DESK_COMMAND_TIMEOUT: Duration = Duration::from_secs(60);
+pub const VAULT_LOGIN_TIMEOUT: Duration = Duration::from_secs(900);
+pub const VAULT_SETUP_TIMEOUT: Duration = Duration::from_secs(3600);
+const DESK_OUTPUT_LIMIT: usize = 32 * 1024;
+
+/// Resolve the Linux VM data directory used by Python's `codex_linux_vm.Client.state_dir`.
+pub fn linux_vm_state_dir(runtime_state_dir: &Path) -> PathBuf {
+    std::env::var_os("CODEX_LINUX_VM_STATE_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| runtime_state_dir.join("linux-vm"))
+}
 
 #[derive(Debug, Error)]
 pub enum VaultError {
@@ -22,6 +36,177 @@ pub enum VaultError {
     InvalidStoredRecord(&'static str),
     #[error("The Desk site must be an https URL")]
     InvalidSite,
+    #[error("The layr-desk command is not installed (cargo install --path crates/layr-desk)")]
+    DeskMissing,
+    #[error("layr-desk command timed out")]
+    DeskTimedOut,
+    #[error("layr-desk command failed")]
+    DeskFailed,
+    #[error("Make the paper key of the vault first")]
+    MissingRecipient,
+    #[error("Name an AWS profile")]
+    InvalidProfile,
+    #[error("Name an AWS profile and a region")]
+    InvalidProfileOrRegion,
+}
+
+#[derive(Debug)]
+pub struct DeskResult {
+    pub code: Option<i32>,
+    pub stdout: String,
+    pub stderr: String,
+    pub timed_out: bool,
+}
+
+/// Host-local resources already resolved by runtime-server's HostRuntime.
+#[derive(Clone, Debug)]
+pub struct VaultHostCommand {
+    python: PathBuf,
+    server_source: PathBuf,
+}
+
+impl VaultHostCommand {
+    pub fn new(python: PathBuf, server_source: PathBuf) -> Self {
+        Self {
+            python,
+            server_source,
+        }
+    }
+
+    pub fn writer(&self, source: &str) -> String {
+        writer_command(
+            &self.python,
+            &self.server_source.join("codex_vault.py"),
+            source,
+        )
+    }
+}
+
+/// Run the host's layr-desk command through runtime-process's owned, bounded child.
+pub async fn run_desk<F>(
+    args: &[String],
+    timeout: Duration,
+    on_output: &mut F,
+) -> Result<DeskResult, VaultError>
+where
+    F: FnMut(bool, &str) + Send,
+{
+    let environment: BTreeMap<OsString, OsString> = std::env::vars_os().collect();
+    run_desk_with_environment(args, timeout, &environment, on_output).await
+}
+
+async fn run_desk_with_environment<F>(
+    args: &[String],
+    timeout: Duration,
+    environment: &BTreeMap<OsString, OsString>,
+    on_output: &mut F,
+) -> Result<DeskResult, VaultError>
+where
+    F: FnMut(bool, &str) + Send,
+{
+    use studio_runtime_process::stream_child::{
+        ChildEvent, ChildSpec, ExitReason, OutputStream, StreamChild,
+    };
+
+    let program = resolve_desk_program(environment)?;
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let mut child = StreamChild::spawn(ChildSpec {
+        program,
+        args: args.iter().map(OsString::from).collect(),
+        cwd,
+        environment: environment.clone(),
+        timeout,
+        inherited_lease: None,
+    })
+    .await
+    .map_err(|_| VaultError::DeskFailed)?;
+    child
+        .write(Vec::new(), true)
+        .await
+        .map_err(|_| VaultError::DeskFailed)?;
+    let mut stdout = String::new();
+    let mut stderr = String::new();
+    let mut code = None;
+    let mut timed_out = false;
+    while let Some(event) = child.next_event().await {
+        match event {
+            ChildEvent::Output { stream, bytes } => {
+                let is_stdout = stream == OutputStream::Stdout;
+                let text = String::from_utf8_lossy(&bytes);
+                on_output(is_stdout, &text);
+                let output = if is_stdout { &mut stdout } else { &mut stderr };
+                output.push_str(&text);
+                if output.len() > DESK_OUTPUT_LIMIT {
+                    let excess = output.len() - DESK_OUTPUT_LIMIT;
+                    let boundary = output
+                        .char_indices()
+                        .find_map(|(index, _)| (index >= excess).then_some(index))
+                        .unwrap_or(output.len());
+                    output.drain(..boundary);
+                }
+            }
+            ChildEvent::Exited {
+                code: exit_code,
+                reason,
+            } => {
+                code = exit_code;
+                timed_out = reason == ExitReason::TimedOut;
+            }
+        }
+    }
+    child.close().await.map_err(|_| VaultError::DeskFailed)?;
+    Ok(DeskResult {
+        code,
+        stdout,
+        stderr,
+        timed_out,
+    })
+}
+
+fn resolve_desk_program(environment: &BTreeMap<OsString, OsString>) -> Result<PathBuf, VaultError> {
+    if let Some(program) = environment.get(OsStr::new("STUDIO_LAYR_DESK_BIN")) {
+        return Ok(PathBuf::from(program));
+    }
+    if let Some(program) = bundled_desk_program()
+        && program.is_file()
+    {
+        return Ok(program);
+    }
+    if let Some(path) = environment.get(OsStr::new("PATH")) {
+        for folder in std::env::split_paths(path) {
+            let candidate = folder.join("layr-desk");
+            if candidate.is_file() {
+                return Ok(candidate);
+            }
+        }
+    }
+    if let Some(home) = environment.get(OsStr::new("HOME")) {
+        let candidate = PathBuf::from(home).join(".cargo/bin/layr-desk");
+        if candidate.is_file() {
+            return Ok(candidate);
+        }
+    }
+    Err(VaultError::DeskMissing)
+}
+
+fn bundled_desk_program() -> Option<PathBuf> {
+    let executable = std::env::current_exe().ok()?;
+    for ancestor in executable.ancestors() {
+        let root = if ancestor.file_name().is_some_and(|name| name == "bin") {
+            ancestor.parent().unwrap_or(ancestor)
+        } else {
+            ancestor
+        };
+        let scripts = root.join("scripts");
+        if scripts.join("codex_vm_vault.py").is_file() {
+            return Some(root.join("bin/layr-desk"));
+        }
+        let source = root.join("workspaces/runtime/apps/server/src");
+        if source.join("codex_vm_vault.py").is_file() {
+            return Some(root.join("workspaces/runtime/apps/server/bin/layr-desk"));
+        }
+    }
+    None
 }
 
 /// Read the cached writer report without contacting the VM.
@@ -96,10 +281,8 @@ fn load_view_object(path: &Path) -> Result<Map<String, Value>, ()> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Map::new()),
         Err(_) => return Err(()),
     };
-    Ok(serde_json::from_slice::<Value>(&bytes)
-        .ok()
-        .and_then(|value| value.as_object().cloned())
-        .unwrap_or_default())
+    let value = serde_json::from_slice::<Value>(&bytes).map_err(|_| ())?;
+    Ok(value.as_object().cloned().unwrap_or_default())
 }
 
 /// Store the Desk site after validating and normalizing its scheme and trailing slash.
@@ -122,24 +305,7 @@ pub fn setup_facts(
     requested_prefix: Option<&str>,
     profiles: &Value,
 ) -> Result<Value, VaultError> {
-    let folder = project_folder(state_dir, project_id)?;
-    let status = load_object(&folder.join("vault.json"), "vault.json")?;
-    if status.get("configured").and_then(Value::as_bool) == Some(true) {
-        return Err(VaultError::AlreadyConfigured);
-    }
-    let project = load_object(&folder.join("project.json"), "project.json")?;
-    let source = project
-        .get("source")
-        .and_then(Value::as_str)
-        .filter(|source| !source.is_empty())
-        .ok_or(VaultError::ProjectSourceMissing)?;
-    let prefix = requested_prefix
-        .filter(|prefix| !prefix.is_empty())
-        .map(str::to_owned)
-        .unwrap_or_else(|| suggested_prefix(source));
-    if !valid_prefix(&prefix) || matches!(prefix.as_str(), "api" | "assets") {
-        return Err(VaultError::InvalidPrefix);
-    }
+    let prefix = prepare_setup_facts(state_dir, project_id, requested_prefix)?;
     let gateway = load_optional_object(&settings_dir.join("gateway.json"), "gateway.json")?;
     let site = gateway
         .get("host")
@@ -162,6 +328,129 @@ pub fn setup_facts(
         "gatewayProfile": gateway_profile,
         "profiles": profiles,
     }))
+}
+
+/// Validate the project and selected prefix before starting the host command.
+pub fn prepare_setup_facts(
+    state_dir: &Path,
+    project_id: &str,
+    requested_prefix: Option<&str>,
+) -> Result<String, VaultError> {
+    if view(state_dir, project_id)?
+        .is_some_and(|view| view.get("state").and_then(Value::as_str) != Some("none"))
+    {
+        return Err(VaultError::AlreadyConfigured);
+    }
+    let folder = project_folder(state_dir, project_id)?;
+    let project = load_object(&folder.join("project.json"), "project.json")?;
+    let source = project
+        .get("source")
+        .and_then(Value::as_str)
+        .filter(|source| !source.is_empty())
+        .ok_or(VaultError::ProjectSourceMissing)?;
+    let prefix = requested_prefix
+        .filter(|prefix| !prefix.is_empty())
+        .map(str::to_owned)
+        .unwrap_or_else(|| suggested_prefix(source));
+    if !valid_prefix(&prefix) || matches!(prefix.as_str(), "api" | "assets") {
+        return Err(VaultError::InvalidPrefix);
+    }
+    Ok(prefix)
+}
+
+/// Validate a new vault request and return the source folder and selected prefix.
+pub fn prepare_new_vault(
+    state_dir: &Path,
+    settings_dir: &Path,
+    project_id: &str,
+    requested_prefix: Option<&str>,
+    profile: &str,
+    region: &str,
+) -> Result<(String, String), VaultError> {
+    if !valid_profile(profile) || !valid_region(region) {
+        return Err(VaultError::InvalidProfileOrRegion);
+    }
+    if view(state_dir, project_id)?
+        .is_some_and(|view| view.get("state").and_then(Value::as_str) != Some("none"))
+    {
+        return Err(VaultError::AlreadyConfigured);
+    }
+    let folder = project_folder(state_dir, project_id)?;
+    let project = load_object(&folder.join("project.json"), "project.json")?;
+    let source = project
+        .get("source")
+        .and_then(Value::as_str)
+        .filter(|source| !source.is_empty())
+        .ok_or(VaultError::ProjectSourceMissing)?
+        .to_owned();
+    let prefix = requested_prefix
+        .filter(|prefix| !prefix.is_empty())
+        .map(str::to_owned)
+        .unwrap_or_else(|| suggested_prefix(&source));
+    if !valid_prefix(&prefix) || matches!(prefix.as_str(), "api" | "assets") {
+        return Err(VaultError::InvalidPrefix);
+    }
+    if !settings_dir.join(&prefix).join("recipient.txt").is_file() {
+        return Err(VaultError::MissingRecipient);
+    }
+    Ok((source, prefix))
+}
+
+pub fn valid_profile(profile: &str) -> bool {
+    let mut chars = profile.chars();
+    chars
+        .next()
+        .is_some_and(|first| first.is_ascii_alphanumeric())
+        && profile.len() <= 128
+        && chars.all(|character| {
+            character.is_ascii_alphanumeric() || matches!(character, '_' | '.' | '@' | '+' | '-')
+        })
+}
+
+pub fn valid_region(region: &str) -> bool {
+    let mut parts = region.split('-');
+    let Some(prefix) = parts.next() else {
+        return false;
+    };
+    let Some(last) = region.rsplit('-').next() else {
+        return false;
+    };
+    prefix.len() == 2
+        && prefix.bytes().all(|byte| byte.is_ascii_lowercase())
+        && last.len() == 1
+        && last.bytes().all(|byte| byte.is_ascii_digit())
+        && parts.count() >= 2
+        && region
+            .split('-')
+            .skip(1)
+            .take_while(|part| *part != last)
+            .all(|part| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_lowercase()))
+}
+
+/// Build the same writer command string Python gives to `layr-desk deploy`.
+pub fn writer_command(python: &Path, script: &Path, source: &str) -> String {
+    [
+        python.as_os_str().to_string_lossy().into_owned(),
+        script.as_os_str().to_string_lossy().into_owned(),
+        "configure".to_owned(),
+        source.to_owned(),
+    ]
+    .iter()
+    .map(|argument| shell_quote(argument))
+    .collect::<Vec<_>>()
+    .join(" ")
+}
+
+fn shell_quote(argument: &str) -> String {
+    if !argument.is_empty()
+        && argument
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"_@%+=:,./-".contains(&byte))
+    {
+        argument.to_owned()
+    } else {
+        format!("'{}'", argument.replace('\'', "'\\''"))
+    }
 }
 
 pub fn suggested_prefix(source: &str) -> String {
@@ -246,8 +535,13 @@ fn write_json(path: &Path, value: &Value) -> Result<(), VaultError> {
 
 #[cfg(test)]
 mod tests {
-    use super::{VaultError, setup_facts, store_site, suggested_prefix, valid_prefix, view};
+    use super::{
+        VaultError, run_desk_with_environment, setup_facts, store_site, suggested_prefix,
+        valid_prefix, valid_profile, valid_region, view, writer_command,
+    };
     use serde_json::{Value, json};
+    use std::collections::BTreeMap;
+    use std::ffi::OsString;
     use std::fs;
 
     fn state() -> tempfile::TempDir {
@@ -303,13 +597,18 @@ mod tests {
     }
 
     #[test]
-    fn view_is_absent_before_a_cached_record_and_redacts_unreadable_records() {
+    fn view_is_absent_before_a_cached_record_and_reports_unreadable_records() {
         let root = state();
         assert_eq!(view(root.path(), "p1").unwrap(), None);
 
         let project = root.path().join("layr-projects/p1");
         fs::write(project.join("vault.json"), b"not-json").unwrap();
-        assert_eq!(view(root.path(), "p1").unwrap(), None);
+        assert_eq!(
+            view(root.path(), "p1").unwrap(),
+            Some(
+                json!({"projectId":"p1","state":"error","reason":"The vault records are unreadable"})
+            )
+        );
         fs::remove_file(project.join("vault.json")).unwrap();
         fs::create_dir(project.join("vault.json")).unwrap();
         let result = view(root.path(), "p1").unwrap().unwrap();
@@ -404,5 +703,64 @@ mod tests {
     fn source_folder_suggestion_matches_python_normalization() {
         assert_eq!(suggested_prefix("/work/Project One!!"), "project-one");
         assert_eq!(suggested_prefix("/work/---"), "project");
+    }
+
+    #[test]
+    fn aws_profile_and_region_validation_matches_python_patterns() {
+        assert!(valid_profile("personal+test@example.com"));
+        assert!(!valid_profile("-invalid"));
+        assert!(valid_region("eu-central-1"));
+        assert!(!valid_region("EU-central-1"));
+        assert!(!valid_region("us-east"));
+    }
+
+    #[test]
+    fn writer_command_uses_shell_join_quoting() {
+        assert_eq!(
+            writer_command(
+                std::path::Path::new("/tmp/python3"),
+                std::path::Path::new("/tmp/server scripts/codex_vault.py"),
+                "/tmp/a'b"
+            ),
+            "/tmp/python3 '/tmp/server scripts/codex_vault.py' configure '/tmp/a'\\''b'"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn bounded_desk_runner_uses_only_a_fake_executable_from_path() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = tempfile::tempdir().unwrap();
+        let bin = root.path().join("bin");
+        fs::create_dir(&bin).unwrap();
+        let fake = bin.join("layr-desk");
+        fs::write(
+            &fake,
+            "#!/bin/sh\n[ \"$1\" = aws-profiles ] && [ \"$2\" = --json ] || exit 91\ncat >/dev/null\nprintf '{\"profiles\":[]}\\n'\n",
+        )
+        .unwrap();
+        fs::set_permissions(&fake, fs::Permissions::from_mode(0o755)).unwrap();
+        let environment = BTreeMap::from([
+            (OsString::from("PATH"), bin.as_os_str().to_owned()),
+            (OsString::from("HOME"), root.path().as_os_str().to_owned()),
+        ]);
+        let args = vec!["aws-profiles".to_owned(), "--json".to_owned()];
+        let mut ignore = |_: bool, _: &str| {};
+
+        let result = run_desk_with_environment(
+            &args,
+            super::DESK_COMMAND_TIMEOUT,
+            &environment,
+            &mut ignore,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(result.code, Some(0));
+        assert_eq!(
+            serde_json::from_str::<Value>(&result.stdout).unwrap(),
+            json!({"profiles":[]})
+        );
     }
 }
