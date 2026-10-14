@@ -80,24 +80,64 @@ def _token_rate_max_entries(document: dict[str, JsonValue]) -> int:
     return maximum
 
 
+def _token_rate_identifier_max_codepoints(document: dict[str, JsonValue]) -> int:
+    components = document.get("components")
+    schemas = components.get("schemas") if isinstance(components, dict) else None
+    value = schemas.get("TokenRateValue") if isinstance(schemas, dict) else None
+    properties = value.get("properties") if isinstance(value, dict) else None
+    turn_id = properties.get("turnId") if isinstance(properties, dict) else None
+    maximum = turn_id.get("maxLength") if isinstance(turn_id, dict) else None
+    rates = schemas.get("TokenRateSnapshot") if isinstance(schemas, dict) else None
+    snapshot_properties = rates.get("properties") if isinstance(rates, dict) else None
+    rate_map = snapshot_properties.get("rates") if isinstance(snapshot_properties, dict) else None
+    teams = snapshot_properties.get("teams") if isinstance(snapshot_properties, dict) else None
+    team_map = teams.get("additionalProperties") if isinstance(teams, dict) else None
+    identifier_schemas = (
+        rate_map.get("propertyNames") if isinstance(rate_map, dict) else None,
+        teams.get("propertyNames") if isinstance(teams, dict) else None,
+        team_map.get("propertyNames") if isinstance(team_map, dict) else None,
+    )
+    if (
+        type(maximum) is not int
+        or maximum <= 0
+        or not isinstance(turn_id, dict)
+        or type(turn_id.get("minLength")) is not int
+        or turn_id["minLength"] != 1
+        or any(
+            not isinstance(identifier_schema, dict)
+            or type(identifier_schema.get("minLength")) is not int
+            or identifier_schema["minLength"] != 1
+            or type(identifier_schema.get("maxLength")) is not int
+            or identifier_schema["maxLength"] != maximum
+            for identifier_schema in identifier_schemas
+        )
+    ):
+        raise ValueError("Token-rate identifiers must share one positive maxLength")
+    return maximum
+
+
 def render_token_rate_limits(document: dict[str, JsonValue]) -> str:
     maximum = _token_rate_max_entries(document)
+    identifier_max = _token_rate_identifier_max_codepoints(document)
     if MAX_TOKEN_RATE_TOTAL_ENTRIES != maximum * 2:
         raise ValueError("Token-rate aggregate limit must cover two per-agent views")
     return (
         "// Generated from the Pydantic TokenRateSnapshot contract.\n"
         f"pub const TOKEN_RATE_MAX_ENTRIES: usize = {maximum};\n"
         f"pub const TOKEN_RATE_MAX_TOTAL_ENTRIES: usize = {MAX_TOKEN_RATE_TOTAL_ENTRIES};\n"
+        f"pub const TOKEN_RATE_IDENTIFIER_MAX_CODEPOINTS: usize = {identifier_max};\n"
     )
 
 
 def render_token_rate_typescript_constant(document: dict[str, JsonValue]) -> str:
     maximum = _token_rate_max_entries(document)
+    identifier_max = _token_rate_identifier_max_codepoints(document)
     if MAX_TOKEN_RATE_TOTAL_ENTRIES != maximum * 2:
         raise ValueError("Token-rate aggregate limit must cover two per-agent views")
     return (
         f"export const TOKEN_RATE_MAX_ENTRIES = {maximum} as const;\n"
-        f"export const TOKEN_RATE_MAX_TOTAL_ENTRIES = {MAX_TOKEN_RATE_TOTAL_ENTRIES} as const;"
+        f"export const TOKEN_RATE_MAX_TOTAL_ENTRIES = {MAX_TOKEN_RATE_TOTAL_ENTRIES} as const;\n"
+        f"export const TOKEN_RATE_IDENTIFIER_MAX_CODEPOINTS = {identifier_max} as const;"
     )
 
 

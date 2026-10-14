@@ -42378,6 +42378,7 @@
             },
             "maxProperties": 4096,
             "propertyNames": {
+              "maxLength": 200,
               "minLength": 1
             },
             "title": "Rates",
@@ -42396,12 +42397,14 @@
               },
               "maxProperties": 4096,
               "propertyNames": {
+                "maxLength": 200,
                 "minLength": 1
               },
               "type": "object"
             },
             "maxProperties": 4096,
             "propertyNames": {
+              "maxLength": 200,
               "minLength": 1
             },
             "title": "Teams",
@@ -51597,6 +51600,7 @@
             },
             "maxProperties": 4096,
             "propertyNames": {
+              "maxLength": 200,
               "minLength": 1
             },
             "title": "Rates",
@@ -51609,12 +51613,14 @@
               },
               "maxProperties": 4096,
               "propertyNames": {
+                "maxLength": 200,
                 "minLength": 1
               },
               "type": "object"
             },
             "maxProperties": 4096,
             "propertyNames": {
+              "maxLength": 200,
               "minLength": 1
             },
             "title": "Teams",
@@ -51669,6 +51675,7 @@
             "title": "Rate"
           },
           "turnId": {
+            "maxLength": 200,
             "minLength": 1,
             "title": "Turnid",
             "type": "string"

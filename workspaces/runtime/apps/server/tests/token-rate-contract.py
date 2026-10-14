@@ -37,6 +37,7 @@ from studio_api.generate_types import (
     render_token_rate_typescript_constant,
 )
 from studio_api.sync.resources.models import (
+    MAX_TOKEN_RATE_IDENTIFIER_CODEPOINTS,
     MAX_TOKEN_RATE_ENTRIES,
     MAX_TOKEN_RATE_TOTAL_ENTRIES,
     ResourceTokenRatesEvent,
@@ -164,6 +165,22 @@ class RateContract(unittest.TestCase):
         teams = properties['teams']
         self.assertEqual(teams['maxProperties'], MAX_TOKEN_RATE_ENTRIES)
         self.assertEqual(teams['additionalProperties']['maxProperties'], MAX_TOKEN_RATE_ENTRIES)
+        self.assertEqual(
+            schema['properties']['rates']['propertyNames']['maxLength'],
+            MAX_TOKEN_RATE_IDENTIFIER_CODEPOINTS,
+        )
+        self.assertEqual(
+            schema['properties']['teams']['propertyNames']['maxLength'],
+            MAX_TOKEN_RATE_IDENTIFIER_CODEPOINTS,
+        )
+        self.assertEqual(
+            schema['properties']['teams']['additionalProperties']['propertyNames']['maxLength'],
+            MAX_TOKEN_RATE_IDENTIFIER_CODEPOINTS,
+        )
+        self.assertEqual(
+            schema['$defs']['TokenRateValue']['properties']['turnId']['maxLength'],
+            MAX_TOKEN_RATE_IDENTIFIER_CODEPOINTS,
+        )
         sample = {'turnId': 'turn', 'active': True, 'estimated': False,
                   'rate': 1.0, 'outputTokens': 1.0}
         TokenRateSnapshot.model_validate({
@@ -186,6 +203,26 @@ class RateContract(unittest.TestCase):
                 'teams': {'team': {
                     f'rate-{index}': sample for index in range(MAX_TOKEN_RATE_ENTRIES + 1)
                 }},
+            })
+
+    def test_token_rate_identifier_bound_counts_opaque_unicode_codepoints(self):
+        identifier = '💠' * MAX_TOKEN_RATE_IDENTIFIER_CODEPOINTS
+        sample = {'turnId': 'turn', 'active': True, 'estimated': False,
+                  'rate': 1.0, 'outputTokens': 1.0}
+        TokenRateSnapshot.model_validate({
+            'rates': {identifier: {**sample, 'turnId': identifier}},
+            'teams': {},
+        })
+        too_long = identifier + '💠'
+        with self.assertRaises(ValueError):
+            TokenRateSnapshot.model_validate({
+                'rates': {too_long: sample},
+                'teams': {},
+            })
+        with self.assertRaises(ValueError):
+            TokenRateSnapshot.model_validate({
+                'rates': {'agent': {**sample, 'turnId': too_long}},
+                'teams': {},
             })
 
     def test_total_token_rate_values_are_bounded_across_workspace_and_team_views(self):
@@ -249,6 +286,14 @@ class RateContract(unittest.TestCase):
         self.assertEqual(
             TOKEN_RATE_LIMITS_OUTPUT.read_text(encoding='utf-8'),
             render_token_rate_limits(document),
+        )
+        self.assertIn(
+            f"TOKEN_RATE_IDENTIFIER_MAX_CODEPOINTS: usize = {MAX_TOKEN_RATE_IDENTIFIER_CODEPOINTS};",
+            render_token_rate_limits(document),
+        )
+        self.assertIn(
+            f"export const TOKEN_RATE_IDENTIFIER_MAX_CODEPOINTS = {MAX_TOKEN_RATE_IDENTIFIER_CODEPOINTS} as const;",
+            render_token_rate_typescript_constant(document),
         )
 
     def test_event_producer_does_not_wait_for_snapshot_publication(self):

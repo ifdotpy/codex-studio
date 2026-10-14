@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { it as test, vi } from "vitest";
 import {
+  TOKEN_RATE_IDENTIFIER_MAX_CODEPOINTS,
   TOKEN_RATE_MAX_ENTRIES,
   TOKEN_RATE_MAX_TOTAL_ENTRIES,
 } from "../generated/api.ts";
@@ -368,6 +369,43 @@ test("team batches accept exact member-count and identifier limits", () => {
   assert.deepEqual(getTokenRate(key), valid);
   assert.deepEqual(values, [null, valid]);
   stop();
+});
+
+test("token-rate identifiers preserve opaque Unicode within the generated codepoint bound", () => {
+  const unicodeId = "💠".repeat(TOKEN_RATE_IDENTIFIER_MAX_CODEPOINTS);
+  const tooLong = `${unicodeId}💠`;
+  const valid = {
+    turnId: unicodeId,
+    active: true,
+    estimated: false,
+    rate: 1,
+    outputTokens: 1,
+  };
+  assert.equal(
+    receiveWorkspaceTokenRates({ rates: { [unicodeId]: valid }, teams: {} }),
+    true,
+  );
+  assert.deepEqual(getTokenRate(unicodeId), valid);
+
+  assert.equal(
+    receiveWorkspaceTokenRates({
+      rates: { [tooLong]: valid },
+      teams: {},
+    }),
+    false,
+  );
+  assert.equal(
+    receiveWorkspaceTokenRates({
+      rates: { agent: { ...valid, turnId: tooLong } },
+      teams: {},
+    }),
+    false,
+  );
+
+  receiveTokenRate("direct-id", {
+    data: JSON.stringify({ ...valid, turnId: tooLong }),
+  });
+  assert.equal(getTokenRate("direct-id"), null);
 });
 
 test("clearing a team removes its inactive cache entry", () => {

@@ -2,6 +2,7 @@ import type { components } from "../generated/api";
 import {
   TOKEN_RATE_MAX_ENTRIES,
   TOKEN_RATE_MAX_TOTAL_ENTRIES,
+  TOKEN_RATE_IDENTIFIER_MAX_CODEPOINTS,
 } from "../generated/api";
 
 // This cache receives volatile SSE events. It never enters the sync database.
@@ -26,6 +27,21 @@ const listeners = new Map<string, Set<(value: TokenRate | null) => void>>();
 const teamMembers = new Map<string, Set<string>>();
 function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value);
+}
+function validTokenRateIdentifier(value: unknown): value is string {
+  if (typeof value !== "string" || value.length === 0) return false;
+  let codepoints = 0;
+  for (const _character of value) {
+    codepoints += 1;
+    if (codepoints > TOKEN_RATE_IDENTIFIER_MAX_CODEPOINTS) return false;
+  }
+  return true;
+}
+function validRateIdentifier(value: unknown): boolean {
+  return (
+    value === null ||
+    (isRecord(value) && validTokenRateIdentifier(value.turnId))
+  );
 }
 function publishRate(id: string, value: TokenRate | null) {
   values.delete(id);
@@ -54,7 +70,11 @@ export function receiveTeamTokenRates(teamId: string, event: MessageEvent) {
     const entries = Object.entries(batch.rates);
     if (
       entries.length > TOKEN_RATE_MAX_ENTRIES ||
-      entries.some(([id]) => id.length > 200)
+      !validTokenRateIdentifier(teamId) ||
+      entries.some(
+        ([id, rate]) =>
+          !validTokenRateIdentifier(id) || !validRateIdentifier(rate),
+      )
     )
       return;
     const next = new Set(entries.map(([id]) => id));
@@ -72,6 +92,11 @@ export function receiveTeamTokenRates(teamId: string, event: MessageEvent) {
 export function receiveTokenRate(id: string, event: MessageEvent) {
   try {
     const value: unknown = JSON.parse(event.data);
+    if (
+      !validTokenRateIdentifier(id) ||
+      (value !== null && !validRateIdentifier(value))
+    )
+      return;
     publishRate(id, value as TokenRate | null);
   } catch {
     /* A malformed telemetry event does not affect the transcript. */
@@ -89,7 +114,9 @@ function validRates(value: unknown): value is Record<string, TokenRate | null> {
     typeof value === "object" &&
     !Array.isArray(value) &&
     Object.keys(value).length <= TOKEN_RATE_MAX_ENTRIES &&
-    Object.entries(value).every(([id]) => id.length <= 200),
+    Object.entries(value).every(
+      ([id, rate]) => validTokenRateIdentifier(id) && validRateIdentifier(rate),
+    ),
   );
 }
 function publishTeam(teamId: string) {
@@ -123,7 +150,8 @@ export function receiveWorkspaceTokenRates(value: WorkspaceRates) {
     !value.teams ||
     typeof value.teams !== "object" ||
     Array.isArray(value.teams) ||
-    Object.keys(value.teams).length > TOKEN_RATE_MAX_ENTRIES
+    Object.keys(value.teams).length > TOKEN_RATE_MAX_ENTRIES ||
+    Object.keys(value.teams).some((id) => !validTokenRateIdentifier(id))
   )
     return false;
   let totalEntries = Object.keys(value.rates).length;
