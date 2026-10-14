@@ -22,6 +22,11 @@ pub struct ManagedToolRuntime {
 }
 
 impl ManagedToolRuntime {
+    #[cfg(test)]
+    pub(crate) fn from_ports_for_test(ports: ManagedToolRuntimePorts) -> Arc<Self> {
+        Arc::new(Self { ports })
+    }
+
     pub fn new(
         monitor: Arc<crate::monitor_runtime_wiring::MonitorRuntime>,
         lifecycle: Arc<dyn crate::agent_lifecycle_runtime::LifecyclePorts>,

@@ -28,7 +28,7 @@ use studio_runtime_store::{
 };
 use tokio::{
     sync::{Notify, Semaphore, mpsc, watch},
-    task::JoinHandle,
+    task::{JoinHandle, JoinSet},
 };
 pub mod callback;
 pub(crate) mod history;
@@ -470,6 +470,7 @@ pub async fn start_account_worker_with_publication_sink(
         streams,
         deferred: VecDeque::new(),
         callbacks: BTreeMap::new(),
+        managed_callback_cursors: BTreeSet::new(),
         retained_requests: retained
             .into_iter()
             .map(|(pending, request)| (request.ticket.id, pending))
@@ -482,6 +483,7 @@ pub async fn start_account_worker_with_publication_sink(
         closing: false,
         restart_recovery_started: false,
         restart_recovery: None,
+        managed_callbacks: JoinSet::new(),
     };
     let mut cancelled_owner = stop.subscribe();
     #[cfg(test)]
@@ -570,8 +572,10 @@ struct Worker {
     publication_retry_at: Option<tokio::time::Instant>,
     closing: bool,
     callbacks: BTreeMap<String, studio_runtime_process::EventCursor>,
+    managed_callback_cursors: BTreeSet<u64>,
     restart_recovery_started: bool,
     restart_recovery: Option<JoinHandle<()>>,
+    managed_callbacks: JoinSet<(studio_runtime_process::EventCursor, Option<Frame>)>,
 }
 impl Worker {
     async fn run(mut self) -> Result<(), WorkerError> {
@@ -675,6 +679,14 @@ impl Worker {
                     None => return Ok(()),
                 },
                 event = self.events.recv() => match event { Some(event) => self.event(event).await?, None => return Ok(()) },
+                callback = self.managed_callbacks.join_next(), if !self.managed_callbacks.is_empty() => {
+                    let (cursor, response) = callback
+                        .ok_or(WorkerError::TaskFailed)?
+                        .map_err(|_| WorkerError::TaskFailed)?;
+                    if let Some(response) = response {
+                        self.push(Effect::Callback(cursor, response))?;
+                    }
+                },
                 changed = self.session.status.changed() => { if changed.is_err() { return Ok(()); } },
             }
             // One ready event after a command prevents a command flood starving evidence.
@@ -1220,6 +1232,7 @@ impl Worker {
                     store::callback_settled(store, &account, generation, cursor.0)
                 })
                 .await?;
+                self.managed_callback_cursors.remove(&cursor.0);
                 if !self.closing {
                     self.control.settled(cursor).await?;
                 }
@@ -1325,24 +1338,25 @@ impl Worker {
             let frame = frame.clone();
             let wake = self.bridge.event_wake();
             let monitor_dispatch_wake = self.bridge.monitor_dispatch_wake();
-            let managed_tool_runtime = self.bridge.managed_tool_runtime();
-            if let Some(response) = self
-                .db("managed_tool_callback", move |store| {
-                    Ok(callback::managed_response(
-                        store,
-                        &account,
-                        generation,
-                        &frame,
-                        now,
-                        wake,
-                        monitor_dispatch_wake,
-                        managed_tool_runtime,
-                    ))
-                })
-                .await?
-            {
-                self.push(Effect::Callback(cursor, response))?;
+            if self.callbacks.len() + self.managed_callbacks.len() >= MAX_PENDING_RESPONSES {
+                return Err(WorkerError::Capacity);
             }
+            let store = Arc::clone(&self.bridge.store);
+            let managed_tool_runtime = self.bridge.managed_tool_runtime();
+            self.managed_callback_cursors.insert(cursor.0);
+            self.managed_callbacks.spawn_blocking(move || {
+                let response = callback::managed_response(
+                    &store,
+                    &account,
+                    generation,
+                    &frame,
+                    now,
+                    wake,
+                    monitor_dispatch_wake,
+                    managed_tool_runtime,
+                );
+                (cursor, response)
+            });
         } else if let JournalPayload::Frame(frame) = &entry.payload
             && let Some(response) = callback::response(frame)
         {
@@ -1385,6 +1399,7 @@ impl Worker {
             .await?;
         if admission {
             self.control.settled(cursor).await?;
+            self.managed_callback_cursors.remove(&cursor.0);
             return Ok(());
         }
         if self.callbacks.len() >= MAX_PENDING_RESPONSES {

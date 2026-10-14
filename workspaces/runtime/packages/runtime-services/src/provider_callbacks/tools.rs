@@ -15,6 +15,8 @@ pub(crate) use runtime_dispatch::MonitorCreatePort;
 pub(crate) use runtime_dispatch::MonitorInputRequest;
 #[cfg(test)]
 pub(crate) use runtime_dispatch::{MonitorCancelPort, MonitorInputPort};
+#[cfg(test)]
+pub(crate) use runtime_dispatch::{RulesActionResult, StatusWatchPort};
 pub use runtime_dispatch::{
     WorkerAccountSelection, select_worker_account, validate_worker_model_choice,
 };

@@ -1171,6 +1171,15 @@ pub(super) fn checkpoint(
             .unwrap_or(0),
     )
 }
+pub(super) fn journal_committed(
+    tx: &studio_runtime_store::Transaction<'_>,
+    account: &str,
+    generation: u64,
+    cursor: u64,
+) -> Result<bool, WorkerError> {
+    let operation = format!("journal:{account}:{generation}:{cursor}");
+    Ok(receipt(tx, &operation, "settled")?.is_some_and(|value| value["committed"] == true))
+}
 fn compact(
     tx: &studio_runtime_store::Transaction<'_>,
     account: &str,
