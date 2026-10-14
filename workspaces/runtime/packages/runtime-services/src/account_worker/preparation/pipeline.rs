@@ -258,11 +258,233 @@ pub(crate) fn prepare(
     method: Method,
     generation: u64,
 ) -> Result<RequestPreparation, WorkerError> {
+    if matches!(method, Method::ThreadCompactStart | Method::ReviewStart) {
+        return Err(refusal(
+            "native-action/preparation-requires-action-entry".into(),
+        ));
+    }
     let selection = admit(store, resources, intent)?;
     let token = workspace(store, intent)?;
     prepare_ready(
         store, resources, intent, method, generation, selection, token,
     )
+}
+
+/// Build the same immutable thread/settings snapshot used by turn preparation,
+/// without compiling or submitting user input. Native settings are handed to
+/// the native-action owner for its separately receipted provider request.
+pub(crate) fn prepare_native_action(
+    store: &RuntimeStore,
+    resources: &PreparationResources,
+    agent_id: &str,
+    attempt_id: &str,
+    generation: u64,
+) -> Result<super::PreparedNativeAction, WorkerError> {
+    let record = AgentRepository::get(&store.read()?, &AgentId::from(agent_id))?
+        .ok_or_else(|| invalid("agent"))?
+        .value();
+    let intent = TurnIntent {
+        agent_id: agent_id.into(),
+        epoch: decode(record["epoch"].clone(), "agent/epoch")?,
+        attempt_id: attempt_id.into(),
+        account_key: record
+            .get("accountKey")
+            .and_then(Value::as_str)
+            .unwrap_or("default")
+            .into(),
+        provider: record
+            .get("provider")
+            .and_then(Value::as_str)
+            .unwrap_or("codex")
+            .into(),
+        thread_id: record
+            .get("threadId")
+            .and_then(Value::as_str)
+            .map(str::to_owned),
+        cwd: record.get("cwd").and_then(Value::as_str).map(str::to_owned),
+        model: record
+            .get("model")
+            .and_then(Value::as_str)
+            .map(str::to_owned),
+        events: Vec::new(),
+    };
+    let admission = admit(store, resources, &intent)?;
+    let token = workspace(store, &intent)?;
+    let mut filesystem = FilesystemSnapshot::capture(store, agent_id)?;
+    filesystem.progress_directory =
+        FilesystemSnapshot::capture(store, agent_id)?.progress_directory;
+    let (identity, _) = catalog(resources, &intent)?;
+    let (snapshot, settings) = scheduler::lifecycle_transaction_with(store, |tx| {
+        let current = preconditions(tx, &intent, &filesystem)?;
+        let frozen = admission
+            .selection
+            .freeze_record(&current, &identity, Instant::now())
+            .map_err(catalog_admission_error)?;
+        let cwd = token
+            .validate(tx)?
+            .map_err(|_| refusal("workspace-readiness/token-stale".into()))?;
+        let mut frozen = frozen;
+        frozen["cwd"] = json!(cwd);
+        let thread = thread_snapshot(
+            tx,
+            resources,
+            &frozen,
+            &generation.to_string(),
+            store.root(),
+            filesystem.progress_directory.clone(),
+        )?;
+        let settings = thread::turn_params(
+            &thread,
+            &thread::TurnInput {
+                events: Vec::new(),
+                has_assets: false,
+            },
+        )
+        .map_err(|error| refusal(format!("thread-preparation/{error:?}")))?;
+        Ok::<_, WorkerError>((thread, settings))
+    })?;
+    let settings = Value::Object(settings);
+    let thread_id = snapshot
+        .actor
+        .thread_id
+        .filter(|id| !id.is_empty())
+        .ok_or_else(|| refusal("native-action/thread-required".into()))?;
+    Ok(super::PreparedNativeAction {
+        thread_id,
+        settings,
+    })
+}
+
+/// Prepare the safety retry's thread fork and turn start from the same checked
+/// thread snapshot and permission builders used by ordinary turn preparation.
+/// The safety operation owns durable intent and provider receipts; this helper
+/// only returns immutable request maps.
+pub(crate) fn prepare_safety_retry(
+    store: &RuntimeStore,
+    resources: &PreparationResources,
+    request: &super::SafetyRetryPreparation,
+) -> Result<super::PreparedSafetyRetry, WorkerError> {
+    if request.agent_id.is_empty()
+        || request.attempt_id.is_empty()
+        || request.source_thread_id.is_empty()
+        || request.turn_id.is_empty()
+        || request.model.is_empty()
+        || !request.input.is_array()
+    {
+        return Err(refusal("safety-retry/identity-invalid".into()));
+    }
+    let record = AgentRepository::get(&store.read()?, &AgentId::from(request.agent_id.as_str()))?
+        .ok_or_else(|| invalid("agent"))?
+        .value();
+    if record.get("threadId").and_then(Value::as_str) != Some(&request.source_thread_id)
+        || record.get("model").and_then(Value::as_str) != Some(&request.model)
+        || record
+            .get("deletedAt")
+            .is_some_and(|value| !value.is_null())
+    {
+        return Err(refusal("safety-retry/agent-changed".into()));
+    }
+    let filesystem = FilesystemSnapshot::capture(store, &request.agent_id)?;
+    let connection_id = record
+        .get("startAttempt")
+        .and_then(|value| value.get("connectionId"))
+        .and_then(Value::as_str)
+        .unwrap_or("safety-retry-preparation");
+    let mut snapshot = scheduler::lifecycle_transaction_with(store, |tx| {
+        let current = agent(tx, &request.agent_id)?.value();
+        if current.get("threadId").and_then(Value::as_str) != Some(&request.source_thread_id)
+            || current.get("epoch") != record.get("epoch")
+            || current.get("model").and_then(Value::as_str) != Some(&request.model)
+        {
+            return Err(refusal("safety-retry/agent-changed".into()));
+        }
+        thread_snapshot(
+            tx,
+            resources,
+            &current,
+            connection_id,
+            store.root(),
+            filesystem.progress_directory.clone(),
+        )
+    })?;
+    // Python's safety retry explicitly starts at low effort, retaining the
+    // existing account's fast-mode service tier and permission profile.
+    snapshot.settings.model = Some(request.model.clone());
+    snapshot.settings.effort = Some("low".into());
+    snapshot.settings.native_effort = Some("low".into());
+    snapshot.settings.daybreak_enabled = thread::Stored::Present(Some(false));
+    let mut fork_params = match thread::plan(
+        &snapshot,
+        &request.attempt_id,
+        &format!("safety-retry:{}", request.attempt_id),
+    ) {
+        thread::Outcome::Resume(attempt) => attempt.params,
+        thread::Outcome::Refuse(reason) => {
+            return Err(refusal(format!("thread-preparation/{reason:?}")));
+        }
+        thread::Outcome::Hold(reason) => {
+            return Err(refusal(format!("thread-preparation/{reason:?}")));
+        }
+        _ => return Err(refusal("safety-retry/source-thread-required".into())),
+    };
+    let mut turn_params = thread::turn_params(
+        &snapshot,
+        &thread::TurnInput {
+            events: Vec::new(),
+            has_assets: false,
+        },
+    )
+    .map_err(|reason| refusal(format!("thread-preparation/{reason:?}")))?;
+    let thread_id = request.attempt_id.clone();
+    let allowed_fork_keys = [
+        "approvalPolicy",
+        "approvalsReviewer",
+        "sandbox",
+        "permissions",
+        "config",
+        "developerInstructions",
+        "runtimeWorkspaceRoots",
+    ];
+    fork_params.retain(|key, _| allowed_fork_keys.contains(&key.as_str()));
+    fork_params.insert("threadId".into(), json!(request.source_thread_id));
+    fork_params.insert("beforeTurnId".into(), json!(request.turn_id));
+    fork_params.insert("deferGoalContinuation".into(), json!(true));
+    fork_params.insert("excludeTurns".into(), json!(true));
+    fork_params.insert("model".into(), json!(request.model));
+    fork_params.insert("cwd".into(), json!(snapshot.actor.cwd));
+
+    turn_params.insert("threadId".into(), json!(thread_id));
+    turn_params.insert("input".into(), request.input.clone());
+    turn_params.insert("clientUserMessageId".into(), json!(request.attempt_id));
+    turn_params.insert("model".into(), json!(request.model));
+    turn_params.insert("effort".into(), json!("low"));
+    turn_params.insert(
+        "serviceTier".into(),
+        json!(if snapshot.settings.fast_mode {
+            "priority"
+        } else {
+            "default"
+        }),
+    );
+    if snapshot.account.provider != thread::Provider::Claude {
+        let program = record
+            .get("cyberAccessProgram")
+            .and_then(Value::as_str)
+            .unwrap_or("standard");
+        if !matches!(program, "standard" | "daybreakBlue" | "daybreakRed")
+            || (record.get("daybreakEnabled") == Some(&json!(true))
+                && !matches!(program, "daybreakBlue" | "daybreakRed"))
+        {
+            return Err(refusal("safety-retry/daybreak-program-invalid".into()));
+        }
+        turn_params.insert("cyberAccessProgram".into(), json!(program));
+    }
+    Ok(super::PreparedSafetyRetry {
+        attempt_id: request.attempt_id.clone(),
+        thread_id,
+        fork_params: Value::Object(fork_params),
+        turn_params: Value::Object(turn_params),
+    })
 }
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn prepare_ready(
