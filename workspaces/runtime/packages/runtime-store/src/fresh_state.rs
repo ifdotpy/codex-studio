@@ -9,8 +9,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use rusqlite::{Connection, TransactionBehavior};
+use rusqlite::{Connection, OptionalExtension, TransactionBehavior};
 use serde_json::{Value, json};
+use uuid::Uuid;
 
 use crate::{StoreError, StoreResult};
 
@@ -67,6 +68,7 @@ fn build_staging(staging: &Path, final_root: &Path) -> StoreResult<()> {
     crate::schema::register_python_trigger_functions(&canvas)?;
     let transaction = canvas.transaction_with_behavior(TransactionBehavior::Immediate)?;
     crate::bootstrap::prepare_sync_schema(&transaction)?;
+    seed_python_lazy_markers(&transaction, staging, final_root)?;
     seed_workspace(&transaction, final_root)?;
     transaction.commit()?;
     drop(canvas);
@@ -74,6 +76,68 @@ fn build_staging(staging: &Path, final_root: &Path) -> StoreResult<()> {
     let supervisor = crate::supervisor_journal::SupervisorJournal::open(staging)
         .map_err(|error| StoreError::SchemaMismatch(error.to_string()))?;
     drop(supervisor);
+    Ok(())
+}
+
+/// Match the marker rows Python creates with its lazy v1 indexes on startup.
+fn seed_python_lazy_markers(
+    transaction: &rusqlite::Transaction<'_>,
+    staging: &Path,
+    state_dir: &Path,
+) -> StoreResult<()> {
+    let created = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or_default();
+    let nonce = format!("{}:{}:{}", state_dir.display(), std::process::id(), created);
+    let token = Uuid::new_v5(&Uuid::NAMESPACE_OID, nonce.as_bytes())
+        .simple()
+        .to_string();
+
+    let rootpage = transaction
+        .query_row(
+            "SELECT rootpage FROM sqlite_master WHERE type='table' AND name='runtime_items'",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .optional()?;
+    if let Some(rootpage) = rootpage {
+        transaction.execute(
+            "INSERT INTO runtime_turn_item_link_state_v1 VALUES (1,?,?,NULL,NULL,1,0,0,?)",
+            rusqlite::params![token, rootpage, created as f64 / 1_000_000_000.0],
+        )?;
+    }
+    transaction.execute(
+        "INSERT INTO runtime_agent_record_generation(id,value) VALUES(1,0)",
+        [],
+    )?;
+    transaction.execute(
+        "INSERT INTO runtime_scheduler_agent_change_state VALUES(1,0,0,0,0)",
+        [],
+    )?;
+
+    // Python's codex_cost_usage.install inserts a random 128-bit token when
+    // it first installs the derived analytics index.
+    let analytics_path = staging.join("analytics.sqlite3");
+    let analytics = Connection::open(analytics_path)?;
+    let has_cost_state = analytics
+        .query_row(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='analytics_cost_state_v1'",
+            [],
+            |_| Ok(()),
+        )
+        .optional()?
+        .is_some();
+    if has_cost_state {
+        analytics.execute(
+            "INSERT OR IGNORE INTO analytics_cost_state_v1(singleton,token) VALUES(1,?1)",
+            [&token],
+        )?;
+    }
+    analytics.execute(
+        "INSERT OR IGNORE INTO analytics_meta(key,value) VALUES('trackingSince',?1)",
+        [format!("{}", created as f64 / 1_000_000_000.0)],
+    )?;
     Ok(())
 }
 
@@ -133,7 +197,7 @@ fn seed_workspace(transaction: &rusqlite::Transaction<'_>, state_dir: &Path) -> 
         "projectOrganizationVersion": 1,
         "rateLimits": {"accountKey": "default", "data": null, "at": null, "error": null},
         "rateLimitsByAccount": {},
-        "sidebarOrder": [],
+        "sidebarOrder": {"groups": null, "revision": 0},
         "stateDir": state_dir.to_string_lossy(),
         "tasksHistoryLimit": 100,
     });
@@ -150,6 +214,14 @@ fn seed_workspace(transaction: &rusqlite::Transaction<'_>, state_dir: &Path) -> 
     )?;
     transaction.execute(
         "INSERT OR IGNORE INTO sync_entity_meta(key,value) VALUES('agent_organization_fields','3')",
+        [],
+    )?;
+    transaction.execute(
+        "INSERT OR IGNORE INTO sync_entity_meta(key,value) VALUES('event_window_seq','0')",
+        [],
+    )?;
+    transaction.execute(
+        "INSERT OR IGNORE INTO sync_entity_meta(key,value) VALUES('task_window_migrated','1')",
         [],
     )?;
     Ok(())
