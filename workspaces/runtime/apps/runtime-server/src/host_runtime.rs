@@ -99,6 +99,7 @@ pub(crate) fn resolve_install_root() -> Result<InstallRoot, WorkerError> {
 pub(crate) struct HostRuntime {
     shutdown: Shutdown,
     task: JoinHandle<Result<(), WorkerError>>,
+    preparation_resources: Option<Arc<PreparationResources>>,
 }
 
 impl HostRuntime {
@@ -155,7 +156,7 @@ impl HostRuntime {
         })
         .await
         .map_err(|_| WorkerError::TaskFailed)??;
-        let resources = resources.with_account_session(state.account_session.clone());
+        let resources = Arc::new(resources.with_account_session(state.account_session.clone()));
         let callback_runtime = Arc::new(
             studio_runtime_services::callback_runtime::CallbackRuntime::new(
                 store.clone(),
@@ -180,7 +181,7 @@ impl HostRuntime {
             store: store.clone(),
             root: store.root().to_owned(),
             native_path,
-            resources,
+            resources: Arc::clone(&resources),
             environment: std::env::vars().collect(),
         });
         Self::with_launcher_broker(
@@ -189,6 +190,7 @@ impl HostRuntime {
             state.event_wake_handle(),
             monitor_dispatch_wake,
             session_broker,
+            Some(resources),
         )
         .await
     }
@@ -209,6 +211,7 @@ impl HostRuntime {
         .await
     }
 
+    #[cfg(test)]
     pub async fn with_launcher_and_monitor_wake(
         store: Arc<RuntimeStore>,
         launcher: Arc<dyn AccountLauncher>,
@@ -221,6 +224,7 @@ impl HostRuntime {
             wake,
             monitor_dispatch_wake,
             AccountSessionBroker::new(),
+            None,
         )
         .await
     }
@@ -231,6 +235,7 @@ impl HostRuntime {
         wake: Arc<tokio::sync::Notify>,
         monitor_dispatch_wake: Arc<tokio::sync::Notify>,
         session_broker: AccountSessionBroker,
+        preparation_resources: Option<Arc<PreparationResources>>,
     ) -> Result<Self, WorkerError> {
         let registry = AccountRegistry::new_with_broker(
             store,
@@ -241,7 +246,15 @@ impl HostRuntime {
         .await?;
         let shutdown = Shutdown::default();
         let task = tokio::spawn(registry.run(wake, shutdown.clone()));
-        Ok(Self { shutdown, task })
+        Ok(Self {
+            shutdown,
+            task,
+            preparation_resources,
+        })
+    }
+
+    pub fn preparation_resources(&self) -> Option<Arc<PreparationResources>> {
+        self.preparation_resources.clone()
     }
 
     pub fn stop_intake(&self) {
@@ -266,7 +279,7 @@ struct HostLauncher {
     store: Arc<RuntimeStore>,
     root: PathBuf,
     native_path: Option<String>,
-    resources: PreparationResources,
+    resources: Arc<PreparationResources>,
     environment: BTreeMap<String, String>,
 }
 
@@ -279,7 +292,7 @@ impl AccountLauncher for HostLauncher {
                 tokio::task::spawn_blocking(move || account_home(&accounts, &key))
                     .await
                     .map_err(|_| WorkerError::TaskFailed)??;
-            let mut resources = self.resources.clone();
+            let mut resources = (*self.resources).clone();
             resources.account_home.clone_from(&home);
             let launch = codex_launch(
                 self.native_path.as_deref(),
