@@ -157,7 +157,35 @@ fn rust_snapshot(store: &RuntimeStore) -> Value {
     })
 }
 
-fn redact_registered_agent_differences(snapshot: &mut Value, deviations: &Value) {
+fn durable_hold_agent_ids(snapshot: &Value) -> std::collections::BTreeSet<String> {
+    snapshot["agents"]
+        .as_array()
+        .expect("agents")
+        .iter()
+        .filter(|agent| {
+            agent["nativeFailureHold"] == true
+                || agent
+                    .get("startOutcomeHold")
+                    .is_some_and(|value| !value.is_null())
+                || agent
+                    .get("contextRepairWait")
+                    .is_some_and(|value| !value.is_null())
+                || agent
+                    .get("restartRecovery")
+                    .is_some_and(|value| !value.is_null())
+                || agent
+                    .get("disconnectRecovery")
+                    .is_some_and(|value| !value.is_null())
+        })
+        .filter_map(|agent| agent["id"].as_str().map(str::to_owned))
+        .collect()
+}
+
+fn redact_registered_agent_differences(
+    snapshot: &mut Value,
+    deviations: &Value,
+    held_agent_ids: &std::collections::BTreeSet<String>,
+) {
     let paths = deviations["durable_reconciliation_hold"]["fields"]
         .as_array()
         .expect("registered startup difference");
@@ -167,6 +195,12 @@ fn redact_registered_agent_differences(snapshot: &mut Value, deviations: &Value)
             .is_some_and(|reason| reason.contains("durable hold"))
     );
     for agent in snapshot["agents"].as_array_mut().expect("agents") {
+        if !agent["id"]
+            .as_str()
+            .is_some_and(|id| held_agent_ids.contains(id))
+        {
+            continue;
+        }
         for path in paths {
             let Some(path) = path.as_str() else { continue };
             if let Some(field) = path.strip_prefix("/runtime_agents/*/record/")
@@ -181,6 +215,12 @@ fn redact_registered_agent_differences(snapshot: &mut Value, deviations: &Value)
         .expect("sync entities")
     {
         if projection["collection"] != "agent" {
+            continue;
+        }
+        if !projection["id"]
+            .as_str()
+            .is_some_and(|id| held_agent_ids.contains(id))
+        {
             continue;
         }
         for path in paths {
@@ -254,8 +294,14 @@ fn python_constructor_and_rust_startup_match_requests_monitors_events_and_projec
         &std::fs::read(deviations_path).expect("read registered differences"),
     )
     .expect("deviation registry JSON");
-    redact_registered_agent_differences(&mut rust, &deviations);
-    redact_registered_agent_differences(&mut python, &deviations);
+    let mut held_agent_ids = durable_hold_agent_ids(&rust);
+    held_agent_ids.extend(durable_hold_agent_ids(&python));
+    assert!(
+        !held_agent_ids.is_empty(),
+        "fixture includes a registered durable hold"
+    );
+    redact_registered_agent_differences(&mut rust, &deviations, &held_agent_ids);
+    redact_registered_agent_differences(&mut python, &deviations, &held_agent_ids);
     let mut differences = Vec::new();
     collect_differences("", &rust, &python, &mut differences);
     assert!(

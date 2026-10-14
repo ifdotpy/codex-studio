@@ -1,5 +1,8 @@
 //! Synchronous monitor consumer: ownership checks and all row writes share one transaction.
 //! Native I/O is returned as an effect, and must run only after a successful commit.
+//! Startup recovery for remote-owned monitors records its owner exit event locally as
+//! `stored_only`; that row claims no delivery and is not resent. The remote owner is not notified
+//! until `cross-server/remote-events` lands.
 
 use serde_json::{Value, json};
 use studio_runtime_store::{
@@ -15,6 +18,7 @@ use crate::monitor_policy::{
 
 pub const SESSION_DEPENDENCY: &str = "provider-session/monitor-commands";
 pub const RULE_DEPENDENCY: &str = "rule-driver/monitor-finish";
+pub const REMOTE_EVENTS_DEPENDENCY: &str = "cross-server/remote-events";
 const STARTUP_RECEIPT_BATCH: usize = 64;
 const RESTART_EVENT_ERROR: &str = "Server restarted before delivery acknowledgement";
 
@@ -203,18 +207,31 @@ fn recover_active_monitors(tx: &Transaction<'_>, now: f64) -> Result<usize, Moni
         return Ok(0);
     }
     let mut statement = tx
-        .prepare(
-            "SELECT id FROM runtime_monitors \
-         WHERE json_extract(record,'$.status') IN ('running','starting','approval') \
-         ORDER BY id",
-        )
+        .prepare("SELECT id,record FROM runtime_monitors ORDER BY id")
         .map_err(studio_runtime_store::StoreError::from)?;
-    let ids = statement
-        .query_map([], |row| row.get::<_, String>(0))
+    let rows = statement
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
         .map_err(studio_runtime_store::StoreError::from)?
         .collect::<Result<Vec<_>, _>>()
         .map_err(studio_runtime_store::StoreError::from)?;
     drop(statement);
+    let mut ids = Vec::new();
+    for (id, raw) in rows {
+        match serde_json::from_str::<Value>(&raw) {
+            Ok(record)
+                if matches!(
+                    record.get("status").and_then(Value::as_str),
+                    Some("running" | "starting" | "approval")
+                ) =>
+            {
+                ids.push(id);
+            }
+            Ok(_) => {}
+            Err(_) => eprintln!("startup monitor recovery skipped row id={id}: invalid record"),
+        }
+    }
     let mut recovered = 0;
     for id in &ids {
         let result = (|| {
@@ -262,7 +279,7 @@ fn recover_active_monitors(tx: &Transaction<'_>, now: f64) -> Result<usize, Moni
     Ok(recovered)
 }
 
-fn startup_store_failure(error: &MonitorError) -> bool {
+pub(crate) fn startup_store_failure(error: &MonitorError) -> bool {
     fn store_failure(error: &studio_runtime_store::StoreError) -> bool {
         matches!(
             error,
@@ -272,6 +289,7 @@ fn startup_store_failure(error: &MonitorError) -> bool {
                 | studio_runtime_store::StoreError::StateDirectory(_)
                 | studio_runtime_store::StoreError::AlreadyOwned
                 | studio_runtime_store::StoreError::MissingDatabase(_)
+                | studio_runtime_store::StoreError::UnsafeStateDirectory
                 | studio_runtime_store::StoreError::SchemaMismatch(_)
                 | studio_runtime_store::StoreError::SchemaObjectMismatch { .. }
         )

@@ -200,6 +200,72 @@ fn startup_recovers_a_committed_monitor_result_before_marking_active_rows_lost()
 }
 
 #[test]
+fn unreadable_receipt_is_skipped_and_other_receipts_are_recovered() {
+    let root = fixtures::tempdir();
+    let cases = fixtures::corpus(root.path());
+    let case = running(&cases);
+    let store = fixtures::store(root.path(), "unreadable-receipt");
+    fixtures::seed(&store, &case);
+    let lost_id = "unreadable-result-monitor";
+    let completed_id = case["before"]["id"]
+        .as_str()
+        .expect("monitor id")
+        .to_owned();
+    let mut lost_monitor = case["before"].clone();
+    lost_monitor["id"] = json!(lost_id);
+    store
+        .transaction(|tx| {
+            Table::new(tx).put(&studio_runtime_store::MonitorRecord::from_value(
+                lost_monitor,
+            )?)
+        })
+        .expect("seed monitor whose result file is unreadable");
+    monitor_receipts::persist(
+        store.root(),
+        &ResultReceipt {
+            version: 1,
+            key: completed_id.clone(),
+            code: Some(0),
+            error: None,
+            operation: Some(operation(&case)),
+            finished: 1500.0,
+        },
+    )
+    .expect("persist valid result");
+    let corrupt_path = store.root().join("monitor-results").join(format!(
+        "{}.json",
+        studio_runtime_store::sha256_hex(lost_id.as_bytes())
+    ));
+    std::fs::write(&corrupt_path, b"{").expect("write corrupt receipt witness");
+
+    let report = monitor_runtime::recover_on_startup(&store, 2000.0)
+        .expect("skip corrupt receipt and continue startup");
+
+    assert_eq!(report.receipts, 1);
+    assert_eq!(report.monitors, 1);
+    let connection = store.read().expect("read receipt recovery results");
+    assert_eq!(
+        MonitorsRepository::get(&connection, &completed_id)
+            .expect("read valid result monitor")
+            .expect("valid result monitor exists")
+            .value()["status"],
+        "completed"
+    );
+    let lost = MonitorsRepository::get(&connection, lost_id)
+        .expect("read unreadable-result monitor")
+        .expect("unreadable-result monitor exists");
+    assert_eq!(lost.value()["status"], "lost");
+    assert_eq!(
+        lost.value()["error"],
+        "Server restarted. Command outcome unknown; not rerun."
+    );
+    assert!(
+        corrupt_path.exists(),
+        "corrupt receipt is retained for diagnosis"
+    );
+}
+
+#[test]
 fn startup_write_failure_rolls_back_all_rows_and_next_start_converges() {
     let root = fixtures::tempdir();
     let cases = fixtures::corpus(root.path());
@@ -351,9 +417,16 @@ fn malformed_monitor_row_is_skipped_while_other_rows_are_recovered() {
     fixtures::seed(&store, &case);
     store
         .transaction(|tx| {
+            // The production expression index rejects malformed JSON on insert;
+            // remove it in this isolated fixture to witness row-level isolation.
+            tx.execute_batch(
+                "DROP INDEX runtime_monitor_agent_status;
+                 DROP INDEX runtime_monitor_stall_due;
+                 DROP INDEX runtime_monitor_status",
+            )?;
             tx.execute(
-                "INSERT INTO runtime_monitors(id,record) VALUES('unexpected-monitor',?1)",
-                [json!({"id":"unexpected-monitor","status":"running"}).to_string()],
+                "INSERT INTO runtime_monitors(id,record) VALUES('unexpected-monitor','{')",
+                [],
             )?;
             Ok(())
         })
@@ -378,10 +451,7 @@ fn malformed_monitor_row_is_skipped_while_other_rows_are_recovered() {
             |row| row.get(0),
         )
         .expect("malformed row remains unchanged");
-    assert_eq!(
-        serde_json::from_str::<Value>(&unexpected).expect("unexpected row JSON")["status"],
-        "running"
-    );
+    assert_eq!(unexpected, "{");
 }
 
 #[test]
