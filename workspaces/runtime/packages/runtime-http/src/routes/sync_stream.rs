@@ -485,6 +485,13 @@ mod tests {
         ));
     }
 
+    mod token_rate_difference {
+        include!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../runtime-services/tests/support/token_rate_difference.rs"
+        ));
+    }
+
     #[tokio::test]
     async fn stream_documents_match_python_resource_hub() {
         use std::io::Write;
@@ -560,9 +567,11 @@ mod tests {
                 .lines()
                 .find_map(|line| line.strip_prefix("data: "))
                 .expect("data");
-            assert_eq!(
-                serde_json::from_str::<Value>(data).expect("JSON"),
-                expected["rates"]
+            token_rate_difference::assert_token_rate_documents_equal(
+                &expected["rates"],
+                &serde_json::from_str::<Value>(data).expect("JSON"),
+                &[],
+                "stream document oracle",
             );
         }
     }
@@ -676,6 +685,10 @@ mod tests {
         json!({"rates":{"agent":{"turnId":"turn","active":true,"estimated":false,"rate":rate,"outputTokens":rate}},"teams":{}})
     }
 
+    fn floating_test_rates(rate: u64) -> Value {
+        json!({"rates":{"agent":{"turnId":"turn","active":true,"estimated":false,"rate":rate as f64,"outputTokens":rate as f64}},"teams":{}})
+    }
+
     fn test_stream(
         hub: &Arc<ChangeNotificationHub>,
         tokens: &TokenRateHub,
@@ -725,7 +738,7 @@ mod tests {
         use std::sync::mpsc;
         let hub = Arc::new(ChangeNotificationHub::new());
         let tokens = TokenRateHub::with_change_hub(hub.clone());
-        tokens.publish(test_rates(1)).expect("first");
+        tokens.publish(floating_test_rates(1)).expect("first");
         let mut reader = tokens.subscribe();
         let (captured, capture_gate) = mpsc::channel();
         let (release, released) = mpsc::channel();
@@ -745,7 +758,7 @@ mod tests {
             let tokens = tokens.clone();
             std::thread::spawn(move || {
                 attempting.send(()).expect("publication gate");
-                tokens.publish(test_rates(2)).expect("second")
+                tokens.publish(floating_test_rates(2)).expect("second")
             })
         };
         attempted
@@ -755,11 +768,11 @@ mod tests {
             .send(())
             .expect("read cursor before releasing rate guard");
         let (rates, cursor) = reading.join().expect("reader");
-        assert_eq!(rates.to_value(), test_rates(1));
+        assert_eq!(rates.to_value(), floating_test_rates(1));
         assert_eq!(cursor.revision, 1);
         assert!(publishing.join().expect("publisher"));
         let (rates, cursor) = token_snapshot(&mut tokens.subscribe(), || hub.snapshot());
-        assert_eq!(rates.to_value(), test_rates(2));
+        assert_eq!(rates.to_value(), floating_test_rates(2));
         assert_eq!(cursor.revision, 2);
     }
 
@@ -794,7 +807,7 @@ mod tests {
                 let tokens = tokens.clone();
                 tokio::spawn(async move {
                     gate.await.expect("reader gate");
-                    tokens.publish(test_rates(rate)).expect("publish")
+                    tokens.publish(floating_test_rates(rate)).expect("publish")
                 })
             };
             publish
@@ -802,12 +815,12 @@ mod tests {
                 .expect("release one publication between polls");
             assert!(producer.await.expect("producer"));
             let document = event_document(first.next().await.expect("token frame")).await;
-            assert_eq!(document["rates"], test_rates(rate)["rates"]);
+            assert_eq!(document["rates"], floating_test_rates(rate)["rates"]);
             assert_eq!(document["revision"], rate);
             assert!(document.get("resources").is_none());
         }
         let latest = event_document(second.next().await.expect("slow reader latest")).await;
-        assert_eq!(latest["rates"], test_rates(4)["rates"]);
+        assert_eq!(latest["rates"], floating_test_rates(4)["rates"]);
         let mut pending = first.next();
         assert!(
             futures_util::poll!(&mut pending).is_pending(),
@@ -899,7 +912,12 @@ mod tests {
                             let mut actual =
                                 event_document(events.next().await.expect("frame")).await;
                             actual["epoch"] = json!("epoch");
-                            assert_eq!(actual, expected, "consumer step {index}");
+                            token_rate_difference::assert_token_rate_documents_equal(
+                                &expected,
+                                &actual,
+                                &[],
+                                &format!("consumer step {index}"),
+                            );
                         }
                     }
                 }
