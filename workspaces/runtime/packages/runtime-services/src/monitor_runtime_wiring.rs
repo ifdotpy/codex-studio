@@ -409,12 +409,7 @@ impl MonitorRuntime {
     /// documentation. Provider writes still commit an intent first, and an
     /// uncertain provider outcome is retained and never resent.
     pub fn input_http(&self, id: &str, input: &Input, now: f64) -> Result<Value, MonitorError> {
-        let mut bytes = [0_u8; 16];
-        getrandom::fill(&mut bytes)
-            .map_err(|_| MonitorError::Refused("Could not allocate monitor input ticket"))?;
-        bytes[6] = (bytes[6] & 0x0f) | 0x40;
-        bytes[8] = (bytes[8] & 0x3f) | 0x80;
-        let ticket = uuid::Uuid::from_bytes(bytes).to_string();
+        let ticket = http_input_ticket()?;
         self.input(id, &ticket, input, now)
     }
 

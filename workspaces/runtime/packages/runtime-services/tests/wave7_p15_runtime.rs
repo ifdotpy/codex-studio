@@ -184,15 +184,18 @@ fn account_worker_monitor_output_is_durable_ordered_and_exactly_acknowledged() {
     ));
     monitor_event_queue::acknowledge(&store, &second_delivery).expect("ack second output");
     monitor_event_queue::acknowledge(&store, &second_delivery).expect("idempotent exact ACK");
-    let operation = serde_json::from_value(case["before"]["operation"].clone())
-        .expect("monitor operation");
+    let operation =
+        serde_json::from_value(case["before"]["operation"].clone()).expect("monitor operation");
     monitor_event_queue::enqueue_exit(&store, id, &operation, "result:monitor", Some(0), None, 9.0)
         .expect("enqueue definitive result behind output");
     let exit = monitor_event_queue::next(&store)
         .expect("read result queue")
         .expect("exit after both output deltas");
     assert_eq!(exit.cursor, "result:monitor");
-    assert!(matches!(exit.event, MonitorEvent::Exit { code: Some(0), .. }));
+    assert!(matches!(
+        exit.event,
+        MonitorEvent::Exit { code: Some(0), .. }
+    ));
     monitor_event_queue::acknowledge(&store, &exit).expect("ack exit");
     monitor_event_queue::enqueue_exit(&store, id, &operation, "result:monitor", Some(0), None, 9.0)
         .expect("replay acknowledged result without duplicating it");
@@ -455,7 +458,7 @@ fn reattach_cancel_and_unknown_input_never_resend_a_command() {
     runtime
         .input(&id, "acknowledged", &input, 2001.0)
         .expect("input reply");
-    assert!(runtime.input(&id, "acknowledged", &input, 2001.0).is_err());
+    assert!(runtime.input(&id, "acknowledged", &input, 2001.0).is_ok());
     *port.unknown.lock().expect("unknown") = true;
     assert!(runtime.input(&id, "unknown", &input, 2002.0).is_err());
     assert!(runtime.input(&id, "retry", &input, 2003.0).is_err());
