@@ -1103,6 +1103,10 @@ fn write_before_restore_checkpoint(
         AgentRepository::put(tx, &AgentRecord::from_value(current_record)?)?;
         let mut operation = operation;
         operation["beforeCheckpoint"] = json!(checkpoint_id);
+        operation
+            .as_object_mut()
+            .ok_or_else(|| StoreError::SchemaMismatch("Invalid restore operation".into()))?
+            .remove("beforeCheckpointId");
         WorkspaceOperationsRepository::put_operation(tx, &operation)?;
         Ok::<_, StoreError>(())
     })?;
@@ -1199,6 +1203,9 @@ fn complete_restore(
         operation["phase"] = json!("completed");
         operation["result"] = result.clone();
         operation["updated"] = json!(now_seconds());
+        if let Some(object) = operation.as_object_mut() {
+            object.remove("restartHold");
+        }
         WorkspaceOperationsRepository::put_operation(tx, &operation)?;
         let item_id = format!("{agent_id}:restore:{checkpoint_id}");
         let label = checkpoint.record.get("label").and_then(Value::as_str).unwrap_or("checkpoint");
