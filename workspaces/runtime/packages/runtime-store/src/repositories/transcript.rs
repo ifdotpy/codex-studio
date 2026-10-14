@@ -675,6 +675,28 @@ fn enrich_persisted_items(
 ) -> TranscriptStoreResult<()> {
     let completed_table = table_exists(connection, "runtime_completed_turns")?;
     let event_meta_table = table_exists(connection, "runtime_event_meta")?;
+    let completion_ids = if completed_table {
+        items
+            .iter()
+            .filter(|item| item.get("turnStatus").is_none())
+            .filter_map(|item| item.get("turnId").and_then(Value::as_str))
+            .map(|turn_id| format!("{agent}:{turn_id}"))
+            .collect::<std::collections::BTreeSet<_>>()
+    } else {
+        std::collections::BTreeSet::new()
+    };
+    let completed_turns = if completion_ids.is_empty() {
+        std::collections::BTreeSet::new()
+    } else {
+        let placeholders = vec!["?"; completion_ids.len()].join(",");
+        let sql = format!("SELECT id FROM runtime_completed_turns WHERE id IN ({placeholders})");
+        let mut statement = connection.prepare(&sql)?;
+        statement
+            .query_map(rusqlite::params_from_iter(completion_ids.iter()), |row| {
+                row.get::<_, String>(0)
+            })?
+            .collect::<Result<std::collections::BTreeSet<_>, _>>()?
+    };
     let mut represented = std::collections::BTreeMap::<String, Vec<(usize, Option<usize>)>>::new();
     for (item_index, item) in items.iter_mut().enumerate() {
         let turn_id = item
@@ -683,12 +705,7 @@ fn enrich_persisted_items(
             .map(str::to_owned);
         if let Some(turn_id) = turn_id.as_deref() {
             if item.get("turnStatus").is_none()
-                && completed_table
-                && connection.query_row(
-                    "SELECT EXISTS(SELECT 1 FROM runtime_completed_turns WHERE id=?1)",
-                    [format!("{agent}:{turn_id}")],
-                    |row| row.get::<_, bool>(0),
-                )?
+                && completed_turns.contains(&format!("{agent}:{turn_id}"))
             {
                 let status = actor
                     .get("turnStatus")
