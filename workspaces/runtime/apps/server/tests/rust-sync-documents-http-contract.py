@@ -5,10 +5,12 @@ from __future__ import annotations
 
 import json
 import os
+import sqlite3
 from pathlib import Path
 import subprocess
 import sys
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 import uuid
 
 from test_isolation import isolate_supervisor_environment
@@ -20,6 +22,29 @@ from sync_http_contract_support import prepare_sync_store_for_rust_contract
 
 
 
+def assert_read_succeeds_unchanged_under_writer(test_case, backend, path, headers):
+    baseline = backend.request("GET", path, headers=headers)
+    test_case.assertEqual(baseline.status, 200, baseline.body[:1000])
+    before = no_write_snapshot(backend.state)
+    database_path = backend.state / "canvas.sqlite3"
+    observer = sqlite3.connect(f"file:{database_path}?mode=ro", uri=True)
+    version = observer.execute("PRAGMA data_version").fetchone()[0]
+    writer = sqlite3.connect(database_path, timeout=0)
+    writer.execute("BEGIN IMMEDIATE")
+    pool = ThreadPoolExecutor(max_workers=1)
+    future = pool.submit(backend.request, "GET", path, headers=headers)
+    try:
+        response = future.result(timeout=3)
+        test_case.assertEqual(response.status, 200, response.body[:1000])
+        test_case.assertEqual(response.body, baseline.body)
+        test_case.assertEqual(no_write_snapshot(backend.state), before)
+        test_case.assertEqual(observer.execute("PRAGMA data_version").fetchone()[0], version)
+    finally:
+        writer.execute("ROLLBACK")
+        writer.close()
+        pool.shutdown(wait=True)
+        observer.close()
+
 
 class SyncDocumentsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
     @classmethod
@@ -29,6 +54,26 @@ class SyncDocumentsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         if os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"):
             prepare_sync_store_for_rust_contract(cls.backend, seed_python_rows=True)
         cls._prepare_python_entity_tombstone()
+
+    @unittest.skipUnless(os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"), "Rust backend only")
+    def test_entity_and_transcript_pull_read_under_a_held_writer(self):
+        headers = self._common_headers()
+        with sqlite3.connect(self.backend.state / "canvas.sqlite3") as database:
+            entity_high = database.execute(
+                "SELECT coalesce(max(seq),0) FROM sync_entities WHERE collection NOT LIKE 'transcript:%'"
+            ).fetchone()[0]
+        assert_read_succeeds_unchanged_under_writer(
+            self,
+            self.backend,
+            f"/api/sync/pull?scope=state:entities:v1&after={entity_high}",
+            headers,
+        )
+        assert_read_succeeds_unchanged_under_writer(
+            self,
+            self.backend,
+            "/api/sync/pull?scope=transcript:agent-a&after=0",
+            headers,
+        )
 
     @unittest.skipUnless(os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"), "Rust storage validation")
     def test_sync_and_chat_refuse_agent_missing_epoch_without_projection_writes(self):

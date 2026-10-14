@@ -420,6 +420,7 @@ fn launch_admission_serializes_cancel_before_native_submission_completes() {
     let root = fixtures::tempdir();
     let cases = fixtures::corpus(root.path());
     let mut case = running(&cases);
+    case["before"]["id"] = json!("monitor-admission-barrier");
     let op = operation(&case);
     case["before"]["status"] = json!("starting");
     case["before"]

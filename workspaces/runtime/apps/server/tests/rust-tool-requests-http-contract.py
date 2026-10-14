@@ -10,6 +10,7 @@ import sqlite3
 import sys
 import importlib.util
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
 from pathlib import Path
 from urllib.parse import urlencode
@@ -210,6 +211,38 @@ class ToolRequestsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             "X-Canvas-Token": cls.backend.session["token"],
             "X-Studio-API-Schema": cls.backend.schema_hash,
         }
+
+    @unittest.skipUnless(os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"), "Rust backend only")
+    def test_list_and_get_reads_succeed_unchanged_while_writer_is_held(self):
+        request_id = "held-writer-read"
+        write_receipts(self.backend, [receipt(request_id, self.lead_id)])
+        headers = self.headers()
+        paths = (
+            "/api/tool-requests?" + urlencode({"agent": self.lead_id}),
+            "/api/tool-requests?" + urlencode({"agent": self.lead_id, "request_id": request_id}),
+        )
+        for path in paths:
+            baseline = self.backend.request("GET", path, headers=headers)
+            self.assertEqual(baseline.status, 200, baseline.body[:1000])
+            before = database_snapshot(self.backend.state)
+            database_path = self.backend.state / "canvas.sqlite3"
+            observer = sqlite3.connect(f"file:{database_path}?mode=ro", uri=True)
+            version = observer.execute("PRAGMA data_version").fetchone()[0]
+            writer = sqlite3.connect(database_path, timeout=0)
+            writer.execute("BEGIN IMMEDIATE")
+            pool = ThreadPoolExecutor(max_workers=1)
+            future = pool.submit(self.backend.request, "GET", path, headers=headers)
+            try:
+                response = future.result(timeout=3)
+                self.assertEqual(response.status, 200, response.body[:1000])
+                self.assertEqual(response.body, baseline.body)
+                self.assertEqual(database_snapshot(self.backend.state), before)
+                self.assertEqual(observer.execute("PRAGMA data_version").fetchone()[0], version)
+            finally:
+                writer.execute("ROLLBACK")
+                writer.close()
+                pool.shutdown(wait=True)
+                observer.close()
 
     def test_terminal_metadata_list_reads_python_state_and_strips_payload_fields(self):
         write_receipts(self.backend, [receipt("terminal-receipt", self.lead_id)])

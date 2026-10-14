@@ -357,7 +357,7 @@ async fn written_callback_replay_compacts_its_journal_without_resending() {
 }
 
 #[tokio::test]
-async fn invalid_publication_identity_refuses_before_entering_writer() {
+async fn publication_uses_the_identity_snapshot_loaded_before_serving() {
     let state = State::new().await;
     state
         .bridge
@@ -371,17 +371,14 @@ async fn invalid_publication_identity_refuses_before_entering_writer() {
                     .unwrap();
             }
             std::fs::write(directory.join("identity.json"), b"invalid identity").unwrap();
+            assert!(crate::notification_dispatch::PublicationContext::load(store).is_ok());
             let entered = std::cell::Cell::new(false);
-            let result = scheduler::lifecycle_transaction(store, |_| {
+            scheduler::lifecycle_transaction(store, |_| {
                 entered.set(true);
                 Ok(())
-            });
-            assert!(result.is_err());
-            assert!(
-                !entered.get(),
-                "identity must be resolved before the writer begins"
-            );
-            assert!(crate::notification_dispatch::PublicationContext::load(store.root()).is_err());
+            })
+            .expect("projection keeps the cached absent identity");
+            assert!(entered.get(), "the cached absent identity remains usable");
             Ok(())
         })
         .await
