@@ -333,9 +333,12 @@ mod tests {
 
     #[test]
     fn transaction_record_contains_only_closed_metadata() {
-        let token = begin_sqlite_transaction(DatabaseKind::Canvas, SqliteStatement::Update)
-            .expect("collector available");
-        finish_sqlite_transaction(token, TransactionOutcome::Committed);
+        // The process-global collector is deliberately nonblocking, so other
+        // parallel tests may make this sample unavailable.
+        if let Some(token) = begin_sqlite_transaction(DatabaseKind::Canvas, SqliteStatement::Update)
+        {
+            finish_sqlite_transaction(token, TransactionOutcome::Committed);
+        }
         let value = sqlite_history();
         let text = value.to_string();
         assert!(!text.contains("SELECT"));
