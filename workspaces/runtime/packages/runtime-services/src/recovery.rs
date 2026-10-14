@@ -23,6 +23,7 @@ pub enum RecoveryAction {
         observation: crate::recovery_absence::RecoveryObservation,
         complete_history: bool,
         idle_twice: bool,
+        confirmed_not_applied: bool,
     },
     AcceptStart {
         turn: Value,
@@ -97,10 +98,16 @@ pub fn recover_turn(
     }
     let eligible = snapshot.eligibility();
     if eligible.unconfirmed_start {
-        let attempt = &a["startAttempt"];
+        let attempt = snapshot.start_attempt();
         let mut read = HistoryRead::new(reader, scope.clone(), Instant::now() + READ_DEADLINE);
         let observation = read.observation()?;
-        if attempt["connectionId"] != scope.connection && !observation.replaced_child(snapshot) {
+        let restart_input_wait = a["restartRecovery"]["stage"] == "held"
+            && a.get("contextRepairWait")
+                .is_some_and(|wait| !wait.is_null());
+        if attempt["connectionId"] != scope.connection
+            && !observation.replaced_child(snapshot)
+            && !restart_input_wait
+        {
             return effects.apply(
                 snapshot,
                 &scope,
@@ -108,6 +115,7 @@ pub fn recover_turn(
                     observation,
                     complete_history: false,
                     idle_twice: false,
+                    confirmed_not_applied: false,
                 },
             );
         }
@@ -119,13 +127,32 @@ pub fn recover_turn(
             .and_then(|items| items.first())
             .and_then(Value::as_str)
             .ok_or(HistoryError::Invalid("events"))?;
-        match read.exact_start(thread, message) {
-            Ok(Some(turn)) => {
+        match read.exact_start_outcome(thread, message) {
+            Ok(crate::recovery_history::ExactStart::Delivered(turn)) => {
                 read.barrier()?;
                 return effects.apply(snapshot, &scope, RecoveryAction::AcceptStart { turn });
             }
+            Ok(crate::recovery_history::ExactStart::NotApplied) => {
+                let state = read.thread_document(thread)?;
+                if !idle(&state["status"]) || crate::event_write::truthy(state.get("activeFlags")) {
+                    return Ok(RecoveryOutcome::Unconfirmed);
+                }
+                read.barrier()?;
+                let observation = read.observation()?;
+                return effects.apply(
+                    snapshot,
+                    &scope,
+                    RecoveryAction::StartAbsent {
+                        observation,
+                        complete_history: true,
+                        idle_twice: true,
+                        confirmed_not_applied: true,
+                    },
+                );
+            }
             history => {
-                let complete_history = matches!(history, Ok(None));
+                let complete_history =
+                    matches!(history, Ok(crate::recovery_history::ExactStart::Missing));
                 let mut idle_twice = complete_history;
                 if complete_history {
                     for _ in 0..2 {
@@ -151,6 +178,7 @@ pub fn recover_turn(
                         observation,
                         complete_history,
                         idle_twice,
+                        confirmed_not_applied: false,
                     },
                 );
             }

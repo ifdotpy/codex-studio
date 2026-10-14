@@ -33,6 +33,7 @@ use tokio::{
 pub mod callback;
 pub(crate) mod history;
 pub mod preparation;
+pub(crate) mod restart_recovery;
 pub mod retained;
 pub mod retained_frame;
 mod store;
@@ -254,6 +255,8 @@ pub enum AccountCommand {
     Stop {
         agent_id: String,
     },
+    RestartRecoveryDone,
+    RestartStreams(Box<NotificationStreamBuffer>),
 }
 
 pub struct AccountHandle {
@@ -362,6 +365,11 @@ pub async fn start_account_worker_with_preparation(
     let events = std::mem::replace(&mut session.events, mpsc::channel(1).1);
     let (commands, inbox) = mpsc::channel(COMMAND_CAPACITY);
     let stop = Shutdown::default();
+    let retained_scope = crate::recovery_history::ConnectionScope {
+        account: account.clone(),
+        connection: generation.0.to_string(),
+        generation: generation.0,
+    };
     let worker = Worker {
         resources,
         bridge: bridge.clone(),
@@ -373,6 +381,12 @@ pub async fn start_account_worker_with_preparation(
         events,
         stop: stop.subscribe(),
         inbox,
+        commands: commands.clone(),
+        retained_session: retained::RetainedSessionPort {
+            scope: retained_scope,
+            commands: commands.clone(),
+            stop: stop.clone(),
+        },
         queued_commands: VecDeque::new(),
         retry_at: Some(tokio::time::Instant::now()),
         pending: recovered
@@ -392,6 +406,8 @@ pub async fn start_account_worker_with_preparation(
         retained_frames: BTreeMap::new(),
         effects,
         closing: false,
+        restart_recovery_started: false,
+        restart_recovery: None,
     };
     let mut cancelled_owner = stop.subscribe();
     #[cfg(test)]
@@ -469,6 +485,8 @@ struct Worker {
     events: mpsc::Receiver<SessionEvent>,
     stop: watch::Receiver<bool>,
     inbox: mpsc::Receiver<AccountCommand>,
+    commands: mpsc::Sender<AccountCommand>,
+    retained_session: retained::RetainedSessionPort,
     queued_commands: VecDeque<AccountCommand>,
     retry_at: Option<tokio::time::Instant>,
     pending: BTreeMap<RequestId, Pending>,
@@ -478,10 +496,16 @@ struct Worker {
     effects: VecDeque<Effect>,
     closing: bool,
     callbacks: BTreeMap<String, studio_runtime_process::EventCursor>,
+    restart_recovery_started: bool,
+    restart_recovery: Option<JoinHandle<()>>,
 }
 impl Worker {
     async fn run(mut self) -> Result<(), WorkerError> {
         let result = self.serve().await;
+        if let Some(recovery) = self.restart_recovery.take() {
+            recovery.abort();
+            let _joined = recovery.await;
+        }
         self.control.cancel();
         let exit = self.session.completion().await;
         // Completion has an independent lane. Drain bounded delivered and retained
@@ -496,6 +520,19 @@ impl Worker {
         loop {
             if self.closing || *self.stop.borrow() {
                 return Ok(());
+            }
+            if !self.restart_recovery_started
+                && self.session.status.borrow().initialization == InitializationStatus::Ready
+            {
+                self.restart_recovery_started = true;
+                let first_pass = restart_recovery::FirstPass {
+                    bridge: self.bridge.clone(),
+                    account: self.account.clone(),
+                    scope: self.retained_session.scope().clone(),
+                    session: self.retained_session.clone(),
+                    commands: self.commands.clone(),
+                };
+                self.restart_recovery = Some(restart_recovery::start_first_pass(first_pass));
             }
             if self
                 .flush_at
@@ -542,6 +579,8 @@ impl Worker {
                     Some(AccountCommand::JournalBarrier(command)) => self.retained_barrier(command).await?,
                     Some(AccountCommand::Wake { agent_id, epoch }) => self.wake(agent_id, epoch).await?,
                     Some(AccountCommand::Stop { agent_id }) => self.stop_agent(agent_id).await?,
+                    Some(AccountCommand::RestartRecoveryDone) => { self.restart_recovery.take(); },
+                    Some(AccountCommand::RestartStreams(streams)) => { self.streams = *streams; },
                     None => return Ok(()),
                 },
                 event = self.events.recv() => match event { Some(event) => self.event(event).await?, None => return Ok(()) },

@@ -480,6 +480,7 @@ impl studio_runtime_services::notification_runtime_effects::NotificationPostComm
             | NotificationPostCommit::AnalyticsStream { observation, .. }
             | NotificationPostCommit::TokenRateStream(observation)
             | NotificationPostCommit::TokenRateAssociation(observation) => observation,
+            NotificationPostCommit::Recovered { .. } => return Ok(()),
         };
         let identity = &observation.delivery;
         let signature = serde_json::to_vec(&json!({"providerHandle":identity.provider_handle,"generation":identity.generation,"cursor":identity.cursor})).expect("identity");
@@ -525,6 +526,20 @@ fn post_commit_value(
     effect: &studio_runtime_services::notification_dispatch::NotificationPostCommit,
 ) -> Value {
     use studio_runtime_services::notification_dispatch::NotificationPostCommit;
+    if let NotificationPostCommit::Recovered {
+        identity,
+        observation,
+    } = effect
+    {
+        return json!({
+            "kind":"recovered",
+            "identity":identity,
+            "agent":observation.agent,
+            "method":observation.method,
+            "params":observation.params,
+            "at":observation.observed_at
+        });
+    }
     let (kind, observation, captured) = match effect {
         NotificationPostCommit::Analytics {
             observation,
@@ -537,6 +552,7 @@ fn post_commit_value(
         NotificationPostCommit::TokenRateAssociation(observation) => {
             ("association", observation, None)
         }
+        NotificationPostCommit::Recovered { .. } => unreachable!("handled above"),
     };
     let mut value = json!({"kind":kind, "agent":observation.agent, "method":observation.method, "params":observation.params,
         "account":observation.delivery.provider_handle.strip_prefix("account:"),

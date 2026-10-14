@@ -154,6 +154,16 @@ impl NotificationStreamBuffer {
         }
         self.post_commit.push(effect);
     }
+    pub(crate) fn stage_recovered_notification(
+        &mut self,
+        identity: String,
+        observation: super::RecoveredNotificationObservation,
+    ) {
+        self.queue_effect(NotificationPostCommit::Recovered {
+            identity,
+            observation,
+        });
+    }
     pub(super) fn stage_analytics(
         &mut self,
         key: StreamKey,

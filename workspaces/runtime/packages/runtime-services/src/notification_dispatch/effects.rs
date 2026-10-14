@@ -79,6 +79,20 @@ pub enum NotificationPostCommit {
     },
     TokenRateStream(NotificationObservation),
     TokenRateAssociation(NotificationObservation),
+    /// Reconstructed from retained native history after a restart. This has a
+    /// recovery identity rather than an invented provider delivery cursor.
+    Recovered {
+        identity: String,
+        observation: RecoveredNotificationObservation,
+    },
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct RecoveredNotificationObservation {
+    pub agent: Value,
+    pub method: String,
+    pub params: Value,
+    pub observed_at: f64,
 }
 
 /// One committed publication unit. `sequence` is monotone per retained account

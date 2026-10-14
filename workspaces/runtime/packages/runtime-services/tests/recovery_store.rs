@@ -477,6 +477,7 @@ fn start_absence_failpoints_roll_back_restore_wait_and_hold() {
                     observation: observation.clone(),
                     complete_history: true,
                     idle_twice: true,
+                    confirmed_not_applied: false,
                 },
             );
             assert!(result.is_err(), "{name}/{table}/{timing}");
@@ -493,6 +494,67 @@ fn start_absence_failpoints_roll_back_restore_wait_and_hold() {
                 })
                 .expect("count");
             assert_eq!(count, 0);
+        }
+    }
+}
+
+#[test]
+fn restart_not_applied_failpoints_roll_back_event_and_agent_together() {
+    let case = oracle("start_oracle")
+        .into_iter()
+        .find(|case| case["name"] == "restore")
+        .expect("restore oracle case");
+    for (table, operation) in [("runtime_events", "UPDATE"), ("runtime_agents", "UPDATE")] {
+        for timing in ["BEFORE", "AFTER"] {
+            let root = fixture();
+            let store = RuntimeStore::open(Some(root.path())).expect("store");
+            let mut agent = case["agent"].clone();
+            let mut attempt = agent["startAttempt"].clone();
+            attempt["executionOutcome"] = json!("unknown");
+            agent["restartRecovery"] = json!({"stage":"held","startAttempt":attempt});
+            agent["contextRepairWait"] = json!({"events":["event"]});
+            agent["status"] = json!("queued");
+            agent["autoWake"] = json!(true);
+            agent["inFlight"] = json!(false);
+            agent["error"] = json!(null);
+            agent.as_object_mut().unwrap().remove("startAttempt");
+            seed_agent(&store, &agent);
+            let before = snapshot(&store);
+            let queue = events(&store);
+            store
+                .transaction(|tx| {
+                    tx.execute_batch(&format!(
+                        "CREATE TRIGGER fail_reconcile {timing} {operation} ON {table} BEGIN SELECT RAISE(ABORT,'injected'); END;"
+                    ))?;
+                    Ok(())
+                })
+                .expect("trigger");
+            let observation: studio_runtime_services::recovery_absence::RecoveryObservation =
+                serde_json::from_value(case["observation"].clone()).expect("observation");
+            let current = |_: &ConnectionScope| Some(observation.clone());
+            let mut writer = HoldWriter::default();
+            let result = RecoveryStore {
+                store: &store,
+                connection_current: &|_| true,
+                completion: &mut writer,
+                at: observation.at,
+                observation_current: &current,
+            }
+            .apply(
+                &before,
+                &observation.scope,
+                RecoveryAction::StartAbsent {
+                    observation: observation.clone(),
+                    complete_history: true,
+                    idle_twice: true,
+                    confirmed_not_applied: true,
+                },
+            );
+            assert!(result.is_err(), "{table}/{timing}");
+            drop(store);
+            let reopened = RuntimeStore::open(Some(root.path())).expect("reopen");
+            assert_eq!(snapshot(&reopened).record(), before.record());
+            assert_eq!(events(&reopened), queue);
         }
     }
 }

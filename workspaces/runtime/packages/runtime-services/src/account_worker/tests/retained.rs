@@ -2,6 +2,12 @@ use super::*;
 use crate::account_worker::retained::{
     PortError, RequestActor, RequestResult, RetainedSessionPort, SessionRequest,
 };
+use crate::{
+    recovery::{RecoveryAction, RecoveryOutcome},
+    recovery_history::ConnectionScope,
+    recovery_policy::RecoverySnapshot,
+    recovery_store::CompletionWriter,
+};
 fn request(state: &State, port: &RetainedSessionPort, operation: &str) -> SessionRequest {
     SessionRequest {
         scope: port.scope().clone(),
@@ -14,6 +20,23 @@ fn request(state: &State, port: &RetainedSessionPort, operation: &str) -> Sessio
         params: json!({"threadId":"fake-thread-0","includeTurns":false}),
         deadline: (tokio::time::Instant::now() + std::time::Duration::from_secs(60)).into_std(),
     }
+}
+
+async fn recovered_publications(state: &State) -> Vec<(String, String)> {
+    state
+        .bridge
+        .run(|store| {
+            let db = store.read()?;
+            let mut statement = db.prepare(
+                "SELECT json_extract(result,'$.effect.Recovered.identity'), json_extract(result,'$.effect.Recovered.observation.method') FROM runtime_operation_receipts WHERE id LIKE 'account-worker:notification-publication:default:%:pending' AND json_extract(result,'$.effect.Recovered.identity') IS NOT NULL ORDER BY id",
+            )?;
+            let rows = statement
+                .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(rows)
+        })
+        .await
+        .expect("read recovered publication receipts")
 }
 #[tokio::test(start_paused = true)]
 async fn retained_reply_replays_without_resending_and_rejects_changed_payload() {
@@ -44,6 +67,329 @@ async fn retained_reply_replays_without_resending_and_rejects_changed_payload() 
         PortError::Identity
     );
     assert!(peer.writes.try_recv().is_err());
+    worker.shutdown().await.unwrap();
+}
+
+async fn restart_history_case(outcome: &str) {
+    let state = State::new().await;
+    let agent_id = state.agent.clone();
+    let epoch = state.epoch;
+    let fail_terminal_settlement = outcome == "terminal_failure";
+    state
+        .bridge
+        .run(move |store| {
+            store.transaction_with(|tx| {
+                let mut agent = AgentRepository::get(tx, &AgentId::from(agent_id.as_str()))?
+                    .expect("seed agent");
+                let event = "annotation:input";
+                let attempt = json!({
+                    "id":"restart-attempt","epoch":epoch,"accountKey":"default",
+                    "threadId":"fake-thread-0","events":[event],"submitted":true,
+                    "executionOutcome":"unknown","created":1.0,"connectionGeneration":1
+                });
+                agent.status = studio_runtime_store::AgentStatus::Queued;
+                agent.extra.insert("threadId".into(), json!("fake-thread-0"));
+                agent.extra.insert("autoWake".into(), json!(true));
+                agent.extra.insert("inFlight".into(), json!(false));
+                agent.extra.insert("error".into(), json!("Context repair waits for a confirmed input receipt: annotation:input"));
+                agent.extra.insert("restartRecovery".into(), json!({"stage":"held","startAttempt":attempt}));
+                agent.extra.insert("contextRepairWait".into(), json!({"error":"Context repair waits for a confirmed input receipt: annotation:input","scope":"native","events":[event],"nextCheckAt":0,"source":{"id":agent_id,"epoch":epoch,"accountKey":"default","threadId":"fake-thread-0","attemptId":null}}));
+                agent.extra.remove("startAttempt");
+                agent.extra.remove("disconnectRecovery");
+                AgentRepository::put(tx, &agent)?;
+                tx.execute("UPDATE runtime_events SET status='uncertain',error='Server restarted before delivery acknowledgement' WHERE id=?1", [event])?;
+                if fail_terminal_settlement {
+                    tx.execute(
+                        &format!("CREATE TRIGGER fail_restart_transcript BEFORE INSERT ON runtime_items WHEN NEW.agent='{}' BEGIN SELECT RAISE(ABORT,'restart settlement failpoint'); END", agent_id),
+                        [],
+                    )?;
+                }
+                Ok::<(), WorkerError>(())
+            })?;
+            Ok(())
+        })
+        .await
+        .expect("seed restart wait");
+
+    let mut peer = Peer::new();
+    let mut worker = peer.worker(state.bridge.clone()).await;
+    let history = peer.write("thread/turns/list").await;
+    match outcome {
+        "delivered" | "terminal" | "terminal_failure" => {
+            let (status, items) = if outcome == "delivered" {
+                ("inProgress", json!([]))
+            } else {
+                (
+                    "completed",
+                    json!([{"id":"answer","type":"agentMessage","text":"recovered answer"}]),
+                )
+            };
+            peer.reply(
+                &history,
+                json!({"data":[{"id":"old-turn","threadId":"fake-thread-0","status":status,
+                    "items":items,"clientUserMessageId":"annotation:input"}]}),
+            )
+            .await;
+            if outcome == "terminal_failure" {
+                tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                    loop {
+                        if state.record().await["restartRecovery"]["stage"] == "held" {
+                            break;
+                        }
+                        tokio::task::yield_now().await;
+                    }
+                })
+                .await
+                .expect("failed settlement rolls back to held receipt");
+                assert_eq!(state.event_status("input").await, "uncertain");
+                let agent = state.agent.clone();
+                let item_id = format!("{agent}:answer");
+                let transcript = state
+                    .bridge
+                    .run(move |store| {
+                        Ok(studio_runtime_store::TranscriptRepository::item(
+                            &store.read()?,
+                            &agent,
+                            &item_id,
+                        )
+                        .map_err(|error| StoreError::SchemaMismatch(error.to_string()))?)
+                    })
+                    .await
+                    .unwrap();
+                assert!(
+                    transcript.is_none(),
+                    "failed settlement rolls back transcript writes"
+                );
+            } else {
+                tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                    loop {
+                        let record = state.record().await;
+                        let settled = if outcome == "terminal" {
+                            record["lastCompletedTurn"] == "old-turn"
+                        } else {
+                            record["restartRecovery"]["stage"] == "finished"
+                        };
+                        if settled {
+                            break;
+                        }
+                        tokio::task::yield_now().await;
+                    }
+                })
+                .await
+                .expect("delivered receipt committed");
+                if outcome == "terminal" {
+                    assert_eq!(state.record().await["lastCompletedTurn"], "old-turn");
+                    assert_eq!(state.event_status("input").await, "delivered");
+                    let agent = state.agent.clone();
+                    let item_id = format!("{agent}:answer");
+                    let item = state
+                        .bridge
+                        .run(move |store| {
+                            Ok(studio_runtime_store::TranscriptRepository::item(
+                                &store.read()?,
+                                &agent,
+                                &item_id,
+                            )
+                            .map_err(|error| StoreError::SchemaMismatch(error.to_string()))?)
+                        })
+                        .await
+                        .unwrap()
+                        .expect("recovered transcript item");
+                    assert_eq!(item.record["text"], "recovered answer");
+                    assert_eq!(item.record["turnStatus"], "completed");
+                    let publications = recovered_publications(&state).await;
+                    assert_eq!(publications.len(), 2);
+                    assert_eq!(publications[0].1, "item/completed");
+                    assert_eq!(publications[1].1, "turn/completed");
+                } else {
+                    assert_eq!(state.record().await["turnId"], "old-turn");
+                }
+            }
+            assert!(
+                peer.writes.try_recv().is_err(),
+                "delivered input is never submitted again"
+            );
+        }
+        "not_applied" => {
+            peer.reply(
+                &history,
+                json!({"data":[{
+                    "id":"rejected","threadId":"fake-thread-0","status":"failed",
+                    "items":[],"clientUserMessageId":"annotation:input","startOutcome":"not_applied"
+                }]}),
+            )
+            .await;
+            let thread = peer.write("thread/read").await;
+            peer.reply(
+                &thread,
+                json!({"thread":{"id":"fake-thread-0","status":{"type":"idle"}}}),
+            )
+            .await;
+            let resume = peer.write("thread/resume").await;
+            peer.reply(&resume, json!({"thread":{"id":"fake-thread-0"}}))
+                .await;
+            let start = peer.write("turn/start").await;
+            peer.accepted(&start).await;
+            assert!(peer.writes.try_recv().is_err());
+        }
+        "unavailable" => {
+            let cursor = peer.frame(json!({"id":history["id"],"error":{"code":-32000,"message":"history unavailable"}})).await;
+            peer.acknowledged(cursor).await;
+            tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                loop {
+                    if state.record().await["restartRecovery"]["stage"] == "held" {
+                        break;
+                    }
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .expect("unknown remains held");
+            assert_eq!(state.event_status("input").await, "uncertain");
+            assert!(
+                peer.writes.try_recv().is_err(),
+                "unknown input is never resubmitted"
+            );
+        }
+        _ => unreachable!(),
+    }
+    worker.shutdown().await.unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn startup_first_pass_reconciles_exact_history_without_replaying_unknown_input() {
+    for outcome in [
+        "delivered",
+        "terminal",
+        "terminal_failure",
+        "not_applied",
+        "unavailable",
+    ] {
+        restart_history_case(outcome).await;
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn restart_terminal_commit_before_wake_converges_on_next_worker_start() {
+    let state = State::new().await;
+    let agent_id = state.agent.clone();
+    let epoch = state.epoch;
+    state
+        .bridge
+        .run(move |store| {
+            store.transaction_with(|tx| {
+                let mut agent = AgentRepository::get(tx, &AgentId::from(agent_id.as_str()))?
+                    .expect("seed agent");
+                let attempt = json!({
+                    "id":"restart-attempt","epoch":epoch,"accountKey":"default",
+                    "threadId":"fake-thread-0","events":["annotation:input"],"submitted":true,
+                    "executionOutcome":"unknown","created":1.0,"connectionGeneration":1
+                });
+                agent.status = studio_runtime_store::AgentStatus::Queued;
+                agent.extra.insert("threadId".into(), json!("fake-thread-0"));
+                agent.extra.insert("autoWake".into(), json!(true));
+                agent.extra.insert("inFlight".into(), json!(false));
+                agent.extra.insert("error".into(), json!("held"));
+                agent.extra.insert("restartRecovery".into(), json!({"stage":"held","startAttempt":attempt}));
+                agent.extra.insert("contextRepairWait".into(), json!({
+                    "error":"held","scope":"native","events":["annotation:input"],"nextCheckAt":0,
+                    "source":{"id":agent_id,"epoch":epoch,"accountKey":"default","threadId":"fake-thread-0","attemptId":null}
+                }));
+                agent.extra.remove("startAttempt");
+                AgentRepository::put(tx, &agent)?;
+                tx.execute("UPDATE runtime_events SET status='uncertain',error='Server restarted before delivery acknowledgement' WHERE id='annotation:input'", [])?;
+                Ok::<(), WorkerError>(())
+            })?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+
+    let agent = state.agent.clone();
+    state
+        .bridge
+        .run(move |store| {
+            let raw: String = store.read()?.query_row(
+                "SELECT record FROM runtime_agents WHERE id=?1",
+                [&agent],
+                |row| row.get(0),
+            )?;
+            let snapshot = RecoverySnapshot::from_record(serde_json::from_str(&raw).unwrap())
+                .map_err(|error| StoreError::SchemaMismatch(error.location))
+                .map_err(WorkerError::from)?;
+            let scope = ConnectionScope {
+                account: "default".into(),
+                connection: "restart-test".into(),
+                generation: 1,
+            };
+            let turn = json!({
+                "id":"old-turn","threadId":"fake-thread-0","status":"completed",
+                "items":[{"id":"answer","type":"agentMessage","text":"recovered answer"}],
+                "clientUserMessageId":"annotation:input"
+            });
+            let action = RecoveryAction::AcceptStart { turn };
+            let mut completion = super::super::restart_recovery::RestartInputCompletion::default();
+            let outcome = store.transaction_with(|tx| {
+                tx.execute(
+                    "UPDATE runtime_agents SET record=json_set(record,'$.contextRepairWait.nextCheckAt',1) WHERE id=?1",
+                    [&agent],
+                )?;
+                let stale_wait = completion
+                    .complete(tx, &snapshot, &scope, &action)
+                    .map_err(|error| StoreError::SchemaMismatch(error.to_string()))?;
+                assert!(matches!(stale_wait, RecoveryOutcome::Superseded));
+                tx.execute(
+                    "UPDATE runtime_agents SET record=json_set(record,'$.contextRepairWait.nextCheckAt',0) WHERE id=?1",
+                    [&agent],
+                )?;
+                tx.execute(
+                    "UPDATE runtime_events SET status='pending' WHERE id='annotation:input'",
+                    [],
+                )?;
+                let stale_event = completion
+                    .complete(tx, &snapshot, &scope, &action)
+                    .map_err(|error| StoreError::SchemaMismatch(error.to_string()))?;
+                assert!(matches!(stale_event, RecoveryOutcome::Superseded));
+                tx.execute(
+                    "UPDATE runtime_events SET status='uncertain' WHERE id='annotation:input'",
+                    [],
+                )?;
+                completion
+                    .complete(tx, &snapshot, &scope, &action)
+                    .map_err(|error| StoreError::SchemaMismatch(error.to_string()))
+            })?;
+            assert!(matches!(outcome, RecoveryOutcome::Applied(_)));
+            Ok(())
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(state.record().await["lastCompletedTurn"], "old-turn");
+    assert_eq!(state.event_status("input").await, "delivered");
+    let agent = state.agent.clone();
+    let item_id = format!("{agent}:answer");
+    let item = state
+        .bridge
+        .run(move |store| {
+            Ok(
+                studio_runtime_store::TranscriptRepository::item(&store.read()?, &agent, &item_id)
+                    .map_err(|error| StoreError::SchemaMismatch(error.to_string()))?,
+            )
+        })
+        .await
+        .unwrap()
+        .expect("terminal item is committed with the settlement");
+    assert_eq!(item.record["turnStatus"], "completed");
+    let mut peer = Peer::new();
+    let mut worker = peer.worker(state.bridge.clone()).await;
+    let publications = recovered_publications(&state).await;
+    assert_eq!(publications.len(), 2);
+    assert_eq!(publications[0].1, "item/completed");
+    assert_eq!(publications[1].1, "turn/completed");
+    assert!(
+        peer.writes.try_recv().is_err(),
+        "committed recovery does not resubmit input on restart"
+    );
     worker.shutdown().await.unwrap();
 }
 #[tokio::test(start_paused = true)]

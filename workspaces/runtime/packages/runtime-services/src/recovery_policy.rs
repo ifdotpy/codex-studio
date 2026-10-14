@@ -3,6 +3,8 @@ use crate::event_write::truthy;
 use serde::Serialize;
 use serde_json::{Value, json};
 
+static NULL_VALUE: Value = Value::Null;
+
 pub const MAX_EVENTS: usize = 32;
 pub const UNKNOWN_START_HOLD_SECONDS: f64 = 600.0;
 const DISCONNECTED: &str = "Codex disconnected. Review the transcript before resuming.";
@@ -39,6 +41,17 @@ impl RecoverySnapshot {
     }
     pub fn record(&self) -> &Value {
         &self.agent
+    }
+    pub fn start_attempt(&self) -> &Value {
+        self.agent
+            .get("startAttempt")
+            .filter(|attempt| !attempt.is_null())
+            .or_else(|| {
+                self.agent
+                    .get("restartRecovery")
+                    .and_then(|r| r.get("startAttempt"))
+            })
+            .unwrap_or(&NULL_VALUE)
     }
     pub fn eligibility(&self) -> Eligibility {
         eligibility(&self.agent)
@@ -122,9 +135,12 @@ fn scope(a: &Value) -> Value {
     json!({"id":a["id"],"accountKey":a["accountKey"],"epoch":a["epoch"],"threadId":a["threadId"]})
 }
 fn eligibility(a: &Value) -> Eligibility {
-    let t = &a["startAttempt"];
-    let d = &a["disconnectRecovery"];
     let r = &a["restartRecovery"];
+    let t = a
+        .get("startAttempt")
+        .filter(|v| !v.is_null())
+        .unwrap_or(&r["startAttempt"]);
+    let d = &a["disconnectRecovery"];
     let w = &a["contextRepairWait"];
     let repair = &a["contextRepair"];
     let c = &a["connectionRecovery"];
@@ -136,29 +152,31 @@ fn eligibility(a: &Value) -> Eligibility {
         && !has(a, "startAttempt")
         && has(a, "threadId")
         && !has(a, "deletedAt");
-    let unconfirmed_start = (has(a, "inFlight") || a["startOutcomeHold"]["stage"] == "held")
-        && has(a, "autoWake")
-        && !has(a, "turnId")
-        && has(a, "threadId")
-        && ![
-            "deletedAt",
-            "nativeFailureHold",
-            "accountTransferId",
-            "workspaceOperation",
-        ]
-        .iter()
-        .any(|k| has(a, k))
-        && !has(t, "action")
-        && has(t, "id")
-        && t["submitted"] == true
-        && (t["executionOutcome"] == "unknown"
-            || a["error"] == "turn/start response timed out; outcome unknown")
-        && t["epoch"] == a["epoch"]
-        && account_equal(t, a)
-        && t["threadId"] == a["threadId"]
-        && has(t, "events")
-        && !has(t, "turnId")
-        && !has(t, "observedTurnId");
+    let restart_input_wait = r["stage"] == "held" && has(a, "contextRepairWait");
+    let unconfirmed_start =
+        (has(a, "inFlight") || a["startOutcomeHold"]["stage"] == "held" || restart_input_wait)
+            && has(a, "autoWake")
+            && !has(a, "turnId")
+            && has(a, "threadId")
+            && ![
+                "deletedAt",
+                "nativeFailureHold",
+                "accountTransferId",
+                "workspaceOperation",
+            ]
+            .iter()
+            .any(|k| has(a, k))
+            && !has(t, "action")
+            && has(t, "id")
+            && t["submitted"] == true
+            && (t["executionOutcome"] == "unknown"
+                || a["error"] == "turn/start response timed out; outcome unknown")
+            && t["epoch"] == a["epoch"]
+            && account_equal(t, a)
+            && t["threadId"] == a["threadId"]
+            && has(t, "events")
+            && !has(t, "turnId")
+            && !has(t, "observedTurnId");
     let busy_claude = a["provider"] == "claude"
         && has(a, "threadId")
         && a["error"]
