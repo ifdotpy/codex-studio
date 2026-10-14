@@ -454,6 +454,13 @@ fn with_boundary(router: Router<HttpState>, state: HttpState) -> Router {
         ))
         .layer(axum_middleware::from_fn_with_state(
             state.clone(),
+            crate::mutation_sync::envelope,
+        ))
+        // Boundary schema validation runs first, so malformed object requests are not sampled.
+        // Python samples before route validation, but the difference is unobservable: both
+        // responses are errors without envelopes, and Rust envelope reads never reject them.
+        .layer(axum_middleware::from_fn_with_state(
+            state.clone(),
             middleware::boundary,
         ))
         .layer(axum_middleware::from_fn_with_state(

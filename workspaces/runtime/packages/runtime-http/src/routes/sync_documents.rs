@@ -302,32 +302,23 @@ pub(crate) async fn push_preferences(
         .map_err(|_| ApiError::validation(vec![Value::String("body".to_owned())]))?;
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
     let validators = state.validators.clone();
-    let response = tokio::task::spawn_blocking(move || -> Result<_, ApiError> {
-        let before_connection = store.read().map_err(|_| ApiError::internal())?;
-        let before = SyncDocumentsRepository::entity_sequence(&before_connection)
-            .map_err(|_| ApiError::internal())?;
-        drop(before_connection);
-        let merged = sync_policy::push_preferences(&store, scope, &fields, move |field| {
+    let merged = tokio::task::spawn_blocking(move || {
+        sync_policy::push_preferences(&store, scope, &fields, move |field| {
             validators.validate_preference_field(field)
         })
-        .map_err(|error| match error {
-            SyncPolicyError::InvalidPreferences => {
-                ApiError::validation(vec![Value::String("body".to_owned())])
-            }
-            SyncPolicyError::InvalidStoredObject { .. } => {
-                ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, error.to_string())
-            }
-            _ => ApiError::internal(),
-        })?;
-        let connection = store.read().map_err(|_| ApiError::internal())?;
-        sync_documents::with_entity_delta(&connection, before, json!({"fields": merged}))
-            .map_err(|_| ApiError::internal())
     })
     .await
-    .map_err(|_| ApiError::internal())??;
-    Ok(Json(super::generated_json::<
-        crate::generated::PreferencePushResponse,
-    >(response)?))
+    .map_err(|_| ApiError::internal())?
+    .map_err(|error| match error {
+        SyncPolicyError::InvalidPreferences => {
+            ApiError::validation(vec![Value::String("body".to_owned())])
+        }
+        SyncPolicyError::InvalidStoredObject { .. } => {
+            ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, error.to_string())
+        }
+        _ => ApiError::internal(),
+    })?;
+    Ok(Json(json!({"fields": merged})))
 }
 
 #[allow(clippy::too_many_arguments)]

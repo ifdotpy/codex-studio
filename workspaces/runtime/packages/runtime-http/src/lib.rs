@@ -4,6 +4,7 @@ pub mod error;
 mod http_body_limits_generated;
 mod json_body;
 pub mod middleware;
+mod mutation_sync;
 pub mod router;
 pub mod routes;
 pub mod schema;

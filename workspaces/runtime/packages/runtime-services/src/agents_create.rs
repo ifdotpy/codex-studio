@@ -1,4 +1,11 @@
 //! Persisted agent creation and management.
+//!
+//! Project creation uses the local server identity supplied by its caller and
+//! falls back to the persisted agent `serverId` when that identity is absent.
+//! If neither exists, creation fails before writing the project. This path does
+//! not create identity files: it depends on the runtime's existing identity
+//! source. The store-held identity from `origin/fix/rust-reads-no-writer` will
+//! provide the authoritative value once that change is merged.
 mod operations;
 pub use operations::*;
 
@@ -287,6 +294,7 @@ fn save_agent(
 pub(crate) fn ensure_project(
     transaction: &Transaction<'_>,
     agent: &Value,
+    server_id: Option<&str>,
 ) -> Result<(), MutationError> {
     let path = agent
         .get("cwd")
@@ -299,12 +307,26 @@ pub(crate) fn ensure_project(
         .get("accountKey")
         .and_then(Value::as_str)
         .unwrap_or("default");
+    let server = server_id
+        .or_else(|| agent.get("serverId").and_then(Value::as_str))
+        .filter(|server| !server.is_empty())
+        .ok_or_else(|| StoreError::SchemaMismatch("new lead has no server identity".to_owned()))?;
     let name = std::path::Path::new(path)
         .file_name()
         .and_then(|value| value.to_str())
         .filter(|value| !value.is_empty())
         .unwrap_or(path);
-    let project = json!({"id":path,"path":path,"name":name,"created":crate::event_write::unix_time().map_err(|error| StoreError::SchemaMismatch(error.to_string()))?,"accountKey":account,"accountRevision":1});
+    let project = json!({
+        "id":path,
+        "path":path,
+        "name":name,
+        "created":crate::event_write::unix_time().map_err(|error| StoreError::SchemaMismatch(error.to_string()))?,
+        "accountKey":account,
+        "accountRevision":1,
+        "homeServerId":server,
+        "locations":[{"serverId":server,"path":path,"projectId":path}],
+        "locationsRevision":0
+    });
     transaction
         .execute(
             "INSERT INTO runtime_projects(id,record) VALUES(?1,?2)",
@@ -398,7 +420,7 @@ fn create_agent_with_identity(
         });
     }
     if record.get("isLead").and_then(Value::as_bool) == Some(true) {
-        ensure_project(transaction, &record)?;
+        ensure_project(transaction, &record, server_id)?;
     }
     AgentRepository::put(transaction, &agent)?;
     let id = record
@@ -628,9 +650,9 @@ pub(crate) use prepared_python_test_support::prepared_python;
 
 #[cfg(test)]
 mod tests {
-    use super::{create_agent, replay_agent};
+    use super::{create_agent, ensure_project, replay_agent};
     use rusqlite::Connection;
-    use serde_json::json;
+    use serde_json::{Value, json};
 
     fn prepared_python(source: &std::path::Path) -> std::path::PathBuf {
         super::prepared_python_test_support::prepared_python(source)
@@ -743,7 +765,7 @@ mod tests {
         let record = json!({
             "id":"agent-a", "rootId":"agent-a", "epoch":0, "status":"queued",
             "name":"Agent A", "prompt":"Start the task", "cwd":"/project",
-            "accountKey":"default", "isLead":true, "needsTitle":false, "autoWake":true,
+            "accountKey":"default", "serverId":"server-a", "isLead":true, "needsTitle":false, "autoWake":true,
             "creationIntent":{"name":"Agent A","prompt":"Start the task"}
         });
         let created = create_agent(
@@ -785,6 +807,22 @@ mod tests {
                 ["id"],
             "agent-a"
         );
+        let project: String = connection
+            .query_row(
+                "SELECT payload FROM sync_entities WHERE collection='project' AND id='/project'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("project projection exists");
+        let project = serde_json::from_str::<serde_json::Value>(&project)
+            .expect("project projection JSON")["value"]
+            .clone();
+        assert_eq!(project["homeServerId"], "server-a");
+        assert_eq!(
+            project["locations"],
+            json!([{"serverId":"server-a","path":"/project","projectId":"/project"}])
+        );
+        assert_eq!(project["locationsRevision"], 0);
 
         let tx = connection.transaction().expect("replay transaction starts");
         super::replay_agent(&tx, "agent-a", &record["creationIntent"], |_, _| true)
@@ -819,6 +857,42 @@ mod tests {
             )
             .expect("conflict does not change agent");
         assert_eq!(after, before);
+    }
+
+    #[test]
+    fn project_creation_uses_persisted_agent_server_id_without_local_identity() {
+        let mut connection = database();
+        let transaction = connection.transaction().expect("transaction starts");
+        let agent = json!({
+            "id":"agent-a",
+            "cwd":"/project",
+            "accountKey":"default",
+            "serverId":"persisted-server"
+        });
+
+        ensure_project(&transaction, &agent, None)
+            .expect("persisted agent identity supplies project location");
+
+        let payload: String = transaction
+            .query_row(
+                "SELECT payload FROM sync_entities WHERE collection='project' AND id='/project'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("project sync projection exists");
+        let project =
+            serde_json::from_str::<Value>(&payload).expect("project projection JSON")["value"]
+                .clone();
+        assert_eq!(project["homeServerId"], "persisted-server");
+        assert_eq!(
+            project["locations"],
+            json!([{
+                "serverId":"persisted-server",
+                "path":"/project",
+                "projectId":"/project"
+            }])
+        );
+        assert_eq!(project["locationsRevision"], 0);
     }
 
     #[test]
