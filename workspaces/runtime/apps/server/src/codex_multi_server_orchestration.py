@@ -376,7 +376,7 @@ class MultiServerService:
     def queue(self, db: Any, server: str, action: str, payload: dict[str, Any], key: str) -> str:
         body = request_body(key, action, payload)
         if len(body.encode('utf-8')) > MAX_REQUEST:
-        raise ValueError(f'The remote request exceeds {MULTI_SERVER_MAX_REQUEST_LABEL}; use a smaller batch')
+            raise ValueError(f'The remote request exceeds {MULTI_SERVER_MAX_REQUEST_LABEL}; use a smaller batch')
         # The identity of a packed request is its content, not its compressed bytes.
         digest = hashlib.sha256(encoded({'requestId': key, 'action': action, 'payload': payload}).encode()).hexdigest()
         row = db.execute('SELECT server,body,fingerprint FROM runtime_server_outbox WHERE id=?', (key,)).fetchone()
