@@ -64,6 +64,8 @@ pub enum RulesServiceError {
     #[error(transparent)]
     Store(#[from] StoreError),
     #[error(transparent)]
+    Json(#[from] serde_json::Error),
+    #[error(transparent)]
     Sqlite(#[from] rusqlite::Error),
     #[error(transparent)]
     Engine(#[from] crate::rules_engine::RuleError),
@@ -277,7 +279,7 @@ fn status_in_transaction(
     } else {
         None
     };
-    let old: BTreeMap<String, Value> = previous
+    let old_records = previous
         .as_deref()
         .map(serde_json::from_str::<Vec<Value>>)
         .transpose()
@@ -287,10 +289,22 @@ fn status_in_transaction(
                 id: actor_id.to_owned(),
             })
         })?
-        .unwrap_or_default()
-        .into_iter()
-        .filter_map(|record| Some((status_key(&record)?, record)))
-        .collect();
+        .unwrap_or_default();
+    let mut old = BTreeMap::<String, Value>::new();
+    for record in old_records {
+        let Some(key) = valid_status_key(&record) else {
+            return Err(StatusError::Store(StoreError::InvalidStoredRecord {
+                object: "runtime_model_status",
+                id: actor_id.to_owned(),
+            }));
+        };
+        if old.insert(key, record).is_some() {
+            return Err(StatusError::Store(StoreError::InvalidStoredRecord {
+                object: "runtime_model_status",
+                id: actor_id.to_owned(),
+            }));
+        }
+    }
     let current_records = active_records
         .iter()
         .filter_map(|record| Some((status_key(record)?, record.clone())))
@@ -662,6 +676,42 @@ fn status_key(record: &Value) -> Option<String> {
     ))
 }
 
+fn valid_status_key(record: &Value) -> Option<String> {
+    let key = status_key(record)?;
+    let nullable_string = |field: &str| {
+        record
+            .get(field)
+            .is_some_and(|value| value.is_null() || value.is_string())
+    };
+    let valid = match record.get("kind")?.as_str()? {
+        "agent" => {
+            nullable_string("name")
+                && record.get("status")?.is_string()
+                && record
+                    .get("inFlight")
+                    .is_some_and(|value| value.is_null() || value.is_boolean())
+                && nullable_string("parentId")
+                && record.get("error")?.is_string()
+                && record
+                    .get("waitsForEvent")
+                    .is_none_or(|value| value.is_string())
+        }
+        "monitor" => {
+            nullable_string("agent")
+                && record.get("status")?.is_string()
+                && record
+                    .get("exitCode")
+                    .is_some_and(|value| value.is_null() || value.is_i64() || value.is_u64())
+                && record.get("error")?.is_string()
+        }
+        _ => false,
+    };
+    if !valid || record.get("id")?.as_str()?.is_empty() {
+        return None;
+    }
+    Some(key)
+}
+
 fn is_terminal_agent(status: &str) -> bool {
     matches!(status, "completed" | "failed" | "interrupted")
 }
@@ -719,10 +769,70 @@ fn expand_home(path: &str) -> String {
 }
 
 fn stable_rule_id(request_id: &str) -> Result<String, RulesServiceError> {
-    if request_id.is_empty() {
+    if request_id.is_empty() || request_id.chars().count() > 200 {
         return Err(RulesServiceError::Invalid("request id"));
     }
     Ok(uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_URL, request_id.as_bytes()).to_string())
+}
+
+fn rules_request_signature(
+    actor_id: &str,
+    actor_epoch: u64,
+    data: Option<&Value>,
+) -> Result<String, RulesServiceError> {
+    let content = serde_json::to_vec(&json!({
+        "actor": actor_id,
+        "epoch": actor_epoch,
+        "data": data,
+    }))?;
+    Ok(Sha256::digest(content)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect())
+}
+
+fn read_rules_receipt(
+    connection: &Connection,
+    receipt_id: &str,
+    signature: &str,
+) -> Result<Option<RulesActionResult>, RulesServiceError> {
+    let Some((saved_signature, raw_result)) = connection
+        .query_row(
+            "SELECT signature,result FROM runtime_operation_receipts WHERE id=?1",
+            [receipt_id],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+        )
+        .optional()?
+    else {
+        return Ok(None);
+    };
+    if saved_signature != signature {
+        return Err(RulesServiceError::Invalid(
+            "Request identity was reused with different content",
+        ));
+    }
+    let invalid_receipt = || {
+        RulesServiceError::Store(StoreError::InvalidStoredRecord {
+            object: "runtime_operation_receipts",
+            id: receipt_id.to_owned(),
+        })
+    };
+    let result: Value = serde_json::from_str(&raw_result).map_err(|_| invalid_receipt())?;
+    let value = result.get("value").cloned().ok_or_else(invalid_receipt)?;
+    let cancel_monitor_ids = result
+        .get("cancelMonitorIds")
+        .and_then(Value::as_array)
+        .ok_or_else(invalid_receipt)?
+        .iter()
+        .map(|item| item.as_str().map(str::to_owned).ok_or_else(invalid_receipt))
+        .collect::<Result<Vec<_>, _>>()?;
+    if cancel_monitor_ids.windows(2).any(|pair| pair[0] >= pair[1]) {
+        return Err(invalid_receipt());
+    }
+    Ok(Some(RulesActionResult {
+        value,
+        cancel_monitor_ids,
+    }))
 }
 
 /// Apply one `RulesRuntime.rules` action. The optional result's cancellation
@@ -779,6 +889,11 @@ pub fn rules(
     }
 
     let body = data.ok_or(RulesServiceError::Invalid("rule"))?;
+    if request_id.is_empty() || request_id.chars().count() > 200 {
+        return Err(RulesServiceError::Invalid("request id"));
+    }
+    let receipt_id = format!("managed-rules:{actor_id}:{request_id}");
+    let signature = rules_request_signature(actor_id, actor_epoch, data)?;
     let key = match body
         .get("id")
         .and_then(Value::as_str)
@@ -787,11 +902,17 @@ pub fn rules(
         Some(id) => id.to_owned(),
         None => stable_rule_id(request_id)?,
     };
-    let (prepared_actor, old_before) = store.read_transaction_with_error(|connection| {
-        let actor = checked_actor(connection, actor_id, actor_epoch).map_err(status_to_rules)?;
-        let old = RulesRepository::get(connection, &key)?.map(|record| record.value().clone());
-        Ok::<_, RulesServiceError>((actor, old))
-    })?;
+    let (prepared_actor, old_before, saved_receipt) =
+        store.read_transaction_with_error(|connection| {
+            let actor =
+                checked_actor(connection, actor_id, actor_epoch).map_err(status_to_rules)?;
+            let saved_receipt = read_rules_receipt(connection, &receipt_id, &signature)?;
+            let old = RulesRepository::get(connection, &key)?.map(|record| record.value().clone());
+            Ok::<_, RulesServiceError>((actor, old, saved_receipt))
+        })?;
+    if let Some(saved_receipt) = saved_receipt {
+        return Ok(saved_receipt);
+    }
     if let Some(old) = &old_before
         && old.get("agent").and_then(Value::as_str) != Some(actor_id)
     {
@@ -827,8 +948,11 @@ pub fn rules(
         None => None,
     };
 
-    let (value, cancel_monitor_ids) = store.transaction_with(|tx| {
+    let result = store.transaction_with(|tx| {
         let actor = checked_actor(tx, actor_id, actor_epoch).map_err(status_to_rules)?;
+        if let Some(saved_receipt) = read_rules_receipt(tx, &receipt_id, &signature)? {
+            return Ok::<_, RulesServiceError>(saved_receipt);
+        }
         if actor.value() != prepared_actor.value() {
             return Err(RulesServiceError::Stale);
         }
@@ -930,12 +1054,21 @@ pub fn rules(
         };
         cancel_monitor_ids.sort();
         cancel_monitor_ids.dedup();
-        Ok::<_, RulesServiceError>((value, cancel_monitor_ids))
+        let saved = RulesActionResult {
+            value,
+            cancel_monitor_ids,
+        };
+        let result = json!({
+            "value": saved.value.clone(),
+            "cancelMonitorIds": saved.cancel_monitor_ids.clone(),
+        });
+        tx.execute(
+            "INSERT INTO runtime_operation_receipts(id,signature,result) VALUES(?1,?2,?3)",
+            params![receipt_id, signature, result.to_string()],
+        )?;
+        Ok(saved)
     })?;
-    Ok(RulesActionResult {
-        value,
-        cancel_monitor_ids,
-    })
+    Ok(result)
 }
 
 struct RuleSave<'a> {
@@ -1167,12 +1300,14 @@ fn empty_text(value: Option<&Value>, maximum: usize) -> Result<String, RulesServ
 #[cfg(test)]
 mod tests {
     use super::{
-        LocalRuleWatchFiles, RuleWatchFiles, RulesServiceError, model_directory,
-        prepared_python_test_support, rules,
+        LocalRuleWatchFiles, MODEL_STATUS_HISTORY, RuleWatchFiles, RulesServiceError, StatusError,
+        model_directory, prepared_python_test_support, rules,
     };
+    use rusqlite::params;
     use serde_json::{Value, json};
     use studio_runtime_store::{
-        AgentRecord, AgentRepository, MonitorRecord, RulesRepository, RuntimeStore, Table,
+        AgentRecord, AgentRepository, MonitorRecord, RulesRepository, RuntimeStore, StoreError,
+        Table,
     };
     use tempfile::TempDir;
 
@@ -1323,6 +1458,85 @@ mod tests {
     }
 
     #[test]
+    fn malformed_cached_status_corpus_is_rejected_with_table_and_actor() {
+        use std::process::Command;
+        use std::time::Duration;
+
+        let (_directory, store) = fixture();
+        let (agents, monitors) = {
+            let connection = store.read().expect("read corpus rows");
+            (
+                Table::<AgentRecord>::new(&connection)
+                    .list()
+                    .expect("read agent rows")
+                    .into_iter()
+                    .map(|record| record.value().clone())
+                    .collect::<Vec<_>>(),
+                Table::<MonitorRecord>::new(&connection)
+                    .list()
+                    .expect("read monitor rows")
+                    .into_iter()
+                    .map(|record| record.value().clone())
+                    .collect::<Vec<_>>(),
+            )
+        };
+        let malformed = json!([{}, {"kind":"agent","id":"partial"}]);
+        let payload = json!({
+            "actor":"lead",
+            "args":{},
+            "agents":agents,
+            "monitors":monitors,
+            "corruptPrevious":malformed,
+        });
+        let server_source =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src");
+        let script = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/managed_status_watch_oracle.py");
+        let mut command = Command::new(prepared_python_test_support::prepared_python(
+            &server_source,
+        ));
+        command.arg(&script).arg(payload.to_string());
+        let isolated = prepared_python_test_support::IsolatedTestEnvironment::new();
+        isolated.apply(&mut command);
+        let output = prepared_python_test_support::output_with_timeout(
+            &mut command,
+            &script,
+            Duration::from_secs(60),
+        )
+        .expect("malformed status corpus completes");
+        assert!(
+            output.status.success(),
+            "malformed status corpus failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let expected: Value = serde_json::from_slice(&output.stdout).expect("corpus JSON");
+        assert_eq!(expected["malformedPreviousRejected"], true);
+
+        store
+            .transaction_with(|tx| {
+                tx.execute(
+                    "INSERT INTO runtime_model_status(agent,revision,at,record) VALUES('lead','corrupt',1,?1)",
+                    [malformed.to_string()],
+                )?;
+                Ok::<_, studio_runtime_store::StoreError>(())
+            })
+            .expect("seed malformed cached status");
+        let error = model_directory(
+            &store,
+            "lead",
+            3,
+            &json!({"since_revision":"corrupt"}),
+            100.0,
+        )
+        .expect_err("reject malformed status cache");
+        assert!(matches!(
+            error,
+            StatusError::Store(StoreError::InvalidStoredRecord { object: "runtime_model_status", id })
+                if id == "lead"
+        ));
+    }
+
+    #[test]
     fn file_rule_save_pause_and_post_commit_cancellations_match_python() {
         use std::process::Command;
         use std::time::Duration;
@@ -1365,9 +1579,46 @@ mod tests {
             Some(&save),
             "rule-save-request",
             100.0,
-            &Files,
+            &LocalRuleWatchFiles,
         )
         .expect("save file rule");
+        let replayed = rules(
+            &store,
+            "lead",
+            3,
+            Some(&save),
+            "rule-save-request",
+            101.0,
+            &LocalRuleWatchFiles,
+        )
+        .expect("replay exact rule request");
+        assert_eq!(replayed, saved, "exact request returns saved result");
+        let mismatched = json!({
+            "id":"rule-fixed",
+            "kind":"file",
+            "name":"different",
+            "path":"watch.txt",
+            "intervalSeconds":30,
+        });
+        assert!(
+            rules(
+                &store,
+                "lead",
+                3,
+                Some(&mismatched),
+                "rule-save-request",
+                102.0,
+                &LocalRuleWatchFiles,
+            )
+            .is_err()
+        );
+        let persisted_after_mismatch = RulesRepository::get(
+            &store.read().expect("read saved rule after conflict"),
+            "rule-fixed",
+        )
+        .expect("read rule row")
+        .expect("saved rule remains");
+        assert_eq!(persisted_after_mismatch.value(), &saved.value);
         store
             .transaction_with(|tx| {
                 tx.execute(
@@ -1390,20 +1641,14 @@ mod tests {
             Some(&json!({"action":"pause","id":"rule-fixed"})),
             "rule-pause-request",
             100.0,
-            &Files,
+            &LocalRuleWatchFiles,
         )
         .expect("pause file rule");
 
-        let normalize = |mut rule: Value| {
-            rule["path"] = json!("<workspace>/watch.txt");
-            rule["fingerprint"] = Value::Null;
-            rule
-        };
-        assert_eq!(normalize(saved.value), normalize(expected["saved"].clone()));
-        assert_eq!(
-            normalize(paused.value),
-            normalize(expected["paused"].clone())
-        );
+        assert_eq!(saved.value, expected["saved"]);
+        assert_eq!(replayed.value, expected["replayed"]);
+        assert_eq!(expected["mismatch"], true);
+        assert_eq!(paused.value, expected["paused"]);
         assert_eq!(expected["cancelled"], json!(["watch-monitor"]));
         assert_eq!(paused.cancel_monitor_ids, ["watch-monitor"]);
         let sync_payload: Value = store
@@ -1434,6 +1679,62 @@ mod tests {
             })
             .expect("count status rows");
         assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn status_cache_pruning_failure_rolls_back_new_revision() {
+        let (_directory, store) = fixture();
+        store
+            .transaction_with(|tx| {
+                for index in 0..MODEL_STATUS_HISTORY {
+                    tx.execute(
+                        "INSERT INTO runtime_model_status(agent,revision,at,record) VALUES('lead',?1,?2,'[]')",
+                        params![format!("prior-{index}"), index as f64],
+                    )?;
+                }
+                tx.execute_batch(
+                    "CREATE TRIGGER fail_status_prune BEFORE DELETE ON runtime_model_status \
+                     BEGIN SELECT RAISE(ABORT,'status prune failpoint'); END;",
+                )?;
+                Ok::<_, studio_runtime_store::StoreError>(())
+            })
+            .expect("seed revision history and pruning failpoint");
+        let before = {
+            let connection = store.read().expect("read old revisions");
+            let mut statement = connection
+                .prepare("SELECT revision,at,record FROM runtime_model_status WHERE agent='lead' ORDER BY revision")
+                .expect("prepare old revision query");
+            statement
+                .query_map([], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, f64>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                })
+                .expect("query old revisions")
+                .collect::<Result<Vec<_>, _>>()
+                .expect("collect old revisions")
+        };
+        assert!(model_directory(&store, "lead", 3, &json!({}), 100.0).is_err());
+        let after = {
+            let connection = store.read().expect("read revisions after rollback");
+            let mut statement = connection
+                .prepare("SELECT revision,at,record FROM runtime_model_status WHERE agent='lead' ORDER BY revision")
+                .expect("prepare revision query");
+            statement
+                .query_map([], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, f64>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                })
+                .expect("query revisions")
+                .collect::<Result<Vec<_>, _>>()
+                .expect("collect revisions")
+        };
+        assert_eq!(after, before, "failed pruning rolls back the insert");
     }
 
     #[derive(Clone, Copy)]

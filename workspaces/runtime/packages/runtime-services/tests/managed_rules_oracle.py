@@ -33,6 +33,7 @@ class Host(RulesMixin):
                                 "cwd":cwd, "concurrency":2, "maxAgents":8}),
         ))
         self.cancelled = []
+        self.request_receipts = {}
 
     @contextmanager
     def db(self):
@@ -69,12 +70,37 @@ class Host(RulesMixin):
     def cancel_monitor(self, key):
         self.cancelled.append(key)
 
+    def rules_request(self, request_id, data, now):
+        """Model the callback's durable request identity around RulesRuntime."""
+        import hashlib
+
+        signature = hashlib.sha256(json.dumps(
+            {"actor": "lead", "epoch": 3, "data": data},
+            sort_keys=True, separators=(",", ":"),
+        ).encode()).hexdigest()
+        saved = self.request_receipts.get(request_id)
+        if saved:
+            if saved[0] != signature:
+                raise ValueError("Request identity was reused with different content")
+            return saved[1]
+        with patch("codex_rules.time.time", return_value=now):
+            result = self.rules(data, actor="lead", epoch=3)
+        self.request_receipts[request_id] = (signature, result)
+        return result
+
 
 host = Host(sys.argv[1])
 Path(sys.argv[1], "watch.txt").write_text("watch corpus")
+save_body = {"id":"rule-fixed", "kind":"file", "name":"watch",
+             "path":"watch.txt", "intervalSeconds":30}
+saved = host.rules_request("rule-save-request", save_body, 100.0)
+replayed = host.rules_request("rule-save-request", save_body, 101.0)
+try:
+    host.rules_request("rule-save-request", {**save_body, "name":"different"}, 102.0)
+    mismatch = False
+except ValueError:
+    mismatch = True
 with patch("codex_rules.time.time", return_value=100.0):
-    saved = host.rules({"id":"rule-fixed", "kind":"file", "name":"watch",
-                        "path":"watch.txt", "intervalSeconds":30}, actor="lead", epoch=3)
     with host.db() as db:
         db.execute("INSERT INTO runtime_monitors VALUES (?,?)", (
             "watch-monitor", json.dumps({"id":"watch-monitor", "agent":"lead",
@@ -84,5 +110,6 @@ with patch("codex_rules.time.time", return_value=100.0):
     entity = host.connection.execute(
         "SELECT payload FROM sync_entities WHERE collection='rule' AND id='rule-fixed'"
     ).fetchone()[0]
-print(json.dumps({"saved":saved, "paused":paused, "cancelled":host.cancelled,
+print(json.dumps({"saved":saved, "replayed":replayed, "mismatch":mismatch,
+                  "paused":paused, "cancelled":host.cancelled,
                   "syncEntity":json.loads(entity)}, separators=(",", ":")))

@@ -77,5 +77,19 @@ class Host(EfficiencyMixin):
 
 payload = json.loads(sys.argv[1])
 host = Host(payload)
+if payload.get("corruptPrevious"):
+    host.connection.execute(
+        "CREATE TABLE runtime_model_status (agent TEXT, revision TEXT, at REAL, record TEXT, PRIMARY KEY(agent,revision))"
+    )
+    host.connection.execute(
+        "INSERT INTO runtime_model_status VALUES(?,?,?,?)",
+        (payload["actor"], "corrupt", 1.0, json.dumps(payload["corruptPrevious"])),
+    )
+    try:
+        host.model_directory(payload["actor"], "orchestration_status", {"since_revision":"corrupt"})
+    except (KeyError, TypeError):
+        print(json.dumps({"malformedPreviousRejected": True}, separators=(",", ":")))
+        raise SystemExit(0)
+    raise AssertionError("malformed cached status record was accepted")
 result = host.model_directory(payload["actor"], "orchestration_status", payload["args"])
 print(json.dumps(result, separators=(",", ":")))

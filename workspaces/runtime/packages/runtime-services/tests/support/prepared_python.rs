@@ -17,7 +17,7 @@ impl IsolatedTestEnvironment {
         Self {
             root: tempfile::Builder::new()
                 .prefix("runtime-test-")
-                .tempdir_in("/var/tmp")
+                .tempdir()
                 .expect("isolated test tempdir"),
         }
     }
