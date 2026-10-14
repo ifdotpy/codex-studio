@@ -51,7 +51,13 @@ def snapshot(root):
                 expected_bases[identity] = base
         receipts = result['runtime_operation_receipts']
         actual_bases = {row['id']:row['result'] for row in receipts if row['id'].startswith('account-worker:stream-base:') and row['signature'] == 'stream-base'}
-        assert actual_bases == expected_bases, 'durable stream bases differ from Python live state'
+        if actual_bases != expected_bases:
+            def fingerprints(bases):
+                return {key: hashlib.sha256(value.encode()).hexdigest() for key, value in bases.items()}
+            raise AssertionError(
+                f"case={getattr(_runtime, 'corpus_case_id', 'seed')} durable stream bases differ from Python live state; "
+                f"expected hashes={fingerprints(expected_bases)} actual hashes={fingerprints(actual_bases)}"
+            )
         result['runtime_operation_receipts'] = [row for row in receipts if row['id'] not in actual_bases]
     prepared = pathlib.Path(root).parent / 'prepared.json'
     if prepared.exists(): result['prepared'] = json.loads(prepared.read_text())
@@ -346,6 +352,7 @@ def run_case(command, template, runtime_type):
             _pristine = backup(db)
     runtime, case = _runtime, command['case']
     case = copy.deepcopy(case)
+    runtime.corpus_case_id = case.get('id', 'unknown')
     if case.get('empty_deltas'):
         case['steps'] = [copy.deepcopy(case['steps'][0]) for _ in range(case['empty_deltas'])]
     if case.get('many_streams'):
