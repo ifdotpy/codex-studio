@@ -114,6 +114,13 @@ impl MonitorRuntime {
             .clone()
     }
 
+    fn record_runtime_error(&self, error: &MonitorError) {
+        *self
+            .last_tick_error
+            .lock()
+            .expect("monitor tick diagnostic") = Some(error.to_string());
+    }
+
     /// Caller supplies wall time once per batch; tests can drive time deterministically.
     pub fn tick(&self, now: f64) -> Result<(), MonitorError> {
         let result = self.tick_inner(now);
@@ -147,6 +154,19 @@ impl MonitorRuntime {
                 }
             };
             if let Err(error) = self.deliver(&delivery, now) {
+                if error.is_bad_delivery() {
+                    if let Err(quarantine_error) = self.quarantine_delivery(&delivery, &error, now)
+                    {
+                        failure = Some(quarantine_error);
+                        break;
+                    }
+                    record_tick_failure(&mut failure, error);
+                    if let Err(ack_error) = self.port.acknowledge(&delivery) {
+                        record_tick_failure(&mut failure, ack_error);
+                        break;
+                    }
+                    continue;
+                }
                 failure = Some(error);
                 break;
             }
@@ -159,7 +179,7 @@ impl MonitorRuntime {
 
         // Cancellation receipts and rule pages progress even under sustained stream
         // output. Their exact identities and replay receipts make this safe.
-        match monitor_driver::pending_cancel_ids(&self.store) {
+        match monitor_driver::pending_cancel_ids(&self.store, now) {
             Ok(ids) => {
                 for id in ids {
                     if let Err(error) =
@@ -222,6 +242,44 @@ impl MonitorRuntime {
         }
         self.wake.notify_one();
         failure.map_or(Ok(()), Err)
+    }
+
+    fn quarantine_delivery(
+        &self,
+        delivery: &Delivery,
+        error: &MonitorError,
+        now: f64,
+    ) -> Result<(), MonitorError> {
+        let located_error = format!("{error} at delivery cursor {}", delivery.cursor);
+        self.store.transaction_with(|tx| {
+            let (snapshot, actor) = monitor_runtime::snapshot(tx, &delivery.id)?;
+            let mut decision = crate::monitor_policy::Decision {
+                record: snapshot.record().clone(),
+                effects: vec![],
+                response: Value::Null,
+            };
+            decision.record["status"] = serde_json::json!("failed");
+            decision.record["error"] = serde_json::json!(located_error);
+            decision.record["finished"] = serde_json::json!(now);
+            decision.record["configurationPending"] = serde_json::json!(false);
+            decision.record["deliveryFailure"] = serde_json::json!({
+                "cursor": delivery.cursor,
+                "error": error.to_string(),
+            });
+            decision.effects.push(
+                if snapshot
+                    .record()
+                    .get("ruleId")
+                    .and_then(Value::as_str)
+                    .is_some_and(|id| !id.is_empty())
+                {
+                    crate::monitor_policy::Effect::RuleFinished
+                } else {
+                    crate::monitor_policy::Effect::ExitEvent { wake: true }
+                },
+            );
+            monitor_runtime::apply(tx, &snapshot, &actor, &decision, now)
+        })
     }
 
     fn attach_batch(&self, scan: &mut Scan, now: f64) -> Result<(), MonitorError> {
@@ -413,11 +471,11 @@ pub fn start(
                 }
                 _ = timer.tick() => {
                     let tick_runtime = runtime.clone();
-                    let result = tokio::task::spawn_blocking(move || tick_runtime.tick(event_write::unix_time()?))
-                        .await.map_err(|_| MonitorError::TaskFailed)?;
-                    match result {
-                        Err(error) if error.fatal_for_tick() => return Err(error),
-                        _ => {}
+                    match tokio::task::spawn_blocking(move || tick_runtime.tick(event_write::unix_time()?)).await {
+                        Ok(Err(error)) if error.store_failure_for_task() => return Err(error),
+                        Ok(Err(_)) => {},
+                        Ok(Ok(())) => {},
+                        Err(_) => runtime.record_runtime_error(&MonitorError::TaskFailed),
                     }
                 }
             }

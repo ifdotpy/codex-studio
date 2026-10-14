@@ -16,7 +16,8 @@ use studio_runtime_services::{
     monitor_runtime_wiring::{Delivery, MonitorEvent, MonitorRuntime},
 };
 use studio_runtime_store::{
-    AgentRecord, AgentRepository, MonitorsRepository, RuleRecord, RulesRepository, RuntimeStore,
+    AgentRecord, AgentRepository, MonitorRecord, MonitorsRepository, RuleRecord, RulesRepository,
+    RuntimeStore, Table,
 };
 use tokio::sync::Notify;
 
@@ -544,19 +545,39 @@ fn cancel_intent_replays_after_restart_until_written_and_holds_unknown() {
     let restarted_runtime = runtime(&store, &port);
     restarted_runtime.tick(2001.0).expect("proven not sent");
     assert_eq!(record(&store, &id)["cancelDispatch"]["status"], "pending");
+    assert_eq!(
+        record(&store, &id)["cancelDispatch"]["nextAttemptAt"],
+        2002.0
+    );
+    assert_eq!(port.submitted.lock().expect("submitted").len(), 1);
+    restarted_runtime.tick(2001.5).expect("backoff is active");
     assert_eq!(port.submitted.lock().expect("submitted").len(), 1);
 
+    restarted_runtime
+        .tick(2002.0)
+        .expect("second not-sent receipt");
+    assert_eq!(record(&store, &id)["cancelDispatch"]["attempts"], 2);
+    assert_eq!(
+        record(&store, &id)["cancelDispatch"]["nextAttemptAt"],
+        2004.0
+    );
+    restarted_runtime
+        .tick(2003.5)
+        .expect("second backoff is active");
+    assert_eq!(port.submitted.lock().expect("submitted").len(), 2);
+
     *port.not_sent.lock().expect("not sent") = false;
-    restarted_runtime.tick(2002.0).expect("written receipt");
+    restarted_runtime.tick(2004.0).expect("written receipt");
     assert_eq!(record(&store, &id)["cancelDispatch"]["status"], "written");
     let submitted = port.submitted.lock().expect("submitted");
-    assert_eq!(submitted.len(), 2);
+    assert_eq!(submitted.len(), 3);
     assert_eq!(submitted[0], submitted[1]);
+    assert_eq!(submitted[1], submitted[2]);
     drop(submitted);
     restarted_runtime
-        .cancel(&id, None, 2003.0)
+        .cancel(&id, None, 2005.0)
         .expect("cancel replay");
-    assert_eq!(port.submitted.lock().expect("submitted").len(), 2);
+    assert_eq!(port.submitted.lock().expect("submitted").len(), 3);
 
     let unknown_case = running(&cases);
     let unknown_store = Arc::new(fixtures::store(root.path(), "cancel-unknown"));
@@ -575,6 +596,189 @@ fn cancel_intent_replays_after_restart_until_written_and_holds_unknown() {
     *unknown_port.unknown.lock().expect("unknown") = false;
     unknown_runtime.tick(2011.0).expect("hold unknown");
     assert_eq!(unknown_port.submitted.lock().expect("submitted").len(), 1);
+}
+
+#[test]
+fn permanent_cancel_refusal_settles_and_is_not_retried() {
+    use studio_runtime_services::monitor_driver::NotSentReason;
+
+    let root = fixtures::tempdir();
+    let cases = fixtures::corpus(root.path());
+    let case = running(&cases);
+    for (name, reason, expected_status, expected_dispatch) in [
+        (
+            "cancel-monitor-missing",
+            NotSentReason::MonitorMissing,
+            "cancelled",
+            "done",
+        ),
+        (
+            "cancel-session-missing",
+            NotSentReason::SessionMissing,
+            "failed",
+            "failed",
+        ),
+    ] {
+        let store = Arc::new(fixtures::store(root.path(), name));
+        fixtures::seed(&store, &case);
+        let port = Arc::new(Port::default());
+        *port.not_sent.lock().expect("not sent") = true;
+        *port.not_sent_reason.lock().expect("not sent reason") = reason;
+        let runtime = runtime(&store, &port);
+        let id = case["before"]["id"].as_str().expect("id");
+
+        runtime
+            .cancel(id, None, 2000.0)
+            .expect("permanent refusal recorded");
+
+        assert_eq!(record(&store, id)["status"], expected_status);
+        assert_eq!(
+            record(&store, id)["cancelDispatch"]["status"],
+            expected_dispatch
+        );
+        assert_eq!(
+            record(&store, id)["cancelDispatch"]["error"],
+            "injected not sent"
+        );
+        runtime
+            .tick(2100.0)
+            .expect("permanent refusal remains settled");
+        assert_eq!(port.submitted.lock().expect("submitted").len(), 1);
+    }
+}
+
+#[test]
+fn cancellation_racing_exit_settles_without_native_terminate() {
+    use studio_runtime_services::monitor_driver;
+
+    let root = fixtures::tempdir();
+    let cases = fixtures::corpus(root.path());
+    let case = running(&cases);
+    let id = case["before"]["id"].as_str().expect("id");
+    let store = Arc::new(fixtures::store(root.path(), "cancel-exit-race"));
+    fixtures::seed(&store, &case);
+    let (_, operation) = store
+        .transaction_with(|tx| monitor_driver::reserve_cancel(tx, id, None, 2000.0))
+        .expect("durable cancel intent");
+    assert!(operation.is_some());
+
+    let port = Arc::new(Port::default());
+    port.deliveries
+        .lock()
+        .expect("deliveries")
+        .push_back(delivery(
+            &case,
+            "exit-races-cancel",
+            MonitorEvent::Exit {
+                code: Some(0),
+                error: None,
+                finished: 2001.0,
+            },
+        ));
+    runtime(&store, &port)
+        .tick(2001.0)
+        .expect("exit wins the race");
+
+    assert_eq!(record(&store, id)["status"], "cancelled");
+    assert_eq!(record(&store, id)["cancelDispatch"]["status"], "done");
+    assert!(port.submitted.lock().expect("submitted").is_empty());
+    assert!(port.deliveries.lock().expect("deliveries").is_empty());
+}
+
+#[tokio::test(start_paused = true)]
+async fn quarantined_delivery_does_not_stop_other_monitors_or_timer() {
+    let root = fixtures::tempdir();
+    let cases = fixtures::corpus(root.path());
+    let bad_case = running(&cases);
+    let mut healthy_case = bad_case.clone();
+    healthy_case["before"]["id"] = json!("healthy-monitor");
+    healthy_case["before"]["log"] = json!("unused-until-output");
+    let store = Arc::new(fixtures::store(root.path(), "bad-delivery"));
+    fixtures::seed(&store, &bad_case);
+    store
+        .transaction(|tx| {
+            Table::new(tx).put(&MonitorRecord::from_value(healthy_case["before"].clone())?)
+        })
+        .expect("seed second monitor");
+
+    let port = Arc::new(Port::default());
+    let mut foreign = delivery(
+        &bad_case,
+        "foreign-exit",
+        MonitorEvent::Exit {
+            code: Some(0),
+            error: None,
+            finished: 2001.0,
+        },
+    );
+    foreign.operation.connection_id = "foreign-connection".into();
+    port.deliveries
+        .lock()
+        .expect("deliveries")
+        .push_back(foreign);
+    let mut healthy_output = delivery(
+        &healthy_case,
+        "healthy-output",
+        MonitorEvent::Output {
+            offset: 0,
+            bytes: b"healthy".to_vec(),
+        },
+    );
+    healthy_output.operation.connection_id = healthy_case["before"]["operation"]["connectionId"]
+        .as_str()
+        .expect("connection id")
+        .into();
+    healthy_case["before"]["log"] = json!(
+        store
+            .root()
+            .join("monitor-logs")
+            .join("healthy-monitor.log")
+    );
+    store
+        .transaction(|tx| {
+            Table::new(tx).put(&MonitorRecord::from_value(healthy_case["before"].clone())?)
+        })
+        .expect("set healthy log path");
+    port.deliveries
+        .lock()
+        .expect("deliveries")
+        .push_back(healthy_output);
+
+    let runtime = Arc::new(runtime(&store, &port));
+    let (stop, receiver) = tokio::sync::watch::channel(false);
+    let acknowledged = Arc::new(tokio::sync::Semaphore::new(0));
+    *port.acknowledged.lock().expect("acknowledged") = Some(acknowledged.clone());
+    let task = studio_runtime_services::monitor_runtime_wiring::start(runtime.clone(), receiver);
+    let mut task = task;
+    tokio::select! {
+        result = &mut task => panic!("monitor timer ended before delivery ACKs: {result:?}"),
+        permits = acknowledged.acquire_many(2) => {
+            permits.expect("both delivery ACKs").forget();
+        }
+    }
+
+    let bad_id = bad_case["before"]["id"].as_str().expect("bad id");
+    assert_eq!(record(&store, bad_id)["status"], "failed");
+    assert_eq!(
+        record(&store, bad_id)["deliveryFailure"]["cursor"],
+        "foreign-exit"
+    );
+    assert!(
+        record(&store, bad_id)["deliveryFailure"]["error"]
+            .as_str()
+            .expect("located error")
+            .contains("result operation changed")
+    );
+    assert_eq!(record(&store, "healthy-monitor")["bytes"], 7);
+    assert!(
+        !task.is_finished(),
+        "bad delivery does not stop the timer task"
+    );
+
+    stop.send(true).expect("shutdown signal");
+    task.await
+        .expect("task joins")
+        .expect("store remains healthy");
 }
 
 #[test]

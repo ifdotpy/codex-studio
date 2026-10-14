@@ -66,6 +66,26 @@ pub enum MonitorError {
 }
 
 impl MonitorError {
+    /// Only a failed durable store boundary may stop the retained runtime task.
+    pub fn store_failure_for_task(&self) -> bool {
+        matches!(
+            self,
+            Self::Store(_)
+                | Self::Event(crate::event_write::EventWriteError::Store(_))
+                | Self::Rules(crate::rules_tick::RulesTickError::Store(_))
+                | Self::Rules(crate::rules_tick::RulesTickError::Event(
+                    crate::event_write::EventWriteError::Store(_)
+                ))
+        )
+    }
+
+    pub fn is_bad_delivery(&self) -> bool {
+        matches!(
+            self,
+            Self::InvalidDeliveryIdentity(_) | Self::InvalidOutputReceipt(_)
+        )
+    }
+
     /// Invalid persisted state and incompatible contracts cannot be repaired by
     /// replaying a timer batch. Other failures retain their durable identities.
     pub fn fatal_for_tick(&self) -> bool {
@@ -415,6 +435,9 @@ pub fn finish(
         decision.record["error"] = json!(error);
         decision.record["finished"] = json!(now);
         decision.record["configurationPending"] = json!(false);
+        if snapshot.fields.cancel_requested && snapshot.record().get("cancelDispatch").is_some() {
+            decision.record["cancelDispatch"] = json!({"status":"done","updatedAt":now});
+        }
     }
     decision.effects.push(
         if snapshot

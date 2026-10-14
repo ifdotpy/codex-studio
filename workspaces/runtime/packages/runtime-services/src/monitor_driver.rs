@@ -14,10 +14,27 @@ pub enum Submission {
     /// The transport returned its durable Written receipt for this effect identity.
     Written,
     /// The transport proves no bytes were sent; the same identity may be retried.
-    NotSent { error: String },
+    NotSent {
+        reason: NotSentReason,
+        error: String,
+    },
     /// The transport cannot prove whether it wrote; this identity must not be resent.
     Unknown,
 }
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum NotSentReason {
+    /// A temporary transport refusal; retry the same durable operation after backoff.
+    #[default]
+    Transient,
+    /// The native monitor process is already gone, so cancellation is complete.
+    MonitorMissing,
+    /// The owning provider session is gone; the command outcome is not recoverable here.
+    SessionMissing,
+}
+
+const CANCEL_RETRY_BASE_SECONDS: f64 = 1.0;
+const CANCEL_RETRY_MAX_SECONDS: f64 = 64.0;
 
 pub trait MonitorNative {
     /// Repeated calls with the same effect identity must reconcile the same native write.
@@ -46,7 +63,7 @@ pub fn start(
     let effect = monitor_runtime::reserve_start(store, id, prepared, now)?;
     // A transport failure does not authorize another command/exec.
     let submission = port.submit(&prepared.operation, &effect);
-    if let Submission::NotSent { error } = &submission {
+    if let Submission::NotSent { error, .. } = &submission {
         crate::monitor_receipts::finish(
             store,
             &crate::monitor_receipts::ResultReceipt {
@@ -89,7 +106,7 @@ pub fn input(
     // callback calls settle_input after its reply is known.
     let outcome = match &result {
         Submission::Written => None,
-        Submission::NotSent { error } => Some(InputOutcome::Rejected(error.clone())),
+        Submission::NotSent { error, .. } => Some(InputOutcome::Rejected(error.clone())),
         Submission::Unknown => Some(InputOutcome::Unknown(
             "Input outcome unknown; do not repeat it".into(),
         )),
@@ -119,10 +136,37 @@ pub fn cancel(
         store.transaction_with(|tx| reserve_cancel(tx, id, owner, now))?;
     if let Some(operation) = operation {
         let receipt = port.submit(&operation, &cancel_effect(id));
-        let (status, error) = match receipt {
-            Submission::Written => ("written", None),
-            Submission::NotSent { error } => ("pending", Some(error)),
-            Submission::Unknown => ("unknown", Some("Cancel dispatch outcome unknown".into())),
+        let (status, error, retry_reason) = match &receipt {
+            Submission::Written => ("written", None, None),
+            Submission::NotSent {
+                reason: NotSentReason::Transient,
+                error,
+            } => (
+                "pending",
+                Some(error.clone()),
+                Some(NotSentReason::Transient),
+            ),
+            Submission::NotSent {
+                reason: NotSentReason::MonitorMissing,
+                error,
+            } => (
+                "done",
+                Some(error.clone()),
+                Some(NotSentReason::MonitorMissing),
+            ),
+            Submission::NotSent {
+                reason: NotSentReason::SessionMissing,
+                error,
+            } => (
+                "failed",
+                Some(error.clone()),
+                Some(NotSentReason::SessionMissing),
+            ),
+            Submission::Unknown => (
+                "unknown",
+                Some("Cancel dispatch outcome unknown".into()),
+                None,
+            ),
         };
         store.transaction_with(|tx| {
             let (current, actor) = monitor_runtime::snapshot(tx, id)?;
@@ -130,24 +174,43 @@ pub fn cancel(
                 && current.record()["status"] == "running"
                 && current.record()["cancelRequested"] == true
             {
-                let mut record = current.record().clone();
-                let mut dispatch = json!({"status":status,"updatedAt":now});
+                let mut decision = if matches!(
+                    retry_reason,
+                    Some(NotSentReason::MonitorMissing | NotSentReason::SessionMissing)
+                ) {
+                    monitor_policy::finish(&current, Some(&operation), None, error.as_deref(), now)?
+                } else {
+                    monitor_policy::Decision {
+                        record: current.record().clone(),
+                        effects: vec![],
+                        response: Value::Null,
+                    }
+                };
+                if retry_reason == Some(NotSentReason::SessionMissing) {
+                    decision.record["status"] = json!("failed");
+                }
+                let previous_attempts = current
+                    .record()
+                    .pointer("/cancelDispatch/attempts")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0);
+                let attempts = if retry_reason == Some(NotSentReason::Transient) {
+                    previous_attempts.saturating_add(1)
+                } else {
+                    previous_attempts
+                };
+                let retry_at = (retry_reason == Some(NotSentReason::Transient))
+                    .then(|| now + cancel_retry_delay(attempts));
+                let mut dispatch = json!({"status":status,"updatedAt":now,"attempts":attempts});
+                if let Some(retry_at) = retry_at {
+                    dispatch["nextAttemptAt"] = json!(retry_at);
+                }
                 if let Some(error) = &error {
                     dispatch["error"] = json!(error.chars().take(12000).collect::<String>());
                     response["error"] = dispatch["error"].clone();
                 }
-                record["cancelDispatch"] = dispatch;
-                monitor_runtime::apply(
-                    tx,
-                    &current,
-                    &actor,
-                    &monitor_policy::Decision {
-                        record,
-                        effects: vec![],
-                        response: Value::Null,
-                    },
-                    now,
-                )?;
+                decision.record["cancelDispatch"] = dispatch;
+                monitor_runtime::apply(tx, &current, &actor, &decision, now)?;
             }
             Ok::<_, MonitorError>(())
         })?;
@@ -156,15 +219,15 @@ pub fn cancel(
 }
 
 /// Select persisted cancellation intents whose transport receipt allows progress.
-pub fn pending_cancel_ids(store: &RuntimeStore) -> Result<Vec<String>, MonitorError> {
+pub fn pending_cancel_ids(store: &RuntimeStore, now: f64) -> Result<Vec<String>, MonitorError> {
     let connection = store.read()?;
     let mut statement = connection
         .prepare(
-            "SELECT id FROM runtime_monitors WHERE json_extract(record,'$.status')='running' AND json_extract(record,'$.cancelRequested')=1 AND COALESCE(json_extract(record,'$.cancelDispatch.status'),'pending')='pending' ORDER BY id LIMIT 64",
+            "SELECT id FROM runtime_monitors WHERE json_extract(record,'$.status')='running' AND json_extract(record,'$.cancelRequested')=1 AND COALESCE(json_extract(record,'$.cancelDispatch.status'),'pending')='pending' AND COALESCE(json_extract(record,'$.cancelDispatch.nextAttemptAt'),0)<=?1 ORDER BY id LIMIT 64",
         )
         .map_err(studio_runtime_store::StoreError::from)?;
     let ids = statement
-        .query_map([], |row| row.get::<_, String>(0))
+        .query_map([now], |row| row.get::<_, String>(0))
         .map_err(studio_runtime_store::StoreError::from)?
         .collect::<Result<Vec<_>, _>>()
         .map_err(studio_runtime_store::StoreError::from)?;
@@ -189,9 +252,23 @@ pub fn reserve_cancel(
     let needs_dispatch = decision.effects.contains(&Effect::Terminate)
         || (snapshot.record()["status"] == "running"
             && snapshot.record()["cancelRequested"] == true
-            && (dispatch_status.is_none() || dispatch_status == Some("pending")));
+            && (dispatch_status.is_none()
+                || (dispatch_status == Some("pending")
+                    && snapshot
+                        .record()
+                        .pointer("/cancelDispatch/nextAttemptAt")
+                        .and_then(Value::as_f64)
+                        .is_none_or(|retry_at| retry_at <= now))));
     if needs_dispatch {
-        decision.record["cancelDispatch"] = json!({"status":"pending"});
+        let previous_attempts = snapshot
+            .record()
+            .pointer("/cancelDispatch/attempts")
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+        decision.record["cancelDispatch"] = json!({
+            "status":"pending",
+            "attempts":previous_attempts,
+        });
         if !decision.effects.contains(&Effect::Terminate) {
             decision.effects.push(Effect::Terminate);
         }
@@ -210,6 +287,11 @@ pub fn reserve_cancel(
     };
     monitor_runtime::apply(tx, &snapshot, &actor, &decision, now)?;
     Ok::<_, MonitorError>((decision.response, operation))
+}
+
+fn cancel_retry_delay(attempts: u64) -> f64 {
+    (CANCEL_RETRY_BASE_SECONDS * 2_f64.powi(attempts.saturating_sub(1).min(6) as i32))
+        .min(CANCEL_RETRY_MAX_SECONDS)
 }
 
 pub fn cancel_effect(id: &str) -> Effect {

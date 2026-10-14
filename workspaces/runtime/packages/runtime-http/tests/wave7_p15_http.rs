@@ -17,6 +17,70 @@ use studio_runtime_services::monitor_runtime_wiring::MonitorRuntime;
 use studio_runtime_store::MonitorsRepository;
 use tower::ServiceExt;
 
+fn database_snapshot(store: &studio_runtime_store::RuntimeStore) -> Value {
+    use rusqlite::types::ValueRef;
+
+    let connection = store.read().expect("database snapshot connection");
+    let schema = connection
+        .prepare("SELECT type, name, tbl_name, sql FROM sqlite_master ORDER BY type, name")
+        .expect("database schema")
+        .query_map([], |row| {
+            Ok(json!([
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, Option<String>>(3)?,
+            ]))
+        })
+        .expect("schema rows")
+        .collect::<Result<Vec<_>, _>>()
+        .expect("schema list");
+    let tables = connection
+        .prepare("SELECT name FROM sqlite_master WHERE type='table' AND (name NOT LIKE 'sqlite_%' OR name='sqlite_sequence') ORDER BY name")
+        .expect("database tables")
+        .query_map([], |row| row.get::<_, String>(0))
+        .expect("table names")
+        .collect::<Result<Vec<_>, _>>()
+        .expect("table list");
+    let mut snapshot = serde_json::Map::new();
+    snapshot.insert("sqlite_master".into(), Value::Array(schema));
+    for table in tables {
+        let escaped = table.replace('"', "\"\"");
+        let mut statement = connection
+            .prepare(&format!("SELECT * FROM \"{escaped}\""))
+            .expect("table contents");
+        let columns = statement.column_count();
+        let mut query = statement.query([]).expect("table query");
+        let mut rows = Vec::new();
+        while let Some(row) = query.next().expect("table row") {
+            rows.push(
+                (0..columns)
+                    .map(|index| match row.get_ref(index).expect("cell") {
+                        ValueRef::Null => Value::Null,
+                        ValueRef::Integer(value) => json!(value),
+                        ValueRef::Real(value) => json!(value),
+                        ValueRef::Text(value) => {
+                            json!(String::from_utf8_lossy(value).into_owned())
+                        }
+                        ValueRef::Blob(value) => json!(
+                            value
+                                .iter()
+                                .map(|byte| format!("{byte:02x}"))
+                                .collect::<String>()
+                        ),
+                    })
+                    .collect::<Vec<_>>(),
+            );
+        }
+        rows.sort_by_key(|row| Value::Array(row.clone()).to_string());
+        snapshot.insert(
+            table,
+            Value::Array(rows.into_iter().map(Value::Array).collect()),
+        );
+    }
+    Value::Object(snapshot)
+}
+
 async fn call(app: &axum::Router, path: &str, body: Value) -> (u16, Value) {
     let request = Request::builder()
         .method("POST")
@@ -73,6 +137,7 @@ async fn installed_runtime_drives_input_and_cancel_through_http() {
     ));
     let app = router(state).expect("router").layer(Extension(runtime));
     let body = json!({"id":case["before"]["id"],"text":"hello"});
+    let before_refusal = database_snapshot(&store);
     let (status, refusal) = call(&app, "/api/monitor/input", body.clone()).await;
     assert_eq!(status, 501);
     assert_eq!(
@@ -80,6 +145,11 @@ async fn installed_runtime_drives_input_and_cancel_through_http() {
         "Not implemented: requires monitor-input-request-identity"
     );
     assert!(port.submitted.lock().expect("submitted").is_empty());
+    assert_eq!(
+        database_snapshot(&store),
+        before_refusal,
+        "input refusal writes nothing"
+    );
     for attempt in 0..2 {
         let (status, response) = call(
             &app,

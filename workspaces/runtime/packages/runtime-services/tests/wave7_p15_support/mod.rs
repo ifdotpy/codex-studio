@@ -2,7 +2,7 @@ use serde_json::json;
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex, mpsc};
 use studio_runtime_services::{
-    monitor_driver::{MonitorNative, Submission},
+    monitor_driver::{MonitorNative, NotSentReason, Submission},
     monitor_policy::{Effect, MonitorError, MonitorSnapshot, Operation, ReattachProof},
     monitor_runtime_wiring::{Delivery, InputReply, MonitorPort},
     rules_engine::RuleCheck,
@@ -15,8 +15,10 @@ pub struct Port {
     pub probes: Mutex<Vec<(String, i64, String)>>,
     pub fail_ack: Mutex<bool>,
     pub fail_ack_gate: Mutex<Option<(Arc<tokio::sync::Notify>, mpsc::Receiver<()>)>>,
+    pub acknowledged: Mutex<Option<Arc<tokio::sync::Semaphore>>>,
     pub unknown: Mutex<bool>,
     pub not_sent: Mutex<bool>,
+    pub not_sent_reason: Mutex<NotSentReason>,
     pub rule_available: Mutex<bool>,
     pub availability_overrides: Mutex<VecDeque<bool>>,
     pub rule_checks: Mutex<Vec<RuleCheck>>,
@@ -29,6 +31,7 @@ impl MonitorNative for Port {
             Submission::Unknown
         } else if *self.not_sent.lock().expect("not sent") {
             Submission::NotSent {
+                reason: *self.not_sent_reason.lock().expect("not sent reason"),
                 error: "injected not sent".into(),
             }
         } else {
@@ -79,6 +82,9 @@ impl MonitorPort for Port {
             return Err(MonitorError::Refused("injected ACK loss"));
         }
         self.deliveries.lock().expect("queue").pop_front();
+        if let Some(acknowledged) = self.acknowledged.lock().expect("acknowledged").as_ref() {
+            acknowledged.add_permits(1);
+        }
         Ok(())
     }
     fn reattach(&self, snapshot: &MonitorSnapshot) -> Result<Option<ReattachProof>, MonitorError> {
