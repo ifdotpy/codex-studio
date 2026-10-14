@@ -1243,8 +1243,10 @@ mod tests {
     }
 
     fn trace_sql(event: TraceEvent<'_>) {
-        if let TraceEvent::Stmt(_, sql) = event {
-            TRACED_SQL.with_borrow_mut(|statements| statements.push(sql.to_owned()));
+        if let TraceEvent::Stmt(statement, _) = event {
+            TRACED_SQL.with_borrow_mut(|statements| {
+                statements.push(statement.sql().into_owned());
+            });
         }
     }
 
@@ -1263,7 +1265,7 @@ mod tests {
 
     #[test]
     fn delivery_metadata_is_joined_in_one_event_query() {
-        let mut connection = Connection::open_in_memory().expect("in-memory database opens");
+        let connection = Connection::open_in_memory().expect("in-memory database opens");
         connection
             .execute_batch(
                 "CREATE TABLE runtime_events(id TEXT,agent TEXT,kind TEXT,status TEXT,error TEXT);
@@ -1313,7 +1315,7 @@ mod tests {
 
     #[test]
     fn completed_turns_are_looked_up_with_one_batch_query() {
-        let mut connection = Connection::open_in_memory().expect("in-memory database opens");
+        let connection = Connection::open_in_memory().expect("in-memory database opens");
         connection
             .execute_batch(
                 "CREATE TABLE runtime_completed_turns(id TEXT PRIMARY KEY);
@@ -1385,13 +1387,10 @@ mod tests {
             assert_eq!(
                 statements
                     .iter()
-                    .filter(|sql| {
-                        sql.starts_with("SELECT EXISTS(SELECT 1 FROM sqlite_master")
-                            && sql.contains("runtime_search_rows")
-                    })
+                    .filter(|sql| sql.starts_with("SELECT EXISTS(SELECT 1 FROM sqlite_master"))
                     .count(),
-                1,
-                "the runtime_search_rows presence query is reused"
+                5,
+                "the row-table presence result removes two catalog queries"
             );
         });
     }
