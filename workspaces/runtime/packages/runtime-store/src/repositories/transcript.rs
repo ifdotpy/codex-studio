@@ -858,7 +858,8 @@ fn index_search_item(
     if !matches!(phase.as_str(), "active" | "dropping" | "complete")
         && table_exists(transaction, "runtime_search")?
     {
-        let previous = if table_exists(transaction, "runtime_search_rows")? {
+        let search_rows_exists = table_exists(transaction, "runtime_search_rows")?;
+        let previous = if search_rows_exists {
             transaction
                 .query_row(
                     "SELECT search_rowid FROM runtime_search_rows WHERE id=?1",
@@ -871,7 +872,7 @@ fn index_search_item(
         };
         if let Some(rowid) = previous {
             transaction.execute("DELETE FROM runtime_search WHERE rowid=?1", [rowid])?;
-        } else if !table_exists(transaction, "runtime_search_rows")? {
+        } else if !search_rows_exists {
             transaction.execute("DELETE FROM runtime_search WHERE id=?1", [id])?;
         }
         transaction.execute(
@@ -879,7 +880,7 @@ fn index_search_item(
             params![id, agent, kind, body],
         )?;
         let rowid = transaction.last_insert_rowid();
-        if table_exists(transaction, "runtime_search_rows")? {
+        if search_rows_exists {
             transaction.execute(
                 "INSERT INTO runtime_search_rows(id,search_rowid) VALUES(?1,?2) \
                  ON CONFLICT(id) DO UPDATE SET search_rowid=excluded.search_rowid",
@@ -1227,9 +1228,22 @@ fn search_phase(connection: &Connection) -> TranscriptStoreResult<String> {
 
 #[cfg(test)]
 mod tests {
-    use rusqlite::Connection;
+    use std::cell::RefCell;
 
-    use super::{TranscriptRepository, TranscriptStoreError};
+    use rusqlite::Connection;
+    use serde_json::json;
+
+    use super::{
+        TranscriptRepository, TranscriptStoreError, enrich_persisted_items, index_search_item,
+    };
+
+    thread_local! {
+        static TRACED_SQL: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+    }
+
+    fn trace_sql(sql: &str) {
+        TRACED_SQL.with_borrow_mut(|statements| statements.push(sql.to_owned()));
+    }
 
     #[test]
     fn event_text_rejects_a_non_text_column_with_its_table_and_id() {
@@ -1242,6 +1256,141 @@ mod tests {
             TranscriptRepository::event_text(&connection, "a", "e"),
             Err(TranscriptStoreError::InvalidStoredObject { table: "runtime_events", id }) if id == "e"
         ));
+    }
+
+    #[test]
+    fn delivery_metadata_is_joined_in_one_event_query() {
+        let mut connection = Connection::open_in_memory().expect("in-memory database opens");
+        connection
+            .execute_batch(
+                "CREATE TABLE runtime_events(id TEXT,agent TEXT,kind TEXT,status TEXT,error TEXT);
+                 CREATE TABLE runtime_event_meta(id TEXT,record TEXT);
+                 INSERT INTO runtime_events VALUES
+                    ('agent:e1','agent','user','sent',NULL),
+                    ('agent:e2','agent','user','pending','retry'),
+                    ('agent:e3','agent','user','sent',NULL);
+                 INSERT INTO runtime_event_meta VALUES
+                    ('agent:e1','{\"requestedDelivery\":\"notify\"}');",
+            )
+            .expect("event fixtures insert");
+        TRACED_SQL.with_borrow_mut(Vec::clear);
+        connection.trace(Some(trace_sql));
+        let mut items = vec![
+            json!({"role":"user","id":"agent:e1"}),
+            json!({"role":"user","id":"agent:e2"}),
+            json!({"role":"user","id":"agent:e3"}),
+        ];
+
+        enrich_persisted_items(&connection, "agent", &json!({"status":"idle"}), &mut items)
+            .expect("items are enriched");
+
+        assert_eq!(items[0]["requestedDelivery"], "notify");
+        assert_eq!(items[1]["requestedDelivery"], "queue");
+        assert_eq!(items[2]["deliveryStatus"], "sent");
+        TRACED_SQL.with_borrow(|statements| {
+            assert_eq!(
+                statements
+                    .iter()
+                    .filter(|sql| sql
+                        .starts_with("SELECT e.id,e.status,e.error,m.record FROM runtime_events"))
+                    .count(),
+                1,
+                "event and metadata rows use one joined statement"
+            );
+            assert_eq!(
+                statements
+                    .iter()
+                    .filter(|sql| sql.starts_with("SELECT record FROM runtime_event_meta"))
+                    .count(),
+                0,
+                "per-event metadata statements are removed"
+            );
+        });
+    }
+
+    #[test]
+    fn completed_turns_are_looked_up_with_one_batch_query() {
+        let mut connection = Connection::open_in_memory().expect("in-memory database opens");
+        connection
+            .execute_batch(
+                "CREATE TABLE runtime_completed_turns(id TEXT PRIMARY KEY);
+                 CREATE TABLE runtime_event_meta(id TEXT,record TEXT);
+                 INSERT INTO runtime_completed_turns VALUES ('agent:t1'),('agent:t2');",
+            )
+            .expect("completion fixtures insert");
+        TRACED_SQL.with_borrow_mut(Vec::clear);
+        connection.trace(Some(trace_sql));
+        let mut items = vec![
+            json!({"turnId":"t1"}),
+            json!({"turnId":"t2","turnStatus":"running"}),
+            json!({"turnId":"t3"}),
+        ];
+
+        enrich_persisted_items(
+            &connection,
+            "agent",
+            &json!({"status":"failed","turnStatus":"failed"}),
+            &mut items,
+        )
+        .expect("items are enriched");
+
+        assert_eq!(items[0]["turnStatus"], "failed");
+        assert_eq!(items[1]["turnStatus"], "running");
+        assert!(items[2].get("turnStatus").is_none());
+        TRACED_SQL.with_borrow(|statements| {
+            assert_eq!(
+                statements
+                    .iter()
+                    .filter(|sql| sql.starts_with("SELECT id FROM runtime_completed_turns"))
+                    .count(),
+                1,
+                "eligible turn IDs are checked in one statement"
+            );
+            assert_eq!(
+                statements
+                    .iter()
+                    .filter(|sql| sql
+                        .starts_with("SELECT EXISTS(SELECT 1 FROM runtime_completed_turns"))
+                    .count(),
+                0,
+                "per-item completion probes are removed"
+            );
+        });
+    }
+
+    #[test]
+    fn legacy_search_row_table_presence_is_reused() {
+        let mut connection = Connection::open_in_memory().expect("in-memory database opens");
+        connection
+            .execute_batch(
+                "CREATE TABLE runtime_search(id TEXT,agent TEXT,kind TEXT,body TEXT);
+                 CREATE TABLE runtime_search_rows(id TEXT PRIMARY KEY,search_rowid INTEGER);
+                 CREATE TABLE runtime_search_indexed(id TEXT PRIMARY KEY);
+                 CREATE TABLE runtime_search_rollout(id INTEGER PRIMARY KEY,phase TEXT);
+                 INSERT INTO runtime_search_rollout VALUES(1,'legacy');",
+            )
+            .expect("legacy search fixtures create");
+        TRACED_SQL.with_borrow_mut(Vec::clear);
+        connection.trace(Some(trace_sql));
+
+        let transaction = connection.transaction().expect("transaction starts");
+        index_search_item(&transaction, "item-1", "agent", "assistant", "body")
+            .expect("search item indexes");
+        transaction.commit().expect("transaction commits");
+
+        TRACED_SQL.with_borrow(|statements| {
+            assert_eq!(
+                statements
+                    .iter()
+                    .filter(|sql| {
+                        sql.starts_with("SELECT EXISTS(SELECT 1 FROM sqlite_master")
+                            && sql.contains("runtime_search_rows")
+                    })
+                    .count(),
+                1,
+                "the runtime_search_rows presence query is reused"
+            );
+        });
     }
 }
 inventory::submit! {
