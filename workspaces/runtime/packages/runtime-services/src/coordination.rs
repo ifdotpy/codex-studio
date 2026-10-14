@@ -314,17 +314,30 @@ fn post_managed_message(
 /// Queue model-authored follow-up input for a descendant. This is the durable
 /// event path used by Runtime.send; the caller resolves descendant ancestry
 /// from the same transaction before invoking it.
+pub struct AgentFollowup<'a> {
+    pub sender_id: &'a str,
+    pub sender_epoch: i64,
+    pub recipient_id: &'a str,
+    pub id: &'a str,
+    pub text: &'a str,
+    pub delivery: &'a str,
+    pub now: f64,
+}
+
 pub fn send_followup(
     transaction: &Transaction<'_>,
-    sender_id: &str,
-    sender_epoch: i64,
-    recipient_id: &str,
-    id: &str,
-    text: &str,
-    delivery: &str,
-    now: f64,
+    input: AgentFollowup<'_>,
     admission: &dyn crate::message_admission::MessageAdmission,
 ) -> Result<PostMessageResult, CoordinationError> {
+    let AgentFollowup {
+        sender_id,
+        sender_epoch,
+        recipient_id,
+        id,
+        text,
+        delivery,
+        now,
+    } = input;
     let text = crate::event_write::python_strip(text);
     if text.is_empty() || text.chars().count() > 32_000 {
         return Err(CoordinationError::InvalidRequest(
