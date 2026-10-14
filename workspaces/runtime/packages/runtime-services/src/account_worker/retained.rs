@@ -161,7 +161,6 @@ fn validate(request: &SessionRequest) -> Result<(), PortError> {
                 | Method::ModelList
                 | Method::ClaudeDiagnostics
                 | Method::OperationStatus
-                | Method::AccountRead
                 | Method::ThreadRead
                 | Method::ThreadTurnsList
         )
