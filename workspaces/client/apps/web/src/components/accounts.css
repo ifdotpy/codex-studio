@@ -451,3 +451,19 @@
   color: var(--muted);
   font-size: var(--studio-text-meta);
 }
+
+/* A one-line status in the composer row; the details are in the tooltip and settings. */
+.account-transfer-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 220px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: var(--muted);
+  font-size: 12px;
+}
+.account-transfer-chip[data-blocked] {
+  color: light-dark(var(--mantine-color-red-7), var(--mantine-color-red-5));
+}
