@@ -24,15 +24,31 @@ install_guard(block_processes=True)
 sys.path.insert(0, str(ROOT / "workspaces/runtime/apps/server/src"))
 import codex_context_repair as repair
 
-home, source, thread_id, import_id, events_path, terminal_turn, output_path = sys.argv[1:]
+(
+    home,
+    source,
+    thread_id,
+    import_id,
+    events_path,
+    terminal_turn,
+    terminal_status,
+    completed_at,
+    inherited_empty,
+    output_path,
+) = sys.argv[1:]
 events = json.loads(Path(events_path).read_text())
+completed_at = float(completed_at) if completed_at else None
+terminal_status = terminal_status or None
+inherited_empty = inherited_empty == "true"
 repair.uuid.uuid4 = lambda: uuid.UUID(import_id)
 try:
     segments = repair._rollout_segments(Path(home), Path(source), thread_id)
     destination = Path(home) / "sessions/.studio-context-repairs/fixture" / Path(source).name
     destination.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     report = repair.sanitized_rollout(
-        Path(source), destination, thread_id, events, terminal_turn, segments=segments
+        Path(source), destination, thread_id, events, terminal_turn,
+        segments=segments, terminal_status=terminal_status,
+        terminal_completed_at=completed_at, inherited_empty=inherited_empty,
     )
     copy = Path(report["copyPath"]).read_bytes() if report.get("copyPath") else b""
     Path(output_path).write_bytes(copy)
