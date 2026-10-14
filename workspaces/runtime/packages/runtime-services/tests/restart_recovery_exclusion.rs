@@ -46,8 +46,8 @@ impl Oracle {
 }
 impl Drop for Oracle {
     fn drop(&mut self) {
-        let _ = writeln!(self.input, "{{\"command\":\"close\"}}");
-        let _ = self.input.flush();
+        let _write_result = writeln!(self.input, "{{\"command\":\"close\"}}");
+        let _flush_result = self.input.flush();
         self.child.wait().expect("reap Python oracle");
     }
 }

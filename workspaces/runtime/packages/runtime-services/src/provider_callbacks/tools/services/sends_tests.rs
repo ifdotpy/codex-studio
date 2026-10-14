@@ -1,4 +1,5 @@
 #![allow(clippy::unwrap_used)]
+#![allow(clippy::duplicate_mod)]
 
 use super::*;
 use crate::managed_host_tools::{PostCommitPort, SendPort};

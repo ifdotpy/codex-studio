@@ -101,6 +101,7 @@ pub(crate) struct HostRuntime {
 
 impl HostRuntime {
     #[cfg(test)]
+    #[allow(dead_code)] // Integration tests use these constructors from a separate crate.
     pub async fn start(
         state: &mut HttpState,
         store: Arc<RuntimeStore>,
@@ -178,6 +179,7 @@ impl HostRuntime {
     }
 
     #[cfg(test)]
+    #[allow(dead_code)] // Integration tests use these constructors from a separate crate.
     pub async fn with_launcher(
         store: Arc<RuntimeStore>,
         launcher: Arc<dyn AccountLauncher>,

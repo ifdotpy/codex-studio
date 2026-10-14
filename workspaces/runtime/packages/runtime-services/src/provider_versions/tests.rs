@@ -1,3 +1,5 @@
+#![allow(clippy::duplicate_mod)]
+
 use super::*;
 use std::{
     io::{BufRead, BufReader, Write},

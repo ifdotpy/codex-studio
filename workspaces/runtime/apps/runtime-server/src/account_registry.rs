@@ -68,6 +68,7 @@ pub(crate) struct AccountRegistry {
 
 impl AccountRegistry {
     #[cfg(test)]
+    #[allow(dead_code)] // Integration tests use this constructor from a separate crate.
     pub async fn new(
         store: Arc<RuntimeStore>,
         launcher: Arc<dyn AccountLauncher>,
