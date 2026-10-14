@@ -72,7 +72,7 @@ class NotificationPreflightRetry(unittest.TestCase):
                     try:
                         return original_execute(sql, parameters)
                     except sqlite3.OperationalError as error:
-                        if ("UPDATE runtime_supervisor_cursor SET sequence=sequence" in str(sql)
+                        if ("UPDATE main.runtime_supervisor_cursor SET sequence=sequence" in str(sql)
                                 and codex_runtime.sqlite_busy(error)):
                             busy_preflight.set()
                         raise
@@ -118,7 +118,7 @@ class NotificationPreflightRetry(unittest.TestCase):
                 try:
                     blocker.execute("BEGIN IMMEDIATE")
                     proceed.set()
-                    self.assertTrue(busy_preflight.wait(HANG_GUARD_SECONDS), "preflight UPDATE did not hit SQLITE_BUSY")
+                    self.assertTrue(busy_preflight.wait(HANG_GUARD_SECONDS), "writer admission did not hit SQLITE_BUSY")
                     acquired = runtime.lock.acquire(timeout=.2)
                     self.assertTrue(acquired, "SQLite writer preflight must not retain Runtime.lock")
                     if acquired:

@@ -36,9 +36,11 @@ STREAM_OR_FILE_ROUTES = frozenset(
     {
         ("GET", "/api/sync/stream"),
         ("GET", "/api/monitor/log"),
+        ("GET", "/api/servers/exports/{name}"),
     }
 )
-HIDDEN_COMPATIBILITY_ROUTES = frozenset({("POST", "/api/voice/{action:path}")})
+# The export stream serves paired servers over the QUIC link only (docs/peer-link.md).
+HIDDEN_COMPATIBILITY_ROUTES = frozenset({("POST", "/api/voice/{action:path}"), ("GET", "/api/servers/exports/{name}")})
 
 
 def effective_route_path(path: str) -> str:

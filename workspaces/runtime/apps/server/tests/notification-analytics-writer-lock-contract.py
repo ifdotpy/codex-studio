@@ -124,9 +124,23 @@ class NotificationAnalyticsWriterContract(unittest.TestCase):
             return original(db, agent)
         params = {'responseId': 'exact-response', 'tokenUsage': {
             'total': {'totalTokens': 17}, 'last': {'totalTokens': 17, 'inputTokens': 7, 'outputTokens': 10}}}
+        def dispatch_notice():
+            # Real dispatch metadata enables the reused connection, which has
+            # a writable analytics attachment. Admission must claim main only.
+            try:
+                self.runtime.notification({'method': 'thread/tokenUsage/updated', 'params': {
+                    'threadId': self.agent['threadId'], 'turnId': self.agent['turnId'], **params},
+                    '_studioDispatchedAt': time.time()})
+                local = self.runtime._callback_db
+                self.assertTrue(local.reuse)
+                databases = {row[1] for row in local.connection.execute('PRAGMA database_list')}
+                self.assertIn('analytics', databases)
+            finally:
+                self.runtime.close_notification_database()
+
         with patch.object(self.runtime, 'analytics_agent', observed):
             with self.writer(self.runtime.analytics_db_path):
-                worker, finished, errors = self.run_callback(lambda: self.notice('thread/tokenUsage/updated', **params))
+                worker, finished, errors = self.run_callback(dispatch_notice)
                 self.assertTrue(entered.wait(HANG_GUARD_SECONDS))
                 self.assertTrue(finished.wait(HANG_GUARD_SECONDS), 'A native callback waits for the analytics writer')
                 self.assertEqual(errors, [])

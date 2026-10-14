@@ -29,6 +29,7 @@ sys.dont_write_bytecode = True
 sys.path.insert(0, str(SERVER_SOURCE_ROOT))
 import codex_runtime
 from codex_runtime import Runtime
+from codex_sync_entities import ENTITY_EVENT_INSERT_TRIGGER
 
 
 class WakeClock:
@@ -393,16 +394,16 @@ class SchedulerConnection(unittest.TestCase):
         def dispatch(**_options):
             calls.append(True)
             with self.rt.db() as db:
-                self.assertIsNotNone(db.execute("SELECT 1 FROM sqlite_master WHERE name='sync_entity_event_INSERT'").fetchone())
+                self.assertIsNotNone(db.execute("SELECT 1 FROM sqlite_master WHERE name=?", (ENTITY_EVENT_INSERT_TRIGGER,)).fetchone())
             if len(calls) == 1:
                 writer = sqlite3.connect(self.rt.db_path)
                 try:
                     with writer:
-                        writer.execute('DROP TRIGGER sync_entity_event_INSERT')
+                        writer.execute('DROP TRIGGER ' + ENTITY_EVENT_INSERT_TRIGGER)
                 finally:
                     writer.close()
             with self.rt.db() as db:
-                self.assertIsNotNone(db.execute("SELECT 1 FROM sqlite_master WHERE name='sync_entity_event_INSERT'").fetchone())
+                self.assertIsNotNone(db.execute("SELECT 1 FROM sqlite_master WHERE name=?", (ENTITY_EVENT_INSERT_TRIGGER,)).fetchone())
                 db.execute("INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch) "
                            "VALUES(?, 'fixture', 'user', 'test', 'pending', 1, 1)", (str(len(calls)),))
                 db.execute("INSERT INTO runtime_items VALUES(?, 'fixture', '{}', 1)", (str(len(calls)),))

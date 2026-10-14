@@ -86,7 +86,7 @@ fn parse_sections(source: &str) -> StoreResult<[&str; 4]> {
 
 fn drop_legacy_watch_triggers(transaction: &Transaction<'_>) -> StoreResult<()> {
     let mut statement = transaction.prepare(
-        "SELECT name FROM sqlite_master WHERE type='trigger' AND name GLOB 'sync_watch_*'",
+        "SELECT name FROM sqlite_master WHERE type='trigger' AND (name GLOB 'sync_watch_*' OR name GLOB 'sync_entity_event_window_v2_*')",
     )?;
     let names = statement
         .query_map([], |row| row.get::<_, String>(0))?

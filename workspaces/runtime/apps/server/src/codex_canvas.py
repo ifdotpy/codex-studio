@@ -670,6 +670,7 @@ class BackendShutdown:
     def __init__(self):
         self.request = None
         self.logged = False
+        self._log_lock = threading.Lock()
         self.finished = False
         self.timeout_seconds = SHUTDOWN_TIMEOUT_SECONDS
 
@@ -683,13 +684,25 @@ class BackendShutdown:
         request = self.request
         if request is None:
             return False
-        if not self.logged:
+        # Claim the record once, but release the guard before stderr IO. The
+        # deadline watchdog must remain independent of every logger and lock.
+        log_lock = self.__dict__.setdefault('_log_lock', threading.Lock())
+        with log_lock:
+            should_log = not self.logged
             self.logged = True
+        if should_log:
             print(json.dumps({"event": "backend_shutdown", "pid": os.getpid(),
                               "signal": request[0], "at": time.time(),
                               "timeoutSeconds": self.timeout_seconds}),
                   file=sys.stderr, flush=True)
         return True
+
+    def observe_request(self):
+        """Report a signal even when Runtime construction blocks the main thread."""
+        while True:
+            if self.requested() or self.finished:
+                return
+            time.sleep(SHUTDOWN_POLL_SECONDS)
 
     def watch(self):
         while True:
@@ -713,6 +726,10 @@ def main():
     # Prepare the watchdog before signals can request shutdown. A daemon still
     # runs while Python waits for non-daemon threads after main returns.
     threading.Thread(target=shutdown.watch, name="backend-shutdown", daemon=True).start()
+    # Diagnostic IO may block. Give it its own daemon before signals are
+    # installed; the existing deadline watchdog never depends on its progress.
+    threading.Thread(target=shutdown.observe_request,
+                     name="backend-shutdown-diagnostic", daemon=True).start()
     signal_numbers = [signal.SIGTERM, signal.SIGINT]
     if hasattr(signal, "SIGBREAK"):
         signal_numbers.append(signal.SIGBREAK)
@@ -732,17 +749,19 @@ def main():
         server = make_server(canvas, args.port, unix_socket=os.name != "nt")
         if shutdown.requested():
             return
+        runtime = Runtime(canvas.root)
+        canvas.runtime = runtime
         if server.unix_server:
             unix_thread = threading.Thread(target=server.unix_server.serve_forever,
                                            kwargs={"poll_interval": 0.5,
                                                    "shutdown_requested": shutdown.requested}, daemon=True)
             unix_thread.start()
-        runtime = Runtime(canvas.root)
-        canvas.runtime = runtime
         if shutdown.requested():
             return
         from codex_live_updates import start as start_updates
         updates = start_updates(runtime)
+        from codex_peer_link import start as start_peer_link
+        start_peer_link(runtime, server.server_port)
         print(f"Codex Canvas: http://127.0.0.1:{server.server_port}", flush=True)
         server.serve_forever(poll_interval=0.5, shutdown_requested=shutdown.requested)
     except KeyboardInterrupt:

@@ -43,6 +43,8 @@ if (!uiOnly) {
         "studio-diagnostics",
         "-p",
         "studio-operations-python",
+        "-p",
+        "studio-peer-link",
       ],
       { cwd: repositoryRoot, stdio: "inherit" },
     );
@@ -187,6 +189,13 @@ try {
           : "studio-runtime-server",
       ),
     );
+    // The QUIC link to paired servers (docs/peer-link.md).
+    const peerLink = path.join(resources, "bin/studio-peer-link");
+    await cp(
+      path.join(cargoTargetDirectory, "release/studio-peer-link"),
+      peerLink,
+    );
+    signCode(peerLink, identity);
     execFileSync(
       "pnpm",
       [

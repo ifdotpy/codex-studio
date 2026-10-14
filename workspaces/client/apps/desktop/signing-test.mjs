@@ -104,10 +104,13 @@ if (process.argv.includes("--unlock-contract")) {
   const repositoryScripts = fileURLToPath(
     new URL("../../../runtime/apps/server/src", import.meta.url),
   );
+  const guest = path.join(app, "Contents/Resources/workspace/vm/guest");
   const lease = path.join(scripts, ".studio-update.lock");
   try {
     mkdirSync(path.join(app, "Contents/MacOS"), { recursive: true });
     mkdirSync(scripts, { recursive: true });
+    mkdirSync(guest, { recursive: true });
+    writeFileSync(path.join(guest, "studio_guest_probe.py"), "value = 1\n");
     copyFileSync("/usr/bin/true", path.join(app, "Contents/MacOS/Probe"));
     chmodSync(path.join(app, "Contents/MacOS/Probe"), 0o755);
     writeFileSync(
@@ -143,6 +146,17 @@ if (process.argv.includes("--unlock-contract")) {
         [],
         "imports cannot add unsigned cache files",
       );
+      execFileSync(process.env.CODEX_AGENTS_PYTHON || "python3", [
+        "-c",
+        "import sys; sys.dont_write_bytecode = False; sys.pycache_prefix = None; sys.path.insert(0, sys.argv[1]); import studio_guest_probe",
+        guest,
+      ]);
+      assert.deepEqual(
+        readdirSync(path.join(guest, "__pycache__")),
+        [],
+        "imports from vm/guest cannot add unsigned cache files",
+      );
+      execFileSync("codesign", ["--verify", "--deep", "--strict", app]);
       execFileSync(process.env.CODEX_AGENTS_PYTHON || "python3", [
         "-B",
         "-c",

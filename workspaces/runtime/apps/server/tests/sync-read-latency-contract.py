@@ -213,48 +213,29 @@ class SyncReadLatencyContract(unittest.TestCase):
         self.assertEqual(unchanged["checkpoint"]["seq"], cursor)
         dumps.assert_not_called()
 
-    def test_writer_conflicts_do_not_serialize_two_entity_http_deadlines(self):
+    def test_committed_monitor_changes_remain_readable_under_an_unrelated_writer(self):
         changed = {**self.monitor, "tail": "The final output", "status": "completed"}
         with self.connect() as db:
             db.execute("UPDATE runtime_monitors SET record=? WHERE id=?", (json.dumps(changed), "monitor"))
+        # Repair the old-build fixture as a startup operation before handlers run.
         self._restart_sync_store()
         path = self.pull_path(after=self.initial["checkpoint"]["seq"])
         self.observe_writer = True
         with self.writer():
-            first = self.pool.submit(self.get, path)
-            self.assertTrue(self.first_writer_attempt.wait(.5), "The first pull did not request the SQLite writer")
-            second = self.pool.submit(self.get, path)
-            self.assert_controls_fast()
-            responses = [first.result(timeout=1), second.result(timeout=1)]
-            # Keep the writer held through both real handlers, including a handler
-            # whose client already timed out. A timed out GET does not stop Python.
+            futures = [self.pool.submit(self.get, path),
+                       self.pool.submit(self.get, self.pull_path(fresh=1))]
+            responses = [future.result(timeout=1) for future in futures]
             self.assertTrue(self.two_pulls_finished.wait(1), self.pull_observations)
         self.observe_writer = False
-
-        evidence = {"responses": responses, "handlerSeconds": [
-            round(row["finished"] - row["started"], 4) for row in self.pull_observations]}
+        self.assertEqual(self.writer_attempts, [])
         for response in responses:
-            self.assertNotIn("timeout", response, evidence)
-            self.assertLess(response["elapsed"], CLIENT_DEADLINE, evidence)
-            # Contention must stay visible. It must not acknowledge a cursor from
-            # an entity projection whose committed source still needs maintenance.
-            self.assertIn(response["status"], (400, 503), evidence)
-            self.assertIn("locked", response["body"].get("error", "").lower(), evidence)
-            self.assertNotIn("checkpoint", response["body"], evidence)
-
-        # Two ordinary callers repair the same source after the writer releases.
-        # Both must expose the exact value and the same durable sequence.
-        repaired = [future.result(timeout=1) for future in
-                    [self.pool.submit(self.get, path), self.pool.submit(self.get, path)]]
-        for response in repaired:
-            self.assertEqual(response["status"], 200, response)
+            self.assertEqual(response.get("status"), 200, response)
             body = response["body"]
             row = next(row for row in body["documents"] if row["id"] == "entity:monitor:monitor")
             value = json.loads(row["payload"])["value"]
             self.assertEqual((value["tail"], value["status"]), (changed["tail"], changed["status"]))
             self.assertEqual(body["checkpoint"]["seq"], body["maxSeq"])
             self.assertGreater(body["checkpoint"]["seq"], self.initial["checkpoint"]["seq"])
-        self.assertEqual(repaired[0]["body"], repaired[1]["body"])
 
     def test_crc32_transcript_collision_does_not_block_an_unchanged_entity_pull(self):
         stripe = zlib.crc32(ENTITY_SCOPE.encode()) % SCOPE_STRIPES
