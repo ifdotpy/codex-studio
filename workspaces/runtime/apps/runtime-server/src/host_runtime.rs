@@ -7,7 +7,7 @@ use serde_json::json;
 use std::{
     collections::BTreeMap,
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{Arc, Mutex},
 };
 use studio_runtime_http::HttpState;
 use studio_runtime_process::{
@@ -139,10 +139,12 @@ impl HostRuntime {
             monitor_dispatch_wake,
             session_broker,
             None,
+            Arc::new(Mutex::new(BTreeMap::new())),
         )
         .await
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn start_with_monitor_wake_and_native_runtime(
         state: &mut HttpState,
         store: Arc<RuntimeStore>,
@@ -151,6 +153,7 @@ impl HostRuntime {
         monitor_dispatch_wake: Arc<tokio::sync::Notify>,
         session_broker: AccountSessionBroker,
         native_runtime: Option<Arc<NativeRuntime>>,
+        session_binaries: Arc<Mutex<BTreeMap<String, (u64, String)>>>,
     ) -> Result<Self, WorkerError> {
         let mut nonce = [0_u8; 16];
         getrandom::fill(&mut nonce).map_err(|_| WorkerError::TaskFailed)?;
@@ -204,6 +207,7 @@ impl HostRuntime {
             root: store.root().to_owned(),
             native_path,
             native_runtime,
+            session_binaries,
             resources,
             environment: std::env::vars().collect(),
         });
@@ -291,6 +295,7 @@ struct HostLauncher {
     root: PathBuf,
     native_path: Option<String>,
     native_runtime: Option<Arc<NativeRuntime>>,
+    session_binaries: Arc<Mutex<BTreeMap<String, (u64, String)>>>,
     resources: PreparationResources,
     environment: BTreeMap<String, String>,
 }
@@ -323,9 +328,10 @@ impl AccountLauncher for HostLauncher {
             let executable = lease
                 .as_ref()
                 .and_then(|lease| lease.path().to_str())
-                .or(self.native_path.as_deref());
+                .map(str::to_owned)
+                .or_else(|| self.native_path.clone());
             let launch = codex_launch(
-                executable,
+                executable.as_deref(),
                 self.environment.clone(),
                 home,
                 isolated,
@@ -379,6 +385,11 @@ impl AccountLauncher for HostLauncher {
                 }) as Arc<dyn ProviderTaskFactory>,
                 None => factory,
             };
+            if let Some(executable) = executable
+                && let Ok(mut binaries) = self.session_binaries.lock()
+            {
+                binaries.insert(account.clone(), (generation.0, executable));
+            }
             Ok(AccountLaunch {
                 factory,
                 options: OpenOptions {

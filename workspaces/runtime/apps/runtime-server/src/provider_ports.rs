@@ -1,9 +1,15 @@
 //! Production provider adapters owned by runtime-server.
 //!
-//! Automatic title generation follows `codex_rename.py:64-115`: it creates an
-//! ephemeral, read-only thread, sends one prompt, and reads the exact turn to
-//! completion. Every provider operation has a durable, deterministic identity;
-//! Unknown writes stop the flow and are never repeated.
+//! Automatic title generation follows `codex_rename.py:64-115`: it uses the
+//! live retained Codex or Claude session, sends one prompt, and reads the exact
+//! turn to completion. Every provider operation has a durable, deterministic
+//! identity; Unknown writes stop the flow and are never repeated.
+//!
+//! Diagnostics queue differences: Python's recovery executor, clock reply
+//! queue, and per-AppServer callback/tool queues do not exist as Rust queues.
+//! `recoveryPending` and `clock_replies` are therefore zero; callbacks are
+//! counted from unresolved durable callback receipts and tool requests from
+//! queued/running `runtime_tool_requests` rows.
 
 use std::{
     future::Future,
@@ -52,17 +58,53 @@ pub(crate) struct SupervisorDiagnostics {
     pub mode: bool,
     pub fallback: bool,
     pub notice: Option<String>,
+    pub state_dir: PathBuf,
 }
 
 impl studio_runtime_services::diagnostics::SupervisorDiagnosticsPort for SupervisorDiagnostics {
     fn snapshot(&self) -> studio_runtime_services::diagnostics::SupervisorDiagnosticsSnapshot {
+        let health = if self.mode { Some(self.health()) } else { None };
         studio_runtime_services::diagnostics::SupervisorDiagnosticsSnapshot {
             mode: self.mode,
             fallback: self.fallback,
             notice: self.notice.clone(),
-            health: None,
+            health,
         }
     }
+}
+
+impl SupervisorDiagnostics {
+    fn health(&self) -> Value {
+        #[cfg(unix)]
+        {
+            use studio_runtime_process::{HealthRequest, SupervisorClient};
+            let result =
+                SupervisorClient::connect_operator(&self.state_dir, self.state_dir.clone())
+                    .and_then(|mut client| client.health(HealthRequest::default()));
+            match result {
+                Ok(status) => supervisor_health_payload(status, &self.state_dir),
+                Err(error) => json!({"error":format!("Supervisor health is unavailable: {error}")}),
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            json!({"error":"Supervisor health transport is unavailable on this platform."})
+        }
+    }
+}
+
+fn supervisor_health_payload(
+    status: studio_runtime_process::HealthResult,
+    expected_state: &std::path::Path,
+) -> Value {
+    if status.protocol != 1 || expected_state.to_str() != Some(status.state_dir.as_str()) {
+        return json!({"error":"The supervisor identity is incompatible."});
+    }
+    if status.recovery.blocked.is_some() || status.recovery.degraded {
+        return json!({"error":"Supervisor crash recovery needs operator attention."});
+    }
+    serde_json::to_value(status)
+        .unwrap_or_else(|_| json!({"error":"invalid supervisor health response"}))
 }
 
 impl studio_runtime_services::diagnostics::ProviderDiagnosticsPort for ProviderDiagnostics {
@@ -96,7 +138,6 @@ impl studio_runtime_services::diagnostics::ProviderDiagnosticsPort for ProviderD
         let mut native_accounts = serde_json::Map::new();
         let mut queues = serde_json::Map::new();
         let mut loaded_threads = 0_u64;
-        let agent_rows = diagnostic_agents(&self.store);
         let deadline = Instant::now() + Duration::from_secs(5);
         for (index, (account, provider, scope)) in active.iter().enumerate() {
             let alias = format!("account{}", index + 1);
@@ -141,50 +182,12 @@ impl studio_runtime_services::diagnostics::ProviderDiagnosticsPort for ProviderD
                 }
             }
 
-            let mut pending = 0_u64;
-            for agent in agent_rows.iter().filter(|agent| {
-                agent
-                    .get("accountKey")
-                    .and_then(Value::as_str)
-                    .unwrap_or("default")
-                    == account
-                    && agent
-                        .get("threadId")
-                        .and_then(Value::as_str)
-                        .is_some_and(|thread| !thread.is_empty())
-            }) {
-                let (Some(agent_id), Some(epoch), Some(thread_id)) = (
-                    agent.get("id").and_then(Value::as_str),
-                    agent.get("epoch").and_then(Value::as_i64),
-                    agent.get("threadId").and_then(Value::as_str),
-                ) else {
-                    continue;
-                };
-                let actor = RequestActor {
-                    agent: agent_id.to_owned(),
-                    epoch,
-                };
-                if Instant::now() >= deadline {
-                    break;
-                }
-                if let Some(value) = provider_read(
-                    self.session.as_ref(),
-                    scope,
-                    Some(actor),
-                    Method::ThreadQueueList,
-                    json!({"threadId":thread_id}),
-                    deadline,
-                ) {
-                    pending = pending.saturating_add(
-                        value
-                            .get("data")
-                            .and_then(Value::as_array)
-                            .map_or(0, |rows| rows.len()) as u64,
-                    );
-                }
-            }
-            queues.insert(format!("{alias}.threadQueuePending"), json!(pending));
+            let (callbacks, tool_requests) = account_queue_counts(&self.store, account);
+            queues.insert(format!("{alias}.callbacks"), json!(callbacks));
+            queues.insert(format!("{alias}.clock_replies"), json!(0));
+            queues.insert(format!("{alias}.tool_requests"), json!(tool_requests));
         }
+        queues.insert("recoveryPending".to_owned(), json!(0));
         ProviderDiagnosticsSnapshot {
             native_accounts: Value::Object(native_accounts),
             studio_loaded_threads: loaded_threads,
@@ -193,21 +196,38 @@ impl studio_runtime_services::diagnostics::ProviderDiagnosticsPort for ProviderD
     }
 }
 
-fn diagnostic_agents(store: &RuntimeStore) -> Vec<Value> {
+fn account_queue_counts(store: &RuntimeStore, account: &str) -> (u64, u64) {
     let Ok(connection) = store.read() else {
-        return Vec::new();
+        return (0, 0);
     };
-    let Ok(mut statement) =
-        connection.prepare("SELECT record FROM runtime_agents ORDER BY id LIMIT 4096")
-    else {
-        return Vec::new();
-    };
-    let Ok(rows) = statement.query_map([], |row| row.get::<_, String>(0)) else {
-        return Vec::new();
-    };
-    rows.filter_map(Result::ok)
-        .filter_map(|raw| serde_json::from_str(&raw).ok())
-        .collect()
+    let callbacks = connection
+        .query_row(
+            "SELECT COUNT(*) FROM runtime_operation_receipts submitted
+             WHERE submitted.id>=?1 AND submitted.id<?2
+               AND substr(submitted.id,-10)=':submitted'
+               AND NOT EXISTS (SELECT 1 FROM runtime_operation_receipts settled
+                 WHERE settled.id=substr(submitted.id,1,length(submitted.id)-10)||':written'
+                    OR settled.id=substr(submitted.id,1,length(submitted.id)-10)||':unknown')",
+            [
+                format!("account-worker:callback:{account}:"),
+                format!("account-worker:callback:{account}:~"),
+            ],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap_or_default()
+        .max(0) as u64;
+    let tool_requests = connection
+        .query_row(
+            "SELECT COUNT(*) FROM runtime_tool_requests r
+             JOIN runtime_agents a ON a.id=json_extract(r.record,'$.agent')
+             WHERE COALESCE(json_extract(a.record,'$.accountKey'),'default')=?1
+               AND json_extract(r.record,'$.stage') IN ('queued','running')",
+            [account],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap_or_default()
+        .max(0) as u64;
+    (callbacks, tool_requests)
 }
 
 fn provider_read(
@@ -259,8 +279,7 @@ fn provider_read(
 pub(crate) struct LiveProviderConnections {
     pub accounts: Arc<AccountDriver>,
     pub session: Arc<dyn AccountSessionPort>,
-    pub native_runtime: Arc<studio_runtime_services::native_runtime::NativeRuntime>,
-    pub codex_binary: Option<String>,
+    pub session_binaries: Arc<std::sync::Mutex<std::collections::BTreeMap<String, (u64, String)>>>,
 }
 
 impl ActiveProviderConnections for LiveProviderConnections {
@@ -290,18 +309,7 @@ impl ActiveProviderConnections for LiveProviderConnections {
                         .filter(|path| !path.is_empty())
                         .map(str::to_owned)
                 } else {
-                    self.native_runtime
-                        .read_state()
-                        .ok()
-                        .flatten()
-                        .and_then(|state| {
-                            state
-                                .selected()
-                                .and_then(|selected| selected.get("path"))
-                                .and_then(Value::as_str)
-                                .map(str::to_owned)
-                        })
-                        .or_else(|| self.codex_binary.clone())
+                    leased_session_binary(&self.session_binaries, &account_key, scope.generation)
                 };
                 Some(ProviderProfile {
                     account_key,
@@ -313,6 +321,15 @@ impl ActiveProviderConnections for LiveProviderConnections {
             })
             .collect()
     }
+}
+
+fn leased_session_binary(
+    binaries: &std::sync::Mutex<std::collections::BTreeMap<String, (u64, String)>>,
+    account: &str,
+    generation: u64,
+) -> Option<String> {
+    let (leased_generation, binary) = binaries.lock().ok()?.get(account)?.clone();
+    (leased_generation == generation).then_some(binary)
 }
 
 /// Uses the account's already-retained provider session. It never launches a
@@ -349,24 +366,30 @@ impl TitleRequestPort for ProviderTitleRequestPort {
                 agent: request.agent_id.clone(),
                 epoch: request.epoch,
             };
+            let claude = request.provider.as_deref() == Some("claude");
             let operation_root = operation_root(&request.request_id);
             let start_operation = format!("{operation_root}:thread");
             // Cancellation or process loss during a submitted write must leave
             // the same cwd available when the durable receipt is inspected.
             home.retain();
+            let thread_params = if claude {
+                json!({"cwd":home.path(),"model":request.model,"ephemeral":true})
+            } else {
+                json!({
+                    "cwd": home.path(),
+                    "model": request.model,
+                    "ephemeral": true,
+                    "approvalPolicy": "never",
+                    "sandbox": "read-only",
+                })
+            };
             let started = self
                 .call(
                     &request.account_key,
                     &start_operation,
                     Some(actor.clone()),
                     Method::ThreadStart,
-                    json!({
-                        "cwd": home.path(),
-                        "model": request.model,
-                        "approvalPolicy": "never",
-                        "sandbox": "read-only",
-                        "ephemeral": true,
-                    }),
+                    thread_params,
                     deadline,
                     None,
                 )
@@ -410,6 +433,9 @@ impl TitleRequestPort for ProviderTitleRequestPort {
                 "input": [{"type": "text", "text": request.prompt}],
                 "model": request.model,
             });
+            if claude {
+                turn_params["clientUserMessageId"] = json!(format!("{operation_root}:turn"));
+            }
             if let Some(effort) = request.effort.as_deref() {
                 turn_params["effort"] = json!(effort);
             }
@@ -531,6 +557,7 @@ impl TitleRequestPort for ProviderTitleRequestPort {
 }
 
 impl ProviderTitleRequestPort {
+    #[allow(clippy::too_many_arguments)]
     async fn call(
         &self,
         account: &str,
@@ -656,8 +683,12 @@ impl Drop for TitleHome {
 
 #[cfg(test)]
 mod tests {
-    use super::{ProviderTitleRequestPort, TitleHome};
+    use super::{
+        ProviderTitleRequestPort, SupervisorDiagnostics, TitleHome, account_queue_counts,
+        leased_session_binary,
+    };
     use serde_json::json;
+    use std::path::PathBuf;
     use std::sync::{Arc, Mutex};
     use std::time::{Duration, SystemTime};
     use studio_runtime_providers::Method;
@@ -816,5 +847,125 @@ mod tests {
         let first = super::operation_root(&"r".repeat(200));
         assert_eq!(first, super::operation_root(&"r".repeat(200)));
         assert!(first.len() < 80);
+    }
+
+    #[tokio::test]
+    async fn claude_title_uses_stable_message_identity_on_retained_session() {
+        let session = Arc::new(Session {
+            requests: Mutex::new(Vec::new()),
+            unknown_start: false,
+        });
+        let port = ProviderTitleRequestPort::new(session.clone());
+        let receipt = port
+            .request(TitleRequest {
+                request_id: "claude-title-request".into(),
+                agent_id: "agent-fixture".into(),
+                epoch: 9,
+                account_key: "claude-account".into(),
+                provider: Some("claude".into()),
+                model: "claude-sonnet".into(),
+                effort: Some("low".into()),
+                prompt: "Write a title".into(),
+                deadline: SystemTime::now() + Duration::from_secs(10),
+            })
+            .await;
+        assert_eq!(receipt.outcome, WriteOutcome::Written);
+        let calls = session.requests.lock().expect("fixture request list");
+        assert_eq!(calls[0].method, Method::ThreadStart);
+        assert_eq!(calls[1].method, Method::TurnStart);
+        assert_eq!(
+            calls[1].params["clientUserMessageId"],
+            json!(format!(
+                "{}:turn",
+                super::operation_root("claude-title-request")
+            ))
+        );
+        assert_eq!(calls[1].params["model"], "claude-sonnet");
+        assert_eq!(calls[2].method, Method::ThreadTurnsList);
+    }
+
+    #[test]
+    fn version_probe_uses_binary_captured_for_live_session() {
+        let binaries = Mutex::new(std::collections::BTreeMap::from([(
+            "account-a".to_owned(),
+            (7, "/immutable/leased/codex".to_owned()),
+        )]));
+        assert_eq!(
+            leased_session_binary(&binaries, "account-a", 7).as_deref(),
+            Some("/immutable/leased/codex")
+        );
+        assert_eq!(leased_session_binary(&binaries, "account-a", 8), None);
+        assert_eq!(leased_session_binary(&binaries, "account-b", 7), None);
+    }
+
+    #[test]
+    fn supervisor_mode_reports_health_lookup_error_instead_of_null() {
+        let directory = tempfile::tempdir().expect("isolated supervisor state");
+        let snapshot = studio_runtime_services::diagnostics::SupervisorDiagnosticsPort::snapshot(
+            &SupervisorDiagnostics {
+                mode: true,
+                fallback: false,
+                notice: None,
+                state_dir: directory.path().join("missing-supervisor"),
+            },
+        );
+        assert!(
+            snapshot
+                .health
+                .is_some_and(|value| value["error"].is_string())
+        );
+    }
+
+    #[test]
+    fn supervisor_health_rejects_incompatible_or_degraded_status() {
+        let state = PathBuf::from("/tmp/studio-supervisor-test");
+        let status = studio_runtime_process::HealthResult {
+            protocol: 1,
+            state_dir: state.display().to_string(),
+            handles: Vec::new(),
+            journal_limit_bytes: 0,
+            output_limit_bytes_per_handle: 0,
+            durability: studio_runtime_process::Durability::SqliteFullSyncPerRequest,
+            recovery: studio_runtime_process::RecoveryStatus {
+                degraded: false,
+                fallback_ready: true,
+                blocked: None,
+                extra: Default::default(),
+            },
+            extra: Default::default(),
+        };
+        assert!(super::supervisor_health_payload(status.clone(), &state)["error"].is_null());
+        let mut degraded = status;
+        degraded.recovery.degraded = true;
+        assert_eq!(
+            super::supervisor_health_payload(degraded, &state)["error"],
+            "Supervisor crash recovery needs operator attention."
+        );
+    }
+
+    #[test]
+    fn queue_fields_count_matching_persisted_work() {
+        let directory = tempfile::tempdir().expect("isolated diagnostics state");
+        let store = studio_runtime_store::RuntimeStore::open(Some(directory.path()))
+            .expect("open diagnostics store");
+        store
+            .transaction_with(|tx| {
+                tx.execute(
+                    "INSERT INTO runtime_agents(id,record) VALUES('agent-a',?1)",
+                    [r#"{"id":"agent-a","accountKey":"account-a"}"#],
+                )?;
+                tx.execute(
+                    "INSERT INTO runtime_operation_receipts(id,signature,result) VALUES(?1,'submitted','true')",
+                    ["account-worker:callback:account-a:1:3:submitted"],
+                )?;
+                tx.execute(
+                    "INSERT INTO runtime_tool_requests(id,record) VALUES('tool-a',?1)",
+                    [r#"{"id":"tool-a","agent":"agent-a","stage":"queued"}"#],
+                )?;
+                Ok::<(), studio_runtime_store::StoreError>(())
+            })
+            .expect("seed durable pending work");
+        assert_eq!(account_queue_counts(&store, "account-a"), (1, 1));
+        assert_eq!(account_queue_counts(&store, "account-b"), (0, 0));
     }
 }
