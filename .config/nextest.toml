@@ -9,4 +9,5 @@ failure-output = "final"
 
 [profile.ci]
 fail-fast = false
+slow-timeout = { period = "60s", terminate-after = 3 }
 junit.path = "junit.xml"
