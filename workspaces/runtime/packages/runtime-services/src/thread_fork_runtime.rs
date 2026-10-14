@@ -145,8 +145,68 @@ pub async fn dispatch_reserved(
     session: &impl RetainedSession,
     deadline: tokio::time::Instant,
 ) -> Result<TransportReceipt> {
+    validate_request(request)?;
+    send(session, request, deadline).await
+}
+
+/// Submit a reserved fork through HttpState's shared retained-account broker.
+/// The caller persists the exact NativeRequest before calling this function;
+/// the broker commits its provider intent and checks the connection scope.
+/// Call from a blocking worker because AccountSessionPort is synchronous.
+pub fn dispatch_reserved_via_broker(
+    request: &NativeRequest,
+    port: &dyn crate::account_session_runtime::AccountSessionPort,
+    deadline: std::time::Instant,
+) -> Result<crate::account_session_runtime::SessionReceipt> {
+    use crate::account_session_runtime::{AccountSessionError, ConnectionScope, ProviderRequest};
+    use crate::account_worker::retained::RequestActor;
+    use studio_runtime_providers::Method;
+
+    validate_request(request)?;
+    let epoch = i64::try_from(request.ticket.epoch).map_err(|_| NativeError::Changed)?;
+    let method = Method::from_wire(&request.method).ok_or(NativeError::Invalid("fork.method"))?;
+    let scope = ConnectionScope {
+        account: request.ticket.account.clone(),
+        connection: request.ticket.connection.clone(),
+        generation: request.ticket.generation,
+    };
+    let receipt = port
+        .provider_request(ProviderRequest {
+            account: request.ticket.account.clone(),
+            operation: request.ticket.request.clone(),
+            actor: Some(RequestActor {
+                agent: request.ticket.agent.clone(),
+                epoch,
+            }),
+            expected_scope: Some(scope.clone()),
+            method,
+            params: request.params.clone(),
+            deadline,
+        })
+        .map_err(|error| match error {
+            AccountSessionError::Requires(name) => NativeError::Unavailable(name),
+            AccountSessionError::Refused(_) => NativeError::Changed,
+            AccountSessionError::Unknown => NativeError::Unknown,
+            _ => NativeError::Unknown,
+        })?;
+    if receipt.operation != request.ticket.request
+        || receipt.scope != scope
+        || receipt
+            .ticket
+            .as_ref()
+            .is_some_and(|ticket| ticket.method != method || ticket.generation != scope.generation)
+    {
+        return Err(NativeError::Changed);
+    }
+    Ok(receipt)
+}
+
+fn validate_request(request: &NativeRequest) -> Result<()> {
     bounded(&request.params, "fork.params")?;
     if request.method != "thread/fork"
+        || request.ticket.request.is_empty()
+        || request.ticket.connection.is_empty()
+        || request.ticket.generation == 0
         || request
             .params
             .get("threadId")
@@ -171,5 +231,5 @@ pub async fn dispatch_reserved(
     {
         return Err(NativeError::Invalid("fork.params.threadId"));
     }
-    send(session, request, deadline).await
+    Ok(())
 }
