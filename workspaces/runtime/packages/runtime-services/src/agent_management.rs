@@ -347,16 +347,35 @@ impl ManagementSnapshot {
             effects.push(kind);
             Ok(())
         };
-        if agent.active()
-            || [
-                "threadId",
-                "turnId",
-                "startAttempt",
-                "workspaceOperation",
-                "accountTransferId",
-            ]
-            .iter()
-            .any(|key| agent.flag(key))
+        let capacity_retry_is_local = agent
+            .record
+            .pointer("/capacityRetry/id")
+            .and_then(Value::as_str)
+            .zip(
+                agent
+                    .record
+                    .pointer("/startAttempt/capacityRetryId")
+                    .and_then(Value::as_str),
+            )
+            .is_some_and(|(retry_id, attempt_retry_id)| {
+                retry_id == attempt_retry_id
+                    && agent
+                        .record
+                        .pointer("/startAttempt/submitted")
+                        .and_then(Value::as_bool)
+                        != Some(true)
+            });
+        if !capacity_retry_is_local
+            && (agent.active()
+                || [
+                    "threadId",
+                    "turnId",
+                    "startAttempt",
+                    "workspaceOperation",
+                    "accountTransferId",
+                ]
+                .iter()
+                .any(|key| agent.flag(key)))
         {
             stage(LifecycleEffectKind::Interrupt)?;
         }
