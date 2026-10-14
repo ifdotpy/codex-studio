@@ -379,7 +379,7 @@
       "additionalProperties": {
         "$ref": "#/$defs/TransferMemberRecord"
       },
-      "maxProperties": 2048,
+      "maxProperties": 2050,
       "propertyNames": {
         "maxLength": 200,
         "minLength": 1

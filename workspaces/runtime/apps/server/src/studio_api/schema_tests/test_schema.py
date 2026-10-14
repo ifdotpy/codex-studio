@@ -10,6 +10,14 @@ from tempfile import TemporaryDirectory
 from typing import cast
 
 from codex_layout import REPOSITORY_ROOT
+from codex_agent_modes import (
+    DEFAULT_MAX_TEAM_AGENTS,
+    DEFAULT_SUBAGENT_CONCURRENCY,
+    MAX_SUBAGENT_CONCURRENCY,
+    MAX_TEAM_AGENTS,
+    MIN_SUBAGENT_CONCURRENCY,
+    MIN_TEAM_AGENTS,
+)
 from pydantic import TypeAdapter, ValidationError
 from codex_sync_entities import _DTO_MODELS
 from studio_api.models import (
@@ -33,7 +41,9 @@ from codex_records import SafeNumber, WorktreeCleanupRecord
 import codex_records as record_contracts
 from studio_api.io.models import TerminalRecord
 from studio_api.work.models import RuleRecord, WorkItem
-from studio_api.generate_types import render
+from studio_api.generate_state_schemas import render_rust_agent_limits
+from studio_api.generate_types import render, render_schema_identity
+from studio_api.persisted_account_transfer import PersistedAccountTransferRecord
 from studio_api.schema import (
     canonical_openapi_json,
     entity_schema_names,
@@ -44,6 +54,7 @@ from studio_api.schema import (
     normalize_optional_parameter_schemas,
     validate_error_responses,
     validate_contract_schemas,
+    api_schema_hash,
     openapi_document,
 )
 from studio_api.request_schema_audit import (
@@ -117,6 +128,54 @@ def sample_document(response_schema: dict[str, JsonValue]) -> dict[str, JsonValu
 
 
 class SchemaContractTests(unittest.TestCase):
+    def test_agent_capacity_contracts_derive_from_runtime_limits(self) -> None:
+        document = openapi_document()
+        components = document["components"]
+        assert isinstance(components, dict)
+        schemas = components["schemas"]
+        assert isinstance(schemas, dict)
+        expected = {
+            "concurrency": (MIN_SUBAGENT_CONCURRENCY, DEFAULT_SUBAGENT_CONCURRENCY, MAX_SUBAGENT_CONCURRENCY),
+            "maxAgents": (MIN_TEAM_AGENTS, DEFAULT_MAX_TEAM_AGENTS, MAX_TEAM_AGENTS),
+        }
+        for model_name in ("CreateAgentRequest", "ConfigureRequest"):
+            model = schemas[model_name]
+            assert isinstance(model, dict)
+            properties = model["properties"]
+            assert isinstance(properties, dict)
+            for field, (minimum, default, maximum) in expected.items():
+                schema = properties[field]
+                assert isinstance(schema, dict)
+                self.assertEqual(schema["minimum"], minimum)
+                self.assertEqual(schema["default"], default)
+                self.assertEqual(schema["maximum"], maximum)
+        conversation = schemas["ConversationRequest"]
+        assert isinstance(conversation, dict)
+        conversation_properties = conversation["properties"]
+        assert isinstance(conversation_properties, dict)
+        concurrency = conversation_properties["subagent_concurrency"]
+        assert isinstance(concurrency, dict)
+        self.assertEqual(concurrency["minimum"], MIN_SUBAGENT_CONCURRENCY)
+        self.assertEqual(concurrency["default"], DEFAULT_SUBAGENT_CONCURRENCY)
+        self.assertEqual(concurrency["maximum"], MAX_SUBAGENT_CONCURRENCY)
+
+        persisted_schema = PersistedAccountTransferRecord.model_json_schema()
+        self.assertEqual(persisted_schema["properties"]["members"]["maxProperties"], MAX_TEAM_AGENTS)
+        generated_identity = render_schema_identity(api_schema_hash(document), document)
+        for name, value in (
+            ("MIN_SUBAGENT_CONCURRENCY", MIN_SUBAGENT_CONCURRENCY),
+            ("DEFAULT_SUBAGENT_CONCURRENCY", DEFAULT_SUBAGENT_CONCURRENCY),
+            ("MAX_SUBAGENT_CONCURRENCY", MAX_SUBAGENT_CONCURRENCY),
+            ("MIN_TEAM_AGENTS", MIN_TEAM_AGENTS),
+            ("DEFAULT_MAX_TEAM_AGENTS", DEFAULT_MAX_TEAM_AGENTS),
+            ("MAX_TEAM_AGENTS", MAX_TEAM_AGENTS),
+        ):
+            self.assertIn(f"export const {name} = {value};", generated_identity)
+        generated_api = REPOSITORY_ROOT / "workspaces/client/apps/web/src/generated/apiSchema.ts"
+        self.assertEqual(generated_api.read_text(encoding="utf-8"), generated_identity)
+        generated_rust = REPOSITORY_ROOT / "workspaces/runtime/packages/runtime-schema/src/agent_limits_generated.rs"
+        self.assertEqual(generated_rust.read_text(encoding="utf-8"), render_rust_agent_limits())
+
     def test_openapi_defaults_ignore_unrelated_same_named_models(self) -> None:
         from pydantic import BaseModel
 
@@ -349,6 +408,26 @@ class SchemaContractTests(unittest.TestCase):
         candidate = constraint_snapshot(committed_document)
         loosenings, _tightenings = constraint_changes(baseline, candidate)
         accepted_loosenings = {
+            ("/components/schemas/ConfigureRequest/properties/concurrency", "maximum"):
+                ("512.0", "2048.0", "Raises the approved subagent concurrency ceiling to support 2048 configured slots."),
+            ("/components/schemas/ConfigureRequest/properties/maxAgents", "maximum"):
+                ("1024.0", "2050.0", "Allows the lead, 2048 workers, and one queued worker."),
+            ("/components/schemas/ConversationRequest/properties/subagent_concurrency", "maximum"):
+                ("512.0", "2048.0", "Raises the approved subagent concurrency ceiling to support 2048 configured slots."),
+            ("/components/schemas/CreateAgentRequest/properties/concurrency", "maximum"):
+                ("512.0", "2048.0", "Raises the approved subagent concurrency ceiling to support 2048 configured slots."),
+            ("/components/schemas/CreateAgentRequest/properties/maxAgents", "maximum"):
+                ("1024.0", "2050.0", "Allows the lead, 2048 workers, and one queued worker."),
+            ("/paths/~1api~1agents/post/requestBody/content/application~1json/schema/properties/concurrency", "maximum"):
+                ("512.0", "2048.0", "Raises the approved subagent concurrency ceiling to support 2048 configured slots."),
+            ("/paths/~1api~1agents/post/requestBody/content/application~1json/schema/properties/maxAgents", "maximum"):
+                ("1024.0", "2050.0", "Allows the lead, 2048 workers, and one queued worker."),
+            ("/paths/~1api~1configure/post/requestBody/content/application~1json/schema/properties/concurrency", "maximum"):
+                ("512.0", "2048.0", "Raises the approved subagent concurrency ceiling to support 2048 configured slots."),
+            ("/paths/~1api~1configure/post/requestBody/content/application~1json/schema/properties/maxAgents", "maximum"):
+                ("1024.0", "2050.0", "Allows the lead, 2048 workers, and one queued worker."),
+            ("/paths/~1api~1conversation/post/requestBody/content/application~1json/schema/properties/subagent_concurrency", "maximum"):
+                ("512.0", "2048.0", "Raises the approved subagent concurrency ceiling to support 2048 configured slots."),
             ("/components/schemas/DraftDocumentInput/properties/deleted", "property"):
                 ("absent from closed object", "accepted property", "Adds the deleted state to the draft input DTO."),
             ("/components/schemas/DraftPushRequest/properties/rows/items/properties/newDocumentState/properties/deleted", "property"):

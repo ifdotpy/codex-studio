@@ -59,6 +59,7 @@ STUDIO_API_COMPONENT_ROOT = SERVER_SOURCE_ROOT / "studio_api"
 LEGACY_SERVER_JS = {
     f"{TESTS_REL}/portable-smoke.mjs": "safe",
     f"{TESTS_REL}/state-contract-smoke.mjs": "safe",
+    f"{SOURCE_REL}/studio_api/benchmarks/runtime_load/test_options.mjs": "safe",
     f"{SOURCE_REL}/studio_api/benchmarks/runtime_load/test_http_outcomes.mjs": "expensive",
 }
 EXPLICIT_SUITES = (

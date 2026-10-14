@@ -1,10 +1,12 @@
 """Unit coverage for the agent API's boundary models."""
 
 import unittest
+import json
 from typing import Callable, cast
 
 from pydantic import TypeAdapter, ValidationError
 from codex_runtime import Runtime
+from codex_agent_modes import MAX_SUBAGENT_CONCURRENCY, MAX_TEAM_AGENTS
 from studio_api.models import JsonValue
 from studio_api.sync.models import CapacityRetrySettingsDto
 
@@ -12,6 +14,7 @@ from .models import (
     AccountTransferRequest,
     CapacityRetryRequest,
     ConversationRequest,
+    ConfigureRequest,
     CreateAgentRequest,
     CreateLeadRequest,
     ImportRequest,
@@ -38,6 +41,28 @@ class AgentRequestModelTests(unittest.TestCase):
             body.model_dump(mode="json", exclude_unset=True),
             {"id": "12345678-1234-4234-8234-123456789abc", "previous": "prior", "reuse_empty": False},
         )
+
+    def test_subagent_limits_accept_2048_and_team_headroom_2050(self) -> None:
+        lead = CreateAgentRequest.model_validate_json(json.dumps(
+            {"prompt": "x", "concurrency": MAX_SUBAGENT_CONCURRENCY, "maxAgents": MAX_TEAM_AGENTS}
+        ))
+        conversation = ConversationRequest.model_validate_json(json.dumps(
+            {"id": "lead", "subagent_concurrency": MAX_SUBAGENT_CONCURRENCY}
+        ))
+        configure = ConfigureRequest.model_validate_json(json.dumps(
+            {"id": "lead", "concurrency": MAX_SUBAGENT_CONCURRENCY, "maxAgents": MAX_TEAM_AGENTS}
+        ))
+        self.assertEqual((lead.concurrency, lead.maxAgents), (MAX_SUBAGENT_CONCURRENCY, MAX_TEAM_AGENTS))
+        self.assertEqual(conversation.subagent_concurrency, MAX_SUBAGENT_CONCURRENCY)
+        self.assertEqual((configure.concurrency, configure.maxAgents), (MAX_SUBAGENT_CONCURRENCY, MAX_TEAM_AGENTS))
+        for model, body in (
+            (CreateAgentRequest, json.dumps({"prompt": "x", "concurrency": MAX_SUBAGENT_CONCURRENCY + 1})),
+            (ConversationRequest, json.dumps({"id": "lead", "subagent_concurrency": MAX_SUBAGENT_CONCURRENCY + 1})),
+            (ConfigureRequest, json.dumps({"id": "lead", "concurrency": MAX_SUBAGENT_CONCURRENCY + 1})),
+            (CreateAgentRequest, json.dumps({"prompt": "x", "concurrency": MAX_SUBAGENT_CONCURRENCY, "maxAgents": MAX_TEAM_AGENTS + 1})),
+        ):
+            with self.subTest(model=model.__name__, body=body), self.assertRaises(ValidationError):
+                model.model_validate_json(body)
 
     def test_conversation_settings_preserve_explicit_null(self) -> None:
         body = ConversationRequest.model_validate_json(

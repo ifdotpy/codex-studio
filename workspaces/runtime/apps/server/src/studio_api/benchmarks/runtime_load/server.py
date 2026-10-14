@@ -1283,8 +1283,8 @@ def main():
                 lambda db: db.execute("SELECT COUNT(*) FROM runtime_events").fetchone()[0],
                 accounting_schema_retries)
             identities = []
-            for agent in workers:
-                team = workers.index(agent) // workers_per_team
+            for worker_index, agent in enumerate(workers):
+                team = worker_index // workers_per_team
                 identities.append((agent, leads[team]))
             emitted_keys = set()
             expected_runtime_event_ids = []

@@ -134,7 +134,25 @@ def render(document: dict[str, JsonValue]) -> str:
         return output_path.read_text(encoding="utf-8")
 
 
-def render_schema_identity(schema_hash: str) -> str:
+def _agent_limit(document: dict[str, JsonValue], model: str, field: str, key: str) -> int:
+    components = document.get("components")
+    schemas = components.get("schemas") if isinstance(components, dict) else None
+    schema = schemas.get(model) if isinstance(schemas, dict) else None
+    properties = schema.get("properties") if isinstance(schema, dict) else None
+    property_schema = properties.get(field) if isinstance(properties, dict) else None
+    value = property_schema.get(key) if isinstance(property_schema, dict) else None
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or int(value) != value:
+        raise ValueError(f"OpenAPI agent limit {model}.{field}.{key} is not an integer")
+    return int(value)
+
+
+def render_schema_identity(schema_hash: str, document: dict[str, JsonValue]) -> str:
+    min_concurrency = _agent_limit(document, "CreateAgentRequest", "concurrency", "minimum")
+    default_concurrency = _agent_limit(document, "CreateAgentRequest", "concurrency", "default")
+    max_concurrency = _agent_limit(document, "CreateAgentRequest", "concurrency", "maximum")
+    min_team_agents = _agent_limit(document, "CreateAgentRequest", "maxAgents", "minimum")
+    default_team_agents = _agent_limit(document, "CreateAgentRequest", "maxAgents", "default")
+    max_team_agents = _agent_limit(document, "CreateAgentRequest", "maxAgents", "maximum")
     return (
         "export const API_SCHEMA_HASH =\n"
         f'  "{schema_hash}";\n'
@@ -142,6 +160,12 @@ def render_schema_identity(schema_hash: str) -> str:
         f'export const API_SCHEMA_HASH_PARAM = "{API_SCHEMA_HASH_PARAM}";\n'
         f'export const API_SCHEMA_MISMATCH_HEADER = "{API_SCHEMA_MISMATCH_HEADER}";\n'
         f'export const API_SCHEMA_MISMATCH_FIELD = "{API_SCHEMA_MISMATCH_FIELD}";\n'
+        f"export const MIN_SUBAGENT_CONCURRENCY = {min_concurrency};\n"
+        f"export const DEFAULT_SUBAGENT_CONCURRENCY = {default_concurrency};\n"
+        f"export const MAX_SUBAGENT_CONCURRENCY = {max_concurrency};\n"
+        f"export const MIN_TEAM_AGENTS = {min_team_agents};\n"
+        f"export const DEFAULT_MAX_TEAM_AGENTS = {default_team_agents};\n"
+        f"export const MAX_TEAM_AGENTS = {max_team_agents};\n"
     )
 
 
@@ -177,7 +201,7 @@ def main(argv: list[str] | None = None) -> int:
         schema_hash = api_schema_hash(document)
         expected_files = {
             OUTPUT: render(document),
-            SCHEMA_OUTPUT: render_schema_identity(schema_hash),
+            SCHEMA_OUTPUT: render_schema_identity(schema_hash, document),
         }
     except (FileNotFoundError, RuntimeError, ValueError, subprocess.CalledProcessError) as error:
         print(f"API type generation failed: {error}", file=sys.stderr)
