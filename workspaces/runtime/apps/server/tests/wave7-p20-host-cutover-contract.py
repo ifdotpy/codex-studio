@@ -109,7 +109,6 @@ EXACT_OWNERS: dict[str, list[str]] = {
     "project-driver/chat-binding": ["P19", "P02"],
     "project-driver/folder-selection": ["P02"],
     "provider-service/claude-discovery": ["P18"],
-    "provider-service/claude-model-catalog": ["P18"],
     "provider-session/account-rate-limits": ["P18"],
     "provider-session/app-server": ["P01", "P14", "P17"],
     "provider-session/claude-controls": ["P08"],

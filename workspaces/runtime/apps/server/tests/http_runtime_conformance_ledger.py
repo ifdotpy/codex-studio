@@ -196,7 +196,7 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
             "query": {"account_key": "$claudeAccount"},
             "query_omit": ["workers", "retry"],
             "expected": "501",
-            "expected_error": "Not implemented: requires provider-service/claude-model-catalog",
+            "expected_error": "Not implemented: requires provider-session/model-list",
         }],
     },
     ("GET", "/api/multi-server"): {
