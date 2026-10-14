@@ -2,6 +2,7 @@
 use serde_json::{Value, json};
 use studio_runtime_providers::{Frame, ResponseBody};
 use studio_runtime_store::{RuntimeStore, system_reads};
+use tokio::sync::Notify;
 
 pub enum CallbackDecision {
     Answer(ResponseBody),
@@ -20,6 +21,7 @@ pub(super) fn managed_response(
     generation: u64,
     frame: &Frame,
     now: f64,
+    wake: std::sync::Arc<Notify>,
 ) -> Option<Frame> {
     let Frame::Request(request) = frame else {
         return None;
@@ -50,22 +52,27 @@ pub(super) fn managed_response(
         ));
     };
     let body = match callback_context(store, account, generation, thread, turn) {
-        Ok(Some(context)) => match crate::provider_callbacks::managed_tool_ports(
-            store, &context, frame,
-        )
-        .and_then(|ports| {
-            crate::provider_callbacks::dispatch_with_managed_tools(
-                store, &context, frame, now, &ports,
-            )
-        }) {
-            Ok(crate::provider_callbacks::CallbackDecision::Answer(reply)) => reply.body,
-            Ok(
-                crate::provider_callbacks::CallbackDecision::Pending(_)
-                | crate::provider_callbacks::CallbackDecision::Settled(_),
-            ) => return None,
-            Ok(crate::provider_callbacks::CallbackDecision::Unsupported) => unsupported(),
-            Err(error) => ResponseBody::Error(json!({"code":-32603,"message":error.to_string()})),
-        },
+        Ok(Some(context)) => {
+            // Integration obligation: runtime-server's MonitorRuntime owner
+            // must supply its dispatch wake here as well as the account wake,
+            // so committed monitor-driver cancellations wake their consumer.
+            match crate::provider_callbacks::managed_tool_ports(store, &context, frame, wake)
+                .and_then(|ports| {
+                    crate::provider_callbacks::dispatch_with_managed_tools(
+                        store, &context, frame, now, &ports,
+                    )
+                }) {
+                Ok(crate::provider_callbacks::CallbackDecision::Answer(reply)) => reply.body,
+                Ok(
+                    crate::provider_callbacks::CallbackDecision::Pending(_)
+                    | crate::provider_callbacks::CallbackDecision::Settled(_),
+                ) => return None,
+                Ok(crate::provider_callbacks::CallbackDecision::Unsupported) => unsupported(),
+                Err(error) => {
+                    ResponseBody::Error(json!({"code":-32603,"message":error.to_string()}))
+                }
+            }
+        }
         Ok(None) => ResponseBody::Error(json!({
             "code":-32603,
             "message":"Managed tool callback has no unique active turn for this account generation"

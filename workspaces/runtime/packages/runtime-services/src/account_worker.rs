@@ -27,7 +27,7 @@ use studio_runtime_store::{
     AgentId, AgentRepository, RuntimeStore, SchedulerRepository, StoreError,
 };
 use tokio::{
-    sync::{Semaphore, mpsc, watch},
+    sync::{Notify, Semaphore, mpsc, watch},
     task::JoinHandle,
 };
 pub mod callback;
@@ -86,6 +86,7 @@ pub struct StoreBridge {
     slot: Arc<Semaphore>,
     preparation_slots: Arc<Semaphore>,
     accounts: Arc<std::sync::Mutex<BTreeSet<String>>>,
+    event_wake: Arc<std::sync::RwLock<Arc<Notify>>>,
     #[cfg(test)]
     faults: Arc<tests::Faults>,
     #[cfg(test)]
@@ -98,6 +99,7 @@ impl StoreBridge {
             slot: Arc::new(Semaphore::new(1)),
             preparation_slots: Arc::new(Semaphore::new(2)),
             accounts: Arc::default(),
+            event_wake: Arc::new(std::sync::RwLock::new(Arc::new(Notify::new()))),
             #[cfg(test)]
             faults: Arc::default(),
             #[cfg(test)]
@@ -107,6 +109,18 @@ impl StoreBridge {
             .run(|store| Ok(scheduler::recover_on_startup(store)?))
             .await?;
         Ok(bridge)
+    }
+    pub fn set_event_wake(&self, wake: Arc<Notify>) {
+        *self
+            .event_wake
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = wake;
+    }
+    pub(crate) fn event_wake(&self) -> Arc<Notify> {
+        self.event_wake
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
     async fn run<T: Send + 'static>(
         &self,
@@ -1008,10 +1022,11 @@ impl Worker {
             let generation = self.generation.0;
             let now = entry.received_at_ms as f64 / 1000.0;
             let frame = frame.clone();
+            let wake = self.bridge.event_wake();
             if let Some(response) = self
                 .db("managed_tool_callback", move |store| {
                     Ok(callback::managed_response(
-                        store, &account, generation, &frame, now,
+                        store, &account, generation, &frame, now, wake,
                     ))
                 })
                 .await?

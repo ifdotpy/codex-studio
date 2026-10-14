@@ -139,6 +139,7 @@ impl AccountRegistry {
     }
 
     pub async fn run(mut self, wake: Arc<Notify>, shutdown: Shutdown) -> Result<(), WorkerError> {
+        self.bridge.set_event_wake(wake.clone());
         let mut stop = shutdown.subscribe();
         let mut retry_delay = RETRY_DELAY;
         let mut retry_at = tokio::time::Instant::now();
