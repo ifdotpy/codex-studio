@@ -48,6 +48,8 @@ export type ServerNavigation = {
   system?: string;
   agentsRunning?: number;
   alerts: DesktopAlert[];
+  /** The alerts are complete: the first sync pull of the server ended. */
+  alertsReady?: boolean;
   opened: string | null;
   error: string;
 };
@@ -190,6 +192,7 @@ export function navigationSnapshot(
     ready: !!data,
     busy: !!data?.threads.some((agent) => agent.inFlight),
     alerts,
+    alertsReady: !!data && data.entitiesComplete !== false,
     projects: [...projects.values()],
     chats,
     opened,

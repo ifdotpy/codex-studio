@@ -26,6 +26,8 @@ export function useDesktopNotifications(
         started: Date.now(),
       };
     const current = state.current;
+    // Before the first pull ends, missing records would make old alerts look new later.
+    if (!current.initialized && data.entitiesComplete === false) return;
     const alerts = desktopAlerts(data);
     const added = alerts
       .filter((alert) => !current.seen.has(alert.id))
