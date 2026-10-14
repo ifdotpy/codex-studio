@@ -59,6 +59,9 @@ def connect_agent(runtime, agent):
     from codex_linux_vm_credentials import profile_path, sync_credentials
     from codex_linux_vm_provider import GuestProcessProxy
     agent_id = agent['id']
+    if runtime.agent(agent_id).get('vmAccountSwitch'):
+        # codex_vm_account_switch stopped the provider and changes the account next.
+        raise RuntimeError('The account of this chat is changing. Send the message again in a moment.')
     account_key = agent.get('accountKey', 'default')
     # Host refresh can call Runtime.connect, which also takes start_lock.
     # Complete it before acquiring that lock for guest process creation.
