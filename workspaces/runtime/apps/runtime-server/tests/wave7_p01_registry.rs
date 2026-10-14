@@ -334,12 +334,10 @@ impl ProviderTaskFactory for WireFactory {
                                 }
                             };
                             let _ignored = reply.send(receipt);
-                            if record_resumes
-                                && matches!(
-                                    write.message()["method"].as_str(),
-                                    Some("thread/resume" | "thread/start")
-                                )
-                            {
+                            if matches!(
+                                write.message()["method"].as_str(),
+                                Some("thread/resume" | "thread/start")
+                            ) {
                                 let _ = observed.await;
                                 status.send_modify(|current| {
                                     current.initialization = InitializationStatus::Ready;

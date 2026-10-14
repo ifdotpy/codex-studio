@@ -316,30 +316,21 @@ pub fn dispatch_notification_with_effects(
                 );
             }
             if kind == "provider/generationStarted" {
-                let Some(agent) =
+                if let Some(agent) =
                     NotificationDispatchRepository::agent_record(transaction, agent_id)?
-                else {
-                    // Python applies generationStarted to the account/thread rate
-                    // table and returns when no active rate entry exists. A
-                    // notification can therefore be valid without an agent row.
-                    return save_outcome(
-                        transaction,
-                        &receipt_id,
-                        &content_signature,
-                        DispatchOutcome::Written,
-                    );
-                };
-                if agent.get("deletedAt").is_some_and(|value| !value.is_null()) {
-                    return save_outcome(
-                        transaction,
-                        &receipt_id,
-                        &content_signature,
-                        DispatchOutcome::Ignored {
-                            reason: "deleted-agent".to_owned(),
-                        },
-                    );
+                {
+                    if agent.get("deletedAt").is_some_and(|value| !value.is_null()) {
+                        return save_outcome(
+                            transaction,
+                            &receipt_id,
+                            &content_signature,
+                            DispatchOutcome::Ignored {
+                                reason: "deleted-agent".to_owned(),
+                            },
+                        );
+                    }
+                    before = Some(agent);
                 }
-                before = Some(agent);
                 effects.generation_started()?;
                 return save_outcome(
                     transaction,

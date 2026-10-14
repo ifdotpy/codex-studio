@@ -9,9 +9,16 @@ use studio_runtime_store::{ProjectsRepository, RuntimeStore};
 /// An intervening edit fails before any write rather than using stale membership.
 pub struct PreparedHost {
     projects: Vec<(String, Value)>,
-    agents: Vec<(String, Value)>,
+    agent_fences: Vec<AgentFence>,
     paths: BTreeMap<String, String>,
     server: Option<String>,
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct AgentFence {
+    id: String,
+    row: Value,
+    attempt_id: Option<Value>,
+    status: Option<Value>,
 }
 impl PreparedHost {
     pub fn load(store: &RuntimeStore) -> Result<Self, ProjectsError> {
@@ -37,18 +44,20 @@ impl PreparedHost {
             }
         }
         let server = store.local_server_id()?;
+        let agent_fences = agent_fences(&agents);
         Ok(Self {
             projects,
-            agents,
+            agent_fences,
             paths,
             server,
         })
     }
 
     pub fn recheck(&self, db: &Connection) -> Result<(), ProjectsError> {
-        let mut agents = ProjectsRepository::agents(db)?;
-        agents.sort_by(|a, b| a.0.cmp(&b.0));
-        if ProjectsRepository::list(db)? != self.projects || agents != self.agents {
+        let agents = agent_fences(&ProjectsRepository::agents(db)?);
+        if ProjectsRepository::list(db)? != self.projects
+            || !agent_fences_match(&self.agent_fences, &agents)
+        {
             return Err(ProjectsError::Conflict(
                 "Project state changed during preparation. Retry",
             ));
@@ -62,9 +71,25 @@ impl PreparedHost {
     /// This is intentionally filesystem work outside the transaction; `recheck`
     /// then fences the database rows inside the transaction that applies them.
     pub fn recheck_paths(&self) -> Result<(), ProjectsError> {
-        for (_, row) in self.projects.iter().chain(&self.agents) {
+        for (_, row) in &self.projects {
             for field in ["path", "cwd"] {
                 let Some(path) = row.get(field).and_then(Value::as_str) else {
+                    continue;
+                };
+                let current = project_key(Some(&json!(path)), false)?;
+                if self.paths.get(path) != Some(&current) {
+                    return Err(ProjectsError::Conflict(
+                        "Project path changed during preparation. Retry",
+                    ));
+                }
+            }
+        }
+        for agent in &self.agent_fences {
+            for path in [agent.row.get("path"), agent.row.get("cwd")]
+                .into_iter()
+                .flatten()
+            {
+                let Some(path) = path.as_str() else {
                     continue;
                 };
                 let current = project_key(Some(&json!(path)), false)?;
@@ -96,6 +121,65 @@ impl PreparedHost {
     pub(crate) fn resolved_paths(&self) -> &BTreeMap<String, String> {
         &self.paths
     }
+}
+
+fn agent_fences(agents: &[(String, Value)]) -> Vec<AgentFence> {
+    let mut fences = agents
+        .iter()
+        .map(|(id, row)| AgentFence {
+            id: id.clone(),
+            row: row.clone(),
+            attempt_id: row.pointer("/startAttempt/id").cloned(),
+            status: row.get("status").cloned(),
+        })
+        .collect::<Vec<_>>();
+    fences.sort_by(|left, right| left.id.cmp(&right.id));
+    fences
+}
+
+fn agent_fences_match(before: &[AgentFence], current: &[AgentFence]) -> bool {
+    before.len() == current.len()
+        && before.iter().zip(current).all(|(before, current)| {
+            let mut expected = before.row.clone();
+            let mut observed = current.row.clone();
+            if let (Some(expected), Some(observed)) =
+                (expected.as_object_mut(), observed.as_object_mut())
+            {
+                expected.remove("status");
+                observed.remove("status");
+            }
+            expected == observed
+                && benign_status_transition(
+                    &before.status,
+                    &current.status,
+                    before.attempt_id.as_ref(),
+                    current.attempt_id.as_ref(),
+                )
+        })
+}
+
+// Python's start boundary rechecks attempt id, epoch, autoWake, deletedAt,
+// threadId and accountKey before submission (codex_runtime.py:7092-7096,
+// 6375-6379). Preserve every field in the snapshot; only the same dispatch's
+// idle→running status transition is benign.
+fn benign_status_transition(
+    before: &Option<Value>,
+    current: &Option<Value>,
+    before_attempt: Option<&Value>,
+    current_attempt: Option<&Value>,
+) -> bool {
+    if before == current {
+        return true;
+    }
+    before_attempt.is_some()
+        && before_attempt == current_attempt
+        && matches!(
+            (
+                before.as_ref().and_then(Value::as_str),
+                current.as_ref().and_then(Value::as_str)
+            ),
+            (Some("idle"), Some("running"))
+        )
 }
 
 /// A checked local binding for P02's draft/commit transaction.

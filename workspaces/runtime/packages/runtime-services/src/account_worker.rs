@@ -281,6 +281,8 @@ pub struct AccountHandle {
     commands: mpsc::Sender<AccountCommand>,
     stop: Shutdown,
     task: JoinHandle<Result<(), WorkerError>>,
+    #[cfg(test)]
+    faults: Arc<tests::Faults>,
 }
 impl AccountHandle {
     pub fn retained_session(&self) -> retained::RetainedSessionPort {
@@ -497,6 +499,8 @@ pub async fn start_account_worker_with_publication_sink(
         commands,
         stop,
         task,
+        #[cfg(test)]
+        faults: bridge.faults.clone(),
     })
 }
 
@@ -706,6 +710,14 @@ impl Worker {
                     Some(AccountCommand::RestartRecoveryDone) => {
                         self.restart_recovery.take();
                         self.schedule_publication_drain();
+                        #[cfg(test)]
+                        {
+                            self.bridge
+                                .faults
+                                .startup_recovery_done
+                                .store(true, std::sync::atomic::Ordering::SeqCst);
+                            self.bridge.faults.startup_recovery.notify_one();
+                        }
                     },
                     Some(AccountCommand::RestartStreams(streams)) => {
                         self.streams = *streams;
