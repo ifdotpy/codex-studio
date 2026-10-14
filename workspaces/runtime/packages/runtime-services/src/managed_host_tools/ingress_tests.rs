@@ -510,22 +510,22 @@ fn named_refusals_leave_all_application_tables_unchanged() {
         (
             "orchestration_interrupt",
             json!({"agent_id":descendant}),
-            "agent-lifecycle/production-ports",
+            "account-worker/agent-interrupt",
         ),
         (
             "orchestration_monitor_input",
             json!({"monitor_id":"missing-monitor","text":"input"}),
-            "monitor-runtime/managed-input",
+            "monitor-input-request-identity",
         ),
         (
             "orchestration_spawn",
             json!({"agents":[{"name":"Worker","prompt":"Task"}]}),
-            "provider-session/model-list",
+            "agent-create/worker-driver",
         ),
         (
             "orchestration_review",
             json!({"target":{"type":"uncommittedChanges"}}),
-            "provider-session/model-list",
+            "agent-create/worker-driver",
         ),
         (
             "orchestration_context",
