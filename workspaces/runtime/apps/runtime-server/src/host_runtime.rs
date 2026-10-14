@@ -99,6 +99,7 @@ pub(crate) fn resolve_install_root() -> Result<InstallRoot, WorkerError> {
 pub(crate) struct HostRuntime {
     shutdown: Shutdown,
     task: JoinHandle<Result<(), WorkerError>>,
+    preparation_resources: Option<Arc<PreparationResources>>,
 }
 
 impl HostRuntime {
@@ -156,6 +157,7 @@ impl HostRuntime {
         .await
         .map_err(|_| WorkerError::TaskFailed)??;
         let resources = resources.with_account_session(state.account_session.clone());
+        let preparation_resources = Arc::new(resources.clone());
         let callback_runtime = Arc::new(
             studio_runtime_services::callback_runtime::CallbackRuntime::new(
                 store.clone(),
@@ -183,14 +185,16 @@ impl HostRuntime {
             resources,
             environment: std::env::vars().collect(),
         });
-        Self::with_launcher_broker(
+        let mut runtime = Self::with_launcher_broker(
             store,
             launcher,
             state.event_wake_handle(),
             monitor_dispatch_wake,
             session_broker,
         )
-        .await
+        .await?;
+        runtime.preparation_resources = Some(preparation_resources);
+        Ok(runtime)
     }
 
     #[cfg(test)]
@@ -241,7 +245,15 @@ impl HostRuntime {
         .await?;
         let shutdown = Shutdown::default();
         let task = tokio::spawn(registry.run(wake, shutdown.clone()));
-        Ok(Self { shutdown, task })
+        Ok(Self {
+            shutdown,
+            task,
+            preparation_resources: None,
+        })
+    }
+
+    pub(crate) fn preparation_resources(&self) -> Option<Arc<PreparationResources>> {
+        self.preparation_resources.clone()
     }
 
     pub fn stop_intake(&self) {
