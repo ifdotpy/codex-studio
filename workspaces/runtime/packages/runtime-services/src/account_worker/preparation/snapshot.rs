@@ -20,6 +20,9 @@ pub struct PreparationResources {
     pub server_source_root: PathBuf,
     /// Resolved interpreter used to start this runtime, also embedded in guidance.
     pub python_executable: PathBuf,
+    /// The host's registry-backed session surface for preparation calls that
+    /// need to coordinate another live account.
+    pub account_session: Option<Arc<dyn crate::account_session_runtime::AccountSessionPort>>,
 }
 impl PreparationResources {
     pub fn bundled(
@@ -96,7 +99,16 @@ impl PreparationResources {
             python_executable,
             account_home,
             server_source_root,
+            account_session: None,
         })
+    }
+
+    pub fn with_account_session(
+        mut self,
+        account_session: Option<Arc<dyn crate::account_session_runtime::AccountSessionPort>>,
+    ) -> Self {
+        self.account_session = account_session;
+        self
     }
 }
 pub(super) fn decode<T: DeserializeOwned>(value: Value, location: &str) -> Result<T, WorkerError> {

@@ -152,10 +152,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let base_home = env::var_os("CODEX_HOME")
         .map(PathBuf::from)
         .unwrap_or_else(|| home.join(".codex"));
+    let account_session_broker = account_registry::AccountSessionBroker::new();
+    let retained_session: Arc<
+        dyn studio_runtime_services::account_session_runtime::RetainedAccountSession,
+    > = Arc::new(account_session_broker.clone());
     state.account_session = Some(Arc::new(
         studio_runtime_services::account_session_runtime::AccountSessionRuntime::new(
             account_driver.clone(),
-            None,
+            Some(retained_session),
             tokio::runtime::Handle::current(),
             PathBuf::from(&state_dir).join("accounts"),
             base_home,
@@ -195,6 +199,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         account_driver,
         native_path,
         monitor_runtime.dispatch_wake_handle(),
+        account_session_broker,
     )
     .await
     {

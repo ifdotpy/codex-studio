@@ -1,6 +1,8 @@
 //! Binary composition of retained account sessions. The supervisor is an
 //! independently installed service; backend shutdown never takes its children.
-use crate::account_registry::{AccountLaunch, AccountLauncher, AccountRegistry, LaunchFuture};
+use crate::account_registry::{
+    AccountLaunch, AccountLauncher, AccountRegistry, AccountSessionBroker, LaunchFuture,
+};
 use serde_json::json;
 use std::{
     collections::BTreeMap,
@@ -114,6 +116,7 @@ impl HostRuntime {
             accounts,
             native_path,
             Arc::new(tokio::sync::Notify::new()),
+            AccountSessionBroker::new(),
         )
         .await
     }
@@ -124,6 +127,7 @@ impl HostRuntime {
         accounts: Arc<AccountDriver>,
         native_path: Option<String>,
         monitor_dispatch_wake: Arc<tokio::sync::Notify>,
+        session_broker: AccountSessionBroker,
     ) -> Result<Self, WorkerError> {
         let mut nonce = [0_u8; 16];
         getrandom::fill(&mut nonce).map_err(|_| WorkerError::TaskFailed)?;
@@ -151,12 +155,22 @@ impl HostRuntime {
         })
         .await
         .map_err(|_| WorkerError::TaskFailed)??;
-        *state = state.clone().with_tool_catalog(CatalogSnapshot {
-            source: CatalogSource::Current,
-            definitions: resources.tools.clone(),
-            saved_thread_id: None,
-            saved_digest: None,
-        });
+        let resources = resources.with_account_session(state.account_session.clone());
+        let callback_runtime = Arc::new(
+            studio_runtime_services::callback_runtime::CallbackRuntime::new(
+                store.clone(),
+                session_broker.callback_reply_port(tokio::runtime::Handle::current()),
+            ),
+        );
+        *state = state
+            .clone()
+            .with_tool_catalog(CatalogSnapshot {
+                source: CatalogSource::Current,
+                definitions: resources.tools.clone(),
+                saved_thread_id: None,
+                saved_digest: None,
+            })
+            .with_callback_runtime(callback_runtime);
         let launcher = Arc::new(HostLauncher {
             factory: SupervisorProviderTaskFactory::new(identity),
             supervisor_mode: std::env::var("CODEX_AGENTS_SUPERVISOR_MODE")
@@ -169,11 +183,12 @@ impl HostRuntime {
             resources,
             environment: std::env::vars().collect(),
         });
-        Self::with_launcher_and_monitor_wake(
+        Self::with_launcher_broker(
             store,
             launcher,
             state.event_wake_handle(),
             monitor_dispatch_wake,
+            session_broker,
         )
         .await
     }
@@ -200,8 +215,30 @@ impl HostRuntime {
         wake: Arc<tokio::sync::Notify>,
         monitor_dispatch_wake: Arc<tokio::sync::Notify>,
     ) -> Result<Self, WorkerError> {
-        let registry =
-            AccountRegistry::new_with_monitor_wake(store, launcher, monitor_dispatch_wake).await?;
+        Self::with_launcher_broker(
+            store,
+            launcher,
+            wake,
+            monitor_dispatch_wake,
+            AccountSessionBroker::new(),
+        )
+        .await
+    }
+
+    async fn with_launcher_broker(
+        store: Arc<RuntimeStore>,
+        launcher: Arc<dyn AccountLauncher>,
+        wake: Arc<tokio::sync::Notify>,
+        monitor_dispatch_wake: Arc<tokio::sync::Notify>,
+        session_broker: AccountSessionBroker,
+    ) -> Result<Self, WorkerError> {
+        let registry = AccountRegistry::new_with_broker(
+            store,
+            launcher,
+            monitor_dispatch_wake,
+            session_broker,
+        )
+        .await?;
         let shutdown = Shutdown::default();
         let task = tokio::spawn(registry.run(wake, shutdown.clone()));
         Ok(Self { shutdown, task })
