@@ -38,7 +38,17 @@ impl IoRuntime {
         let weak: Weak<_> = Arc::downgrade(&terminals);
         session.set_notification_callback(Arc::new(move |notification: TerminalNotification| {
             if let Some(terminals) = weak.upgrade() {
-                let _apply_result = terminals.apply_notification(notification);
+                let mut delay = std::time::Duration::from_millis(10);
+                loop {
+                    match terminals.apply_notification(notification.clone()) {
+                        Ok(()) => break,
+                        Err(error) => {
+                            eprintln!("Could not persist terminal notification; retaining it for retry: {error}");
+                            std::thread::sleep(delay);
+                            delay = (delay * 2).min(std::time::Duration::from_secs(1));
+                        }
+                    }
+                }
             }
         }));
         let weak = Arc::downgrade(&terminals);
