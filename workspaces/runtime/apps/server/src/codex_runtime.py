@@ -1911,6 +1911,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 start_connection_recovery(self)
                 from codex_linux_vm_watchdog import start as start_vm_watchdog
                 start_vm_watchdog(self)
+                from codex_peer_updates import start as start_peer_updates
+                start_peer_updates(self)
             self.resume_read_only_image_bases()
             with self.read_db() as db:
                 commands_saved = db.execute("SELECT 1 FROM sqlite_master WHERE name='runtime_server_exec'").fetchone()
@@ -1938,6 +1940,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         close_connection_recovery(self)
         from codex_linux_vm_watchdog import close as close_vm_watchdog
         close_vm_watchdog(self)
+        from codex_peer_updates import close as close_peer_updates
+        close_peer_updates(self)
         for server in servers:
             if not server.join_callbacks(timeout=30):
                 original_error.add_note("Initialization callbacks did not drain; keeper and lease retained")
@@ -11880,6 +11884,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         close_connection_recovery(self)
         from codex_linux_vm_watchdog import close as close_vm_watchdog
         close_vm_watchdog(self)
+        from codex_peer_updates import close as close_peer_updates
+        close_peer_updates(self)
         with self.lock:
             monitor_threads = list(self.monitor_threads)
         for worker in monitor_threads:

@@ -2641,6 +2641,12 @@ export interface components {
       };
       /** Autopair */
       autoPair: boolean;
+      /**
+       * Autoupdate
+       * @description Install a newer build that a paired server runs (docs/peer-updates.md).
+       * @default true
+       */
+      autoUpdate?: boolean;
     };
     /** AccessSnapshot */
     AccessSnapshot: {
@@ -11428,6 +11434,8 @@ export interface components {
       /** Mobileprotocol */
       mobileProtocol: number;
       nativeRuntime: components["schemas"]["NativeRuntimeStatus"] | null;
+      /** @default null */
+      peerUpdate?: components["schemas"]["PeerUpdateStatus"] | null;
       /** Pid */
       pid: number;
       /** Protocol */
@@ -16412,6 +16420,65 @@ export interface components {
        */
       team_id?: null | string;
     };
+    /**
+     * PeerUpdateBuild
+     * @description The build stamp in Contents/Resources/studio-build.json (docs/peer-updates.md).
+     */
+    PeerUpdateBuild: {
+      /** Branch */
+      branch: string;
+      /**
+       * Builtat
+       * @description Packaging time on the build Mac, in seconds since the epoch.
+       */
+      builtAt: number;
+      /** Commit */
+      commit: string;
+      /**
+       * Committime
+       * @description Commit time, in seconds since the epoch.
+       */
+      commitTime: number;
+      /**
+       * Version
+       * @constant
+       */
+      version: 1;
+    };
+    /** PeerUpdateEvent */
+    PeerUpdateEvent: {
+      /**
+       * At
+       * @description Time of the pull or install attempt, in seconds since the epoch.
+       */
+      at: null | number;
+      build: components["schemas"]["PeerUpdateBuild"] | null;
+      /** Outcome */
+      outcome: null | string;
+      /** Reason */
+      reason: null | string;
+      /**
+       * Server
+       * @description The paired server that offered the build.
+       */
+      server: null | string;
+    };
+    /** PeerUpdatePending */
+    PeerUpdatePending: {
+      build: components["schemas"]["PeerUpdateBuild"];
+      /** Server */
+      server: string;
+    };
+    /** PeerUpdateStatus */
+    PeerUpdateStatus: {
+      /** @description The build of the installed app; null for a source checkout. */
+      build: components["schemas"]["PeerUpdateBuild"] | null;
+      /** Checkedat */
+      checkedAt: null | number;
+      lastInstall: components["schemas"]["PeerUpdateEvent"] | null;
+      lastPull: components["schemas"]["PeerUpdateEvent"] | null;
+      pending: components["schemas"]["PeerUpdatePending"] | null;
+    };
     /** PendingSettingsRecordResponse */
     PendingSettingsRecordResponse: {
       /**
@@ -20674,8 +20741,16 @@ export interface components {
        * @enum {string}
        */
       action: "settings";
-      /** Autopair */
-      autoPair: boolean;
+      /**
+       * Autopair
+       * @default null
+       */
+      autoPair?: boolean | null;
+      /**
+       * Autoupdate
+       * @default null
+       */
+      autoUpdate?: boolean | null;
       /**
        * Requestid
        * @default null

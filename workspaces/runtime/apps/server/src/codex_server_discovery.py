@@ -40,6 +40,10 @@ class ServerDiscovery:
                 CREATE TABLE IF NOT EXISTS runtime_access_discovered(id TEXT PRIMARY KEY, record TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS runtime_access_auto_attempts(id TEXT PRIMARY KEY, record TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS runtime_access_unrevokes(id TEXT PRIMARY KEY, client TEXT NOT NULL);
+                -- Updates from a paired server (docs/peer-updates.md), on by default. A separate
+                -- table keeps runtime_access_settings equal to the Rust store schema.
+                CREATE TABLE IF NOT EXISTS runtime_peer_update_settings(id INTEGER PRIMARY KEY CHECK(id=1), auto_update INTEGER NOT NULL);
+                INSERT OR IGNORE INTO runtime_peer_update_settings VALUES(1,1);
             ''')
 
     def start(self) -> None:
@@ -65,9 +69,16 @@ class ServerDiscovery:
         with self.service.runtime.read_db() as db:
             return bool(db.execute("SELECT auto_pair FROM runtime_access_settings WHERE id=1").fetchone()[0])
 
-    def settings(self, enabled: bool, actor: str) -> dict[str, Any]:
+    def auto_update_enabled(self) -> bool:
+        with self.service.runtime.read_db() as db:
+            return bool(db.execute("SELECT auto_update FROM runtime_peer_update_settings WHERE id=1").fetchone()[0])
+
+    def settings(self, auto_pair: bool | None, actor: str, auto_update: bool | None = None) -> dict[str, Any]:
         with self.service._write() as db:
-            db.execute("UPDATE runtime_access_settings SET auto_pair=? WHERE id=1", (int(enabled),))
+            if auto_pair is not None:
+                db.execute("UPDATE runtime_access_settings SET auto_pair=? WHERE id=1", (int(auto_pair),))
+            if auto_update is not None:
+                db.execute("UPDATE runtime_peer_update_settings SET auto_update=? WHERE id=1", (int(auto_update),))
             self.service._audit(db, "local", "settings", actor)
         return self.service.snapshot()
 
