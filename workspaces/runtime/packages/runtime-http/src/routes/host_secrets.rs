@@ -6,10 +6,33 @@ use crate::error::ApiError;
 use crate::router::HttpState;
 use axum::{Json, extract::State, http::StatusCode};
 use serde_json::Value;
+use std::collections::{HashMap, VecDeque};
+use std::sync::{Mutex, OnceLock};
+use std::time::Duration;
 use studio_runtime_services::project_secrets::{self, GuestRpc, ProjectSecretsError};
 
 const GUEST_RPC: &[Dependency] = &[Dependency::new("linux-vm/guest-rpc")];
 const VAULT_DESK: &[Dependency] = &[Dependency::new("macos-platform/layr-desk")];
+const VAULT_SETUP_TIMEOUT: Duration = studio_runtime_services::vault::VAULT_SETUP_TIMEOUT;
+const VAULT_LOGIN_TIMEOUT: Duration = studio_runtime_services::vault::VAULT_LOGIN_TIMEOUT;
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+enum VaultJobKind {
+    Setup,
+    Login,
+}
+
+#[derive(Default)]
+struct VaultJobs {
+    jobs: HashMap<(VaultJobKind, String), Value>,
+    order: VecDeque<(VaultJobKind, String)>,
+}
+
+static VAULT_JOBS: OnceLock<Mutex<VaultJobs>> = OnceLock::new();
+
+fn vault_jobs() -> &'static Mutex<VaultJobs> {
+    VAULT_JOBS.get_or_init(|| Mutex::new(VaultJobs::default()))
+}
 
 pub(crate) fn routes() -> RouteGroup {
     RouteGroup::new(vec![
@@ -30,7 +53,7 @@ pub(crate) fn routes() -> RouteGroup {
         ),
         post(
             "/api/vault/aws-login",
-            OperationStatus::partial(VAULT_DESK),
+            OperationStatus::Implemented,
             aws_login,
         ),
         post(
@@ -38,14 +61,10 @@ pub(crate) fn routes() -> RouteGroup {
             OperationStatus::partial(VAULT_DESK),
             pull,
         ),
-        post(
-            "/api/vault/setup",
-            OperationStatus::partial(VAULT_DESK),
-            setup,
-        ),
+        post("/api/vault/setup", OperationStatus::Implemented, setup),
         post(
             "/api/vault/setup/facts",
-            OperationStatus::partial(VAULT_DESK),
+            OperationStatus::Implemented,
             setup_facts,
         ),
         post(
@@ -138,20 +157,337 @@ async fn remove_secret(
     .await
 }
 
-async fn aws_login(ApiJson(_body): ApiJson<Value>) -> Result<Json<Value>, ApiError> {
-    unavailable("POST", "/api/vault/aws-login", VAULT_DESK)
+async fn aws_login(
+    State(_state): State<HttpState>,
+    ApiJson(body): ApiJson<Value>,
+) -> Result<Json<Value>, ApiError> {
+    let profile = request_string(&body, "profile")?.to_owned();
+    let request_id = request_string(&body, "requestId")?.to_owned();
+    if let Some(job) = find_job(VaultJobKind::Login, &request_id)? {
+        return Ok(Json(job));
+    }
+    if !studio_runtime_services::vault::valid_profile(&profile) {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "Name an AWS profile",
+        ));
+    }
+    let initial = serde_json::json!({"requestId":request_id,"state":"running"});
+    let (job, started) = reserve_job(VaultJobKind::Login, &request_id, initial)?;
+    if started {
+        tokio::spawn(run_login_job(request_id, profile));
+    }
+    Ok(Json(job))
 }
 
 async fn pull(ApiJson(_body): ApiJson<Value>) -> Result<Json<Value>, ApiError> {
     unavailable("POST", "/api/vault/pull", VAULT_DESK)
 }
 
-async fn setup(ApiJson(_body): ApiJson<Value>) -> Result<Json<Value>, ApiError> {
-    unavailable("POST", "/api/vault/setup", VAULT_DESK)
+async fn setup(
+    State(state): State<HttpState>,
+    ApiJson(body): ApiJson<Value>,
+) -> Result<Json<Value>, ApiError> {
+    let project_id = request_string(&body, "projectId")?.to_owned();
+    let request_id = request_string(&body, "requestId")?.to_owned();
+    if let Some(job) = find_job(VaultJobKind::Setup, &request_id)? {
+        return Ok(Json(job));
+    }
+    let requested_prefix = request_string(&body, "prefix")?.to_owned();
+    let profile = request_string(&body, "profile")?.to_owned();
+    let region = request_string(&body, "region")?.to_owned();
+    let settings = settings_dir(&state.state_dir);
+    let vm_state_dir =
+        studio_runtime_services::vault::linux_vm_state_dir(std::path::Path::new(&state.state_dir));
+    let (source, prefix) = studio_runtime_services::vault::prepare_new_vault(
+        &vm_state_dir,
+        &settings,
+        &project_id,
+        Some(&requested_prefix),
+        &profile,
+        &region,
+    )
+    .map_err(vault_error)?;
+    let host_command = state
+        .vault_host_command
+        .as_ref()
+        .ok_or_else(ApiError::internal)?;
+    let writer = host_command.writer(&source);
+    let initial = serde_json::json!({"requestId":request_id,"state":"running","prefix":prefix});
+    let (job, started) = reserve_job(VaultJobKind::Setup, &request_id, initial)?;
+    if started {
+        tokio::spawn(run_setup_job(request_id, prefix, profile, region, writer));
+    }
+    Ok(Json(job))
 }
 
-async fn setup_facts(ApiJson(_body): ApiJson<Value>) -> Result<Json<Value>, ApiError> {
-    unavailable("POST", "/api/vault/setup/facts", VAULT_DESK)
+async fn setup_facts(
+    State(state): State<HttpState>,
+    ApiJson(body): ApiJson<Value>,
+) -> Result<Json<Value>, ApiError> {
+    let project_id = request_string(&body, "projectId")?;
+    let requested_prefix = body.get("prefix").and_then(Value::as_str);
+    let vm_state_dir =
+        studio_runtime_services::vault::linux_vm_state_dir(std::path::Path::new(&state.state_dir));
+    studio_runtime_services::vault::prepare_setup_facts(
+        &vm_state_dir,
+        project_id,
+        requested_prefix,
+    )
+    .map_err(vault_error)?;
+    let args = vec!["aws-profiles".to_owned(), "--json".to_owned()];
+    let mut ignore_output = |_: bool, _: &str| {};
+    let output = studio_runtime_services::vault::run_desk(
+        &args,
+        studio_runtime_services::vault::DESK_COMMAND_TIMEOUT,
+        &mut ignore_output,
+    )
+    .await
+    .map_err(vault_error)?;
+    if output.timed_out {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "layr-desk aws-profiles timed out",
+        ));
+    }
+    if output.code != Some(0) {
+        let reason = desk_reason(&output.stderr, &output.stdout);
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            format!("layr-desk aws-profiles: {reason}"),
+        ));
+    }
+    let profiles: Value = serde_json::from_str(&output.stdout).map_err(|_| {
+        ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "layr-desk aws-profiles returned invalid JSON",
+        )
+    })?;
+    let settings = settings_dir(&state.state_dir);
+    studio_runtime_services::vault::setup_facts(
+        &vm_state_dir,
+        &settings,
+        project_id,
+        requested_prefix,
+        &profiles,
+    )
+    .map(Json)
+    .map_err(vault_error)
+}
+
+fn find_job(kind: VaultJobKind, request_id: &str) -> Result<Option<Value>, ApiError> {
+    vault_jobs()
+        .lock()
+        .map_err(|_| ApiError::internal())
+        .map(|jobs| jobs.jobs.get(&(kind, request_id.to_owned())).cloned())
+}
+
+fn reserve_job(
+    kind: VaultJobKind,
+    request_id: &str,
+    initial: Value,
+) -> Result<(Value, bool), ApiError> {
+    let mut jobs = vault_jobs().lock().map_err(|_| ApiError::internal())?;
+    let key = (kind, request_id.to_owned());
+    if let Some(job) = jobs.jobs.get(&key) {
+        return Ok((job.clone(), false));
+    }
+    jobs.order.push_back(key.clone());
+    jobs.jobs.insert(key, initial.clone());
+    while jobs.order.len() > 50 {
+        if let Some(expired) = jobs.order.pop_front() {
+            jobs.jobs.remove(&expired);
+        }
+    }
+    Ok((initial, true))
+}
+
+fn update_job(kind: VaultJobKind, request_id: &str, update: impl FnOnce(&mut Value)) {
+    if let Ok(mut jobs) = vault_jobs().lock()
+        && let Some(job) = jobs.jobs.get_mut(&(kind, request_id.to_owned()))
+    {
+        update(job);
+    }
+}
+
+fn finish_job(kind: VaultJobKind, request_id: &str, mut fields: Value) {
+    update_job(kind, request_id, |job| {
+        if let (Some(job), Some(fields)) = (job.as_object_mut(), fields.as_object_mut()) {
+            job.remove("progress");
+            job.extend(std::mem::take(fields));
+        }
+    });
+}
+
+async fn run_login_job(request_id: String, profile: String) {
+    let args = vec![
+        "aws-login".to_owned(),
+        "--profile".to_owned(),
+        profile,
+        "--json".to_owned(),
+    ];
+    let mut pending = String::new();
+    let mut on_output = |stdout: bool, chunk: &str| {
+        if !stdout {
+            return;
+        }
+        pending.push_str(chunk);
+        while let Some(end) = pending.find('\n') {
+            let line: String = pending.drain(..=end).collect();
+            if let Ok(value) = serde_json::from_str::<Value>(line.trim())
+                && let Some(page) = value.get("page").and_then(Value::as_str)
+                && page.starts_with("https://")
+            {
+                let code = value
+                    .get("code")
+                    .map(|code| match code {
+                        Value::String(value) => value.clone(),
+                        other => other.to_string(),
+                    })
+                    .unwrap_or_default();
+                update_job(VaultJobKind::Login, &request_id, |job| {
+                    job["page"] = Value::String(page.to_owned());
+                    job["code"] = Value::String(code.chars().take(40).collect());
+                });
+            }
+        }
+    };
+    let result =
+        studio_runtime_services::vault::run_desk(&args, VAULT_LOGIN_TIMEOUT, &mut on_output).await;
+    match result {
+        Ok(result) if result.code == Some(0) && !result.timed_out => {
+            finish_job(
+                VaultJobKind::Login,
+                &request_id,
+                serde_json::json!({"state":"done"}),
+            );
+        }
+        Ok(result) => {
+            let error = desk_reason(&result.stderr, &result.stdout);
+            finish_job(
+                VaultJobKind::Login,
+                &request_id,
+                serde_json::json!({"state":"failed","error":error}),
+            );
+        }
+        Err(error) => {
+            finish_job(
+                VaultJobKind::Login,
+                &request_id,
+                serde_json::json!({"state":"failed","error":error.to_string()}),
+            );
+        }
+    }
+}
+
+async fn run_setup_job(
+    request_id: String,
+    prefix: String,
+    profile: String,
+    region: String,
+    writer: String,
+) {
+    let args = vec![
+        "deploy".to_owned(),
+        "--project".to_owned(),
+        prefix.clone(),
+        "--profile".to_owned(),
+        profile,
+        "--region".to_owned(),
+        region,
+        "--writer".to_owned(),
+        writer,
+    ];
+    let mut pending = String::new();
+    let mut on_output = |stdout: bool, chunk: &str| {
+        if stdout {
+            return;
+        }
+        pending.push_str(chunk);
+        while let Some(end) = pending.find('\n') {
+            let line: String = pending.drain(..=end).collect();
+            if let Some(progress) = line.strip_prefix("layr-desk: ") {
+                update_job(VaultJobKind::Setup, &request_id, |job| {
+                    job["progress"] = Value::String(progress.trim().chars().take(200).collect());
+                });
+            }
+        }
+    };
+    let result =
+        studio_runtime_services::vault::run_desk(&args, VAULT_SETUP_TIMEOUT, &mut on_output).await;
+    match result {
+        Ok(result) if result.code == Some(0) && !result.timed_out => {
+            let site = result
+                .stdout
+                .lines()
+                .rfind(|line| !line.trim().is_empty())
+                .and_then(|line| serde_json::from_str::<Value>(line.trim()).ok())
+                .and_then(|value| value.get("site").and_then(Value::as_str).map(str::to_owned));
+            match site {
+                Some(site) => finish_job(
+                    VaultJobKind::Setup,
+                    &request_id,
+                    serde_json::json!({"state":"done","site":site}),
+                ),
+                None => finish_job(
+                    VaultJobKind::Setup,
+                    &request_id,
+                    serde_json::json!({"state":"failed","error":"layr-desk returned invalid JSON"}),
+                ),
+            }
+        }
+        Ok(result) if result.code == Some(3) => {
+            let error = desk_reason(&result.stderr, &result.stdout);
+            finish_job(
+                VaultJobKind::Setup,
+                &request_id,
+                serde_json::json!({"state":"signin","error":error}),
+            );
+        }
+        Ok(result) => {
+            let error = desk_reason(&result.stderr, &result.stdout);
+            finish_job(
+                VaultJobKind::Setup,
+                &request_id,
+                serde_json::json!({"state":"failed","error":error}),
+            );
+        }
+        Err(error) => finish_job(
+            VaultJobKind::Setup,
+            &request_id,
+            serde_json::json!({"state":"failed","error":error.to_string()}),
+        ),
+    }
+}
+
+fn settings_dir(state_dir: &str) -> std::path::PathBuf {
+    std::env::var_os("HOME")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::path::PathBuf::from(state_dir))
+        .join(".config/studio-vault")
+}
+
+fn vault_error(error: studio_runtime_services::vault::VaultError) -> ApiError {
+    ApiError::new(StatusCode::BAD_REQUEST, error.to_string())
+}
+
+fn desk_reason(stderr: &str, stdout: &str) -> String {
+    let text = stderr.trim();
+    let text = if let Some(at) = text.rfind("Error: ") {
+        &text[at + "Error: ".len()..]
+    } else if !text.is_empty() {
+        text.lines().last().unwrap_or("layr-desk failed")
+    } else if !stdout.trim().is_empty() {
+        stdout.lines().last().unwrap_or("layr-desk failed")
+    } else {
+        "layr-desk failed"
+    };
+    text.split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .take(500)
+        .collect()
 }
 
 async fn unlock(ApiJson(_body): ApiJson<Value>) -> Result<Json<Value>, ApiError> {
@@ -240,9 +576,13 @@ mod tests {
     }
 
     fn authorized_request(body: Value) -> Request<Body> {
+        authorized_request_at("/api/project-secrets/set", body)
+    }
+
+    fn authorized_request_at(uri: &str, body: Value) -> Request<Body> {
         Request::builder()
             .method(Method::POST)
-            .uri("/api/project-secrets/set")
+            .uri(uri)
             .header("host", TEST_HTTP_HOST)
             .header("content-type", "application/json")
             .header("x-canvas-token", "test-token")
@@ -256,6 +596,39 @@ mod tests {
             )))
             .body(Body::from(body.to_string()))
             .unwrap()
+    }
+
+    #[tokio::test]
+    async fn vault_setup_facts_route_uses_the_host_command_and_cached_project() {
+        let state = tempfile::tempdir().unwrap();
+        let project = state.path().join("linux-vm/layr-projects/p1");
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::write(
+            project.join("project.json"),
+            br#"{"projectId":"p1","source":"/tmp/Project One"}"#,
+        )
+        .unwrap();
+        let app = app(state.path(), None);
+        let request = authorized_request_at("/api/vault/setup/facts", json!({"projectId":"p1"}));
+
+        let response = app.oneshot(request).await.unwrap();
+        let status = response.status();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
+        let response: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(
+            response,
+            json!({
+                "prefix":"project-one",
+                "keys":false,
+                "site":null,
+                "region":"eu-central-1",
+                "gatewayProfile":null,
+                "profiles":[{"name":"fixture"}]
+            })
+        );
     }
 
     #[tokio::test]

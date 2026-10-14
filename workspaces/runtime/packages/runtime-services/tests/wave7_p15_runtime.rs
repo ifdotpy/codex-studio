@@ -271,6 +271,7 @@ fn lifecycle_cancel_intent_survives_crash_before_committed_and_dispatches_after_
                 2000.0,
                 &lifecycle,
                 &rooms,
+                &studio_runtime_services::sync_policy::ProjectVaultSnapshot::default(),
             )
         })
         .expect("stop commits monitor cancellation without invoking committed hook");
