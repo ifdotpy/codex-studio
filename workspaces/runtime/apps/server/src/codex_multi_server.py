@@ -33,11 +33,15 @@ from codex_multi_server_transport_limits import (
     MULTI_SERVER_MAX_RESPONSE_LABEL,
 )
 from codex_remote import RemoteAccess, validate_origin
+from codex_multi_server_protocol import (
+    ACCESS_PROTOCOL_VERSION,
+    MULTI_SERVER_SIGNING_DOMAIN,
+)
 
 if TYPE_CHECKING:
     from codex_server_discovery import ServerDiscovery
 
-PROTOCOL = 1
+PROTOCOL = ACCESS_PROTOCOL_VERSION
 CLOCK_SKEW_SECONDS = 300
 INVITE_SECONDS = 900
 MAX_TAILSCALE_IDENTITY_JSON_BYTES = 1_048_576
@@ -125,7 +129,7 @@ def _ed25519_key(value: object) -> bool:
 
 def request_bytes(method: str, target: str, server_id: str, client_id: str,
                   timestamp: str, nonce: str, request_id: str, raw: bytes) -> bytes:
-    return "\n".join(("studio-multi-server-v1", method.upper(), target, server_id,
+    return "\n".join((MULTI_SERVER_SIGNING_DOMAIN, method.upper(), target, server_id,
                       client_id, timestamp, nonce, request_id,
                       hashlib.sha256(raw).hexdigest())).encode("utf-8")
 

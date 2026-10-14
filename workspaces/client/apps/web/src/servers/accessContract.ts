@@ -1,4 +1,5 @@
 import type { PairInvitation } from "./pairing";
+import { ACCESS_PROTOCOL_VERSION } from "../generated/multiServerProtocol";
 export type ServerAccessPeer = {
   id: string;
   clientId: string;
@@ -15,7 +16,7 @@ export type ServerAccessPeer = {
   alias?: string | null;
 };
 export type ServerAccessState = {
-  protocol: 1;
+  protocol: typeof ACCESS_PROTOCOL_VERSION;
   identity: {
     serverId: string;
     label: string;

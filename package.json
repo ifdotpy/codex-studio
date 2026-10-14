@@ -17,6 +17,8 @@
     "multi-server-limits:check": "python3 workspaces/runtime/apps/server/src/codex_python.py --exec -m studio_api.generate_multi_server_transport_limits --check",
     "federation-limits:generate": "python3 workspaces/runtime/apps/server/src/codex_python.py --exec -m studio_api.generate_federation_limits --write",
     "federation-limits:check": "python3 workspaces/runtime/apps/server/src/codex_python.py --exec -m studio_api.generate_federation_limits --check",
+    "multi-server-protocol:generate": "python3 workspaces/runtime/apps/server/src/codex_python.py --exec -m studio_api.generate_multi_server_protocol --write",
+    "multi-server-protocol:check": "python3 workspaces/runtime/apps/server/src/codex_python.py --exec -m studio_api.generate_multi_server_protocol --check",
     "typecheck:runtime": "python3 workspaces/runtime/apps/server/src/codex_python.py --mypy",
     "test:client": "pnpm run typecheck:client-helper && pnpm --filter codex-agents-web test",
     "typecheck:client-helper": "pnpm --filter codex-agents-web exec tsc --project tests/tsconfig.json",

@@ -7,9 +7,10 @@ import json
 import hashlib
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from typing import cast
+from typing import Literal, cast
 
 from codex_layout import REPOSITORY_ROOT
+from codex_multi_server_protocol import ACCESS_PROTOCOL_VERSION
 from codex_agent_modes import (
     DEFAULT_MAX_TEAM_AGENTS,
     DEFAULT_SUBAGENT_CONCURRENCY,
@@ -42,6 +43,7 @@ import codex_records as record_contracts
 from studio_api.io.models import TerminalRecord
 from studio_api.work.models import RuleRecord, WorkItem
 from studio_api.generate_state_schemas import render_rust_agent_limits
+from studio_api.generate_multi_server_protocol import OUTPUTS as MULTI_SERVER_PROTOCOL_OUTPUTS
 from studio_api.generate_types import render, render_schema_identity
 from studio_api.persisted_account_transfer import PersistedAccountTransferRecord
 from studio_api.schema import (
@@ -128,6 +130,35 @@ def sample_document(response_schema: dict[str, JsonValue]) -> dict[str, JsonValu
 
 
 class SchemaContractTests(unittest.TestCase):
+    def test_multi_server_access_protocol_has_one_generated_owner(self) -> None:
+        from studio_api.multi_server.models import AccessProtocolVersion
+
+        self.assertEqual(AccessProtocolVersion, Literal[ACCESS_PROTOCOL_VERSION])
+        document = openapi_document()
+        components = document["components"]
+        assert isinstance(components, dict)
+        schemas = components["schemas"]
+        assert isinstance(schemas, dict)
+        for model_name in (
+            "AccessInvitation",
+            "DiscoveryIdentity",
+            "AccessSnapshot",
+            "AutoPairRequest",
+            "DevicePairRequest",
+            "DevicePairResponse",
+        ):
+            model = schemas[model_name]
+            assert isinstance(model, dict)
+            properties = model["properties"]
+            assert isinstance(properties, dict)
+            protocol = properties["protocol"]
+            assert isinstance(protocol, dict)
+            with self.subTest(model=model_name):
+                self.assertEqual(protocol["const"], ACCESS_PROTOCOL_VERSION)
+        for path, expected in MULTI_SERVER_PROTOCOL_OUTPUTS.items():
+            with self.subTest(generated=path.name):
+                self.assertEqual(path.read_text(encoding="utf-8"), expected)
+
     def test_agent_capacity_contracts_derive_from_runtime_limits(self) -> None:
         document = openapi_document()
         components = document["components"]
