@@ -658,7 +658,15 @@ fn decide_inner(
             } else {
                 reason.clone()
             };
-            stop(snapshot, target, *descendants, false, reason.as_deref(), now, live)
+            stop(
+                snapshot,
+                target,
+                *descendants,
+                false,
+                reason.as_deref(),
+                now,
+                live,
+            )
         }
         Action::Delete { target } => stop(snapshot, target, true, true, None, now, live),
         Action::Archive {
@@ -806,12 +814,17 @@ fn stop(
         object.insert("autoWake".to_owned(), json!(false));
         object.insert("epoch".to_owned(), json!(epoch));
         object.insert("status".to_owned(), json!("paused"));
-        object.insert(
-            "error".to_owned(),
-            json!(reason.clone()),
-        );
+        object.insert("error".to_owned(), json!(reason.clone()));
         if delete && !agent.flag("deletedAt") {
             object.insert("deletedAt".to_owned(), json!(now));
+        }
+        if delete && agent.record.get("workspaceCleanupIntent").is_none() {
+            record["workspaceCleanupIntent"] =
+                crate::workspace_cleanup_runtime::queued_cleanup_intent(
+                    agent.id(),
+                    epoch,
+                    crate::workspace_cleanup_runtime::CleanupAction::Delete,
+                );
         }
         for kind in required.remove(agent.id()).unwrap_or_default() {
             decision.effects.push(LifecycleEffect::new(
@@ -855,9 +868,15 @@ fn archive(
     }
     if agent.flag("agentArchive") {
         if truthy(agent.record["agentArchive"].get("cleanupPending")) {
-            return Err(ManagementError::Unavailable(
-                "workspace-state/agent-lifecycle",
-            ));
+            return Ok(Decision::result(json!({
+                "status":"archived",
+                "agent":brief(&agent.record),
+                "replayed":true,
+                "cleanupPending":true,
+                "workspace":null,
+                "worktree":{"state":"pending","bytes":0},
+                "unassignedWork":agent.record["agentArchive"].get("unassignedWork").cloned().unwrap_or(json!([]))
+            })));
         }
         workspace_dependency(agent)?;
         return Ok(Decision::result(
@@ -930,7 +949,14 @@ fn archive(
     record["autoWake"] = json!(false);
     record["status"] = json!("paused");
     record["epoch"] = json!(next_epoch(agent)?);
-    record["agentArchive"] = json!({"at":now,"by":actor,"reason":reason,"epoch":record["epoch"],"cleanupPending":false,"unknownToolRequests":[],"unassignedWork":unassigned});
+    record["agentArchive"] = json!({"at":now,"by":actor,"reason":reason,"epoch":record["epoch"],"cleanupPending":true,"unknownToolRequests":[],"unassignedWork":unassigned});
+    record["workspaceCleanupIntent"] = crate::workspace_cleanup_runtime::queued_cleanup_intent(
+        agent.id(),
+        record["epoch"]
+            .as_i64()
+            .ok_or(ManagementError::Invalid("Invalid archive epoch"))?,
+        crate::workspace_cleanup_runtime::CleanupAction::Archive,
+    );
     decision.result = json!({"status":"archived","agent":brief(&record),"worktree":{"state":"none","bytes":0},"unassignedWork":unassigned});
     decision.write("runtime_agents", record);
     Ok(decision)

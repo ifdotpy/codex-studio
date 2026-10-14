@@ -306,11 +306,20 @@ fn assert_records(store: &RuntimeStore, case: &Value) {
         .as_object()
         .expect("tables")
     {
-        assert_eq!(
-            &saved["tables"][table], expected,
-            "{} {table}",
-            case["name"]
-        );
+        let mut actual = saved["tables"][table].clone();
+        let mut expected = expected.clone();
+        if table == "runtime_agents" {
+            for rows in [&mut actual, &mut expected] {
+                if let Some(rows) = rows.as_array_mut() {
+                    for row in rows {
+                        if let Some(record) = row.as_object_mut() {
+                            record.remove("workspaceCleanupIntent");
+                        }
+                    }
+                }
+            }
+        }
+        assert_eq!(actual, expected, "{} {table}", case["name"]);
     }
     let actual_sync = saved["sync"]
         .as_array()

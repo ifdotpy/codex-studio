@@ -16,9 +16,31 @@ pub fn execute(store: &RuntimeStore, action: &Action, now: f64) -> Result<Value,
     let rooms = crate::sync_entity_context::RoomDirectory::prepare(&reader)?;
     let projects = ProjectsRepository::list(&reader)?;
     let vault_snapshot = crate::sync_policy::ProjectVaultSnapshot::capture(store.root(), &projects);
-    store.transaction_with_error(|transaction| {
+    let mut result = store.transaction_with_error(|transaction| {
         execute_in_transaction(transaction, action, now, &rooms, &vault_snapshot)
-    })
+    })?;
+    if matches!(action, Action::Delete { .. } | Action::Archive { .. }) {
+        crate::workspace_cleanup_runtime::reconcile_pending_cleanup(store).map_err(|_| {
+            studio_runtime_store::StoreError::RecordContract(
+                "Lifecycle committed; workspace cleanup remains pending",
+            )
+        })?;
+        if let Some(agent_id) = result
+            .get("agent")
+            .and_then(|agent| agent.get("id"))
+            .and_then(Value::as_str)
+        {
+            if let Some(agent) = studio_runtime_store::AgentRepository::get(
+                &store.read()?,
+                &studio_runtime_store::AgentId::from(agent_id),
+            )? {
+                if let Some(agent_archive) = agent.value().get("agentArchive") {
+                    result["agent"]["agentArchive"] = agent_archive.clone();
+                }
+            }
+        }
+    }
+    Ok(result)
 }
 
 /// Archive a worker after its accepted result has been merged and verified on
