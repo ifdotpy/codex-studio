@@ -281,25 +281,28 @@ class AccountTransfers:
             if target_account.get("disconnected"):
                 raise ValueError("Reconnect this account before transferring a team to it")
             members = rt.team_agents(db, key, include_id=key)
-            if any(agent.get('environment') == 'linux' and not agent.get('deletedAt')
-                   and agent.get('accountKey', 'default') != target for agent in members):
-                raise ValueError('Archive the Linux VM workers before changing the team account. Their native account identity stays fixed.')
-            target_provider = rt.accounts.get(target).get('provider', 'codex')
-            op = {'id': request_id, 'leadId': key, 'targetAccountKey': target,
-                  'status': 'pending', 'scope': scope, 'created': time.time(), 'members': {},
-                  'requests': {request_id: {'leadId': key, 'targetAccountKey': target, 'scope': scope}}}
-            # Subagent-only changes take effect now; team transfers set this as the lead moves.
-            root = rt.agent(key, db)
-            op['targetProvider'] = target_provider
-            self.adopt(db, op, members)
-            if scope == 'subagents' or root.get('accountKey', 'default') == target:
-                defaults = copy.deepcopy(root.get('workerDefaults') or rt.worker_defaults(root))
-                defaults['accountKey'] = target
-                root['workerDefaults'] = defaults
-                rt.put(db, 'agents', root)
-            if all(m['phase'] in MEMBER_TERMINAL for m in op['members'].values()):
-                op["status"] = "completed"
-            self.save(db, op)
+            from codex_vm_account_switch import needs_switch
+            vm_switch = bool(needs_switch([a for a in members if scope == 'team' or a['id'] != key], target))
+            if not vm_switch:
+                target_provider = rt.accounts.get(target).get('provider', 'codex')
+                op = {'id': request_id, 'leadId': key, 'targetAccountKey': target,
+                      'status': 'pending', 'scope': scope, 'created': time.time(), 'members': {},
+                      'requests': {request_id: {'leadId': key, 'targetAccountKey': target, 'scope': scope}}}
+                # Subagent-only changes take effect now; team transfers set this as the lead moves.
+                root = rt.agent(key, db)
+                op['targetProvider'] = target_provider
+                self.adopt(db, op, members)
+                if scope == 'subagents' or root.get('accountKey', 'default') == target:
+                    defaults = copy.deepcopy(root.get('workerDefaults') or rt.worker_defaults(root))
+                    defaults['accountKey'] = target
+                    root['workerDefaults'] = defaults
+                    rt.put(db, 'agents', root)
+                if all(m['phase'] in MEMBER_TERMINAL for m in op['members'].values()):
+                    op["status"] = "completed"
+                self.save(db, op)
+        if vm_switch:
+            from codex_vm_account_switch import switch
+            return switch(self, key, target, request_id, scope)
         rt.changed.set()
         return op
 
@@ -828,7 +831,7 @@ class AccountTransfers:
             from codex_native_tools import account_reserved
             if account_reserved(rt, target) or account_reserved(rt, source_key):
                 raise RuntimeError('Waiting for the account tool catalog update')
-            source = rt.connect(source_key) if source_thread else None
+            source = rt.connect(source_key, history_read=True) if source_thread else None
             server = rt.connect(target)
             catalog = rt.catalog(target)
             resolved = self.destination_settings(snapshot, target, catalog)
@@ -1257,7 +1260,8 @@ class AccountTransfers:
                 return None
         # Check native state first: it is cheap, and every later move of a
         # materialized imported thread stops here without hashing the archive.
-        native = self.source_history_missing(self.rt.accounts.home(source_account), thread_id)
+        # These proofs only read the profile's files. A changed login does not change them.
+        native = self.source_history_missing(self.rt.accounts.home(source_account, for_login=True), thread_id)
         if not native:
             return None
         if source_thread is not None:
@@ -1282,7 +1286,7 @@ class AccountTransfers:
                     or not member.get('error') or '[Errno 2]' not in str(member['error'])
                     or member.get('result') or member.get('nativeMethod')):
                 continue
-            proof = self.source_history_missing(self.rt.accounts.home(member['sourceAccountKey']),
+            proof = self.source_history_missing(self.rt.accounts.home(member['sourceAccountKey'], for_login=True),
                                                 thread_id, member['error'])
             if proof:
                 return op, member, proof
@@ -1386,7 +1390,7 @@ class AccountTransfers:
         try:
             # Confirm that the native thread has no turns. A successful empty
             # page is sufficient; only the exact missing-rollout errors qualify.
-            verifier = rt.connect(source_account) if source_history_missing else server
+            verifier = rt.connect(source_account, history_read=True) if source_history_missing else server
             try:
                 native = verifier.call('thread/read', {'threadId':thread_id, 'includeTurns':False}, timeout=10)
                 thread = native.get('thread') if isinstance(native, dict) else None
@@ -1569,7 +1573,7 @@ class AccountTransfers:
                     proof_changed = True
                     empty_connection = None
                 else:
-                    empty_connection = self.rt.connect(source_key)
+                    empty_connection = self.rt.connect(source_key, history_read=True)
             else:
                 empty_connection = None
         if proof_changed:
@@ -1606,7 +1610,7 @@ class AccountTransfers:
                 return False
             return True
         assert before is not None
-        source = self.rt.connect(source_key)
+        source = self.rt.connect(source_key, history_read=True)
         after = source.call('thread/read', {'threadId': before['id'], 'includeTurns': False}, timeout=10)['thread']
         if (after.get('status', {}).get('type') not in {'idle', 'notLoaded', 'systemError'}
                 or not self.same_native_history(before, after)):
@@ -1693,7 +1697,7 @@ class AccountTransfers:
             source = None
             source_empty_proof = None
             if a.get('threadId'):
-                source = rt.connect(a.get('accountKey', 'default'))
+                source = rt.connect(a.get('accountKey', 'default'), history_read=True)
                 native, source_empty_proof = self.read_transfer_source(source, aid, a['threadId'], portable)
                 if source_empty_proof is not None:
                     # A prior exact thread/start receipt proves the source began

@@ -194,6 +194,10 @@ class SystemApiTests(unittest.TestCase):
         self.assertEqual(body["nativeRuntime"]["selected"]["version"], "1.2.3")
         self.assertEqual(body["liveUpdate"], {"status": "idle", "pid": 3})
         self.assertEqual(body["supervisor"], supervisor_health())
+        # A source checkout has no build stamp and no peer update records.
+        self.assertEqual(body["peerUpdate"], {
+            "build": None, "checkedAt": None, "lastPull": None, "pending": None, "lastInstall": None,
+        })
         native.assert_called_once_with(runtime)
         browser.assert_called_once_with(runtime, "fixture-account")
 

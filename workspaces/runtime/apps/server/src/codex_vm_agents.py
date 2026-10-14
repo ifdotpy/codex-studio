@@ -6,6 +6,7 @@ import hashlib
 import json
 from pathlib import Path, PurePosixPath
 import platform
+import re
 import subprocess
 import sys
 import time
@@ -280,6 +281,35 @@ def _save_turn(runtime: Any, agent: Mapping[str, Any], turn: str, key: str) -> s
     return output
 
 
+def _settle_unknown_save(runtime: Any, agent: Mapping[str, Any], turn: str, key: str) -> str | None:
+    """The state of a turn save without a proven result, or None when the save did not happen.
+
+    The guest kills a layr command at its deadline (on 2026-10-13 a guest kernel oops hung
+    `btrfs send`) and keeps outcome_unknown in the receipt of its request ID, so a retry with
+    that ID gets the same answer forever. layr writes the op log entry when a save commits, and
+    the killed command can no longer commit. The op log therefore proves the outcome.
+    """
+    line = context(runtime, agent)
+
+    def run(step: str, argv: list[str]) -> str:
+        result = request(runtime, "layr.exec", {"agentId": agent["id"], "argv": argv, "cwd": line["path"]},
+                         key + ":" + step)
+        if result.get("exitCode") != 0:
+            raise ValueError("The layr " + step + " step of the turn save check failed")
+        return base64.b64decode(result.get("stdout", "")).decode()
+
+    for row in run("op-log", ["layr", "op", "log", "-n", "500"]).splitlines():
+        match = _TURN_SAVE_OP.search(row.strip())
+        if match and match["agent"] == agent["id"] and match["turn"] == turn:
+            return run("state", ["layr", "rev-parse", match["state"]]).strip() or None
+    # Older entries can be out of this window. A second save of the same content only adds a state.
+    return None
+
+
+# One line of `layr op log`: "<op> <time> <owner> [<session>] save <state> Studio turn <turn>".
+_TURN_SAVE_OP = re.compile(r"\[(?P<agent>[^\]]+)\] save (?P<state>[0-9a-f]+) Studio turn (?P<turn>\S+)$")
+
+
 def flush_turns(runtime: Any, agent: Mapping[str, Any]) -> None:
     from codex_linux_vm import LinuxVMError
     for turn, saved in list(agent.get("layrTurnSaves", {}).items()):
@@ -293,16 +323,22 @@ def flush_turns(runtime: Any, agent: Mapping[str, Any]) -> None:
         try:
             state = _save_turn(runtime, agent, turn, key)
         except Exception as error:
-            if not isinstance(error, ValueError) and not (
+            settled = None
+            if isinstance(error, LinuxVMError) and error.code == "outcome_unknown":
+                # The guest's own answer, not a lost one: its receipt keeps it for this ID.
+                settled = _settle_unknown_save(runtime, agent, turn, key)
+            elif not isinstance(error, ValueError) and not (
                     isinstance(error, LinuxVMError) and not error.uncertain and error.code):
                 raise
-            with runtime.lock, runtime.db() as db:
-                latest = runtime.agent(agent["id"], db)
-                row = latest.setdefault("layrTurnSaves", {}).setdefault(turn, {"status": "pending"})
-                if row.get("status") != "saved":
-                    row["attempt"] = attempt + 1
-                    runtime.put(db, "agents", latest)
-            raise
+            if settled is None:
+                with runtime.lock, runtime.db() as db:
+                    latest = runtime.agent(agent["id"], db)
+                    row = latest.setdefault("layrTurnSaves", {}).setdefault(turn, {"status": "pending"})
+                    if row.get("status") != "saved":
+                        row["attempt"] = attempt + 1
+                        runtime.put(db, "agents", latest)
+                raise
+            state = settled
         with runtime.lock, runtime.db() as db:
             latest = runtime.agent(agent["id"], db)
             latest.setdefault("layrTurnSaves", {})[turn] = {

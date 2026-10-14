@@ -1256,6 +1256,12 @@
           "autoPair": {
             "title": "Autopair",
             "type": "boolean"
+          },
+          "autoUpdate": {
+            "default": true,
+            "description": "Install a newer build that a paired server runs (docs/peer-updates.md).",
+            "title": "Autoupdate",
+            "type": "boolean"
           }
         },
         "required": [
@@ -2022,6 +2028,10 @@
             "default": null,
             "title": "Transferid",
             "type": "string"
+          },
+          "vmSessionCopy": {
+            "$ref": "#/components/schemas/JsonObjectResponse",
+            "default": null
           }
         },
         "title": "AccountHistoryRecordResponse",
@@ -7180,6 +7190,10 @@
             "default": null,
             "title": "Usageresumeenabled",
             "type": "boolean"
+          },
+          "vmAccountSwitch": {
+            "$ref": "#/components/schemas/JsonObjectResponse",
+            "default": null
           },
           "workerBaseBehindMain": {
             "anyOf": [
@@ -20907,6 +20921,17 @@
             ],
             "title": "Title"
           },
+          "updated": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "number"
+              }
+            ],
+            "title": "Updated"
+          },
           "version": {
             "anyOf": [
               {
@@ -21654,6 +21679,26 @@
             "default": null,
             "title": "Queuedinputpreserved",
             "type": "boolean"
+          },
+          "requestBasis": {
+            "$ref": "#/components/schemas/JsonValue"
+          },
+          "requestId": {
+            "default": null,
+            "title": "Requestid",
+            "type": "string"
+          },
+          "requestReceipt": {
+            "$ref": "#/components/schemas/JsonValue"
+          },
+          "requestState": {
+            "default": null,
+            "enum": [
+              "pending",
+              "result"
+            ],
+            "title": "Requeststate",
+            "type": "string"
           },
           "source": {
             "default": null,
@@ -23577,6 +23622,17 @@
                 "type": "null"
               }
             ]
+          },
+          "peerUpdate": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PeerUpdateStatus"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
           },
           "pid": {
             "maximum": 9007199254740991,
@@ -28560,6 +28616,18 @@
             ],
             "default": null,
             "title": "Allocateddiskbytes"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "default": null,
+            "title": "Error"
           },
           "settings": {
             "$ref": "#/components/schemas/LinuxVMSettings"
@@ -35743,6 +35811,202 @@
           "members"
         ],
         "title": "PeerTeamSaveRequest",
+        "type": "object"
+      },
+      "PeerUpdateBuild": {
+        "additionalProperties": false,
+        "description": "The build stamp in Contents/Resources/studio-build.json (docs/peer-updates.md).",
+        "properties": {
+          "branch": {
+            "title": "Branch",
+            "type": "string"
+          },
+          "builtAt": {
+            "description": "Packaging time on the build Mac, in seconds since the epoch.",
+            "title": "Builtat",
+            "type": "number"
+          },
+          "commit": {
+            "title": "Commit",
+            "type": "string"
+          },
+          "commitTime": {
+            "description": "Commit time, in seconds since the epoch.",
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "title": "Committime",
+            "type": "integer"
+          },
+          "version": {
+            "const": 1,
+            "maximum": 1,
+            "minimum": 1,
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "version",
+          "builtAt",
+          "commit",
+          "commitTime",
+          "branch"
+        ],
+        "title": "PeerUpdateBuild",
+        "type": "object"
+      },
+      "PeerUpdateEvent": {
+        "additionalProperties": false,
+        "properties": {
+          "at": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "number"
+              }
+            ],
+            "description": "Time of the pull or install attempt, in seconds since the epoch.",
+            "title": "At"
+          },
+          "build": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PeerUpdateBuild"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "outcome": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "title": "Outcome"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "title": "Reason"
+          },
+          "server": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "description": "The paired server that offered the build.",
+            "title": "Server"
+          }
+        },
+        "required": [
+          "at",
+          "server",
+          "build",
+          "outcome",
+          "reason"
+        ],
+        "title": "PeerUpdateEvent",
+        "type": "object"
+      },
+      "PeerUpdatePending": {
+        "additionalProperties": false,
+        "properties": {
+          "build": {
+            "$ref": "#/components/schemas/PeerUpdateBuild"
+          },
+          "server": {
+            "title": "Server",
+            "type": "string"
+          }
+        },
+        "required": [
+          "build",
+          "server"
+        ],
+        "title": "PeerUpdatePending",
+        "type": "object"
+      },
+      "PeerUpdateStatus": {
+        "additionalProperties": false,
+        "properties": {
+          "build": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PeerUpdateBuild"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The build of the installed app; null for a source checkout."
+          },
+          "checkedAt": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "number"
+              }
+            ],
+            "title": "Checkedat"
+          },
+          "lastInstall": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PeerUpdateEvent"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "lastPull": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PeerUpdateEvent"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "pending": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PeerUpdatePending"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "build",
+          "checkedAt",
+          "lastPull",
+          "pending",
+          "lastInstall"
+        ],
+        "title": "PeerUpdateStatus",
         "type": "object"
       },
       "PendingSettingsRecordResponse": {
@@ -47024,8 +47288,28 @@
             "type": "string"
           },
           "autoPair": {
-            "title": "Autopair",
-            "type": "boolean"
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Autopair"
+          },
+          "autoUpdate": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Autoupdate"
           },
           "requestId": {
             "anyOf": [
@@ -47043,8 +47327,7 @@
           }
         },
         "required": [
-          "action",
-          "autoPair"
+          "action"
         ],
         "title": "SetAccessSettings",
         "type": "object"

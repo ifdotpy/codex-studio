@@ -130,6 +130,14 @@ def _cancel_result(record: "ToolRequestRecord", message: str) -> "JsonObject":
     })}]}
 
 
+def _interrupted_result(record: "ToolRequestRecord", message: str) -> "JsonObject":
+    """The answer for a native caller that still waits on a call that a restart interrupted."""
+    return {"success": False, "contentItems": [{"type": "inputText", "text": json.dumps({
+        "requestId": record["id"], "stage": "interrupted", "outcome": "unknown", "message": message
+        + ". Nothing was repeated. Check what the call did before you run it again.",
+    })}]}
+
+
 def _spawned_ids(result: "JsonObject") -> list[str]:
     ids: list[str] = []
     if not isinstance(result, dict):
@@ -258,6 +266,9 @@ class RequestMixin:
             else:
                 record["stage"] = "interrupted"
                 record["error"] = "Server restarted before the execution receipt"
+                # A surviving native caller still waits on this call; tool response recovery
+                # sends it this answer, and the outcome stays unknown.
+                record["result"] = _interrupted_result(record, record["error"])
             self.put(db, "tool_requests", record)
 
     @staticmethod
@@ -374,7 +385,11 @@ class RequestMixin:
                           "timing": {"reservationBeganAt": reservation_started,
                                      "reservationLockedAt": reservation_locked}}
                 from codex_connection_recovery import supervisor_identity
-                native_identity = supervisor_identity(getattr(self, "servers", {}).get(account_key))
+                # The caller's own native child: a Linux VM chat has its own server, not the account's.
+                server_for = getattr(self, "server_for", None)
+                native_identity = supervisor_identity(
+                    server_for(account_key, connection_id) if callable(server_for)
+                    else getattr(self, "servers", {}).get(account_key))
                 if native_identity is not None:
                     record["supervisor"] = native_identity
                 received = message.get("_studioReceivedAt")

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { desktopAlerts } from "./desktopAlerts.ts";
+import { alertsSince, desktopAlerts } from "./desktopAlerts.ts";
 
 import { it } from "vitest";
 
@@ -364,4 +364,30 @@ it("keeps completed-thread alerts with empty entity collections", () => {
       target: { agentId: "lead", section: "messages" },
     },
   ]);
+});
+
+it("does not show a complaint from before the window started when its page arrives late", () => {
+  const started = 1_000_000 * 1000;
+  const complaint = (version, updated) => ({
+    id: "c-1",
+    leadId: "lead",
+    title: "Need a decision",
+    needsUserResponse: true,
+    created: 900_000,
+    updated,
+    version,
+  });
+  const fresh = alertsSince(started);
+  const [old] = desktopAlerts(
+    snapshot([lead], [], [complaint(1, 900_000)]),
+  ).filter((alert) => alert.id.startsWith("complaint:"));
+  assert.equal(old.at, 900_000);
+  assert.equal(fresh(old), false);
+  // A new version of the same complaint after the start is a new event.
+  const [next] = desktopAlerts(
+    snapshot([lead], [], [complaint(2, 1_000_010)]),
+  ).filter((alert) => alert.id.startsWith("complaint:"));
+  assert.equal(fresh(next), true);
+  // A record without a time keeps the earlier rule.
+  assert.equal(fresh({ ...old, at: undefined }), true);
 });

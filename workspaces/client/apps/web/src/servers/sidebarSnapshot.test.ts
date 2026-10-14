@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Snapshot } from "../types";
 import { navigationSnapshot } from "./navigation";
-import { sidebarSnapshot } from "./sidebarSnapshot";
+import { sidebarProjectChat, sidebarSnapshot } from "./sidebarSnapshot";
 
 function snapshot(): Snapshot {
   return {
@@ -175,6 +175,7 @@ describe("server sidebar projection", () => {
         "savedOrder",
         "compact",
         "collapsed",
+        "visualFields",
         "indicators",
         "unread",
       ].sort(),
@@ -219,7 +220,29 @@ describe("server sidebar projection", () => {
       "codex-project-compact:/state/different",
       JSON.stringify({ "/work": true }),
     );
+    // Edit times of this server's sidebar fields go with the snapshot; other keys do not.
+    const field = (key: string, name: string) => JSON.stringify([key, name]);
+    const own = field(`codex-project-tree:${data.stateDir}`, folderKey);
+    records.set(
+      "studio-ui-preference-fields-v1:server",
+      JSON.stringify({
+        [own]: { value: false, timestamp: 7, writer: "frame" },
+        [field("codex-project-tree:/state/different", folderKey)]: {
+          value: true,
+          timestamp: 8,
+          writer: "frame",
+        },
+        [field("codex-worker-disclosures", "lead")]: {
+          value: true,
+          timestamp: 9,
+          writer: "frame",
+        },
+      }),
+    );
     const projected = sidebarSnapshot(data);
+    expect(projected.visualFields).toEqual({
+      [own]: { value: false, timestamp: 7, writer: "frame" },
+    });
     expect(projected.compact).toEqual(compact);
     expect(projected.collapsed).toEqual(collapsed);
     expect(projected.savedOrder).toEqual(groups);
@@ -229,6 +252,7 @@ describe("server sidebar projection", () => {
         `codex-project-compact:${data.stateDir}`,
         `codex-project-tree:${data.stateDir}`,
         `codex-sidebar-order:${data.stateDir}`,
+        "studio-ui-preference-fields-v1:server",
       ].sort(),
     );
     expect(setItem).not.toHaveBeenCalled();
@@ -250,6 +274,33 @@ describe("server sidebar projection", () => {
     const projected = sidebarSnapshot(data);
     expect(projected.sidebarOrder).toEqual(order);
     expect(projected.savedOrder).toEqual({ projects: ["/legacy"] });
+  });
+
+  it("shows a VM chat in its project on this Mac", () => {
+    const line = "/var/lib/codex-studio/layr/projects/da54bb40/lines/main";
+    const vm = {
+      id: "vm-lead",
+      cwd: line,
+      executionMode: "vm",
+      hostProjectPath: "/Users/me/Projects/attar",
+    } as Snapshot["threads"][number];
+    const native = {
+      id: "native",
+      cwd: "/Users/me/Projects/attar",
+      executionMode: "native",
+      hostProjectPath: "/Users/me/Projects/other",
+    } as Snapshot["threads"][number];
+    const data = snapshot();
+    data.threads = [vm, native];
+    const threads = sidebarSnapshot(data).threads;
+    expect(threads.map((row) => row.cwd)).toEqual([
+      "/Users/me/Projects/attar",
+      "/Users/me/Projects/attar",
+    ]);
+    // The chat record keeps its line; the same view comes back for the same record.
+    expect(vm.cwd).toBe(line);
+    expect(sidebarProjectChat(vm)).toBe(sidebarProjectChat(vm));
+    expect(sidebarProjectChat(native)).toBe(native);
   });
 
   it("uses empty saved preferences when keys are missing or invalid", () => {

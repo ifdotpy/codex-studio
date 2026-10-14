@@ -137,8 +137,10 @@ def create_router(context: ApiContext) -> APIRouter:
             if values is not None:
                 client.set_settings(values.model_dump())
             vm_status = client.status()
+            failure = vm_status.get("error") if vm_status["state"] in {"failed", "unresponsive"} else None
             return {"settings": client.get_settings(), "state": vm_status["state"],
-                    "allocatedDiskBytes": vm_status.get("allocatedDiskBytes")}
+                    "allocatedDiskBytes": vm_status.get("allocatedDiskBytes"),
+                    "error": str(failure) if failure else None}
         except (RuntimeError, OSError, ValueError) as error:
             raise HTTPException(status_code=400, detail=str(error)) from error
 
@@ -165,6 +167,7 @@ def create_router(context: ApiContext) -> APIRouter:
     )
     def desktop(request: Request, query: DesktopQuery = Depends()) -> Response:
         from codex_backend_identity import BACKEND_BUILD
+        from codex_peer_updates import status as peer_update_status
         from codex_browser import diagnostics as untyped_browser_diagnostics
         from codex_native_runtime import status as untyped_native_runtime_status
         from codex_provider_versions import status as untyped_provider_version_status
@@ -236,6 +239,7 @@ def create_router(context: ApiContext) -> APIRouter:
                 if supervisor_fallback else None
             ),
             "stateDir": str(Path(canvas.root).resolve()),
+            "peerUpdate": peer_update_status(Path(canvas.root)),
         }
         return context.send(request, result)
 

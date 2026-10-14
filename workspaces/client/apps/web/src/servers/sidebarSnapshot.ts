@@ -4,6 +4,8 @@ import {
   type ChatIndicator,
 } from "../components/chat-status/chatStatusModel";
 import type { Agent, PeerTeam, Project, Room, Snapshot } from "../types";
+import { readPreferenceFields } from "../sync/uiPreferenceStore";
+import type { PreferenceFields } from "../sync/uiPreferenceMerge";
 
 export type ServerSidebarSnapshot = {
   stateDir: string;
@@ -17,6 +19,8 @@ export type ServerSidebarSnapshot = {
   savedOrder: Record<string, string[]>;
   compact: Record<string, boolean>;
   collapsed: Record<string, boolean>;
+  /** Edit times of the compact and collapse values, for last-writer-wins merges. */
+  visualFields?: PreferenceFields;
   indicators: [string, ChatIndicator][];
   unread: string[];
 };
@@ -31,8 +35,24 @@ function pick<T extends object, K extends keyof T>(
   return result;
 }
 
+// The chats of the sidebar, each in its project. A VM chat runs in its layr line inside the
+// VM (cwd), and its project on this Mac is hostProjectPath; the server lists that project.
+const projectViews = new WeakMap<Agent, Agent>();
+export function sidebarProjectChat(agent: Agent): Agent {
+  if (
+    agent.executionMode !== "vm" ||
+    !agent.hostProjectPath ||
+    agent.cwd === agent.hostProjectPath
+  )
+    return agent;
+  let view = projectViews.get(agent);
+  if (!view)
+    projectViews.set(agent, (view = { ...agent, cwd: agent.hostProjectPath }));
+  return view;
+}
+
 export function sidebarAgent(agent: Agent): Agent {
-  return pick(agent, [
+  return pick(sidebarProjectChat(agent), [
     "id",
     "name",
     "tail",
@@ -69,6 +89,27 @@ export function sidebarAgent(agent: Agent): Agent {
     "readState",
     "readStateSupported",
   ]);
+}
+
+/** The saved preference fields of this server's compact and collapse records. */
+export function sidebarVisualFields(
+  stateDir: string,
+  fields: PreferenceFields = readPreferenceFields("server"),
+): PreferenceFields {
+  const keys = new Set([
+    `codex-project-compact:${stateDir}`,
+    `codex-project-tree:${stateDir}`,
+  ]);
+  const result: PreferenceFields = {};
+  for (const [name, field] of Object.entries(fields)) {
+    try {
+      const [key] = JSON.parse(name);
+      if (keys.has(key)) result[name] = field;
+    } catch {
+      /* A field name that is not JSON is not a sidebar value. */
+    }
+  }
+  return result;
 }
 
 /** Preserve sidebar fields and source identities without transcripts or runtime collections. */
@@ -139,6 +180,7 @@ export function sidebarSnapshot(
       `codex-project-tree:${data.stateDir}`,
       {},
     ),
+    visualFields: sidebarVisualFields(data.stateDir),
     indicators: [...indicators],
     unread: [...unread],
   };

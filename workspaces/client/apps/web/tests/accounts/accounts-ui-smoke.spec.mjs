@@ -1346,9 +1346,18 @@ async function runAccountsUi(mode, { page: fixturePage }) {
     await codexSignIn.getByText("ABCD-1234", { exact: true }).waitFor();
     assert.equal(logins.length, 1, "reload resumes the existing native login");
     assert.equal(logins[0].requestId, firstLogin);
+    const cancelResponse = page.waitForResponse((response) => {
+      const request = response.request();
+      return (
+        new URL(response.url()).pathname === "/api/accounts/login/cancel" &&
+        request.method() === "POST" &&
+        request.postDataJSON().login_id === firstLogin
+      );
+    });
     await codexSignIn
       .getByRole("button", { name: "Cancel sign-in", exact: true })
       .click();
+    assert.equal((await cancelResponse).ok(), true);
     await codexSignIn
       .getByText("Sign-in cancelled.", { exact: true })
       .waitFor();

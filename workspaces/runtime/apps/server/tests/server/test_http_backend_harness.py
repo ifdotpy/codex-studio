@@ -2,6 +2,7 @@
 
 import os
 from pathlib import Path
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -14,6 +15,49 @@ import http_backend_harness
 
 
 class BackendEnvironmentTests(unittest.TestCase):
+    def test_not_ready_waits_for_child_exit_before_reporting_status(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="http-backend-exit-") as temporary:
+            backend = http_backend_harness.BackendProcess(
+                Path(temporary), claude_bin=None, initialize_workspace=False,
+            )
+            process = mock.Mock()
+            process.wait.return_value = 1
+            backend._process = process
+            try:
+                with mock.patch.object(backend, "stop"), self.assertRaisesRegex(
+                    RuntimeError, "child exit status=1",
+                ):
+                    backend._raise_backend_not_ready("stdout closed before ready", None)
+                process.wait.assert_called_once_with(
+                    timeout=http_backend_harness.STOP_TIMEOUT_SECONDS,
+                )
+            finally:
+                backend._process = None
+                backend.close()
+
+    def test_not_ready_reports_when_child_exit_wait_bound_expires(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="http-backend-exit-") as temporary:
+            backend = http_backend_harness.BackendProcess(
+                Path(temporary), claude_bin=None, initialize_workspace=False,
+            )
+            process = mock.Mock()
+            process.wait.side_effect = subprocess.TimeoutExpired(
+                "backend", http_backend_harness.STOP_TIMEOUT_SECONDS,
+            )
+            backend._process = process
+            try:
+                with mock.patch.object(backend, "stop"), self.assertRaisesRegex(
+                    RuntimeError, "did not exit within the 4s wait bound",
+                ) as raised:
+                    backend._raise_backend_not_ready("stdout closed before ready", None)
+                self.assertNotIn("child exit status=None", str(raised.exception))
+                process.wait.assert_called_once_with(
+                    timeout=http_backend_harness.STOP_TIMEOUT_SECONDS,
+                )
+            finally:
+                backend._process = None
+                backend.close()
+
     def test_custom_command_receives_only_explicit_backend_python(self) -> None:
         with tempfile.TemporaryDirectory(prefix="http-backend-env-") as temporary:
             scratch = Path(temporary)

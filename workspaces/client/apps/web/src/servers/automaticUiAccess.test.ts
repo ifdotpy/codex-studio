@@ -25,6 +25,7 @@ const server = {
 const snapshot: DiscoverySnapshot = {
   localServerId: "home",
   autoPair: true,
+  autoUpdate: true,
   servers: [
     {
       id: "remote",

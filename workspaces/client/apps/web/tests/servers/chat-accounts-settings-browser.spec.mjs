@@ -101,7 +101,20 @@ test("Accounts includes a backend-paired server before this UI has credentials",
     await expect(
       signIn.getByRole("button", { name: "Cancel sign-in" }),
     ).toBeVisible();
+    const loginId = remote.accountWrites
+      .filter((row) => row.path === "/api/accounts/login")
+      .at(-1)?.loginId;
+    expect(loginId).toEqual(expect.any(String));
+    const cancelResponse = page.waitForResponse((response) => {
+      const request = response.request();
+      return (
+        new URL(response.url()).pathname === "/api/accounts/login/cancel" &&
+        request.method() === "POST" &&
+        request.postDataJSON().login_id === loginId
+      );
+    });
     await signIn.getByRole("button", { name: "Cancel sign-in" }).click();
+    expect((await cancelResponse).ok()).toBe(true);
     await expect(signIn).toContainText("Sign-in cancelled.");
     expect(remote.accountWrites.map((row) => row.path)).toEqual([
       "/api/accounts/login",

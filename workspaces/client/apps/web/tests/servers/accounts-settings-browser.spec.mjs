@@ -4,6 +4,18 @@ import { fileURLToPath } from "node:url";
 import { test, expect } from "../playwright.mjs";
 import { fixture } from "./multi-server-fixture.mjs";
 
+function waitForPost(page, pathname, matches = () => true) {
+  return page.waitForResponse((response) => {
+    const request = response.request();
+    if (
+      new URL(response.url()).pathname !== pathname ||
+      request.method() !== "POST"
+    )
+      return false;
+    return matches(request.postDataJSON());
+  });
+}
+
 test("accounts settings show per-server state and provider choices", async ({
   page,
   context,
@@ -355,7 +367,13 @@ test("accounts settings show per-server state and provider choices", async ({
   await page.setViewportSize({ width: 1280, height: 1100 });
   const submittedCode = "FAKE-CLAUDE-CODE#FAKE-STATE";
   await claudeSignIn.getByLabel("Paste code").fill(submittedCode);
+  const codeResponse = waitForPost(
+    page,
+    "/api/accounts/claude/login/code",
+    (body) => body.code === submittedCode,
+  );
   await claudeSignIn.getByRole("button", { name: "Finish sign-in" }).click();
+  expect((await codeResponse).ok()).toBe(true);
   await expect(claudeSignIn).toContainText("Signed in as new@example.test");
   expect(remote.accountWrites).toEqual(
     expect.arrayContaining([
@@ -463,11 +481,20 @@ test("accounts settings show per-server state and provider choices", async ({
   ).toBeVisible();
   expect(addStarts[3]?.loginId).not.toBe(addStarts[2]?.loginId);
   expect(addStarts[3]?.requestId).not.toBe(addStarts[2]?.requestId);
+  const activeClaudeLoginId = addStarts[3]?.loginId;
+  expect(activeClaudeLoginId).toEqual(expect.any(String));
+  const claudeCancelResponse = waitForPost(
+    page,
+    "/api/accounts/claude/login/cancel",
+    (body) => body.login_id === activeClaudeLoginId,
+  );
   await secondClaudeSignIn
     .getByRole("button", { name: "Cancel", exact: true })
     .click();
+  expect((await claudeCancelResponse).ok()).toBe(true);
   await expect(secondClaudeSignIn).toContainText("Sign-in cancelled.");
   await secondClaudeSignIn.getByLabel("Close", { exact: true }).click();
+  await expect(secondClaudeSignIn).toBeHidden();
   await expect(settings).toBeVisible();
 
   await accounts
@@ -491,7 +518,9 @@ test("accounts settings show per-server state and provider choices", async ({
   await codexSignIn.screenshot({
     path: resolve(screenshots, "accounts-codex-signin-light.png"),
   });
+  const codexCancelResponse = waitForPost(page, "/api/accounts/login/cancel");
   await codexSignIn.getByRole("button", { name: "Cancel sign-in" }).click();
+  expect((await codexCancelResponse).ok()).toBe(true);
   await expect(codexSignIn).toContainText("Sign-in cancelled.");
   const codexWrites = remote.accountWrites.filter((write) =>
     ["/api/accounts/login", "/api/accounts/login/cancel"].includes(write.path),
@@ -507,7 +536,13 @@ test("accounts settings show per-server state and provider choices", async ({
   const reconnect = remoteFrame.getByRole("dialog", {
     name: /Sign in to Codex · person@example.test · Remote/,
   });
+  const reconnectResponse = waitForPost(
+    page,
+    "/api/accounts/login",
+    (body) => body.account_key === "remote-codex",
+  );
   await reconnect.getByRole("button", { name: "Start sign-in" }).click();
+  expect((await reconnectResponse).ok()).toBe(true);
   await expect(reconnect).toContainText("Sign-in restored.");
   await expect
     .poll(
