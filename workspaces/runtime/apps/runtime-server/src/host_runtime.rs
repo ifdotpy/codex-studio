@@ -34,8 +34,11 @@ impl HostRuntime {
     ) -> Result<Self, WorkerError> {
         let mut nonce = [0_u8; 16];
         getrandom::fill(&mut nonce).map_err(|_| WorkerError::TaskFailed)?;
+        let backend_id = data_encoding::HEXLOWER.encode(&nonce);
+        studio_runtime_services::analytics_capture::start_token_rate_process(&store, &backend_id)
+            .map_err(|_| WorkerError::TaskFailed)?;
         let identity = BackendIdentity {
-            backend_id: BackendId(data_encoding::HEXLOWER.encode(&nonce)),
+            backend_id: BackendId(backend_id.clone()),
             state_dir: store.root().to_owned(),
         };
         let python =
@@ -62,6 +65,8 @@ impl HostRuntime {
                 studio_runtime_services::notification_runtime_effects::RuntimeNotificationPostCommitSink {
                     token_rates: state.token_rate_handle(),
                     resources: state.resource_notifications_handle(),
+                    analytics_store: Arc::clone(&store),
+                    process_id: backend_id,
                 },
             ),
             environment: std::env::vars().collect(),
