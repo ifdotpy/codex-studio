@@ -114,6 +114,7 @@ fn apply(store: &RuntimeStore, case: &Value, prepared: &Value) -> Result<Value, 
                     assets: i["assets"].clone(),
                 })
                 .collect(),
+            radio_authorized: false,
         };
         let mut rolled = None;
         let rollback: Result<(), studio_runtime_services::notification_dispatch::NotificationDispatchError> = store.transaction_with(|tx| {

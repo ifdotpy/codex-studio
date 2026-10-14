@@ -187,6 +187,11 @@ fn send_as_actor(
             "Communication is limited to one team; use broadcast for your team",
         ));
     }
+    if studio_runtime_store::truthy(actor.get("remoteOrigin"))
+        && (target.starts_with("remote:") || target.starts_with("federated:"))
+    {
+        return Err(CallbackError::Dependency("federation/agent-message"));
+    }
     if target.starts_with("remote:") || target.starts_with("federated:") {
         let room = if let Some(peer) = target.strip_prefix("remote:") {
             let mut statement = tx.prepare(

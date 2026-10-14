@@ -371,9 +371,8 @@ impl LifecyclePorts for ProductionLifecyclePorts {
         self.reconcile_deleted_tombstones()?;
         self.dispatch_prepared()?;
         self.reconcile_deleted_tombstones()?;
-        crate::workspace_cleanup_runtime::reconcile_pending_cleanup(&self.store).map_err(|_| {
-            ManagementError::Unavailable("workspace-state/agent-lifecycle")
-        })?;
+        crate::workspace_cleanup_runtime::reconcile_pending_cleanup(&self.store)
+            .map_err(|_| ManagementError::Unavailable("workspace-state/agent-lifecycle"))?;
         Ok(())
     }
 }

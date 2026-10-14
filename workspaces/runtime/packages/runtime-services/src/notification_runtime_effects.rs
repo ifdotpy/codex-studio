@@ -74,8 +74,13 @@ impl NotificationEffects for RuntimeNotificationEffects {
         let mut result = Vec::new();
         if matches!(
             method,
-            "item/agentMessage/delta" | "item/reasoning/textDelta" | "provider/generationStarted"
+            "item/agentMessage/delta" | "item/reasoning/textDelta"
         ) {
+            result.push(NotificationPostCommit::TokenRateStream(observation(
+                before.or(after),
+            )));
+        }
+        if method == "provider/generationStarted" && before.or(after).is_some() {
             result.push(NotificationPostCommit::TokenRateStream(observation(
                 before.or(after),
             )));

@@ -38,7 +38,33 @@ pub fn corpus(root: &Path) -> Vec<Value> {
         std::fs::copy(template.join(database), destination.join(database))
             .expect("monitor fixture");
     }
-    cases.clone()
+    let mut cases = cases.clone();
+    for case in &mut cases {
+        rebase_fixture_paths(case, template_root.path(), root);
+    }
+    cases
+}
+
+fn rebase_fixture_paths(value: &mut Value, from: &Path, to: &Path) {
+    match value {
+        Value::String(path) => {
+            let source = Path::new(path);
+            if let Ok(relative) = source.strip_prefix(from) {
+                *path = to.join(relative).to_string_lossy().into_owned();
+            }
+        }
+        Value::Array(values) => {
+            for value in values {
+                rebase_fixture_paths(value, from, to);
+            }
+        }
+        Value::Object(values) => {
+            for value in values.values_mut() {
+                rebase_fixture_paths(value, from, to);
+            }
+        }
+        _ => {}
+    }
 }
 
 pub fn store(root: &Path, name: &str) -> RuntimeStore {

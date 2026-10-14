@@ -131,6 +131,7 @@ fn intent(state: &Value) -> TurnIntent {
         thread_id: Some("thread".into()),
         cwd: Some("/fixture".into()),
         model: Some(a["model"].as_str().expect("model").into()),
+        radio_authorized: false,
         events: vec![],
     }
 }
@@ -153,6 +154,7 @@ fn submission(state: &Value, at: f64) -> PreparedSubmission {
                 assets: json!([]),
             })
             .collect(),
+        radio_authorized: false,
     }
 }
 fn params(state: &Value) -> Value {

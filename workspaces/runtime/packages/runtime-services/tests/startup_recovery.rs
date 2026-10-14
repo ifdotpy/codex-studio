@@ -379,7 +379,7 @@ fn startup_remote_owned_monitor_is_recovered_without_aborting() {
     let root = fixtures::tempdir();
     let cases = fixtures::corpus(root.path());
     let mut case = running(&cases);
-    case["actor"]["remoteWorker"] = json!(true);
+    case["actor"]["remoteWorker"] = json!({"server":"remote-server","link":"remote-link"});
     let id = case["before"]["id"]
         .as_str()
         .expect("monitor id")
