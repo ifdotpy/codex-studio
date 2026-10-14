@@ -19,11 +19,11 @@ class IsolationViolation(BaseException):
 
 
 class OracleGuard:
-    def __init__(self, *, block_processes=False, allow_loopback_connect=False):
+    def __init__(self, *, block_processes=False, allow_loopback=False):
         real_home = Path(pwd.getpwuid(os.getuid()).pw_dir)
         self.forbidden = {real_home / name for name in (".codex", ".claude")}
         self.block_processes = block_processes
-        self.allow_loopback_connect = allow_loopback_connect
+        self.allow_loopback = allow_loopback
         self.local = threading.local()
         self.stat, self.lstat = os.stat, os.lstat
 
@@ -34,7 +34,7 @@ class OracleGuard:
                 raise IsolationViolation("oracle refused access to a forbidden provider home")
 
     def audit(self, event, args):
-        if event == "socket.connect" and self.allow_loopback_connect:
+        if event in {"socket.connect", "socket.bind"} and self.allow_loopback:
             connection, address = args
             if connection.family in {socket.AF_INET, socket.AF_INET6}:
                 host = address[0]
@@ -84,11 +84,12 @@ class OracleGuard:
                             raise AssertionError("synthetic provider-home guard failed")
             finally:
                 self.forbidden.remove(forbidden)
-        if self.allow_loopback_connect:
+        if self.allow_loopback:
             class LoopbackSocket:
                 family = socket.AF_INET
 
             self.audit("socket.connect", (LoopbackSocket(), ("127.0.0.1", 1)))
+            self.audit("socket.bind", (LoopbackSocket(), ("127.0.0.1", 0)))
             try:
                 self.audit("socket.connect", (LoopbackSocket(), ("203.0.113.1", 1)))
             except IsolationViolation:
@@ -98,7 +99,7 @@ class OracleGuard:
         print("guard refused synthetic provider-home content and metadata access")
 
 
-def install_guard(*, block_processes=False, allow_loopback_connect=False):
+def install_guard(*, block_processes=False, allow_loopback=False):
     # Initialize the runtime guard's physical forbidden roots before the oracle
     # rejects even metadata resolution beneath those roots. Later imports reuse it.
     tests = Path(__file__).resolve().parents[4] / "apps/server/tests"
@@ -107,7 +108,7 @@ def install_guard(*, block_processes=False, allow_loopback_connect=False):
     install_home_guard()
     guard = OracleGuard(
         block_processes=block_processes,
-        allow_loopback_connect=allow_loopback_connect,
+        allow_loopback=allow_loopback,
     )
     sys.addaudithook(guard.audit)
     # CPython emits no audit event for these metadata calls.

@@ -27,6 +27,7 @@ pub mod analytics_history_schedule;
 pub mod analytics_measurements;
 pub mod analytics_rollout;
 pub mod bounded_child;
+pub mod browser;
 pub mod budget;
 pub mod budget_runtime;
 pub mod budget_service;
