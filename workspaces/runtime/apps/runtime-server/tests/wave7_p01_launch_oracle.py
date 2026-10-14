@@ -12,6 +12,8 @@ _GUARD = install_guard()
 sys.path.insert(0, str(ROOT / "workspaces/runtime/apps/server/src"))
 from codex_runtime import AppServer
 from codex_process_supervisor import Journal, Supervisor, native_launch_environment
+import codex_runtime
+import codex_workspace_images
 
 request = json.load(sys.stdin)
 root = pathlib.Path(request["root"])
@@ -35,6 +37,14 @@ with patch.dict(os.environ, request["environment"], clear=True):
     try:
         if request.get("mode") == "direct":
             with patch("subprocess.Popen", capture_direct):
+                AppServer(root / "native", lambda *_: None, lambda *_: None, lambda *_: None,
+                          home=request["home"], isolated=request["isolated"],
+                          executable=request["executable"])
+        elif request.get("mode") == "direct-wrapped":
+            prefix = request["providerPrefix"]
+            with patch.object(codex_workspace_images, "exec_prefix", return_value=prefix), \
+                 patch.object(codex_runtime.shutil, "which", return_value=prefix[0]), \
+                 patch("subprocess.Popen", capture_direct):
                 AppServer(root / "native", lambda *_: None, lambda *_: None, lambda *_: None,
                           home=request["home"], isolated=request["isolated"],
                           executable=request["executable"])

@@ -673,6 +673,7 @@ fn python_launch(
     isolated: bool,
     executable: &str,
     mode: &str,
+    provider_prefix: Option<&[String]>,
 ) -> Value {
     use std::io::Write;
     let source = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../server/src");
@@ -684,7 +685,7 @@ fn python_launch(
         .stderr(std::process::Stdio::piped())
         .spawn()
         .unwrap();
-    child.stdin.take().unwrap().write_all(json!({"root":root,"environment":environment,"home":home,"isolated":isolated,"executable":executable,"mode":mode}).to_string().as_bytes()).unwrap();
+    child.stdin.take().unwrap().write_all(json!({"root":root,"environment":environment,"home":home,"isolated":isolated,"executable":executable,"mode":mode,"providerPrefix":provider_prefix}).to_string().as_bytes()).unwrap();
     let output = child.wait_with_output().unwrap();
     assert!(
         output.status.success(),
@@ -765,6 +766,7 @@ async fn every_launch_signature_field_matches_real_python_appserver() {
             isolated,
             "/fixture/codex",
             "supervisor",
+            None,
         );
         let launch = host_runtime::codex_launch(
             Some("/fixture/codex"),
@@ -846,6 +848,7 @@ fn direct_launch_command_and_environment_match_python() {
             isolated,
             "/fixture/codex",
             "direct",
+            None,
         );
         let launch = host_runtime::codex_launch(
             Some("/fixture/codex"),
@@ -870,6 +873,60 @@ fn direct_launch_command_and_environment_match_python() {
             oracle["cwd"].as_str().map(str::to_owned)
         );
     }
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn direct_launch_applies_python_shared_mount_wrapper_when_available() {
+    let root = tempfile::tempdir().unwrap();
+    let home = root.path().join("codex");
+    std::fs::create_dir(&home).unwrap();
+    let environment = BTreeMap::from([
+        ("HOME".into(), root.path().to_string_lossy().into_owned()),
+        ("CODEX_HOME".into(), home.to_string_lossy().into_owned()),
+        ("PATH".into(), "/usr/bin:/bin".into()),
+    ]);
+    let prefix = vec!["/bin/true".to_owned()];
+    let executable = "/fixture/codex";
+    let oracle = python_launch(
+        root.path(),
+        &environment,
+        &home,
+        false,
+        executable,
+        "direct-wrapped",
+        Some(&prefix),
+    );
+    let python_source = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../server/src");
+    let python = prepared_python::prepared_python(&python_source);
+    let launch = host_runtime::provider_process_command_with_prefix(
+        &python,
+        host_runtime::codex_launch(
+            Some(executable),
+            environment,
+            home.to_string_lossy().into_owned(),
+            false,
+            root.path().into(),
+        ),
+        prefix,
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        serde_json::to_value(launch.command).unwrap(),
+        oracle["command"]
+    );
+    assert_eq!(
+        serde_json::to_value(launch.environment).unwrap(),
+        oracle["env"]
+    );
+    assert_eq!(
+        launch
+            .cwd
+            .as_ref()
+            .map(|path| path.to_string_lossy().into_owned()),
+        oracle["cwd"].as_str().map(str::to_owned)
+    );
 }
 
 #[cfg(target_os = "linux")]
@@ -1144,6 +1201,7 @@ async fn host_start_reattaches_python_launch_and_delivers_http_input() {
         false,
         executable.to_str().unwrap(),
         "supervisor",
+        None,
     );
     let root = fixture._root.path().to_path_buf();
     let mut supervisor = tokio::task::spawn_blocking(move || {
@@ -1621,4 +1679,602 @@ async fn direct_launch_mode_completes_http_turn_and_reaps_child() {
         !std::path::Path::new(&format!("/proc/{pid}")).exists(),
         "backend shutdown terminates and reaps its direct provider"
     );
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn direct_generation_and_journal_identity_survive_backend_restart() {
+    use std::os::unix::fs::PermissionsExt;
+    use tower::ServiceExt;
+    if std::env::var_os("STUDIO_W7_P01_DIRECT_RESTART_CHILD").is_none() {
+        let output = tokio::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "direct_generation_and_journal_identity_survive_backend_restart",
+                "--nocapture",
+            ])
+            .env("STUDIO_W7_P01_DIRECT_RESTART_CHILD", "1")
+            .env("STUDIO_W7_P01_COMPLETE_TURN", "1")
+            .env_remove("CODEX_AGENTS_SUPERVISOR_MODE")
+            .kill_on_drop(true)
+            .output()
+            .await
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+    let fixture = tokio::task::spawn_blocking(Fixture::new).await.unwrap();
+    fixture
+        .store
+        .transaction_with(|tx| {
+            tx.execute_batch(
+                "CREATE TABLE direct_journal_audit(id TEXT PRIMARY KEY,result TEXT NOT NULL);
+                 CREATE TRIGGER capture_direct_journal AFTER INSERT ON runtime_operation_receipts
+                 WHEN NEW.id LIKE 'account-worker:journal:default:%'
+                 BEGIN INSERT OR REPLACE INTO direct_journal_audit VALUES(NEW.id,NEW.result); END;",
+            )?;
+            Ok::<(), StoreError>(())
+        })
+        .unwrap();
+    std::fs::write(
+        fixture._root.path().join("emit-generation-notification"),
+        "1",
+    )
+    .unwrap();
+    let launch_observer =
+        tokio::net::UnixListener::bind(fixture._root.path().join("launch.sock")).unwrap();
+    let turn_observer =
+        tokio::net::UnixListener::bind(fixture._root.path().join("turn.sock")).unwrap();
+    let (accounts, home) = account_driver(fixture._root.path());
+    std::fs::write(
+        home.join("auth.json"),
+        json!({"OPENAI_API_KEY":"fixture-host-key"}).to_string(),
+    )
+    .unwrap();
+    let executable = fixture._root.path().join("provider");
+    std::fs::copy(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/wave7_p01_native_fixture.py"),
+        &executable,
+    )
+    .unwrap();
+    std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let mut state = studio_runtime_http::HttpState::new(
+        "fixture-token".into(),
+        "fixture".into(),
+        Some(executable.to_string_lossy().into_owned()),
+        fixture._root.path().to_string_lossy().into_owned(),
+        49171,
+        None,
+        Some(fixture.store.clone()),
+        None,
+    )
+    .with_account_driver(accounts.clone());
+    let mut changes = state.sync_changes_handle().subscribe();
+    let runtime = host_runtime::HostRuntime::start(
+        &mut state,
+        fixture.store.clone(),
+        accounts.clone(),
+        Some(executable.to_string_lossy().into_owned()),
+    )
+    .await
+    .unwrap();
+    let app = studio_runtime_http::router(state.clone()).unwrap();
+    let agent_id = fixture.agents[0]["id"].as_str().unwrap();
+    assert_eq!(
+        app.clone()
+            .oneshot(direct_message_post(
+                agent_id,
+                "9e63d185-cf3f-4938-8205-064d1bd02411",
+                "first backend generation",
+            ))
+            .await
+            .unwrap()
+            .status(),
+        200
+    );
+    let first_launch = read_direct_report(&launch_observer).await;
+    assert_eq!(first_launch["count"], 1);
+    assert_eq!(read_direct_report(&turn_observer).await["count"], 1);
+    let first_generation = direct_generation(&fixture.store);
+    wait_for_direct_journal(&fixture.store, first_generation, &mut changes).await;
+    let first_rows = direct_journal_rows(&fixture.store, first_generation);
+    assert!(!first_rows.is_empty(), "first provider wrote journal rows");
+    wait_for_direct_completion(&fixture.store, agent_id, &mut changes).await;
+    runtime_shutdown::close(runtime, &state).await.unwrap();
+    assert!(
+        !std::path::Path::new(&format!("/proc/{}", first_launch["pid"].as_u64().unwrap())).exists(),
+        "first backend shutdown reaps its direct provider"
+    );
+
+    let second_agent_id = fixture.agents[1]["id"].as_str().unwrap();
+    make_direct_agent_runnable(&fixture.store, second_agent_id, "default");
+    let runtime = host_runtime::HostRuntime::start(
+        &mut state,
+        fixture.store.clone(),
+        accounts,
+        Some(executable.to_string_lossy().into_owned()),
+    )
+    .await
+    .unwrap();
+    let app = studio_runtime_http::router(state.clone()).unwrap();
+    assert_eq!(
+        app.clone()
+            .oneshot(direct_message_post(
+                second_agent_id,
+                "9e63d185-cf3f-4938-8205-064d1bd02412",
+                "restarted backend generation",
+            ))
+            .await
+            .unwrap()
+            .status(),
+        200
+    );
+    let second_launch = read_direct_report(&launch_observer).await;
+    assert_eq!(second_launch["count"], 2);
+    let second_generation = direct_generation(&fixture.store);
+    assert!(second_generation > first_generation);
+    wait_for_direct_journal(&fixture.store, second_generation, &mut changes).await;
+    let second_rows = direct_journal_rows(&fixture.store, second_generation);
+    assert!(
+        !second_rows.is_empty(),
+        "restarted provider writes journal rows"
+    );
+    assert_ne!(
+        first_rows, second_rows,
+        "journal identities include distinct generations"
+    );
+    runtime_shutdown::close(runtime, &state).await.unwrap();
+    assert!(
+        !std::path::Path::new(&format!("/proc/{}", second_launch["pid"].as_u64().unwrap()))
+            .exists(),
+        "second backend shutdown reaps its direct provider"
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn direct_child_crash_holds_written_turn_without_resending_after_relaunch() {
+    use std::os::unix::fs::PermissionsExt;
+    use tower::ServiceExt;
+    if std::env::var_os("STUDIO_W7_P01_DIRECT_CRASH_CHILD").is_none() {
+        let output = tokio::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "direct_child_crash_holds_written_turn_without_resending_after_relaunch",
+                "--nocapture",
+            ])
+            .env("STUDIO_W7_P01_DIRECT_CRASH_CHILD", "1")
+            .env_remove("CODEX_AGENTS_SUPERVISOR_MODE")
+            .kill_on_drop(true)
+            .output()
+            .await
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+    let fixture = tokio::task::spawn_blocking(Fixture::new).await.unwrap();
+    std::fs::write(fixture._root.path().join("crash-first-turn"), "1").unwrap();
+    let launch_observer =
+        tokio::net::UnixListener::bind(fixture._root.path().join("launch.sock")).unwrap();
+    let turn_observer =
+        tokio::net::UnixListener::bind(fixture._root.path().join("turn.sock")).unwrap();
+    let (accounts, home) = account_driver(fixture._root.path());
+    std::fs::write(
+        home.join("auth.json"),
+        json!({"OPENAI_API_KEY":"fixture-host-key"}).to_string(),
+    )
+    .unwrap();
+    let executable = fixture._root.path().join("provider");
+    std::fs::copy(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/wave7_p01_native_fixture.py"),
+        &executable,
+    )
+    .unwrap();
+    std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let mut state = studio_runtime_http::HttpState::new(
+        "fixture-token".into(),
+        "fixture".into(),
+        Some(executable.to_string_lossy().into_owned()),
+        fixture._root.path().to_string_lossy().into_owned(),
+        49171,
+        None,
+        Some(fixture.store.clone()),
+        None,
+    )
+    .with_account_driver(accounts.clone());
+    let runtime = host_runtime::HostRuntime::start(
+        &mut state,
+        fixture.store.clone(),
+        accounts,
+        Some(executable.to_string_lossy().into_owned()),
+    )
+    .await
+    .unwrap();
+    let app = studio_runtime_http::router(state.clone()).unwrap();
+    let agent_id = fixture.agents[0]["id"].as_str().unwrap();
+    let body = json!({"room":agent_id,"id":"a1eabc96-5d2b-4fe0-bcbc-18a93c539b17","text":"crash in flight"});
+    let post = || {
+        axum::http::Request::builder()
+            .method("POST")
+            .uri("/api/messages")
+            .header("host", "127.0.0.1:49171")
+            .header("content-type", "application/json")
+            .header("x-canvas-token", "fixture-token")
+            .header(
+                studio_runtime_http::API_SCHEMA_HASH_HEADER,
+                studio_runtime_http::schema::api_schema_hash(),
+            )
+            .extension(axum::extract::ConnectInfo(
+                "127.0.0.1:12345".parse::<std::net::SocketAddr>().unwrap(),
+            ))
+            .body(axum::body::Body::from(body.to_string()))
+            .unwrap()
+    };
+    assert_eq!(app.clone().oneshot(post()).await.unwrap().status(), 200);
+    let first_launch = read_direct_report(&launch_observer).await;
+    assert_eq!(first_launch["count"], 1);
+    let crash = read_direct_report(&turn_observer).await;
+    assert_eq!(crash["count"], 1);
+    assert_eq!(crash["request"]["method"], "turn/start");
+    let second_launch = read_direct_report(&launch_observer).await;
+    assert_eq!(
+        second_launch["count"], 2,
+        "registry replaces crashed provider"
+    );
+    let mut changes = state.sync_changes_handle().subscribe();
+    let held = tokio::time::timeout(std::time::Duration::from_secs(15), async {
+        loop {
+            let raw = fixture
+                .store
+                .read()
+                .unwrap()
+                .query_row(
+                    "SELECT record FROM runtime_agents WHERE id=?1",
+                    [agent_id],
+                    |row| row.get::<_, String>(0),
+                )
+                .unwrap();
+            let record: Value = serde_json::from_str(&raw).unwrap();
+            if record["restartRecovery"]["startAttempt"]["executionOutcome"] == "unknown"
+                && record["restartRecovery"]["stage"] == "held"
+            {
+                break record;
+            }
+            changes.changed().await.unwrap();
+        }
+    })
+    .await
+    .unwrap_or_else(|_| {
+        panic!(
+            "unknown direct provider write is held; state={}",
+            direct_agent_debug(&fixture.store, agent_id)
+        )
+    });
+    assert_eq!(held["autoWake"], false);
+    assert_eq!(
+        fixture
+            .store
+            .read()
+            .unwrap()
+            .query_row(
+                "SELECT count(*) FROM runtime_events WHERE id=?1 AND status='uncertain'",
+                [body["id"].as_str().unwrap()],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+        1
+    );
+    let generation = direct_generation(&fixture.store);
+    assert!(generation >= 2);
+    assert_eq!(
+        std::fs::read_to_string(fixture._root.path().join("turn-count")).unwrap(),
+        "1"
+    );
+    assert_eq!(app.clone().oneshot(post()).await.unwrap().status(), 200);
+    assert_eq!(
+        std::fs::read_to_string(fixture._root.path().join("turn-count")).unwrap(),
+        "1"
+    );
+    runtime_shutdown::close(runtime, &state).await.unwrap();
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn direct_child_crash_before_turn_write_retries_queued_input_once() {
+    use std::os::unix::fs::PermissionsExt;
+    use tower::ServiceExt;
+    if std::env::var_os("STUDIO_W7_P01_DIRECT_NOT_SENT_CHILD").is_none() {
+        let output = tokio::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "direct_child_crash_before_turn_write_retries_queued_input_once",
+                "--nocapture",
+            ])
+            .env("STUDIO_W7_P01_DIRECT_NOT_SENT_CHILD", "1")
+            .env("STUDIO_W7_P01_COMPLETE_TURN", "1")
+            .env_remove("CODEX_AGENTS_SUPERVISOR_MODE")
+            .kill_on_drop(true)
+            .output()
+            .await
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+    let fixture = tokio::task::spawn_blocking(Fixture::new).await.unwrap();
+    std::fs::write(fixture._root.path().join("crash-first-initialize"), "1").unwrap();
+    let launch_observer =
+        tokio::net::UnixListener::bind(fixture._root.path().join("launch.sock")).unwrap();
+    let turn_observer =
+        tokio::net::UnixListener::bind(fixture._root.path().join("turn.sock")).unwrap();
+    let (accounts, home) = account_driver(fixture._root.path());
+    std::fs::write(
+        home.join("auth.json"),
+        json!({"OPENAI_API_KEY":"fixture-host-key"}).to_string(),
+    )
+    .unwrap();
+    let executable = fixture._root.path().join("provider");
+    std::fs::copy(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/wave7_p01_native_fixture.py"),
+        &executable,
+    )
+    .unwrap();
+    std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let mut state = studio_runtime_http::HttpState::new(
+        "fixture-token".into(),
+        "fixture".into(),
+        Some(executable.to_string_lossy().into_owned()),
+        fixture._root.path().to_string_lossy().into_owned(),
+        49171,
+        None,
+        Some(fixture.store.clone()),
+        None,
+    )
+    .with_account_driver(accounts.clone());
+    let app = studio_runtime_http::router(state.clone()).unwrap();
+    let agent_id = fixture.agents[0]["id"].as_str().unwrap();
+    let body = json!({"room":agent_id,"id":"50ba7350-4055-437d-946f-9a44d87caa38","text":"queued before provider ready"});
+    let post = || {
+        axum::http::Request::builder()
+            .method("POST")
+            .uri("/api/messages")
+            .header("host", "127.0.0.1:49171")
+            .header("content-type", "application/json")
+            .header("x-canvas-token", "fixture-token")
+            .header(
+                studio_runtime_http::API_SCHEMA_HASH_HEADER,
+                studio_runtime_http::schema::api_schema_hash(),
+            )
+            .extension(axum::extract::ConnectInfo(
+                "127.0.0.1:12345".parse::<std::net::SocketAddr>().unwrap(),
+            ))
+            .body(axum::body::Body::from(body.to_string()))
+            .unwrap()
+    };
+    assert_eq!(app.clone().oneshot(post()).await.unwrap().status(), 200);
+    let mut changes = state.sync_changes_handle().subscribe();
+    let runtime = host_runtime::HostRuntime::start(
+        &mut state,
+        fixture.store.clone(),
+        accounts,
+        Some(executable.to_string_lossy().into_owned()),
+    )
+    .await
+    .unwrap();
+    let first_launch = read_direct_report(&launch_observer).await;
+    assert_eq!(first_launch["count"], 1);
+    let second_launch = read_direct_report(&launch_observer).await;
+    assert_eq!(
+        second_launch["count"], 2,
+        "registry replaces pre-write crash"
+    );
+    let turn = read_direct_report(&turn_observer).await;
+    assert_eq!(turn["count"], 1);
+    assert_eq!(turn["request"]["method"], "turn/start");
+    let terminal = tokio::time::timeout(std::time::Duration::from_secs(15), async {
+        loop {
+            let raw = fixture
+                .store
+                .read()
+                .unwrap()
+                .query_row(
+                    "SELECT record FROM runtime_agents WHERE id=?1",
+                    [agent_id],
+                    |row| row.get::<_, String>(0),
+                )
+                .unwrap();
+            let record: Value = serde_json::from_str(&raw).unwrap();
+            if record["status"] == "completed" && record["inFlight"] != true {
+                break record;
+            }
+            changes.changed().await.unwrap();
+        }
+    })
+    .await
+    .expect("queued input completes after the pre-write child crash");
+    assert_eq!(terminal["status"], "completed");
+    assert_eq!(
+        std::fs::read_to_string(fixture._root.path().join("turn-count")).unwrap(),
+        "1"
+    );
+    runtime_shutdown::close(runtime, &state).await.unwrap();
+}
+
+#[cfg(target_os = "linux")]
+async fn read_direct_report(listener: &tokio::net::UnixListener) -> Value {
+    use tokio::io::AsyncReadExt;
+    let (mut socket, _) =
+        tokio::time::timeout(std::time::Duration::from_secs(15), listener.accept())
+            .await
+            .expect("direct child report hang guard")
+            .unwrap();
+    let mut bytes = Vec::new();
+    socket.read_to_end(&mut bytes).await.unwrap();
+    serde_json::from_slice(&bytes).unwrap()
+}
+
+#[cfg(target_os = "linux")]
+fn direct_message_post(
+    agent_id: &str,
+    id: &str,
+    text: &str,
+) -> axum::http::Request<axum::body::Body> {
+    let body = json!({"room":agent_id,"id":id,"text":text});
+    axum::http::Request::builder()
+        .method("POST")
+        .uri("/api/messages")
+        .header("host", "127.0.0.1:49171")
+        .header("content-type", "application/json")
+        .header("x-canvas-token", "fixture-token")
+        .header(
+            studio_runtime_http::API_SCHEMA_HASH_HEADER,
+            studio_runtime_http::schema::api_schema_hash(),
+        )
+        .extension(axum::extract::ConnectInfo(
+            "127.0.0.1:12345".parse::<std::net::SocketAddr>().unwrap(),
+        ))
+        .body(axum::body::Body::from(body.to_string()))
+        .unwrap()
+}
+
+#[cfg(target_os = "linux")]
+fn direct_generation(store: &RuntimeStore) -> u64 {
+    let raw = store
+        .read()
+        .unwrap()
+        .query_row(
+            "SELECT result FROM runtime_operation_receipts WHERE id='account-worker:direct-generation:default:next'",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .unwrap();
+    serde_json::from_str(&raw).unwrap()
+}
+
+#[cfg(target_os = "linux")]
+fn make_direct_agent_runnable(store: &RuntimeStore, agent_id: &str, account: &str) {
+    store
+        .transaction_with(|tx| {
+            let raw: String = tx.query_row(
+                "SELECT record FROM runtime_agents WHERE id=?1",
+                [agent_id],
+                |row| row.get(0),
+            )?;
+            let mut record: Value = serde_json::from_str(&raw)
+                .map_err(|error| StoreError::SchemaMismatch(error.to_string()))?;
+            record["accountKey"] = json!(account);
+            record["status"] = json!("queued");
+            record["autoWake"] = json!(true);
+            tx.execute(
+                "UPDATE runtime_agents SET record=?1 WHERE id=?2",
+                [record.to_string(), agent_id.to_owned()],
+            )?;
+            Ok::<(), StoreError>(())
+        })
+        .unwrap();
+}
+
+#[cfg(target_os = "linux")]
+fn direct_agent_debug(store: &RuntimeStore, agent_id: &str) -> String {
+    let db = store.read().unwrap();
+    let raw = db
+        .query_row(
+            "SELECT record FROM runtime_agents WHERE id=?1",
+            [agent_id],
+            |row| row.get::<_, String>(0),
+        )
+        .unwrap();
+    let agent: Value = serde_json::from_str(&raw).unwrap();
+    let events = db
+        .prepare("SELECT id,status FROM runtime_events ORDER BY rowid")
+        .unwrap()
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    format!(
+        "status={},outcome={},recovery={},events={events:?}",
+        agent["status"],
+        agent["restartRecovery"]["startAttempt"]["executionOutcome"],
+        agent["restartRecovery"]["stage"]
+    )
+}
+
+#[cfg(target_os = "linux")]
+fn direct_journal_rows(store: &RuntimeStore, generation: u64) -> Vec<(String, String)> {
+    let db = store.read().unwrap();
+    let prefix = format!("account-worker:journal:default:{generation}:");
+    let upper = format!("{prefix}~");
+    let mut query = db
+        .prepare("SELECT id,result FROM direct_journal_audit WHERE id>=?1 AND id<?2 ORDER BY id")
+        .unwrap();
+    query
+        .query_map((prefix.as_str(), upper.as_str()), |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap()
+}
+
+#[cfg(target_os = "linux")]
+async fn wait_for_direct_journal<T: Clone + Send + Sync + 'static>(
+    store: &RuntimeStore,
+    generation: u64,
+    changes: &mut watch::Receiver<T>,
+) {
+    tokio::time::timeout(std::time::Duration::from_secs(15), async {
+        loop {
+            if !direct_journal_rows(store, generation).is_empty() {
+                break;
+            }
+            changes.changed().await.unwrap();
+        }
+    })
+    .await
+    .expect("direct provider journal publication hang guard");
+}
+
+#[cfg(target_os = "linux")]
+async fn wait_for_direct_completion<T: Clone + Send + Sync + 'static>(
+    store: &RuntimeStore,
+    agent_id: &str,
+    changes: &mut watch::Receiver<T>,
+) -> Value {
+    tokio::time::timeout(std::time::Duration::from_secs(15), async {
+        loop {
+            let raw = store
+                .read()
+                .unwrap()
+                .query_row(
+                    "SELECT record FROM runtime_agents WHERE id=?1",
+                    [agent_id],
+                    |row| row.get::<_, String>(0),
+                )
+                .unwrap();
+            let record: Value = serde_json::from_str(&raw).unwrap();
+            if record["status"] == "completed" && record["inFlight"] != true {
+                break record;
+            }
+            changes.changed().await.unwrap();
+        }
+    })
+    .await
+    .expect("direct provider turn completion hang guard")
 }

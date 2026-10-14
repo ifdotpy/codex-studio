@@ -44,7 +44,9 @@ impl DirectProviderTaskFactory {
         {
             return Err(AdapterError::InvalidConfiguration);
         }
-        let generation = options.expected_generation.unwrap_or(Generation(1));
+        let Some(generation) = options.expected_generation else {
+            return Err(AdapterError::InvalidConfiguration);
+        };
         if generation.0 == 0 {
             return Err(AdapterError::InvalidConfiguration);
         }
