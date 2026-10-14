@@ -409,7 +409,6 @@ pub(crate) fn prepare_safety_retry(
         .ok_or_else(|| invalid("agent"))?
         .value();
     if record.get("threadId").and_then(Value::as_str) != Some(&request.source_thread_id)
-        || record.get("model").and_then(Value::as_str) != Some(&request.model)
         || record
             .get("deletedAt")
             .is_some_and(|value| !value.is_null())
@@ -426,7 +425,6 @@ pub(crate) fn prepare_safety_retry(
         let current = agent(tx, &request.agent_id)?.value();
         if current.get("threadId").and_then(Value::as_str) != Some(&request.source_thread_id)
             || current.get("epoch") != record.get("epoch")
-            || current.get("model").and_then(Value::as_str) != Some(&request.model)
         {
             return Err(refusal("safety-retry/agent-changed".into()));
         }
