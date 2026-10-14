@@ -330,7 +330,7 @@ radio.setUp()
 try:
     for key in ('a', 'b', 'c', 'd'):
         status = 'queued' if mode == 'queue' and key == 'a' else 'idle'
-        radio.mutate_agent(key, epoch=1, name=key, status=status, inFlight=False,
+        radio.mutate_agent(key, epoch=1, name=key, status=status, inFlight=False, events=0,
                            provider='codex', model='fake-model', role='orchestrator', depth=0,
                            prompt='', worktree=False, accountKey='default', autoWake=True,
                            nativeEffort=None, threadId='native-' + key)
@@ -526,7 +526,7 @@ async fn production_reconcile_admits_radio_queue_event_to_retained_worker() {
     let snapshot = radio_queue_snapshot(scratch.path());
     seed_radio_interrupt(&fixture, &snapshot);
     let (launcher, mut writes) = scripted_with_resume_recording(true, true);
-    let mut registry = AccountRegistry::new(fixture.store.clone(), launcher)
+    let mut registry = AccountRegistry::new(fixture.store.clone(), launcher.clone())
         .await
         .unwrap();
     registry.set_radio_clock_for_test(Arc::new(|| 2_000_000_000.0));
@@ -593,7 +593,16 @@ async fn production_reconcile_admits_radio_queue_event_to_retained_worker() {
         writes.try_recv().is_err(),
         "radio queue event was sent twice"
     );
-    registry.shutdown().await.unwrap();
+    drop(registry);
+    let mut restarted = AccountRegistry::new(fixture.store.clone(), launcher)
+        .await
+        .unwrap();
+    restarted.reconcile(None).await.unwrap();
+    assert!(
+        writes.try_recv().is_err(),
+        "unknown radio turn must not be resent after worker restart"
+    );
+    restarted.shutdown().await.unwrap();
 }
 
 #[tokio::test]
