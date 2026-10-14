@@ -12,6 +12,62 @@ use std::{
 use studio_runtime_providers::supervisor_v1::{StartMatch, compare_start};
 
 pub(super) const RETRY: Duration = Duration::from_millis(20);
+
+/// Borrowed-field parse of one `/proc/<pid>/stat` record. Linux commands may
+/// contain spaces and closing parentheses, so fields are read only after the
+/// final command-name delimiter.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct ProcStat {
+    pub(crate) state: char,
+    pub(crate) process_group: u32,
+    pub(crate) session: u32,
+    pub(crate) start_ticks: u64,
+}
+
+impl ProcStat {
+    pub(crate) fn parse(raw: &str) -> Result<Self> {
+        let tail = raw
+            .rsplit_once(')')
+            .ok_or(Error::Refused("Cannot verify process identity"))?
+            .1;
+        let mut fields = tail.split_whitespace();
+        let state = fields
+            .next()
+            .and_then(|value| value.chars().next())
+            .ok_or(Error::Refused("Cannot verify process identity"))?;
+        let process_group = fields
+            .by_ref()
+            .nth(1)
+            .and_then(|value| value.parse().ok())
+            .ok_or(Error::Refused("Cannot verify process identity"))?;
+        let session = fields
+            .by_ref()
+            .next()
+            .and_then(|value| value.parse().ok())
+            .ok_or(Error::Refused("Cannot verify process identity"))?;
+        let start_ticks = fields
+            .nth(15)
+            .and_then(|value| value.parse().ok())
+            .ok_or(Error::Refused("Cannot read kernel process start ticks"))?;
+        Ok(Self {
+            state,
+            process_group,
+            session,
+            start_ticks,
+        })
+    }
+
+    pub(crate) fn start_identity(self, boot_id: &str) -> String {
+        format!("linux:{boot_id}:{}", self.start_ticks)
+    }
+}
+
+pub(crate) fn boot_id() -> Result<String> {
+    Ok(fs::read_to_string("/proc/sys/kernel/random/boot_id")?
+        .trim()
+        .to_owned())
+}
+
 pub(crate) fn start_time(pid: u32, allow_zombie: bool) -> Result<Option<String>> {
     if pid == 0 {
         return Ok(None);
@@ -26,20 +82,11 @@ pub(crate) fn start_time(pid: u32, allow_zombie: bool) -> Result<Option<String>>
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(e) => return Err(e.into()),
     };
-    let tail = stat
-        .rsplit_once(')')
-        .ok_or(Error::Refused("Cannot verify process identity"))?
-        .1;
-    if !allow_zombie && tail.trim_start().starts_with('Z') {
+    let stat = ProcStat::parse(&stat)?;
+    if !allow_zombie && stat.state == 'Z' {
         return Ok(None);
     }
-    let ticks = tail
-        .split_whitespace()
-        .nth(19)
-        .and_then(|s| s.parse::<u64>().ok())
-        .ok_or(Error::Refused("Cannot read kernel process start ticks"))?;
-    let boot = fs::read_to_string("/proc/sys/kernel/random/boot_id")?;
-    Ok(Some(format!("linux:{}:{ticks}", boot.trim())))
+    Ok(Some(stat.start_identity(&boot_id()?)))
 }
 
 /// Signal a process group only while a captured member still has its exact
@@ -225,6 +272,23 @@ pub(super) fn valid_start(value: &str) -> bool {
 mod tests {
     use super::*;
     use std::process::Command;
+
+    #[test]
+    fn proc_stat_parses_borrowed_fields_after_the_last_command_delimiter() {
+        let mut fields = vec!["1"; 20];
+        fields[0] = "S";
+        fields[2] = "22";
+        fields[3] = "33";
+        fields[19] = "1234";
+        let raw = format!("42 (odd ) command) {}", fields.join(" "));
+
+        let stat = ProcStat::parse(&raw).unwrap();
+        assert_eq!(stat.state, 'S');
+        assert_eq!(stat.process_group, 22);
+        assert_eq!(stat.session, 33);
+        assert_eq!(stat.start_ticks, 1234);
+        assert_eq!(stat.start_identity("boot-id"), "linux:boot-id:1234");
+    }
 
     #[test]
     #[cfg(target_os = "linux")]

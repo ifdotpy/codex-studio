@@ -2,7 +2,7 @@ use serde_json::{Map, Value, json};
 use studio_runtime_providers::{
     CodecError, DecodedJournalPayload, Frame, LineDecoder, MAX_FRAME_BYTES, Method,
     NotificationFrame, PendingBook, RequestFrame, RequestId, RequestState, ResponseBody,
-    decode_journal_entry, encode_line,
+    decode_journal_entry, decode_journal_value, encode_line,
 };
 
 fn method(method: Method, id: Option<RequestId>, params: Option<Value>) -> Frame {
@@ -180,6 +180,27 @@ fn journal_decode_keeps_cursor_generation_and_malformed_stdout_bytes() {
             ..
         }))
     ));
+}
+
+#[test]
+fn journal_value_decoder_matches_the_wire_decoder_for_valid_and_malformed_values() {
+    let valid = json!({
+        "method": "turn/started",
+        "params": {"threadId": "thread"},
+        "extension": {"future": true}
+    });
+    let valid_bytes = serde_json::to_vec(&valid).expect("value serializes");
+    assert_eq!(
+        decode_journal_value(42, 9, valid.clone()),
+        decode_journal_entry(42, 9, valid_bytes),
+    );
+
+    let malformed = json!({"method": 17, "extension": [1, 2]});
+    let malformed_bytes = serde_json::to_vec(&malformed).expect("value serializes");
+    assert_eq!(
+        decode_journal_value(43, 9, malformed),
+        decode_journal_entry(43, 9, malformed_bytes),
+    );
 }
 
 #[test]
