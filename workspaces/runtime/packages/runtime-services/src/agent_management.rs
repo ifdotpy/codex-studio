@@ -387,13 +387,12 @@ impl ManagementSnapshot {
                 "cross-server/agent-management",
             ));
         }
-        if agent.flag("capacityRetry")
-            || agent
-                .record
-                .get("usageResume")
-                .and_then(|r| r.get("status"))
-                .and_then(Value::as_str)
-                .is_some_and(|s| matches!(s, "scheduled" | "started"))
+        if agent
+            .record
+            .get("usageResume")
+            .and_then(|r| r.get("status"))
+            .and_then(Value::as_str)
+            .is_some_and(|s| matches!(s, "scheduled" | "started"))
         {
             stage(LifecycleEffectKind::CancelResume)?;
         }
