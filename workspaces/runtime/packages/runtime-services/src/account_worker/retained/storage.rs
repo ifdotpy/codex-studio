@@ -4,6 +4,34 @@ pub(super) fn authorize(tx: &rusqlite::Transaction<'_>, call: &Call) -> Result<b
         return Ok(match call.method.as_str() {
             "thread/list" => call.params.get("threadId").is_none(),
             "thread/loaded/list" | "model/list" | "claude/diagnostics" => true,
+            "thread/read" => {
+                call.params
+                    .get("threadId")
+                    .and_then(Value::as_str)
+                    .is_some_and(|id| !id.is_empty())
+                    && call
+                        .params
+                        .get("includeTurns")
+                        .is_none_or(|value| value == &json!(false))
+            }
+            "thread/turns/list" => {
+                call.params
+                    .get("threadId")
+                    .and_then(Value::as_str)
+                    .is_some_and(|id| !id.is_empty())
+                    && call
+                        .params
+                        .get("limit")
+                        .and_then(Value::as_u64)
+                        .is_some_and(|limit| limit <= 20)
+                    && call.params.get("sortDirection").and_then(Value::as_str) == Some("desc")
+                    && call.params.get("itemsView").and_then(Value::as_str) == Some("full")
+            }
+            "operationStatus" => call
+                .params
+                .get("operationId")
+                .and_then(Value::as_str)
+                .is_some_and(|id| id.starts_with("monitor:") && id.len() > "monitor:".len()),
             _ => false,
         });
     };
