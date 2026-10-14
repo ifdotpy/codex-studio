@@ -64,6 +64,7 @@ pub mod federation_messaging;
 pub mod historical_input_receipts;
 pub mod host_project_runtime;
 pub mod host_worker_create;
+pub mod linux_vm_guest;
 pub mod maintenance;
 pub(crate) mod managed_host_tools;
 pub mod message_admission;
