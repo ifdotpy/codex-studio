@@ -90,13 +90,6 @@ test-browser-smoke:
 test-heavy:
     @node {{quote(facade)}} test-heavy
 
-[doc("Run isolated Rust corpus mutations (manual heavy tier; two build jobs, no load generators).")]
-test-rust-runtime-corpora-mutations *args:
-    @python3 workspaces/runtime/packages/runtime-services/tests/turn_lifecycle/mutation_check.py --target "${CARGO_TARGET_DIR:?set an isolated external CARGO_TARGET_DIR}/corpus-mutations" {{args}}
-
-[doc("Run the opt-in provider-session scheduling fairness diagnostic (manual heavy tier).")]
-test-rust-session-fairness:
-    @cargo nextest run -p studio-runtime-services --run-ignored only -E 'test(replenished_journal_and_settlement_lanes_allow_command_and_receipt_progress)'
 [doc("Run seeded monitor mutations in an external isolated target directory.")]
 test-rust-monitors-mutations target:
     @python3 workspaces/runtime/packages/runtime-services/tests/turn_lifecycle/mutation_check.py --target {{quote(target)}} --manifest workspaces/runtime/packages/runtime-services/tests/monitors/mutations.json --filter 'binary(/monitor_(corpus|recovery)/)'
