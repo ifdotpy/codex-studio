@@ -275,6 +275,7 @@ class AnalyticsMixin:
             count INTEGER NOT NULL, bytes INTEGER NOT NULL);
           CREATE TABLE IF NOT EXISTS analytics_limits (
             id INTEGER PRIMARY KEY AUTOINCREMENT, account TEXT NOT NULL, at REAL NOT NULL, record TEXT NOT NULL);
+          CREATE INDEX IF NOT EXISTS analytics_limits_account_at ON analytics_limits(account, at);
           CREATE TABLE IF NOT EXISTS analytics_agents (id TEXT PRIMARY KEY, record TEXT NOT NULL);
           CREATE TABLE IF NOT EXISTS analytics_usage (
             seq INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT UNIQUE NOT NULL,

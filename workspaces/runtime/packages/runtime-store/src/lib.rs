@@ -182,6 +182,8 @@ impl RuntimeStore {
             }
         }
         schema::verify_core(&canvas_path, &analytics_path)?;
+        // Keep Rust opens current even when Python has not refreshed this index yet.
+        schema::ensure_analytics_limits_index(&analytics_path)?;
 
         let writer = open_database(&canvas_path, OpenFlags::SQLITE_OPEN_READ_WRITE)?;
         writer.pragma_update(None, "synchronous", "FULL")?;

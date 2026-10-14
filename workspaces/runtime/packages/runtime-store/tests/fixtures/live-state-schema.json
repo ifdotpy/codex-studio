@@ -128,6 +128,12 @@
         "type": "table"
       },
       {
+        "name": "analytics_limits_account_at",
+        "sql": "CREATE INDEX analytics_limits_account_at ON analytics_limits(account, at)",
+        "table": "analytics_limits",
+        "type": "index"
+      },
+      {
         "name": "analytics_meta",
         "sql": "CREATE TABLE analytics_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
         "table": "analytics_meta",
