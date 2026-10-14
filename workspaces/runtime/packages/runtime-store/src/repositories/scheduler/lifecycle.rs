@@ -1049,13 +1049,10 @@ impl SchedulerRepository {
             }
             agent.status = status.clone();
         }
-        if current_attempt && continuation_allowed(&agent)
+        if current_attempt
+            && continuation_allowed(&agent)
             && !agent.extra.get("nativeFailureHold").is_some_and(truthy)
-            && transaction.query_row(
-                "SELECT EXISTS(SELECT 1 FROM runtime_events WHERE agent=?1 AND epoch=?2 AND status='pending')",
-                params![agent_id, epoch],
-                |row| row.get::<_, bool>(0),
-            )?
+            && Self::has_pending_continuation_event(transaction, agent_id, epoch)?
         {
             agent.status = AgentStatus::Queued;
         }
@@ -1078,6 +1075,21 @@ impl SchedulerRepository {
             json!(true),
         )?;
         Ok(true)
+    }
+
+    /// Match Python Runtime.notification's continuation ownership rule at turn completion.
+    /// An unresolved initial receipt is excluded; other dispatching/uncertain inputs still own
+    /// the child's continuation until exact delivery resolution.
+    pub fn has_pending_continuation_event(
+        connection: &Connection,
+        agent_id: &str,
+        epoch: i64,
+    ) -> StoreResult<bool> {
+        Ok(connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM runtime_events WHERE agent=?1 AND epoch=?2 AND (status IN ('pending','reserved') OR (id<>?3 AND status IN ('dispatching','uncertain'))))",
+            params![agent_id, epoch, format!("{agent_id}:initial")],
+            |row| row.get::<_, bool>(0),
+        )?)
     }
 }
 

@@ -62,6 +62,42 @@ fn database() -> Connection {
 }
 
 #[test]
+fn terminal_pending_ownership_includes_unresolved_non_initial_inputs() {
+    let connection = database();
+    connection
+        .execute("DELETE FROM runtime_events", [])
+        .expect("clear fixture events");
+    for (id, status, epoch) in [
+        ("agent:initial", "uncertain", 4),
+        ("dispatching", "dispatching", 4),
+        ("uncertain", "uncertain", 4),
+        ("other-epoch", "uncertain", 3),
+        ("delivered", "delivered", 4),
+    ] {
+        connection
+            .execute(
+                "INSERT INTO runtime_events VALUES(?1,'agent','user',?1,?2,1.0,?3,NULL,NULL)",
+                rusqlite::params![id, status, epoch],
+            )
+            .expect("event fixture writes");
+    }
+    assert!(
+        SchedulerRepository::has_pending_continuation_event(&connection, "agent", 4)
+            .expect("pending continuation query")
+    );
+    connection
+        .execute(
+            "DELETE FROM runtime_events WHERE id IN ('dispatching','uncertain')",
+            [],
+        )
+        .expect("remove unresolved child inputs");
+    assert!(
+        !SchedulerRepository::has_pending_continuation_event(&connection, "agent", 4)
+            .expect("initial receipt is excluded")
+    );
+}
+
+#[test]
 fn named_policy_refusal_leaves_every_table_unchanged() {
     let mut connection = database();
     connection

@@ -162,6 +162,9 @@ fn apply(store: &RuntimeStore, case: &Value, prepared: &Value) -> Result<Value, 
     let mut results = Vec::new();
     let mut streams = NotificationStreamBuffer::default();
     for (index, step) in case["steps"].as_array().expect("steps").iter().enumerate() {
+        if case["python_only_contract"] == true || step["python_only"] == true {
+            continue;
+        }
         let agent_id = step["agent"].as_str().unwrap_or("agent");
         if step["recover_task"] == true {
             use studio_runtime_services::notification_dispatch::{
@@ -445,6 +448,14 @@ fn apply(store: &RuntimeStore, case: &Value, prepared: &Value) -> Result<Value, 
             prepared["analytics_overflow"],
             "analytics overflow parity"
         );
+    }
+    if case["pending_continuation_probe"] == true {
+        let db = store.read().map_err(|error| error.to_string())?;
+        let pending = studio_runtime_store::SchedulerRepository::has_pending_continuation_event(
+            &db, "agent", 1,
+        )
+        .map_err(|error| error.to_string())?;
+        return Ok(json!({"outcomes":results,"pendingProbe":pending}));
     }
     if case["analytics_semantics"] == true {
         Ok(json!({"outcomes":results,"handoff":handoff,"analytics_overflow":analytics_overflow}))
@@ -991,6 +1002,12 @@ fn corpus(full: bool, runtime_effects: bool) {
                 &case["return"],
                 "{id}: entry-point result"
             );
+            if case["pending_continuation_probe"] == true {
+                assert_eq!(
+                    value["pendingProbe"], expected["captures"][0]["pendingContinuation"],
+                    "{id}: continuation ownership must match real Python Runtime.notification"
+                );
+            }
         }
         drop(store);
         if case["crash_replay"] == true {
@@ -1019,6 +1036,13 @@ fn corpus(full: bool, runtime_effects: bool) {
         let applied = started.elapsed().as_secs_f64();
         let actual =
             oracle.call(json!({"command":"snapshot","module":"notification_dispatch","root":rust}));
+        if case["python_only_contract"] == true {
+            assert!(error.is_none(), "{id}: Python-only notification contract: {error:?}");
+            report.push(json!({"id":id,"contract":"Python-only tool-turn waiter wake","differences":[],"error":null,
+                "seconds":{"seed":seeded,"apply":applied-seeded,"snapshot":started.elapsed().as_secs_f64()-applied}}));
+            green += 1;
+            continue;
+        }
         if let Some(service) = case["requires_service"].as_str() {
             assert_eq!(
                 error.as_deref(),

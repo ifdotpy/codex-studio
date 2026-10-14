@@ -1810,7 +1810,10 @@ async fn stream_base_and_metadata_rollback_together() {
     peer.frame(frame.clone()).await;
     assert!(worker.completion().await.is_err());
     state.bridge.run(move |store| store.transaction_with(|tx| {
-        assert_eq!(tx.query_row("SELECT COUNT(*) FROM runtime_operation_receipts WHERE signature='stream-base'",[],|row|row.get::<_,i64>(0))?,0);
+        // The delta batch was flushed before this transaction. A failed item/started
+        // write must leave that previously committed base intact; only the visible
+        // snapshot update and stream metadata mutation roll back together.
+        assert_eq!(tx.query_row("SELECT COUNT(*) FROM runtime_operation_receipts WHERE signature='stream-base'",[],|row|row.get::<_,i64>(0))?,1);
         let body:String=tx.query_row("SELECT body FROM runtime_item_fulltext WHERE id LIKE '%:atomic'",[],|row|row.get(0))?;
         assert_eq!(body,"x".repeat(store::STREAM_FLUSH_BYTES));
         assert_eq!(store::receipt(tx,"cursor:default:1","ack")?,Some(json!(delta)));

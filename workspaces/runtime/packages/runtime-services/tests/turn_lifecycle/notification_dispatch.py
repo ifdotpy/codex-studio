@@ -6,6 +6,7 @@ writers execute unchanged.
 """
 import copy
 import hashlib
+import inspect
 import json
 import pathlib
 import sqlite3
@@ -22,6 +23,10 @@ TABLES = ('runtime_native_notices', 'runtime_native_limit_refreshes', 'runtime_p
           'runtime_requests', 'runtime_complaints', 'runtime_context_manifests', 'runtime_context_reminders', 'sync_entities',
           'sync_documents', 'sync_versions', 'runtime_search', 'runtime_search_rows',
           'runtime_search_indexed', 'runtime_search_next_meta')
+# Updated whenever the Runtime.notification boundary inspected by this corpus changes.
+_NOTIFICATION_GUARD_DIGEST = '5803d290ade2087b7a3aa52217a0d1a42cd8ac50c459e38306917c43a3b08b5e'
+assert hashlib.sha256(inspect.getsource(Runtime.notification).encode()).hexdigest() == _NOTIFICATION_GUARD_DIGEST, \
+    'Runtime.notification control flow changed: re-derive notification corpus cases and update the guard digest'
 class ManualTimer:
     def __init__(self, interval, callback): self.callback = callback
     def start(self): pass
@@ -127,6 +132,12 @@ def seed(runtime, case):
                 elif event.get('no_metadata'):
                     db.execute('DELETE FROM runtime_event_meta WHERE id=?', (event_id,))
             db.execute("UPDATE runtime_events SET status='dispatching' WHERE agent='agent'")
+        for event in case.get('notification_events', []):
+            db.execute(
+                "INSERT INTO runtime_events VALUES(?,?,?,?,?,?,?,NULL,NULL)",
+                (event['id'], 'agent', 'user', event.get('text', event['id']), event['status'],
+                 1234.5, event.get('epoch', agent['epoch'])),
+            )
         if case.get('account_only'):
             db.execute("DELETE FROM runtime_agents")
             db.execute("DELETE FROM sync_entities WHERE collection='agent'")
@@ -236,6 +247,7 @@ def transition(runtime, case):
             signature = digest({'agent':'agent','firstEventId':prepared['firstEventId'],'submittedAt':1234.5,'createdAt':1234.5,'record':record,'text':prepared['text'],'inputTexts':[i['text'] for i in prepared['inputs']]})
             runtime.save_receipt(db,'provider-submission:' + hashlib.sha256(('agent:' + prepared['firstEventId']).encode()).hexdigest(),signature,{'status':'written'})
         return
+    waiter_observations = []
     with patch.object(codex_streaming.threading, 'Timer', ManualTimer), patch.object(time, 'time', lambda:1234.5):
         for index, step in enumerate(case['steps']):
             if step.get('rollback'): continue  # Discarded Rust caller transaction has no committed Python equivalent.
@@ -259,7 +271,26 @@ def transition(runtime, case):
                 outcome = {'status':'ignored','reason':'stale-turn-item'}
             if step.get('required_service'):
                 runtime.corpus_before_refusal = snapshot(runtime.root)
+            waiter = None
+            if case.get('waiter_wake_probe'):
+                import threading
+                waiter = threading.Event()
+                runtime._tool_turn_binding_waiters = {('default', 'thread'): {waiter}}
+                runtime._tool_turn_binding_waiter_count = 1
             runtime.notification(frame, 'default', 'connection-' + str(generation))
+            if waiter is not None:
+                waiter_observations.append(waiter.is_set())
+            if step.get('python_only'):
+                continue
+            if case.get('pending_continuation_probe'):
+                with runtime.db() as db:
+                    pending = db.execute(
+                        "SELECT 1 FROM runtime_events WHERE agent='agent' AND epoch=? AND "
+                        "(status IN ('pending','reserved') OR "
+                        "(id<>'agent:initial' AND status IN ('dispatching','uncertain'))) LIMIT 1",
+                        (runtime.agent('agent', db)['epoch'],),
+                    ).fetchone() is not None
+                runtime.corpus_captures.append({'pendingContinuation': pending})
             if frame['method'] == 'thread/tokenUsage/updated':
                 updated = runtime.agent(agent_id)
                 runtime.corpus_captures.append({'params': params, 'tokensUsed': updated['tokensUsed'],
@@ -270,6 +301,9 @@ def transition(runtime, case):
                     runtime.save_receipt(db, 'provider-notification:' + digest(identity), signature, outcome)
             if step.get('tick'):
                 runtime._stream_buffer._tick()
+        if case.get('waiter_wake_probe'):
+            assert waiter_observations == case['expected_waiter_wakes'], \
+                f"Python tool-turn waiter wake sequence: {waiter_observations}"
         with runtime.db() as db:
             if case.get('advance_before_flush'):
                 agent = runtime.agent('agent',db)
