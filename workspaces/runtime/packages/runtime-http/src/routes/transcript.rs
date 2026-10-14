@@ -48,7 +48,7 @@ pub(crate) fn routes() -> RouteGroup {
 async fn transcript_page(
     State(state): State<HttpState>,
     query: QueryParams,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<Json<crate::generated::TranscriptPageResponse>, ApiError> {
     let request = PageRequest {
         before: query
             .typed_value("before")
@@ -72,7 +72,7 @@ async fn read_page(
     query: QueryParams,
     request: PageRequest,
     native_fallback: bool,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<Json<crate::generated::TranscriptPageResponse>, ApiError> {
     let agent = query
         .typed_value("id")
         .and_then(Value::as_str)
@@ -99,7 +99,7 @@ async fn read_page(
 async fn transcript_item(
     State(state): State<HttpState>,
     query: QueryParams,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<Json<crate::generated::TranscriptItemResponse>, ApiError> {
     let agent = query
         .typed_value("id")
         .and_then(Value::as_str)
@@ -126,7 +126,7 @@ async fn transcript_item(
 async fn transcript_search(
     State(state): State<HttpState>,
     query: QueryParams,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<Json<crate::generated::TranscriptSearchResponse>, ApiError> {
     let agent = query
         .typed_value("id")
         .and_then(Value::as_str)
@@ -157,7 +157,7 @@ async fn transcript_search(
 async fn search_item(
     State(state): State<HttpState>,
     query: QueryParams,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<Json<crate::generated::SearchItemResponse>, ApiError> {
     let identity = query
         .typed_value("id")
         .and_then(Value::as_str)
@@ -179,7 +179,7 @@ async fn search_item(
 async fn search(
     State(state): State<HttpState>,
     query: QueryParams,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<Json<crate::generated::SearchResponse>, ApiError> {
     let search = query
         .typed_value("q")
         .and_then(Value::as_str)
@@ -205,7 +205,7 @@ async fn search(
 async fn canvas_transcript(
     State(state): State<HttpState>,
     query: QueryParams,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<Json<crate::generated::TranscriptPageResponse>, ApiError> {
     read_page(state, query, PageRequest::default(), true).await
 }
 

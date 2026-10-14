@@ -234,7 +234,9 @@ pub(crate) fn routes() -> RouteGroup {
     ])
 }
 
-async fn list_projects(State(state): State<HttpState>) -> Result<Json<Value>, ApiError> {
+async fn list_projects(
+    State(state): State<HttpState>,
+) -> Result<Json<crate::generated::ProjectReadResponse>, ApiError> {
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
     let value = studio_runtime_process::blocking_pool::spawn_blocking(
         "runtime-http/routes/projects",
@@ -251,7 +253,7 @@ async fn list_projects(State(state): State<HttpState>) -> Result<Json<Value>, Ap
 async fn write_project(
     State(state): State<HttpState>,
     ApiJson(body): ApiJson<Value>,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<Json<ProjectWriteResponse>, ApiError> {
     if let Some(dependency) = projects::write_dependency(&body) {
         return Err(ApiError::new(
             StatusCode::NOT_IMPLEMENTED,
@@ -278,10 +280,13 @@ async fn write_project(
             let value = projects::write(&store, &body, &default, &known).map_err(projects_error)?;
             if is_remove {
                 super::generated_json::<crate::generated::ProjectRemovalResponse>(value)
+                    .map(ProjectWriteResponse::Removal)
             } else if is_sidebar {
                 super::generated_json::<crate::generated::SidebarOrderResponse>(value)
+                    .map(ProjectWriteResponse::Sidebar)
             } else {
                 super::generated_json::<crate::generated::ProjectMutationRecord>(value)
+                    .map(ProjectWriteResponse::Mutation)
             }
         },
     )
@@ -290,12 +295,20 @@ async fn write_project(
     Ok(Json(value))
 }
 
+#[derive(serde::Serialize)]
+#[serde(untagged)]
+enum ProjectWriteResponse {
+    Removal(crate::generated::ProjectRemovalResponse),
+    Sidebar(crate::generated::SidebarOrderResponse),
+    Mutation(crate::generated::ProjectMutationRecord),
+}
+
 async fn project_locations(
     State(state): State<HttpState>,
     query: QueryParams,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<Json<crate::generated::ProjectLocationQueryResponse>, ApiError> {
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
-    let query = Value::Object(query.into_typed());
+    let query = Value::Object((*query.into_typed()).clone());
     let value = studio_runtime_process::blocking_pool::spawn_blocking(
         "runtime-http/routes/projects",
         move || projects::location_query(&store, &query).map_err(projects_error),
@@ -308,7 +321,7 @@ async fn project_locations(
 async fn peer_teams(
     State(state): State<HttpState>,
     ApiJson(body): ApiJson<Value>,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<Json<PeerTeamWriteResponse>, ApiError> {
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
     let account_policy = state
         .account_policy
@@ -347,7 +360,7 @@ async fn peer_teams(
         .await
         .map_err(|_| ApiError::internal())??;
         state.event_wake.notify_one();
-        return Ok(Json(value));
+        return Ok(Json(PeerTeamWriteResponse::Raw(value)));
     }
     let is_radio = body.get("action").and_then(Value::as_str) == Some("radio");
     let result = studio_runtime_process::blocking_pool::spawn_blocking(
@@ -358,11 +371,14 @@ async fn peer_teams(
             match body["action"].as_str() {
                 Some("radio") => {
                     super::generated_json::<crate::generated::PeerRadioResponse>(value)
+                        .map(PeerTeamWriteResponse::Radio)
                 }
                 Some("convert") => {
                     super::generated_json::<crate::generated::PeerConversionResponse>(value)
+                        .map(PeerTeamWriteResponse::Conversion)
                 }
-                _ => super::generated_json::<crate::generated::PeerProjectResponse>(value),
+                _ => super::generated_json::<crate::generated::PeerProjectResponse>(value)
+                    .map(PeerTeamWriteResponse::Project),
             }
         },
     )
@@ -372,6 +388,15 @@ async fn peer_teams(
         state.event_wake.notify_one();
     }
     Ok(Json(result))
+}
+
+#[derive(serde::Serialize)]
+#[serde(untagged)]
+enum PeerTeamWriteResponse {
+    Raw(Value),
+    Radio(crate::generated::PeerRadioResponse),
+    Conversion(crate::generated::PeerConversionResponse),
+    Project(crate::generated::PeerProjectResponse),
 }
 
 fn projects_error(error: ProjectsError) -> ApiError {

@@ -111,7 +111,7 @@ async fn signed_status() -> Result<Json<Value>, ApiError> {
 async fn manage(
     State(state): State<HttpState>,
     ApiJson(body): ApiJson<Value>,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<Json<crate::generated::FederationSnapshot>, ApiError> {
     let action = body
         .get("action")
         .and_then(Value::as_str)

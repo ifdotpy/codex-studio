@@ -38,7 +38,7 @@ pub(crate) fn routes() -> RouteGroup {
 async fn selection(
     State(state): State<HttpState>,
     ApiJson(body): ApiJson<generated::AccountSelectionRequest>,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<Json<generated::AgentResponse>, ApiError> {
     studio_runtime_process::blocking_pool::spawn_blocking(
         "runtime-http/routes/account_transfer",
         move || {
@@ -81,7 +81,7 @@ struct Request {
 async fn transfer(
     State(state): State<HttpState>,
     ApiJson(body): ApiJson<Request>,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<Json<generated::TransferResponse>, ApiError> {
     studio_runtime_process::blocking_pool::spawn_blocking(
         "runtime-http/routes/account_transfer",
         move || {

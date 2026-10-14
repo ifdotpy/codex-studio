@@ -83,7 +83,9 @@ async fn require_reconciled_driver(state: &HttpState) -> Result<(), ApiError> {
     }
 }
 
-async fn listing(State(state): State<HttpState>) -> Result<Json<Value>, ApiError> {
+async fn listing(
+    State(state): State<HttpState>,
+) -> Result<Json<crate::generated::TerminalList>, ApiError> {
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
     let result = studio_runtime_process::blocking_pool::spawn_blocking(
         "runtime-http/routes/terminals",
@@ -100,7 +102,7 @@ async fn listing(State(state): State<HttpState>) -> Result<Json<Value>, ApiError
 async fn output(
     query: QueryParams,
     State(state): State<HttpState>,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<Json<crate::generated::TerminalOutput>, ApiError> {
     let id = query
         .typed_value("id")
         .and_then(Value::as_str)
@@ -137,7 +139,7 @@ async fn output(
 async fn create(
     State(state): State<HttpState>,
     ApiJson(body): ApiJson<Value>,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<Json<crate::generated::TerminalRecord>, ApiError> {
     #[cfg(unix)]
     {
         require_reconciled_driver(&state).await?;
@@ -213,7 +215,7 @@ async fn action(
     path: MatchedPath,
     State(state): State<HttpState>,
     ApiJson(body): ApiJson<Value>,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<Json<TerminalActionResponse>, ApiError> {
     #[cfg(unix)]
     {
         require_reconciled_driver(&state).await?;
@@ -235,13 +237,13 @@ async fn action(
         .map_err(|_| ApiError::internal())?
         .map_err(terminal_body_error)?;
         if is_input {
-            Ok(Json(super::generated_json::<
-                crate::generated::TerminalInputResult,
-            >(result)?))
+            Ok(Json(TerminalActionResponse::Input(
+                super::generated_json::<crate::generated::TerminalInputResult>(result)?,
+            )))
         } else {
-            Ok(Json(super::generated_json::<
-                crate::generated::TerminalRecord,
-            >(result)?))
+            Ok(Json(TerminalActionResponse::Record(
+                super::generated_json::<crate::generated::TerminalRecord>(result)?,
+            )))
         }
     }
     #[cfg(not(unix))]
@@ -252,6 +254,13 @@ async fn action(
                 .unwrap_or_else(|_| ApiError::internal()),
         )
     }
+}
+
+#[derive(serde::Serialize)]
+#[serde(untagged)]
+enum TerminalActionResponse {
+    Input(crate::generated::TerminalInputResult),
+    Record(crate::generated::TerminalRecord),
 }
 
 fn checked_agent_cwd(

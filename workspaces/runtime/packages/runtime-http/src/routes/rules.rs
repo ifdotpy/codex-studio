@@ -31,7 +31,9 @@ pub(crate) fn routes() -> RouteGroup {
     ])
 }
 
-pub(crate) async fn list(State(state): State<HttpState>) -> Result<Json<Value>, ApiError> {
+pub(crate) async fn list(
+    State(state): State<HttpState>,
+) -> Result<Json<crate::generated::RuleList>, ApiError> {
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
     let records = studio_runtime_process::blocking_pool::spawn_blocking(
         "runtime-http/routes/rules",
@@ -57,7 +59,7 @@ pub(crate) async fn list(State(state): State<HttpState>) -> Result<Json<Value>, 
 async fn update(
     State(state): State<HttpState>,
     ApiJson(body): ApiJson<Value>,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<Json<RuleWriteResponse>, ApiError> {
     let action = string(&body, "action").unwrap_or("save");
     let now = now_seconds()?;
     if action == "save"
@@ -211,11 +213,20 @@ async fn update(
             };
             if result.get("deleted").is_some() {
                 super::generated_json::<crate::generated::DeletedRuleReceipt>(result)
+                    .map(RuleWriteResponse::Deleted)
             } else {
                 super::generated_json::<crate::generated::RuleRecordResponse>(result)
+                    .map(RuleWriteResponse::Record)
             }
         })?;
     Ok(Json(result))
+}
+
+#[derive(serde::Serialize)]
+#[serde(untagged)]
+enum RuleWriteResponse {
+    Deleted(crate::generated::DeletedRuleReceipt),
+    Record(crate::generated::RuleRecordResponse),
 }
 
 fn rules_error(error: RulesError) -> ApiError {

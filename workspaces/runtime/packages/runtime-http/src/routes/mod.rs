@@ -53,7 +53,6 @@ mod workspace_files;
 mod workspace_views;
 
 use manifest::RouteGroup;
-use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 
@@ -62,24 +61,42 @@ type RegisteredRouteGroup = (&'static str, fn() -> RouteGroup);
 pub(super) fn accounts_response(
     snapshot: studio_runtime_services::account_policy::AccountsSnapshot,
 ) -> Result<axum::Json<crate::generated::AccountsResponse>, crate::error::ApiError> {
-    serde_json::from_value(serde_json::json!({
-        "accounts": snapshot.accounts,
-        "archivedAccounts": snapshot.archived_accounts,
-        "defaultAccountKey": snapshot.default_account_key,
-        "logins": snapshot.logins,
-        "supportsDisconnect": true,
-        "supportsDelete": true,
+    use crate::generated::{Account, AccountsResponse, CodexLoginReceipt};
+
+    let accounts = snapshot
+        .accounts
+        .into_iter()
+        .map(serde_json::from_value::<Account>)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| crate::error::ApiError::internal())?;
+    let archived_accounts = snapshot
+        .archived_accounts
+        .into_iter()
+        .map(serde_json::from_value::<Account>)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| crate::error::ApiError::internal())?;
+    let logins = snapshot
+        .logins
+        .into_iter()
+        .map(serde_json::from_value::<CodexLoginReceipt>)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| crate::error::ApiError::internal())?;
+
+    Ok(axum::Json(AccountsResponse {
+        sync_entities: None,
+        sync_entities_after: None,
+        accounts,
+        archived_accounts,
+        default_account_key: serde_json::from_value(snapshot.default_account_key)
+            .map_err(|_| crate::error::ApiError::internal())?,
+        logins,
+        supports_delete: true,
+        supports_disconnect: true,
     }))
-    .map(axum::Json)
-    .map_err(|_| crate::error::ApiError::internal())
 }
 
-fn generated_json<T: DeserializeOwned + Serialize>(
-    value: Value,
-) -> Result<Value, crate::error::ApiError> {
-    serde_json::from_value::<T>(value)
-        .and_then(serde_json::to_value)
-        .map_err(|_| crate::error::ApiError::internal())
+fn generated_json<T: DeserializeOwned>(value: Value) -> Result<T, crate::error::ApiError> {
+    serde_json::from_value::<T>(value).map_err(|_| crate::error::ApiError::internal())
 }
 
 fn registered_route_groups() -> Vec<RegisteredRouteGroup> {

@@ -65,7 +65,7 @@ pub(super) fn queue_snapshot(
         })?;
     for item in &items {
         let id = item.get("id").and_then(Value::as_str).unwrap_or("<event>");
-        if super::generated_json::<crate::generated::QueueItem>(item.clone()).is_err() {
+        if serde_json::from_value::<crate::generated::QueueItem>(item.clone()).is_err() {
             return Err(invalid_stored("runtime_events", id));
         }
     }

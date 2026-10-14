@@ -42,7 +42,7 @@ pub(crate) fn routes() -> RouteGroup {
 async fn changes(
     query: QueryParams,
     State(state): State<HttpState>,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<Json<crate::generated::ChangesResponse>, ApiError> {
     let agent = query.nonempty_str("agent").map(str::to_owned);
     let scope = query.nonempty_str("scope").map(str::to_owned);
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
@@ -87,7 +87,7 @@ async fn changes(
 async fn workspace(
     query: QueryParams,
     State(state): State<HttpState>,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<Json<crate::generated::WorkspaceView>, ApiError> {
     let agent = query.nonempty_str("agent").map(str::to_owned);
     let view = query.nonempty_str("view").unwrap_or("full").to_owned();
     let store = state.store.clone().ok_or_else(ApiError::internal)?;

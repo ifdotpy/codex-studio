@@ -36,7 +36,9 @@ pub(crate) fn routes() -> RouteGroup {
     ])
 }
 
-pub(crate) async fn protocol(State(state): State<HttpState>) -> Result<Json<Value>, ApiError> {
+pub(crate) async fn protocol(
+    State(state): State<HttpState>,
+) -> Result<Json<crate::generated::SyncProtocolResponse>, ApiError> {
     let socket_path = PathBuf::from(state.state_dir).join("canvas.sock");
     let unix_socket = studio_runtime_process::blocking_pool::spawn_blocking(
         "runtime-http/routes/sync_documents",
@@ -77,7 +79,7 @@ pub(crate) async fn protocol(State(state): State<HttpState>) -> Result<Json<Valu
 pub(crate) async fn pull(
     query: QueryParams,
     State(state): State<HttpState>,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<Json<SyncPullResponseBody>, ApiError> {
     let scope = query
         .typed_value("scope")
         .and_then(Value::as_str)
@@ -114,10 +116,7 @@ pub(crate) async fn pull(
                 .map_err(super::transcript::map_transcript_error)?;
             // Python samples generation after transcript maintenance commits.
             response["generation"] = json!(store.generation().map_err(|_| ApiError::internal())?);
-            if !validators.validate_stored("SyncPullResponse", &response)
-                || serde_json::from_value::<crate::generated::SyncPullResponse>(response.clone())
-                    .is_err()
-            {
+            if !validators.validate_stored("SyncPullResponse", &response) {
                 return Err(invalid_entity("sync_entities", "transcript-pull-response").into());
             }
             return Ok(response);
@@ -259,9 +258,13 @@ pub(crate) async fn pull(
     .await
     .map_err(|_| ApiError::internal())??;
     let response = if result.get("reset").and_then(Value::as_bool) == Some(true) {
-        super::generated_json::<crate::generated::SyncPullResetResponse>(result)?
+        SyncPullResponseBody::Reset(super::generated_json::<
+            crate::generated::SyncPullResetResponse,
+        >(result)?)
     } else {
-        super::generated_json::<crate::generated::SyncPullResponse>(result)?
+        SyncPullResponseBody::Page(super::generated_json::<crate::generated::SyncPullResponse>(
+            result,
+        )?)
     };
     Ok(Json(response))
 }
@@ -377,6 +380,13 @@ fn capture_project_vault_snapshot(
     Ok((reader, snapshot))
 }
 
+#[derive(serde::Serialize)]
+#[serde(untagged)]
+pub(crate) enum SyncPullResponseBody {
+    Reset(crate::generated::SyncPullResetResponse),
+    Page(crate::generated::SyncPullResponse),
+}
+
 #[derive(Debug, Deserialize)]
 pub(crate) struct PreferencePushRequest {
     scope: String,
@@ -387,7 +397,7 @@ pub(crate) struct PreferencePushRequest {
 pub(crate) async fn push_drafts(
     State(state): State<HttpState>,
     ApiJson(parsed): ApiJson<crate::generated::DraftPushRequest>,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<Json<Vec<crate::generated::SyncDocument>>, ApiError> {
     let validators = state.validators.clone();
     let mut writes = Vec::with_capacity(parsed.rows.len());
     for (index, row) in parsed.rows.into_iter().enumerate() {
@@ -613,12 +623,7 @@ fn pull_entities(
     } else {
         "SyncPullResponse"
     };
-    let generated_response_valid = if page.reset {
-        serde_json::from_value::<crate::generated::SyncPullResetResponse>(response.clone()).is_ok()
-    } else {
-        serde_json::from_value::<crate::generated::SyncPullResponse>(response.clone()).is_ok()
-    };
-    if !validators.validate_stored(schema, &response) || !generated_response_valid {
+    if !validators.validate_stored(schema, &response) {
         return Err(invalid_entity("sync_entities", "pull-response"));
     }
     Ok(response)

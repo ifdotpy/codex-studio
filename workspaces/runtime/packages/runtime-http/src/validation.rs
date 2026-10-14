@@ -36,9 +36,9 @@ pub(crate) struct ValidatedRequest {
         dead_code,
         reason = "shared QueryParams retains the original ordered wire values"
     )]
-    pub query: Map<String, Value>,
+    pub query: Arc<Map<String, Value>>,
     #[allow(dead_code, reason = "shared header validation feeds route handlers")]
-    pub headers: Map<String, Value>,
+    pub headers: Arc<Map<String, Value>>,
 }
 
 #[derive(Clone)]
@@ -63,6 +63,12 @@ pub(crate) struct Registry {
     operations: Arc<BTreeMap<String, OperationValidator>>,
     preference_field: Option<Validator>,
     stored_schemas: Arc<BTreeMap<String, Validator>>,
+}
+
+pub(crate) struct MatchedOperation {
+    pub key: String,
+    pub has_body_schema: bool,
+    pub has_opaque_body: bool,
 }
 
 #[derive(Debug)]
@@ -317,11 +323,12 @@ impl Registry {
         }
         Ok(ValidatedRequest {
             body,
-            query: query.as_object().cloned().unwrap_or_default(),
-            headers: headers.as_object().cloned().unwrap_or_default(),
+            query: Arc::new(query.as_object().cloned().unwrap_or_default()),
+            headers: Arc::new(headers.as_object().cloned().unwrap_or_default()),
         })
     }
 
+    #[cfg(test)]
     pub(crate) fn validate_route(
         &self,
         method: &str,
@@ -331,33 +338,29 @@ impl Registry {
         self.validate(&format!("{method} {path_template}"), raw)
     }
 
-    pub(crate) fn template_for(&self, method: &str, path: &str) -> Option<String> {
-        crate::schema::matching_template(
+    pub(crate) fn validate_matched(
+        &self,
+        operation: &MatchedOperation,
+        raw: RawRequest,
+    ) -> Result<ValidatedRequest, LocatedError> {
+        self.validate(&operation.key, raw)
+    }
+
+    pub(crate) fn match_route(&self, method: &str, path: &str) -> Option<MatchedOperation> {
+        let template = crate::schema::matching_template(
             self.operations.keys().filter_map(|key| key.split_once(' ')),
             Some(method),
             path,
-        )
-        .map(str::to_owned)
-    }
-
-    pub(crate) fn has_body_schema(&self, method: &str, path: &str) -> Option<bool> {
-        self.template_for(method, path).and_then(|template| {
-            self.operations
-                .get(&format!("{method} {template}"))
-                .map(|operation| operation.body.is_some())
-        })
-    }
-
-    pub(crate) fn has_opaque_body(&self, method: &str, path: &str) -> Option<bool> {
-        self.template_for(method, path).and_then(|template| {
-            self.operations
-                .get(&format!("{method} {template}"))
-                .map(|operation| {
-                    operation
-                        .body
-                        .as_ref()
-                        .is_some_and(|part| part.has_opaque_json)
-                })
+        )?;
+        let key = format!("{method} {template}");
+        let operation = self.operations.get(&key)?;
+        Some(MatchedOperation {
+            key,
+            has_body_schema: operation.body.is_some(),
+            has_opaque_body: operation
+                .body
+                .as_ref()
+                .is_some_and(|part| part.has_opaque_json),
         })
     }
 
