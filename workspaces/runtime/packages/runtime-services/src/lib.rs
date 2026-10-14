@@ -53,6 +53,7 @@ pub mod multi_server_auth;
 pub mod multi_server_discovery;
 pub mod multi_server_orchestration;
 pub mod multi_server_pairing;
+pub mod native_runtime;
 pub mod panels;
 pub mod payload_blobs;
 pub mod payload_store;
