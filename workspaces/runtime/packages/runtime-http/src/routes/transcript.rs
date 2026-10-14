@@ -12,23 +12,13 @@ use super::manifest::{Dependency, OperationStatus, RouteGroup, get};
 use crate::error::ApiError;
 use crate::router::HttpState;
 
-pub(super) const PAGE_DEPENDENCIES: &[Dependency] = &[
-    Dependency::new("transcript/payload-store"),
-    Dependency::new("transcript/receipt-page"),
-    Dependency::new("transcript/reasoning-page"),
-];
-const CANVAS_DEPENDENCIES: &[Dependency] = &[
-    Dependency::new("transcript/payload-store"),
-    Dependency::new("transcript/receipt-page"),
-    Dependency::new("transcript/reasoning-page"),
-    Dependency::new("transcript/workspace-state"),
-];
+const CANVAS_DEPENDENCIES: &[Dependency] = &[Dependency::new("transcript/workspace-state")];
 
 pub(crate) fn routes() -> RouteGroup {
     RouteGroup::new(vec![
         get(
             "/api/transcript/page",
-            OperationStatus::partial(PAGE_DEPENDENCIES),
+            OperationStatus::Implemented,
             transcript_page,
         ),
         get(
@@ -263,7 +253,7 @@ inventory::submit! {
     crate::routes::manifest::RouteModuleRegistration {
         name: "transcript",
         routes: Some(routes),
-        dependencies: &["transcript/payload-store", "transcript/receipt-page", "transcript/reasoning-page", "transcript/workspace-state"],
+        dependencies: &["transcript/workspace-state"],
     }
 }
 
@@ -273,9 +263,6 @@ mod tests {
     #[test]
     fn transcript_partial_manifest_accepts_every_remaining_refusal() {
         use super::super::manifest::dependency_unavailable;
-        for path in ["/api/transcript/page", "/api/sync/pull"] {
-            assert!(dependency_unavailable("GET", path, PAGE_DEPENDENCIES).is_ok());
-        }
         assert!(dependency_unavailable("GET", "/api/transcript", CANVAS_DEPENDENCIES).is_ok());
     }
 }

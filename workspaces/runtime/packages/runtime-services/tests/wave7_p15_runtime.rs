@@ -5,6 +5,7 @@ mod fixtures;
 #[path = "support/prepared_python.rs"]
 mod prepared_python_support;
 
+use base64::Engine;
 use serde_json::{Value, json};
 use std::path::Path;
 use std::process::Command;
@@ -13,7 +14,7 @@ use std::time::Duration;
 use studio_runtime_services::{
     agent_lifecycle_runtime,
     agent_management::Action,
-    monitor_driver,
+    monitor_driver, monitor_event_queue,
     monitor_lifecycle::MonitorLifecyclePorts,
     monitor_policy::{Effect, Input},
     monitor_receipts::{self, ResultReceipt},
@@ -130,6 +131,76 @@ fn runtime_ticks_match_complete_python_rows_and_events() {
         count += 1;
     }
     assert!(count >= 4);
+}
+
+#[test]
+fn account_worker_monitor_output_is_durable_ordered_and_exactly_acknowledged() {
+    let root = fixtures::tempdir();
+    let cases = fixtures::corpus(root.path());
+    let case = running(&cases);
+    let store = fixtures::store(root.path(), "monitor-output-queue");
+    fixtures::seed(&store, &case);
+    let id = case["before"]["id"].as_str().expect("monitor id");
+    let account = case["before"]["operation"]["accountKey"]
+        .as_str()
+        .expect("account");
+    let first = json!({
+        "processId": id,
+        "deltaBase64": base64::engine::general_purpose::STANDARD.encode(b"one")
+    });
+    let second = json!({
+        "processId": id,
+        "deltaBase64": base64::engine::general_purpose::STANDARD.encode(b"two")
+    });
+    store
+        .transaction_with(|tx| {
+            monitor_event_queue::enqueue_output_in_transaction(tx, id, account, 7, 11, &first)?;
+            monitor_event_queue::enqueue_output_in_transaction(tx, id, account, 7, 12, &second)?;
+            Ok::<_, studio_runtime_services::notification_dispatch::NotificationDispatchError>(())
+        })
+        .expect("enqueue output in provider receipt transaction");
+
+    let first_delivery = monitor_event_queue::next(&store)
+        .expect("read output queue")
+        .expect("first output");
+    assert_eq!(first_delivery.cursor, format!("{account}:7:11"));
+    assert!(matches!(
+        &first_delivery.event,
+        MonitorEvent::Output { offset: 0, bytes } if bytes == b"one"
+    ));
+    let replay = monitor_event_queue::next(&store)
+        .expect("replay output queue")
+        .expect("same first output");
+    assert_eq!(replay.cursor, first_delivery.cursor);
+    monitor_event_queue::acknowledge(&store, &first_delivery).expect("ack first output");
+
+    let second_delivery = monitor_event_queue::next(&store)
+        .expect("read second output")
+        .expect("second output");
+    assert_eq!(second_delivery.cursor, format!("{account}:7:12"));
+    assert!(matches!(
+        &second_delivery.event,
+        MonitorEvent::Output { offset: 3, bytes } if bytes == b"two"
+    ));
+    monitor_event_queue::acknowledge(&store, &second_delivery).expect("ack second output");
+    monitor_event_queue::acknowledge(&store, &second_delivery).expect("idempotent exact ACK");
+    let operation = serde_json::from_value(case["before"]["operation"].clone())
+        .expect("monitor operation");
+    monitor_event_queue::enqueue_exit(&store, id, &operation, "result:monitor", Some(0), None, 9.0)
+        .expect("enqueue definitive result behind output");
+    let exit = monitor_event_queue::next(&store)
+        .expect("read result queue")
+        .expect("exit after both output deltas");
+    assert_eq!(exit.cursor, "result:monitor");
+    assert!(matches!(exit.event, MonitorEvent::Exit { code: Some(0), .. }));
+    monitor_event_queue::acknowledge(&store, &exit).expect("ack exit");
+    monitor_event_queue::enqueue_exit(&store, id, &operation, "result:monitor", Some(0), None, 9.0)
+        .expect("replay acknowledged result without duplicating it");
+    assert!(
+        monitor_event_queue::next(&store)
+            .expect("empty output queue")
+            .is_none()
+    );
 }
 
 #[test]

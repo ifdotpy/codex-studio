@@ -30,6 +30,21 @@ pub(super) fn apply(
         .provider_handle
         .strip_prefix("account:")
         .ok_or(NotificationDispatchError::InvalidNotification)?;
+    if method == "command/exec/outputDelta" {
+        let process_id = p["processId"]
+            .as_str()
+            .filter(|value| !value.is_empty())
+            .ok_or(NotificationDispatchError::InvalidNotification)?;
+        crate::monitor_event_queue::enqueue_output_in_transaction(
+            tx,
+            process_id,
+            account,
+            identity.generation,
+            identity.cursor,
+            p,
+        )?;
+        return Ok(Some(DispatchOutcome::Written));
+    }
     if let Some(kind) = notices::NoticeKind::parse(method) {
         let item_id = format!(
             "{id}:native-notice:hook:{}",
@@ -66,7 +81,6 @@ pub(super) fn apply(
         "account/login/completed" => Some(NotificationDependency::AccountLogin),
         "account/updated" => Some(NotificationDependency::AccountRefresh),
         "account/rateLimits/updated" => Some(NotificationDependency::RateLimits),
-        "command/exec/outputDelta" => Some(NotificationDependency::MonitorOutput),
         "turn/started" | "turn/completed" => Some(NotificationDependency::TurnLifecycle),
         kind if kind.starts_with("thread/realtime/") => Some(NotificationDependency::Realtime),
         "thread/closed" => Some(NotificationDependency::ThreadUnloaded),

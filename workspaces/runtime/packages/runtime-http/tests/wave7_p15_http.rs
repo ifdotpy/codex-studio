@@ -137,19 +137,30 @@ async fn installed_runtime_drives_input_and_cancel_through_http() {
     ));
     let app = router(state).expect("router").layer(Extension(runtime));
     let body = json!({"id":case["before"]["id"],"text":"hello"});
-    let before_refusal = database_snapshot(&store);
-    let (status, refusal) = call(&app, "/api/monitor/input", body.clone()).await;
-    assert_eq!(status, 501);
+    *port.unknown.lock().expect("unknown") = true;
+    let (status, result) = call(&app, "/api/monitor/input", body.clone()).await;
     assert_eq!(
-        refusal["error"],
-        "Not implemented: requires monitor-input-request-identity"
+        status, 400,
+        "unknown input result must be surfaced: {result}"
     );
-    assert!(port.submitted.lock().expect("submitted").is_empty());
+    assert_eq!(port.submitted.lock().expect("submitted").len(), 1);
+    let after_unknown = database_snapshot(&store);
+    let (status, retry) = call(&app, "/api/monitor/input", body).await;
+    assert_eq!(
+        status, 400,
+        "unknown input retry must stay refused: {retry}"
+    );
+    assert_eq!(
+        port.submitted.lock().expect("submitted").len(),
+        1,
+        "a repeated HTTP request must not resend an Unknown native input"
+    );
     assert_eq!(
         database_snapshot(&store),
-        before_refusal,
-        "input refusal writes nothing"
+        after_unknown,
+        "refusing a repeat must leave the durable Unknown latch unchanged"
     );
+    *port.unknown.lock().expect("unknown") = false;
     for attempt in 0..2 {
         let (status, response) = call(
             &app,
@@ -169,7 +180,7 @@ async fn installed_runtime_drives_input_and_cancel_through_http() {
             assert!(response["_syncEntitiesAfter"].is_number());
         }
     }
-    assert_eq!(port.submitted.lock().expect("submitted").len(), 1);
+    assert_eq!(port.submitted.lock().expect("submitted").len(), 2);
     let saved = MonitorsRepository::get(
         &store.read().expect("read"),
         case["before"]["id"].as_str().expect("id"),

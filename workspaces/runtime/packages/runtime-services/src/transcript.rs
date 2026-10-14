@@ -111,14 +111,49 @@ pub fn pull_scope(
     after: i64,
 ) -> Result<Value, TranscriptError> {
     let now = crate::transcript_runtime::observed_at()?;
-    let analytics = studio_runtime_store::AnalyticsRepository::new(store.root())
-        .open_read_only()
-        .map_err(|_| TranscriptError::Store)?;
+    let reader = store.read()?;
+    let actor = TranscriptRepository::agent(&reader, agent)?;
+    let deleted = actor
+        .as_ref()
+        .is_none_or(|value| truthy(value.get("deletedAt")));
+    let expected_revision = reader
+        .query_row(
+            "SELECT revision FROM runtime_transcript_revisions WHERE agent=?1",
+            [agent],
+            |row| row.get::<_, i64>(0),
+        )
+        .optional()?
+        .unwrap_or(0);
+    drop(reader);
+    let fresh_payload = if deleted {
+        None
+    } else {
+        Some(crate::transcript_runtime::page_at(
+            store,
+            agent,
+            &crate::transcript_runtime::PageRequest::default(),
+            now,
+        )?)
+    };
     match store.read_transaction_with_error(|transaction| {
-        pull_scope_in(transaction, &analytics, scope, agent, after, now)
+        pull_scope_in(
+            transaction,
+            scope,
+            agent,
+            after,
+            expected_revision,
+            fresh_payload.as_ref(),
+        )
     }) {
         Err(TranscriptError::ReadOnlyRepair) => store.transaction_with(|transaction| {
-            pull_scope_in(transaction, &analytics, scope, agent, after, now)
+            pull_scope_in(
+                transaction,
+                scope,
+                agent,
+                after,
+                expected_revision,
+                fresh_payload.as_ref(),
+            )
         }),
         result => result,
     }
@@ -126,11 +161,11 @@ pub fn pull_scope(
 
 fn pull_scope_in(
     transaction: &Transaction<'_>,
-    analytics: &Connection,
     scope: &str,
     agent: &str,
     after: i64,
-    now: f64,
+    expected_revision: i64,
+    fresh_payload: Option<&Value>,
 ) -> Result<Value, TranscriptError> {
     let actor = TranscriptRepository::agent(transaction, agent)?;
     let deleted = actor.as_ref().is_none_or(|a| truthy(a.get("deletedAt")));
@@ -170,18 +205,15 @@ fn pull_scope_in(
             params![scope, studio_runtime_store::sha256_hex(revision.to_string().as_bytes())],
             |r| r.get::<_, Option<String>>(0),
         ).optional()?.flatten();
+    if cache.is_none() && !deleted && revision != expected_revision {
+        return Err(TranscriptError::SnapshotChanged);
+    }
     let payload = if let Some(raw) = &cache {
         serde_json::from_str(raw).map_err(|_| invalid_stored("sync_entities", scope))?
     } else if deleted {
         json!({})
     } else {
-        crate::transcript_runtime::project(
-            transaction,
-            analytics,
-            agent,
-            &crate::transcript_runtime::PageRequest::default(),
-            now,
-        )?
+        fresh_payload.cloned().ok_or(TranscriptError::Store)?
     };
     if cache.is_some() && !deleted {
         let cache_id = format!("{scope}/@revision");

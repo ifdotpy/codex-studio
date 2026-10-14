@@ -43,9 +43,10 @@ pub trait MonitorNative {
 
 // Hold admission and its transport submission in one sequence. A concurrent cancel
 // or input cannot overtake command/exec after its running intent is committed.
-fn native_sequence(id: &str) -> Result<MutexGuard<'static, ()>, MonitorError> {
+fn native_sequence(store: &RuntimeStore, id: &str) -> Result<MutexGuard<'static, ()>, MonitorError> {
     static SEQUENCES: [Mutex<()>; 64] = [const { Mutex::new(()) }; 64];
     let mut hash = std::collections::hash_map::DefaultHasher::new();
+    store.root().hash(&mut hash);
     id.hash(&mut hash);
     SEQUENCES[hash.finish() as usize % SEQUENCES.len()]
         .try_lock()
@@ -59,7 +60,7 @@ pub fn start(
     prepared: &PreparedStart,
     now: f64,
 ) -> Result<Submission, MonitorError> {
-    let _sequence = native_sequence(id)?;
+    let _sequence = native_sequence(store, id)?;
     let effect = monitor_runtime::reserve_start(store, id, prepared, now)?;
     // A transport failure does not authorize another command/exec.
     let submission = port.submit(&prepared.operation, &effect);
@@ -92,7 +93,7 @@ pub fn input(
     request: InputRequest<'_>,
     now: f64,
 ) -> Result<Submission, MonitorError> {
-    let _sequence = native_sequence(request.id)?;
+    let _sequence = native_sequence(store, request.id)?;
     let effect = monitor_runtime::reserve_input(
         store,
         request.id,
@@ -131,7 +132,7 @@ pub fn cancel(
     owner: Option<&str>,
     now: f64,
 ) -> Result<Value, MonitorError> {
-    let _sequence = native_sequence(id)?;
+    let _sequence = native_sequence(store, id)?;
     let (mut response, operation) =
         store.transaction_with(|tx| reserve_cancel(tx, id, owner, now))?;
     if let Some(operation) = operation {
