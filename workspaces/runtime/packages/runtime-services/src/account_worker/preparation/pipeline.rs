@@ -242,6 +242,23 @@ fn resolve_daybreak_program(
     }
     Err(refusal("Daybreak is not available for this model on this account. Choose another model or turn off Daybreak".into()))
 }
+
+/// Native start params resolve Daybreak separately against the selected model.
+/// Temporarily clear the planner's legacy unconditional refusal, then restore
+/// the recorded setting before emitting provider params.
+fn plan_native_thread(
+    snapshot: &mut thread::Snapshot,
+    attempt_id: &str,
+    transport_ticket: &str,
+) -> thread::Outcome {
+    let daybreak = std::mem::replace(
+        &mut snapshot.settings.daybreak_enabled,
+        thread::Stored::Present(Some(false)),
+    );
+    let outcome = thread::plan(snapshot, attempt_id, transport_ticket);
+    snapshot.settings.daybreak_enabled = daybreak;
+    outcome
+}
 pub(crate) fn admit(
     store: &RuntimeStore,
     resources: &PreparationResources,
@@ -383,8 +400,8 @@ pub(crate) fn prepare_native_thread(
     let mut snapshot = prepare_native_snapshot(store, resources, agent_id, attempt_id, generation)?;
     snapshot.actor.thread_id = None;
     snapshot.catalog.saved_thread_id = None;
-    match thread::plan(
-        &snapshot,
+    match plan_native_thread(
+        &mut snapshot,
         attempt_id,
         &format!("native-thread:{agent_id}:{attempt_id}"),
     ) {
@@ -520,8 +537,8 @@ pub(crate) fn prepare_safety_retry(
     snapshot.settings.model = Some(request.model.clone());
     snapshot.settings.effort = Some("low".into());
     snapshot.settings.native_effort = Some("low".into());
-    let mut fork_params = match thread::plan(
-        &snapshot,
+    let mut fork_params = match plan_native_thread(
+        &mut snapshot,
         &request.attempt_id,
         &format!("safety-retry:{}", request.attempt_id),
     ) {
