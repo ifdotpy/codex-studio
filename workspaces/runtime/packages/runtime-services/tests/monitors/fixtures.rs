@@ -1,26 +1,44 @@
 use serde_json::Value;
-use std::path::Path;
+use std::{path::Path, sync::OnceLock};
 use studio_runtime_store::{AgentRecord, AgentRepository, MonitorRecord, RuntimeStore, Table};
 
 pub fn corpus(root: &Path) -> Vec<Value> {
+    static TEMPLATE: OnceLock<(tempfile::TempDir, Vec<Value>)> = OnceLock::new();
     let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let output = std::process::Command::new("timeout")
-        .arg("60")
-        .arg(crate::prepared_python_support::prepared_python(
-            &manifest.join("../../apps/server/src"),
-        ))
-        .arg("-B")
-        .arg(manifest.join("tests/monitors/oracle.py"))
-        .arg(manifest.join("../../apps/server/src"))
-        .arg(root)
-        .output()
-        .expect("monitor fixture");
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    serde_json::from_slice(&output.stdout).expect("monitor fixture")
+    let (template_root, cases) = TEMPLATE.get_or_init(|| {
+        let template_root = tempfile::tempdir().expect("monitor fixture template");
+        let source = manifest.join("../../apps/server/src");
+        let script = manifest.join("tests/monitors/oracle.py");
+        let mut command =
+            std::process::Command::new(crate::prepared_python_support::prepared_python(&source));
+        command
+            .arg("-B")
+            .arg(&script)
+            .arg(&source)
+            .arg(template_root.path());
+        let output = crate::prepared_python_support::output_with_timeout(
+            &mut command,
+            &script,
+            crate::prepared_python_support::PYTHON_ORACLE_TIMEOUT,
+        )
+        .unwrap_or_else(|error| panic!("{}: {error}", script.display()));
+        assert!(
+            output.status.success(),
+            "{}: {}",
+            script.display(),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let cases = serde_json::from_slice(&output.stdout).expect("monitor fixture");
+        (template_root, cases)
+    });
+    let template = template_root.path().join("template");
+    let destination = root.join("template");
+    std::fs::create_dir(&destination).expect("monitor fixture");
+    for database in ["canvas.sqlite3", "analytics.sqlite3"] {
+        std::fs::copy(template.join(database), destination.join(database))
+            .expect("monitor fixture");
+    }
+    cases.clone()
 }
 
 pub fn store(root: &Path, name: &str) -> RuntimeStore {
