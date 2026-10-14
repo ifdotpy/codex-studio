@@ -43,7 +43,10 @@ pub trait MonitorNative {
 
 // Hold admission and its transport submission in one sequence. A concurrent cancel
 // or input cannot overtake command/exec after its running intent is committed.
-fn native_sequence(store: &RuntimeStore, id: &str) -> Result<MutexGuard<'static, ()>, MonitorError> {
+fn native_sequence(
+    store: &RuntimeStore,
+    id: &str,
+) -> Result<MutexGuard<'static, ()>, MonitorError> {
     static SEQUENCES: [Mutex<()>; 64] = [const { Mutex::new(()) }; 64];
     let mut hash = std::collections::hash_map::DefaultHasher::new();
     store.root().hash(&mut hash);
