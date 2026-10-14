@@ -1185,8 +1185,7 @@ mod tests {
         };
         git(&["config", "user.name", "Cleanup Fixture"]);
         git(&["config", "user.email", "cleanup@example.invalid"]);
-        std::fs::write(repository.join("README.md"), "fixture\n")
-            .expect("fixture file writes");
+        std::fs::write(repository.join("README.md"), "fixture\n").expect("fixture file writes");
         git(&["add", "README.md"]);
         git(&["commit", "-q", "-m", "fixture"]);
         git(&[
@@ -1214,7 +1213,10 @@ mod tests {
         );
         let saved = agent(&store);
         assert_eq!(saved["worktreeReady"], false);
-        assert_eq!(saved.pointer("/agentArchive/cleanupPending"), Some(&json!(false)));
+        assert_eq!(
+            saved.pointer("/agentArchive/cleanupPending"),
+            Some(&json!(false))
+        );
     }
 
     #[test]
