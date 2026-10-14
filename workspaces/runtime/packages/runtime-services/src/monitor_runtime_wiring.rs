@@ -3,9 +3,12 @@
 //! Result recovery precedes stall decisions. Publication and transport ACK follow commit.
 //!
 //! Registered HTTP contract gap: `MonitorInput` has no request identity, pending owner decision.
-//! HTTP retries after a lost response cannot be distinguished from new input. Each provider write
-//! still has a durable ticketed intent; an unknown provider outcome remains latched and is never
-//! resent. Managed-tool input uses its callback request identity for durable replay instead.
+//! Python has the same acknowledged-response gap: codex_rules.py:727 refuses only while
+//! `inputAttempt` exists; codex_rules.py:781-782 clears it on settlement and saves
+//! `lastInputAttempt` without comparing it on the next call. Therefore an identical HTTP retry
+//! after an acknowledged response may be a new input. Each provider write still has a durable
+//! ticketed intent; an unknown provider outcome remains latched and is never resent. Managed-tool
+//! input uses its callback request identity for durable replay instead.
 
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -69,6 +72,11 @@ pub enum InputReply {
 /// `command/exec` runs inside the retained provider app-server. Its child priority
 /// is selected by the provider launch environment; this port never spawns it locally.
 pub trait MonitorPort: MonitorNative + rules_tick::RuleMonitor + Send + Sync {
+    /// Prepare and submit one persisted managed start. Implementations must return
+    /// after a durable intent and retain Unknown without another command/exec.
+    fn start_monitor(&self, _id: &str, _now: f64) -> Result<(), MonitorError> {
+        Err(MonitorError::Unavailable("provider-session/monitor-start"))
+    }
     fn next(&self) -> Result<Option<Delivery>, MonitorError>;
     fn acknowledge(&self, delivery: &Delivery) -> Result<(), MonitorError>;
     fn reattach(&self, snapshot: &MonitorSnapshot) -> Result<Option<ReattachProof>, MonitorError>;
@@ -192,6 +200,16 @@ impl MonitorRuntime {
 
         // Cancellation receipts and rule pages progress even under sustained stream
         // output. Their exact identities and replay receipts make this safe.
+        match monitor_driver::pending_start_ids(&self.store) {
+            Ok(ids) => {
+                for id in ids {
+                    if let Err(error) = self.port.start_monitor(&id, now) {
+                        record_tick_failure(&mut failure, error);
+                    }
+                }
+            }
+            Err(error) => record_tick_failure(&mut failure, error),
+        }
         match monitor_driver::pending_cancel_ids(&self.store, now) {
             Ok(ids) => {
                 for id in ids {

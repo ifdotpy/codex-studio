@@ -199,7 +199,7 @@ pub fn enqueue_probe(
 ) -> Result<(), MonitorError> {
     let cursor = format!("liveness:{id}:{generation}");
     store.transaction_with(|tx| {
-        let Some(record) = MonitorsRepository::get(tx, &id.to_owned())? else {
+        let Some(record) = MonitorsRepository::get(tx, id)? else {
             return Err(MonitorError::Refused("Unknown command watch"));
         };
         let mut value = record.value().clone();
@@ -271,7 +271,7 @@ pub fn enqueue_exit(
         &value[..end]
     });
     store.transaction_with(|tx| {
-        let Some(record) = MonitorsRepository::get(tx, &id.to_owned())? else {
+        let Some(record) = MonitorsRepository::get(tx, id)? else {
             return Err(MonitorError::Refused("Unknown command watch"));
         };
         let mut value = record.value().clone();

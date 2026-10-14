@@ -21,8 +21,8 @@ use studio_runtime_services::{
     monitor_runtime_wiring::{Delivery, MonitorEvent, MonitorRuntime},
 };
 use studio_runtime_store::{
-    AgentRecord, AgentRepository, MonitorRecord, MonitorsRepository, RuleRecord, RulesRepository,
-    RuntimeStore, Table,
+    AgentRecord, AgentRepository, MonitorRecord, MonitorsRepository,
+    NotificationDispatchRepository, RuleRecord, RulesRepository, RuntimeStore, Table,
 };
 use tokio::sync::Notify;
 
@@ -924,6 +924,193 @@ async fn quarantined_delivery_does_not_stop_other_monitors_or_timer() {
     task.await
         .expect("task joins")
         .expect("store remains healthy");
+}
+
+#[test]
+fn http_input_retry_after_ack_matches_python_missing_identity_contract() {
+    let root = fixtures::tempdir();
+    let cases = fixtures::corpus(root.path());
+    let case = running(&cases);
+    let store = Arc::new(fixtures::store(root.path(), "http-input-identity-gap"));
+    fixtures::seed(&store, &case);
+    let id = case["before"]["id"].as_str().expect("monitor id");
+    let mut monitor = record(&store, id);
+    monitor["interactive"] = json!(true);
+    store
+        .transaction(|tx| Table::new(tx).put(&MonitorRecord::from_value(monitor.clone())?))
+        .expect("mark seeded watch interactive");
+
+    let port = Arc::new(Port::default());
+    let runtime = runtime(&store, &port);
+    let input = Input {
+        text: "same input".into(),
+        rows: None,
+        cols: None,
+        close_stdin: false,
+    };
+    // The HTTP contract has no request ID, so after ack the retry gets a new
+    // ticket and behaves as a new input, exactly like Python's settled state.
+    runtime
+        .input_http(id, &input, 2000.0)
+        .expect("first input acknowledged");
+    let first = record(&store, id)["lastInputAttempt"]["id"]
+        .as_str()
+        .expect("first ticket")
+        .to_owned();
+    runtime
+        .input_http(id, &input, 2001.0)
+        .expect("same body has no HTTP identity to replay");
+    let second = record(&store, id)["lastInputAttempt"]["id"]
+        .as_str()
+        .expect("second ticket")
+        .to_owned();
+
+    assert_ne!(first, second);
+    let submissions = port.submitted.lock().expect("submissions");
+    assert_eq!(submissions.len(), 2);
+    assert_ne!(submissions[0], submissions[1]);
+    assert!(submissions.iter().all(|effect| matches!(
+        effect,
+        Effect::Native { identity, method: "command/exec/write", .. }
+            if identity.starts_with(&format!("monitor-input:{id}:"))
+    )));
+}
+
+#[test]
+fn committed_managed_start_is_dispatched_after_admission() {
+    let root = fixtures::tempdir();
+    let case = running(&fixtures::corpus(root.path()));
+    let store = Arc::new(fixtures::store(root.path(), "managed-monitor-start"));
+    fixtures::seed(&store, &case);
+    let id = case["before"]["id"].as_str().expect("monitor id");
+    let mut monitor = record(&store, id);
+    monitor["status"] = json!("starting");
+    monitor["operation"] = Value::Null;
+    store
+        .transaction(|tx| Table::new(tx).put(&MonitorRecord::from_value(monitor.clone())?))
+        .expect("persist admitted monitor start");
+
+    let port = Arc::new(Port::default());
+    runtime(&store, &port)
+        .tick(2000.0)
+        .expect("dispatch managed start");
+    assert_eq!(
+        port.starts.lock().expect("monitor start calls").as_slice(),
+        &[(id.to_owned(), 2000.0)]
+    );
+}
+
+#[test]
+fn output_queue_enforces_capacity_and_preserves_terminal_reserve_atomically() {
+    let root = fixtures::tempdir();
+    let case = running(&fixtures::corpus(root.path()));
+    let store = fixtures::store(root.path(), "output-count-boundary");
+    fixtures::seed(&store, &case);
+    let id = case["before"]["id"].as_str().expect("monitor id");
+    let account = case["before"]["operation"]["accountKey"]
+        .as_str()
+        .expect("account");
+    let chunk = json!({
+        "processId":id,
+        "deltaBase64":base64::engine::general_purpose::STANDARD.encode(b"x")
+    });
+    for cursor in 0..126 {
+        store
+            .transaction_with(|tx| {
+                monitor_event_queue::enqueue_output_in_transaction(
+                    tx, id, account, 7, cursor, &chunk,
+                )
+            })
+            .expect("fill output admission slots");
+    }
+    let before = record(&store, id);
+    let rejected = store.transaction_with::<_, studio_runtime_services::notification_dispatch::NotificationDispatchError>(|tx| {
+        NotificationDispatchRepository::put_notification_receipt(
+            tx,
+            "provider-notification-capacity",
+            "same-notification",
+            "settled",
+        )?;
+        monitor_event_queue::enqueue_output_in_transaction(
+            tx, id, account, 7, 126, &chunk,
+        )?;
+        Ok(())
+    });
+    assert!(matches!(
+        rejected,
+        Err(studio_runtime_services::notification_dispatch::NotificationDispatchError::StreamCapacity)
+    ));
+    assert_eq!(record(&store, id), before);
+    let receipt = store
+        .transaction_with(|tx| {
+            NotificationDispatchRepository::notification_receipt(
+                tx,
+                "provider-notification-capacity",
+            )
+        })
+        .expect("read notification receipt");
+    assert!(
+        receipt.is_none(),
+        "failed queue append rolls back its receipt"
+    );
+
+    let operation = serde_json::from_value(case["before"]["operation"].clone()).expect("operation");
+    monitor_event_queue::enqueue_probe(&store, id, &operation, 8, &json!({"ok":true}))
+        .expect("probe fits reserved event slot");
+    monitor_event_queue::enqueue_exit(&store, id, &operation, "exit:count", Some(0), None, 9.0)
+        .expect("exit fits reserved event slot");
+    assert_eq!(
+        record(&store, id)["streamQueue"]
+            .as_array()
+            .expect("stream queue")
+            .len(),
+        128
+    );
+}
+
+#[test]
+fn output_queue_enforces_byte_limit_and_keeps_room_for_probe_and_exit() {
+    let root = fixtures::tempdir();
+    let case = running(&fixtures::corpus(root.path()));
+    let store = fixtures::store(root.path(), "output-byte-boundary");
+    fixtures::seed(&store, &case);
+    let id = case["before"]["id"].as_str().expect("monitor id");
+    let account = case["before"]["operation"]["accountKey"]
+        .as_str()
+        .expect("account");
+    // P15 admits 960 KiB of output and reserves 64 KiB for terminal events.
+    let bytes = vec![b'x'; 32 * 1024];
+    let chunk = json!({
+        "processId":id,
+        "deltaBase64":base64::engine::general_purpose::STANDARD.encode(&bytes)
+    });
+    for cursor in 0..30 {
+        store
+            .transaction_with(|tx| {
+                monitor_event_queue::enqueue_output_in_transaction(
+                    tx, id, account, 7, cursor, &chunk,
+                )
+            })
+            .expect("fill output byte admission limit");
+    }
+    assert_eq!(
+        record(&store, id)["streamQueue"][29]["byteLength"],
+        32 * 1024
+    );
+    let error = store
+        .transaction_with(|tx| {
+            monitor_event_queue::enqueue_output_in_transaction(tx, id, account, 7, 30, &chunk)
+        })
+        .expect_err("output beyond 960 KiB is refused");
+    assert!(matches!(
+        error,
+        studio_runtime_services::notification_dispatch::NotificationDispatchError::StreamCapacity
+    ));
+    let operation = serde_json::from_value(case["before"]["operation"].clone()).expect("operation");
+    monitor_event_queue::enqueue_probe(&store, id, &operation, 8, &json!({"ok":true}))
+        .expect("probe fits reserved byte capacity");
+    monitor_event_queue::enqueue_exit(&store, id, &operation, "exit:bytes", Some(0), None, 9.0)
+        .expect("exit fits reserved byte capacity");
 }
 
 #[test]

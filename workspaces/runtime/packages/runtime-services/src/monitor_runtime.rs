@@ -892,7 +892,7 @@ pub fn bind_rule_in_transaction(
     rule_id: &str,
     account_key: &str,
 ) -> Result<Value, MonitorError> {
-    let record = MonitorsRepository::get(tx, &monitor_id.to_owned())?
+    let record = MonitorsRepository::get(tx, monitor_id)?
         .ok_or(MonitorError::Refused("Unknown command watch"))?;
     let mut value = record.value().clone();
     if !matches!(value["status"].as_str(), Some("starting" | "approval"))

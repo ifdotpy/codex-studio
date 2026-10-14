@@ -232,6 +232,132 @@ impl RetainedMonitorPort {
         })?)
     }
 
+    fn dispatch_monitor_start(&self, id: &str, now: f64) -> Result<(), MonitorError> {
+        use studio_runtime_store::{AgentId, AgentRepository, MonitorsRepository};
+
+        let (monitor, actor) = self.store.transaction_with(|tx| {
+            let (snapshot, actor) = studio_runtime_services::monitor_runtime::snapshot(tx, id)?;
+            if snapshot.record()["status"] != "starting"
+                || snapshot
+                    .record()
+                    .get("ruleId")
+                    .is_some_and(|value| !value.is_null())
+                || snapshot.operation().is_some()
+            {
+                return Err(MonitorError::Refused(
+                    "Monitor is not awaiting its first start",
+                ));
+            }
+            let saved = MonitorsRepository::get(tx, id)?
+                .ok_or(MonitorError::Refused("Unknown command watch"))?;
+            let agent = AgentRepository::get(tx, &AgentId::from(snapshot.agent()))?
+                .ok_or(MonitorError::Refused("Unknown agent"))?;
+            if agent.id().as_ref() != snapshot.agent() {
+                return Err(MonitorError::Refused("Monitor owner changed"));
+            }
+            Ok((
+                saved.value().clone(),
+                serde_json::to_value(agent).map_err(studio_runtime_store::StoreError::from)?,
+            ))
+        })?;
+        let agent_id = monitor["agent"]
+            .as_str()
+            .ok_or(MonitorError::Refused("Monitor owner is invalid"))?;
+        let epoch = monitor["epoch"]
+            .as_u64()
+            .ok_or(MonitorError::Refused("Monitor epoch is invalid"))?;
+        if actor["epoch"].as_u64() != Some(epoch)
+            || actor["autoWake"] != true
+            || actor["deletedAt"]
+                .as_f64()
+                .is_some_and(|deleted| deleted != 0.0)
+        {
+            return Err(MonitorError::Refused("The agent turn was stopped"));
+        }
+        let cwd = monitor["cwd"]
+            .as_str()
+            .filter(|cwd| Path::new(cwd).is_absolute())
+            .ok_or(MonitorError::Refused(
+                "Monitor working directory is unavailable",
+            ))?;
+        let account = monitor["accountKey"]
+            .as_str()
+            .filter(|account| !account.is_empty())
+            .or_else(|| actor["accountKey"].as_str())
+            .unwrap_or("default");
+        let scope = self
+            .session
+            .current_scope(account)
+            .ok_or(MonitorError::Unavailable("provider-session/monitor-start"))?;
+        let operation = Operation {
+            agent: agent_id.to_owned(),
+            epoch: i64::try_from(epoch)
+                .map_err(|_| MonitorError::Refused("Monitor epoch is invalid"))?,
+            account_key: account.to_owned(),
+            connection_id: scope.connection,
+            evidence: BTreeMap::new(),
+        };
+        let resources = self
+            .preparation
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+            .ok_or(MonitorError::Unavailable(
+                "account-worker/monitor-preparation",
+            ))?;
+        let prepared =
+            studio_runtime_services::account_worker::preparation::prepare_monitor_command(
+                &self.store,
+                &resources,
+                agent_id,
+                epoch,
+            )
+            .map_err(|_| MonitorError::Refused("Monitor command preparation was refused"))?;
+        let config_receipt = self
+            .request(
+                &operation,
+                format!("monitor-config:{id}:{epoch}"),
+                Method::ConfigRead,
+                json!({"cwd":cwd,"includeLayers":false}),
+                Instant::now() + Duration::from_secs(20),
+                true,
+            )
+            .map_err(|_| MonitorError::Unavailable("provider-session/monitor-config"))?;
+        let config = match config_receipt.result {
+            Some(ProviderResponse::Reply(value))
+                if config_receipt.certainty == RequestCertainty::Written =>
+            {
+                value["config"].clone()
+            }
+            _ => return Err(MonitorError::Unavailable("provider-session/monitor-config")),
+        };
+        if !config.is_object() {
+            return Err(MonitorError::Refused("Monitor configuration is invalid"));
+        }
+        let command = monitor["command"]
+            .as_str()
+            .ok_or(MonitorError::Refused("Monitor command is invalid"))?;
+        let argv = monitor_command(command, &config, actor["executionMode"] == "vm")
+            .map_err(|_| MonitorError::Refused("Monitor command preparation was refused"))?;
+        let mut params = json!({
+            "command":argv,
+            "cwd":cwd,
+            "processId":id,
+            "streamStdoutStderr":true,
+            "timeoutMs":monitor["timeout_ms"],
+        });
+        apply_turn_permissions(&mut params, &prepared.settings, &actor)
+            .map_err(|_| MonitorError::Refused("Monitor sandbox policy refused the command"))?;
+        let start = studio_runtime_services::monitor_runtime::PreparedStart {
+            monitor,
+            actor,
+            operation,
+            params,
+        };
+        let _ = studio_runtime_services::monitor_driver::start(&self.store, self, id, &start, now)?;
+        Ok(())
+    }
+
     fn submission(receipt: SessionReceipt, operation: &str) -> Submission {
         if receipt.operation != operation {
             return Submission::Unknown;
@@ -372,11 +498,10 @@ impl RetainedMonitorPort {
             .clone()
             .ok_or_else(|| "account-worker/monitor-preparation is unavailable".to_owned())?;
         let prepared_action =
-            studio_runtime_services::account_worker::preparation::prepare_native_action(
+            studio_runtime_services::account_worker::preparation::prepare_monitor_command(
                 &self.store,
                 &resources,
                 &check.agent_id,
-                &check.monitor_id,
                 check.epoch,
             )
             .map_err(|error| error.to_string())?;
@@ -771,6 +896,10 @@ impl studio_runtime_services::monitor_runtime::WorkspaceAdmission for PreparedRu
 }
 
 impl MonitorPort for RetainedMonitorPort {
+    fn start_monitor(&self, id: &str, now: f64) -> Result<(), MonitorError> {
+        self.dispatch_monitor_start(id, now)
+    }
+
     fn next(&self) -> Result<Option<Delivery>, MonitorError> {
         monitor_event_queue::next(&self.store)
     }
@@ -939,19 +1068,17 @@ fn persist_not_reattachable(
     })
 }
 
-/// The private preparation seam mirrors the shared account-worker entry:
-/// `account_worker::preparation::prepare_native_action(store, resources,
-/// agent_id, attempt_id, generation)`. Its `settings` are the common turn
-/// permission result used to select sandboxPolicy/permissionProfile below.
+/// Monitor command preparation uses the shared permission builder without a
+/// turn-start attempt gate: `prepare_monitor_command(store, resources,
+/// agent_id, epoch)`. Its settings select sandboxPolicy/permissionProfile.
 fn prepare_monitor_permissions(
     store: &RuntimeStore,
     resources: &studio_runtime_services::account_worker::preparation::PreparationResources,
     agent_id: &str,
-    attempt_id: &str,
-    generation: u64,
+    epoch: u64,
 ) -> Result<Value, String> {
-    let prepared = studio_runtime_services::account_worker::preparation::prepare_native_action(
-        store, resources, agent_id, attempt_id, generation,
+    let prepared = studio_runtime_services::account_worker::preparation::prepare_monitor_command(
+        store, resources, agent_id, epoch,
     )
     .map_err(|error| error.to_string())?;
     Ok(prepared.settings)
@@ -982,7 +1109,6 @@ fn run_probe(
         store,
         resources,
         &operation.agent,
-        &format!("liveness:{id}:{generation}"),
         u64::try_from(generation).map_err(|_| "Invalid liveness generation")?,
     )?;
     let config_operation = format!("monitor-config:{id}:{generation}");

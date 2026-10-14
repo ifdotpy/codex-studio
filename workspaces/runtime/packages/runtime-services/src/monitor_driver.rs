@@ -238,6 +238,23 @@ pub fn pending_cancel_ids(store: &RuntimeStore, now: f64) -> Result<Vec<String>,
     Ok(ids)
 }
 
+/// Starting monitors without a committed native operation are durable launch intents.
+/// Rule checks have their own scheduler and are excluded here.
+pub fn pending_start_ids(store: &RuntimeStore) -> Result<Vec<String>, MonitorError> {
+    let connection = store.read()?;
+    let mut statement = connection
+        .prepare(
+            "SELECT id FROM runtime_monitors WHERE json_extract(record,'$.status')='starting' AND json_extract(record,'$.operation') IS NULL AND json_extract(record,'$.ruleId') IS NULL ORDER BY created,id LIMIT 64",
+        )
+        .map_err(studio_runtime_store::StoreError::from)?;
+    let ids = statement
+        .query_map([], |row| row.get::<_, String>(0))
+        .map_err(studio_runtime_store::StoreError::from)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(studio_runtime_store::StoreError::from)?;
+    Ok(ids)
+}
+
 /// P10 calls this in the lifecycle transaction while its retained account owner
 /// serializes start/stop. After commit, submit only the returned exact operation
 /// with `cancel_effect`; replay the lifecycle receipt rather than staging twice.
