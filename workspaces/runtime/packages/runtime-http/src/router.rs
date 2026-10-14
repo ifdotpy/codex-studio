@@ -35,6 +35,7 @@ pub struct HttpState {
         Option<Arc<studio_runtime_services::multi_server_orchestration::OrchestrationDriver>>,
     pub(crate) project_secrets_guest:
         Option<Arc<dyn studio_runtime_services::project_secrets::GuestRpc>>,
+    pub(crate) vault_job_client: Option<crate::routes::VaultJobClient>,
     pub(crate) vault_host_command: Option<studio_runtime_services::vault::VaultHostCommand>,
     pub account_session:
         Option<Arc<dyn studio_runtime_services::account_session_runtime::AccountSessionPort>>,
@@ -141,6 +142,7 @@ impl HttpState {
             browser_forwarder,
             orchestration_driver,
             project_secrets_guest: None,
+            vault_job_client: None,
             vault_host_command: None,
             account_session: None,
             account_driver: None,
@@ -196,6 +198,12 @@ impl HttpState {
         guest: Arc<dyn studio_runtime_services::project_secrets::GuestRpc>,
     ) -> Self {
         self.project_secrets_guest = Some(guest);
+        self
+    }
+
+    /// Attach the runtime-owned vault job client used by setup and login routes.
+    pub fn with_vault_job_client(mut self, client: crate::routes::VaultJobClient) -> Self {
+        self.vault_job_client = Some(client);
         self
     }
 
