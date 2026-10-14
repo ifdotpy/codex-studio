@@ -37,6 +37,7 @@ pub mod capacity_retry;
 pub mod catalog_reads;
 pub mod change_notifications;
 pub mod checkpoints;
+pub mod claude_auth_runtime;
 pub mod claude_auth_wait;
 pub mod claude_bridge;
 pub mod claude_controls;

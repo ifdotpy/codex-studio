@@ -130,6 +130,7 @@ fn validate(request: &SessionRequest) -> Result<(), PortError> {
     if !matches!(
         request.method,
         Method::ThreadRead
+            | Method::AccountRead
             | Method::ThreadTurnsList
             | Method::ThreadItemsList
             | Method::ThreadBackgroundTerminalsList

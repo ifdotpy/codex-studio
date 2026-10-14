@@ -370,10 +370,19 @@ pub async fn start_account_worker_with_preparation(
         connection: generation.0.to_string(),
         generation: generation.0,
     };
+    let retained_port = retained::RetainedSessionPort {
+        scope: retained_scope.clone(),
+        commands: commands.clone(),
+        stop: stop.clone(),
+    };
+    let auth_probe_at = (resources.claude_account_pin.get("provider") == Some(&json!("claude")))
+        .then(tokio::time::Instant::now);
     let worker = Worker {
         resources,
+        retained_port,
         bridge: bridge.clone(),
         account: account.clone(),
+        auth_probe_at,
         generation,
         timeout_ms,
         control: session.control.clone(),
@@ -427,11 +436,7 @@ pub async fn start_account_worker_with_preparation(
         result
     });
     Ok(AccountHandle {
-        scope: crate::recovery_history::ConnectionScope {
-            account,
-            connection: generation.0.to_string(),
-            generation: generation.0,
-        },
+        scope,
         commands,
         stop,
         task,
@@ -476,8 +481,10 @@ struct Worker {
     retained_frames: BTreeMap<String, retained_frame::PendingFrame>,
     retained_barriers: Vec<retained::PendingBarrier>,
     resources: preparation::PreparationResources,
+    retained_port: retained::RetainedSessionPort,
     bridge: StoreBridge,
     account: String,
+    auth_probe_at: Option<tokio::time::Instant>,
     generation: Generation,
     timeout_ms: u64,
     control: SessionControl,
@@ -571,6 +578,7 @@ impl Worker {
                 _ = Shutdown::cancelled(&mut self.stop) => { self.closing = true; self.control.cancel(); },
                 _ = tokio::time::sleep_until(self.flush_at.unwrap_or_else(||tokio::time::Instant::now()+STREAM_CADENCE)), if self.flush_at.is_some() => self.flush().await?,
                 _ = tokio::time::sleep_until(self.retry_at.unwrap_or_else(|| tokio::time::Instant::now() + PREPARATION_RETRY)), if self.retry_at.is_some() => self.retry_preparations().await?,
+                _ = tokio::time::sleep_until(self.auth_probe_at.unwrap_or_else(||tokio::time::Instant::now()+crate::claude_auth_runtime::PROBE_INTERVAL)), if self.auth_probe_at.is_some() && self.session.status.borrow().initialization == InitializationStatus::Ready => self.probe_auth_waits().await?,
                 command = async { match self.queued_commands.pop_front() { Some(command) => Some(command), None => self.inbox.recv().await } }, if self.session.status.borrow().initialization == InitializationStatus::Ready => match command {
                     #[cfg(test)]
                     Some(AccountCommand::Barrier(reply)) => { let _ignored = reply.send(self.bridge.faults.journal_count.load(std::sync::atomic::Ordering::SeqCst)); },
@@ -662,6 +670,37 @@ impl Worker {
             }
         }
     }
+    /// Progress retained bridge requests while an owner waits for a reply from
+    /// that same account worker (Claude's outbound account/read auth proof).
+    async fn drive_retained<T>(
+        &mut self,
+        future: impl Future<Output = crate::continuation::Result<T>>,
+    ) -> crate::continuation::Result<T> {
+        tokio::pin!(future);
+        loop {
+            tokio::select! { biased;
+                _ = Shutdown::cancelled(&mut self.stop), if !self.closing => {
+                    self.closing = true;
+                    self.control.cancel();
+                    return Err(crate::continuation::ContinuationError::Unavailable("claude-auth/worker-stopped"));
+                },
+                _ = tokio::time::sleep_until(self.flush_at.unwrap_or_else(||tokio::time::Instant::now()+STREAM_CADENCE)), if self.flush_at.is_some() => {
+                    self.flush().await.map_err(|_| crate::continuation::ContinuationError::Unavailable("claude-auth/worker-flush"))?;
+                },
+                result = &mut future => return result,
+                event = self.events.recv(), if !self.closing => match event {
+                    Some(event) => self.event(event).await.map_err(|_| crate::continuation::ContinuationError::Unavailable("claude-auth/worker-event"))?,
+                    None => { self.closing=true; self.control.cancel(); }
+                },
+                command = self.inbox.recv(), if !self.closing && self.queued_commands.len() < COMMAND_CAPACITY => match command {
+                    Some(AccountCommand::RetainedRequest(command)) => self.retained_request(*command).await.map_err(|_| crate::continuation::ContinuationError::Unavailable("claude-auth/worker-request"))?,
+                    Some(AccountCommand::Stop { agent_id }) => self.stop_agent(agent_id).await.map_err(|_| crate::continuation::ContinuationError::Unavailable("claude-auth/worker-stop"))?,
+                    Some(command) => self.queued_commands.push_back(command),
+                    None => { self.closing=true; self.control.cancel(); }
+                },
+            }
+        }
+    }
     async fn retry_preparations(&mut self) -> Result<(), WorkerError> {
         self.retry_at = None;
         let account = self.account.clone();
@@ -692,6 +731,83 @@ impl Worker {
         }
         Ok(())
     }
+    async fn probe_auth_waits(&mut self) -> Result<(), WorkerError> {
+        let Some(driver) = self.resources.account_driver.clone() else {
+            self.auth_probe_at = None;
+            return Ok(());
+        };
+        if self.resources.claude_account_pin.get("provider") != Some(&json!("claude")) {
+            self.auth_probe_at = None;
+            return Ok(());
+        }
+        self.auth_probe_at =
+            Some(tokio::time::Instant::now() + crate::claude_auth_runtime::PROBE_INTERVAL);
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|_| WorkerError::TaskFailed)?
+            .as_secs_f64();
+        let account = self.account.clone();
+        let waits = self
+            .db("claude_auth_due_waits", move |store| {
+                crate::claude_auth_runtime::due_waits(store, &account, now)
+                    .map_err(|error| WorkerError::PreparationRefused(error.to_string()))
+            })
+            .await?;
+        for (agent, epoch, settings) in waits {
+            let _probe_slot = crate::claude_auth_runtime::acquire_probe_slot()
+                .await
+                .map_err(|error| WorkerError::PreparationRefused(error.to_string()))?;
+            let pin = self.resources.claude_account_pin.clone();
+            let driver_for_probe = driver.clone();
+            let account_for_probe = self.account.clone();
+            let driver_for_pin = driver.clone();
+            let account_for_pin = self.account.clone();
+            let driver_after_probe = driver.clone();
+            let account_after_probe = self.account.clone();
+            let completed = crate::claude_auth_runtime::probe_due(
+                self.bridge.store.clone(),
+                &agent,
+                &settings,
+                &pin,
+                now,
+                move |_| async move {
+                    let status = tokio::task::spawn_blocking(move || {
+                        driver_for_probe.get(&account_for_probe)
+                    })
+                    .await
+                    .ok()
+                    .and_then(std::result::Result::ok);
+                    let current = tokio::task::spawn_blocking(move || {
+                        driver_for_pin.internal_record(&account_for_pin)
+                    })
+                    .await
+                    .ok()
+                    .and_then(std::result::Result::ok)
+                    .unwrap_or(Value::Null);
+                    if status == Some(crate::account_driver::AccountStatus::Ready) {
+                        json!({
+                            "status":"ready",
+                            "accountId":current.get("accountId"),
+                            "_credentialIdentity":current.get("_credentialIdentity")
+                        })
+                    } else {
+                        json!({"status":"unavailable"})
+                    }
+                },
+                || {
+                    driver_after_probe
+                        .auth_pin(&account_after_probe)
+                        .unwrap_or(Value::Null)
+                },
+            )
+            .await
+            .map_err(|error| WorkerError::PreparationRefused(error.to_string()))?;
+            if completed {
+                self.wake(agent, epoch).await?;
+            }
+        }
+        Ok(())
+    }
     async fn wake(&mut self, agent: String, epoch: i64) -> Result<(), WorkerError> {
         if self.closing || self.pending.len() >= MAX_PENDING_RESPONSES {
             return Ok(());
@@ -706,6 +822,28 @@ impl Worker {
             self.submit(intent, Method::ThreadResume, None).await?;
         }
         Ok(())
+    }
+    async fn require_claude_auth(
+        &mut self,
+        driver: Arc<crate::account_driver::AccountDriver>,
+        intent: &TurnIntent,
+    ) -> Result<bool, WorkerError> {
+        let port = self.retained_port.clone();
+        crate::claude_auth_runtime::require_before_start(
+            self.bridge.store.clone(),
+            driver,
+            self.resources.claude_account_pin.clone(),
+            intent,
+            |actor, deadline| {
+                let port = port.clone();
+                async move {
+                    let request = crate::claude_auth_runtime::account_read(&port, actor, deadline);
+                    self.drive_retained(request).await
+                }
+            },
+        )
+        .await
+        .map_err(|error| WorkerError::PreparationRefused(error.to_string()))
     }
     async fn submit(
         &mut self,
@@ -731,6 +869,16 @@ impl Worker {
                 })
                 .await?
             {
+                return Ok(());
+            }
+        }
+        if method == Method::TurnStart && intent.provider == "claude" {
+            let Some(driver) = self.resources.account_driver.clone() else {
+                return Err(WorkerError::PreparationRefused(
+                    "claude-auth/account-driver-unavailable".into(),
+                ));
+            };
+            if !self.require_claude_auth(driver, &intent).await? {
                 return Ok(());
             }
         }

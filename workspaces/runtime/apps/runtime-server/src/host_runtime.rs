@@ -16,8 +16,9 @@ use studio_runtime_process::{
     provider_task::SupervisorProviderTaskFactory,
 };
 use studio_runtime_services::{
-    account_driver::{AccountDriver, AccountStatus, ProviderAuthReader},
+    account_driver::{AccountDriver, AccountStatus, AuthMetadata, AuthStatus, ProviderAuthReader},
     account_worker::{WorkerError, preparation::PreparationResources},
+    claude_bridge::{BridgeSnapshot, ResolvedBridge},
     provider_session_task::SessionTaskConfig,
     thread_prepare::{CatalogSnapshot, CatalogSource},
 };
@@ -36,7 +37,6 @@ impl InstallRoot {
     pub(crate) fn workspace_root(&self) -> &Path {
         &self.0
     }
-
     fn server_source(&self) -> PathBuf {
         let packaged = self.0.join("scripts");
         if packaged.join("codex_python.py").is_file() {
@@ -140,7 +140,7 @@ impl HostRuntime {
         let catalog = state.model_catalog_handle();
         let resource_root = install_root.workspace_root().to_owned();
         let server_source = install_root.server_source();
-        let resources = tokio::task::spawn_blocking(move || {
+        let mut resources = tokio::task::spawn_blocking(move || {
             PreparationResources::bundled_at(
                 String::new(),
                 catalog,
@@ -151,6 +151,8 @@ impl HostRuntime {
         })
         .await
         .map_err(|_| WorkerError::TaskFailed)??;
+        resources.account_driver = Some(accounts.clone());
+        let claude_bridge_dir = install_root.claude_bridge_dir();
         *state = state.clone().with_tool_catalog(CatalogSnapshot {
             source: CatalogSource::Current,
             definitions: resources.tools.clone(),
@@ -167,6 +169,7 @@ impl HostRuntime {
             root: store.root().to_owned(),
             native_path,
             resources,
+            claude_bridge_dir,
             environment: std::env::vars().collect(),
         });
         Self::with_launcher_and_monitor_wake(
@@ -230,6 +233,7 @@ struct HostLauncher {
     root: PathBuf,
     native_path: Option<String>,
     resources: PreparationResources,
+    claude_bridge_dir: PathBuf,
     environment: BTreeMap<String, String>,
 }
 
@@ -238,25 +242,43 @@ impl AccountLauncher for HostLauncher {
         Box::pin(async move {
             let accounts = self.accounts.clone();
             let key = account.clone();
-            let (home, isolated) =
-                tokio::task::spawn_blocking(move || account_home(&accounts, &key))
+            let (provider, home, isolated, claude_profile) =
+                tokio::task::spawn_blocking(move || selected_account(&accounts, &key))
                     .await
                     .map_err(|_| WorkerError::TaskFailed)??;
             let mut resources = self.resources.clone();
             resources.account_home.clone_from(&home);
-            let launch = codex_launch(
-                self.native_path.as_deref(),
-                self.environment.clone(),
-                home,
-                isolated,
-                self.root.clone(),
-            );
+            let accounts = self.accounts.clone();
+            let key = account.clone();
+            resources.claude_account_pin =
+                tokio::task::spawn_blocking(move || accounts.auth_pin(&key))
+                    .await
+                    .map_err(|_| WorkerError::TaskFailed)?
+                    .map_err(|_| {
+                        WorkerError::PreparationRefused("account-driver/unavailable".into())
+                    })?;
+            let launch = if let Some(profile) = claude_profile {
+                claude_launch(
+                    profile,
+                    &self.claude_bridge_dir,
+                    self.root.clone(),
+                    self.environment.clone(),
+                )?
+            } else {
+                codex_launch(
+                    self.native_path.as_deref(),
+                    self.environment.clone(),
+                    home,
+                    isolated,
+                    self.root.clone(),
+                )
+            };
             // Existing catalog refresh owns its bounded one-off child; both
             // HTTP reads and preparation observe this same retained service.
             let _catalog_status = self
                 .resources
                 .model_catalog
-                .read(&account, &resources.account_home, "codex", false)
+                .read(&account, &resources.account_home, &provider, false)
                 .await;
             let clock = SessionClock::default();
             let handle = ProviderHandle::for_account(&account);
@@ -302,7 +324,7 @@ impl AccountLauncher for HostLauncher {
                 config: SessionTaskConfig {
                     initialize_params: json!({"clientInfo":{"name":"codex_agents_canvas","version":"1.0.0"},"capabilities":{"experimentalApi":true}}),
                     generation,
-                    claude: false,
+                    claude: provider == "claude",
                     timeout_ms: REQUEST_TIMEOUT_MS,
                     initialize_operation: OperationId(format!(
                         "account:{account}:initialize:{}",
@@ -572,4 +594,170 @@ pub(crate) fn account_home<R: ProviderAuthReader>(
         .ok_or_else(|| WorkerError::PreparationRefused("account-driver/profile-home".into()))?
         .to_owned();
     Ok((home, key != "default"))
+}
+
+fn selected_account(
+    accounts: &AccountDriver,
+    key: &str,
+) -> Result<(String, String, bool, Option<serde_json::Value>), WorkerError> {
+    let snapshot = accounts
+        .snapshot()
+        .map_err(|_| WorkerError::PreparationRefused("account-driver/unavailable".into()))?;
+    let profile = snapshot
+        .accounts
+        .iter()
+        .find(|profile| profile["id"] == key)
+        .ok_or_else(|| WorkerError::PreparationRefused("account-driver/unavailable".into()))?;
+    let provider = profile
+        .get("provider")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("codex")
+        .to_owned();
+    if provider == "codex" {
+        let (home, isolated) = account_home(accounts, key)?;
+        return Ok((provider, home, isolated, None));
+    }
+    if provider != "claude" {
+        return Err(WorkerError::PreparationRefused(
+            "provider-session/unsupported-provider".into(),
+        ));
+    }
+    let profile = accounts
+        .claude_profile(key)
+        .map_err(|_| WorkerError::PreparationRefused("account-driver/unavailable".into()))?;
+    let home = profile
+        .get("home")
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| WorkerError::PreparationRefused("account-driver/profile-home".into()))?
+        .to_owned();
+    Ok((provider, home, false, Some(profile)))
+}
+
+pub(crate) fn claude_launch(
+    profile: serde_json::Value,
+    bridge_dir: &Path,
+    root: PathBuf,
+    mut environment: BTreeMap<String, String>,
+) -> Result<ProviderLaunchSpec, WorkerError> {
+    let account_id = profile
+        .get("accountId")
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| value.starts_with("claude:"))
+        .ok_or_else(|| WorkerError::PreparationRefused("claude/account-identity".into()))?;
+    let email = profile
+        .get("email")
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| WorkerError::PreparationRefused("claude/account-identity".into()))?;
+    let credential_identity = profile
+        .get("_credentialIdentity")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| WorkerError::PreparationRefused("claude/account-identity".into()))?;
+    if account_id != format!("claude:{email}") || credential_identity != account_id {
+        return Err(WorkerError::PreparationRefused(
+            "claude/account-identity".into(),
+        ));
+    }
+    let options = profile
+        .get("claudeOptions")
+        .unwrap_or(&serde_json::Value::Null);
+    let configured_node = environment.get("STUDIO_NODE_BIN").map(String::as_str);
+    let node = if let Some(configured) = configured_node {
+        executable(configured, environment.get("PATH").map(String::as_str))
+    } else {
+        executable("node", environment.get("PATH").map(String::as_str)).or_else(|| {
+            let home = environment.get("HOME").map(PathBuf::from);
+            [
+                PathBuf::from("/opt/homebrew/bin/node"),
+                PathBuf::from("/usr/local/bin/node"),
+            ]
+            .into_iter()
+            .chain(home.into_iter().flat_map(|home| {
+                [
+                    home.join(".local/share/fnm/aliases/default/bin/node"),
+                    home.join("Library/Application Support/fnm/aliases/default/bin/node"),
+                    home.join(".volta/bin/node"),
+                    home.join(".local/share/mise/shims/node"),
+                ]
+            }))
+            .find_map(|path| executable(&path.to_string_lossy(), None))
+        })
+    }
+    .ok_or_else(|| WorkerError::PreparationRefused("claude/node-unavailable".into()))?;
+    let binary_path = options
+        .get("binaryPath")
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .or_else(|| environment.get("STUDIO_CLAUDE_BIN").map(String::as_str));
+    let claude = match binary_path {
+        Some(binary) => executable(binary, environment.get("PATH").map(String::as_str)),
+        None => executable("claude", environment.get("PATH").map(String::as_str)).or_else(|| {
+            environment
+                .get("HOME")
+                .map(|home| PathBuf::from(home).join(".local/bin/claude"))
+                .and_then(|path| executable(&path.to_string_lossy(), None))
+        }),
+    }
+    .ok_or_else(|| WorkerError::PreparationRefused("claude/cli-unavailable".into()))?;
+    let bridge = bridge_dir.join("bridge.mjs");
+    let sdk_present = bridge_dir
+        .join("node_modules/@anthropic-ai/claude-agent-sdk/package.json")
+        .is_file();
+    let metadata = AuthMetadata {
+        status: AuthStatus::Ready,
+        account_id: Some(account_id.to_owned()),
+        email: Some(email.to_owned()),
+        plan: profile
+            .get("plan")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned),
+        credential_identity: Some(credential_identity.to_owned()),
+        error: None,
+        error_kind: None,
+    };
+    let snapshot = BridgeSnapshot::from_record(profile)
+        .map_err(|error| WorkerError::PreparationRefused(error.to_string()))?;
+    snapshot
+        .launch(
+            ResolvedBridge {
+                node,
+                executable: claude,
+                bridge,
+                root,
+                sdk_present,
+            },
+            &metadata,
+            std::mem::take(&mut environment),
+        )
+        .map_err(|error| WorkerError::PreparationRefused(error.to_string()))
+}
+
+fn executable(configured: &str, path: Option<&str>) -> Option<PathBuf> {
+    let candidate = PathBuf::from(configured);
+    let candidate = if candidate.is_absolute() || candidate.components().count() > 1 {
+        candidate
+    } else {
+        env::split_paths(path?)
+            .map(|directory| directory.join(candidate.clone()))
+            .find(|path| path.is_file() && is_executable(path))?
+    };
+    if candidate.is_file() && is_executable(&candidate) {
+        candidate.canonicalize().ok()
+    } else {
+        None
+    }
+}
+
+fn is_executable(path: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::metadata(path)
+            .is_ok_and(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
+    }
+    #[cfg(not(unix))]
+    {
+        path.is_file()
+    }
 }
