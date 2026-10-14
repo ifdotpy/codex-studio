@@ -364,7 +364,13 @@ impl LifecyclePorts for ProductionLifecyclePorts {
         self.monitor_wake.notify_one();
         self.lifecycle_wake.notify_one();
         self.dispatch_prepared()?;
-        self.finalize_committed_deletions()
+        self.finalize_committed_deletions()?;
+        crate::workspace_cleanup_runtime::reconcile_pending_cleanup(&self.store).map_err(|_| {
+            studio_runtime_store::StoreError::RecordContract(
+                "Lifecycle committed; workspace cleanup remains pending",
+            )
+        })?;
+        Ok(())
     }
 }
 

@@ -31,7 +31,7 @@ pub fn archive_accepted_result(
     target: &str,
     now: f64,
 ) -> Result<Value, ManagementError> {
-    execute(
+    let result = execute(
         store,
         &Action::Archive {
             actor: actor.to_owned(),
@@ -41,7 +41,13 @@ pub fn archive_accepted_result(
             unassign_work: false,
         },
         now,
-    )
+    )?;
+    crate::workspace_cleanup_runtime::reconcile_pending_cleanup(store).map_err(|_| {
+        studio_runtime_store::StoreError::RecordContract(
+            "Archive committed; workspace cleanup remains pending",
+        )
+    })?;
+    Ok(result)
 }
 
 pub fn execute_in_transaction(

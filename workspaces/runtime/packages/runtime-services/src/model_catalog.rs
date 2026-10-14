@@ -119,6 +119,7 @@ async fn read_account_session_catalog(
                     operation: operation.clone(),
                     actor: None,
                     expected_scope: Some(current_scope.clone()),
+                    deleted_actor_session: None,
                     method: studio_runtime_providers::Method::ModelList,
                     params,
                     deadline: Instant::now() + CATALOG_TIMEOUT,

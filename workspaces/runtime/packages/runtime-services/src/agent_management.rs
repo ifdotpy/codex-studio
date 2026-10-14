@@ -555,27 +555,6 @@ fn next_epoch(agent: &Agent) -> Result<i64, ManagementError> {
         .filter(|epoch| *epoch <= MAX_SAFE_EPOCH)
         .ok_or(ManagementError::Invalid("Agent epoch limit reached"))
 }
-fn workspace_dependency(agent: &Agent) -> Result<(), ManagementError> {
-    let image_removed = agent
-        .record
-        .get("imageWorkspacePhase")
-        .and_then(Value::as_str)
-        == Some("removed");
-    if agent.record.get("executionMode").and_then(Value::as_str) == Some("vm")
-        || ["worktreeReady", "worktreeCleanup", "cleanedWorktree"]
-            .iter()
-            .any(|key| agent.flag(key))
-        || (!image_removed
-            && ["imageWorkspaceReady", "cleanedImageWorkspace"]
-                .iter()
-                .any(|key| agent.flag(key)))
-    {
-        return Err(ManagementError::Unavailable(
-            "workspace-state/agent-lifecycle",
-        ));
-    }
-    Ok(())
-}
 
 /// Caller-provided time is audit provenance, never part of authorization.
 pub fn decide(
@@ -692,22 +671,6 @@ fn stop(
     for agent in &agents {
         let mut effects = Vec::new();
         snapshot.stop_effects(agent, &mut effects, live)?;
-        if delete {
-            workspace_dependency(agent)?;
-            // Python only schedules image cleanup for non-removed workspaces
-            // (codex_runtime.py:4983-4985).
-            if agent.flag("imageWorkspace")
-                && agent
-                    .record
-                    .get("imageWorkspacePhase")
-                    .and_then(Value::as_str)
-                    != Some("removed")
-            {
-                return Err(ManagementError::Unavailable(
-                    "workspace-state/agent-lifecycle",
-                ));
-            }
-        }
         if !delete
             && agent.identity.is_lead != Some(true)
             && agent.identity.parent_id.is_some()
@@ -794,6 +757,14 @@ fn stop(
         if delete && !agent.flag("deletedAt") {
             object.insert("deletedAt".to_owned(), json!(now));
         }
+        if delete && agent.record.get("workspaceCleanupIntent").is_none() {
+            record["workspaceCleanupIntent"] =
+                crate::workspace_cleanup_runtime::queued_cleanup_intent(
+                    agent.id(),
+                    epoch,
+                    crate::workspace_cleanup_runtime::CleanupAction::Delete,
+                );
+        }
         for kind in required.remove(agent.id()).unwrap_or_default() {
             decision.effects.push(LifecycleEffect::new(
                 kind,
@@ -836,11 +807,16 @@ fn archive(
     }
     if agent.flag("agentArchive") {
         if truthy(agent.record["agentArchive"].get("cleanupPending")) {
-            return Err(ManagementError::Unavailable(
-                "workspace-state/agent-lifecycle",
-            ));
+            return Ok(Decision::result(json!({
+                "status":"archived",
+                "agent":brief(&agent.record),
+                "replayed":true,
+                "cleanupPending":true,
+                "workspace":null,
+                "worktree":{"state":"pending","bytes":0},
+                "unassignedWork":agent.record["agentArchive"].get("unassignedWork").cloned().unwrap_or(json!([]))
+            })));
         }
-        workspace_dependency(agent)?;
         return Ok(Decision::result(
             json!({"status":"archived","agent":brief(&agent.record),"replayed":true,"workspace":null,"worktree":{"state":"kept","reason":"already archived","bytes":0},"unassignedWork":agent.record["agentArchive"].get("unassignedWork").cloned().unwrap_or(json!([]))}),
         ));
@@ -863,7 +839,6 @@ fn archive(
         ));
     }
     snapshot.refuse_live(agent)?;
-    workspace_dependency(agent)?;
     let reason = python_strip(reason);
     if reason.is_empty() || reason.chars().count() > 1000 {
         return Err(ManagementError::Invalid(
@@ -911,7 +886,14 @@ fn archive(
     record["autoWake"] = json!(false);
     record["status"] = json!("paused");
     record["epoch"] = json!(next_epoch(agent)?);
-    record["agentArchive"] = json!({"at":now,"by":actor,"reason":reason,"epoch":record["epoch"],"cleanupPending":false,"unknownToolRequests":[],"unassignedWork":unassigned});
+    record["agentArchive"] = json!({"at":now,"by":actor,"reason":reason,"epoch":record["epoch"],"cleanupPending":true,"unknownToolRequests":[],"unassignedWork":unassigned});
+    record["workspaceCleanupIntent"] = crate::workspace_cleanup_runtime::queued_cleanup_intent(
+        agent.id(),
+        record["epoch"]
+            .as_i64()
+            .ok_or(ManagementError::Invalid("Invalid archive epoch"))?,
+        crate::workspace_cleanup_runtime::CleanupAction::Archive,
+    );
     decision.result = json!({"status":"archived","agent":brief(&record),"worktree":{"state":"none","bytes":0},"unassignedWork":unassigned});
     decision.write("runtime_agents", record);
     Ok(decision)
@@ -954,7 +936,6 @@ fn restore(snapshot: &ManagementSnapshot, agent: &Agent) -> Result<Decision, Man
     if parent.flag("deletedAt") {
         return Err(ManagementError::Invalid("Restore the parent first"));
     }
-    workspace_dependency(agent)?;
     let mut record = agent.record.clone();
     let object = record
         .as_object_mut()

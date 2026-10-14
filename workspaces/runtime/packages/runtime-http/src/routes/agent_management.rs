@@ -14,16 +14,8 @@ use studio_runtime_services::{
 };
 
 const LIFECYCLE: &[Dependency] = &[
-    Dependency::new("account-worker/agent-interrupt"),
     Dependency::new("agent-management/snapshot-limit"),
     Dependency::new("cross-server/agent-management"),
-    Dependency::new("event-driver/child-stop-notification"),
-    Dependency::new("monitor-driver/agent-stop"),
-    Dependency::new("account-worker/deleted-settlement"),
-    Dependency::new("usage-policy/agent-stop"),
-    Dependency::new("voice-driver/agent-stop"),
-    Dependency::new("work-driver/deletion-release"),
-    Dependency::new("workspace-state/agent-lifecycle"),
 ];
 const NATIVE: &[Dependency] = &[Dependency::new("account-worker/native-action")];
 
@@ -126,11 +118,8 @@ async fn dispatch<T: serde::de::DeserializeOwned + serde::Serialize>(
 inventory::submit! {
     crate::routes::manifest::RouteModuleRegistration {
         name: "agent_management", routes: Some(routes), dependencies: &[
-            "account-worker/agent-interrupt", "account-worker/native-action",
-            "agent-management/snapshot-limit", "cross-server/agent-management",
-            "event-driver/child-stop-notification", "monitor-driver/agent-stop",
-            "account-worker/deleted-settlement", "usage-policy/agent-stop", "voice-driver/agent-stop", "work-driver/deletion-release",
-            "workspace-state/agent-lifecycle",
+            "account-worker/native-action", "agent-management/snapshot-limit",
+            "cross-server/agent-management",
         ],
     }
 }
