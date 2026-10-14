@@ -15,8 +15,10 @@ use crate::router::HttpState;
 const IMAGE_EXECUTION_DEPENDENCY: &str = "workspace-state/image-execution";
 const CHECKPOINT_SCHEMA_DEPENDENCY: &str = "store-bootstrap/checkpoints-schema";
 const THREAD_FORK_DEPENDENCY: &str = "provider-session/thread-fork";
+const NATIVE_REQUEST_DEPENDENCY: &str = "provider-session/native-request";
 const IMAGE_DEPENDENCIES: [Dependency; 1] = [Dependency::new(IMAGE_EXECUTION_DEPENDENCY)];
 const THREAD_FORK_DEPENDENCIES: [Dependency; 1] = [Dependency::new(THREAD_FORK_DEPENDENCY)];
+const RESTORE_DEPENDENCIES: [Dependency; 1] = [Dependency::new(NATIVE_REQUEST_DEPENDENCY)];
 
 pub(crate) fn routes() -> RouteGroup {
     RouteGroup::new(vec![
@@ -37,7 +39,7 @@ pub(crate) fn routes() -> RouteGroup {
         ),
         post(
             "/api/checkpoint/restore",
-            OperationStatus::partial(&THREAD_FORK_DEPENDENCIES),
+            OperationStatus::partial(&RESTORE_DEPENDENCIES),
             restore,
         ),
     ])
@@ -79,12 +81,36 @@ pub(crate) async fn preview(
 }
 
 pub(crate) async fn restore(
-    ApiJson(_body): ApiJson<crate::generated::CheckpointRestoreRequest>,
+    State(state): State<HttpState>,
+    ApiJson(body): ApiJson<crate::generated::CheckpointRestoreRequest>,
 ) -> Result<Json<Value>, ApiError> {
-    Err(
-        dependency_unavailable("POST", "/api/checkpoint/restore", &THREAD_FORK_DEPENDENCIES)
-            .unwrap_or_else(|_| ApiError::internal()),
-    )
+    let store = state.store.clone().ok_or_else(ApiError::internal)?;
+    let preparation = state.preparation_resources.clone();
+    let account = state.account_session.clone().ok_or_else(|| {
+        dependency_unavailable("POST", "/api/checkpoint/restore", &RESTORE_DEPENDENCIES)
+            .unwrap_or_else(|_| ApiError::internal())
+    })?;
+    let checkpoint = body
+        .checkpoint_id
+        .or(body.checkpoint)
+        .flatten()
+        .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "Unknown checkpoint"))?;
+    let agent = body.agent;
+    let expected_tree = body.expected_tree;
+    let result = tokio::task::spawn_blocking(move || {
+        checkpoints::restore(
+            &store,
+            &agent,
+            &checkpoint,
+            &expected_tree,
+            preparation.as_deref(),
+            account.as_ref(),
+        )
+        .map_err(|error| map_error(error, "/api/checkpoint/restore"))
+    })
+    .await
+    .map_err(|_| ApiError::internal())??;
+    super::generated_json::<crate::generated::CheckpointRestoreResponse>(result).map(Json)
 }
 
 pub(crate) async fn branch(
@@ -119,6 +145,24 @@ fn map_error(error: CheckpointsError, path: &'static str) -> ApiError {
             dependency_unavailable("POST", path, &IMAGE_DEPENDENCIES)
                 .unwrap_or_else(|_| ApiError::internal())
         }
+        CheckpointsError::ProviderUnavailable => {
+            dependency_unavailable("POST", path, &RESTORE_DEPENDENCIES)
+                .unwrap_or_else(|_| ApiError::internal())
+        }
+        CheckpointsError::ProviderUnknown => ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "Workspace recovery is required before retrying this restore",
+        ),
+        CheckpointsError::ProviderRejected => ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "The provider rejected the checkpoint restore",
+        ),
+        CheckpointsError::Preparation(message) => ApiError::new(StatusCode::BAD_REQUEST, message),
+        CheckpointsError::WorkspaceOperation(_) => ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "Checkpoint history is unavailable for restore",
+        ),
+        CheckpointsError::Json(_) => ApiError::internal(),
         CheckpointsError::ActivityChanged => ApiError::new(
             StatusCode::BAD_REQUEST,
             "Workspace activity changed before checkpoint capture",
@@ -168,6 +212,7 @@ inventory::submit! {
         routes: Some(routes),
         dependencies: &[
         "provider-session/thread-fork",
+        "provider-session/native-request",
         "workspace-state/image-execution",
         "store-bootstrap/checkpoints-schema",
         ],

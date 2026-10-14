@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Checkpoint capture and preview interoperate with Python and Rust backends."""
+"""Checkpoint capture, preview, and restore contracts across Python and Rust."""
 
 from __future__ import annotations
 
@@ -276,7 +276,7 @@ class CheckpointsHTTPContract(unittest.TestCase):
         self.assertEqual(preview["diff"], preview["patch"])
         self.assertIn("base checkpoint", preview["patch"])
         self.assertEqual(preview["truncated"], False)
-        self.assertEqual(preview["canRestore"], not is_rust_backend())
+        self.assertTrue(preview["canRestore"])
         self.assertEqual(no_write_snapshot(backend.state), before)
 
     def test_legacy_reservations_without_operation_rows_recover(self) -> None:
@@ -589,7 +589,7 @@ class CheckpointsHTTPContract(unittest.TestCase):
                     "checkpoint": self.initial_checkpoint_id,
                     "expectedTree": "0" * 40,
                 },
-                "Not implemented: requires provider-session/thread-fork",
+                "Not implemented: requires provider-session/native-request",
             ),
             (
                 "/api/checkpoint",
@@ -608,6 +608,43 @@ class CheckpointsHTTPContract(unittest.TestCase):
             self.assertEqual(response.json()["error"], error)
             self.assertEqual(
                 (no_write_snapshot(self.backend.state), checkpoint_refs(self.workspace)), before
+            )
+
+    def test_z_restore_endpoint_runs_or_refuses_without_writes(self) -> None:
+        expected_tree = subprocess.run(
+            ["git", "write-tree"], cwd=self.workspace, check=True, capture_output=True,
+            text=True, timeout=30,
+        ).stdout.strip()
+        before = (no_write_snapshot(self.backend.state), checkpoint_refs(self.workspace))
+        response = self.backend.request(
+            "POST",
+            "/api/checkpoint/restore",
+            body={
+                "agent": AGENT_ID,
+                "checkpoint": self.initial_checkpoint_id,
+                "expectedTree": expected_tree,
+            },
+            headers=self.headers(),
+        )
+        if is_rust_backend():
+            self.assertEqual(response.status, 501, response.body[:1000])
+            self.assertEqual(
+                response.json()["error"],
+                "Not implemented: requires provider-session/native-request",
+            )
+            self.assertEqual(
+                (no_write_snapshot(self.backend.state), checkpoint_refs(self.workspace)), before
+            )
+        else:
+            self.assertEqual(response.status, 200, response.body[:1000])
+            self.assertEqual(response.json()["status"], "restored")
+            self.assertEqual(response.json()["checkpoint"], self.initial_checkpoint_id)
+            self.assertEqual(
+                subprocess.run(
+                    ["git", "write-tree"], cwd=self.workspace, check=True,
+                    capture_output=True, text=True, timeout=30,
+                ).stdout.strip(),
+                expected_tree,
             )
 
     def test_crash_after_update_ref_leaves_dangling_ref_and_recovers_on_startup(self) -> None:

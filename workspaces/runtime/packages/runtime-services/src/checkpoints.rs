@@ -1,15 +1,28 @@
-//! Git-backed checkpoint capture and preview for local workspaces.
+//! Git-backed checkpoint capture, preview, and restore for local workspaces.
+//!
+//! Restore follows Python `WorkspaceRuntime.restore_checkpoint` and
+//! `checkpoint_preview` in `codex_workspace.py`. The deliberate safety
+//! difference is `unknown_restore_outcome_is_held`: an ambiguous provider
+//! receipt is persisted as recovery-required and is never resent.
 
 use std::fs::{File, FileTimes, OpenOptions};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use crate::account_session_runtime::{
+    AccountSessionError, AccountSessionPort, ConnectionScope, ProviderRequest, ProviderResponse,
+    RequestCertainty,
+};
+use crate::account_worker::retained::RequestActor;
 use crate::bounded_child::{self, ChildError};
 use crate::event_write::truthy;
+use crate::native_actions::NativeRequest;
+use crate::workspace_operations::{CheckpointHistory, ProviderTicket};
 use serde_json::{Value, json};
+use studio_runtime_store::workspace_operations::WorkspaceOperationsRepository;
 use studio_runtime_store::{
-    CaptureKind, CheckpointsRepository, RuntimeStore, StoreError, StoredCheckpointObject,
-    WorkspaceSnapshot,
+    AgentRecord, AgentRepository, CaptureKind, CheckpointsRepository, RestoreReservation,
+    RuntimeStore, StoreError, StoredCheckpointObject, TranscriptRepository, WorkspaceSnapshot,
 };
 use thiserror::Error;
 
@@ -62,6 +75,18 @@ pub enum CheckpointsError {
     GitTimeout,
     #[error("The workspace cannot be accessed")]
     WorkspaceUnavailable,
+    #[error("Provider request outcome is unknown; inspect restore recovery before retrying")]
+    ProviderUnknown,
+    #[error("Not implemented: requires provider-session/native-request")]
+    ProviderUnavailable,
+    #[error("Provider rejected the restore request")]
+    ProviderRejected,
+    #[error("Native thread preparation failed: {0}")]
+    Preparation(String),
+    #[error(transparent)]
+    WorkspaceOperation(#[from] crate::workspace_operations::WorkspaceOperationError),
+    #[error(transparent)]
+    Json(#[from] serde_json::Error),
     #[error("Invalid stored object {object}/{id}")]
     InvalidStoredObject { object: &'static str, id: String },
     #[error(transparent)]
@@ -73,6 +98,52 @@ pub struct PreviewContext {
     pub agent: StoredCheckpointObject,
     pub checkpoint: StoredCheckpointObject,
     pub recovery_expected_tree: Option<String>,
+}
+
+struct RestoreContext {
+    snapshot: WorkspaceSnapshot,
+    agent: StoredCheckpointObject,
+    checkpoint: StoredCheckpointObject,
+}
+
+/// Keep thread/start params behind a small adapter while the shared account
+/// preparation module owns their construction and its exact Python parity.
+trait RestoreStartParams {
+    fn build(
+        &self,
+        store: &RuntimeStore,
+        resources: &crate::account_worker::preparation::PreparationResources,
+        agent_id: &str,
+        attempt_id: &str,
+        generation: u64,
+    ) -> Result<Value, CheckpointsError>;
+}
+
+struct SharedRestoreStartParams;
+
+impl RestoreStartParams for SharedRestoreStartParams {
+    fn build(
+        &self,
+        store: &RuntimeStore,
+        resources: &crate::account_worker::preparation::PreparationResources,
+        agent_id: &str,
+        attempt_id: &str,
+        generation: u64,
+    ) -> Result<Value, CheckpointsError> {
+        let attempt_id = format!(
+            "checkpoint-restore:{}",
+            &studio_runtime_store::sha256_hex(attempt_id.as_bytes())[..32]
+        );
+        let prepared = crate::account_worker::preparation::prepare_native_thread(
+            store,
+            resources,
+            agent_id,
+            &attempt_id,
+            generation,
+        )
+        .map_err(|error| CheckpointsError::Preparation(error.to_string()))?;
+        Ok(prepared.params)
+    }
 }
 
 pub fn capture_context(
@@ -317,7 +388,11 @@ pub fn preview(store: &RuntimeStore, context: PreviewContext) -> Result<Value, C
     let raw_patch = String::from_utf8_lossy(&bytes).into_owned();
     let truncated = output_truncated || raw_patch.chars().count() > MAX_PATCH_CHARS;
     let patch = raw_patch.chars().take(MAX_PATCH_CHARS).collect::<String>();
-    let can_restore = false;
+    let mut can_restore = truthy(context.agent.record.get("worktreeReady"))
+        && !truthy(context.agent.record.get("inFlight"));
+    if context.recovery_expected_tree.is_some() {
+        can_restore &= current_tree == expected_tree || current_tree == tree;
+    }
     let mut summary = checkpoint.clone();
     remove_summary_payload(&mut summary);
     Ok(json!({
@@ -328,6 +403,735 @@ pub fn preview(store: &RuntimeStore, context: PreviewContext) -> Result<Value, C
         "truncated": truncated,
         "canRestore": can_restore,
     }))
+}
+
+/// Restore a saved conversation and its isolated workspace. The provider intent
+/// is saved in the workspace journal before the retained account broker is called.
+pub fn restore(
+    store: &RuntimeStore,
+    agent_id: &str,
+    checkpoint_id: &str,
+    expected_tree: &str,
+    preparation: Option<&crate::account_worker::preparation::PreparationResources>,
+    account: &dyn AccountSessionPort,
+) -> Result<Value, CheckpointsError> {
+    if !is_full_object_id(expected_tree) {
+        return Err(CheckpointsError::UnknownCheckpoint);
+    }
+    let operation_id = restore_operation_id(agent_id, checkpoint_id, expected_tree);
+    let signature = restore_signature(agent_id, checkpoint_id, expected_tree);
+    let initial = restore_context(store, agent_id, checkpoint_id)?;
+    ensure_agent_available(&initial.agent)?;
+    if initial.agent.record.get("worktreeReady") != Some(&Value::Bool(true)) {
+        return Err(CheckpointsError::ExecutionWorkspace);
+    }
+    let operation_record = WorkspaceOperationsRepository::operation(&store.read()?, &operation_id)?;
+    if operation_record.is_none() {
+        ensure_workspace_idle(&initial.snapshot, None)?;
+    }
+    let cwd = agent_string(&initial.snapshot, "cwd")?;
+    let checkpoint_tree = stored_tree(&initial.checkpoint)?;
+    let current_tree = snapshot_tree(store, cwd)?;
+
+    if let Some(operation) = operation_record.as_ref() {
+        if operation.get("signature").and_then(Value::as_str) != Some(signature.as_str()) {
+            return Err(CheckpointsError::ActivityChanged);
+        }
+        if operation.get("delivery").and_then(Value::as_str) == Some("rejected") {
+            return Err(CheckpointsError::ProviderRejected);
+        }
+        if operation.get("phase").and_then(Value::as_str) == Some("completed") {
+            if current_tree != checkpoint_tree {
+                return Err(CheckpointsError::ActivityChanged);
+            }
+            return Ok(operation
+                .get("result")
+                .cloned()
+                .unwrap_or_else(|| json!({"status":"restored","checkpoint":checkpoint_id})));
+        }
+    }
+
+    let stored_request = operation_record
+        .as_ref()
+        .and_then(|op| op.get("nativeRequest"))
+        .cloned()
+        .map(serde_json::from_value::<NativeRequest>)
+        .transpose()?;
+    let stored_scope = stored_request.as_ref().map(|request| ConnectionScope {
+        account: request.ticket.account.clone(),
+        connection: request.ticket.connection.clone(),
+        generation: request.ticket.generation,
+    });
+    if operation_record.is_some() && stored_request.is_none() {
+        // Every provider handoff is preceded by an exact durable NativeRequest.
+        // An older or damaged row cannot safely be reconstructed and resent.
+        return Err(CheckpointsError::ProviderUnknown);
+    }
+    let scope = stored_scope
+        .clone()
+        .or_else(|| {
+            account.current_scope(
+                initial
+                    .agent
+                    .record
+                    .get("accountKey")
+                    .and_then(Value::as_str)
+                    .unwrap_or("default"),
+            )
+        })
+        .ok_or(CheckpointsError::ProviderUnavailable)?;
+    let request = if let Some(request) = stored_request {
+        request
+    } else {
+        let epoch = initial
+            .agent
+            .record
+            .get("epoch")
+            .and_then(Value::as_u64)
+            .ok_or_else(|| invalid_agent(agent_id))?;
+        let method = if initial
+            .checkpoint
+            .record
+            .get("turnId")
+            .and_then(Value::as_str)
+            .is_some()
+        {
+            "thread/fork"
+        } else {
+            "thread/start"
+        };
+        let ticket = ProviderTicket {
+            operation: operation_id.clone(),
+            agent: agent_id.to_owned(),
+            epoch,
+            account: scope.account.clone(),
+            thread: (method == "thread/fork")
+                .then(|| {
+                    initial
+                        .checkpoint
+                        .record
+                        .get("threadId")
+                        .and_then(Value::as_str)
+                })
+                .flatten()
+                .map(str::to_owned),
+            connection: scope.connection.clone(),
+            generation: scope.generation,
+            request: operation_id.clone(),
+        };
+        let resources = preparation.ok_or(CheckpointsError::ProviderUnavailable)?;
+        let start_params = SharedRestoreStartParams.build(
+            store,
+            resources,
+            agent_id,
+            &operation_id,
+            scope.generation,
+        )?;
+        let params = if method == "thread/fork" {
+            restore_fork_params(
+                &initial.agent.record,
+                &initial.checkpoint,
+                cwd,
+                resources,
+                &start_params,
+            )?
+        } else {
+            start_params
+        };
+        NativeRequest {
+            ticket,
+            method: method.into(),
+            params,
+        }
+    };
+    let ticket = request.ticket.clone();
+
+    let saved_provider = operation_record
+        .as_ref()
+        .and_then(|operation| operation.get("provider"))
+        .filter(|_| {
+            matches!(
+                operation_record
+                    .as_ref()
+                    .and_then(|op| op.get("phase"))
+                    .and_then(Value::as_str),
+                Some("provider_ready" | "local_mutation" | "recovery_required")
+            )
+        })
+        .cloned();
+    let needs_dispatch = if saved_provider.is_some() {
+        false
+    } else if let Some(operation) = operation_record.as_ref() {
+        if operation.get("phase").and_then(Value::as_str) == Some("recovery_required")
+            || operation.get("providerTicket").is_some()
+                && operation.get("delivery").and_then(Value::as_str) != Some("not_sent")
+        {
+            return Err(CheckpointsError::ProviderUnknown);
+        }
+        operation.get("delivery").and_then(Value::as_str) == Some("not_sent")
+    } else {
+        true
+    };
+
+    let retry_not_sent = operation_record.as_ref().is_some_and(|operation| {
+        operation.get("phase").and_then(Value::as_str) == Some("failed")
+            && operation.get("delivery").and_then(Value::as_str) == Some("not_sent")
+    });
+    if operation_record.is_none() || retry_not_sent {
+        let ticket_value = serde_json::to_value(&ticket)?;
+        let request_value = serde_json::to_value(&request)?;
+        let reserved = store.transaction_with(|tx| {
+            CheckpointsRepository::reserve_restore(
+                tx,
+                &initial.snapshot,
+                RestoreReservation {
+                    operation_id: &operation_id,
+                    checkpoint_id,
+                    expected_tree,
+                    signature: &signature,
+                    ticket: &ticket_value,
+                    native_request: &request_value,
+                    now: now_seconds(),
+                },
+            )
+        })?;
+        if !reserved {
+            return Err(CheckpointsError::ActivityChanged);
+        }
+        if operation_record.is_none() && current_tree != expected_tree {
+            store.transaction_with(|tx| {
+                CheckpointsRepository::set_restore_phase(
+                    tx,
+                    &operation_id,
+                    "failed",
+                    now_seconds(),
+                    &[("delivery", json!("not_sent"))],
+                )?;
+                CheckpointsRepository::fail_restore(
+                    tx,
+                    &operation_id,
+                    "Files changed after the preview. Preview again",
+                    now_seconds(),
+                )
+            })?;
+            return Err(CheckpointsError::ActivityChanged);
+        }
+    }
+
+    let provider = if let Some(provider) = saved_provider {
+        provider
+    } else {
+        if needs_dispatch {
+            let receipt = match dispatch_restore_provider(&request, account, &scope) {
+                Ok(receipt) => receipt,
+                Err(error @ CheckpointsError::ProviderUnknown) => {
+                    store.transaction_with(|tx| {
+                        CheckpointsRepository::set_restore_phase(
+                            tx,
+                            &operation_id,
+                            "recovery_required",
+                            now_seconds(),
+                            &[("error", json!(error.to_string()))],
+                        )
+                    })?;
+                    return Err(error);
+                }
+                Err(error @ CheckpointsError::ProviderUnavailable) => {
+                    store.transaction_with(|tx| {
+                        CheckpointsRepository::set_restore_phase(
+                            tx,
+                            &operation_id,
+                            "failed",
+                            now_seconds(),
+                            &[("delivery", json!("not_sent"))],
+                        )?;
+                        CheckpointsRepository::fail_restore(
+                            tx,
+                            &operation_id,
+                            &error.to_string(),
+                            now_seconds(),
+                        )
+                    })?;
+                    return Err(error);
+                }
+                Err(error) => {
+                    store.transaction_with(|tx| {
+                        CheckpointsRepository::fail_restore(
+                            tx,
+                            &operation_id,
+                            &error.to_string(),
+                            now_seconds(),
+                        )
+                    })?;
+                    return Err(error);
+                }
+            };
+            match receipt.certainty {
+                RequestCertainty::Written => match receipt.result {
+                    Some(ProviderResponse::Reply(response)) => {
+                        let provider = match crate::workspace_operations::accept_provider_result(
+                            &ticket, &ticket, &response,
+                        ) {
+                            Ok(provider) => provider,
+                            Err(_) => {
+                                store.transaction_with(|tx| {
+                                    CheckpointsRepository::set_restore_phase(
+                                        tx,
+                                        &operation_id,
+                                        "failed",
+                                        now_seconds(),
+                                        &[("delivery", json!("rejected"))],
+                                    )?;
+                                    CheckpointsRepository::fail_restore(
+                                        tx,
+                                        &operation_id,
+                                        "Provider returned an invalid restore response",
+                                        now_seconds(),
+                                    )
+                                })?;
+                                return Err(CheckpointsError::ProviderRejected);
+                            }
+                        };
+                        store.transaction_with(|tx| {
+                            CheckpointsRepository::set_restore_phase(
+                                tx,
+                                &operation_id,
+                                "provider_ready",
+                                now_seconds(),
+                                &[
+                                    ("provider", provider.clone()),
+                                    ("delivery", json!("written")),
+                                ],
+                            )
+                        })?;
+                        provider
+                    }
+                    Some(ProviderResponse::Rejected(_)) => {
+                        store.transaction_with(|tx| {
+                            CheckpointsRepository::set_restore_phase(
+                                tx,
+                                &operation_id,
+                                "failed",
+                                now_seconds(),
+                                &[("delivery", json!("rejected"))],
+                            )?;
+                            CheckpointsRepository::fail_restore(
+                                tx,
+                                &operation_id,
+                                "Provider rejected the restore request",
+                                now_seconds(),
+                            )
+                        })?;
+                        return Err(CheckpointsError::ProviderRejected);
+                    }
+                    None => {
+                        store.transaction_with(|tx| {
+                            CheckpointsRepository::set_restore_phase(
+                                tx,
+                                &operation_id,
+                                "recovery_required",
+                                now_seconds(),
+                                &[("error", json!("Provider receipt has no result"))],
+                            )
+                        })?;
+                        return Err(CheckpointsError::ProviderUnknown);
+                    }
+                },
+                RequestCertainty::NotSent => {
+                    store.transaction_with(|tx| {
+                        CheckpointsRepository::set_restore_phase(
+                            tx,
+                            &operation_id,
+                            "failed",
+                            now_seconds(),
+                            &[("delivery", json!("not_sent"))],
+                        )?;
+                        CheckpointsRepository::fail_restore(
+                            tx,
+                            &operation_id,
+                            "Provider request was not sent",
+                            now_seconds(),
+                        )
+                    })?;
+                    return Err(CheckpointsError::ProviderRejected);
+                }
+                RequestCertainty::Unknown => {
+                    store.transaction_with(|tx| {
+                        CheckpointsRepository::set_restore_phase(
+                            tx,
+                            &operation_id,
+                            "recovery_required",
+                            now_seconds(),
+                            &[("error", json!("Provider request outcome is unknown"))],
+                        )
+                    })?;
+                    return Err(CheckpointsError::ProviderUnknown);
+                }
+            }
+        } else {
+            return Err(CheckpointsError::ProviderUnknown);
+        }
+    };
+
+    restore_local(
+        store,
+        agent_id,
+        checkpoint_id,
+        expected_tree,
+        &operation_id,
+        &signature,
+        &provider,
+    )
+}
+
+fn restore_context(
+    store: &RuntimeStore,
+    agent_id: &str,
+    checkpoint_id: &str,
+) -> Result<RestoreContext, CheckpointsError> {
+    let connection = store.read()?;
+    if !CheckpointsRepository::tables_available(&connection)? {
+        return Err(CheckpointsError::MissingSchema);
+    }
+    let snapshot = CheckpointsRepository::workspace_snapshot(&connection, agent_id)?
+        .ok_or(CheckpointsError::UnknownAgent)?;
+    let agent = snapshot.agent.clone();
+    let checkpoint = CheckpointsRepository::checkpoint(&connection, checkpoint_id)?
+        .ok_or(CheckpointsError::UnknownCheckpoint)?;
+    if checkpoint.record.get("agent").and_then(Value::as_str) != Some(agent_id) {
+        return Err(CheckpointsError::WrongAgent);
+    }
+    Ok(RestoreContext {
+        snapshot,
+        agent,
+        checkpoint,
+    })
+}
+
+fn stored_tree(checkpoint: &StoredCheckpointObject) -> Result<&str, CheckpointsError> {
+    let tree = checkpoint
+        .record
+        .get("tree")
+        .and_then(Value::as_str)
+        .filter(|value| is_full_object_id(value))
+        .ok_or_else(|| invalid_checkpoint(&checkpoint.id))?;
+    Ok(tree)
+}
+
+fn restore_operation_id(agent: &str, checkpoint: &str, expected_tree: &str) -> String {
+    let digest = studio_runtime_store::sha256_hex(expected_tree.as_bytes());
+    format!("restore:{agent}:{checkpoint}:{}", &digest[..32])
+}
+
+fn restore_signature(agent: &str, checkpoint: &str, expected_tree: &str) -> String {
+    crate::event_write::request_signature(&json!({
+        "agent": agent,
+        "checkpoint": checkpoint,
+        "expectedTree": expected_tree,
+    }))
+}
+
+fn restore_fork_params(
+    agent: &Value,
+    checkpoint: &StoredCheckpointObject,
+    cwd: &str,
+    resources: &crate::account_worker::preparation::PreparationResources,
+    start_params: &Value,
+) -> Result<Value, CheckpointsError> {
+    let thread = checkpoint
+        .record
+        .get("threadId")
+        .and_then(Value::as_str)
+        .filter(|id| !id.is_empty())
+        .ok_or_else(|| invalid_checkpoint(&checkpoint.id))?;
+    let mut params = json!({
+        "threadId":thread,
+        "cwd":cwd,
+        "config":resources.thread_config,
+    });
+    if let Some(turn) = checkpoint.record.get("turnId").and_then(Value::as_str) {
+        params["lastTurnId"] = json!(turn);
+    }
+    if let Some(model) = agent.get("model") {
+        params["model"] = model.clone();
+    }
+    if let Some(policy) = start_params.get("approvalPolicy") {
+        params["approvalPolicy"] = policy.clone();
+    }
+    if let Some(sandbox) = start_params.get("sandbox") {
+        params["sandbox"] = sandbox.clone();
+    }
+    Ok(params)
+}
+
+fn dispatch_restore_provider(
+    request: &NativeRequest,
+    account: &dyn AccountSessionPort,
+    scope: &ConnectionScope,
+) -> Result<crate::account_session_runtime::SessionReceipt, CheckpointsError> {
+    let deadline = std::time::Instant::now() + GIT_TIMEOUT;
+    if request.method == "thread/fork" {
+        return crate::thread_fork_runtime::dispatch_reserved_via_broker(
+            request, account, deadline,
+        )
+        .map_err(map_fork_error);
+    }
+    let method = studio_runtime_providers::Method::from_wire(&request.method)
+        .ok_or(CheckpointsError::ProviderRejected)?;
+    account
+        .provider_request(ProviderRequest {
+            account: request.ticket.account.clone(),
+            operation: request.ticket.request.clone(),
+            actor: Some(RequestActor {
+                agent: request.ticket.agent.clone(),
+                epoch: request.ticket.epoch as i64,
+            }),
+            expected_scope: Some(scope.clone()),
+            method,
+            params: request.params.clone(),
+            deadline,
+        })
+        .map_err(map_account_error)
+}
+
+fn map_fork_error(error: crate::native_actions::NativeError) -> CheckpointsError {
+    match error {
+        crate::native_actions::NativeError::Unavailable(_) => CheckpointsError::ProviderUnavailable,
+        crate::native_actions::NativeError::Unknown => CheckpointsError::ProviderUnknown,
+        _ => CheckpointsError::ProviderRejected,
+    }
+}
+
+fn map_account_error(error: AccountSessionError) -> CheckpointsError {
+    match error {
+        AccountSessionError::Requires(_) => CheckpointsError::ProviderUnavailable,
+        AccountSessionError::Unknown => CheckpointsError::ProviderUnknown,
+        AccountSessionError::Refused(_) | AccountSessionError::InvalidResponse(_) => {
+            CheckpointsError::ProviderRejected
+        }
+        AccountSessionError::Persistence => CheckpointsError::ProviderUnknown,
+    }
+}
+
+fn restore_local(
+    store: &RuntimeStore,
+    agent_id: &str,
+    checkpoint_id: &str,
+    expected_tree: &str,
+    operation_id: &str,
+    signature: &str,
+    provider: &Value,
+) -> Result<Value, CheckpointsError> {
+    let connection = store.read()?;
+    let agent = CheckpointsRepository::agent(&connection, agent_id)?
+        .ok_or(CheckpointsError::UnknownAgent)?;
+    let operation = WorkspaceOperationsRepository::operation(&connection, operation_id)?
+        .ok_or(CheckpointsError::RecoveryRequired)?;
+    if operation.get("signature").and_then(Value::as_str) != Some(signature)
+        || operation.get("source") != Some(&CheckpointsRepository::workspace_source(&agent.record))
+        || operation.get("provider") != Some(provider)
+    {
+        return Err(CheckpointsError::ActivityChanged);
+    }
+    let checkpoint = CheckpointsRepository::checkpoint(&connection, checkpoint_id)?
+        .ok_or(CheckpointsError::UnknownCheckpoint)?;
+    let tree = stored_tree(&checkpoint)?.to_owned();
+    let cwd = agent
+        .record
+        .get("cwd")
+        .and_then(Value::as_str)
+        .ok_or_else(|| invalid_agent(agent_id))?
+        .to_owned();
+    let current_tree = snapshot_tree(store, &cwd)?;
+    if current_tree != expected_tree && current_tree != tree {
+        return Err(CheckpointsError::RecoveryRequired);
+    }
+    store.transaction_with(|tx| {
+        CheckpointsRepository::set_restore_phase(
+            tx,
+            operation_id,
+            "local_mutation",
+            now_seconds(),
+            &[],
+        )
+    })?;
+    if current_tree == expected_tree {
+        let already_captured = operation
+            .get("beforeCheckpoint")
+            .is_some_and(|value| !value.is_null());
+        if !already_captured {
+            write_before_restore_checkpoint(store, agent_id, operation_id, &cwd)?;
+        }
+        git(&cwd, &["read-tree", expected_tree], &[], None, 0)?;
+        git(&cwd, &["read-tree", "--reset", "-u", &tree], &[], None, 0)?;
+    }
+    if snapshot_tree(store, &cwd)? != tree {
+        return Err(CheckpointsError::RecoveryRequired);
+    }
+    complete_restore(
+        store,
+        agent_id,
+        checkpoint_id,
+        operation_id,
+        signature,
+        provider,
+    )
+}
+
+fn write_before_restore_checkpoint(
+    store: &RuntimeStore,
+    agent_id: &str,
+    operation_id: &str,
+    cwd: &str,
+) -> Result<(), CheckpointsError> {
+    let snapshot = capture_context(store, agent_id)?;
+    let tree = snapshot_tree(store, cwd)?;
+    let commit_bytes = git(
+        cwd,
+        &["commit-tree", &tree, "-p", "HEAD"],
+        &[
+            ("GIT_AUTHOR_NAME", "Codex Agents"),
+            ("GIT_AUTHOR_EMAIL", "local@codex-agents.invalid"),
+            ("GIT_COMMITTER_NAME", "Codex Agents"),
+            ("GIT_COMMITTER_EMAIL", "local@codex-agents.invalid"),
+        ],
+        Some(b"Codex Agents workspace checkpoint\n"),
+        128,
+    )?;
+    let commit = String::from_utf8_lossy(&commit_bytes).trim().to_owned();
+    let id = new_uuid()?;
+    let reference = format!("refs/codex-agents/checkpoints/{agent_id}/{id}");
+    git(cwd, &["update-ref", &reference, &commit], &[], None, 0)?;
+    store.transaction_with(|tx| {
+        let current = CheckpointsRepository::agent(tx, agent_id)?
+            .ok_or_else(|| StoreError::SchemaMismatch(format!("Invalid stored object agents/{agent_id}")))?;
+        let operation = WorkspaceOperationsRepository::operation(tx, operation_id)?
+            .ok_or_else(|| StoreError::SchemaMismatch(format!("Invalid stored object runtime_workspace_operations/{operation_id}")))?;
+        if operation.get("phase").and_then(Value::as_str) != Some("local_mutation")
+            || operation.get("source") != Some(&CheckpointsRepository::workspace_source(&current.record))
+        { return Err(StoreError::SchemaMismatch("Restore reservation changed".into())); }
+        let parent_id = current.record.get("checkpointHistoryHead").and_then(Value::as_str).map(str::to_owned);
+        let parent_boundary = snapshot.parent_checkpoint.as_ref()
+            .and_then(|parent| parent.record.get("historyBoundary"))
+            .and_then(Value::as_i64);
+        let (history_delta, history_boundary) = CheckpointsRepository::history_delta(tx, agent_id, parent_boundary)?;
+        let record = json!({
+            "id":id,"agent":agent_id,"rootId":current.record.get("rootId"),
+            "label":"Before restore","tree":tree,"commit":commit,"ref":reference,
+            "historyParent":parent_id,"historyDelta":history_delta,"historyBoundary":history_boundary,
+            "threadId":current.record.get("threadId"),"turnId":current.record.get("lastCompletedTurn"),
+            "created":now_seconds(),"cwd":cwd,
+        });
+        tx.execute("INSERT INTO runtime_checkpoints(id,record) VALUES(?1,?2)", rusqlite::params![id, record.to_string()])?;
+        let mut current_record = current.record;
+        current_record["checkpointHistoryHead"] = json!(id);
+        AgentRepository::put(tx, &AgentRecord::from_value(current_record)?)?;
+        let mut operation = operation;
+        operation["beforeCheckpoint"] = json!(id);
+        WorkspaceOperationsRepository::put_operation(tx, &operation)?;
+        Ok::<_, StoreError>(())
+    })?;
+    Ok(())
+}
+
+fn complete_restore(
+    store: &RuntimeStore,
+    agent_id: &str,
+    checkpoint_id: &str,
+    operation_id: &str,
+    signature: &str,
+    provider: &Value,
+) -> Result<Value, CheckpointsError> {
+    store.transaction_with(|tx| {
+        let mut agent = CheckpointsRepository::agent(tx, agent_id)?
+            .ok_or(CheckpointsError::UnknownAgent)?;
+        let mut operation = WorkspaceOperationsRepository::operation(tx, operation_id)?
+            .ok_or(CheckpointsError::RecoveryRequired)?;
+        let checkpoint = CheckpointsRepository::checkpoint(tx, checkpoint_id)?
+            .ok_or(CheckpointsError::UnknownCheckpoint)?;
+        if operation.get("signature").and_then(Value::as_str) != Some(signature)
+            || operation.get("source") != Some(&CheckpointsRepository::workspace_source(&agent.record))
+            || operation.get("provider") != Some(provider)
+            || operation.get("phase").and_then(Value::as_str) != Some("local_mutation")
+            || agent.record.get("workspaceReservationId").and_then(Value::as_str) != Some(operation_id)
+            || !matches!(agent.record.get("workspaceOperation").and_then(Value::as_str), Some("restore" | "restore_recovery"))
+        {
+            return Err(CheckpointsError::ActivityChanged);
+        }
+        let history = WorkspaceOperationsRepository::history(tx, agent_id, checkpoint_id)?;
+        let Some(selected) = history.checkpoints.first() else {
+            return Err(CheckpointsError::UnknownCheckpoint);
+        };
+        let visible = CheckpointHistory::from_records(
+            selected,
+            &history.checkpoints[1..],
+            history.items,
+        )?.visible_ids()?;
+        let mut items = TranscriptRepository::items_for_agent_including_restored(tx, agent_id)
+            .map_err(|_| CheckpointsError::Store(StoreError::SchemaMismatch("Invalid stored object runtime_items".into())))?;
+        let search_index_available: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='runtime_search_indexed')",
+            [],
+            |row| row.get(0),
+        ).map_err(StoreError::from)?;
+        for item in &mut items {
+            let should_be_visible = visible.contains(&item.id);
+            let was_visible = item.record.get("afterRestore").is_none();
+            if should_be_visible == was_visible { continue; }
+            if should_be_visible {
+                if let Some(object) = item.record.as_object_mut() { object.remove("afterRestore"); }
+                let indexed: bool = if search_index_available {
+                    tx.query_row(
+                        "SELECT EXISTS(SELECT 1 FROM runtime_search_indexed WHERE id=?1)",
+                        [&item.id], |row| row.get(0),
+                    ).map_err(StoreError::from)?
+                } else {
+                    false
+                };
+                if !indexed {
+                    let text = TranscriptRepository::full_text(tx, item)
+                        .map_err(|_| CheckpointsError::Store(StoreError::SchemaMismatch("Invalid stored object runtime_item_fulltext".into())))?
+                        .unwrap_or_default();
+                    TranscriptRepository::put_notification_item(
+                        tx, &item.id, agent_id, &item.record,
+                        item.record.get("created").and_then(Value::as_f64).unwrap_or_default(),
+                        &text, true,
+                    ).map_err(|_| CheckpointsError::Store(StoreError::SchemaMismatch("Invalid stored object runtime_items".into())))?;
+                } else {
+                    tx.execute("UPDATE runtime_items SET record=?1 WHERE id=?2", rusqlite::params![item.record.to_string(), item.id]).map_err(StoreError::from)?;
+                }
+            } else {
+                item.record["afterRestore"] = json!(checkpoint_id);
+                tx.execute("UPDATE runtime_items SET record=?1 WHERE id=?2", rusqlite::params![item.record.to_string(), item.id]).map_err(StoreError::from)?;
+            }
+        }
+        tx.execute("UPDATE runtime_events SET status='cancelled' WHERE agent=?1 AND status='pending'", [agent_id]).map_err(StoreError::from)?;
+        let result = json!({"status":"restored","checkpoint":checkpoint_id});
+        agent.record["threadId"] = provider["thread"]["id"].clone();
+        for (source, target) in [("sandbox", "sandbox"), ("approvalPolicy", "approvalPolicy"), ("activePermissionProfile", "profile")] {
+            agent.record[target] = provider.get(source).cloned().unwrap_or(Value::Null);
+        }
+        agent.record["turnId"] = Value::Null;
+        agent.record["inFlight"] = json!(false);
+        agent.record["status"] = json!("paused");
+        agent.record["autoWake"] = json!(false);
+        agent.record["workspaceOperation"] = Value::Null;
+        agent.record.as_object_mut().ok_or_else(|| invalid_agent(agent_id))?.remove("workspaceReservationId");
+        agent.record["restoredCheckpoint"] = json!(checkpoint_id);
+        agent.record["lastCompletedTurn"] = checkpoint.record.get("turnId").cloned().unwrap_or(Value::Null);
+        agent.record["checkpointHistoryHead"] = json!(checkpoint_id);
+        AgentRepository::put(tx, &AgentRecord::from_value(agent.record)?)?;
+        operation["phase"] = json!("completed");
+        operation["result"] = result.clone();
+        operation["updated"] = json!(now_seconds());
+        WorkspaceOperationsRepository::put_operation(tx, &operation)?;
+        let item_id = format!("restore:{checkpoint_id}");
+        let label = checkpoint.record.get("label").and_then(Value::as_str).unwrap_or("checkpoint");
+        let item = json!({"id":item_id,"role":"system","title":"Checkpoint","text":format!("Restored workspace and conversation to {label}")});
+        TranscriptRepository::put_notification_item(tx, &item_id, agent_id, &item, now_seconds(), item["text"].as_str().unwrap_or_default(), false)
+            .map_err(|_| CheckpointsError::Store(StoreError::SchemaMismatch("Invalid stored object runtime_items".into())))?;
+        Ok::<_, CheckpointsError>(result)
+    })
 }
 
 pub(crate) fn ensure_agent_available(

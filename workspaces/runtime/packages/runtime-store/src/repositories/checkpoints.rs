@@ -95,6 +95,16 @@ pub enum CaptureKind {
     Turn,
 }
 
+pub struct RestoreReservation<'a> {
+    pub operation_id: &'a str,
+    pub checkpoint_id: &'a str,
+    pub expected_tree: &'a str,
+    pub signature: &'a str,
+    pub ticket: &'a Value,
+    pub native_request: &'a Value,
+    pub now: f64,
+}
+
 impl CaptureKind {
     pub fn as_str(self) -> &'static str {
         match self {
@@ -452,6 +462,208 @@ impl CheckpointsRepository {
         Ok(true)
     }
 
+    /// Persist a restore intent before any provider request or workspace effect.
+    pub fn reserve_restore(
+        transaction: &Transaction<'_>,
+        expected: &WorkspaceSnapshot,
+        reservation: RestoreReservation<'_>,
+    ) -> StoreResult<bool> {
+        let RestoreReservation {
+            operation_id,
+            checkpoint_id,
+            expected_tree,
+            signature,
+            ticket,
+            native_request,
+            now,
+        } = reservation;
+        let Some(current) = Self::workspace_snapshot(transaction, &expected.agent.id)? else {
+            return Ok(false);
+        };
+        let prior = read_object(transaction, "runtime_workspace_operations", operation_id)?;
+        let retry_not_sent = prior.as_ref().is_some_and(|operation| {
+            operation.record.get("kind").and_then(Value::as_str) == Some("restore")
+                && operation.record.get("signature").and_then(Value::as_str) == Some(signature)
+                && operation.record.get("phase").and_then(Value::as_str) == Some("failed")
+                && operation.record.get("delivery").and_then(Value::as_str) == Some("not_sent")
+                && operation.record.get("nativeRequest") == Some(native_request)
+        });
+        if !retry_not_sent && !same_workspace_activity(&current, expected) {
+            return Ok(false);
+        }
+        let agent = current
+            .agent
+            .record
+            .as_object()
+            .ok_or_else(|| invalid_record("runtime_agents", &current.agent.id))?;
+        if agent.get("worktreeReady") != Some(&Value::Bool(true))
+            || crate::truthy(agent.get("inFlight"))
+            || (!retry_not_sent && crate::truthy(agent.get("workspaceOperation")))
+            || (!retry_not_sent
+                && agent
+                    .get("workspaceReservationId")
+                    .is_some_and(|v| !v.is_null()))
+            || (retry_not_sent
+                && agent.get("workspaceOperation").and_then(Value::as_str)
+                    != Some("restore_recovery")
+                && agent
+                    .get("workspaceOperation")
+                    .is_some_and(|v| !v.is_null()))
+        {
+            return Ok(false);
+        }
+        let checkpoint = Self::checkpoint(transaction, checkpoint_id)?;
+        if checkpoint.as_ref().is_none_or(|checkpoint| {
+            checkpoint.record.get("agent").and_then(Value::as_str)
+                != Some(expected.agent.id.as_str())
+        }) {
+            return Ok(false);
+        }
+        let source = Self::workspace_source(&current.agent.record);
+        if retry_not_sent {
+            let mut operation = prior
+                .ok_or_else(|| invalid_record("runtime_workspace_operations", operation_id))?;
+            operation.record["phase"] = json!("provider_pending");
+            operation.record["delivery"] = Value::Null;
+            operation.record["error"] = Value::Null;
+            operation.record["updated"] = json!(now);
+            update_object(
+                transaction,
+                "runtime_workspace_operations",
+                operation_id,
+                &operation.record,
+            )?;
+            let mut record = current.agent.record;
+            record["workspaceOperation"] = json!("restore");
+            record["workspaceReservationId"] = json!(operation_id);
+            update_agent(
+                transaction,
+                &expected.agent.id,
+                &record,
+                &[
+                    ("workspaceOperation", json!("restore")),
+                    ("workspaceReservationId", json!(operation_id)),
+                ],
+            )?;
+            return Ok(true);
+        }
+        let operation = json!({
+            "id": operation_id,
+            "kind": "restore",
+            "agent": expected.agent.id,
+            "checkpoint": checkpoint_id,
+            "expectedTree": expected_tree,
+            "signature": signature,
+            "source": source,
+            "epoch": agent.get("epoch"),
+            "phase": "provider_pending",
+            "providerTicket": ticket,
+            "nativeRequest": native_request,
+            "created": now,
+        });
+        insert_object(
+            transaction,
+            "runtime_workspace_operations",
+            operation_id,
+            &operation,
+        )?;
+        let mut record = current.agent.record;
+        record["workspaceOperation"] = json!("restore");
+        record["workspaceReservationId"] = json!(operation_id);
+        update_agent(
+            transaction,
+            &expected.agent.id,
+            &record,
+            &[
+                ("workspaceOperation", json!("restore")),
+                ("workspaceReservationId", json!(operation_id)),
+            ],
+        )?;
+        Ok(true)
+    }
+
+    pub fn set_restore_phase(
+        transaction: &Transaction<'_>,
+        operation_id: &str,
+        phase: &str,
+        now: f64,
+        extra: &[(&str, Value)],
+    ) -> StoreResult<bool> {
+        let Some(mut operation) =
+            read_object(transaction, "runtime_workspace_operations", operation_id)?
+        else {
+            return Ok(false);
+        };
+        if operation.record.get("kind").and_then(Value::as_str) != Some("restore") {
+            return Ok(false);
+        }
+        operation.record["phase"] = json!(phase);
+        operation.record["updated"] = json!(now);
+        for (key, value) in extra {
+            operation.record[*key] = value.clone();
+        }
+        update_object(
+            transaction,
+            "runtime_workspace_operations",
+            operation_id,
+            &operation.record,
+        )?;
+        Ok(true)
+    }
+
+    pub fn fail_restore(
+        transaction: &Transaction<'_>,
+        operation_id: &str,
+        error: &str,
+        now: f64,
+    ) -> StoreResult<()> {
+        let Some(mut operation) =
+            read_object(transaction, "runtime_workspace_operations", operation_id)?
+        else {
+            return Ok(());
+        };
+        operation.record["phase"] = json!("failed");
+        operation.record["error"] = json!(error);
+        operation.record["updated"] = json!(now);
+        update_object(
+            transaction,
+            "runtime_workspace_operations",
+            operation_id,
+            &operation.record,
+        )?;
+        let agent_id = operation
+            .record
+            .get("agent")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        if let Some(mut agent) = read_object(transaction, "runtime_agents", agent_id)?
+            && agent
+                .record
+                .get("workspaceReservationId")
+                .and_then(Value::as_str)
+                == Some(operation_id)
+        {
+            agent.record["workspaceOperation"] = Value::Null;
+            agent
+                .record
+                .as_object_mut()
+                .ok_or_else(|| invalid_record("runtime_agents", agent_id))?
+                .remove("workspaceReservationId");
+            agent.record["checkpointError"] = json!(error);
+            update_agent(
+                transaction,
+                agent_id,
+                &agent.record,
+                &[
+                    ("workspaceOperation", Value::Null),
+                    ("workspaceReservationId", Value::Null),
+                    ("checkpointError", json!(error)),
+                ],
+            )?;
+        }
+        Ok(())
+    }
+
     pub fn history_delta(
         connection: &Connection,
         agent_id: &str,
@@ -682,6 +894,69 @@ impl CheckpointsRepository {
                         "checkpointError",
                         json!("Server restarted before checkpoint capture finished"),
                     ),
+                ],
+            )?;
+        }
+        for mut operation in read_all(transaction, "runtime_workspace_operations")? {
+            if operation.record.get("kind").and_then(Value::as_str) != Some("restore")
+                || !matches!(
+                    operation.record.get("phase").and_then(Value::as_str),
+                    Some("provider_pending" | "provider_ready" | "local_mutation")
+                )
+            {
+                continue;
+            }
+            let operation_id = operation.id.clone();
+            let agent_id = operation
+                .record
+                .get("agent")
+                .and_then(Value::as_str)
+                .ok_or_else(|| invalid_record("runtime_workspace_operations", &operation_id))?
+                .to_owned();
+            operation.record["phase"] = json!("recovery_required");
+            operation.record["restartHold"] = json!(true);
+            operation.record["error"] = json!(
+                "Server restarted during a workspace operation. Inspect the workspace before retrying."
+            );
+            operation.record["updated"] = json!(now);
+            update_object(
+                transaction,
+                "runtime_workspace_operations",
+                &operation_id,
+                &operation.record,
+            )?;
+            let Some(mut agent) = read_object(transaction, "runtime_agents", &agent_id)? else {
+                return Err(invalid_record(
+                    "runtime_workspace_operations",
+                    &operation_id,
+                ));
+            };
+            if agent
+                .record
+                .get("workspaceReservationId")
+                .and_then(Value::as_str)
+                != Some(operation_id.as_str())
+                || agent
+                    .record
+                    .get("workspaceOperation")
+                    .and_then(Value::as_str)
+                    != Some("restore")
+            {
+                return Err(invalid_record("runtime_agents", &agent_id));
+            }
+            agent.record["workspaceOperation"] = json!("restore_recovery");
+            agent.record["autoWake"] = json!(false);
+            agent.record["status"] = json!("interrupted");
+            agent.record["error"] = operation.record["error"].clone();
+            update_agent(
+                transaction,
+                &agent_id,
+                &agent.record,
+                &[
+                    ("workspaceOperation", json!("restore_recovery")),
+                    ("autoWake", json!(false)),
+                    ("status", json!("interrupted")),
+                    ("error", operation.record["error"].clone()),
                 ],
             )?;
         }
@@ -1068,5 +1343,88 @@ mod tests {
                 |row| row.get::<_, String>(0),
             )
             .is_ok_and(|phase| phase == "capture_running"));
+    }
+
+    #[test]
+    fn restart_holds_every_restore_effect_boundary_without_replaying_it() {
+        let mut connection = Connection::open_in_memory().expect("memory database opens");
+        connection
+            .execute_batch(
+                "CREATE TABLE runtime_workspace_operations(id TEXT PRIMARY KEY,record TEXT NOT NULL);
+                 CREATE TABLE runtime_agents(id TEXT PRIMARY KEY,record TEXT NOT NULL);
+                 CREATE TABLE sync_entities(collection TEXT,id TEXT,seq INTEGER,hash TEXT,payload TEXT,deleted INTEGER,PRIMARY KEY(collection,id));
+                 CREATE TABLE sync_documents(seq INTEGER);
+                 CREATE TABLE sync_versions(seq INTEGER);",
+            )
+            .expect("restore recovery tables create");
+        for (index, phase) in ["provider_pending", "provider_ready", "local_mutation"]
+            .into_iter()
+            .enumerate()
+        {
+            let id = format!("restore-{phase}");
+            let agent = format!("agent-{phase}");
+            let agent_record = json!({
+                "id":agent,
+                "workspaceOperation":"restore",
+                "workspaceReservationId":id,
+                "autoWake":true,
+                "status":"running",
+            });
+            let projection = json!({"collection":"agent","id":agent,"value":agent_record});
+            let operation = json!({
+                "id":id,"kind":"restore","agent":agent,"phase":phase,
+                "expectedTree":"0123456789012345678901234567890123456789",
+            });
+            connection
+                .execute(
+                    "INSERT INTO runtime_agents(id,record) VALUES(?1,?2)",
+                    rusqlite::params![agent, agent_record.to_string()],
+                )
+                .expect("agent inserted");
+            connection
+                .execute(
+                    "INSERT INTO runtime_workspace_operations(id,record) VALUES(?1,?2)",
+                    rusqlite::params![id, operation.to_string()],
+                )
+                .expect("restore operation inserted");
+            connection
+                .execute(
+                    "INSERT INTO sync_entities(collection,id,seq,hash,payload,deleted) VALUES('agent',?1,?2,'hash',?3,0)",
+                    rusqlite::params![agent, index as i64 + 1, projection.to_string()],
+                )
+                .expect("agent projection inserted");
+        }
+        let transaction = connection
+            .transaction()
+            .expect("recovery transaction begins");
+        CheckpointsRepository::recover_captures(&transaction, 99.0)
+            .expect("startup holds restores");
+        transaction.commit().expect("recovery commits");
+        for phase in ["provider_pending", "provider_ready", "local_mutation"] {
+            let id = format!("restore-{phase}");
+            let agent = format!("agent-{phase}");
+            let operation: serde_json::Value = connection
+                .query_row(
+                    "SELECT record FROM runtime_workspace_operations WHERE id=?1",
+                    [&id],
+                    |row| row.get::<_, String>(0),
+                )
+                .map(|record| serde_json::from_str(&record).expect("operation JSON"))
+                .expect("operation reads");
+            assert_eq!(operation["phase"], "recovery_required");
+            assert_eq!(operation["restartHold"], true);
+            let record: serde_json::Value = connection
+                .query_row(
+                    "SELECT record FROM runtime_agents WHERE id=?1",
+                    [&agent],
+                    |row| row.get::<_, String>(0),
+                )
+                .map(|record| serde_json::from_str(&record).expect("agent JSON"))
+                .expect("agent reads");
+            assert_eq!(record["workspaceOperation"], "restore_recovery");
+            assert_eq!(record["workspaceReservationId"], id);
+            assert_eq!(record["autoWake"], false);
+            assert_eq!(record["status"], "interrupted");
+        }
     }
 }
