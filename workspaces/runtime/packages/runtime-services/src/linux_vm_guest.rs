@@ -141,101 +141,169 @@ impl GuestRpc for UnixGuestRpc {
         timeout: Duration,
         on_frame: &mut dyn FnMut(Value) -> Result<(), GuestError>,
     ) -> Result<Value, GuestError> {
-        use socket2::{Domain, SockAddr, Socket, Type};
-        use std::os::unix::net::UnixStream;
+        stream_socket(
+            &self.socket_path,
+            method,
+            params,
+            request_id,
+            timeout,
+            on_frame,
+        )
+    }
+}
 
-        let identity = request_identity(request_id)?;
-        validate_request(method, &identity, timeout)?;
-        let mut request = Map::new();
-        request.insert("id".to_owned(), Value::String(identity.clone()));
-        request.insert("method".to_owned(), Value::String(method.to_owned()));
-        request.insert(
-            "params".to_owned(),
-            if params.is_null() {
-                Value::Object(Map::new())
-            } else {
-                params.clone()
-            },
-        );
-        let mut frame =
-            serde_json::to_vec(&Value::Object(request)).map_err(|_| GuestError::InvalidRequest)?;
-        frame.push(b'\n');
-        if frame.len() > GUEST_FRAME_LIMIT_BYTES {
-            return Err(GuestError::Protocol {
-                message: "request exceeds the frame limit",
-                uncertain: false,
-            });
+/// Production client for the host-side VM control socket.
+#[cfg(unix)]
+#[derive(Clone, Debug)]
+pub struct UnixVmControlRpc {
+    socket_path: PathBuf,
+}
+
+#[cfg(unix)]
+impl UnixVmControlRpc {
+    /// Connect to `<vm_state_dir>/control.sock`.
+    pub fn new(vm_state_dir: impl Into<PathBuf>) -> Self {
+        Self {
+            socket_path: vm_state_dir.into().join("control.sock"),
         }
+    }
 
-        let deadline = Instant::now() + timeout;
-        let address = SockAddr::unix(&self.socket_path).map_err(|error| GuestError::Transport {
+    /// Use the Python runtime's VM state path: `CODEX_LINUX_VM_STATE_DIR` when set,
+    /// otherwise `<runtime_state_dir>/linux-vm`.
+    pub fn for_runtime_state(runtime_state_dir: &Path) -> Self {
+        let vm_state_dir = std::env::var_os("CODEX_LINUX_VM_STATE_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| runtime_state_dir.join("linux-vm"));
+        Self::new(vm_state_dir)
+    }
+
+    /// The endpoint path, exposed for diagnostics and fake endpoint tests.
+    pub fn socket_path(&self) -> &Path {
+        &self.socket_path
+    }
+}
+
+#[cfg(unix)]
+impl GuestRpc for UnixVmControlRpc {
+    fn stream(
+        &self,
+        method: &str,
+        params: &Value,
+        request_id: Option<&str>,
+        timeout: Duration,
+        on_frame: &mut dyn FnMut(Value) -> Result<(), GuestError>,
+    ) -> Result<Value, GuestError> {
+        stream_socket(
+            &self.socket_path,
+            method,
+            params,
+            request_id,
+            timeout,
+            on_frame,
+        )
+    }
+}
+
+#[cfg(unix)]
+fn stream_socket(
+    socket_path: &Path,
+    method: &str,
+    params: &Value,
+    request_id: Option<&str>,
+    timeout: Duration,
+    on_frame: &mut dyn FnMut(Value) -> Result<(), GuestError>,
+) -> Result<Value, GuestError> {
+    use socket2::{Domain, SockAddr, Socket, Type};
+    use std::os::unix::net::UnixStream;
+
+    let identity = request_identity(request_id)?;
+    validate_request(method, &identity, timeout)?;
+    let mut request = Map::new();
+    request.insert("id".to_owned(), Value::String(identity.clone()));
+    request.insert("method".to_owned(), Value::String(method.to_owned()));
+    request.insert(
+        "params".to_owned(),
+        if params.is_null() {
+            Value::Object(Map::new())
+        } else {
+            params.clone()
+        },
+    );
+    let mut frame =
+        serde_json::to_vec(&Value::Object(request)).map_err(|_| GuestError::InvalidRequest)?;
+    frame.push(b'\n');
+    if frame.len() > GUEST_FRAME_LIMIT_BYTES {
+        return Err(GuestError::Protocol {
+            message: "request exceeds the frame limit",
+            uncertain: false,
+        });
+    }
+
+    let deadline = Instant::now() + timeout;
+    let address = SockAddr::unix(socket_path).map_err(|error| GuestError::Transport {
+        message: error.to_string(),
+        uncertain: false,
+    })?;
+    let socket =
+        Socket::new(Domain::UNIX, Type::STREAM, None).map_err(|error| GuestError::Transport {
             message: error.to_string(),
             uncertain: false,
         })?;
-        let socket = Socket::new(Domain::UNIX, Type::STREAM, None).map_err(|error| {
-            GuestError::Transport {
-                message: error.to_string(),
-                uncertain: false,
-            }
-        })?;
-        let connect_timeout = timeout.min(Duration::from_secs(GUEST_CONNECT_TIMEOUT_SECONDS));
-        socket
-            .connect_timeout(&address, connect_timeout)
-            .map_err(|error| GuestError::Transport {
-                message: error.to_string(),
-                uncertain: false,
-            })?;
-        let mut channel: UnixStream = socket.into();
-        let write_timeout = remaining(deadline).map_err(|_| GuestError::Protocol {
-            message: "request exceeded its timeout before send",
+    let connect_timeout = timeout.min(Duration::from_secs(GUEST_CONNECT_TIMEOUT_SECONDS));
+    socket
+        .connect_timeout(&address, connect_timeout)
+        .map_err(|error| GuestError::Transport {
+            message: error.to_string(),
             uncertain: false,
         })?;
-        channel
-            .set_write_timeout(Some(write_timeout))
-            .map_err(|error| GuestError::Transport {
-                message: error.to_string(),
-                uncertain: false,
-            })?;
-        channel
-            .write_all(&frame)
-            .map_err(|error| GuestError::Transport {
-                message: error.to_string(),
-                uncertain: true,
-            })?;
+    let mut channel: UnixStream = socket.into();
+    let write_timeout = remaining(deadline).map_err(|_| GuestError::Protocol {
+        message: "request exceeded its timeout before send",
+        uncertain: false,
+    })?;
+    channel
+        .set_write_timeout(Some(write_timeout))
+        .map_err(|error| GuestError::Transport {
+            message: error.to_string(),
+            uncertain: false,
+        })?;
+    channel
+        .write_all(&frame)
+        .map_err(|error| GuestError::Transport {
+            message: error.to_string(),
+            uncertain: true,
+        })?;
 
-        let mut bytes = Vec::with_capacity(BUFFER_READ_BYTES);
-        loop {
-            let next = read_line(&mut channel, deadline, &mut bytes)?;
-            let response: Value =
-                serde_json::from_slice(&next).map_err(|_| GuestError::Protocol {
-                    message: "response is not valid JSON",
-                    uncertain: true,
-                })?;
-            let Some(fields) = response.as_object() else {
-                return Err(GuestError::Protocol {
-                    message: "response must be an object",
-                    uncertain: true,
-                });
-            };
-            if fields.get("id").and_then(Value::as_str) != Some(identity.as_str()) {
-                return Err(GuestError::Protocol {
-                    message: "response identity differs from the request",
-                    uncertain: true,
-                });
-            }
-            if let Some(error) = fields.get("error") {
-                let (code, detail) = error_fields(error);
-                return Err(GuestError::Rejected {
-                    uncertain: code.as_deref() == Some("outcome_unknown"),
-                    code,
-                    detail,
-                });
-            }
-            on_frame(response.clone())
-                .map_err(|_| GuestError::FrameCallback { uncertain: true })?;
-            if let Some(result) = fields.get("result") {
-                return Ok(result.clone());
-            }
+    let mut bytes = Vec::with_capacity(BUFFER_READ_BYTES);
+    loop {
+        let next = read_line(&mut channel, deadline, &mut bytes)?;
+        let response: Value = serde_json::from_slice(&next).map_err(|_| GuestError::Protocol {
+            message: "response is not valid JSON",
+            uncertain: true,
+        })?;
+        let Some(fields) = response.as_object() else {
+            return Err(GuestError::Protocol {
+                message: "response must be an object",
+                uncertain: true,
+            });
+        };
+        if fields.get("id").and_then(Value::as_str) != Some(identity.as_str()) {
+            return Err(GuestError::Protocol {
+                message: "response identity differs from the request",
+                uncertain: true,
+            });
+        }
+        if let Some(error) = fields.get("error") {
+            let (code, detail) = error_fields(error);
+            return Err(GuestError::Rejected {
+                uncertain: code.as_deref() == Some("outcome_unknown"),
+                code,
+                detail,
+            });
+        }
+        on_frame(response.clone()).map_err(|_| GuestError::FrameCallback { uncertain: true })?;
+        if let Some(result) = fields.get("result") {
+            return Ok(result.clone());
         }
     }
 }
@@ -362,7 +430,7 @@ mod tests {
 
     use serde_json::{Value, json};
 
-    use super::{GuestError, GuestRpc, UnixGuestRpc};
+    use super::{GuestError, GuestRpc, UnixGuestRpc, UnixVmControlRpc};
 
     const TEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
 
@@ -444,5 +512,37 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn control_rpc_uses_the_host_control_socket() {
+        let directory = tempfile::tempdir().expect("temporary fake VM directory");
+        let rpc = UnixVmControlRpc::new(directory.path());
+        let listener = UnixListener::bind(rpc.socket_path()).expect("fake control endpoint binds");
+        let (sender, request) = mpsc::channel();
+        thread::spawn(move || {
+            let (mut connection, _) = listener.accept().expect("fake control endpoint accepts");
+            connection
+                .set_read_timeout(Some(TEST_TIMEOUT))
+                .expect("fake endpoint read timeout");
+            let mut line = String::new();
+            BufReader::new(&mut connection)
+                .read_line(&mut line)
+                .expect("fake control endpoint reads frame");
+            let value: Value = serde_json::from_str(&line).expect("request frame parses");
+            sender.send(value).expect("request witness delivered");
+            connection
+                .write_all(br#"{"id":"host-status","result":{"state":"stopped"}}"#)
+                .and_then(|()| connection.write_all(b"\n"))
+                .expect("fake control endpoint writes response");
+        });
+        let result = rpc
+            .call("host.status", &json!({}), Some("host-status"), TEST_TIMEOUT)
+            .expect("control result received");
+        let sent = request
+            .recv_timeout(TEST_TIMEOUT)
+            .expect("request witness received");
+        assert_eq!(sent["method"], "host.status");
+        assert_eq!(result, json!({"state":"stopped"}));
     }
 }
