@@ -71,6 +71,35 @@ fn typed_request_serialization_preserves_extensions_and_reserved_field_precedenc
 }
 
 #[test]
+fn typed_response_deserialization_preserves_unknown_outcomes_and_remote_errors() {
+    let response: AckResult = response_value(
+        SupervisorAction::Ack,
+        17,
+        r#"{"requestId":17,"result":{"acknowledged":9,"extension":true}}"#,
+    )
+    .unwrap();
+    assert_eq!(response.acknowledged, 9);
+    assert_eq!(response.extra["extension"], true);
+
+    assert!(matches!(
+        response_value::<AckResult>(
+            SupervisorAction::Ack,
+            17,
+            r#"{"requestId":17,"error":"durable refusal","result":null}"#,
+        ),
+        Err(SupervisorError::Remote { message, .. }) if message == "durable refusal"
+    ));
+    assert!(matches!(
+        response_value::<AckResult>(
+            SupervisorAction::Ack,
+            17,
+            r#"{"requestId":18,"result":{"acknowledged":9}}"#,
+        ),
+        Err(SupervisorError::UnknownOutcome { request_id: 17, .. })
+    ));
+}
+
+#[test]
 fn event_payload_and_unknown_kind_round_trip() {
     let event: SupervisorEvent = serde_json::from_value(serde_json::json!({
         "sequence": 2, "kind": "future-event", "payload": "{\"x\":1}", "generation": 4, "extension": true

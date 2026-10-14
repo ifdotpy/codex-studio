@@ -6,7 +6,7 @@ use crate::protocol::{
 use crate::shared_values_generated::PROCESS_SUPERVISOR_PROTOCOL_VERSION;
 use crate::{BackendIdentity, OperationId, SupervisorAction, SupervisorError, SupervisorHandle};
 use serde::{Deserialize, Serialize};
-use serde_json::{Map, Value};
+use serde_json::{Value, value::RawValue};
 use std::collections::BTreeMap;
 use std::io::{self, Write};
 
@@ -258,30 +258,43 @@ pub(crate) fn request_frame<R: SupervisorRequest>(
     Ok(writer.bytes)
 }
 
+#[derive(Deserialize)]
+struct ResponseEnvelope {
+    #[serde(rename = "requestId")]
+    request_id: Option<Box<RawValue>>,
+    error: Option<Box<RawValue>>,
+    result: Option<Box<RawValue>>,
+}
+
 pub(crate) fn response_value<O: for<'de> Deserialize<'de>>(
     action: SupervisorAction,
     request_id: u64,
     response: &str,
 ) -> Result<O, SupervisorError> {
-    let response: Value = match serde_json::from_str(response) {
+    let response: ResponseEnvelope = match serde_json::from_str(response) {
         Ok(response) => response,
         Err(_) => return Err(SupervisorError::UnknownOutcome { action, request_id }),
     };
-    if response.get("requestId").and_then(Value::as_u64) != Some(request_id) {
+    if response
+        .request_id
+        .as_deref()
+        .and_then(|raw| serde_json::from_str::<u64>(raw.get()).ok())
+        != Some(request_id)
+    {
         return Err(SupervisorError::UnknownOutcome { action, request_id });
     }
-    if let Some(message) = response.get("error").and_then(Value::as_str) {
-        return Err(SupervisorError::Remote {
-            action,
-            message: message.to_owned(),
-        });
+    if let Some(message) = response
+        .error
+        .as_deref()
+        .and_then(|raw| serde_json::from_str::<String>(raw.get()).ok())
+    {
+        return Err(SupervisorError::Remote { action, message });
     }
-    let result = response
-        .get("result")
-        .cloned()
-        .unwrap_or_else(|| Value::Object(Map::new()));
-    serde_json::from_value(result)
-        .map_err(|_| SupervisorError::UnknownOutcome { action, request_id })
+    match response.result {
+        Some(result) => serde_json::from_str(result.get()),
+        None => serde_json::from_str("{}"),
+    }
+    .map_err(|_| SupervisorError::UnknownOutcome { action, request_id })
 }
 
 pub(crate) fn serialize_frame(value: &Value) -> Result<Vec<u8>, SupervisorError> {
