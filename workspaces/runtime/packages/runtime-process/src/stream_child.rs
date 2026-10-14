@@ -174,9 +174,10 @@ impl StreamChild {
         if bytes.len() > INPUT_BYTES {
             return Err(ChildError::InputTooLarge);
         }
+        let empty_close = bytes.is_empty() && close;
         let (reply, response) = oneshot::channel();
         // Queue admission times out before the write exists: safely not submitted.
-        timeout(
+        let admitted = timeout(
             INPUT_DEADLINE,
             self.input.send(WriteRequest {
                 bytes,
@@ -184,13 +185,26 @@ impl StreamChild {
                 reply,
             }),
         )
-        .await
-        .map_err(|_| ChildError::Closed)?
-        .map_err(|_| ChildError::Closed)?;
-        timeout(INPUT_DEADLINE, response)
-            .await
-            .map_err(|_| ChildError::Unknown)?
-            .map_err(|_| ChildError::Unknown)?
+        .await;
+        match admitted {
+            Err(_) => return Err(ChildError::Closed),
+            Ok(Err(_)) => {
+                // Closing empty stdin carries no input outcome. A fast child
+                // may exit and drop its receiver before this close is queued.
+                return if empty_close {
+                    Ok(())
+                } else {
+                    Err(ChildError::Closed)
+                };
+            }
+            Ok(Ok(())) => {}
+        }
+        match timeout(INPUT_DEADLINE, response).await {
+            Err(_) => Err(ChildError::Unknown),
+            Ok(Err(_)) if empty_close => Ok(()),
+            Ok(Err(_)) => Err(ChildError::Unknown),
+            Ok(Ok(result)) => result,
+        }
     }
     pub async fn cancel(&self) -> Result<(), ChildError> {
         self.cancel.send_replace(true);
@@ -387,6 +401,30 @@ pub async fn capture(spec: ChildSpec) -> io::Result<Capture> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn closing_empty_stdin_after_fast_child_exit_is_successful() {
+        let mut child = StreamChild::spawn(ChildSpec {
+            program: PathBuf::from("/bin/true"),
+            args: Vec::new(),
+            cwd: std::env::current_dir().unwrap(),
+            environment: BTreeMap::new(),
+            timeout: Duration::from_secs(2),
+            inherited_lease: None,
+        })
+        .await
+        .unwrap();
+        assert!(matches!(
+            child.next_event().await,
+            Some(ChildEvent::Exited {
+                code: Some(0),
+                reason: ExitReason::Completed
+            })
+        ));
+        child.write(Vec::new(), true).await.unwrap();
+        child.close().await.unwrap();
+    }
 
     fn spec(command: &str, root: &std::path::Path) -> ChildSpec {
         ChildSpec {
