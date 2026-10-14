@@ -103,12 +103,23 @@ pub(super) fn free_space(root: &Path, required: u64) -> Result<()> {
     Ok(())
 }
 pub(super) fn stop_verified(pid: u32, pgid: u32, expected: &str) -> Result<&'static str> {
-    let process = verify_group(pid, pgid)?;
     if !expected.starts_with("linux:") {
         return Err(Error::Refused(
             "Legacy child identity requires durable upgrade before signal",
         ));
     }
+    match start_time(pid, false)?.as_deref() {
+        None => return Ok("already-exited"),
+        Some(actual) if actual == expected => {}
+        Some(_) => return Err(Error::Refused("Child identity changed before close")),
+    }
+    let Some(process) = verify_group_for_close(pid, pgid)? else {
+        return if start_time(pid, false)?.is_none() {
+            Ok("already-exited")
+        } else {
+            Err(Error::Refused("Child identity changed before close"))
+        };
+    };
     for (signal, timeout, outcome) in [
         (Signal::TERM, Duration::from_millis(1500), "terminated"),
         (Signal::KILL, Duration::from_secs(1), "killed"),
@@ -134,6 +145,20 @@ pub(super) fn stop_verified(pid: u32, pgid: u32, expected: &str) -> Result<&'sta
     ))
 }
 
+fn verify_group_for_close(pid: u32, pgid: u32) -> Result<Option<Pid>> {
+    let raw = i32::try_from(pid).map_err(|_| Error::Refused("Invalid child PID"))?;
+    let process = Pid::from_raw(raw).ok_or(Error::Refused("Invalid child PID"))?;
+    if pid != pgid {
+        return Err(Error::Refused("Child process group identity changed"));
+    }
+    match getpgid(Some(process)) {
+        Ok(group) if group == process => Ok(Some(process)),
+        Ok(_) => Err(Error::Refused("Child process group identity changed")),
+        Err(rustix::io::Errno::SRCH) => Ok(None),
+        Err(error) => Err(std::io::Error::from(error).into()),
+    }
+}
+
 pub(super) fn verify_group(pid: u32, pgid: u32) -> Result<Pid> {
     let raw = i32::try_from(pid).map_err(|_| Error::Refused("Invalid child PID"))?;
     let process = Pid::from_raw(raw).ok_or(Error::Refused("Invalid child PID"))?;
@@ -156,4 +181,35 @@ pub(super) fn valid_start(value: &str) -> bool {
                 && micros.len() == 6
                 && micros.bytes().all(|c| c.is_ascii_digit())
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::process::Command;
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn close_succeeds_when_the_verified_child_has_already_exited() {
+        let mut child = Command::new("sh")
+            .args(["-c", "exec sleep 30"])
+            .spawn()
+            .expect("blocking child starts");
+        let pid = child.id();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let identity = loop {
+            if let Some(identity) = start_time(pid, true).expect("process identity read") {
+                break identity;
+            }
+            assert!(Instant::now() < deadline, "child identity did not appear");
+            thread::sleep(RETRY);
+        };
+        child.kill().expect("stop blocking child");
+        child.wait().expect("child exits");
+
+        assert!(matches!(
+            stop_verified(pid, pid, &identity),
+            Ok("already-exited")
+        ));
+    }
 }
