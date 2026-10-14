@@ -2,6 +2,7 @@ mod account_login;
 mod account_transfer;
 mod agent_management;
 mod agents_create;
+mod branches;
 mod browser;
 mod catalog;
 mod catalog_agent;
