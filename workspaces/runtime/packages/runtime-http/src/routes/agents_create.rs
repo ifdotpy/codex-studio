@@ -136,21 +136,30 @@ impl CreationCatalog for RouteCreationCatalog<'_> {
 }
 
 pub(crate) fn routes() -> RouteGroup {
-    const LEAD_DEPENDENCIES: [Dependency; 6] = [
+    const LEAD_DEPENDENCIES: [Dependency; 8] = [
+        Dependency::new("account-driver/unavailable"),
         Dependency::new("cross-server-driver/local-identity"),
         Dependency::new("cross-server-driver/project-binding"),
+        Dependency::new("provider-session/model-list"),
         Dependency::new("project-driver/folder-selection"),
         Dependency::new("worker-driver/settings-catalog"),
         Dependency::new("workspace-state/image-workspace"),
         Dependency::new("workspace-state/vm-workspace"),
     ];
-    const AGENT_DEPENDENCIES: [Dependency; 3] = [
+    const RENAME_DEPENDENCIES: [Dependency; 1] =
+        [Dependency::new("provider-session/title-generation")];
+    const AGENT_DEPENDENCIES: [Dependency; 5] = [
+        Dependency::new("account-driver/unavailable"),
+        Dependency::new("provider-session/model-list"),
         Dependency::new("worker-driver/settings-catalog"),
         Dependency::new("workspace-state/image-workspace"),
         Dependency::new("workspace-state/vm-workspace"),
     ];
-    const CONVERSATION_DEPENDENCIES: [Dependency; 1] =
-        [Dependency::new("worker-driver/settings-catalog")];
+    const CONVERSATION_DEPENDENCIES: [Dependency; 3] = [
+        Dependency::new("account-driver/unavailable"),
+        Dependency::new("provider-session/model-list"),
+        Dependency::new("worker-driver/settings-catalog"),
+    ];
     RouteGroup::new(vec![
         post(
             "/api/agents",
@@ -168,7 +177,11 @@ pub(crate) fn routes() -> RouteGroup {
             OperationStatus::partial(&LEAD_DEPENDENCIES),
             create_lead,
         ),
-        post("/api/rename", OperationStatus::Implemented, rename),
+        post(
+            "/api/rename",
+            OperationStatus::partial(&RENAME_DEPENDENCIES),
+            rename,
+        ),
     ])
 }
 
@@ -565,12 +578,15 @@ inventory::submit! {
         name: "agents_create",
         routes: Some(routes),
         dependencies: &[
-        "cross-server-driver/local-identity",
-        "cross-server-driver/project-binding",
-        "project-driver/folder-selection",
-        "worker-driver/settings-catalog",
-        "workspace-state/image-workspace",
-        "workspace-state/vm-workspace",
+            "account-driver/unavailable",
+            "cross-server-driver/local-identity",
+            "cross-server-driver/project-binding",
+            "provider-session/model-list",
+            "provider-session/title-generation",
+            "project-driver/folder-selection",
+            "worker-driver/settings-catalog",
+            "workspace-state/image-workspace",
+            "workspace-state/vm-workspace",
         ],
     }
 }

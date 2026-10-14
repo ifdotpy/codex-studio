@@ -30,7 +30,7 @@ const BASE_BUILD_WAIT: Duration = Duration::from_secs(900);
 const BASE_BUILD_POLL: Duration = Duration::from_millis(50);
 static BASE_BUILD_WORKERS: OnceLock<Mutex<BTreeSet<String>>> = OnceLock::new();
 
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+#[allow(dead_code)]
 pub(crate) fn fsevents_history_lost(events: &[(u64, u32)]) -> bool {
     events
         .iter()
@@ -1527,13 +1527,20 @@ pub use macos::MacAsifBackend;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
+    use std::sync::{Mutex, mpsc};
+
+    struct CopyGate {
+        entered: mpsc::Sender<()>,
+        release: Mutex<mpsc::Receiver<()>>,
+    }
+
+    const ASYNC_PROVISION_TIMEOUT: Duration = Duration::from_secs(30);
 
     #[derive(Default)]
     struct FakeBackend {
         store: PathBuf,
         fail_once: Mutex<Option<&'static str>>,
-        copy_delay: Duration,
+        copy_gate: Option<CopyGate>,
     }
 
     impl FakeBackend {
@@ -1588,7 +1595,16 @@ mod tests {
             excludes: &[String],
             check: &dyn Fn() -> Result<(), ImageWorkspaceError>,
         ) -> Result<(), ImageWorkspaceError> {
-            thread::sleep(self.copy_delay);
+            if let Some(gate) = &self.copy_gate {
+                gate.entered
+                    .send(())
+                    .map_err(|error| ImageWorkspaceError::Backend(error.to_string()))?;
+                gate.release
+                    .lock()
+                    .map_err(|error| ImageWorkspaceError::Backend(error.to_string()))?
+                    .recv_timeout(ASYNC_PROVISION_TIMEOUT * 2)
+                    .map_err(|error| ImageWorkspaceError::Backend(error.to_string()))?;
+            }
             copy_fake(source, destination, source, excludes)?;
             check()?;
             self.fail("copy")
@@ -1738,7 +1754,7 @@ mod tests {
 
     #[test]
     fn fsevents_id_progress_is_not_history_loss_but_dropped_history_is() {
-        assert!(!fsevents_history_lost(&[(101, 0), (102, 0x10)]));
+        assert!(!fsevents_history_lost(&[(101, 0), (102, 0x1), (102, 0x10)]));
         assert!(fsevents_history_lost(&[(102, 0x2)]));
         assert!(fsevents_history_lost(&[(102, 0x4)]));
         assert!(fsevents_history_lost(&[(102, 0x8)]));
@@ -1766,21 +1782,45 @@ mod tests {
         let project = fixture.path().join("project");
         fs::create_dir_all(&project).expect("project");
         fs::write(project.join("file.txt"), "base").expect("source");
-        let manager = WorkspaceLifecycle::with_backend(
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let manager = Arc::new(WorkspaceLifecycle::with_backend(
             &store,
             FakeBackend {
                 store: store.clone(),
                 fail_once: Mutex::new(None),
-                copy_delay: Duration::from_millis(400),
+                copy_gate: Some(CopyGate {
+                    entered: entered_tx,
+                    release: Mutex::new(release_rx),
+                }),
             },
+        ));
+        let (result_tx, result_rx) = mpsc::channel();
+        let caller_manager = Arc::clone(&manager);
+        let caller_project = project.clone();
+        let caller = thread::spawn(move || {
+            let result = caller_manager.start_workspace_provision(&caller_project, "async-agent");
+            result_tx
+                .send(result)
+                .expect("provision result receiver is alive");
+        });
+        let entered = entered_rx.recv_timeout(ASYNC_PROVISION_TIMEOUT);
+        let returned_while_copy_blocked = result_rx.recv_timeout(ASYNC_PROVISION_TIMEOUT);
+        release_tx
+            .send(())
+            .expect("base copy gate is still waiting");
+        caller.join().expect("provision caller exits");
+        assert!(
+            entered.is_ok(),
+            "base copy did not reach gate; provision result={returned_while_copy_blocked:?}, base state={:?}, workspace rows={:?}",
+            manager.base_status(&project),
+            manager.list_workspaces()
         );
-        let started = std::time::Instant::now();
-        let pending = manager
-            .start_workspace_provision(&project, "async-agent")
+        let pending = returned_while_copy_blocked
+            .expect("provision returned while base copy remained blocked")
             .expect("provision enqueued");
         assert_eq!(pending["state"], "creating");
-        assert!(started.elapsed() < Duration::from_millis(200));
-        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let deadline = std::time::Instant::now() + ASYNC_PROVISION_TIMEOUT;
         loop {
             let row = manager
                 .list_workspaces()
@@ -1811,7 +1851,7 @@ mod tests {
             FakeBackend {
                 store: store.clone(),
                 fail_once: Mutex::new(None),
-                copy_delay: Duration::ZERO,
+                copy_gate: None,
             },
         );
         let key = repo_key(&project.canonicalize().expect("canonical project"));
@@ -1845,7 +1885,7 @@ mod tests {
         let backend = FakeBackend {
             store: store.clone(),
             fail_once: Mutex::new(Some("copy")),
-            copy_delay: Duration::ZERO,
+            copy_gate: None,
         };
         let manager = WorkspaceLifecycle::with_backend(&store, backend);
 
