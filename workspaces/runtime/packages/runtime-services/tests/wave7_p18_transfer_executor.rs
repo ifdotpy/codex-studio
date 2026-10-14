@@ -12,10 +12,11 @@ use std::{
     },
 };
 use studio_runtime_services::{
+    account_session_runtime::ConnectionScope,
     account_transfer::{Ticket, TransferError},
     account_transfer_driver::{
-        self as driver, DispatchOutcome, PreparedTransfer, TransferExecutor, TransferMethod,
-        TransferPreparation, TransferTransport,
+        self as driver, DispatchOutcome, PreparedTransfer, TransferDispatch, TransferExecutor,
+        TransferMethod, TransferPreparation, TransferTransport,
     },
 };
 use studio_runtime_store::{AccountTransferRepository, RuntimeStore};
@@ -82,7 +83,13 @@ struct Executor<'a> {
     calls: AtomicUsize,
 }
 impl TransferTransport for Executor<'_> {
-    fn send(&self, ticket: &Ticket, _: &str, _: &Value) -> Option<Value> {
+    fn send(
+        &self,
+        ticket: &Ticket,
+        scope: &ConnectionScope,
+        method: &str,
+        _: &Value,
+    ) -> TransferDispatch {
         self.calls.fetch_add(1, Ordering::SeqCst);
         self.store
             .transaction(|_| Ok(()))
@@ -90,10 +97,11 @@ impl TransferTransport for Executor<'_> {
         let stored = operation(self.store);
         assert_eq!(stored["members"]["lead"]["phase"], "submitted");
         assert_eq!(stored["members"]["lead"]["transportTicket"], json!(ticket));
-        if matches!(self.behavior, Behavior::LostResponse) {
-            None
-        } else {
-            Some(json!({"thread":{"id":"destination-thread"}}))
+        let lost_response = matches!(self.behavior, Behavior::LostResponse);
+        TransferDispatch {
+            receipt: json!({"ticket":ticket,"scope":scope,"method":method}),
+            result: (!lost_response).then(|| json!({"thread":{"id":"destination-thread"}})),
+            certainty: if lost_response { "unknown" } else { "written" },
         }
     }
 }
@@ -129,6 +137,11 @@ impl TransferExecutor for Executor<'_> {
         }
         Ok(PreparedTransfer {
             ticket,
+            scope: ConnectionScope {
+                account: "target".into(),
+                connection: "retained-connection".into(),
+                generation: 1,
+            },
             method: TransferMethod::Fork,
             params: json!({"threadId":"source-thread"}),
         })
