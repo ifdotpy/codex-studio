@@ -635,6 +635,43 @@ class RateContract(unittest.TestCase):
                 'total': {'outputTokens': total}, 'last': {'outputTokens': 1141}}}, 'a', 'c', at)
         self.assertFalse(ambiguous.associate_response_rate('codex', 'thread', 'turn', 'ambiguous', 1141))
 
+    def test_response_rate_cache_uses_its_named_bound(self):
+        with patch.object(codex_token_rate, 'MAX_RESPONSE_RATE_CACHE_ENTRIES', 2):
+            rates = TokenRates(lambda: 0)
+            agent = {'id': 'cache-bound', 'threadId': 'thread', 'inFlight': True}
+            rates.observe(agent, 'turn/started', {'turn': {'id': 'turn'}}, 'a', 'c', 0)
+            for index, total in enumerate((10, 20, 30), start=1):
+                rates.observe(agent, 'thread/tokenUsage/updated', {
+                    'turnId': 'turn', 'responseId': f'response-{index}',
+                    'responseOutputTokens': 10,
+                    'tokenUsage': {'total': {'outputTokens': total},
+                                   'last': {'outputTokens': 10}},
+                }, 'a', 'c', index)
+            self.assertEqual(len(rates.response_rates), 2)
+            self.assertIsNone(rates.response_rate('cache-bound', 'thread', 'turn', 'response-1'))
+            self.assertIsNotNone(rates.response_rate('cache-bound', 'thread', 'turn', 'response-2'))
+            self.assertIsNotNone(rates.response_rate('cache-bound', 'thread', 'turn', 'response-3'))
+
+    def test_pending_response_index_tracks_eviction_and_exact_association(self):
+        with patch.object(codex_token_rate, 'MAX_RESPONSE_RATE_CACHE_ENTRIES', 2):
+            rates = TokenRates(lambda: 0)
+            agent = {'id': 'indexed', 'threadId': 'thread', 'inFlight': True}
+            rates.observe(agent, 'turn/started', {'turn': {'id': 'turn'}}, 'a', 'c', 0)
+            for at, total, output in ((1, 10, 10), (2, 30, 20), (3, 60, 30)):
+                rates.observe(agent, 'thread/tokenUsage/updated', {
+                    'turnId': 'turn',
+                    'tokenUsage': {'total': {'outputTokens': total},
+                                   'last': {'outputTokens': output}},
+                }, 'a', 'c', at)
+
+            self.assertEqual(len(rates.pending_response_rates), 2)
+            self.assertNotIn(('indexed', 'thread', 'turn', 10), rates.pending_response_rate_index)
+            self.assertFalse(rates.associate_response_rate('indexed', 'thread', 'turn', 'old', 10))
+            self.assertTrue(rates.associate_response_rate('indexed', 'thread', 'turn', 'middle', 20))
+            self.assertNotIn(('indexed', 'thread', 'turn', 20), rates.pending_response_rate_index)
+            self.assertTrue(rates.associate_response_rate('indexed', 'thread', 'turn', 'new', 30))
+            self.assertFalse(rates.pending_response_rate_index)
+
     def test_claude_turn_output_corrections_are_cumulative(self):
         now = [0]
         rates = TokenRates(lambda: now[0])

@@ -14,6 +14,7 @@ if TYPE_CHECKING:
 MIN_DURATION = .25
 MAX_RATE = 1000.0
 MAX_RATE_ENTRIES = MAX_TOKEN_RATE_ENTRIES
+MAX_RESPONSE_RATE_CACHE_ENTRIES = 4096
 TOKEN_RATE_EXPIRY_SECONDS = 90
 TOKEN_RATE_PUBLICATION_DELAY_SECONDS = .05
 TOKEN_RATE_PUBLICATION_RETRY_SECONDS = 1.0
@@ -197,6 +198,8 @@ class TokenRates:
         self.requests = {}
         self.response_rates = OrderedDict()
         self.pending_response_rates = OrderedDict()
+        # Inverted exact-match index; pending-map changes update it under self.lock.
+        self.pending_response_rate_index = {}
         self.expiry_lock = threading.Lock()
         self.expiry_timers = OrderedDict()
         self._publication_lock = threading.Lock()
@@ -426,35 +429,60 @@ class TokenRates:
             key = (agent_id, thread, rate.turn, identity)
             self.response_rates[key] = {'rate': sample[2], 'outputTokens': sample[0], 'durationSeconds': sample[1]}
             self.response_rates.move_to_end(key)
-            while len(self.response_rates) > 4096:
+            while len(self.response_rates) > MAX_RESPONSE_RATE_CACHE_ENTRIES:
                 self.response_rates.popitem(last=False)
         elif isinstance(identity, tuple) and sample and sample[1] is not None:
             key = (agent_id, thread, rate.turn, identity)
-            self.pending_response_rates[key] = {'rate': sample[2], 'outputTokens': sample[0],
-                                                'durationSeconds': sample[1], 'responseId': None}
+            response_sample = {'rate': sample[2], 'outputTokens': sample[0],
+                               'durationSeconds': sample[1], 'responseId': None}
+            prior = self.pending_response_rates.get(key)
+            if prior is not None:
+                self._unindex_pending_response_rate(key, prior)
+            self.pending_response_rates[key] = response_sample
             self.pending_response_rates.move_to_end(key)
-            while len(self.pending_response_rates) > 4096:
-                self.pending_response_rates.popitem(last=False)
+            self._index_pending_response_rate(key, response_sample)
+            while len(self.pending_response_rates) > MAX_RESPONSE_RATE_CACHE_ENTRIES:
+                expired_key, expired_sample = self.pending_response_rates.popitem(last=False)
+                self._unindex_pending_response_rate(expired_key, expired_sample)
+
+    def _pending_response_rate_signature(self, key, sample):
+        return (*key[:3], sample['outputTokens'])
+
+    def _index_pending_response_rate(self, key, sample):
+        signature = self._pending_response_rate_signature(key, sample)
+        self.pending_response_rate_index.setdefault(signature, set()).add(key)
+
+    def _unindex_pending_response_rate(self, key, sample):
+        signature = self._pending_response_rate_signature(key, sample)
+        candidates = self.pending_response_rate_index.get(signature)
+        if candidates is None:
+            return
+        candidates.discard(key)
+        if not candidates:
+            self.pending_response_rate_index.pop(signature, None)
 
     def associate_response_rate(self, agent_id, thread, turn, response_id, output_tokens):
         output_tokens = count(output_tokens)
         if not isinstance(response_id, str) or not response_id or output_tokens is None:
             return False
         with self.lock:
-            matches = [(key, sample) for key, sample in self.pending_response_rates.items()
-                       if key[:3] == (agent_id, thread, turn) and sample['outputTokens'] == output_tokens
-                       and sample['responseId'] is None]
-            if len(matches) != 1:
+            signature = (agent_id, thread, turn, output_tokens)
+            candidates = self.pending_response_rate_index.get(signature, ())
+            if len(candidates) != 1:
                 return False
-            key, sample = matches[0]
-            sample['responseId'] = response_id
+            key = next(iter(candidates))
+            sample = self.pending_response_rates.get(key)
+            if (sample is None or sample['outputTokens'] != output_tokens
+                    or sample['responseId'] is not None):
+                return False
             self.response_rates[(agent_id, thread, turn, response_id)] = {
                 'rate': sample['rate'], 'outputTokens': sample['outputTokens'],
                 'durationSeconds': sample['durationSeconds']}
             self.response_rates.move_to_end((agent_id, thread, turn, response_id))
-            while len(self.response_rates) > 4096:
+            while len(self.response_rates) > MAX_RESPONSE_RATE_CACHE_ENTRIES:
                 self.response_rates.popitem(last=False)
             del self.pending_response_rates[key]
+            self._unindex_pending_response_rate(key, sample)
             return True
 
     def response_rate(self, agent_id, thread, turn, response_id):
