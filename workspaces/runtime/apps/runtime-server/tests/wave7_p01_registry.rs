@@ -794,7 +794,7 @@ async fn wire_send(peer: &mut tokio::io::BufReader<tokio::net::UnixStream>, valu
         .unwrap();
 }
 
-async fn provider_input_barrier(root: &std::path::Path) -> Value {
+async fn provider_input_barrier(root: &std::path::Path, backend_id: &str) -> Value {
     use tokio::io::AsyncWriteExt;
     let mut peer = tokio::io::BufReader::new(
         tokio::net::UnixStream::connect(root.join("supervisor.sock"))
@@ -803,10 +803,11 @@ async fn provider_input_barrier(root: &std::path::Path) -> Value {
     );
     wire_send(
         &mut peer,
-        json!({"protocol":1,"stateDir":root,"backendId":"python-cutover-fixture"}),
+        json!({"protocol":1,"stateDir":root,"backendId":backend_id}),
     )
     .await;
-    assert!(wire_read(&mut peer).await["error"].is_null());
+    let attached = wire_read(&mut peer).await;
+    assert!(attached["error"].is_null(), "supervisor attach failed: {attached}");
     wire_send(
         &mut peer,
         json!({
@@ -1517,7 +1518,7 @@ async fn host_start_reattaches_python_launch_and_delivers_http_input() {
     drop(retained);
     // The provider consumes this barrier after all earlier stdin messages;
     // shutdown joined the Rust worker before the barrier was written.
-    provider_input_barrier(fixture._root.path()).await;
+    provider_input_barrier(fixture._root.path(), "verify-cutover").await;
     let (mut barrier, _) =
         tokio::time::timeout(std::time::Duration::from_secs(10), observer.accept())
             .await
