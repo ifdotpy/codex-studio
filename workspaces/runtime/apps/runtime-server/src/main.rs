@@ -22,7 +22,7 @@ use std::sync::Arc;
 use std::sync::Mutex;
 
 use axum::Extension;
-use studio_runtime_http::{HttpState, router};
+use studio_runtime_http::{HttpState, VaultJobOwner, router};
 use studio_runtime_services::account_driver::AccountDriver;
 use studio_runtime_services::account_policy::AccountPolicyState;
 use studio_runtime_store::{RuntimeStore, account_state};
@@ -332,6 +332,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         eprintln!("lifecycle startup reconciliation remains pending: {error}");
     }
     let sync_changes = state.sync_changes_handle();
+    let vault_job_owner = VaultJobOwner::start();
+    state = state.with_vault_job_client(vault_job_owner.client());
     let app = match router(state.clone()) {
         Ok(app) => {
             let app = app
@@ -352,11 +354,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             {
                 let terminal_cleanup = shutdown_io_runtime(Arc::clone(&io_runtime)).await;
                 let runtime_cleanup = runtime_shutdown::close(runtime, &state).await;
+                let vault_jobs_cleanup = vault_job_owner.shutdown().await;
                 terminal_cleanup?;
                 runtime_cleanup?;
+                vault_jobs_cleanup?;
             }
             #[cfg(not(unix))]
-            state.shutdown_services().await?;
+            {
+                let services_cleanup = state.shutdown_services().await;
+                let vault_jobs_cleanup = vault_job_owner.shutdown().await;
+                services_cleanup?;
+                vault_jobs_cleanup?;
+            }
             return Err(error);
         }
     };
@@ -444,11 +453,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     .await;
     monitor_shutdown.send_replace(true);
     federation_cancelled.store(true, std::sync::atomic::Ordering::Release);
+    let vault_jobs_cleanup = vault_job_owner.shutdown().await;
     federation_task.await?;
     if let Some(task) = orchestration_task {
         task.await?;
     }
     monitor_task.await??;
+    vault_jobs_cleanup?;
     #[cfg(unix)]
     {
         let terminal_cleanup = shutdown_io_runtime(Arc::clone(&io_runtime)).await;

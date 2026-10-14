@@ -7,15 +7,17 @@ use crate::router::HttpState;
 use axum::{Json, extract::State, http::StatusCode};
 use serde_json::Value;
 use std::collections::{HashMap, VecDeque};
-use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 use studio_runtime_services::project_secrets::{self, GuestRpc, ProjectSecretsError};
+use tokio::sync::{mpsc, oneshot};
+use tokio::task::JoinHandle;
 
-const GUEST_RPC: &[Dependency] = &[Dependency::new("linux-vm/guest-rpc")];
 const VAULT_DESK: &[Dependency] = &[Dependency::new("macos-platform/layr-desk")];
 const VAULT_SETUP_TIMEOUT: Duration = studio_runtime_services::vault::VAULT_SETUP_TIMEOUT;
 const VAULT_LOGIN_TIMEOUT: Duration = studio_runtime_services::vault::VAULT_LOGIN_TIMEOUT;
 const VAULT_PROGRESS_LINE_MAX_BYTES: usize = 16 * 1024;
+const VAULT_JOB_CAPACITY: usize = 50;
+const VAULT_JOB_MESSAGE_CAPACITY: usize = 256;
 const INVALID_LOGIN_JSON: &str = "layr-desk aws-login returned invalid JSON";
 const OVERSIZED_PROGRESS_LINE: &str = "layr-desk emitted an oversized progress line";
 
@@ -25,33 +27,170 @@ enum VaultJobKind {
     Login,
 }
 
-#[derive(Default)]
 struct VaultJobs {
     jobs: HashMap<(VaultJobKind, String), Value>,
-    order: VecDeque<(VaultJobKind, String)>,
+    order: HashMap<VaultJobKind, VecDeque<String>>,
 }
 
-static VAULT_JOBS: OnceLock<Mutex<VaultJobs>> = OnceLock::new();
+enum VaultJobMessage {
+    Find {
+        kind: VaultJobKind,
+        request_id: String,
+        reply: oneshot::Sender<Option<Value>>,
+    },
+    Reserve {
+        kind: VaultJobKind,
+        request_id: String,
+        initial: Value,
+        reply: oneshot::Sender<(Value, bool)>,
+    },
+    Update {
+        kind: VaultJobKind,
+        request_id: String,
+        fields: Value,
+        clear_progress: bool,
+        reply: Option<oneshot::Sender<()>>,
+    },
+    Shutdown,
+}
 
-fn vault_jobs() -> &'static Mutex<VaultJobs> {
-    VAULT_JOBS.get_or_init(|| Mutex::new(VaultJobs::default()))
+pub struct VaultJobClient {
+    sender: mpsc::Sender<VaultJobMessage>,
+}
+
+impl Clone for VaultJobClient {
+    fn clone(&self) -> Self {
+        Self {
+            sender: self.sender.clone(),
+        }
+    }
+}
+
+pub struct VaultJobOwner {
+    client: VaultJobClient,
+    task: JoinHandle<()>,
+}
+
+impl VaultJobOwner {
+    /// Start the vault job owner on the current Tokio runtime.
+    pub fn start() -> Self {
+        let (sender, receiver) = mpsc::channel(VAULT_JOB_MESSAGE_CAPACITY);
+        let task = tokio::spawn(run_vault_job_owner(receiver));
+        Self {
+            client: VaultJobClient { sender },
+            task,
+        }
+    }
+
+    pub fn client(&self) -> VaultJobClient {
+        self.client.clone()
+    }
+
+    /// Ask the owner to stop and await its task before returning.
+    pub async fn shutdown(self) -> std::io::Result<()> {
+        let sent = self
+            .client
+            .sender
+            .send(VaultJobMessage::Shutdown)
+            .await
+            .is_ok();
+        let task_result = self.task.await.map_err(std::io::Error::other);
+        if !sent {
+            task_result?;
+            return Err(std::io::Error::other(
+                "vault job owner stopped before shutdown was requested",
+            ));
+        }
+        task_result
+    }
+}
+
+async fn run_vault_job_owner(mut receiver: mpsc::Receiver<VaultJobMessage>) {
+    let mut jobs = VaultJobs {
+        jobs: HashMap::new(),
+        order: HashMap::new(),
+    };
+    while let Some(message) = receiver.recv().await {
+        match message {
+            VaultJobMessage::Find {
+                kind,
+                request_id,
+                reply,
+            } => {
+                drop(reply.send(jobs.jobs.get(&(kind, request_id)).cloned()));
+            }
+            VaultJobMessage::Reserve {
+                kind,
+                request_id,
+                initial,
+                reply,
+            } => {
+                let key = (kind, request_id.clone());
+                if let Some(job) = jobs.jobs.get(&key) {
+                    drop(reply.send((job.clone(), false)));
+                } else {
+                    jobs.order.entry(kind).or_default().push_back(request_id);
+                    jobs.jobs.insert(key, initial.clone());
+                    loop {
+                        let expired = {
+                            let order = jobs.order.entry(kind).or_default();
+                            if order.len() > VAULT_JOB_CAPACITY {
+                                order.pop_front()
+                            } else {
+                                None
+                            }
+                        };
+                        let Some(expired) = expired else {
+                            break;
+                        };
+                        jobs.jobs.remove(&(kind, expired));
+                    }
+                    drop(reply.send((initial, true)));
+                }
+            }
+            VaultJobMessage::Update {
+                kind,
+                request_id,
+                mut fields,
+                clear_progress,
+                reply,
+            } => {
+                if let Some(job) = jobs.jobs.get_mut(&(kind, request_id))
+                    && let Some(job) = job.as_object_mut()
+                {
+                    if clear_progress {
+                        job.remove("progress");
+                    }
+                    if let Some(fields) = fields.as_object_mut() {
+                        job.extend(std::mem::take(fields));
+                    }
+                }
+                if let Some(reply) = reply
+                    && reply.send(()).is_err()
+                {
+                    continue;
+                }
+            }
+            VaultJobMessage::Shutdown => break,
+        }
+    }
 }
 
 pub(crate) fn routes() -> RouteGroup {
     RouteGroup::new(vec![
         post(
             "/api/project-secrets/list",
-            OperationStatus::partial(GUEST_RPC),
+            OperationStatus::Implemented,
             list_secrets,
         ),
         post(
             "/api/project-secrets/remove",
-            OperationStatus::partial(GUEST_RPC),
+            OperationStatus::Implemented,
             remove_secret,
         ),
         post(
             "/api/project-secrets/set",
-            OperationStatus::partial(GUEST_RPC),
+            OperationStatus::Implemented,
             set_secret,
         ),
         post(
@@ -78,9 +217,12 @@ pub(crate) fn routes() -> RouteGroup {
     ])
 }
 
-fn guest(state: &HttpState, path: &'static str) -> Result<std::sync::Arc<dyn GuestRpc>, ApiError> {
+fn guest(state: &HttpState) -> Result<std::sync::Arc<dyn GuestRpc>, ApiError> {
     state.project_secrets_guest.clone().ok_or_else(|| {
-        dependency_unavailable("POST", path, GUEST_RPC).unwrap_or_else(|_| ApiError::internal())
+        ApiError::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Linux VM guest RPC is unavailable",
+        )
     })
 }
 
@@ -104,11 +246,10 @@ fn guest_error(error: ProjectSecretsError) -> ApiError {
 
 async fn guest_call(
     state: &HttpState,
-    path: &'static str,
     mutation: bool,
     call: impl FnOnce(&dyn GuestRpc) -> Result<Value, ProjectSecretsError> + Send + 'static,
 ) -> Result<Json<Value>, ApiError> {
-    let rpc = guest(state, path)?;
+    let rpc = guest(state)?;
     let result = tokio::task::spawn_blocking(move || call(rpc.as_ref()))
         .await
         .map_err(|_| {
@@ -127,7 +268,7 @@ async fn list_secrets(
     ApiJson(body): ApiJson<Value>,
 ) -> Result<Json<Value>, ApiError> {
     let project_id = request_string(&body, "projectId")?.to_owned();
-    guest_call(&state, "/api/project-secrets/list", false, move |rpc| {
+    guest_call(&state, false, move |rpc| {
         project_secrets::list_names(rpc, &project_id)
     })
     .await
@@ -141,7 +282,7 @@ async fn set_secret(
     let name = request_string(&body, "name")?.to_owned();
     let value = request_string(&body, "value")?.to_owned();
     let request_id = request_string(&body, "requestId")?.to_owned();
-    guest_call(&state, "/api/project-secrets/set", true, move |rpc| {
+    guest_call(&state, true, move |rpc| {
         project_secrets::set_secret(rpc, &project_id, &name, &value, &request_id)
     })
     .await
@@ -154,7 +295,7 @@ async fn remove_secret(
     let project_id = request_string(&body, "projectId")?.to_owned();
     let name = request_string(&body, "name")?.to_owned();
     let request_id = request_string(&body, "requestId")?.to_owned();
-    guest_call(&state, "/api/project-secrets/remove", true, move |rpc| {
+    guest_call(&state, true, move |rpc| {
         project_secrets::remove_secret(rpc, &project_id, &name, &request_id)
     })
     .await
@@ -166,7 +307,8 @@ async fn aws_login(
 ) -> Result<Json<Value>, ApiError> {
     let profile = request_string(&body, "profile")?.to_owned();
     let request_id = request_string(&body, "requestId")?.to_owned();
-    if let Some(job) = find_job(VaultJobKind::Login, &request_id)? {
+    let job_client = vault_job_client(&state)?;
+    if let Some(job) = find_job(&job_client, VaultJobKind::Login, &request_id).await? {
         return Ok(Json(job));
     }
     if !studio_runtime_services::vault::valid_profile(&profile) {
@@ -180,9 +322,10 @@ async fn aws_login(
         .clone()
         .ok_or_else(ApiError::internal)?;
     let initial = serde_json::json!({"requestId":request_id,"state":"running"});
-    let (job, started) = reserve_job(VaultJobKind::Login, &request_id, initial)?;
+    let (job, started) =
+        reserve_job(&job_client, VaultJobKind::Login, &request_id, initial).await?;
     if started {
-        tokio::spawn(run_login_job(request_id, profile, host_command));
+        tokio::spawn(run_login_job(request_id, profile, host_command, job_client));
     }
     Ok(Json(job))
 }
@@ -197,7 +340,8 @@ async fn setup(
 ) -> Result<Json<Value>, ApiError> {
     let project_id = request_string(&body, "projectId")?.to_owned();
     let request_id = request_string(&body, "requestId")?.to_owned();
-    if let Some(job) = find_job(VaultJobKind::Setup, &request_id)? {
+    let job_client = vault_job_client(&state)?;
+    if let Some(job) = find_job(&job_client, VaultJobKind::Setup, &request_id).await? {
         return Ok(Json(job));
     }
     let requested_prefix = request_string(&body, "prefix")?.to_owned();
@@ -221,7 +365,8 @@ async fn setup(
         .ok_or_else(ApiError::internal)?;
     let writer = host_command.writer(&source);
     let initial = serde_json::json!({"requestId":request_id,"state":"running","prefix":prefix});
-    let (job, started) = reserve_job(VaultJobKind::Setup, &request_id, initial)?;
+    let (job, started) =
+        reserve_job(&job_client, VaultJobKind::Setup, &request_id, initial).await?;
     if started {
         tokio::spawn(run_setup_job(
             request_id,
@@ -230,6 +375,7 @@ async fn setup(
             region,
             writer,
             host_command.clone(),
+            job_client,
         ));
     }
     Ok(Json(job))
@@ -294,48 +440,86 @@ async fn setup_facts(
     .map_err(vault_error)
 }
 
-fn find_job(kind: VaultJobKind, request_id: &str) -> Result<Option<Value>, ApiError> {
-    vault_jobs()
-        .lock()
-        .map_err(|_| ApiError::internal())
-        .map(|jobs| jobs.jobs.get(&(kind, request_id.to_owned())).cloned())
+fn vault_job_client(state: &HttpState) -> Result<VaultJobClient, ApiError> {
+    state
+        .vault_job_client
+        .clone()
+        .ok_or_else(ApiError::internal)
 }
 
-fn reserve_job(
+async fn find_job(
+    client: &VaultJobClient,
+    kind: VaultJobKind,
+    request_id: &str,
+) -> Result<Option<Value>, ApiError> {
+    let (reply, result) = oneshot::channel();
+    client
+        .sender
+        .send(VaultJobMessage::Find {
+            kind,
+            request_id: request_id.to_owned(),
+            reply,
+        })
+        .await
+        .map_err(|_| ApiError::internal())?;
+    result.await.map_err(|_| ApiError::internal())
+}
+
+async fn reserve_job(
+    client: &VaultJobClient,
     kind: VaultJobKind,
     request_id: &str,
     initial: Value,
 ) -> Result<(Value, bool), ApiError> {
-    let mut jobs = vault_jobs().lock().map_err(|_| ApiError::internal())?;
-    let key = (kind, request_id.to_owned());
-    if let Some(job) = jobs.jobs.get(&key) {
-        return Ok((job.clone(), false));
-    }
-    jobs.order.push_back(key.clone());
-    jobs.jobs.insert(key, initial.clone());
-    while jobs.order.len() > 50 {
-        if let Some(expired) = jobs.order.pop_front() {
-            jobs.jobs.remove(&expired);
-        }
-    }
-    Ok((initial, true))
+    let (reply, result) = oneshot::channel();
+    client
+        .sender
+        .send(VaultJobMessage::Reserve {
+            kind,
+            request_id: request_id.to_owned(),
+            initial,
+            reply,
+        })
+        .await
+        .map_err(|_| ApiError::internal())?;
+    result.await.map_err(|_| ApiError::internal())
 }
 
-fn update_job(kind: VaultJobKind, request_id: &str, update: impl FnOnce(&mut Value)) {
-    if let Ok(mut jobs) = vault_jobs().lock()
-        && let Some(job) = jobs.jobs.get_mut(&(kind, request_id.to_owned()))
+fn update_job(
+    client: &VaultJobClient,
+    kind: VaultJobKind,
+    request_id: &str,
+    fields: Value,
+    clear_progress: bool,
+) {
+    client
+        .sender
+        .try_send(VaultJobMessage::Update {
+            kind,
+            request_id: request_id.to_owned(),
+            fields,
+            clear_progress,
+            reply: None,
+        })
+        .ok();
+}
+
+async fn finish_job(client: &VaultJobClient, kind: VaultJobKind, request_id: &str, fields: Value) {
+    let (reply, result) = oneshot::channel();
+    if client
+        .sender
+        .send(VaultJobMessage::Update {
+            kind,
+            request_id: request_id.to_owned(),
+            fields,
+            clear_progress: true,
+            reply: Some(reply),
+        })
+        .await
+        .is_ok()
     {
-        update(job);
+        drop(result.await);
     }
-}
-
-fn finish_job(kind: VaultJobKind, request_id: &str, mut fields: Value) {
-    update_job(kind, request_id, |job| {
-        if let (Some(job), Some(fields)) = (job.as_object_mut(), fields.as_object_mut()) {
-            job.remove("progress");
-            job.extend(std::mem::take(fields));
-        }
-    });
 }
 
 /// Consume newline-delimited output while keeping an unfinished record bounded.
@@ -375,7 +559,11 @@ fn consume_progress_lines(
     oversized
 }
 
-fn login_progress(request_id: &str, line: &str) -> Result<(), &'static str> {
+fn login_progress(
+    client: &VaultJobClient,
+    request_id: &str,
+    line: &str,
+) -> Result<(), &'static str> {
     let value = serde_json::from_str::<Value>(line).map_err(|_| INVALID_LOGIN_JSON)?;
     if let Some(page) = value.get("page").and_then(Value::as_str)
         && page.starts_with("https://")
@@ -387,19 +575,26 @@ fn login_progress(request_id: &str, line: &str) -> Result<(), &'static str> {
                 other => other.to_string(),
             })
             .unwrap_or_default();
-        update_job(VaultJobKind::Login, request_id, |job| {
-            job["page"] = Value::String(page.to_owned());
-            job["code"] = Value::String(code.chars().take(40).collect());
-        });
+        update_job(
+            client,
+            VaultJobKind::Login,
+            request_id,
+            serde_json::json!({"page":page,"code":code.chars().take(40).collect::<String>()}),
+            false,
+        );
     }
     Ok(())
 }
 
-fn setup_progress(request_id: &str, line: &str) {
+fn setup_progress(client: &VaultJobClient, request_id: &str, line: &str) {
     if let Some(progress) = line.strip_prefix("layr-desk: ") {
-        update_job(VaultJobKind::Setup, request_id, |job| {
-            job["progress"] = Value::String(progress.trim().chars().take(200).collect());
-        });
+        update_job(
+            client,
+            VaultJobKind::Setup,
+            request_id,
+            serde_json::json!({"progress":progress.trim().chars().take(200).collect::<String>()}),
+            false,
+        );
     }
 }
 
@@ -407,6 +602,7 @@ async fn run_login_job(
     request_id: String,
     profile: String,
     host_command: studio_runtime_services::vault::VaultHostCommand,
+    job_client: VaultJobClient,
 ) {
     let args = vec![
         "aws-login".to_owned(),
@@ -424,7 +620,7 @@ async fn run_login_job(
         let oversized =
             consume_progress_lines(&mut pending, &mut discarding_oversized, chunk, |line| {
                 if output_error.is_none()
-                    && let Err(error) = login_progress(&request_id, line)
+                    && let Err(error) = login_progress(&job_client, &request_id, line)
                 {
                     output_error = Some(error);
                 }
@@ -440,40 +636,48 @@ async fn run_login_job(
     if output_error.is_none()
         && !discarding_oversized
         && !pending.is_empty()
-        && let Err(error) = login_progress(&request_id, pending.trim_end_matches('\r'))
+        && let Err(error) = login_progress(&job_client, &request_id, pending.trim_end_matches('\r'))
     {
         output_error = Some(error);
     }
     if let Some(error) = output_error {
         finish_job(
+            &job_client,
             VaultJobKind::Login,
             &request_id,
             serde_json::json!({"state":"failed","error":error}),
-        );
+        )
+        .await;
         return;
     }
     match result {
         Ok(result) if result.code == Some(0) && !result.timed_out => {
             finish_job(
+                &job_client,
                 VaultJobKind::Login,
                 &request_id,
                 serde_json::json!({"state":"done"}),
-            );
+            )
+            .await;
         }
         Ok(result) => {
             let error = desk_reason(&result.stderr, &result.stdout);
             finish_job(
+                &job_client,
                 VaultJobKind::Login,
                 &request_id,
                 serde_json::json!({"state":"failed","error":error}),
-            );
+            )
+            .await;
         }
         Err(error) => {
             finish_job(
+                &job_client,
                 VaultJobKind::Login,
                 &request_id,
                 serde_json::json!({"state":"failed","error":error.to_string()}),
-            );
+            )
+            .await;
         }
     }
 }
@@ -485,6 +689,7 @@ async fn run_setup_job(
     region: String,
     writer: String,
     host_command: studio_runtime_services::vault::VaultHostCommand,
+    job_client: VaultJobClient,
 ) {
     let args = vec![
         "deploy".to_owned(),
@@ -506,7 +711,7 @@ async fn run_setup_job(
         }
         let oversized =
             consume_progress_lines(&mut pending, &mut discarding_oversized, chunk, |line| {
-                setup_progress(&request_id, line)
+                setup_progress(&job_client, &request_id, line)
             });
         if oversized {
             output_error = Some(OVERSIZED_PROGRESS_LINE);
@@ -517,14 +722,16 @@ async fn run_setup_job(
         .await;
     drop(on_output);
     if output_error.is_none() && !discarding_oversized && !pending.is_empty() {
-        setup_progress(&request_id, pending.trim_end_matches('\r'));
+        setup_progress(&job_client, &request_id, pending.trim_end_matches('\r'));
     }
     if let Some(error) = output_error {
         finish_job(
+            &job_client,
             VaultJobKind::Setup,
             &request_id,
             serde_json::json!({"state":"failed","error":error}),
-        );
+        )
+        .await;
         return;
     }
     match result {
@@ -536,39 +743,53 @@ async fn run_setup_job(
                 .and_then(|line| serde_json::from_str::<Value>(line.trim()).ok())
                 .and_then(|value| value.get("site").and_then(Value::as_str).map(str::to_owned));
             match site {
-                Some(site) => finish_job(
-                    VaultJobKind::Setup,
-                    &request_id,
-                    serde_json::json!({"state":"done","site":site}),
-                ),
+                Some(site) => {
+                    finish_job(
+                        &job_client,
+                        VaultJobKind::Setup,
+                        &request_id,
+                        serde_json::json!({"state":"done","site":site}),
+                    )
+                    .await
+                }
                 None => finish_job(
+                    &job_client,
                     VaultJobKind::Setup,
                     &request_id,
                     serde_json::json!({"state":"failed","error":"layr-desk returned invalid JSON"}),
-                ),
+                )
+                .await,
             }
         }
         Ok(result) if result.code == Some(3) => {
             let error = desk_reason(&result.stderr, &result.stdout);
             finish_job(
+                &job_client,
                 VaultJobKind::Setup,
                 &request_id,
                 serde_json::json!({"state":"signin","error":error}),
-            );
+            )
+            .await;
         }
         Ok(result) => {
             let error = desk_reason(&result.stderr, &result.stdout);
             finish_job(
+                &job_client,
                 VaultJobKind::Setup,
                 &request_id,
                 serde_json::json!({"state":"failed","error":error}),
-            );
+            )
+            .await;
         }
-        Err(error) => finish_job(
-            VaultJobKind::Setup,
-            &request_id,
-            serde_json::json!({"state":"failed","error":error.to_string()}),
-        ),
+        Err(error) => {
+            finish_job(
+                &job_client,
+                VaultJobKind::Setup,
+                &request_id,
+                serde_json::json!({"state":"failed","error":error.to_string()}),
+            )
+            .await
+        }
     }
 }
 
@@ -628,8 +849,9 @@ inventory::submit! {
 #[cfg(test)]
 mod tests {
     use super::{
-        GuestRpc, INVALID_LOGIN_JSON, OVERSIZED_PROGRESS_LINE, VAULT_PROGRESS_LINE_MAX_BYTES,
-        VaultJobKind, consume_progress_lines, find_job, reserve_job, run_login_job, run_setup_job,
+        GuestRpc, INVALID_LOGIN_JSON, OVERSIZED_PROGRESS_LINE, VAULT_JOB_CAPACITY,
+        VAULT_PROGRESS_LINE_MAX_BYTES, VaultJobClient, VaultJobKind, VaultJobOwner,
+        consume_progress_lines, find_job, reserve_job, run_login_job, run_setup_job,
     };
     use crate::router::HttpState;
     use axum::body::Body;
@@ -721,6 +943,12 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         )
+    }
+
+    async fn test_job_client() -> (VaultJobOwner, VaultJobClient) {
+        let owner = VaultJobOwner::start();
+        let client = owner.client();
+        (owner, client)
     }
 
     #[test]
@@ -872,12 +1100,12 @@ mod tests {
             .unwrap();
         assert_eq!(
             status,
-            StatusCode::NOT_IMPLEMENTED,
+            StatusCode::SERVICE_UNAVAILABLE,
             "{}",
             String::from_utf8_lossy(&body)
         );
         let body = String::from_utf8_lossy(&body);
-        assert!(body.contains("linux-vm/guest-rpc"));
+        assert!(body.contains("Linux VM guest RPC is unavailable"));
         assert!(!body.contains("generated-test-value"));
         assert!(!state.path().join("layr-projects").exists());
     }
@@ -886,49 +1114,71 @@ mod tests {
     #[tokio::test]
     async fn malformed_login_json_fails_the_job() {
         let root = tempfile::tempdir().unwrap();
+        let (owner, client) = test_job_client().await;
         let request_id = test_request_id("malformed-login");
         let host_command = fake_host_command(root.path(), "printf '%s\\n' '{malformed'");
         reserve_job(
+            &client,
             VaultJobKind::Login,
             &request_id,
             json!({"requestId":request_id,"state":"running"}),
         )
+        .await
         .unwrap();
 
-        run_login_job(request_id.clone(), "default".to_owned(), host_command).await;
+        run_login_job(
+            request_id.clone(),
+            "default".to_owned(),
+            host_command,
+            client.clone(),
+        )
+        .await;
 
-        let job = find_job(VaultJobKind::Login, &request_id).unwrap().unwrap();
+        let job = find_job(&client, VaultJobKind::Login, &request_id)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(job["state"], "failed");
         assert_eq!(job["error"], INVALID_LOGIN_JSON);
+        owner.shutdown().await.unwrap();
     }
 
     #[cfg(unix)]
     #[tokio::test]
     async fn oversized_login_and_setup_lines_fail_the_jobs_with_bounded_buffers() {
         let root = tempfile::tempdir().unwrap();
+        let (owner, client) = test_job_client().await;
         let login_id = test_request_id("oversized-login");
         reserve_job(
+            &client,
             VaultJobKind::Login,
             &login_id,
             json!({"requestId":login_id,"state":"running"}),
         )
+        .await
         .unwrap();
         run_login_job(
             login_id.clone(),
             "default".to_owned(),
             fake_host_command(root.path(), "printf '%16385s' ''"),
+            client.clone(),
         )
         .await;
-        let login = find_job(VaultJobKind::Login, &login_id).unwrap().unwrap();
+        let login = find_job(&client, VaultJobKind::Login, &login_id)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(login["state"], "failed");
         assert_eq!(login["error"], OVERSIZED_PROGRESS_LINE);
 
         let setup_id = test_request_id("oversized-setup");
         reserve_job(
+            &client,
             VaultJobKind::Setup,
             &setup_id,
             json!({"requestId":setup_id,"state":"running"}),
         )
+        .await
         .unwrap();
         run_setup_job(
             setup_id.clone(),
@@ -937,10 +1187,50 @@ mod tests {
             "eu-central-1".to_owned(),
             "writer".to_owned(),
             fake_host_command(root.path(), "printf '%16385s' '' >&2"),
+            client.clone(),
         )
         .await;
-        let setup = find_job(VaultJobKind::Setup, &setup_id).unwrap().unwrap();
+        let setup = find_job(&client, VaultJobKind::Setup, &setup_id)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(setup["state"], "failed");
         assert_eq!(setup["error"], OVERSIZED_PROGRESS_LINE);
+        owner.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn login_capacity_does_not_evict_setup_receipts() {
+        let (owner, client) = test_job_client().await;
+        let setup_id = test_request_id("retained-setup");
+        reserve_job(
+            &client,
+            VaultJobKind::Setup,
+            &setup_id,
+            json!({"requestId":setup_id,"state":"done"}),
+        )
+        .await
+        .unwrap();
+
+        for index in 0..VAULT_JOB_CAPACITY {
+            let request_id = test_request_id(&format!("login-{index}"));
+            reserve_job(
+                &client,
+                VaultJobKind::Login,
+                &request_id,
+                json!({"requestId":request_id,"state":"done"}),
+            )
+            .await
+            .unwrap();
+        }
+
+        assert_eq!(
+            find_job(&client, VaultJobKind::Setup, &setup_id)
+                .await
+                .unwrap()
+                .unwrap()["state"],
+            "done"
+        );
+        owner.shutdown().await.unwrap();
     }
 }
