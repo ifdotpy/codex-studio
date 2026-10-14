@@ -307,7 +307,7 @@ async fn image_workspace_pending_event_is_refused_before_account_provider_launch
         })
         .unwrap();
     fixture.enqueue(0, "image-workspace-refused");
-    let (launcher, _writes) = scripted();
+    let (launcher, mut writes) = scripted();
     let mut registry = AccountRegistry::new(fixture.store.clone(), launcher.clone())
         .await
         .unwrap();
@@ -315,16 +315,49 @@ async fn image_workspace_pending_event_is_refused_before_account_provider_launch
     registry.reconcile(None).await.unwrap();
 
     assert!(launcher.opened.lock().unwrap().is_empty());
+    let record = || {
+        let db = fixture.store.read().unwrap();
+        db.query_row(
+            "SELECT record FROM runtime_agents WHERE id=?1",
+            [agent_id],
+            |row| row.get::<_, String>(0),
+        )
+        .unwrap()
+    };
     let db = fixture.store.read().unwrap();
-    let status: String = db
+    let event_status: String = db
         .query_row(
             "SELECT status FROM runtime_events WHERE id='annotation:image-workspace-refused'",
             [],
             |row| row.get(0),
         )
         .unwrap();
-    assert_eq!(status, "pending");
+    assert_eq!(event_status, "pending");
+    let held: Value = serde_json::from_str(&record()).unwrap();
+    assert_eq!(held["status"], "paused");
+    assert_eq!(held["error"], "workspace-state/image-execution");
+    assert_eq!(held["nativeFailureHold"], true);
+    assert_eq!(held["autoWake"], false);
     registry.shutdown().await.unwrap();
+
+    let mut restarted = AccountRegistry::new(fixture.store.clone(), launcher.clone())
+        .await
+        .unwrap();
+    restarted.reconcile(None).await.unwrap();
+    assert_eq!(serde_json::from_str::<Value>(&record()).unwrap(), held);
+    assert!(launcher.opened.lock().unwrap().is_empty());
+    assert!(writes.try_recv().is_err());
+    let db = fixture.store.read().unwrap();
+    let event_status: String = db
+        .query_row(
+            "SELECT status FROM runtime_events WHERE id='annotation:image-workspace-refused'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(event_status, "pending");
+    drop(db);
+    restarted.shutdown().await.unwrap();
 }
 
 #[tokio::test]

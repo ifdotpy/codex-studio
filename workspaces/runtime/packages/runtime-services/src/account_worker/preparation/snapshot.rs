@@ -17,6 +17,7 @@ pub struct PreparationResources {
     pub role_guidance: BTreeMap<PathBuf, String>,
     pub model_catalog: ModelCatalogService,
     pub account_home: String,
+    pub server_source_root: PathBuf,
     /// Resolved interpreter used to start this runtime, also embedded in guidance.
     pub python_executable: PathBuf,
 }
@@ -25,6 +26,26 @@ impl PreparationResources {
         account_home: String,
         model_catalog: ModelCatalogService,
         python_executable: PathBuf,
+    ) -> Result<Self, WorkerError> {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../..")
+            .canonicalize()
+            .map_err(|_| invalid("repository root"))?;
+        Self::bundled_at(
+            account_home,
+            model_catalog,
+            python_executable,
+            root.clone(),
+            root.join("workspaces/runtime/apps/server/src"),
+        )
+    }
+
+    pub fn bundled_at(
+        account_home: String,
+        model_catalog: ModelCatalogService,
+        python_executable: PathBuf,
+        root: PathBuf,
+        server_source_root: PathBuf,
     ) -> Result<Self, WorkerError> {
         if !python_executable.is_absolute() {
             return Err(refusal("preparation/resolved-python-required".into()));
@@ -41,10 +62,6 @@ impl PreparationResources {
                 .map_err(|_| invalid("preparation resources"))?,
             "preparation resources",
         )?;
-        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../../..")
-            .canonicalize()
-            .map_err(|_| invalid("repository root"))?;
         let legacy_tools = decode(
             serde_json::from_str(include_str!(
                 "../../../../../../../.agents/skills/codex-workspace/references/native-tools.json"
@@ -78,6 +95,7 @@ impl PreparationResources {
             model_catalog,
             python_executable,
             account_home,
+            server_source_root,
         })
     }
 }
@@ -263,11 +281,8 @@ pub(super) fn guidance(
         }
         let path = state_root.join("progress").join(id).join("PROGRESS.md");
         let script = resources
-            .skills_root
-            .parent()
-            .and_then(Path::parent)
-            .ok_or_else(|| invalid("skills root"))?
-            .join("workspaces/runtime/apps/server/src/codex_progress_layout.py");
+            .server_source_root
+            .join("codex_progress_layout.py");
         let python = resources.python_executable.to_string_lossy();
         resources
             .progress_template
