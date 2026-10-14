@@ -511,9 +511,13 @@ async fn finalize_accepted_archive(
                 };
                 return Ok((work, serde_json::json!({"status":"kept","reason":reason}), false));
             }
-        } else if work["mergeIntent"]["status"] != "completed"
-            || work["mergeIntent"]["resultId"] != latest["id"]
-            || work["mergeIntent"]["revision"] != revision
+        } else if !studio_runtime_services::work_write::vm_merge_confirmed(
+            &connection,
+            &work_id_for_read,
+            latest["id"].as_str().unwrap_or_default(),
+            revision,
+        )
+        .map_err(write_error)?
         {
             return Ok((work, serde_json::json!({"status":"kept","reason":"The layr result merge is not confirmed"}), false));
         }

@@ -96,11 +96,11 @@ while True:
         if b'\n' not in frame: continue
         request = json.loads(bytes(frame).split(b'\n', 1)[0])
         method, params = request['method'], request['params']
-        intent_key = 'submissionIntent' if method == 'line.evidence' else 'mergeIntent'
+        kind = 'submission' if method == 'line.evidence' else 'merge'
         with sqlite3.connect(database_path) as db:
-            row = db.execute('SELECT record FROM runtime_work WHERE json_extract(record, ?) = ?',
-                             ('$.%s.requestId' % intent_key, request['id'])).fetchone()
-        intent_status = json.loads(row[0])[intent_key]['status'] if row else None
+            row = db.execute('SELECT result FROM runtime_operation_receipts WHERE id LIKE ? AND json_extract(result,\'$.requestId\') = ?',
+                             ('work-write-vm-intent:%s:%%' % kind, request['id'])).fetchone()
+        intent_status = json.loads(row[0])['status'] if row else None
         with open(calls_path, 'a', encoding='utf-8') as output:
             output.write(json.dumps({**request, 'intentStatus': intent_status}) + '\n')
         try:
@@ -222,19 +222,6 @@ def _normal(value, work_ids=None, aliases=None, field=None):
     return value
 
 
-def without_vm_intents(value):
-    """Remove Rust-only durable intent metadata from Python result parity."""
-    if isinstance(value, dict):
-        return {
-            key: without_vm_intents(item)
-            for key, item in value.items()
-            if key not in {"submissionIntent", "mergeIntent"}
-        }
-    if isinstance(value, list):
-        return [without_vm_intents(item) for item in value]
-    return value
-
-
 def snapshot(state: Path):
     """Normalize work-write state for the Python/Rust parity assertion."""
     with closing(sqlite3.connect(state / "canvas.sqlite3")) as database:
@@ -252,7 +239,7 @@ def snapshot(state: Path):
                           "restartRecovery", "connectionRecovery", "worktreePreparation"):
                 record.pop(field, None)
             agents.append((identity, _normal(record)))
-        receipts = [(identity, signature, _normal(json.loads(result), work_ids)) for identity, signature, result in database.execute("SELECT id,signature,result FROM runtime_operation_receipts ORDER BY id")]
+        receipts = [(identity, signature, _normal(json.loads(result), work_ids)) for identity, signature, result in database.execute("SELECT id,signature,result FROM runtime_operation_receipts WHERE id NOT LIKE 'work-write-vm-intent:%' ORDER BY id")]
         events = []
         for row in database.execute("SELECT id,agent,kind,text,status,created,epoch,turn_id,error FROM runtime_events"):
             identity, agent, kind, body, status, created, epoch, turn_id, error = row
@@ -871,18 +858,17 @@ class WorkWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         actual_submit = self.post_as(self.worker_id, submit)
         self.assertEqual(actual_submit.status, 200, actual_submit.body[:1000])
         actual_state = snapshot(self.backend.state)
-        task_key = actual_state["_work_ids"][task["id"]]
-        actual_work = next(record for identity, record in actual_state["runtime_work"] if identity == task_key)
-        self.assertEqual(actual_work["submissionIntent"]["status"], "completed")
-        self.assertEqual(actual_work["submissionIntent"]["requestId"],
+        with closing(fixture_connection(self.backend.state / "canvas.sqlite3")) as database:
+            intent = json.loads(database.execute(
+                "SELECT result FROM runtime_operation_receipts WHERE id=?",
+                (f"work-write-vm-intent:submission:{task['id']}",),
+            ).fetchone()[0])
+        self.assertEqual(intent["status"], "completed")
+        self.assertEqual(intent["requestId"],
                          "layr-evidence:" + self.worker_id + ":vm-state-1")
-        actual_state["runtime_work"] = [
-            (identity, {key: value for key, value in record.items() if key != "submissionIntent"})
-            for identity, record in actual_state["runtime_work"]
-        ]
         aliases = result_id_aliases(expected_state, actual_state)
-        self.assertEqual(normal_result(without_vm_intents(actual_submit.json()), aliases),
-                         normal_result(without_vm_intents(expected_submit), aliases))
+        self.assertEqual(normal_result(actual_submit.json(), aliases),
+                         normal_result(expected_submit, aliases))
         actual_state, expected_state = compare_snapshots(expected_state, actual_state, aliases)
         self.assertEqual(actual_state, expected_state)
 
@@ -893,19 +879,17 @@ class WorkWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         actual_accept = self.post(accept)
         self.assertEqual(actual_accept.status, 200, actual_accept.body[:1000])
         actual_state = snapshot(self.backend.state)
-        task_key = actual_state["_work_ids"][task["id"]]
-        accepted_work = next(record for identity, record in actual_state["runtime_work"] if identity == task_key)
-        self.assertEqual(accepted_work["mergeIntent"]["status"], "completed")
-        self.assertEqual(accepted_work["mergeIntent"]["requestId"],
+        with closing(fixture_connection(self.backend.state / "canvas.sqlite3")) as database:
+            intent = json.loads(database.execute(
+                "SELECT result FROM runtime_operation_receipts WHERE id=?",
+                (f"work-write-vm-intent:merge:{task['id']}",),
+            ).fetchone()[0])
+        self.assertEqual(intent["status"], "completed")
+        self.assertEqual(intent["requestId"],
                          "layr-accept:" + expected_submit["results"][-1]["id"])
-        actual_state["runtime_work"] = [
-            (identity, {key: value for key, value in record.items()
-                        if key not in {"submissionIntent", "mergeIntent"}})
-            for identity, record in actual_state["runtime_work"]
-        ]
         aliases = result_id_aliases(expected_state, actual_state)
-        self.assertEqual(normal_result(without_vm_intents(actual_accept.json()), aliases),
-                         normal_result(without_vm_intents(expected_accept), aliases))
+        self.assertEqual(normal_result(actual_accept.json(), aliases),
+                         normal_result(expected_accept, aliases))
         actual_state, expected_state = compare_snapshots(expected_state, actual_state, aliases)
         self.assertEqual(actual_state, expected_state)
         self.assertEqual([call["intentStatus"] for call in guest.calls], ["pending", "pending"])
@@ -927,8 +911,8 @@ class WorkWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
                               "id": "vm-before-intent-submit"}
         before_intent_snapshot = snapshot(self.backend.state)
         with closing(fixture_connection(self.backend.state / "canvas.sqlite3")) as database, database:
-            database.execute("""CREATE TRIGGER fail_vm_intent BEFORE UPDATE ON runtime_work
-                WHEN json_extract(NEW.record,'$.submissionIntent.status')='pending'
+            database.execute("""CREATE TRIGGER fail_vm_intent BEFORE INSERT ON runtime_operation_receipts
+                WHEN NEW.id LIKE 'work-write-vm-intent:submission:%'
                 BEGIN SELECT RAISE(ABORT,'injected VM intent failure'); END""")
         call_count = len(guest.calls)
         refused_before_intent = self.post_as(self.worker_id, before_intent_body)
@@ -945,16 +929,18 @@ class WorkWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
                             "checks": "fail completion write", "revision": "vm-state-after-guest",
                             "id": "vm-after-guest-submit"}
         with closing(fixture_connection(self.backend.state / "canvas.sqlite3")) as database, database:
-            database.execute("""CREATE TRIGGER fail_vm_completion BEFORE UPDATE ON runtime_work
-                WHEN json_extract(NEW.record,'$.submissionIntent.status')='completed'
+            database.execute("""CREATE TRIGGER fail_vm_completion BEFORE UPDATE ON runtime_operation_receipts
+                WHEN NEW.id LIKE 'work-write-vm-intent:submission:%'
+                 AND json_extract(NEW.result,'$.status')='completed'
                 BEGIN SELECT RAISE(ABORT,'injected VM completion failure'); END""")
         call_count = len(guest.calls)
         failed_completion = self.post_as(self.worker_id, after_guest_body)
         self.assertNotEqual(failed_completion.status, 200, failed_completion.body[:1000])
         self.assertEqual(guest.calls[call_count]["method"], "line.evidence")
         with closing(fixture_connection(self.backend.state / "canvas.sqlite3")) as database:
-            row = database.execute("SELECT record FROM runtime_work WHERE id=?", (after_guest["id"],)).fetchone()
-        self.assertEqual(json.loads(row[0])["submissionIntent"]["status"], "pending")
+            row = database.execute("SELECT result FROM runtime_operation_receipts WHERE id=?",
+                                   (f"work-write-vm-intent:submission:{after_guest['id']}",)).fetchone()
+        self.assertEqual(json.loads(row[0])["status"], "pending")
         with closing(fixture_connection(self.backend.state / "canvas.sqlite3")) as database, database:
             database.execute("DROP TRIGGER fail_vm_completion")
         pending_snapshot = snapshot(self.backend.state)
@@ -978,8 +964,9 @@ class WorkWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         self.assertEqual(failed.status, 502, failed.body[:1000])
         self.assertEqual(guest.calls[call_count]["method"], "line.evidence")
         with closing(fixture_connection(self.backend.state / "canvas.sqlite3")) as database:
-            row = database.execute("SELECT record FROM runtime_work WHERE id=?", (unknown["id"],)).fetchone()
-        self.assertEqual(json.loads(row[0])["submissionIntent"]["status"], "unknown")
+            row = database.execute("SELECT result FROM runtime_operation_receipts WHERE id=?",
+                                   (f"work-write-vm-intent:submission:{unknown['id']}",)).fetchone()
+        self.assertEqual(json.loads(row[0])["status"], "unknown")
         before_retry = snapshot(self.backend.state)
         retry = self.post_as(self.worker_id, unknown_submit)
         self.assertIn(retry.status, (400, 409))
@@ -1009,8 +996,9 @@ class WorkWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         self.assertEqual(failed_merge.status, 502, failed_merge.body[:1000])
         self.assertEqual(guest.calls[call_count]["method"], "line.merge")
         with closing(fixture_connection(self.backend.state / "canvas.sqlite3")) as database:
-            row = database.execute("SELECT record FROM runtime_work WHERE id=?", (merge_task["id"],)).fetchone()
-        self.assertEqual(json.loads(row[0])["mergeIntent"]["status"], "unknown")
+            row = database.execute("SELECT result FROM runtime_operation_receipts WHERE id=?",
+                                   (f"work-write-vm-intent:merge:{merge_task['id']}",)).fetchone()
+        self.assertEqual(json.loads(row[0])["status"], "unknown")
         before_merge_retry = snapshot(self.backend.state)
         self.assertIn(self.post(merge_accept).status, (400, 409))
         self.assertEqual(snapshot(self.backend.state), before_merge_retry)
@@ -1332,10 +1320,12 @@ class WorkWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             self.assertEqual(vm_submit.status, 502, vm_submit.body[:1000])
             self.assertIn("Layr evidence request failed", vm_submit.json().get("error", ""))
             with closing(fixture_connection(self.backend.state / "canvas.sqlite3")) as database:
-                row = database.execute("SELECT record FROM runtime_work WHERE id=?", (vm_id,)).fetchone()
+                row = database.execute(
+                    "SELECT result FROM runtime_operation_receipts WHERE id=?",
+                    (f"work-write-vm-intent:submission:{vm_id}",),
+                ).fetchone()
             self.assertIsNotNone(row)
-            work = json.loads(row[0])
-            self.assertIn(work.get("submissionIntent", {}).get("status"), {"not_sent", "unknown"})
+            self.assertIn(json.loads(row[0]).get("status"), {"not_sent", "unknown"})
 
     def test_refusals_stale_versions_deleted_agent_and_failure_roll_back_all_tables(self):
         created = self.post({"action": "create", "title": "Refusal target"})

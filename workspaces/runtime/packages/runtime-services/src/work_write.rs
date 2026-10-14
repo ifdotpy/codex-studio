@@ -8,9 +8,11 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use rusqlite::OptionalExtension;
 use serde_json::{Value, json};
 use studio_runtime_store::{
-    AgentId, AgentRecord, AgentRepository, RuntimeStore, Transaction, WorkItemsRepository,
+    AgentId, AgentRecord, AgentRepository, Connection, RuntimeStore, Transaction,
+    WorkItemsRepository,
 };
 
 use crate::event_write::{self, EventWriteError as Error};
@@ -141,6 +143,47 @@ pub struct VmSubmissionCall {
     pub request_id: String,
 }
 
+fn vm_intent_id(kind: &str, task_id: &str) -> String {
+    format!("work-write-vm-intent:{kind}:{task_id}")
+}
+
+fn read_vm_intent(
+    connection: &Connection,
+    kind: &str,
+    task_id: &str,
+) -> Result<Option<Value>, WorkWriteError> {
+    let encoded = connection
+        .query_row(
+            "SELECT result FROM runtime_operation_receipts WHERE id=?1",
+            [vm_intent_id(kind, task_id)],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(studio_runtime_store::StoreError::from)?;
+    Ok(encoded
+        .map(|value| serde_json::from_str(&value).map_err(studio_runtime_store::StoreError::from))
+        .transpose()?)
+}
+
+fn write_vm_intent(
+    tx: &Transaction<'_>,
+    kind: &str,
+    task_id: &str,
+    intent: &Value,
+) -> Result<(), WorkWriteError> {
+    tx.execute(
+        "INSERT INTO runtime_operation_receipts(id,signature,result) VALUES (?1,?2,?3) \
+         ON CONFLICT(id) DO UPDATE SET signature=excluded.signature,result=excluded.result",
+        rusqlite::params![
+            vm_intent_id(kind, task_id),
+            "work-write-vm-intent-v1",
+            intent.to_string()
+        ],
+    )
+    .map_err(studio_runtime_store::StoreError::from)?;
+    Ok(())
+}
+
 pub enum VmSubmissionPreparation {
     NotVm,
     Replay,
@@ -196,8 +239,7 @@ pub fn prepare_vm_submission(
             return Ok(VmSubmissionPreparation::NotVm);
         }
         let rpc_id = format!("layr-evidence:{owner_id}:{}", input.revision);
-        let mut current = work.clone();
-        if let Some(intent) = current.get("submissionIntent") {
+        if let Some(intent) = read_vm_intent(tx, "submission", &input.task_id)? {
             match intent.get("status").and_then(Value::as_str) {
                 Some("pending" | "unknown") => {
                     return Err(Error::Conflict(
@@ -220,15 +262,16 @@ pub fn prepare_vm_submission(
                 _ => {}
             }
         }
-        current["submissionIntent"] = json!({
+        let intent = json!({
             "status":"pending",
             "requestId":rpc_id,
+            "taskId":input.task_id,
             "owner":owner_id,
             "revision":input.revision,
             "version":work["version"],
             "created":event_write::unix_time()?,
         });
-        WorkItemsRepository::update_work(tx, &input.task_id, &current)?;
+        write_vm_intent(tx, "submission", &input.task_id, &intent)?;
         Ok(VmSubmissionPreparation::Call(VmSubmissionCall {
             owner_id: owner_id.to_owned(),
             revision: input.revision.clone(),
@@ -246,25 +289,21 @@ pub fn finish_vm_submission(
     outcome: Result<Value, bool>,
 ) -> Result<Option<Value>, WorkWriteError> {
     store.transaction_with_error(|tx| {
-        let mut work = WorkItemsRepository::work_record(tx, task_id)?
+        WorkItemsRepository::work_record(tx, task_id)?
             .ok_or(Error::InvalidRequest("Unknown work item"))?;
-        let mut intent = work
-            .get("submissionIntent")
-            .cloned()
+        let mut intent = read_vm_intent(tx, "submission", task_id)?
             .filter(|value| value.get("requestId").and_then(Value::as_str) == Some(request_id))
             .ok_or(Error::Conflict("The layr evidence intent changed"))?;
         match outcome {
             Ok(evidence) => {
                 intent["status"] = json!("completed");
                 intent["evidence"] = evidence.clone();
-                work["submissionIntent"] = intent;
-                WorkItemsRepository::update_work(tx, task_id, &work)?;
+                write_vm_intent(tx, "submission", task_id, &intent)?;
                 Ok(Some(evidence))
             }
             Err(uncertain) => {
                 intent["status"] = json!(if uncertain { "unknown" } else { "not_sent" });
-                work["submissionIntent"] = intent;
-                WorkItemsRepository::update_work(tx, task_id, &work)?;
+                write_vm_intent(tx, "submission", task_id, &intent)?;
                 Ok(None)
             }
         }
@@ -336,7 +375,7 @@ pub fn prepare_vm_accept(
             .ok_or_else(|| invalid("runtime_work", task_id))?
             .to_owned();
         let rpc_id = format!("layr-accept:{result_id}");
-        if let Some(intent) = work.get("mergeIntent") {
+        if let Some(intent) = read_vm_intent(tx, "merge", task_id)? {
             if intent.get("requestId").and_then(Value::as_str) == Some(rpc_id.as_str()) {
                 match intent.get("status").and_then(Value::as_str) {
                     Some("completed") => {
@@ -352,16 +391,16 @@ pub fn prepare_vm_accept(
                 }
             }
         }
-        let mut current = work;
-        current["mergeIntent"] = json!({
+        let intent = json!({
             "status":"pending",
             "requestId":rpc_id,
+            "taskId":task_id,
             "resultId":result_id,
             "revision":revision,
             "owner":owner_id,
             "created":event_write::unix_time()?,
         });
-        WorkItemsRepository::update_work(tx, task_id, &current)?;
+        write_vm_intent(tx, "merge", task_id, &intent)?;
         Ok(VmAcceptPreparation::Call(VmMergeCall {
             lead_id: lead.id.0,
             owner_id,
@@ -379,11 +418,9 @@ pub fn finish_vm_accept(
     uncertain: Option<bool>,
 ) -> Result<(), WorkWriteError> {
     store.transaction_with_error(|tx| {
-        let mut work = WorkItemsRepository::work_record(tx, task_id)?
+        WorkItemsRepository::work_record(tx, task_id)?
             .ok_or(Error::InvalidRequest("Unknown work item"))?;
-        let mut intent = work
-            .get("mergeIntent")
-            .cloned()
+        let mut intent = read_vm_intent(tx, "merge", task_id)?
             .filter(|value| value.get("requestId").and_then(Value::as_str) == Some(request_id))
             .ok_or(Error::Conflict("The layr merge intent changed"))?;
         if let Some(uncertain) = uncertain {
@@ -391,10 +428,24 @@ pub fn finish_vm_accept(
         } else {
             intent["status"] = json!("completed");
         }
-        work["mergeIntent"] = intent;
-        WorkItemsRepository::update_work(tx, task_id, &work)?;
+        write_vm_intent(tx, "merge", task_id, &intent)?;
         Ok(())
     })
+}
+
+/// Verify the exact accepted result has a durable successful guest merge.
+pub fn vm_merge_confirmed(
+    connection: &Connection,
+    task_id: &str,
+    result_id: &str,
+    revision: &str,
+) -> Result<bool, WorkWriteError> {
+    let Some(intent) = read_vm_intent(connection, "merge", task_id)? else {
+        return Ok(false);
+    };
+    Ok(intent["status"] == "completed"
+        && intent["resultId"] == result_id
+        && intent["revision"] == revision)
 }
 
 pub enum WorkWrite {
