@@ -710,6 +710,22 @@ impl<R: ProviderAuthReader> AccountDriver<R> {
         project_snapshot(&state.value, &state.order)
     }
 
+    /// Internal selected-account record, including the non-secret identity pin.
+    pub(crate) fn internal_record(&self, account: &str) -> Result<Value, AccountDriverError> {
+        let state = self
+            .state
+            .lock()
+            .map_err(|_| AccountDriverError::Poisoned)?;
+        Ok(registry_account(&state.value, account)?.clone())
+    }
+
+    /// Stable, non-secret identity selected for a retained account session.
+    pub fn auth_pin(&self, account: &str) -> Result<Value, AccountDriverError> {
+        Ok(crate::claude_auth_wait::account_pin(
+            &self.internal_record(account)?,
+        ))
+    }
+
     /// Refresh the response projection from credentials without persisting it.
     pub fn listing_snapshot(&self) -> Result<AccountsSnapshot, AccountDriverError> {
         let state = self

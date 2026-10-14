@@ -4,6 +4,7 @@ use crate::{model_catalog::ModelCatalogService, thread_prepare as thread, turn_p
 use serde::{Deserialize, de::DeserializeOwned};
 use serde_json::Map;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use studio_runtime_store::{AgentRecord, Transaction};
 
 #[derive(Clone)]
@@ -19,6 +20,8 @@ pub struct PreparationResources {
     pub account_home: String,
     /// Resolved interpreter used to start this runtime, also embedded in guidance.
     pub python_executable: PathBuf,
+    pub claude_account_pin: Value,
+    pub account_driver: Option<Arc<crate::account_driver::AccountDriver>>,
 }
 impl PreparationResources {
     pub fn bundled(
@@ -78,6 +81,8 @@ impl PreparationResources {
             model_catalog,
             python_executable,
             account_home,
+            claude_account_pin: Value::Null,
+            account_driver: None,
         })
     }
 }
