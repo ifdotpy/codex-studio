@@ -214,6 +214,23 @@ mod tests {
     }
 
     #[test]
+    fn settings_reads_python_fallback_and_prefers_config() {
+        let directory = tempfile::tempdir().expect("temporary state directory");
+        let fallback = VmSettings {
+            cpus: 1,
+            ..VmSettings::defaults()
+        };
+        atomic_json(&directory.path().join("settings.json"), &fallback).unwrap();
+        assert_eq!(get_settings(directory.path()).unwrap(), fallback);
+        let configured = VmSettings {
+            cpus: fallback.cpus + 1,
+            ..fallback
+        };
+        atomic_json(&directory.path().join("config.json"), &configured).unwrap();
+        assert_eq!(get_settings(directory.path()).unwrap(), configured);
+    }
+
+    #[test]
     fn settings_validate_ranges_and_reject_shrinking_provisioned_disks() {
         assert!(
             VmSettings {
@@ -236,6 +253,64 @@ mod tests {
         )
         .unwrap_err();
         assert!(matches!(err, SettingsError::DiskShrink));
+    }
+
+    #[test]
+    fn provisioned_disks_grow_without_shrinking_existing_files() {
+        let directory = tempfile::tempdir().expect("temporary state directory");
+        let current = VmSettings::defaults();
+        atomic_json(&directory.path().join("config.json"), &current).unwrap();
+        fs::write(directory.path().join("system.raw"), []).unwrap();
+        fs::write(directory.path().join("data.raw"), []).unwrap();
+        let desired = VmSettings {
+            system_disk_bytes: current.system_disk_bytes + GIB,
+            data_disk_bytes: current.data_disk_bytes + GIB,
+            ..current
+        };
+        set_settings(directory.path(), desired, &StoppedControl).unwrap();
+        assert_eq!(
+            fs::metadata(directory.path().join("system.raw"))
+                .unwrap()
+                .len(),
+            desired.system_disk_bytes
+        );
+        assert_eq!(
+            fs::metadata(directory.path().join("data.raw"))
+                .unwrap()
+                .len(),
+            desired.data_disk_bytes
+        );
+    }
+
+    struct RunningControl;
+
+    impl GuestRpc for RunningControl {
+        fn stream(
+            &self,
+            _method: &str,
+            _params: &Value,
+            _request_id: Option<&str>,
+            _timeout: Duration,
+            _on_frame: &mut dyn FnMut(Value) -> Result<(), GuestError>,
+        ) -> Result<Value, GuestError> {
+            Ok(json!({"state":"running"}))
+        }
+    }
+
+    #[test]
+    fn running_vm_settings_refusal_has_no_write() {
+        let directory = tempfile::tempdir().expect("temporary state directory");
+        let settings = VmSettings::defaults();
+        atomic_json(&directory.path().join("settings.json"), &settings).unwrap();
+        let original = fs::read(directory.path().join("settings.json")).unwrap();
+        assert!(matches!(
+            set_settings(directory.path(), settings, &RunningControl),
+            Err(SettingsError::Running)
+        ));
+        assert_eq!(
+            fs::read(directory.path().join("settings.json")).unwrap(),
+            original
+        );
     }
 }
 

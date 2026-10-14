@@ -12,14 +12,12 @@ use super::{
 use crate::{error::ApiError, generated, router::HttpState};
 
 /// Narrow adapter for Python's `runtime.send(..., manual=false, delivery="after_turn")`.
-/// P03 has no actorless/system-input argument; the live lead is used as the sender so its
-/// epoch/admission checks still run. `send_followup` persists the non-manual follow-up event.
+/// `send_system_followup` persists the actorless non-manual follow-up event.
 trait HandoffPort {
     fn send_after_turn(
         &self,
         transaction: &Transaction<'_>,
-        lead: &str,
-        epoch: i64,
+        recipient: &str,
         request_id: &str,
         text: &str,
         now: f64,
@@ -36,8 +34,7 @@ impl HandoffPort for CoordinationHandoffPort {
     fn send_after_turn(
         &self,
         transaction: &Transaction<'_>,
-        lead: &str,
-        epoch: i64,
+        recipient: &str,
         request_id: &str,
         text: &str,
         now: f64,
@@ -46,12 +43,10 @@ impl HandoffPort for CoordinationHandoffPort {
         studio_runtime_services::coordination::PostMessageResult,
         studio_runtime_services::coordination::CoordinationError,
     > {
-        studio_runtime_services::coordination::send_followup(
+        studio_runtime_services::coordination::send_system_followup(
             transaction,
-            studio_runtime_services::coordination::AgentFollowup {
-                sender_id: lead,
-                sender_epoch: epoch,
-                recipient_id: lead,
+            studio_runtime_services::coordination::SystemFollowup {
+                recipient_id: recipient,
                 id: request_id,
                 text,
                 delivery: "after_turn",
@@ -187,7 +182,7 @@ async fn send_handoff(
     let custom_admission = state.message_admission;
     tokio::task::spawn_blocking(move || {
         let connection = store.read().map_err(|_| ApiError::internal())?;
-        let sender = AgentRepository::get(&connection, &AgentId::from(lead.as_str()))
+        AgentRepository::get(&connection, &AgentId::from(lead.as_str()))
             .map_err(|_| ApiError::internal())?
             .ok_or_else(ApiError::internal)?;
         let ingress_admission = if custom_admission.is_none() {
@@ -219,7 +214,6 @@ async fn send_handoff(
                 CoordinationHandoffPort.send_after_turn(
                     transaction,
                     &lead,
-                    sender.epoch,
                     &request_id,
                     &text,
                     now_seconds(),
@@ -239,6 +233,12 @@ async fn send_handoff(
 fn mac_error(error: mac_sync::MacSyncError) -> ApiError {
     match error {
         mac_sync::MacSyncError::Busy => ApiError::new(StatusCode::CONFLICT, error.to_string()),
+        mac_sync::MacSyncError::HandoffUnknown => {
+            ApiError::new(StatusCode::CONFLICT, error.to_string())
+        }
+        mac_sync::MacSyncError::Guest(ref guest) if guest.uncertain() => {
+            ApiError::new(StatusCode::CONFLICT, error.to_string())
+        }
         mac_sync::MacSyncError::Guest(_) => {
             ApiError::new(StatusCode::BAD_REQUEST, error.to_string())
         }
@@ -348,5 +348,84 @@ mod tests {
         assert_eq!(value["status"]["state"], "synced");
         assert_eq!(std::fs::read(folder.join("file.txt")).unwrap(), b"guest");
         server.join().unwrap();
+    }
+
+    #[tokio::test]
+    async fn config_http_contract_and_invalid_resolve_refusal_are_quiescent() {
+        let state_dir = tempfile::tempdir().unwrap();
+        let project = state_dir.path().join("layr-projects/p1");
+        let folder = state_dir.path().join("mac-folder");
+        std::fs::create_dir_all(project.join("sync")).unwrap();
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(
+            project.join("project.json"),
+            json!({"projectId":"p1","source":folder}).to_string(),
+        )
+        .unwrap();
+        std::fs::write(
+            project.join("sync/status.json"),
+            json!({"state":"syncing","conflicts":[],"choices":[],"withAgent":[],"deletes":0})
+                .to_string(),
+        )
+        .unwrap();
+        let state = crate::router::HttpState::new(
+            "fixture-token".into(),
+            "fixture".into(),
+            None,
+            state_dir.path().to_string_lossy().into_owned(),
+            49171,
+            None,
+            None,
+            None,
+        );
+        let app = crate::router::router(state).unwrap();
+        let request = |uri: &'static str, body: Value| {
+            axum::http::Request::builder()
+                .method("POST")
+                .uri(uri)
+                .header("host", "127.0.0.1:49171")
+                .header("x-canvas-token", "fixture-token")
+                .header(
+                    crate::schema::API_SCHEMA_HASH_HEADER,
+                    crate::schema::api_schema_hash(),
+                )
+                .header("content-type", "application/json")
+                .extension(axum::extract::ConnectInfo(
+                    "127.0.0.1:12345".parse::<std::net::SocketAddr>().unwrap(),
+                ))
+                .body(Body::from(body.to_string()))
+                .unwrap()
+        };
+        let before = std::fs::read(project.join("sync/status.json")).unwrap();
+        let refused = app
+            .clone()
+            .oneshot(request(
+                "/api/mac-sync/resolve",
+                json!({"projectId":"p1","path":"file.txt","choice":"both"}),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(refused.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            std::fs::read(project.join("sync/status.json")).unwrap(),
+            before
+        );
+        assert!(!project.join("sync/round.lock").exists());
+
+        let response = app
+            .oneshot(request(
+                "/api/mac-sync/config",
+                json!({"projectId":"p1","enabled":false,"allowDeletes":false}),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+            .await
+            .unwrap();
+        let value: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(value["state"], "paused");
+        assert_eq!(value["enabled"], false);
+        assert!(project.join("sync/config.json").is_file());
     }
 }

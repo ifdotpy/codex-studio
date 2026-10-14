@@ -156,4 +156,71 @@ mod tests {
         assert_eq!(value["allocatedDiskBytes"], 0);
         server.join().unwrap();
     }
+
+    #[tokio::test]
+    async fn settings_get_http_reports_defaults_and_post_refusal_writes_nothing() {
+        let state_dir = tempfile::tempdir().expect("temporary state directory");
+        let state = crate::router::HttpState::new(
+            "fixture-token".into(),
+            "fixture".into(),
+            None,
+            state_dir.path().to_string_lossy().into_owned(),
+            49171,
+            None,
+            None,
+            None,
+        );
+        let app = crate::router::router(state).expect("valid router");
+        let request = |method: axum::http::Method, body: Option<Value>| {
+            let mut builder = axum::http::Request::builder()
+                .method(method)
+                .uri("/api/linux-vm/settings")
+                .header("host", "127.0.0.1:49171")
+                .header("x-canvas-token", "fixture-token")
+                .header(
+                    crate::schema::API_SCHEMA_HASH_HEADER,
+                    crate::schema::api_schema_hash(),
+                )
+                .extension(axum::extract::ConnectInfo(
+                    "127.0.0.1:12345".parse::<std::net::SocketAddr>().unwrap(),
+                ));
+            if body.is_some() {
+                builder = builder.header("content-type", "application/json");
+            }
+            builder
+                .body(body.map_or_else(Body::empty, |value| Body::from(value.to_string())))
+                .unwrap()
+        };
+        let response = app
+            .clone()
+            .oneshot(request(axum::http::Method::GET, None))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let value: Value = serde_json::from_slice(
+            &axum::body::to_bytes(response.into_body(), 1024 * 1024)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(value["state"], "stopped");
+        assert_eq!(value["settings"]["memoryBytes"], 4 * 1024 * 1024 * 1024u64);
+        let before = std::fs::read_dir(state_dir.path().join("linux-vm"))
+            .ok()
+            .map(|entries| entries.count())
+            .unwrap_or(0);
+        let response = app
+            .oneshot(request(
+                axum::http::Method::POST,
+                Some(json!({"cpus":0,"memoryBytes":4294967296u64,"systemDiskBytes":17179869184u64,"dataDiskBytes":137438953472u64})),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let after = std::fs::read_dir(state_dir.path().join("linux-vm"))
+            .ok()
+            .map(|entries| entries.count())
+            .unwrap_or(0);
+        assert_eq!(before, after);
+    }
 }

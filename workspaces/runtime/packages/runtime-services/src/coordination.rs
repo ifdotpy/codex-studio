@@ -333,15 +333,54 @@ pub fn send_followup(
     input: AgentFollowup<'_>,
     admission: &dyn crate::message_admission::MessageAdmission,
 ) -> Result<PostMessageResult, CoordinationError> {
-    let AgentFollowup {
-        sender_id,
-        sender_epoch,
-        recipient_id,
-        id,
-        text,
-        delivery,
-        now,
-    } = input;
+    send_followup_inner(
+        transaction,
+        Some((input.sender_id, input.sender_epoch)),
+        input.recipient_id,
+        input.id,
+        input.text,
+        input.delivery,
+        input.now,
+        admission,
+    )
+}
+
+/// An actorless runtime follow-up, matching `Runtime.send(..., sender=None)`.
+pub struct SystemFollowup<'a> {
+    pub recipient_id: &'a str,
+    pub id: &'a str,
+    pub text: &'a str,
+    pub delivery: &'a str,
+    pub now: f64,
+}
+
+pub fn send_system_followup(
+    transaction: &Transaction<'_>,
+    input: SystemFollowup<'_>,
+    admission: &dyn crate::message_admission::MessageAdmission,
+) -> Result<PostMessageResult, CoordinationError> {
+    send_followup_inner(
+        transaction,
+        None,
+        input.recipient_id,
+        input.id,
+        input.text,
+        input.delivery,
+        input.now,
+        admission,
+    )
+}
+
+fn send_followup_inner(
+    transaction: &Transaction<'_>,
+    sender_identity: Option<(&str, i64)>,
+    recipient_id: &str,
+    id: &str,
+    text: &str,
+    delivery: &str,
+    now: f64,
+    admission: &dyn crate::message_admission::MessageAdmission,
+) -> Result<PostMessageResult, CoordinationError> {
     let text = crate::event_write::python_strip(text);
     if text.is_empty() || text.chars().count() > 32_000 {
         return Err(CoordinationError::InvalidRequest(
@@ -353,16 +392,23 @@ pub fn send_followup(
             "Choose queue, steer, after_tool or after_turn",
         ));
     }
-    let sender =
-        crate::event_write::checked_agent(transaction, sender_id).map_err(event_write_error)?;
-    if sender.epoch != sender_epoch || !crate::event_write::truthy(sender.extra.get("autoWake")) {
-        return Err(CoordinationError::InvalidRequest("Sender was stopped"));
-    }
     let mut recipient =
         crate::event_write::checked_agent(transaction, recipient_id).map_err(event_write_error)?;
-    if recipient.root_id != sender.root_id {
+    if let Some((sender_id, sender_epoch)) = sender_identity {
+        let sender =
+            crate::event_write::checked_agent(transaction, sender_id).map_err(event_write_error)?;
+        if sender.epoch != sender_epoch || !crate::event_write::truthy(sender.extra.get("autoWake"))
+        {
+            return Err(CoordinationError::InvalidRequest("Sender was stopped"));
+        }
+        if recipient.root_id != sender.root_id {
+            return Err(CoordinationError::InvalidRequest(
+                "This record belongs to another team",
+            ));
+        }
+    } else if !crate::event_write::truthy(recipient.extra.get("autoWake")) {
         return Err(CoordinationError::InvalidRequest(
-            "This record belongs to another team",
+            "Agent is stopped; no message was queued",
         ));
     }
     if safety_retry_active(&recipient) {
@@ -399,19 +445,21 @@ pub fn send_followup(
             event_inserted: false,
         });
     }
-    recipient.extra.insert("autoWake".into(), Value::Bool(true));
-    recipient.extra.insert("error".into(), Value::Null);
-    recipient.extra.insert("complaintMisses".into(), json!(0));
-    recipient.extra.remove("nativeFailureHold");
-    capacity_reset(transaction, &mut recipient)?;
-    studio_runtime_store::AgentRepository::put(transaction, &recipient)?;
-    let projection = serde_json::to_value(&recipient).map_err(StoreError::from)?;
-    crate::agents_create::publish_agent(transaction, &projection)?;
-    QueueWriteRepository::put_metadata(
-        transaction,
-        id,
-        &json!({"assets":[],"acceptedAt":now,"delivery":delivery,"senderId":sender_id}),
-    )?;
+    if sender_identity.is_some() {
+        recipient.extra.insert("autoWake".into(), Value::Bool(true));
+        recipient.extra.insert("error".into(), Value::Null);
+        recipient.extra.insert("complaintMisses".into(), json!(0));
+        recipient.extra.remove("nativeFailureHold");
+        capacity_reset(transaction, &mut recipient)?;
+        studio_runtime_store::AgentRepository::put(transaction, &recipient)?;
+        let projection = serde_json::to_value(&recipient).map_err(StoreError::from)?;
+        crate::agents_create::publish_agent(transaction, &projection)?;
+    }
+    let mut metadata = json!({"assets":[],"acceptedAt":now,"delivery":delivery});
+    if let Some((sender_id, _)) = sender_identity {
+        metadata["senderId"] = Value::String(sender_id.to_owned());
+    }
+    QueueWriteRepository::put_metadata(transaction, id, &metadata)?;
     let inserted = crate::event_write::enqueue_event(
         transaction,
         &recipient,
@@ -1047,6 +1095,8 @@ mod tests {
              CREATE TABLE graph_edges(id TEXT PRIMARY KEY,source TEXT NOT NULL,target TEXT NOT NULL,kind TEXT NOT NULL,UNIQUE(source,target,kind));
              CREATE TABLE messages(id TEXT PRIMARY KEY,room TEXT NOT NULL,author TEXT NOT NULL,text TEXT NOT NULL,at REAL NOT NULL,deliveries TEXT NOT NULL);
              CREATE TABLE runtime_agents(id TEXT PRIMARY KEY,record TEXT NOT NULL);
+             CREATE TABLE runtime_events(id TEXT PRIMARY KEY,agent TEXT,kind TEXT,text TEXT,status TEXT,created REAL,epoch INTEGER,turn_id TEXT,error TEXT);
+             CREATE TABLE runtime_event_meta(id TEXT PRIMARY KEY,record TEXT NOT NULL);
              CREATE TABLE graph_agents(id TEXT PRIMARY KEY,record TEXT NOT NULL);
              CREATE TABLE sync_entities(collection TEXT NOT NULL,id TEXT NOT NULL,seq INTEGER NOT NULL,hash TEXT NOT NULL,payload TEXT,deleted INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(collection,id));
              CREATE TABLE sync_documents(seq INTEGER PRIMARY KEY,scope TEXT NOT NULL,id TEXT NOT NULL,payload TEXT NOT NULL,deleted INTEGER NOT NULL DEFAULT 0);
@@ -1076,6 +1126,102 @@ mod tests {
     fn mixed_teams_are_refused() {
         assert!(require_single_team(["team-a", "team-b"].into_iter()).is_err());
         assert!(require_single_team(["team-a", "team-a"].into_iter()).is_ok());
+    }
+
+    struct AllowAdmission;
+
+    impl crate::message_admission::MessageAdmission for AllowAdmission {
+        fn workspace(
+            &self,
+            _tx: &studio_runtime_store::Transaction<'_>,
+            _agent: &studio_runtime_store::AgentRecord,
+        ) -> Result<Vec<serde_json::Value>, CoordinationError> {
+            Ok(Vec::new())
+        }
+
+        fn budget(
+            &self,
+            _tx: &studio_runtime_store::Transaction<'_>,
+            _agent: &studio_runtime_store::AgentRecord,
+            _root: &studio_runtime_store::AgentRecord,
+        ) -> Result<(), CoordinationError> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn actorless_followup_matches_python_runtime_send_row_and_replays_once() {
+        use super::{SystemFollowup, send_system_followup};
+
+        let mut connection = database();
+        let mut lead = studio_runtime_store::AgentRepository::get(
+            &connection,
+            &studio_runtime_store::AgentId::from("lead"),
+        )
+        .unwrap()
+        .unwrap();
+        lead.status = studio_runtime_store::AgentStatus::Running;
+        lead.extra.insert("autoWake".into(), json!(true));
+        lead.extra.insert("inFlight".into(), json!(true));
+        studio_runtime_store::AgentRepository::put(&connection, &lead)
+            .expect("recipient becomes an active lead");
+        let send = |connection: &mut Connection, text: &str| {
+            let tx = connection.transaction().expect("transaction starts");
+            let result = send_system_followup(
+                &tx,
+                SystemFollowup {
+                    recipient_id: "lead",
+                    id: "mac-conflict:state:abcd",
+                    text,
+                    delivery: "after_turn",
+                    now: 123.5,
+                },
+                &AllowAdmission,
+            );
+            if result.is_ok() {
+                tx.commit().expect("system follow-up commits");
+            }
+            result
+        };
+        send(&mut connection, " Mac conflict ").expect("Python-compatible actorless input queues");
+        send(&mut connection, " Mac conflict ").expect("same identity replay returns receipt");
+        let event: (String, String, String, String, i64) = connection
+            .query_row(
+                "SELECT id,agent,kind,text,epoch FROM runtime_events",
+                [],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
+            )
+            .expect("one follow-up row exists");
+        assert_eq!(
+            event,
+            (
+                "mac-conflict:state:abcd".to_owned(),
+                "lead".to_owned(),
+                "followup".to_owned(),
+                "Mac conflict".to_owned(),
+                0,
+            )
+        );
+        let metadata: String = connection
+            .query_row(
+                "SELECT record FROM runtime_event_meta WHERE id='mac-conflict:state:abcd'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("event metadata exists");
+        let metadata: serde_json::Value = serde_json::from_str(&metadata).unwrap();
+        assert_eq!(metadata["delivery"], "after_turn");
+        assert_eq!(metadata["assets"], json!([]));
+        assert!(metadata.get("senderId").is_none());
+        assert_eq!(count(&connection, "runtime_events"), 1);
     }
 
     #[test]

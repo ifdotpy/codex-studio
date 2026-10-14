@@ -1,4 +1,9 @@
 //! Mac folder conflict resolution and configuration, using the Linux VM guest RPC boundary.
+//!
+//! Registered Python compatibility difference: after an uncertain `sync.mac.handoff`, Python
+//! retries the same guest operation ID and relies on guest deduplication. Rust persists the
+//! request intent and refuses to resend an unknown outcome; a completed saved receipt is used
+//! to finish local writes after restart.
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
@@ -31,6 +36,8 @@ pub enum MacSyncError {
     NoConflict(String),
     #[error("The VM guest operation failed")]
     Guest(#[source] GuestError),
+    #[error("The Mac sync handoff outcome is unknown and will not be resent")]
+    HandoffUnknown,
     #[error("Mac sync state could not be read or written")]
     Io(#[source] std::io::Error),
     #[error("Mac sync state is invalid")]
@@ -138,6 +145,7 @@ pub fn resolve(
     let manifest_path = directory.join("manifest.json");
     let held_path = directory.join("held.json");
     let status_path = directory.join("status.json");
+    let intent_path = directory.join("handoff-intent.json");
     let mut manifest = read_json(&manifest_path, json!({}))?;
     let mut held = read_json(&held_path, json!({}))?;
     let mut status = read_json(&status_path, json!({}))?;
@@ -222,33 +230,74 @@ pub fn resolve(
                 );
                 let mut params =
                     json!({"projectId":project_id,"operationId":operation,"path":rel,"kind":kind});
-                if let Some(entry) = local {
-                    let bytes = read_sync_file(&path, &kind)?;
-                    let archive = directory.join(format!("handoff-{}.tar.gz", &operation[4..28]));
-                    if !archive.exists() {
-                        make_archive(
-                            &archive,
-                            rel,
-                            &kind,
-                            &bytes,
-                            entry["x"].as_u64().unwrap_or(0) as u32,
-                            &path,
-                        )?;
-                    }
-                    upload_archive(guest, &archive, &operation)?;
-                    params["upload"] = json!(format!(
-                        "/var/lib/codex-studio/projects/mac-sync-{}",
-                        &operation[4..28]
-                    ));
+                let prior_intent = read_json(&intent_path, Value::Null)?;
+                if matches!(prior_intent["state"].as_str(), Some("unknown" | "sending")) {
+                    return Err(MacSyncError::HandoffUnknown);
                 }
-                let result = guest
-                    .call(
-                        "sync.mac.handoff",
-                        &params,
-                        Some(&operation),
-                        HANDOFF_TIMEOUT,
-                    )
-                    .map_err(MacSyncError::Guest)?;
+                let prior_result = (prior_intent["operationId"] == operation
+                    && prior_intent["state"] == "completed")
+                    .then(|| prior_intent["result"].clone());
+                let result = if let Some(result) = prior_result {
+                    result
+                } else {
+                    save_json(
+                        &intent_path,
+                        &json!({"operationId":operation,"state":"sending"}),
+                    )?;
+                    let sent = (|| {
+                        if let Some(entry) = local {
+                            let bytes = read_sync_file(&path, &kind)?;
+                            let archive =
+                                directory.join(format!("handoff-{}.tar.gz", &operation[4..28]));
+                            if !archive.exists() {
+                                make_archive(
+                                    &archive,
+                                    rel,
+                                    &kind,
+                                    &bytes,
+                                    entry["x"].as_u64().unwrap_or(0) as u32,
+                                    &path,
+                                )?;
+                            }
+                            upload_archive(guest, &archive, &operation)?;
+                            params["upload"] = json!(format!(
+                                "/var/lib/codex-studio/projects/mac-sync-{}",
+                                &operation[4..28]
+                            ));
+                        }
+                        guest
+                            .call(
+                                "sync.mac.handoff",
+                                &params,
+                                Some(&operation),
+                                HANDOFF_TIMEOUT,
+                            )
+                            .map_err(MacSyncError::Guest)
+                    })();
+                    match sent {
+                        Ok(result) => {
+                            save_json(
+                                &intent_path,
+                                &json!({"operationId":operation,"state":"completed","result":result}),
+                            )?;
+                            result
+                        }
+                        Err(MacSyncError::Guest(error)) => {
+                            save_json(
+                                &intent_path,
+                                &json!({"operationId":operation,"state":if error.uncertain() {"unknown"} else {"not_sent"}}),
+                            )?;
+                            return Err(MacSyncError::Guest(error));
+                        }
+                        Err(error) => {
+                            save_json(
+                                &intent_path,
+                                &json!({"operationId":operation,"state":"not_sent"}),
+                            )?;
+                            return Err(error);
+                        }
+                    }
+                };
                 let line = result["line"]
                     .as_str()
                     .ok_or(MacSyncError::Invalid)?
@@ -308,6 +357,9 @@ pub fn resolve(
     save_json(&manifest_path, &manifest)?;
     save_json(&held_path, &held)?;
     save_json(&status_path, &status)?;
+    if choice == "agent" {
+        let _ = fs::remove_file(&intent_path);
+    }
     let source = project_record["source"]
         .as_str()
         .ok_or(MacSyncError::NoProject)?;
@@ -676,7 +728,10 @@ mod tests {
     use std::sync::Mutex;
 
     #[derive(Default)]
-    struct FakeGuest(Mutex<Vec<(String, Value, Option<String>)>>);
+    struct FakeGuest {
+        calls: Mutex<Vec<(String, Value, Option<String>)>>,
+        unknown_handoff: bool,
+    }
 
     impl GuestRpc for FakeGuest {
         fn stream(
@@ -687,11 +742,17 @@ mod tests {
             _timeout: Duration,
             _on_frame: &mut dyn FnMut(Value) -> Result<(), GuestError>,
         ) -> Result<Value, GuestError> {
-            self.0.lock().unwrap().push((
+            self.calls.lock().unwrap().push((
                 method.to_owned(),
                 params.clone(),
                 request_id.map(str::to_owned),
             ));
+            if method == "sync.mac.handoff" && self.unknown_handoff {
+                return Err(GuestError::Transport {
+                    message: "fake endpoint closed after write".to_owned(),
+                    uncertain: true,
+                });
+            }
             Ok(match method {
                 "sync.mac.head" => json!({"mainStateId":"main-1"}),
                 "sync.mac.read" => {
@@ -756,7 +817,7 @@ mod tests {
                 .unwrap()
                 .contains("layr state handoff-1")
         );
-        let calls = guest.0.lock().unwrap();
+        let calls = guest.calls.lock().unwrap();
         let handoff = calls
             .iter()
             .find(|call| call.0 == "sync.mac.handoff")
@@ -769,13 +830,107 @@ mod tests {
         assert_eq!(repeated.handoff_id.as_deref(), Some(identity.as_str()));
         assert_eq!(
             guest
-                .0
+                .calls
                 .lock()
                 .unwrap()
                 .iter()
                 .filter(|call| call.0 == "sync.mac.handoff")
                 .count(),
             1
+        );
+    }
+
+    #[test]
+    fn unknown_handoff_is_durable_and_never_resent_after_restart() {
+        let (state, _) = setup();
+        let guest = FakeGuest {
+            unknown_handoff: true,
+            ..FakeGuest::default()
+        };
+        assert!(matches!(
+            resolve(state.path(), "p1", "file.txt", "agent", &guest),
+            Err(MacSyncError::Guest(error)) if error.uncertain()
+        ));
+        let calls_before_restart = guest
+            .calls
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|call| call.0 == "sync.mac.handoff")
+            .count();
+        assert_eq!(calls_before_restart, 1);
+        fs::write(
+            state.path().join("mac-folder/file.txt"),
+            b"changed after unknown",
+        )
+        .unwrap();
+        assert!(matches!(
+            resolve(state.path(), "p1", "file.txt", "agent", &guest),
+            Err(MacSyncError::HandoffUnknown)
+        ));
+        assert_eq!(
+            guest
+                .calls
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|call| call.0 == "sync.mac.handoff")
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn prepared_intent_does_not_call_guest_and_completed_receipt_recovers_local_state() {
+        let (state, _) = setup();
+        let directory = state.path().join("layr-projects/p1/sync");
+        save_json(
+            &directory.join("handoff-intent.json"),
+            &json!({"operationId":"unresolved","state":"sending"}),
+        )
+        .unwrap();
+        let guest = FakeGuest::default();
+        assert!(matches!(
+            resolve(state.path(), "p1", "file.txt", "agent", &guest),
+            Err(MacSyncError::HandoffUnknown)
+        ));
+        assert!(
+            !guest
+                .calls
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|call| call.0 == "sync.mac.handoff")
+        );
+
+        let (state, _) = setup();
+        let directory = state.path().join("layr-projects/p1/sync");
+        let content = hex_sha(b"mac version");
+        let operation = format!(
+            "mac-{}",
+            &hex_sha(format!("p1\0file.txt\0{content}\0main-1").as_bytes())[..32]
+        );
+        save_json(
+            &directory.join("handoff-intent.json"),
+            &json!({"operationId":operation,"state":"completed","result":{"line":"mac-conflict","stateId":"handoff-recovered","mainStateId":"main-1"}}),
+        )
+        .unwrap();
+        let guest = FakeGuest::default();
+        let result = resolve(state.path(), "p1", "file.txt", "agent", &guest).unwrap();
+        assert_eq!(result.response["stateId"], "handoff-recovered");
+        assert_eq!(
+            guest
+                .calls
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|call| call.0 == "sync.mac.handoff")
+                .count(),
+            0
+        );
+        assert_eq!(
+            read_json(&directory.join("held.json"), json!({})).unwrap()["file.txt"]["stateId"],
+            "handoff-recovered"
         );
     }
 
