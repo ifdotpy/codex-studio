@@ -1025,8 +1025,8 @@ async fn production_reconcile_admits_radio_queue_event_to_retained_worker() {
             .unwrap();
     let recovery = restarted.reconcile(None).await;
     assert!(
-        matches!(recovery, Err(WorkerError::PreparationRefused(_))),
-        "startup recovery changing an agent fence must refuse the queued radio turn"
+        recovery.is_ok(),
+        "workspaceMode is only a preference for this non-worktree actor; Python creates its worktree only when worktree=true (codex_runtime.py:5001-5002, 6307-6308)"
     );
     let status_after_recovery: String = fixture
         .store
