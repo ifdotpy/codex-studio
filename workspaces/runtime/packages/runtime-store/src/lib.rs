@@ -248,6 +248,11 @@ pub struct RuntimeStore {
 }
 
 impl RuntimeStore {
+    /// Canonical state root for adapters that must resolve content-addressed receipts.
+    pub fn state_dir(&self) -> &Path {
+        &self.root
+    }
+
     /// Open an existing state directory, bootstrapping the sync family on first open.
     pub fn open(state_dir: Option<&Path>) -> StoreResult<Self> {
         let root = match state_dir {
