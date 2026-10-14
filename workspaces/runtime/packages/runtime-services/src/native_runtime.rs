@@ -1,18 +1,19 @@
 //! Native Codex executable lifecycle over Python-compatible files.
 //!
 //! Python behavior ported from `codex_native_runtime.py` lines 74-150, 201-238,
-//! 606-690 and `codex_native_binary.py` lines 177-264, 480-548.  Discovery,
-//! compatibility execution, publication, selection and release are explicit
-//! ports so tests never run a real provider.  Session leases are process-local;
-//! production callers must hold one for the full provider-session lifetime.
-//! Windows npm shim expansion remains the named unsupported case inherited
-//! from `provider_binaries`.
+//! `codex_native_binary.py` lines 177-264 and 480-548. The compatibility probe
+//! and clock are injected. One runtime instance per canonical state root is
+//! enforced by an exclusive OS lock; its session leases are process-local.
+//! The first cutover uses direct provider launch, so sessions do not survive
+//! backend restart. Python's supervisor launch-proof/reattachment stays
+//! unported and named as a residual. Account-agent release scheduling from
+//! `codex_native_release.py` is outside this executable-bundle service. Windows
+//! npm shim expansion remains unsupported.
 
 use std::collections::BTreeMap;
-use std::fs::{self, File, OpenOptions};
+use std::fs::{self, File, OpenOptions, TryLockError};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -33,8 +34,6 @@ const STATUS_RELATIVE_PATH: &str = "native-runtime/status.json";
 const BUILDS_RELATIVE_PATH: &str = "native-runtime/builds";
 const APPROVAL_REVISION: u64 = 2;
 
-static TEMPORARY_SEQUENCE: AtomicU64 = AtomicU64::new(0);
-
 #[derive(Debug, Error)]
 pub enum NativeRuntimeError {
     #[error("native runtime I/O failed: {0}")]
@@ -45,6 +44,12 @@ pub enum NativeRuntimeError {
     InvalidCandidate,
     #[error("native executable compatibility check failed")]
     Incompatible,
+    #[error("native runtime store is already locked by another instance")]
+    StoreAlreadyLocked,
+    #[error("native runtime store path contains a symlink or escapes its root")]
+    UnsafeStorePath,
+    #[error("native executable compatibility was refused: {0}")]
+    CompatibilityRefused(#[from] CompatibilityRefusal),
     #[error("native executable version is invalid")]
     InvalidVersion,
     #[error("native bundle identity is invalid")]
@@ -74,8 +79,12 @@ pub enum DurableStep {
     StatusRecordWrite,
     StatusRecordRename,
     BundleDirectoryRename,
+    BundleDirectorySync,
     RetiredBundleRename,
+    RetiredDirectorySync,
     RetiredBundleRemoval,
+    RetiredDirectoryCleanupSync,
+    StatusDirectorySync,
 }
 
 #[derive(Default)]
@@ -96,7 +105,36 @@ impl FailPoints for NoFailPoints {
 /// Neither method is called inside a store transaction.
 pub trait CompatibilityProbe: Send + Sync {
     fn version(&self, executable: &Path) -> Result<String, NativeRuntimeError>;
-    fn check(&self, bundle: &Path, platform: NativePlatform) -> Result<Value, NativeRuntimeError>;
+    fn check(
+        &self,
+        bundle: &Path,
+        platform: NativePlatform,
+    ) -> Result<CompatibilityResult, NativeRuntimeError>;
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct CompatibilityEvidence {
+    pub schema: Value,
+    pub smoke: Value,
+    pub companions: BTreeMap<String, Value>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum CompatibilityResult {
+    Approved(CompatibilityEvidence),
+    Refused(CompatibilityRefusal),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
+pub enum CompatibilityRefusal {
+    #[error("protocol schema is incompatible")]
+    ProtocolSchema,
+    #[error("provider smoke check failed")]
+    ProviderSmoke,
+    #[error("required companion check failed")]
+    CompanionCheck,
+    #[error("platform is unsupported")]
+    UnsupportedPlatform,
 }
 
 /// Injectable time source for deterministic persisted timestamps.
@@ -118,6 +156,7 @@ impl Clock for SystemClock {
 
 struct Inner {
     root: PathBuf,
+    _lock_file: File,
     probe: Arc<dyn CompatibilityProbe>,
     clock: Arc<dyn Clock>,
     fail_points: Arc<dyn FailPoints>,
@@ -132,37 +171,60 @@ pub struct NativeRuntime {
 }
 
 impl NativeRuntime {
-    #[must_use]
-    pub fn new(root: impl Into<PathBuf>, probe: Arc<dyn CompatibilityProbe>) -> Self {
+    pub fn new(
+        root: impl Into<PathBuf>,
+        probe: Arc<dyn CompatibilityProbe>,
+    ) -> Result<Self, NativeRuntimeError> {
         Self::with_ports(root, probe, Arc::new(SystemClock), Arc::new(NoFailPoints))
     }
 
-    #[must_use]
     pub fn with_fail_points(
         root: impl Into<PathBuf>,
         probe: Arc<dyn CompatibilityProbe>,
         fail_points: Arc<dyn FailPoints>,
-    ) -> Self {
+    ) -> Result<Self, NativeRuntimeError> {
         Self::with_ports(root, probe, Arc::new(SystemClock), fail_points)
     }
 
-    #[must_use]
     pub fn with_ports(
         root: impl Into<PathBuf>,
         probe: Arc<dyn CompatibilityProbe>,
         clock: Arc<dyn Clock>,
         fail_points: Arc<dyn FailPoints>,
-    ) -> Self {
-        Self {
+    ) -> Result<Self, NativeRuntimeError> {
+        let root = canonical_store_root(&root.into())?;
+        let lock_path = root.join(".native-runtime.lock");
+        reject_symlink_components(&lock_path)?;
+        if fs::symlink_metadata(&lock_path)
+            .is_ok_and(|metadata| metadata.file_type().is_symlink() || !metadata.is_file())
+        {
+            return Err(NativeRuntimeError::UnsafeStorePath);
+        }
+        let lock_file = OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(&lock_path)?;
+        if fs::canonicalize(&lock_path)? != lock_path {
+            return Err(NativeRuntimeError::UnsafeStorePath);
+        }
+        match lock_file.try_lock() {
+            Ok(()) => {}
+            Err(TryLockError::WouldBlock) => return Err(NativeRuntimeError::StoreAlreadyLocked),
+            Err(TryLockError::Error(error)) => return Err(error.into()),
+        }
+        Ok(Self {
             inner: Arc::new(Inner {
-                root: root.into(),
+                root,
+                _lock_file: lock_file,
                 probe,
                 clock,
                 fail_points,
                 state: Mutex::new(()),
                 leases: Mutex::new(BTreeMap::new()),
             }),
-        }
+        })
     }
 
     #[must_use]
@@ -220,20 +282,14 @@ impl NativeRuntime {
             .map_err(|_| NativeRuntimeError::InvalidCandidate)?;
         let companions = companion_identities(&source.path, platform)
             .map_err(|_| NativeRuntimeError::InvalidCandidate)?;
-        let root = self.inner.root.canonicalize().or_else(|error| {
-            if error.kind() == io::ErrorKind::NotFound {
-                fs::create_dir_all(&self.inner.root)?;
-                self.inner.root.canonicalize()
-            } else {
-                Err(error)
-            }
-        })?;
-        let builds = root.join(BUILDS_RELATIVE_PATH);
-        fs::create_dir_all(&builds)?;
-        let staging = unique_path(&builds, ".validate-");
-        fs::create_dir(&staging)?;
-        let staged_bundle = staging.join("bundle");
-        let result = (|| {
+        let root = &self.inner.root;
+        let builds = ensure_store_directory(root, BUILDS_RELATIVE_PATH, true)?
+            .ok_or(NativeRuntimeError::UnsafeStorePath)?;
+        let staging = tempfile::Builder::new()
+            .prefix(".validate-")
+            .tempdir_in(&builds)?;
+        let staged_bundle = staging.path().join("bundle");
+        (|| {
             fs::create_dir(&staged_bundle)?;
             self.inner
                 .fail_points
@@ -271,16 +327,14 @@ impl NativeRuntime {
             if parse_native_version(&version).is_none() {
                 return Err(NativeRuntimeError::InvalidVersion);
             }
-            let checks = self.inner.probe.check(&staged_bundle, platform)?;
-            if checks.as_object().is_none_or(Map::is_empty) {
-                return Err(NativeRuntimeError::Incompatible);
-            }
+            let compatibility = self.inner.probe.check(&staged_bundle, platform)?;
+            let checks = compatibility_checks(compatibility, &names)?;
             if hash_bundle(&staged_bundle, &names)? != hashes {
                 return Err(NativeRuntimeError::InvalidCandidate);
             }
 
             let target = builds.join(&bundle_hash);
-            if target.exists() {
+            if fs::symlink_metadata(&target).is_ok() {
                 verify_bundle(&target, &names, &hashes, platform)?;
             } else {
                 self.inner
@@ -297,6 +351,13 @@ impl NativeRuntime {
                     Err(error) => return Err(error.into()),
                 }
             }
+            self.inner
+                .fail_points
+                .before(DurableStep::BundleDirectorySync)?;
+            sync_directory(&builds)?;
+            self.inner
+                .fail_points
+                .after(DurableStep::BundleDirectorySync)?;
             let approved_path = target.join(executable_name);
             let record = approval_record(ApprovalRecordInput {
                 path: &approved_path,
@@ -310,9 +371,7 @@ impl NativeRuntime {
                 validated_at: self.inner.clock.unix_seconds()?,
             })?;
             Ok(record)
-        })();
-        let _cleanup = fs::remove_dir_all(&staging);
-        result
+        })()
     }
 
     /// Scan candidates, approve the newest compatible bundle and persist the
@@ -386,11 +445,15 @@ impl NativeRuntime {
                     }
                     break;
                 }
-                Err(_) => {
+                Err(error) => {
+                    let error = match error {
+                        NativeRuntimeError::CompatibilityRefused(reason) => reason.to_string(),
+                        _ => "native compatibility approval failed".to_owned(),
+                    };
                     let mut row = json!({
                         "path": candidate.path,
                         "status": "rejected",
-                        "error": "native compatibility approval failed",
+                        "error": error,
                     });
                     add_candidate_identity(
                         &mut row,
@@ -425,10 +488,9 @@ impl NativeRuntime {
     /// Read the Python-written state record without discarding accounts,
     /// rotation receipts, rejected candidates, or unknown extension fields.
     pub fn read_state(&self) -> Result<Option<NativeRuntimeState>, NativeRuntimeError> {
-        let path = self.status_path();
-        if !path.exists() {
+        let Some(path) = checked_status_path(&self.inner.root, false)? else {
             return Ok(None);
-        }
+        };
         Ok(read_state(&path).map(Some)?)
     }
 
@@ -465,10 +527,10 @@ impl NativeRuntime {
         let expected = self
             .inner
             .root
-            .canonicalize()?
             .join(BUILDS_RELATIVE_PATH)
             .join(&bundle)
             .join(current_platform()?.executable_name());
+        reject_symlink_components(&expected)?;
         if path != expected {
             return Err(NativeRuntimeError::InvalidState);
         }
@@ -478,6 +540,7 @@ impl NativeRuntime {
         }
         let platform = current_platform()?;
         let names = bundle_names_for_directory(parent, platform)?;
+        verify_bundle_files(parent, &names)?;
         let hashes = hash_bundle(parent, &names)?;
         validate_approved_record(&Value::Object(selected.clone()), &self.inner.root, platform)?;
         if bundle_digest(&hashes)? != bundle {
@@ -507,17 +570,23 @@ impl NativeRuntime {
         if leases.get(bundle).copied().unwrap_or_default() > 0 {
             return Err(NativeRuntimeError::InUse);
         }
-        let directory = self
-            .inner
-            .root
-            .canonicalize()?
-            .join(BUILDS_RELATIVE_PATH)
-            .join(bundle);
-        if !directory.exists() {
+        let Some(builds) = ensure_store_directory(&self.inner.root, BUILDS_RELATIVE_PATH, false)?
+        else {
             return Ok(false);
+        };
+        let directory = builds.join(bundle);
+        reject_symlink_components(&directory)?;
+        let metadata = match fs::symlink_metadata(&directory) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
+            Err(error) => return Err(error.into()),
+        };
+        if metadata.file_type().is_symlink() || !metadata.is_dir() {
+            return Err(NativeRuntimeError::UnsafeStorePath);
         }
         let platform = current_platform()?;
         let names = bundle_names_for_directory(&directory, platform)?;
+        verify_bundle_files(&directory, &names)?;
         let hashes = hash_bundle(&directory, &names)?;
         if bundle_digest(&hashes)? != bundle {
             return Err(NativeRuntimeError::InvalidBundle);
@@ -533,48 +602,75 @@ impl NativeRuntime {
         {
             return Err(NativeRuntimeError::InUse);
         }
-        let retired = unique_path(
-            directory
-                .parent()
-                .ok_or(NativeRuntimeError::InvalidBundle)?,
-            ".retired-",
-        );
+        let retired_parent = tempfile::Builder::new()
+            .prefix(".retired-")
+            .tempdir_in(&builds)?;
         self.inner
             .fail_points
             .before(DurableStep::RetiredBundleRename)?;
+        let retired_root = retired_parent.keep();
+        let retired = retired_root.join("bundle");
         fs::rename(&directory, &retired)?;
         self.inner
             .fail_points
             .after(DurableStep::RetiredBundleRename)?;
+        self.inner
+            .fail_points
+            .before(DurableStep::RetiredDirectorySync)?;
+        sync_directory(&retired_root)?;
+        sync_directory(&builds)?;
+        self.inner
+            .fail_points
+            .after(DurableStep::RetiredDirectorySync)?;
         drop(leases);
         self.inner
             .fail_points
             .before(DurableStep::RetiredBundleRemoval)?;
-        fs::remove_dir_all(retired)?;
+        remove_tree_without_symlinks(&retired_root)?;
         self.inner
             .fail_points
             .after(DurableStep::RetiredBundleRemoval)?;
+        self.inner
+            .fail_points
+            .before(DurableStep::RetiredDirectoryCleanupSync)?;
+        sync_directory(&builds)?;
+        self.inner
+            .fail_points
+            .after(DurableStep::RetiredDirectoryCleanupSync)?;
         Ok(true)
     }
 
     /// Retry cleanup after a crash that happened after the atomic retirement
     /// rename. Retired directories are never visible as approved bundles.
     pub fn recover_retired(&self) -> Result<usize, NativeRuntimeError> {
-        let builds = self.inner.root.join(BUILDS_RELATIVE_PATH);
-        if !builds.exists() {
+        let Some(builds) = ensure_store_directory(&self.inner.root, BUILDS_RELATIVE_PATH, false)?
+        else {
             return Ok(0);
-        }
+        };
         let mut removed = 0;
-        for entry in fs::read_dir(builds)? {
+        for entry in fs::read_dir(&builds)? {
             let entry = entry?;
             if entry.file_name().to_string_lossy().starts_with(".retired-") {
+                let retired = entry.path();
+                reject_symlink_components(&retired)?;
+                let metadata = fs::symlink_metadata(&retired)?;
+                if metadata.file_type().is_symlink() || !metadata.is_dir() {
+                    return Err(NativeRuntimeError::UnsafeStorePath);
+                }
                 self.inner
                     .fail_points
                     .before(DurableStep::RetiredBundleRemoval)?;
-                fs::remove_dir_all(entry.path())?;
+                remove_tree_without_symlinks(&retired)?;
                 self.inner
                     .fail_points
                     .after(DurableStep::RetiredBundleRemoval)?;
+                self.inner
+                    .fail_points
+                    .before(DurableStep::RetiredDirectoryCleanupSync)?;
+                sync_directory(&builds)?;
+                self.inner
+                    .fail_points
+                    .after(DurableStep::RetiredDirectoryCleanupSync)?;
                 removed += 1;
             }
         }
@@ -582,8 +678,7 @@ impl NativeRuntime {
     }
 
     fn load_or_default(&self) -> Result<Value, NativeRuntimeError> {
-        let path = self.status_path();
-        if path.exists() {
+        if let Some(path) = checked_status_path(&self.inner.root, false)? {
             let value: Value = serde_json::from_slice(&fs::read(path)?)?;
             if !value.is_object() {
                 return Err(NativeRuntimeError::InvalidState);
@@ -603,40 +698,45 @@ impl NativeRuntime {
         if !state.is_object() {
             return Err(NativeRuntimeError::InvalidState);
         }
-        let path = self.status_path();
-        let parent = path.parent().ok_or(NativeRuntimeError::InvalidState)?;
-        fs::create_dir_all(parent)?;
-        let temporary = unique_path(parent, ".status-");
-        let result = (|| {
+        let parent = ensure_store_directory(&self.inner.root, "native-runtime", true)?
+            .ok_or(NativeRuntimeError::UnsafeStorePath)?;
+        let path = parent.join("status.json");
+        reject_symlink_components(&path)?;
+        if let Ok(metadata) = fs::symlink_metadata(&path)
+            && (metadata.file_type().is_symlink() || !metadata.is_file())
+        {
+            return Err(NativeRuntimeError::UnsafeStorePath);
+        }
+        (|| {
             self.inner
                 .fail_points
                 .before(DurableStep::StatusRecordWrite)?;
-            let mut file = OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&temporary)?;
-            file.write_all(&serde_json::to_vec(state)?)?;
-            file.sync_all()?;
+            let mut temporary = tempfile::Builder::new()
+                .prefix(".status-")
+                .tempfile_in(&parent)?;
+            temporary.write_all(&serde_json::to_vec(state)?)?;
+            temporary.as_file().sync_all()?;
             self.inner
                 .fail_points
                 .after(DurableStep::StatusRecordWrite)?;
-            drop(file);
             self.inner
                 .fail_points
                 .before(DurableStep::StatusRecordRename)?;
-            fs::rename(&temporary, &path)?;
+            temporary
+                .persist(&path)
+                .map_err(|error| NativeRuntimeError::Io(error.error))?;
             self.inner
                 .fail_points
                 .after(DurableStep::StatusRecordRename)?;
-            if let Ok(directory) = File::open(parent) {
-                directory.sync_all()?;
-            }
+            self.inner
+                .fail_points
+                .before(DurableStep::StatusDirectorySync)?;
+            sync_directory(&parent)?;
+            self.inner
+                .fail_points
+                .after(DurableStep::StatusDirectorySync)?;
             Ok(())
-        })();
-        if result.is_err() {
-            let _ignored = fs::remove_file(temporary);
-        }
-        result
+        })()
     }
 
     fn lock_leases(&self) -> Result<MutexGuard<'_, BTreeMap<String, usize>>, NativeRuntimeError> {
@@ -733,6 +833,40 @@ fn resolve_discovery_path(path: &Path, platform: NativePlatform) -> Result<PathB
         .map_err(|_| "npm launcher resolution failed")
 }
 
+fn compatibility_checks(
+    result: CompatibilityResult,
+    bundle_names: &[String],
+) -> Result<Value, NativeRuntimeError> {
+    let evidence = match result {
+        CompatibilityResult::Approved(evidence) => evidence,
+        CompatibilityResult::Refused(reason) => {
+            return Err(NativeRuntimeError::CompatibilityRefused(reason));
+        }
+    };
+    let expected_companions = bundle_names
+        .iter()
+        .filter(|name| name.as_str() != "codex" && name.as_str() != "codex.exe")
+        .cloned()
+        .collect::<std::collections::BTreeSet<_>>();
+    let observed_companions = evidence
+        .companions
+        .keys()
+        .cloned()
+        .collect::<std::collections::BTreeSet<_>>();
+    if evidence.schema.as_object().is_none_or(Map::is_empty)
+        || evidence.smoke.is_null()
+        || evidence.companions.values().any(Value::is_null)
+        || expected_companions != observed_companions
+    {
+        return Err(NativeRuntimeError::Incompatible);
+    }
+    Ok(json!({
+        "schema": evidence.schema,
+        "smoke": evidence.smoke,
+        "companions": evidence.companions,
+    }))
+}
+
 fn binary_candidate(record: &Value) -> Option<BinaryCandidate> {
     Some(BinaryCandidate {
         path: PathBuf::from(record.get("path")?.as_str()?),
@@ -751,9 +885,146 @@ fn add_candidate_identity(row: &mut Value, identity: Option<Value>, companions: 
     }
 }
 
-fn unique_path(parent: &Path, prefix: &str) -> PathBuf {
-    let sequence = TEMPORARY_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-    parent.join(format!("{prefix}{}-{sequence}", std::process::id()))
+fn canonical_store_root(path: &Path) -> Result<PathBuf, NativeRuntimeError> {
+    let absolute = lexical_absolute(path)?;
+    let mut current = PathBuf::new();
+    for component in absolute.components() {
+        current.push(component.as_os_str());
+        match fs::symlink_metadata(&current) {
+            Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_dir() => {
+                return Err(NativeRuntimeError::UnsafeStorePath);
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                fs::create_dir(&current)?;
+            }
+            Err(error) => return Err(error.into()),
+        }
+    }
+    Ok(absolute.canonicalize()?)
+}
+
+fn lexical_absolute(path: &Path) -> Result<PathBuf, NativeRuntimeError> {
+    let path = if path.is_absolute() {
+        path.to_owned()
+    } else {
+        std::env::current_dir()?.join(path)
+    };
+    let mut absolute = PathBuf::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::Prefix(_) | std::path::Component::RootDir => {
+                absolute.push(component.as_os_str());
+            }
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                absolute.pop();
+            }
+            std::path::Component::Normal(_) => absolute.push(component.as_os_str()),
+        }
+    }
+    if absolute.is_absolute() {
+        Ok(absolute)
+    } else {
+        Err(NativeRuntimeError::UnsafeStorePath)
+    }
+}
+
+fn reject_symlink_components(path: &Path) -> Result<(), NativeRuntimeError> {
+    let mut current = PathBuf::new();
+    let components = path.components().collect::<Vec<_>>();
+    for (index, component) in components.iter().enumerate() {
+        current.push(component.as_os_str());
+        match fs::symlink_metadata(&current) {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                return Err(NativeRuntimeError::UnsafeStorePath);
+            }
+            Ok(metadata) if index + 1 < components.len() && !metadata.file_type().is_dir() => {
+                return Err(NativeRuntimeError::UnsafeStorePath);
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+    Ok(())
+}
+
+fn ensure_store_directory(
+    root: &Path,
+    relative: &str,
+    create: bool,
+) -> Result<Option<PathBuf>, NativeRuntimeError> {
+    reject_symlink_components(root)?;
+    let root_metadata = fs::symlink_metadata(root)?;
+    if root_metadata.file_type().is_symlink() || !root_metadata.is_dir() {
+        return Err(NativeRuntimeError::UnsafeStorePath);
+    }
+    let relative_path = Path::new(relative);
+    if relative_path.is_absolute()
+        || relative_path
+            .components()
+            .any(|component| !matches!(component, std::path::Component::Normal(_)))
+    {
+        return Err(NativeRuntimeError::UnsafeStorePath);
+    }
+    let mut current = root.to_owned();
+    for component in relative_path.components() {
+        current.push(component.as_os_str());
+        match fs::symlink_metadata(&current) {
+            Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_dir() => {
+                return Err(NativeRuntimeError::UnsafeStorePath);
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound && create => {
+                fs::create_dir(&current)?;
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(error.into()),
+        }
+    }
+    reject_symlink_components(&current)?;
+    Ok(Some(current))
+}
+
+fn checked_status_path(
+    root: &Path,
+    create_parent: bool,
+) -> Result<Option<PathBuf>, NativeRuntimeError> {
+    let Some(parent) = ensure_store_directory(root, "native-runtime", create_parent)? else {
+        return Ok(None);
+    };
+    let path = parent.join("status.json");
+    reject_symlink_components(&path)?;
+    match fs::symlink_metadata(&path) {
+        Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_file() => {
+            Err(NativeRuntimeError::UnsafeStorePath)
+        }
+        Ok(_) => Ok(Some(path)),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn sync_directory(path: &Path) -> Result<(), NativeRuntimeError> {
+    File::open(path)?.sync_all()?;
+    Ok(())
+}
+
+fn remove_tree_without_symlinks(path: &Path) -> Result<(), NativeRuntimeError> {
+    let metadata = fs::symlink_metadata(path)?;
+    if metadata.file_type().is_symlink() {
+        return Err(NativeRuntimeError::UnsafeStorePath);
+    }
+    if metadata.is_dir() {
+        for entry in fs::read_dir(path)? {
+            remove_tree_without_symlinks(&entry?.path())?;
+        }
+        fs::remove_dir(path)?;
+    } else {
+        fs::remove_file(path)?;
+    }
+    Ok(())
 }
 
 fn hash_file(path: &Path) -> Result<String, NativeRuntimeError> {
@@ -794,16 +1065,7 @@ fn verify_bundle(
     expected: &[(String, String)],
     platform: NativePlatform,
 ) -> Result<(), NativeRuntimeError> {
-    if directory.is_symlink() || !directory.is_dir() {
-        return Err(NativeRuntimeError::InvalidBundle);
-    }
-    for name in names {
-        let path = directory.join(name);
-        let metadata = fs::symlink_metadata(&path)?;
-        if !metadata.is_file() || metadata.file_type().is_symlink() {
-            return Err(NativeRuntimeError::InvalidBundle);
-        }
-    }
+    verify_bundle_files(directory, names)?;
     if hash_bundle(directory, names)? != expected {
         return Err(NativeRuntimeError::InvalidBundle);
     }
@@ -811,6 +1073,22 @@ fn verify_bundle(
         .map_err(|_| NativeRuntimeError::InvalidBundle)?;
     companion_identities(&directory.join(platform.executable_name()), platform)
         .map_err(|_| NativeRuntimeError::InvalidBundle)?;
+    Ok(())
+}
+
+fn verify_bundle_files(directory: &Path, names: &[String]) -> Result<(), NativeRuntimeError> {
+    reject_symlink_components(directory)?;
+    if !fs::symlink_metadata(directory)?.is_dir() {
+        return Err(NativeRuntimeError::InvalidBundle);
+    }
+    for name in names {
+        let path = directory.join(name);
+        reject_symlink_components(&path)?;
+        let metadata = fs::symlink_metadata(path)?;
+        if !metadata.is_file() || metadata.file_type().is_symlink() {
+            return Err(NativeRuntimeError::InvalidBundle);
+        }
+    }
     Ok(())
 }
 
@@ -867,16 +1145,18 @@ fn validate_approved_record(
     {
         return Err(NativeRuntimeError::InvalidState);
     }
+    reject_symlink_components(root)?;
     let expected = root
-        .canonicalize()?
         .join(BUILDS_RELATIVE_PATH)
         .join(bundle)
         .join(platform.executable_name());
+    reject_symlink_components(&expected)?;
     if selected.get("path").and_then(Value::as_str) != expected.to_str() {
         return Err(NativeRuntimeError::InvalidBundle);
     }
     let directory = expected.parent().ok_or(NativeRuntimeError::InvalidBundle)?;
     let names = bundle_names_for_directory(directory, platform)?;
+    verify_bundle_files(directory, &names)?;
     let hashes = hash_bundle(directory, &names)?;
     let executable_hash = hashes
         .iter()

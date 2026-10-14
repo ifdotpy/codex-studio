@@ -18,6 +18,16 @@ sys.path.insert(0, str(server_source))
 
 from codex_native_runtime import NativeRuntimeUpdates
 
+if len(sys.argv) > 3 and sys.argv[3] == "--read":
+    updates = NativeRuntimeUpdates(SimpleNamespace(root=root))
+    updates._load_selected()
+    print(json.dumps({
+        "selected": updates.selected(),
+        "accounts": updates.state["accounts"],
+        "status": updates.state["status"],
+    }, sort_keys=True, separators=(",", ":")))
+    raise SystemExit(0)
+
 cases = {
     "fresh": {
         "status": "checking",

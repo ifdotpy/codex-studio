@@ -4,6 +4,7 @@ use std::{fs, path::Path};
 
 use serde_json::Value;
 use serde_json::json;
+use std::collections::BTreeMap;
 use tempfile::TempDir;
 
 #[path = "support/prepared_python.rs"]
@@ -23,7 +24,10 @@ impl studio_runtime_services::native_runtime::CompatibilityProbe for NoProbe {
         &self,
         _bundle: &std::path::Path,
         _platform: studio_runtime_services::provider_binaries::NativePlatform,
-    ) -> Result<Value, studio_runtime_services::native_runtime::NativeRuntimeError> {
+    ) -> Result<
+        studio_runtime_services::native_runtime::CompatibilityResult,
+        studio_runtime_services::native_runtime::NativeRuntimeError,
+    > {
         unreachable!("state corpus never approves a candidate")
     }
 }
@@ -48,11 +52,26 @@ impl studio_runtime_services::native_runtime::CompatibilityProbe for FixtureProb
         &self,
         bundle: &Path,
         _platform: studio_runtime_services::provider_binaries::NativePlatform,
-    ) -> Result<Value, studio_runtime_services::native_runtime::NativeRuntimeError> {
+    ) -> Result<
+        studio_runtime_services::native_runtime::CompatibilityResult,
+        studio_runtime_services::native_runtime::NativeRuntimeError,
+    > {
+        use studio_runtime_services::native_runtime::{
+            CompatibilityEvidence, CompatibilityRefusal, CompatibilityResult,
+        };
         if !bundle.join("codex-code-mode-host").is_file() {
-            return Err(studio_runtime_services::native_runtime::NativeRuntimeError::Incompatible);
+            return Ok(CompatibilityResult::Refused(
+                CompatibilityRefusal::CompanionCheck,
+            ));
         }
-        Ok(json!({"schema": {"methods": ["initialize"]}, "smoke": true}))
+        Ok(CompatibilityResult::Approved(CompatibilityEvidence {
+            schema: json!({"methods": ["initialize"]}),
+            smoke: json!(true),
+            companions: BTreeMap::from([(
+                "codex-code-mode-host".to_owned(),
+                json!({"smoke": true}),
+            )]),
+        }))
     }
 }
 
@@ -63,7 +82,7 @@ fn rust_reads_the_complete_status_record_written_by_python() {
     let script = manifest.join("tests/native_runtime_state_oracle.py");
     let root = TempDir::new().expect("isolated Python state root");
     let output = Command::new(prepared_python::prepared_python(&source))
-        .arg(script)
+        .arg(&script)
         .arg(&source)
         .arg(root.path())
         .env("PYTHONDONTWRITEBYTECODE", "1")
@@ -79,7 +98,8 @@ fn rust_reads_the_complete_status_record_written_by_python() {
         let runtime = studio_runtime_services::native_runtime::NativeRuntime::new(
             root.path().join(name),
             Arc::new(NoProbe),
-        );
+        )
+        .expect("exclusive corpus runtime");
         let actual = runtime
             .read_state()
             .expect("Rust state reader")
@@ -91,7 +111,8 @@ fn rust_reads_the_complete_status_record_written_by_python() {
     let native_runtime = studio_runtime_services::native_runtime::NativeRuntime::new(
         &state_root,
         Arc::new(FixtureProbe),
-    );
+    )
+    .expect("exclusive rotation runtime");
     let candidate = root.path().join("candidate");
     fs::create_dir(&candidate).expect("candidate directory");
     let executable = candidate.join("codex");
@@ -171,4 +192,23 @@ fn rust_reads_the_complete_status_record_written_by_python() {
             .release(&old_hash)
             .expect("release unused executable")
     );
+
+    let python_read = Command::new(prepared_python::prepared_python(&source))
+        .arg(script)
+        .arg(&source)
+        .arg(&state_root)
+        .arg("--read")
+        .env("PYTHONDONTWRITEBYTECODE", "1")
+        .output()
+        .expect("run Python reader on Rust-written state");
+    assert!(
+        python_read.status.success(),
+        "Python reader failed: {}",
+        String::from_utf8_lossy(&python_read.stderr)
+    );
+    let python_state: Value =
+        serde_json::from_slice(&python_read.stdout).expect("Python reader JSON");
+    assert_eq!(python_state["selected"], new_record);
+    assert_eq!(python_state["accounts"], second_state.record()["accounts"]);
+    assert_eq!(python_state["status"], "ready");
 }
