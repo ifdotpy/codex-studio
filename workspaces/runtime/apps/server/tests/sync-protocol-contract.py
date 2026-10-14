@@ -12,6 +12,8 @@ from codex_layout import WEB_ROOT
 from studio_api.generate_types import (
     OPENAPI_AUTHORITY,
     SYNC_PROTOCOL_OUTPUT,
+    SYNC_PROTOCOL_PYTHON_OUTPUT,
+    render_sync_protocol_python,
     render_sync_protocol_rust,
     render_sync_protocol_typescript,
 )
@@ -49,6 +51,10 @@ class SyncProtocolContract(unittest.TestCase):
         self.assertEqual(
             SYNC_PROTOCOL_OUTPUT.read_text(encoding="utf-8"),
             render_sync_protocol_rust(document),
+        )
+        self.assertEqual(
+            SYNC_PROTOCOL_PYTHON_OUTPUT.read_text(encoding="utf-8"),
+            render_sync_protocol_python(document),
         )
         api_types = (WEB_ROOT / "src/generated/api.ts").read_text(encoding="utf-8")
         self.assertTrue(

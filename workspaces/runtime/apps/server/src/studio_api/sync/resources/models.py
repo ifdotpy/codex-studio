@@ -1,4 +1,4 @@
-"""Authoritative typed contracts for protocol 3 resource notifications."""
+"""Authoritative typed contracts for sync resource notifications."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from pydantic import Field, RootModel, StrictBool, StrictFloat, StrictStr, model
 
 from studio_api.models import ContractModel, SafeInt, SyncEntity
 from studio_api.schema import API_SCHEMA_MISMATCH_FIELD
-from studio_api.sync.protocol import SYNC_PROTOCOL_VERSION
+from studio_api.sync.protocol_type_generated import SyncProtocolVersion
 
 MAX_SAFE_REVISION = 9_007_199_254_740_991
 MAX_ENTITY_CHANGE_DOCUMENTS = 512
@@ -178,7 +178,7 @@ class ResourceRevisionEntry(ContractModel):
 class ResourceChangeEvent(ContractModel):
     """Named `resources` SSE payload with optional bounded state data."""
 
-    protocol: Literal[SYNC_PROTOCOL_VERSION]
+    protocol: SyncProtocolVersion
     workspaceId: NonEmptyIdentifier
     epoch: NonEmptyIdentifier
     revision: ResourceRevision
@@ -202,7 +202,7 @@ class ResourceChangeEvent(ContractModel):
 class ResourceHeartbeatEvent(ContractModel):
     """Named `heartbeat` SSE payload; it never requests a resource read."""
 
-    protocol: Literal[SYNC_PROTOCOL_VERSION]
+    protocol: SyncProtocolVersion
     workspaceId: NonEmptyIdentifier
     epoch: NonEmptyIdentifier
     revision: ResourceRevision
@@ -221,7 +221,7 @@ class TokenRateValue(ContractModel):
 class ResourceTokenRatesEvent(ContractModel):
     """Named `token-rates` SSE payload; values come from workspace_snapshot()."""
 
-    protocol: Literal[SYNC_PROTOCOL_VERSION]
+    protocol: SyncProtocolVersion
     workspaceId: NonEmptyIdentifier
     epoch: NonEmptyIdentifier
     revision: ResourceRevision

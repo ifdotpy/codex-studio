@@ -5,9 +5,8 @@ from typing import Annotated, Literal, TypeAlias
 from pydantic import BeforeValidator, ConfigDict, Field, StrictInt
 
 from studio_api.models import ContractModel, JsonValue, ResponseModel, SafeInt, require_strict_integer
-from codex_multi_server_protocol import ACCESS_PROTOCOL_VERSION
+from codex_multi_server_protocol_generated import AccessProtocolVersion as AccessProtocolVersion
 
-AccessProtocolVersion: TypeAlias = Literal[ACCESS_PROTOCOL_VERSION]
 # Visible characters, with ASCII spaces only between visible characters.
 SERVER_NAME_PATTERN = r"^[^\s\p{C}](?:[^\s\p{C}]| +[^\s\p{C}])*$"
 

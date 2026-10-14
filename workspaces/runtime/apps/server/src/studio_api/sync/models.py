@@ -12,6 +12,7 @@ from codex_nested_delegation import (
 )
 from studio_api.sync.preferences import UiPreferencesDto
 from studio_api.sync.protocol import SYNC_PROTOCOL_VERSION
+from studio_api.sync.protocol_type_generated import SyncProtocolVersion
 from studio_api.models import (
     ContractModel,
     ContractStrEnum,
@@ -1159,8 +1160,8 @@ class WorkspaceEntityDto(ContractModel):
 
 
 class SyncProtocolResponse(ResponseModel):
-    protocolVersion: Literal[SYNC_PROTOCOL_VERSION]
-    supportedVersions: list[Literal[SYNC_PROTOCOL_VERSION]]
+    protocolVersion: SyncProtocolVersion
+    supportedVersions: list[SyncProtocolVersion]
     capabilities: list[str]
     scopes: list[str]
     pullEndpoint: Literal["/api/sync/pull"]

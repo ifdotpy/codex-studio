@@ -40,7 +40,8 @@ if TYPE_CHECKING:
     from codex_canvas import Canvas
     from codex_records import RecordStore
     from codex_remote import RemoteAccess
-from studio_api.federation.router import FEDERATION_PATHS, MAX_BODY_BYTES, create_router
+from codex_federation_limits import FEDERATION_PATHS
+from studio_api.federation.router import MAX_BODY_BYTES, create_router
 
 SIGNED_MODELS = {
     "pair": PairRequest,

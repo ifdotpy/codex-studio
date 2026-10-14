@@ -45,6 +45,7 @@ from studio_api.work.models import RuleRecord, WorkItem
 from studio_api.generate_state_schemas import render_rust_agent_limits
 from studio_api.generate_multi_server_protocol import OUTPUTS as MULTI_SERVER_PROTOCOL_OUTPUTS
 from studio_api.generate_types import render, render_schema_identity
+from studio_api.sync.protocol import SYNC_PROTOCOL_VERSION
 from studio_api.persisted_account_transfer import PersistedAccountTransferRecord
 from studio_api.schema import (
     canonical_openapi_json,
@@ -121,6 +122,22 @@ def sample_document(response_schema: dict[str, JsonValue]) -> dict[str, JsonValu
                 },
                 "Status": {"type": "string", "enum": ["idle", "running"]},
                 "TaskEntityDto": {"type": "object", "properties": {"id": {"type": "string"}}},
+                "SyncProtocolResponse": {
+                    "type": "object",
+                    "properties": {
+                        "protocolVersion": {
+                            "type": "integer", "const": SYNC_PROTOCOL_VERSION,
+                            "minimum": SYNC_PROTOCOL_VERSION, "maximum": SYNC_PROTOCOL_VERSION,
+                        },
+                        "supportedVersions": {
+                            "type": "array",
+                            "items": {
+                                "type": "integer", "const": SYNC_PROTOCOL_VERSION,
+                                "minimum": SYNC_PROTOCOL_VERSION, "maximum": SYNC_PROTOCOL_VERSION,
+                            },
+                        },
+                    },
+                },
             }
         },
     }
