@@ -35,6 +35,7 @@ pub fn migrate_budget(
     store: &RuntimeStore,
     agent: &Value,
     budget: &dyn HistoryBudgetSink,
+    now: f64,
 ) -> Result<bool, HistoryError> {
     let key = format!("budgetUsageMigrationV1:{}", text(&agent["id"]));
     let db = AnalyticsRepository::new(store.root())
@@ -53,17 +54,18 @@ pub fn migrate_budget(
     }
     let records=db.prepare("SELECT seq,record FROM analytics_usage WHERE agent=? AND seq>? AND seq<=? ORDER BY seq LIMIT ?").map_err(studio_runtime_store::StoreError::from)?.query_map(params![agent["id"].as_str(),start,end,PAGE_SIZE],|r|Ok((r.get::<_,i64>(0)?,r.get::<_,String>(1)?))).map_err(studio_runtime_store::StoreError::from)?.collect::<Result<Vec<_>,_>>().map_err(studio_runtime_store::StoreError::from)?;
     drop(db);
+    let mut captures = Vec::with_capacity(records.len());
     for (seq, raw) in &records {
         let record: Value =
             serde_json::from_str(raw).map_err(studio_runtime_store::StoreError::from)?;
         CaptureTable::Usage.validate(&record)?;
         let params = json!({"threadId":record["threadId"],"turnId":record["turnId"],"responseId":record["responseId"],"rawTokenUsageRecord":record["rawTokenUsageRecord"],"requestUsage":record["requestUsage"],"tokenUsage":{"total":record["total"],"last":record["last"]},"_analyticsTimestampSource":record["timestampSource"]});
-        budget.capture(
-            agent,
-            &params,
-            number(&record["at"]).ok_or(CaptureError::Invalid("/analytics_usage/at"))?,
-        )?;
+        let at = number(&record["at"]).ok_or(CaptureError::Invalid("/analytics_usage/at"))?;
+        captures.push((agent.clone(), params, at));
         state["cursor"] = json!(seq);
+    }
+    if !captures.is_empty() {
+        budget.capture_page(&captures, now)?;
     }
     if records.len() < PAGE_SIZE as usize {
         state["cursor"] = json!(end)
