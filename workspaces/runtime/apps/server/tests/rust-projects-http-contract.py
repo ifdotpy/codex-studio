@@ -9,6 +9,7 @@ import os
 import hashlib
 import json
 import sqlite3
+import subprocess
 import sys
 import unittest
 from contextlib import closing
@@ -83,6 +84,95 @@ class ProjectsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         self.assertEqual(response.json()["matches"], [])
         self.assertIn("gitHead", response.json())
         self.assertIn("gitOrigin", response.json())
+
+    @staticmethod
+    def _git_repo(path: Path, origin: str) -> None:
+        path.mkdir(parents=True, exist_ok=True)
+        subprocess.run(
+            ["git", "init", "-q", str(path)], check=True, timeout=30
+        )
+        subprocess.run(
+            ["git", "-C", str(path), "config", "remote.origin.url", origin],
+            check=True,
+            timeout=30,
+        )
+
+    def test_matches_includes_unregistered_cwd_and_visible_git_children(self) -> None:
+        source = self.backend.cwd
+        origin = "https://example.invalid/w9-projects.git"
+        subprocess.run(
+            ["git", "-C", str(source), "config", "remote.origin.url", origin],
+            check=True,
+            timeout=30,
+        )
+        parent = self.backend.root / "matches-cwd"
+        parent.mkdir()
+        self._git_repo(parent, origin)
+        child = parent / "unregistered-child"
+        self._git_repo(child, origin)
+        query = urlencode(
+            {"project": str(source), "server": "local", "action": "matches", "path": str(parent)}
+        )
+        response = self.backend.request(
+            "GET", f"/api/project-locations?{query}", headers=self.headers()
+        )
+        self.assertEqual(response.status, 200, response.body[:1000])
+        rows = response.json()["matches"]
+        self.assertEqual(
+            [row["path"] for row in rows],
+            [str(source.resolve()), str(parent.resolve()), str(child.resolve())],
+        )
+        self.assertEqual(rows[1]["projectId"], str(parent.resolve()))
+
+    def test_local_alias_selects_local_server_location_not_first(self) -> None:
+        local = self.backend.root / "local-location"
+        remote = self.backend.root / "remote-location"
+        local.mkdir()
+        registered = self.backend.request(
+            "POST",
+            "/api/projects",
+            body={"path": str(local), "name": "Local alias fixture"},
+            headers=self.headers(),
+        )
+        self.assertEqual(registered.status, 200, registered.body[:1000])
+        project_id = registered.json()["id"]
+        original = self._project_record(project_id)
+        local_origin = "https://example.invalid/local.git"
+        remote_origin = "https://example.invalid/remote.git"
+        self._git_repo(local, local_origin)
+        self._git_repo(remote, remote_origin)
+        local_server = registered.json()["homeServerId"]
+        changed = dict(original)
+        changed["locations"] = [
+            {"serverId": "paired-remote", "path": str(remote), "projectId": project_id},
+            {"serverId": local_server, "path": str(local), "projectId": project_id},
+        ]
+        with closing(sqlite3.connect(self.backend.state / "canvas.sqlite3")) as db:
+            db.execute(
+                "UPDATE runtime_projects SET record=? WHERE id=?",
+                (json.dumps(changed), project_id),
+            )
+            db.commit()
+        try:
+            query = urlencode({"project": project_id, "server": "local"})
+            response = self.backend.request(
+                "GET", f"/api/project-locations?{query}", headers=self.headers()
+            )
+            self.assertEqual(response.status, 200, response.body[:1000])
+            self.assertEqual(response.json()["gitOrigin"], "example.invalid/local")
+        finally:
+            with closing(sqlite3.connect(self.backend.state / "canvas.sqlite3")) as db:
+                db.execute(
+                    "UPDATE runtime_projects SET record=? WHERE id=?",
+                    (json.dumps(original), project_id),
+                )
+                db.commit()
+            self.backend.request(
+                "POST",
+                "/api/projects",
+                body={"action": "remove", "path": project_id},
+                headers=self.headers(),
+            )
 
     def test_remote_project_location_query_refuses_without_writing(self) -> None:
         before = no_write_snapshot(self.backend.state)

@@ -92,9 +92,7 @@ pub fn preview_context(
         .ok_or(CheckpointsError::UnknownAgent)?;
     let checkpoint = CheckpointsRepository::checkpoint(&connection, checkpoint_id)?
         .ok_or(CheckpointsError::UnknownCheckpoint)?;
-    if let Some(owner) = checkpoint.record.get("agent").and_then(Value::as_str)
-        && owner != agent_id
-    {
+    if checkpoint.record.get("agent").and_then(Value::as_str) != Some(agent_id) {
         return Err(CheckpointsError::WrongAgent);
     }
     let recovery_expected_tree =

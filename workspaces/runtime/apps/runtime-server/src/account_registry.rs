@@ -67,6 +67,7 @@ pub(crate) struct AccountRegistry {
     store: Arc<RuntimeStore>,
     bridge: StoreBridge,
     launcher: Arc<dyn AccountLauncher>,
+    radio_clock: Arc<dyn Fn() -> f64 + Send + Sync>,
     workers: BTreeMap<String, AccountHandle>,
     after_account: String,
     after_agent: BTreeMap<String, String>,
@@ -93,10 +94,27 @@ impl AccountRegistry {
             store,
             bridge,
             launcher,
+            radio_clock: Arc::new(event_time),
             workers: BTreeMap::new(),
             after_account: String::new(),
             after_agent: BTreeMap::new(),
         })
+    }
+
+    #[cfg(test)]
+    pub fn set_radio_clock_for_test(&mut self, clock: Arc<dyn Fn() -> f64 + Send + Sync>) {
+        self.radio_clock = clock;
+    }
+
+    #[cfg(test)]
+    pub async fn close_worker_for_test(&mut self, account: &str) -> Result<(), WorkerError> {
+        let worker = self.workers.get_mut(account).ok_or(WorkerError::Closed)?;
+        worker.cancel();
+        let sender = worker.radio_interrupt_sender();
+        while !sender.is_closed() {
+            tokio::task::yield_now().await;
+        }
+        Ok(())
     }
 
     pub(crate) async fn start(&mut self, account: &str) -> Result<(), WorkerError> {
@@ -204,13 +222,14 @@ impl AccountRegistry {
         if !has_rooms {
             return Ok(());
         }
+        let now = (self.radio_clock)();
         let store = self.store.clone();
         let effects = tokio::task::spawn_blocking(move || {
             let prepared = PreparedHost::load(&store)?;
             prepared.recheck_paths()?;
             store.transaction_with(|tx| {
                 let mut ingress = RuntimeRadioIngress;
-                radio_runtime::tick(tx, &prepared, &mut ingress, event_time())
+                radio_runtime::tick(tx, &prepared, &mut ingress, now)
             })
         })
         .await
@@ -228,16 +247,11 @@ impl AccountRegistry {
             };
             let sender = worker.radio_interrupt_sender();
             let store = self.store.clone();
+            let now = (self.radio_clock)();
             tokio::task::spawn_blocking(move || {
                 let prepared = PreparedHost::load(&store)?;
                 let mut transport = RuntimeRadioInterrupt { sender };
-                radio_runtime::handoff_interrupt(
-                    &store,
-                    &prepared,
-                    &effect,
-                    &mut transport,
-                    event_time(),
-                )
+                radio_runtime::handoff_interrupt(&store, &prepared, &effect, &mut transport, now)
             })
             .await
             .map_err(|_| WorkerError::TaskFailed)?

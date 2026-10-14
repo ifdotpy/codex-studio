@@ -9,6 +9,7 @@ use account_registry::{AccountLaunch, AccountLauncher, AccountRegistry, LaunchFu
 use serde_json::{Value, json};
 use std::{
     collections::BTreeMap,
+    fs,
     path::PathBuf,
     sync::{
         Arc, Mutex,
@@ -260,6 +261,225 @@ fn scripted_with_unknown_writes(
         }),
         rx,
     )
+}
+
+fn radio_interrupt_snapshot(root: &std::path::Path) -> Value {
+    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let source = manifest.join("../server/src");
+    let script = r#"
+import importlib.util, json, pathlib, sqlite3, sys
+from unittest.mock import patch
+root = pathlib.Path(sys.argv[1])
+tests = pathlib.Path(sys.argv[2])
+sys.path.insert(0, str(tests))
+spec = importlib.util.spec_from_file_location('radio_fixture', tests / 'radio-contract.py')
+fixture = importlib.util.module_from_spec(spec); spec.loader.exec_module(fixture)
+radio = fixture.Radio('test_two_replies_share_all_text_and_stop')
+radio.setUp()
+try:
+    for key in ('a', 'b', 'c', 'd'):
+        radio.mutate_agent(key, epoch=1, name=key, status='idle', inFlight=False,
+                           provider='codex', model='gpt-6-astra', role='lead', depth=0,
+                           prompt='', worktree=False)
+    radio.action('send', text='question', request_id='seed-send')
+    radio.tick()
+    active = radio.room()['radio']['active']
+    radio.mutate_agent('a', inFlight=True, status='running', turnId='turn',
+                       startAttempt=dict(id='fixture-attempt', events=[active['eventId']], epoch=1, submitted=True,
+                                         threadId='native-a', observedTurnId='turn'))
+    with radio.runtime.db() as db:
+        db.execute("UPDATE runtime_events SET status='delivered',turn_id='turn'")
+    radio.action('stop')
+    tables = ('agents','projects','rooms','events','chat_messages','requests',
+              'completed_turns','items','operation_receipts','sync_entities','sidebar_order')
+    mapping = {'sync_entities':'sync_entities','sidebar_order':'runtime_sidebar_order'}
+    snapshot = {}
+    with radio.runtime.db() as db:
+        for table in tables:
+            actual = mapping.get(table, 'runtime_' + table)
+            try:
+                snapshot[table] = [dict(row) for row in db.execute('SELECT * FROM ' + actual)]
+            except sqlite3.OperationalError as error:
+                if 'no such table' not in str(error): raise
+    print(json.dumps(snapshot))
+finally:
+    radio.doCleanups()
+"#;
+    let mut command = std::process::Command::new(prepared_python::prepared_python(&source));
+    command
+        .arg("-c")
+        .arg(script)
+        .arg(root)
+        .arg(manifest.join("../server/tests"));
+    let output = prepared_python::output_with_timeout(
+        &mut command,
+        &manifest.join("tests/wave7_p01_radio_fixture.py"),
+        std::time::Duration::from_secs(30),
+    )
+    .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    serde_json::from_slice::<Value>(&output.stdout).unwrap()
+}
+
+fn seed_radio_interrupt(fixture: &Fixture, snapshot: &Value) {
+    let project_root = fixture._root.path().join("radio-project");
+    fs::create_dir_all(&project_root).unwrap();
+    std::process::Command::new("git")
+        .args(["init", "-q"])
+        .current_dir(&project_root)
+        .status()
+        .unwrap();
+    let identity = fixture.store.root().join("multi-server");
+    fs::create_dir_all(&identity).unwrap();
+    fs::write(
+        identity.join("identity.json"),
+        r#"{"serverId":"local-test","label":"fixture","publicKey":"fixture"}"#,
+    )
+    .unwrap();
+    fixture
+        .store
+        .set_local_server_id(Some("local-test".to_owned()))
+        .unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&identity, fs::Permissions::from_mode(0o700)).unwrap();
+        fs::set_permissions(
+            identity.join("identity.json"),
+            fs::Permissions::from_mode(0o600),
+        )
+        .unwrap();
+    }
+    fixture
+        .store
+        .transaction(|db| {
+            for (table, rows) in snapshot.as_object().unwrap() {
+                let table_name = match table.as_str() {
+                    "sync_entities" => "sync_entities".to_owned(),
+                    "sidebar_order" => "runtime_sidebar_order".to_owned(),
+                    _ => format!("runtime_{table}"),
+                };
+                db.execute(&format!("DELETE FROM {table_name}"), [])?;
+                for row in rows.as_array().unwrap() {
+                    let mut row = row.clone();
+                    if table == "projects" {
+                        let record: Value =
+                            serde_json::from_str(row["record"].as_str().unwrap()).unwrap();
+                        let mut record = record;
+                        record["id"] = json!(project_root.to_string_lossy());
+                        record["path"] = json!(project_root.to_string_lossy());
+                        if let Some(locations) = record["locations"].as_array_mut() {
+                            for location in locations {
+                                location["path"] = json!(project_root.to_string_lossy());
+                            }
+                        }
+                        row["id"] = json!(project_root.to_string_lossy());
+                        row["record"] = json!(record.to_string());
+                    }
+                    if table == "rooms" {
+                        let mut record: Value =
+                            serde_json::from_str(row["record"].as_str().unwrap()).unwrap();
+                        record["projectPath"] = json!(project_root.to_string_lossy());
+                        row["record"] = json!(record.to_string());
+                    }
+                    let fields = row.as_object().unwrap();
+                    let names = fields.keys().cloned().collect::<Vec<_>>().join(",");
+                    let placeholders = vec!["?"; fields.len()].join(",");
+                    let values = fields
+                        .values()
+                        .map(|value| match value {
+                            Value::Null => rusqlite::types::Value::Null,
+                            Value::String(value) => rusqlite::types::Value::Text(value.clone()),
+                            Value::Number(value) if value.is_i64() => {
+                                rusqlite::types::Value::Integer(value.as_i64().unwrap())
+                            }
+                            Value::Number(value) => {
+                                rusqlite::types::Value::Real(value.as_f64().unwrap())
+                            }
+                            _ => panic!("unsupported radio fixture SQL value"),
+                        })
+                        .collect::<Vec<_>>();
+                    db.execute(
+                        &format!("INSERT INTO {table_name}({names}) VALUES({placeholders})"),
+                        rusqlite::params_from_iter(values),
+                    )?;
+                }
+            }
+            Ok(())
+        })
+        .unwrap();
+}
+
+#[tokio::test]
+async fn production_reconcile_delivers_radio_interrupt_once_with_deterministic_clock() {
+    let fixture = tokio::task::spawn_blocking(Fixture::new).await.unwrap();
+    let scratch = tempfile::tempdir().unwrap();
+    let snapshot = radio_interrupt_snapshot(scratch.path());
+    seed_radio_interrupt(&fixture, &snapshot);
+    let (launcher, _writes) = scripted();
+    let mut registry = AccountRegistry::new(fixture.store.clone(), launcher)
+        .await
+        .unwrap();
+    registry.set_radio_clock_for_test(Arc::new(|| 1_000.0));
+    registry.start("default").await.unwrap();
+
+    registry.reconcile(None).await.unwrap();
+    let room = || {
+        let db = fixture.store.read().unwrap();
+        let raw: String = db
+            .query_row("SELECT record FROM runtime_rooms LIMIT 1", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        serde_json::from_str::<Value>(&raw).unwrap()
+    };
+    let delivered = room();
+    assert_eq!(delivered["radio"]["status"], "stopping");
+    assert_eq!(delivered["radio"]["active"]["interruptState"], "accepted");
+    registry.reconcile(None).await.unwrap();
+    let replay = room();
+    assert_eq!(replay["radio"]["revision"], delivered["radio"]["revision"]);
+    assert_eq!(replay["radio"]["active"]["interruptState"], "accepted");
+    registry.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn production_reconcile_keeps_closed_worker_interrupt_unknown_without_resending() {
+    let fixture = tokio::task::spawn_blocking(Fixture::new).await.unwrap();
+    let scratch = tempfile::tempdir().unwrap();
+    let snapshot = radio_interrupt_snapshot(scratch.path());
+    seed_radio_interrupt(&fixture, &snapshot);
+    let (launcher, _writes) = scripted();
+    let mut registry = AccountRegistry::new(fixture.store.clone(), launcher)
+        .await
+        .unwrap();
+    registry.set_radio_clock_for_test(Arc::new(|| 1_000.0));
+    registry.start("default").await.unwrap();
+    registry.close_worker_for_test("default").await.unwrap();
+
+    registry.reconcile(None).await.unwrap();
+    let room = || {
+        let db = fixture.store.read().unwrap();
+        let raw: String = db
+            .query_row("SELECT record FROM runtime_rooms LIMIT 1", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        serde_json::from_str::<Value>(&raw).unwrap()
+    };
+    let unknown = room();
+    assert_eq!(unknown["radio"]["status"], "stopping");
+    assert_eq!(unknown["radio"]["active"]["interruptState"], "unknown");
+    let revision = unknown["radio"]["revision"].clone();
+    registry.reconcile(None).await.unwrap();
+    let replay = room();
+    assert_eq!(replay["radio"]["revision"], revision);
+    assert_eq!(replay["radio"]["active"]["interruptState"], "unknown");
+    drop(registry);
 }
 
 #[tokio::test]

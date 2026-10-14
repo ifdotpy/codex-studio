@@ -538,6 +538,44 @@ class CheckpointsHTTPContract(unittest.TestCase):
                 (no_write_snapshot(backend.state), checkpoint_refs(self.workspace)), before
             )
 
+    def test_preview_refuses_checkpoint_with_missing_or_null_agent_without_writes(self) -> None:
+        backend = self.backend
+        database_path = backend.state / "canvas.sqlite3"
+        for owner in ("missing", "null"):
+            with closing(sqlite3.connect(database_path)) as database:
+                raw = database.execute(
+                    "SELECT record FROM runtime_checkpoints WHERE id=?",
+                    (self.initial_checkpoint_id,),
+                ).fetchone()[0]
+                checkpoint = json.loads(raw)
+                if owner == "missing":
+                    checkpoint.pop("agent", None)
+                else:
+                    checkpoint["agent"] = None
+                database.execute(
+                    "UPDATE runtime_checkpoints SET record=? WHERE id=?",
+                    (json.dumps(checkpoint), self.initial_checkpoint_id),
+                )
+                database.commit()
+            before = no_write_snapshot(backend.state)
+            try:
+                response = backend.request(
+                    "POST",
+                    "/api/checkpoint/preview",
+                    body={"agent": AGENT_ID, "checkpoint": self.initial_checkpoint_id},
+                    headers=self.headers(),
+                )
+                accepted_refusal_statuses = {400, 500} if not is_rust_backend() and owner == "missing" else {400}
+                self.assertIn(response.status, accepted_refusal_statuses, response.body[:1000])
+                self.assertEqual(no_write_snapshot(backend.state), before)
+            finally:
+                with closing(sqlite3.connect(database_path)) as database:
+                    database.execute(
+                        "UPDATE runtime_checkpoints SET record=? WHERE id=?",
+                        (raw, self.initial_checkpoint_id),
+                    )
+                    database.commit()
+
     @unittest.skipUnless(is_rust_backend(), "Stored Git option validation belongs to Rust")
     def test_preview_rejects_non_object_id_tree_without_writes(self) -> None:
         backend = self.backend

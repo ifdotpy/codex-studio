@@ -3,6 +3,7 @@
 use crate::event_write::{EventWriteError, python_json, python_strip, read_receipt, save_receipt};
 use crate::host_project_runtime::PreparedHost;
 use serde_json::{Value, json};
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 use studio_runtime_store::{
@@ -57,7 +58,15 @@ pub fn location_query(store: &RuntimeStore, query: &Value) -> Result<Value, Proj
         .and_then(Value::as_str)
         .filter(|value| !value.is_empty() && value.chars().count() <= 128)
         .ok_or(ProjectsError::BadRequest("The server ID is invalid"))?;
-    if server != "local" && store.local_server_id()?.as_deref() != Some(server) {
+    let local_server_id = store.local_server_id()?;
+    let server_id = if server == "local" {
+        local_server_id.as_deref().ok_or(ProjectsError::BadRequest(
+            "The local server ID is unavailable",
+        ))?
+    } else {
+        server
+    };
+    if local_server_id.as_deref() != Some(server_id) {
         return Err(ProjectsError::Requires(
             "cross-server-driver/project-location-read",
         ));
@@ -87,7 +96,8 @@ pub fn location_query(store: &RuntimeStore, query: &Value) -> Result<Value, Proj
             return Ok(json!({"matches":[]}));
         };
         let db = store.read()?;
-        let mut matches = Vec::new();
+        let mut candidates = Vec::new();
+        let mut seen = BTreeSet::new();
         for (id, candidate) in ProjectsRepository::list(&db)? {
             let Some(path) = candidate
                 .get("path")
@@ -96,10 +106,56 @@ pub fn location_query(store: &RuntimeStore, query: &Value) -> Result<Value, Proj
             else {
                 continue;
             };
-            if git_origin(std::path::Path::new(path)).as_deref() == Some(origin.as_str()) {
-                matches.push(json!({"projectId":id,"path":path,"name":candidate.get("name")}));
+            if seen.insert(path.to_owned()) {
+                candidates.push(json!({"projectId":id,"path":path,"name":candidate.get("name")}));
             }
         }
+        if let Some(cwd) = query
+            .get("path")
+            .and_then(Value::as_str)
+            .filter(|p| !p.is_empty())
+        {
+            let cwd = expand_home(cwd)
+                .canonicalize()
+                .map_err(|_| ProjectsError::BadRequest("This directory is unavailable"))?;
+            if !cwd.is_dir() {
+                return Err(ProjectsError::BadRequest("This directory is unavailable"));
+            }
+            let mut children = std::fs::read_dir(&cwd)
+                .map_err(|_| ProjectsError::BadRequest("This directory is unavailable"))?
+                .filter_map(Result::ok)
+                .filter_map(|entry| {
+                    let path = entry.path();
+                    (path.is_dir() && path.join(".git").exists()).then_some(path)
+                })
+                .collect::<Vec<_>>();
+            children.sort_by_key(|path| {
+                path.file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .to_lowercase()
+            });
+            children.truncate(50);
+            if cwd.join(".git").exists() {
+                children.insert(0, cwd.clone());
+            }
+            for path in children {
+                let text = path.to_string_lossy().into_owned();
+                if seen.insert(text.clone()) {
+                    candidates.push(json!({"projectId":text,"path":text,"name":path.file_name().map(|n|n.to_string_lossy().into_owned()).unwrap_or_default()}));
+                }
+            }
+        }
+        let matches = candidates
+            .into_iter()
+            .filter(|row| {
+                row["path"]
+                    .as_str()
+                    .and_then(|path| git_origin(Path::new(path)))
+                    .as_deref()
+                    == Some(origin.as_str())
+            })
+            .collect::<Vec<_>>();
         return Ok(json!({"matches":matches}));
     }
     let path = query
@@ -114,7 +170,7 @@ pub fn location_query(store: &RuntimeStore, query: &Value) -> Result<Value, Proj
                     rows.iter().find(|row| {
                         row.get("serverId")
                             .and_then(Value::as_str)
-                            .is_some_and(|id| id == server || server == "local")
+                            .is_some_and(|id| id == server_id)
                     })
                 })
                 .and_then(|row| row.get("path").and_then(Value::as_str))
@@ -135,6 +191,19 @@ pub fn location_query(store: &RuntimeStore, query: &Value) -> Result<Value, Proj
         .filter(|value| value.len() == 40 || value.len() == 64)
         .map(|value| value[..8].to_owned());
     Ok(json!({"gitHead":head,"gitOrigin":git_origin(&directory),"matches":[]}))
+}
+
+fn expand_home(path: &str) -> PathBuf {
+    if (path == "~" || path.starts_with("~/"))
+        && let Some(home) = std::env::var_os("HOME")
+    {
+        let mut expanded = PathBuf::from(home);
+        if path.len() > 2 {
+            expanded.push(&path[2..]);
+        }
+        return expanded;
+    }
+    PathBuf::from(path)
 }
 
 fn git_read(directory: &std::path::Path, args: &[&str]) -> Option<String> {
