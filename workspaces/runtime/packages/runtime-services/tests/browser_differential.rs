@@ -52,7 +52,11 @@ impl PairedExchange for Exchange {
     }
 }
 
-fn python_corpus() -> (Value, prepared_python::IsolatedTestEnvironment) {
+fn python_corpus() -> (
+    Value,
+    prepared_python::IsolatedTestEnvironment,
+    tempfile::TempDir,
+) {
     let source = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src");
     let python = prepared_python::prepared_python(&source);
     let script = concat!(
@@ -60,8 +64,9 @@ fn python_corpus() -> (Value, prepared_python::IsolatedTestEnvironment) {
         "/tests/browser_bridge/oracle.py"
     );
     let environment = prepared_python::IsolatedTestEnvironment::new();
+    let fixture_root = tempfile::tempdir().expect("isolated browser fixture root");
     let mut command = Command::new(python);
-    command.arg(script);
+    command.arg(script).arg(fixture_root.path());
     environment.apply(&mut command);
     let output = prepared_python::output_with_timeout(
         &mut command,
@@ -73,6 +78,7 @@ fn python_corpus() -> (Value, prepared_python::IsolatedTestEnvironment) {
     (
         serde_json::from_slice(&output.stdout).expect("oracle emits complete JSON outputs"),
         environment,
+        fixture_root,
     )
 }
 
@@ -399,7 +405,7 @@ fn rust_response(case: &Value) -> (Value, Vec<Value>) {
 
 #[test]
 fn python_browser_corpus_matches_rust_and_config_decisions() {
-    let (oracle, _environment) = python_corpus();
+    let (oracle, _environment, _fixture_root) = python_corpus();
     assert_eq!(oracle["lifecycle"]["expiredClosed"], true);
     assert_eq!(oracle["lifecycle"]["eightAdmitted"], 8);
     assert_eq!(oracle["lifecycle"]["ninthClosed"], true);
