@@ -2,6 +2,7 @@
 use super::*;
 use crate::{submit_gates as gates, thread_prepare as thread, turn_prepare as turn};
 use snapshot::*;
+use std::path::PathBuf;
 use std::time::Instant;
 use studio_runtime_store::Transaction;
 
@@ -17,7 +18,6 @@ pub(crate) struct CommitGuard {
 }
 pub(crate) struct Admission {
     selection: gates::ExecutionSelection,
-    filesystem: FilesystemSnapshot,
 }
 pub(crate) struct RequestPreparation {
     pub intent: TurnIntent,
@@ -114,11 +114,20 @@ fn preconditions(
     intent: &TurnIntent,
     filesystem: &FilesystemSnapshot,
 ) -> Result<Value, WorkerError> {
+    preconditions_for_purpose(tx, intent, filesystem, false)
+}
+fn preconditions_for_purpose(
+    tx: &Transaction<'_>,
+    intent: &TurnIntent,
+    filesystem: &FilesystemSnapshot,
+    allow_paused_start: bool,
+) -> Result<Value, WorkerError> {
     let record = agent(tx, &intent.agent_id)?.value();
     if record["epoch"] != intent.epoch
-        || record["startAttempt"]["id"] != intent.attempt_id
-        || record["startAttempt"]["submitted"] != false
-        || record["autoWake"] != true
+        || (!allow_paused_start
+            && (record["startAttempt"]["id"] != intent.attempt_id
+                || record["startAttempt"]["submitted"] != false
+                || record["autoWake"] != true))
         || record["nativeFailureHold"] == true
         || native_thread_blocked(&record)
         || context_repair_blocked(&record)
@@ -174,15 +183,131 @@ fn catalog_admission_error(error: gates::ExecutionDenial) -> WorkerError {
         _ => refusal(error.to_string()),
     }
 }
+
+/// Match Python's `turn_program` plus `turn_params`: disabled Daybreak always
+/// submits `standard`; enabled Daybreak resolves grants for the effective
+/// model selected by preparation, never the stale program stored on the agent.
+fn daybreak_program(
+    resources: &PreparationResources,
+    snapshot: &thread::Snapshot,
+) -> Result<Option<String>, WorkerError> {
+    if snapshot.account.provider == thread::Provider::Claude {
+        if snapshot.settings.daybreak_enabled == thread::Stored::Present(Some(true)) {
+            return Err(refusal("daybreak/provider-unsupported".into()));
+        }
+        return Ok(None);
+    }
+    let enabled = match &snapshot.settings.daybreak_enabled {
+        thread::Stored::Present(Some(enabled)) => *enabled,
+        thread::Stored::Present(None) | thread::Stored::Absent => false,
+    };
+    if !enabled {
+        return Ok(Some("standard".into()));
+    }
+    let catalog = match resources.model_catalog.read_for_admission(
+        &snapshot.account.key,
+        &resources.account_home,
+        "codex",
+    ) {
+        crate::model_catalog::AdmissionCatalogRead::Fresh { value, .. } => value,
+        crate::model_catalog::AdmissionCatalogRead::Pending => return Err(catalog_pending()),
+        crate::model_catalog::AdmissionCatalogRead::Unavailable => {
+            return Err(refusal("daybreak/model-catalog-unavailable".into()));
+        }
+    };
+    resolve_daybreak_program(&catalog, snapshot.settings.model.as_deref(), true).map(Some)
+}
+
+fn resolve_daybreak_program(
+    catalog: &Value,
+    model: Option<&str>,
+    enabled: bool,
+) -> Result<String, WorkerError> {
+    if !enabled {
+        return Ok("standard".into());
+    }
+    let programs = catalog
+        .get("data")
+        .and_then(Value::as_array)
+        .and_then(|rows| {
+            rows.iter().find(|row| {
+                row.get("model").and_then(Value::as_str) == model
+                    && row.get("hidden").and_then(Value::as_bool) != Some(true)
+            })
+        })
+        .and_then(|row| row.get("availableAccessPrograms"))
+        .and_then(|value| value.get("cyber"))
+        .and_then(Value::as_array);
+    let Some(programs) = programs else {
+        return Err(refusal("Daybreak is not available for this model on this account. Choose another model or turn off Daybreak".into()));
+    };
+    if programs.iter().any(|program| !program.is_string()) {
+        return Err(refusal("Daybreak model catalog is invalid".into()));
+    }
+    for candidate in ["daybreakBlue", "daybreakRed"] {
+        if programs.iter().any(|program| program == candidate) {
+            return Ok(candidate.into());
+        }
+    }
+    Err(refusal("Daybreak is not available for this model on this account. Choose another model or turn off Daybreak".into()))
+}
+
+/// Native start params resolve Daybreak separately against the selected model.
+/// Temporarily clear the planner's legacy unconditional refusal, then restore
+/// the recorded setting before emitting provider params.
+fn plan_native_thread(
+    snapshot: &mut thread::Snapshot,
+    attempt_id: &str,
+    transport_ticket: &str,
+) -> thread::Outcome {
+    let daybreak = std::mem::replace(
+        &mut snapshot.settings.daybreak_enabled,
+        thread::Stored::Present(Some(false)),
+    );
+    let outcome = thread::plan(snapshot, attempt_id, transport_ticket);
+    snapshot.settings.daybreak_enabled = daybreak;
+    outcome
+}
+
+/// Build native action/retry turn settings with the Daybreak value resolved for
+/// the selected model. The generic planner refuses enabled Daybreak because
+/// ordinary turns resolve it elsewhere; temporarily clear that legacy gate,
+/// then restore the stored setting and apply the resolved provider value.
+fn native_turn_params(
+    snapshot: &mut thread::Snapshot,
+    input: &thread::TurnInput,
+    program: Option<&str>,
+) -> Result<serde_json::Map<String, Value>, WorkerError> {
+    let enabled = std::mem::replace(
+        &mut snapshot.settings.daybreak_enabled,
+        thread::Stored::Present(Some(false)),
+    );
+    let params = thread::turn_params(snapshot, input);
+    snapshot.settings.daybreak_enabled = enabled;
+    let mut params = params.map_err(|reason| refusal(format!("thread-preparation/{reason:?}")))?;
+    if let Some(program) = program {
+        params.insert("cyberAccessProgram".into(), json!(program));
+    }
+    Ok(params)
+}
+
 pub(crate) fn admit(
     store: &RuntimeStore,
     resources: &PreparationResources,
     intent: &TurnIntent,
 ) -> Result<Admission, WorkerError> {
+    admit_for_purpose(store, resources, intent, false)
+}
+fn admit_for_purpose(
+    store: &RuntimeStore,
+    resources: &PreparationResources,
+    intent: &TurnIntent,
+    allow_paused_start: bool,
+) -> Result<Admission, WorkerError> {
     let filesystem = FilesystemSnapshot::capture(store, &intent.agent_id)?;
     let (identity, observation) = catalog(resources, intent)?;
     scheduler::lifecycle_transaction_with(store, |tx| {
-        let record = preconditions(tx, intent, &filesystem)?;
+        let record = preconditions_for_purpose(tx, intent, &filesystem, allow_paused_start)?;
         let observed = gates::ExecutionSnapshot::from_record(&record, identity.clone())
             .map_err(|e| refusal(e.to_string()))?;
         let mut selected =
@@ -201,7 +326,6 @@ pub(crate) fn admit(
         }
         Ok(Admission {
             selection: selected,
-            filesystem,
         })
     })
 }
@@ -280,15 +404,17 @@ pub(crate) fn prepare_native_action(
     attempt_id: &str,
     generation: u64,
 ) -> Result<super::PreparedNativeAction, WorkerError> {
-    let snapshot = prepare_native_snapshot(store, resources, agent_id, attempt_id, generation)?;
-    let settings = thread::turn_params(
-        &snapshot,
+    let mut snapshot =
+        prepare_native_snapshot(store, resources, agent_id, attempt_id, generation, false)?;
+    let program = daybreak_program(resources, &snapshot)?;
+    let settings = native_turn_params(
+        &mut snapshot,
         &thread::TurnInput {
             events: Vec::new(),
             has_assets: false,
         },
-    )
-    .map_err(|error| refusal(format!("thread-preparation/{error:?}")))?;
+        program.as_deref(),
+    )?;
     let thread_id = snapshot
         .actor
         .thread_id
@@ -309,15 +435,24 @@ pub(crate) fn prepare_native_thread(
     attempt_id: &str,
     generation: u64,
 ) -> Result<super::PreparedNativeThread, WorkerError> {
-    let mut snapshot = prepare_native_snapshot(store, resources, agent_id, attempt_id, generation)?;
+    let mut snapshot =
+        prepare_native_snapshot(store, resources, agent_id, attempt_id, generation, true)?;
+    if snapshot.actor.native_teleport_tool.is_none() && snapshot.actor.thread_id.is_some() {
+        snapshot.actor.native_teleport_tool = Some(thread::SessionTool::Move);
+    }
     snapshot.actor.thread_id = None;
     snapshot.catalog.saved_thread_id = None;
-    match thread::plan(
-        &snapshot,
+    // A fresh restore start still uses the source agent's saved tool catalog,
+    // which Python's new_thread_params preserves when threadId is present.
+    snapshot.actor.native_tool_source = Some(snapshot.catalog.source);
+    match plan_native_thread(
+        &mut snapshot,
         attempt_id,
         &format!("native-thread:{agent_id}:{attempt_id}"),
     ) {
         thread::Outcome::Start(attempt) => Ok(super::PreparedNativeThread {
+            // Python `Runtime.new_thread_params` emits no cyberAccessProgram and
+            // does not validate Daybreak at this point.
             params: Value::Object(attempt.params),
         }),
         thread::Outcome::Refuse(reason) => Err(refusal(format!("thread-preparation/{reason:?}"))),
@@ -326,12 +461,221 @@ pub(crate) fn prepare_native_thread(
     }
 }
 
+/// Prepare the permission portion of Python's monitor command path. Monitor
+/// ownership is checked by the monitor service; this snapshot only rechecks
+/// the actor epoch/deletion state and intentionally has no startAttempt gate.
+pub(crate) fn prepare_monitor_command(
+    store: &RuntimeStore,
+    resources: &PreparationResources,
+    agent_id: &str,
+    epoch: u64,
+) -> Result<super::PreparedMonitorCommand, WorkerError> {
+    if agent_id.is_empty() || agent_id.len() > 200 {
+        return Err(refusal("monitor-preparation/agent-id-invalid".into()));
+    }
+    let filesystem = FilesystemSnapshot::capture(store, agent_id)?;
+    let observed = AgentRepository::get(&store.read()?, &AgentId::from(agent_id))?
+        .ok_or_else(|| invalid(agent_id))?
+        .value();
+    validate_monitor_actor(&observed, epoch)?;
+    let image_temp = if observed["imageWorkspace"] == true
+        && observed["imageWorkspaceReady"] != true
+        && observed["provider"] != "claude"
+    {
+        Some(ensure_image_workspace_temp(store, agent_id)?)
+    } else {
+        None
+    };
+    scheduler::lifecycle_transaction_with(store, |tx| {
+        let current = agent(tx, agent_id)?.value();
+        validate_monitor_actor(&current, epoch)?;
+        let connection = current["startAttempt"]["connectionId"]
+            .as_str()
+            .filter(|id| !id.is_empty())
+            .unwrap_or("monitor-preparation");
+        let snapshot = thread_snapshot(
+            tx,
+            resources,
+            &current,
+            connection,
+            store.root(),
+            filesystem.progress_directory.clone(),
+        )?;
+        let thread_id = snapshot
+            .actor
+            .thread_id
+            .as_deref()
+            .filter(|id| !id.is_empty())
+            .ok_or_else(|| refusal("monitor-preparation/thread-required".into()))?
+            .to_owned();
+        let progress_directory = match &snapshot.workspace {
+            thread::WorkspaceReadiness::Ready { progress_directory } => progress_directory.clone(),
+            _ => None,
+        };
+        let settings = monitor_command_settings(
+            &current,
+            &snapshot.actor.cwd,
+            snapshot.settings.role,
+            snapshot.settings.is_lead,
+            snapshot.settings.yolo_mode,
+            progress_directory,
+            image_temp.as_deref(),
+        )?;
+        Ok(super::PreparedMonitorCommand {
+            thread_id,
+            settings,
+        })
+    })
+}
+
+fn validate_monitor_actor(record: &Value, epoch: u64) -> Result<(), WorkerError> {
+    if record["epoch"] != json!(epoch)
+        || record
+            .get("deletedAt")
+            .is_some_and(|value| !value.is_null())
+        || record["autoWake"] != true
+    {
+        return Err(refusal("monitor-preparation/actor-changed".into()));
+    }
+    Ok(())
+}
+
+fn monitor_command_settings(
+    record: &Value,
+    cwd: &str,
+    role: thread::Role,
+    is_lead: bool,
+    yolo_mode: Option<bool>,
+    progress_directory: Option<String>,
+    image_temp: Option<&str>,
+) -> Result<Value, WorkerError> {
+    let permissions = if record["imageWorkspace"] == true && record["imageWorkspaceReady"] != true {
+        if record["provider"] == "claude" {
+            json!({"approvalPolicy":"never","sandboxPolicy":{"type":"readOnly"}})
+        } else {
+            let temp = image_temp
+                .ok_or_else(|| refusal("monitor-preparation/image-temp-required".into()))?;
+            json!({"approvalPolicy":"never","sandboxPolicy":{"type":"workspaceWrite","writableRoots":[temp],"networkAccess":false}})
+        }
+    } else if record["executionMode"] == "vm" && role == thread::Role::Reviewer {
+        json!({"approvalPolicy":"never","sandboxPolicy":{"type":"readOnly"}})
+    } else {
+        match yolo_mode {
+            Some(true) => {
+                json!({"approvalPolicy":"never","sandboxPolicy":{"type":"dangerFullAccess"}})
+            }
+            Some(false) if role == thread::Role::Reviewer => {
+                json!({"approvalPolicy":"on-request","sandboxPolicy":{"type":"readOnly"}})
+            }
+            Some(false) => {
+                let mut roots = vec![Value::String(cwd.into())];
+                if is_lead && let Some(progress) = progress_directory {
+                    roots.push(Value::String(progress));
+                }
+                json!({"approvalPolicy":"on-request","sandboxPolicy":{"type":"workspaceWrite","writableRoots":roots,"networkAccess":false}})
+            }
+            None => json!({}),
+        }
+    };
+    let mut permissions = permissions;
+    let object = permissions
+        .as_object_mut()
+        .ok_or_else(|| refusal("monitor-preparation/permissions-invalid".into()))?;
+    if !object.contains_key("sandboxPolicy") {
+        let sandbox = record.get("sandbox").filter(|value| json_truthy(value));
+        let Some(sandbox) = sandbox else {
+            return Err(refusal("monitor-preparation/sandbox-unknown".into()));
+        };
+        if let Some(profile_id) = record["profile"]["id"].as_str().filter(|id| !id.is_empty()) {
+            object.insert("permissionProfile".into(), json!(profile_id));
+        } else {
+            object.insert("sandboxPolicy".into(), sandbox.clone());
+        }
+    }
+    Ok(permissions)
+}
+
+fn json_truthy(value: &Value) -> bool {
+    match value {
+        Value::Null => false,
+        Value::Bool(value) => *value,
+        Value::Number(value) => value.as_f64() != Some(0.0),
+        Value::String(value) => !value.is_empty(),
+        Value::Array(value) => !value.is_empty(),
+        Value::Object(value) => !value.is_empty(),
+    }
+}
+
+fn ensure_image_workspace_temp(
+    store: &RuntimeStore,
+    agent_id: &str,
+) -> Result<String, WorkerError> {
+    use std::fs;
+    let root = store
+        .root()
+        .canonicalize()
+        .map_err(|_| refusal("monitor-preparation/image-temp-root".into()))?;
+    let temp_root = root.join("image-workspace-temp");
+    ensure_private_directory(&temp_root)?;
+    if fs::canonicalize(&temp_root)
+        .ok()
+        .and_then(|path| path.parent().map(PathBuf::from))
+        .as_deref()
+        != Some(root.as_path())
+    {
+        return Err(refusal("monitor-preparation/image-temp-escape".into()));
+    }
+    let name = uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_URL, agent_id.as_bytes()).to_string();
+    let temp = temp_root.join(name);
+    ensure_private_directory(&temp)?;
+    let resolved_root = fs::canonicalize(&temp_root)
+        .map_err(|_| refusal("monitor-preparation/image-temp-root".into()))?;
+    let resolved = fs::canonicalize(&temp)
+        .map_err(|_| refusal("monitor-preparation/image-temp-directory".into()))?;
+    if resolved.parent() != Some(resolved_root.as_path()) {
+        return Err(refusal("monitor-preparation/image-temp-escape".into()));
+    }
+    Ok(resolved.to_string_lossy().into_owned())
+}
+
+fn ensure_private_directory(path: &std::path::Path) -> Result<(), WorkerError> {
+    use std::fs;
+    use std::os::unix::fs::PermissionsExt;
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_dir() => {
+            return Err(refusal("monitor-preparation/image-temp-unsafe".into()));
+        }
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            if let Err(error) = fs::create_dir(path)
+                && error.kind() != std::io::ErrorKind::AlreadyExists
+            {
+                return Err(refusal("monitor-preparation/image-temp-create".into()));
+            }
+        }
+        Err(_) => return Err(refusal("monitor-preparation/image-temp-create".into())),
+    }
+    let metadata = fs::symlink_metadata(path)
+        .map_err(|_| refusal("monitor-preparation/image-temp-create".into()))?;
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return Err(refusal("monitor-preparation/image-temp-unsafe".into()));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o700))
+            .map_err(|_| refusal("monitor-preparation/image-temp-permissions".into()))?;
+    }
+    Ok(())
+}
+
 fn prepare_native_snapshot(
     store: &RuntimeStore,
     resources: &PreparationResources,
     agent_id: &str,
     attempt_id: &str,
     generation: u64,
+    allow_paused_start: bool,
 ) -> Result<thread::Snapshot, WorkerError> {
     let record = AgentRepository::get(&store.read()?, &AgentId::from(agent_id))?
         .ok_or_else(|| invalid("agent"))?
@@ -361,19 +705,43 @@ fn prepare_native_snapshot(
             .map(str::to_owned),
         events: Vec::new(),
     };
-    let admission = admit(store, resources, &intent)?;
-    let token = workspace(store, &intent)?;
+    let admission = admit_for_purpose(store, resources, &intent, allow_paused_start)?;
+    let token = if allow_paused_start {
+        None
+    } else {
+        Some(workspace(store, &intent)?)
+    };
+    let restore_cwd = if allow_paused_start {
+        let cwd = intent
+            .cwd
+            .as_ref()
+            .map(PathBuf::from)
+            .ok_or_else(|| refusal("workspace-readiness/cwd-required".into()))?;
+        if std::fs::canonicalize(&cwd).ok().as_ref() != Some(&cwd) || !cwd.is_dir() {
+            return Err(refusal("workspace-readiness/cwd-unavailable".into()));
+        }
+        Some(cwd)
+    } else {
+        None
+    };
     let filesystem = FilesystemSnapshot::capture(store, agent_id)?;
     let (identity, _) = catalog(resources, &intent)?;
     scheduler::lifecycle_transaction_with(store, |tx| {
-        let current = preconditions(tx, &intent, &filesystem)?;
+        let current = preconditions_for_purpose(tx, &intent, &filesystem, allow_paused_start)?;
         let frozen = admission
             .selection
             .freeze_record(&current, &identity, Instant::now())
             .map_err(catalog_admission_error)?;
-        let cwd = token
-            .validate(tx)?
-            .map_err(|_| refusal("workspace-readiness/token-stale".into()))?;
+        let cwd = if let Some(token) = &token {
+            token
+                .validate(tx)?
+                .map_err(|_| refusal("workspace-readiness/token-stale".into()))?
+        } else {
+            restore_cwd
+                .as_ref()
+                .cloned()
+                .ok_or_else(|| refusal("workspace-readiness/cwd-required".into()))?
+        };
         let mut frozen = frozen;
         frozen["cwd"] = json!(cwd);
         thread_snapshot(
@@ -409,7 +777,6 @@ pub(crate) fn prepare_safety_retry(
         .ok_or_else(|| invalid("agent"))?
         .value();
     if record.get("threadId").and_then(Value::as_str) != Some(&request.source_thread_id)
-        || record.get("model").and_then(Value::as_str) != Some(&request.model)
         || record
             .get("deletedAt")
             .is_some_and(|value| !value.is_null())
@@ -426,7 +793,6 @@ pub(crate) fn prepare_safety_retry(
         let current = agent(tx, &request.agent_id)?.value();
         if current.get("threadId").and_then(Value::as_str) != Some(&request.source_thread_id)
             || current.get("epoch") != record.get("epoch")
-            || current.get("model").and_then(Value::as_str) != Some(&request.model)
         {
             return Err(refusal("safety-retry/agent-changed".into()));
         }
@@ -444,9 +810,8 @@ pub(crate) fn prepare_safety_retry(
     snapshot.settings.model = Some(request.model.clone());
     snapshot.settings.effort = Some("low".into());
     snapshot.settings.native_effort = Some("low".into());
-    snapshot.settings.daybreak_enabled = thread::Stored::Present(Some(false));
-    let mut fork_params = match thread::plan(
-        &snapshot,
+    let mut fork_params = match plan_native_thread(
+        &mut snapshot,
         &request.attempt_id,
         &format!("safety-retry:{}", request.attempt_id),
     ) {
@@ -459,14 +824,18 @@ pub(crate) fn prepare_safety_retry(
         }
         _ => return Err(refusal("safety-retry/source-thread-required".into())),
     };
-    let mut turn_params = thread::turn_params(
-        &snapshot,
+    let program = daybreak_program(resources, &snapshot)?;
+    let mut turn_params = native_turn_params(
+        &mut snapshot,
         &thread::TurnInput {
             events: Vec::new(),
             has_assets: false,
         },
-    )
-    .map_err(|reason| refusal(format!("thread-preparation/{reason:?}")))?;
+        program.as_deref(),
+    )?;
+    // Python's safety retry builds its turn/start map directly and omits cwd;
+    // cwd belongs to the preceding fork request only.
+    turn_params.remove("cwd");
     let thread_id = request.attempt_id.clone();
     let allowed_fork_keys = [
         "approvalPolicy",
@@ -498,19 +867,6 @@ pub(crate) fn prepare_safety_retry(
             "default"
         }),
     );
-    if snapshot.account.provider != thread::Provider::Claude {
-        let program = record
-            .get("cyberAccessProgram")
-            .and_then(Value::as_str)
-            .unwrap_or("standard");
-        if !matches!(program, "standard" | "daybreakBlue" | "daybreakRed")
-            || (record.get("daybreakEnabled") == Some(&json!(true))
-                && !matches!(program, "daybreakBlue" | "daybreakRed"))
-        {
-            return Err(refusal("safety-retry/daybreak-program-invalid".into()));
-        }
-        turn_params.insert("cyberAccessProgram".into(), json!(program));
-    }
     Ok(super::PreparedSafetyRetry {
         attempt_id: request.attempt_id.clone(),
         thread_id,
@@ -528,13 +884,11 @@ pub(crate) fn prepare_ready(
     admission: Admission,
     token: crate::workspace_ready::ReadyToken,
 ) -> Result<RequestPreparation, WorkerError> {
-    let Admission {
-        selection,
-        mut filesystem,
-    } = admission;
-    // Workspace provisioning may have created the progress directory.
-    filesystem.progress_directory =
-        FilesystemSnapshot::capture(store, &intent.agent_id)?.progress_directory;
+    let Admission { selection } = admission;
+    // Workspace provisioning can update stored agent/project paths as well as
+    // create the progress directory. Capture all filesystem observations after
+    // that work, before the transaction rechecks the current records.
+    let filesystem = FilesystemSnapshot::capture(store, &intent.agent_id)?;
     let (identity, _) = catalog(resources, intent)?;
     let (mut snapshot, mut turn_snapshot, events, mut prepared_intent) =
         scheduler::lifecycle_transaction_with(store, |tx| {
@@ -798,6 +1152,7 @@ pub(crate) fn commit(
     AgentRepository::put(tx, &decode(frozen, &context.intent.agent_id)?)?;
     Ok(())
 }
+
 pub(crate) fn apply_patch(
     record: &mut Value,
     patch: &thread::AgentPatch,
@@ -923,4 +1278,193 @@ pub(crate) fn commit_claude(
         submission,
     )?;
     Ok(true)
+}
+
+#[cfg(test)]
+mod daybreak_tests {
+    use super::*;
+
+    fn action_snapshot(enabled: bool) -> thread::Snapshot {
+        thread::Snapshot {
+            actor: thread::Actor {
+                id: "agent".into(),
+                epoch: 1,
+                thread_id: Some("thread".into()),
+                cwd: "/tmp/project".into(),
+                compactions: 0,
+                prepare_attempt: None,
+                native_teleport_tool: None,
+                native_role_guidance: None,
+                native_tool_source: None,
+                native_tool_update: None,
+                error: None,
+                native_release: None,
+                root_id: "root".into(),
+                parent_id: None,
+                auto_wake: true,
+                native_effort_present: false,
+                deleted: false,
+            },
+            root: thread::Root {
+                can_delegate: true,
+                federation_enabled: false,
+            },
+            account: thread::Account {
+                key: "account".into(),
+                provider: thread::Provider::Codex,
+                connection_id: "connection".into(),
+                available: true,
+                supervisor_identity: None,
+            },
+            settings: thread::Settings {
+                model: Some("fallback-model".into()),
+                effort: None,
+                native_effort: None,
+                fast_mode: false,
+                yolo_mode: Some(true),
+                profile_instructions: String::new(),
+                role: thread::Role::Implementer,
+                is_lead: false,
+                needs_title: false,
+                claude_options: serde_json::Map::new(),
+                daybreak_enabled: thread::Stored::Present(Some(enabled)),
+                cyber_access_program: thread::Stored::Absent,
+            },
+            guidance: thread::GuidanceBundle {
+                instructions: String::new(),
+                role: String::new(),
+                progress: String::new(),
+                thread_config: serde_json::Map::new(),
+            },
+            catalog: thread::CatalogSnapshot {
+                source: thread::CatalogSource::Current,
+                definitions: Vec::new(),
+                saved_thread_id: Some("thread".into()),
+                saved_digest: None,
+            },
+            workspace: thread::WorkspaceReadiness::Ready {
+                progress_directory: None,
+            },
+            unsupported: None,
+            admission: None,
+            pending: None,
+            loaded: None,
+            closed: false,
+        }
+    }
+
+    #[test]
+    fn disabled_daybreak_uses_standard_for_fallback_model_without_catalog() {
+        assert_eq!(
+            resolve_daybreak_program(&json!({}), Some("fallback-model"), false)
+                .expect("disabled Daybreak resolves to standard"),
+            "standard"
+        );
+    }
+
+    #[test]
+    fn enabled_daybreak_uses_grant_for_selected_fallback_model() {
+        let catalog = json!({"data":[
+            {"model":"requested-model","hidden":true,"availableAccessPrograms":{"cyber":["daybreakBlue"]}},
+            {"model":"fallback-model","availableAccessPrograms":{"cyber":["daybreakRed"]}}
+        ]});
+        assert_eq!(
+            resolve_daybreak_program(&catalog, Some("fallback-model"), true)
+                .expect("fallback model has a Daybreak grant"),
+            "daybreakRed"
+        );
+    }
+
+    #[test]
+    fn native_action_turn_params_resolve_enabled_and_disabled_daybreak_for_fallback_model() {
+        let catalog = json!({"data":[
+            {"model":"requested-model","hidden":true,"availableAccessPrograms":{"cyber":["daybreakBlue"]}},
+            {"model":"fallback-model","availableAccessPrograms":{"cyber":["daybreakRed"]}}
+        ]});
+        for (enabled, expected) in [(false, "standard"), (true, "daybreakRed")] {
+            let mut snapshot = action_snapshot(enabled);
+            let program =
+                resolve_daybreak_program(&catalog, snapshot.settings.model.as_deref(), enabled);
+            assert!(
+                program.is_ok(),
+                "fallback model Daybreak resolution must succeed"
+            );
+            let Some(program) = program.ok() else {
+                continue;
+            };
+            if enabled {
+                assert!(thread::turn_params(&snapshot, &thread::TurnInput::default()).is_err());
+            }
+            let params =
+                native_turn_params(&mut snapshot, &thread::TurnInput::default(), Some(&program));
+            assert!(params.is_ok(), "native action turn params must be prepared");
+            let params = match params {
+                Ok(params) => params,
+                Err(_) => return,
+            };
+            assert_eq!(params.get("cyberAccessProgram"), Some(&json!(expected)));
+            assert_eq!(
+                snapshot.settings.daybreak_enabled,
+                thread::Stored::Present(Some(enabled))
+            );
+        }
+    }
+
+    #[test]
+    fn monitor_preparation_accepts_submitted_running_actor_without_start_admission() {
+        let record = json!({
+            "id":"agent", "epoch":7, "autoWake":true, "deletedAt":null,
+            "status":"running", "startAttempt":{"id":"submitted","submitted":true}
+        });
+        assert!(validate_monitor_actor(&record, 7).is_ok());
+        assert!(validate_monitor_actor(&record, 8).is_err());
+        let deleted = json!({"epoch":7,"autoWake":true,"deletedAt":1});
+        assert!(validate_monitor_actor(&deleted, 7).is_err());
+    }
+
+    #[test]
+    fn monitor_settings_match_turn_permission_and_sandbox_fallback() {
+        let yolo = monitor_command_settings(
+            &json!({"sandbox":"workspace-write"}),
+            "/workspace",
+            thread::Role::Implementer,
+            false,
+            Some(true),
+            None,
+            None,
+        );
+        assert_eq!(
+            yolo.ok(),
+            Some(json!({
+                "approvalPolicy":"never","sandboxPolicy":{"type":"dangerFullAccess"}
+            }))
+        );
+
+        let profile = monitor_command_settings(
+            &json!({"sandbox":"workspace-write","profile":{"id":"strict"}}),
+            "/workspace",
+            thread::Role::Implementer,
+            false,
+            None,
+            None,
+            None,
+        );
+        assert_eq!(profile.ok(), Some(json!({"permissionProfile":"strict"})));
+
+        let reviewer = monitor_command_settings(
+            &json!({"sandbox":"workspace-write"}),
+            "/workspace",
+            thread::Role::Reviewer,
+            false,
+            Some(false),
+            None,
+            None,
+        );
+        assert_eq!(
+            reviewer.ok(),
+            Some(json!({
+                "approvalPolicy":"on-request","sandboxPolicy":{"type":"readOnly"}
+            }))
+        );
+    }
 }

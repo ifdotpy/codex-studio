@@ -36,6 +36,14 @@ pub struct PreparedNativeThread {
     pub params: serde_json::Value,
 }
 
+/// Monitor thread identity and exact permission params prepared from the current
+/// actor record. Unlike turn preparation this is valid during an active turn.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PreparedMonitorCommand {
+    pub thread_id: String,
+    pub settings: serde_json::Value,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct SafetyRetryPreparation {
     pub agent_id: String,
@@ -90,35 +98,24 @@ pub fn prepare_native_thread(
     pipeline::prepare_native_thread(store, resources, agent_id, attempt_id, generation)
 }
 
+/// Prepare permission settings for an already-admitted monitor command. This
+/// deliberately skips native-action startAttempt admission; monitor owners
+/// authorize the running monitor and pass its observed agent epoch.
+pub fn prepare_monitor_command(
+    store: &RuntimeStore,
+    resources: &PreparationResources,
+    agent_id: &str,
+    epoch: u64,
+) -> Result<PreparedMonitorCommand, WorkerError> {
+    pipeline::prepare_monitor_command(store, resources, agent_id, epoch)
+}
+
 pub fn prepare_safety_retry(
     store: &RuntimeStore,
     resources: &PreparationResources,
     request: &SafetyRetryPreparation,
 ) -> Result<PreparedSafetyRetry, WorkerError> {
     pipeline::prepare_safety_retry(store, resources, request)
-}
-
-#[cfg(test)]
-mod safety_retry_tests {
-    use super::*;
-    use serde_json::json;
-
-    #[test]
-    fn safety_retry_binds_fork_receipt_to_complete_turn_params() {
-        let mut prepared = PreparedSafetyRetry {
-            attempt_id: "attempt-1".into(),
-            thread_id: "attempt-1".into(),
-            fork_params: json!({"threadId":"source"}),
-            turn_params: json!({"threadId":"attempt-1","input":[]}),
-        };
-
-        prepared.with_thread_id("forked-thread").unwrap();
-
-        assert_eq!(prepared.thread_id, "forked-thread");
-        assert_eq!(prepared.turn_params["threadId"], "forked-thread");
-        assert_eq!(prepared.turn_params["input"], json!([]));
-        assert!(prepared.with_thread_id("").is_err());
-    }
 }
 
 pub fn prepare_turn(
@@ -178,5 +175,28 @@ impl PreparedTurn {
             prepared.submission.as_ref(),
             Some(&prepared.guard),
         )
+    }
+}
+
+#[cfg(test)]
+mod safety_retry_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn safety_retry_binds_fork_receipt_to_complete_turn_params() {
+        let mut prepared = PreparedSafetyRetry {
+            attempt_id: "attempt-1".into(),
+            thread_id: "attempt-1".into(),
+            fork_params: json!({"threadId":"source"}),
+            turn_params: json!({"threadId":"attempt-1","input":[]}),
+        };
+
+        assert!(prepared.with_thread_id("forked-thread").is_ok());
+
+        assert_eq!(prepared.thread_id, "forked-thread");
+        assert_eq!(prepared.turn_params["threadId"], "forked-thread");
+        assert_eq!(prepared.turn_params["input"], json!([]));
+        assert!(prepared.with_thread_id("").is_err());
     }
 }
