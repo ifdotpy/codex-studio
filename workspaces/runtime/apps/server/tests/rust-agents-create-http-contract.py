@@ -378,8 +378,6 @@ class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         )
 
     def test_p10_delete_commits_without_account_worker(self):
-        if not os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"):
-            self.skipTest("P10 Rust deletion behavior")
         victim = self.draft()
         victim_id = victim["id"]
         response = self.backend.request(
@@ -389,7 +387,24 @@ class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             headers=self.headers(),
         )
         self.assertEqual(response.status, 200, response.body[:1000])
-        self.assertEqual(response.json(), {"deleted": [victim_id]})
+        result = response.json()
+        self.assertEqual(result["deleted"], [victim_id])
+        if os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"):
+            self.assertEqual(result, {"deleted": [victim_id]})
+        else:
+            self.assertEqual(result["_syncEntitiesAfter"], result["_syncEntities"][0]["seq"] - 1)
+            self.assertEqual(
+                result["_syncEntities"][0],
+                {
+                    "_deleted": True,
+                    "id": f"entity:agent:{victim_id}",
+                    "payload": json.dumps(
+                        {"collection": "agent", "id": victim_id, "value": {}},
+                        separators=(",", ":"),
+                    ),
+                    "seq": result["_syncEntities"][0]["seq"],
+                },
+            )
         self.assertTrue(self.stored(victim_id)["deletedAt"])
 
     def test_rust_agent_creation_writes_one_pending_event_and_replays(self):
