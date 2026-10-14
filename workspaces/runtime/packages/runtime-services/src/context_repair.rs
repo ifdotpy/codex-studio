@@ -1667,7 +1667,7 @@ fn verify_native_items(
             actor,
             BrokerRead {
                 operation,
-                suffix: &format!("items-{page_index}"),
+                suffix: &item_read_suffix(turn, page_index),
                 method: studio_runtime_providers::Method::ThreadItemsList,
                 params,
             },
@@ -1700,6 +1700,25 @@ fn verify_native_items(
         cursor = Some(next.to_owned());
     }
     Err(RepairError::ReceiptHold)
+}
+
+fn item_read_suffix(turn: &str, page_index: usize) -> String {
+    format!(
+        "items-{}-{page_index}",
+        studio_runtime_store::sha256_hex(turn.as_bytes())
+    )
+}
+
+#[cfg(test)]
+mod item_read_identity_tests {
+    use super::item_read_suffix;
+
+    #[test]
+    fn item_read_identity_is_stable_per_turn_and_page() {
+        assert_eq!(item_read_suffix("turn-a", 0), item_read_suffix("turn-a", 0));
+        assert_ne!(item_read_suffix("turn-a", 0), item_read_suffix("turn-b", 0));
+        assert_ne!(item_read_suffix("turn-a", 0), item_read_suffix("turn-a", 1));
+    }
 }
 
 fn verify_tool_receipts(
