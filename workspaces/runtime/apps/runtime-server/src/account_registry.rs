@@ -8,7 +8,7 @@ use studio_runtime_process::provider_seam::{OpenOptions, ProviderTaskFactory, Sh
 use studio_runtime_services::{
     account_worker::{
         AccountCommand, AccountHandle, StoreBridge, WorkerError, preparation::PreparationResources,
-        start_account_worker_with_preparation,
+        start_account_worker_with_publication_sink,
     },
     provider_session_task::SessionTaskConfig,
 };
@@ -49,6 +49,8 @@ pub(crate) struct AccountLaunch {
     pub options: OpenOptions,
     pub config: SessionTaskConfig,
     pub resources: PreparationResources,
+    pub publication_sink:
+        Arc<dyn studio_runtime_services::notification_runtime_effects::NotificationPostCommitSink>,
 }
 
 /// Launch resolution runs outside transactions. A successful return owns the
@@ -98,13 +100,14 @@ impl AccountRegistry {
             return Ok(());
         }
         let launch = self.launcher.launch(account.to_owned()).await?;
-        let worker = start_account_worker_with_preparation(
+        let worker = start_account_worker_with_publication_sink(
             self.bridge.clone(),
             account.to_owned(),
             launch.factory,
             launch.options,
             launch.config,
             launch.resources,
+            launch.publication_sink,
         )
         .await?;
         self.workers.insert(account.to_owned(), worker);

@@ -424,6 +424,7 @@ fn apply(store: &RuntimeStore, case: &Value, prepared: &Value) -> Result<Value, 
             .expect("Python post-commit captures");
         let selected: Vec<_> = handoff
             .iter()
+            .filter(|effect| effect["kind"] != "tokenRateUsage")
             .filter(|effect| case["analytics_semantics"] != true || effect["kind"] != "analytics")
             .cloned()
             .collect();
@@ -479,7 +480,8 @@ impl studio_runtime_services::notification_runtime_effects::NotificationPostComm
             NotificationPostCommit::Analytics { observation, .. }
             | NotificationPostCommit::AnalyticsStream { observation, .. }
             | NotificationPostCommit::TokenRateStream(observation)
-            | NotificationPostCommit::TokenRateAssociation(observation) => observation,
+            | NotificationPostCommit::TokenRateAssociation(observation)
+            | NotificationPostCommit::TokenRateUsage(observation) => observation,
             NotificationPostCommit::Recovered { .. } => return Ok(()),
         };
         let identity = &observation.delivery;
@@ -552,9 +554,21 @@ fn post_commit_value(
         NotificationPostCommit::TokenRateAssociation(observation) => {
             ("association", observation, None)
         }
+        NotificationPostCommit::TokenRateUsage(observation) => {
+            ("tokenRateUsage", observation, None)
+        }
         NotificationPostCommit::Recovered { .. } => unreachable!("handled above"),
     };
-    let mut value = json!({"kind":kind, "agent":observation.agent, "method":observation.method, "params":observation.params,
+    // Python's stream callback intentionally resolves an agent through its
+    // account/connection/thread index and carries no agent payload. Rust keeps
+    // the frozen agent on its internal effect for snapshot projection; omit
+    // that implementation context from the cross-language corpus shape.
+    let agent = if kind == "stream" {
+        Value::Null
+    } else {
+        observation.agent.clone().unwrap_or(Value::Null)
+    };
+    let mut value = json!({"kind":kind, "agent":agent, "method":observation.method, "params":observation.params,
         "account":observation.delivery.provider_handle.strip_prefix("account:"),
         "connection":format!("connection-{}", observation.delivery.generation),
         "at":if kind=="analytics" { observation.observed_at } else { observation.provider_at },

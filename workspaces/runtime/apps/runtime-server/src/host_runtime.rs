@@ -128,8 +128,11 @@ impl HostRuntime {
     ) -> Result<Self, WorkerError> {
         let mut nonce = [0_u8; 16];
         getrandom::fill(&mut nonce).map_err(|_| WorkerError::TaskFailed)?;
+        let backend_id = data_encoding::HEXLOWER.encode(&nonce);
+        studio_runtime_services::analytics_capture::start_token_rate_process(&store, &backend_id)
+            .map_err(|_| WorkerError::TaskFailed)?;
         let identity = BackendIdentity {
-            backend_id: BackendId(data_encoding::HEXLOWER.encode(&nonce)),
+            backend_id: BackendId(backend_id.clone()),
             state_dir: store.root().to_owned(),
         };
         let install_root = resolve_install_root()?;
@@ -171,6 +174,14 @@ impl HostRuntime {
             native_path,
             resources,
             claude_bridge_dir,
+            publication_sink: Arc::new(
+                studio_runtime_services::notification_runtime_effects::RuntimeNotificationPostCommitSink {
+                    token_rates: state.token_rate_handle(),
+                    resources: state.resource_notifications_handle(),
+                    analytics_store: Arc::clone(&store),
+                    process_id: backend_id,
+                },
+            ),
             environment: std::env::vars().collect(),
         });
         Self::with_launcher_and_monitor_wake(
@@ -235,6 +246,8 @@ struct HostLauncher {
     native_path: Option<String>,
     resources: PreparationResources,
     claude_bridge_dir: PathBuf,
+    publication_sink:
+        Arc<dyn studio_runtime_services::notification_runtime_effects::NotificationPostCommitSink>,
     environment: BTreeMap<String, String>,
 }
 
@@ -335,6 +348,7 @@ impl AccountLauncher for HostLauncher {
                     recovered: vec![],
                 },
                 resources,
+                publication_sink: Arc::clone(&self.publication_sink),
             })
         })
     }

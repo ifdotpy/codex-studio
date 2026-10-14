@@ -79,6 +79,7 @@ pub enum NotificationPostCommit {
     },
     TokenRateStream(NotificationObservation),
     TokenRateAssociation(NotificationObservation),
+    TokenRateUsage(NotificationObservation),
     /// Reconstructed from retained native history after a restart. This has a
     /// recovery identity rather than an invented provider delivery cursor.
     Recovered {
