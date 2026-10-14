@@ -39,18 +39,27 @@ async fn branch(
 ) -> Result<Json<Value>, ApiError> {
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
     let port = state.account_session.clone().ok_or_else(unavailable)?;
-    let account = {
-        let db = store.read().map_err(ApiError::stored)?;
-        let agent = AgentRepository::get(&db, &AgentId::from(body.agent.as_str()))
-            .map_err(ApiError::stored)?
-            .ok_or_else(|| bad_request("Unknown managed agent"))?;
-        agent
-            .extra
-            .get("accountKey")
-            .and_then(Value::as_str)
-            .unwrap_or("default")
-            .to_owned()
-    };
+    let agent_id = body.agent.clone();
+    let account_store = store.clone();
+    let account = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-http/routes/branches",
+        move || {
+            let db = account_store.read().map_err(ApiError::stored)?;
+            let agent = AgentRepository::get(&db, &AgentId::from(agent_id.as_str()))
+                .map_err(ApiError::stored)?
+                .ok_or_else(|| bad_request("Unknown managed agent"))?;
+            Ok::<_, ApiError>(
+                agent
+                    .extra
+                    .get("accountKey")
+                    .and_then(Value::as_str)
+                    .unwrap_or("default")
+                    .to_owned(),
+            )
+        },
+    )
+    .await
+    .map_err(|_| ApiError::internal())??;
     let operation_id = format!("branch:{}", body.id);
     let signature = sha256_hex(
         serde_json::to_string(&json!({
@@ -59,174 +68,176 @@ async fn branch(
         .map_err(|_| ApiError::internal())?
         .as_bytes(),
     );
-    let (source, selected, scope, operation) = tokio::task::spawn_blocking({
-        let store = store.clone();
-        let port = port.clone();
-        let scope_account = account.clone();
-        let agent_id = body.agent.clone();
-        let message_id = body.message_id.clone();
-        let operation_id = operation_id.clone();
-        let signature = signature.clone();
-        move || {
-            let scope = port.current_scope(&scope_account).ok_or_else(unavailable)?;
-            let snapshot = {
-                let db = store.read().map_err(ApiError::stored)?;
-                CheckpointsRepository::workspace_snapshot(&db, &agent_id)
-                    .map_err(ApiError::stored)?
-                    .ok_or_else(|| bad_request("Unknown managed agent"))?
-            };
-            let source = snapshot.agent.record.clone();
-            let selected = {
-                let db = store.read().map_err(ApiError::stored)?;
-                TranscriptRepository::resolve_item(&db, &agent_id, &message_id)
-                    .map_err(|_| ApiError::internal())?
-                    .ok_or_else(|| bad_request("Unknown message in this conversation"))?
-            };
-            if selected.record.get("afterRestore").is_some()
-                || selected
-                    .record
-                    .get("turnId")
+    let (source, selected, scope, operation) =
+        studio_runtime_process::blocking_pool::spawn_blocking("runtime-http/routes/branches", {
+            let store = store.clone();
+            let port = port.clone();
+            let scope_account = account.clone();
+            let agent_id = body.agent.clone();
+            let message_id = body.message_id.clone();
+            let operation_id = operation_id.clone();
+            let signature = signature.clone();
+            move || {
+                let scope = port.current_scope(&scope_account).ok_or_else(unavailable)?;
+                let snapshot = {
+                    let db = store.read().map_err(ApiError::stored)?;
+                    CheckpointsRepository::workspace_snapshot(&db, &agent_id)
+                        .map_err(ApiError::stored)?
+                        .ok_or_else(|| bad_request("Unknown managed agent"))?
+                };
+                let source = snapshot.agent.record.clone();
+                let selected = {
+                    let db = store.read().map_err(ApiError::stored)?;
+                    TranscriptRepository::resolve_item(&db, &agent_id, &message_id)
+                        .map_err(|_| ApiError::internal())?
+                        .ok_or_else(|| bad_request("Unknown message in this conversation"))?
+                };
+                if selected.record.get("afterRestore").is_some()
+                    || selected
+                        .record
+                        .get("turnId")
+                        .and_then(Value::as_str)
+                        .is_none_or(str::is_empty)
+                {
+                    return Err(bad_request(
+                        "This message has no active native turn reference",
+                    ));
+                }
+                if source
+                    .get("threadId")
                     .and_then(Value::as_str)
                     .is_none_or(str::is_empty)
-            {
-                return Err(bad_request(
-                    "This message has no active native turn reference",
-                ));
-            }
-            if source
-                .get("threadId")
-                .and_then(Value::as_str)
-                .is_none_or(str::is_empty)
-                || source.get("inFlight").and_then(Value::as_bool) == Some(true)
-                || source.get("turnId").and_then(Value::as_str)
-                    == selected.record.get("turnId").and_then(Value::as_str)
-            {
-                return Err(bad_request("Wait for this turn to finish before branching"));
-            }
-            let mut operation = None;
-            store
-                .transaction_with(|tx| {
-                    if !CheckpointsRepository::workspace_unchanged(tx, &snapshot)? {
-                        return Err(studio_runtime_store::StoreError::SchemaMismatch(
-                            "branch workspace changed".into(),
-                        ));
-                    }
-                    if let Some(prior) = tx
-                        .query_row(
-                            "SELECT record FROM runtime_workspace_operations WHERE id=?1",
-                            [&operation_id],
-                            |row| row.get::<_, String>(0),
-                        )
-                        .optional()?
-                    {
-                        let mut prior: Value = serde_json::from_str(&prior)?;
-                        if prior.get("signature").and_then(Value::as_str)
-                            != Some(signature.as_str())
-                        {
+                    || source.get("inFlight").and_then(Value::as_bool) == Some(true)
+                    || source.get("turnId").and_then(Value::as_str)
+                        == selected.record.get("turnId").and_then(Value::as_str)
+                {
+                    return Err(bad_request("Wait for this turn to finish before branching"));
+                }
+                let mut operation = None;
+                store
+                    .transaction_with(|tx| {
+                        if !CheckpointsRepository::workspace_unchanged(tx, &snapshot)? {
                             return Err(studio_runtime_store::StoreError::SchemaMismatch(
-                                "branch request id has different content".into(),
+                                "branch workspace changed".into(),
                             ));
                         }
-                        match prior.get("phase").and_then(Value::as_str) {
-                            Some("completed" | "provider_ready") => {
-                                operation = Some(prior);
-                                return Ok(());
+                        if let Some(prior) = tx
+                            .query_row(
+                                "SELECT record FROM runtime_workspace_operations WHERE id=?1",
+                                [&operation_id],
+                                |row| row.get::<_, String>(0),
+                            )
+                            .optional()?
+                        {
+                            let mut prior: Value = serde_json::from_str(&prior)?;
+                            if prior.get("signature").and_then(Value::as_str)
+                                != Some(signature.as_str())
+                            {
+                                return Err(studio_runtime_store::StoreError::SchemaMismatch(
+                                    "branch request id has different content".into(),
+                                ));
                             }
-                            Some("failed") => {
-                                prior["phase"] = json!("provider_pending");
-                                if let Some(value) = prior.as_object_mut() {
-                                    value.remove("provider");
-                                    value.remove("result");
-                                    value.remove("error");
+                            match prior.get("phase").and_then(Value::as_str) {
+                                Some("completed" | "provider_ready") => {
+                                    operation = Some(prior);
+                                    return Ok(());
                                 }
-                                tx.execute(
+                                Some("failed") => {
+                                    prior["phase"] = json!("provider_pending");
+                                    if let Some(value) = prior.as_object_mut() {
+                                        value.remove("provider");
+                                        value.remove("result");
+                                        value.remove("error");
+                                    }
+                                    tx.execute(
                                     "UPDATE runtime_workspace_operations SET record=?2 WHERE id=?1",
                                     params![operation_id, prior.to_string()],
                                 )?;
-                            }
-                            Some("provider_pending" | "recovery_required") => {
-                                // Re-submit the same broker operation identity
-                                // below. The retained broker returns its saved
-                                // receipt or Unknown and never sends a duplicate.
-                                operation = Some(prior);
-                                return Ok(());
-                            }
-                            _ => {
-                                return Err(studio_runtime_store::StoreError::SchemaMismatch(
+                                }
+                                Some("provider_pending" | "recovery_required") => {
+                                    // Re-submit the same broker operation identity
+                                    // below. The retained broker returns its saved
+                                    // receipt or Unknown and never sends a duplicate.
+                                    operation = Some(prior);
+                                    return Ok(());
+                                }
+                                _ => {
+                                    return Err(studio_runtime_store::StoreError::SchemaMismatch(
                                     "Workspace recovery is required before retrying this branch"
                                         .into(),
                                 ));
+                                }
                             }
                         }
-                    }
-                    if (source
-                        .get("workspaceOperation")
-                        .is_some_and(|value| !value.is_null() && value != "")
-                        && source.get("workspaceReservationId").and_then(Value::as_str)
-                            != Some(operation_id.as_str()))
-                        || snapshot.agents.iter().any(|entry| {
-                            entry.id != agent_id
-                                && entry.record.get("cwd") == source.get("cwd")
-                                && entry
-                                    .record
-                                    .get("workspaceOperation")
-                                    .is_some_and(|value| !value.is_null() && value != "")
-                        })
-                    {
-                        return Err(studio_runtime_store::StoreError::SchemaMismatch(
-                            "workspace is busy".into(),
-                        ));
-                    }
-                    let source_stamp = CheckpointsRepository::workspace_source(&source);
-                    let mut record = if let Some(existing) = tx
-                        .query_row(
-                            "SELECT record FROM runtime_workspace_operations WHERE id=?1",
-                            [&operation_id],
-                            |row| row.get::<_, String>(0),
-                        )
-                        .optional()?
-                    {
-                        serde_json::from_str::<Value>(&existing)?
-                    } else {
-                        let record = json!({
-                            "id":operation_id,"kind":"branch","agent":agent_id,
-                            "phase":"provider_pending","signature":signature,
-                            "source":source_stamp,"message_id":message_id,
-                            "turn_id":selected.record["turnId"],
-                            "previousStatus":source.get("status"),
-                            "previousAutoWake":source.get("autoWake"),
-                            "previousWorkspaceOperation":source.get("workspaceOperation"),
-                            "created":unix_time()
-                        });
+                        if (source
+                            .get("workspaceOperation")
+                            .is_some_and(|value| !value.is_null() && value != "")
+                            && source.get("workspaceReservationId").and_then(Value::as_str)
+                                != Some(operation_id.as_str()))
+                            || snapshot.agents.iter().any(|entry| {
+                                entry.id != agent_id
+                                    && entry.record.get("cwd") == source.get("cwd")
+                                    && entry
+                                        .record
+                                        .get("workspaceOperation")
+                                        .is_some_and(|value| !value.is_null() && value != "")
+                            })
+                        {
+                            return Err(studio_runtime_store::StoreError::SchemaMismatch(
+                                "workspace is busy".into(),
+                            ));
+                        }
+                        let source_stamp = CheckpointsRepository::workspace_source(&source);
+                        let mut record = if let Some(existing) = tx
+                            .query_row(
+                                "SELECT record FROM runtime_workspace_operations WHERE id=?1",
+                                [&operation_id],
+                                |row| row.get::<_, String>(0),
+                            )
+                            .optional()?
+                        {
+                            serde_json::from_str::<Value>(&existing)?
+                        } else {
+                            let record = json!({
+                                "id":operation_id,"kind":"branch","agent":agent_id,
+                                "phase":"provider_pending","signature":signature,
+                                "source":source_stamp,"message_id":message_id,
+                                "turn_id":selected.record["turnId"],
+                                "previousStatus":source.get("status"),
+                                "previousAutoWake":source.get("autoWake"),
+                                "previousWorkspaceOperation":source.get("workspaceOperation"),
+                                "created":unix_time()
+                            });
+                            tx.execute(
+                                "INSERT INTO runtime_workspace_operations(id,record) VALUES(?1,?2)",
+                                params![operation_id, record.to_string()],
+                            )?;
+                            record
+                        };
+                        let mut actor =
+                            AgentRepository::get(tx, &AgentId::from(agent_id.as_str()))?
+                                .ok_or_else(|| rusqlite::Error::QueryReturnedNoRows)?;
+                        actor
+                            .extra
+                            .insert("workspaceOperation".into(), json!("branch"));
+                        actor
+                            .extra
+                            .insert("workspaceReservationId".into(), json!(operation_id));
+                        AgentRepository::put(tx, &actor)?;
+                        record["reserved"] = json!(true);
                         tx.execute(
-                            "INSERT INTO runtime_workspace_operations(id,record) VALUES(?1,?2)",
+                            "UPDATE runtime_workspace_operations SET record=?2 WHERE id=?1",
                             params![operation_id, record.to_string()],
                         )?;
-                        record
-                    };
-                    let mut actor = AgentRepository::get(tx, &AgentId::from(agent_id.as_str()))?
-                        .ok_or_else(|| rusqlite::Error::QueryReturnedNoRows)?;
-                    actor
-                        .extra
-                        .insert("workspaceOperation".into(), json!("branch"));
-                    actor
-                        .extra
-                        .insert("workspaceReservationId".into(), json!(operation_id));
-                    AgentRepository::put(tx, &actor)?;
-                    record["reserved"] = json!(true);
-                    tx.execute(
-                        "UPDATE runtime_workspace_operations SET record=?2 WHERE id=?1",
-                        params![operation_id, record.to_string()],
-                    )?;
-                    operation = Some(record);
-                    Ok(())
-                })
-                .map_err(|error| bad_request(&error.to_string()))?;
-            Ok::<_, ApiError>((source, selected, scope, operation))
-        }
-    })
-    .await
-    .map_err(|_| ApiError::internal())??;
+                        operation = Some(record);
+                        Ok(())
+                    })
+                    .map_err(|error| bad_request(&error.to_string()))?;
+                Ok::<_, ApiError>((source, selected, scope, operation))
+            }
+        })
+        .await
+        .map_err(|_| ApiError::internal())??;
     if let Some(result) = operation
         .as_ref()
         .and_then(|op| op.get("result"))
@@ -250,87 +261,88 @@ async fn branch(
         "gpt-5.6-sol"
     };
     let before = body.before.unwrap_or(false);
-    let fork_turn = tokio::task::spawn_blocking({
-        let port = port.clone();
-        let account = account.clone();
-        let scope = scope.clone();
-        let operation = format!("{operation_id}:turns");
-        let actor = body.agent.clone();
-        let epoch = source["epoch"].as_i64().unwrap_or(0);
-        let thread_id = source["threadId"].as_str().map(str::to_owned);
-        let selected_turn = selected.record["turnId"].as_str().map(str::to_owned);
-        move || {
-            if before {
-                // Python reads the full thread history before resolving `before`.
-                // ThreadTurnsList is paged here; stable per-page operation IDs let
-                // the retained broker replay a known page without resending an
-                // uncertain one.
-                let mut cursor: Option<String> = None;
-                let mut seen_cursors = HashSet::new();
-                let mut turn_ids = Vec::new();
-                let mut page = 0_u64;
-                loop {
-                    let mut params = json!({
-                        "threadId":thread_id,
-                        "limit":20,
-                        "sortDirection":"desc",
-                        "itemsView":"full"
-                    });
-                    if let Some(cursor_value) = &cursor {
-                        params["cursor"] = json!(cursor_value);
-                    }
-                    let result = provider_request(
-                        port.as_ref(),
-                        &account,
-                        &scope,
-                        format!("{operation}:{page}"),
-                        Some(RequestActor {
-                            agent: actor.clone(),
-                            epoch,
-                        }),
-                        Method::ThreadTurnsList,
-                        params,
-                    )?;
-                    let turns = result
-                        .get("data")
-                        .and_then(Value::as_array)
-                        .ok_or_else(ApiError::internal)?;
-                    for turn in turns {
-                        let id = turn
-                            .get("id")
-                            .and_then(Value::as_str)
-                            .filter(|id| !id.is_empty())
+    let fork_turn =
+        studio_runtime_process::blocking_pool::spawn_blocking("runtime-http/routes/branches", {
+            let port = port.clone();
+            let account = account.clone();
+            let scope = scope.clone();
+            let operation = format!("{operation_id}:turns");
+            let actor = body.agent.clone();
+            let epoch = source["epoch"].as_i64().unwrap_or(0);
+            let thread_id = source["threadId"].as_str().map(str::to_owned);
+            let selected_turn = selected.record["turnId"].as_str().map(str::to_owned);
+            move || {
+                if before {
+                    // Python reads the full thread history before resolving `before`.
+                    // ThreadTurnsList is paged here; stable per-page operation IDs let
+                    // the retained broker replay a known page without resending an
+                    // uncertain one.
+                    let mut cursor: Option<String> = None;
+                    let mut seen_cursors = HashSet::new();
+                    let mut turn_ids = Vec::new();
+                    let mut page = 0_u64;
+                    loop {
+                        let mut params = json!({
+                            "threadId":thread_id,
+                            "limit":20,
+                            "sortDirection":"desc",
+                            "itemsView":"full"
+                        });
+                        if let Some(cursor_value) = &cursor {
+                            params["cursor"] = json!(cursor_value);
+                        }
+                        let result = provider_request(
+                            port.as_ref(),
+                            &account,
+                            &scope,
+                            format!("{operation}:{page}"),
+                            Some(RequestActor {
+                                agent: actor.clone(),
+                                epoch,
+                            }),
+                            Method::ThreadTurnsList,
+                            params,
+                        )?;
+                        let turns = result
+                            .get("data")
+                            .and_then(Value::as_array)
                             .ok_or_else(ApiError::internal)?;
-                        turn_ids.push(id.to_owned());
+                        for turn in turns {
+                            let id = turn
+                                .get("id")
+                                .and_then(Value::as_str)
+                                .filter(|id| !id.is_empty())
+                                .ok_or_else(ApiError::internal)?;
+                            turn_ids.push(id.to_owned());
+                        }
+                        let Some(next) = result
+                            .get("nextCursor")
+                            .and_then(Value::as_str)
+                            .filter(|next| !next.is_empty())
+                        else {
+                            break;
+                        };
+                        if !seen_cursors.insert(next.to_owned()) {
+                            return Err(ApiError::internal());
+                        }
+                        cursor = Some(next.to_owned());
+                        page = page.checked_add(1).ok_or_else(ApiError::internal)?;
                     }
-                    let Some(next) = result
-                        .get("nextCursor")
-                        .and_then(Value::as_str)
-                        .filter(|next| !next.is_empty())
-                    else {
-                        break;
-                    };
-                    if !seen_cursors.insert(next.to_owned()) {
-                        return Err(ApiError::internal());
-                    }
-                    cursor = Some(next.to_owned());
-                    page = page.checked_add(1).ok_or_else(ApiError::internal)?;
+                    let selected_turn = selected_turn.as_deref().ok_or_else(ApiError::internal)?;
+                    let position = turn_ids
+                        .iter()
+                        .position(|turn| turn == selected_turn)
+                        .ok_or_else(|| {
+                            bad_request("The selected turn is absent from native history")
+                        })?;
+                    Ok::<_, ApiError>(turn_ids.get(position + 1).cloned())
+                } else {
+                    Ok(selected_turn)
                 }
-                let selected_turn = selected_turn.as_deref().ok_or_else(ApiError::internal)?;
-                let position = turn_ids
-                    .iter()
-                    .position(|turn| turn == selected_turn)
-                    .ok_or_else(|| {
-                        bad_request("The selected turn is absent from native history")
-                    })?;
-                Ok::<_, ApiError>(turn_ids.get(position + 1).cloned())
-            } else {
-                Ok(selected_turn)
             }
-        }
-    })
-    .await
-    .map_err(|_| ApiError::internal())?;
+        })
+        .await
+        .map_err(|_| ApiError::internal())?;
     let fork_turn = match fork_turn {
         Ok(turn) => turn,
         Err(error) => {
@@ -373,9 +385,12 @@ async fn branch(
             deadline: Instant::now() + Duration::from_secs(60),
         };
         let sender = port.clone();
-        let result = tokio::task::spawn_blocking(move || sender.provider_request(request))
-            .await
-            .map_err(|_| ApiError::internal())?;
+        let result = studio_runtime_process::blocking_pool::spawn_blocking(
+            "runtime-http/routes/branches",
+            move || sender.provider_request(request),
+        )
+        .await
+        .map_err(|_| ApiError::internal())?;
         match result {
             Ok(receipt) if receipt.certainty == RequestCertainty::Written => match receipt.result {
                 Some(ProviderResponse::Reply(value)) => value,
