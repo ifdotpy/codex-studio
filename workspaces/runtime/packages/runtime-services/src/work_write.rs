@@ -10,13 +10,82 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde_json::{Value, json};
 use studio_runtime_store::{
-    AgentId, AgentRecord, AgentRepository, Transaction, WorkItemsRepository,
+    AgentId, AgentRecord, AgentRepository, RuntimeStore, Transaction, WorkItemsRepository,
 };
 
 use crate::event_write::{self, EventWriteError as Error};
 use thiserror::Error;
 
 static GENERATED_WORK_ID: AtomicU64 = AtomicU64::new(0);
+
+/// Check whether a submitted commit is on local main without contacting a remote.
+/// Repositories with an origin are kept for the separately scheduled remote check.
+pub fn accepted_revision_is_on_local_main(repository: &str, revision: &str) -> bool {
+    use std::ffi::OsStr;
+    use std::time::Duration;
+
+    if !(7..=64).contains(&revision.len()) || !revision.bytes().all(|byte| byte.is_ascii_hexdigit())
+    {
+        return false;
+    }
+    let run_git = |args: &[&str]| {
+        crate::bounded_child::run_without_git_environment(crate::bounded_child::Request {
+            program: OsStr::new("git"),
+            cwd: OsStr::new(repository),
+            args,
+            environment: &[],
+            input: None,
+            stdout_limit: 256,
+            stderr_limit: 256,
+            timeout: Duration::from_secs(2),
+        })
+        .ok()
+        .map(|output| output.stdout.bytes)
+    };
+    let submitted_ref = format!("{revision}^{{commit}}");
+    let Some(submitted) = run_git(&["rev-parse", "--verify", "--end-of-options", &submitted_ref])
+    else {
+        return false;
+    };
+    let submitted = String::from_utf8_lossy(&submitted).trim().to_owned();
+    let Some(remotes) = run_git(&["remote"]) else {
+        return false;
+    };
+    if String::from_utf8_lossy(&remotes)
+        .lines()
+        .any(|remote| remote == "origin")
+    {
+        return false;
+    }
+    let Some(main) = run_git(&["rev-parse", "--verify", "refs/heads/main^{commit}"]) else {
+        return false;
+    };
+    let main = String::from_utf8_lossy(&main).trim().to_owned();
+    run_git(&["merge-base", "--is-ancestor", &submitted, &main]).is_some()
+}
+
+/// Identify repositories whose accepted-result main check needs remote transport.
+pub fn repository_has_origin(repository: &str) -> bool {
+    use std::ffi::OsStr;
+    use std::time::Duration;
+
+    crate::bounded_child::run_without_git_environment(crate::bounded_child::Request {
+        program: OsStr::new("git"),
+        cwd: OsStr::new(repository),
+        args: &["remote"],
+        environment: &[],
+        input: None,
+        stdout_limit: 256,
+        stderr_limit: 256,
+        timeout: Duration::from_secs(2),
+    })
+    .ok()
+    .is_some_and(|output| {
+        String::from_utf8_lossy(&output.stdout.bytes)
+            .lines()
+            .any(|remote| remote == "origin")
+    })
+}
 
 pub struct CreateWork {
     pub actor_id: String,
@@ -54,6 +123,7 @@ pub enum WorkMutation {
     },
 }
 
+#[derive(Clone)]
 pub struct SubmitWork {
     pub task_id: String,
     pub version: Option<i64>,
@@ -62,6 +132,143 @@ pub struct SubmitWork {
     pub revision: String,
     pub files: Vec<String>,
     pub state_dir: PathBuf,
+    pub vm_evidence: Option<Value>,
+}
+
+pub struct VmSubmissionCall {
+    pub owner_id: String,
+    pub revision: String,
+    pub request_id: String,
+}
+
+pub enum VmSubmissionPreparation {
+    NotVm,
+    Replay,
+    Evidence(Value),
+    Call(VmSubmissionCall),
+}
+
+/// Persist an exact layr evidence request before contacting the guest. A pending
+/// or unknown request is never sent again; completed evidence can be replayed.
+pub fn prepare_vm_submission(
+    store: &RuntimeStore,
+    agent_id: &str,
+    request_id: Option<&str>,
+    signature: &str,
+    input: &SubmitWork,
+) -> Result<VmSubmissionPreparation, WorkWriteError> {
+    store.transaction_with_error(|tx| {
+        let agent = event_write::checked_agent(tx, agent_id)?;
+        if event_write::read_receipt(
+            tx,
+            request_id,
+            signature,
+            "runtime_work",
+            request_id.unwrap_or(agent_id),
+            |value| {
+                value
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .is_some_and(|id| WorkItemsRepository::validate_work(tx, id, value).is_ok())
+            },
+        )?
+        .is_some()
+        {
+            return Ok(VmSubmissionPreparation::Replay);
+        }
+        let work = load_work(tx, &agent.root_id.0, &input.task_id, input.version)?;
+        if !matches!(work["status"].as_str(), Some("running" | "ready" | "blocked" | "review")) {
+            return Err(Error::InvalidRequest("This result is already accepted").into());
+        }
+        if !blocked_by(&work, &dependency_statuses(tx, &work)?).is_empty() {
+            return Err(Error::InvalidRequest("Dependencies have not been accepted").into());
+        }
+        text(&input.result, false)?;
+        text(&input.checks, false)?;
+        python_bounded_text(&input.revision, 200)?;
+        if input.files.len() > 50 || input.files.iter().any(|path| path.chars().count() > 4096) {
+            return Err(Error::InvalidRequest("Supply up to 50 file paths").into());
+        }
+        let owner_id = work["owner"].as_str().unwrap_or(&agent.id.0);
+        let owner = event_write::checked_agent(tx, owner_id)?;
+        validate_submission_files(&owner, &input.files)?;
+        if owner.extra.get("executionMode").and_then(Value::as_str) != Some("vm") {
+            return Ok(VmSubmissionPreparation::NotVm);
+        }
+        let rpc_id = format!("layr-evidence:{owner_id}:{}", input.revision);
+        let mut current = work.clone();
+        if let Some(intent) = current.get("submissionIntent") {
+            match intent.get("status").and_then(Value::as_str) {
+                Some("pending" | "unknown") => {
+                    return Err(Error::Conflict(
+                        "A prior layr evidence request has an unknown outcome; inspect it before retrying",
+                    )
+                    .into());
+                }
+                _ if intent.get("requestId").and_then(Value::as_str)
+                    == Some(rpc_id.as_str()) =>
+                {
+                    match intent.get("status").and_then(Value::as_str) {
+                    Some("completed") => {
+                        if let Some(evidence) = intent.get("evidence") {
+                            return Ok(VmSubmissionPreparation::Evidence(evidence.clone()));
+                        }
+                    }
+                    _ => {}
+                    }
+                }
+                _ => {}
+            }
+        }
+        current["submissionIntent"] = json!({
+            "status":"pending",
+            "requestId":rpc_id,
+            "owner":owner_id,
+            "revision":input.revision,
+            "version":work["version"],
+            "created":event_write::unix_time()?,
+        });
+        WorkItemsRepository::update_work(tx, &input.task_id, &current)?;
+        Ok(VmSubmissionPreparation::Call(VmSubmissionCall {
+            owner_id: owner_id.to_owned(),
+            revision: input.revision.clone(),
+            request_id: rpc_id,
+        }))
+    })
+}
+
+/// Record the guest's terminal response before the normal work submission write.
+/// A lost response is persisted as unknown and can never trigger an automatic resend.
+pub fn finish_vm_submission(
+    store: &RuntimeStore,
+    task_id: &str,
+    request_id: &str,
+    outcome: Result<Value, bool>,
+) -> Result<Option<Value>, WorkWriteError> {
+    store.transaction_with_error(|tx| {
+        let mut work = WorkItemsRepository::work_record(tx, task_id)?
+            .ok_or(Error::InvalidRequest("Unknown work item"))?;
+        let mut intent = work
+            .get("submissionIntent")
+            .cloned()
+            .filter(|value| value.get("requestId").and_then(Value::as_str) == Some(request_id))
+            .ok_or(Error::Conflict("The layr evidence intent changed"))?;
+        match outcome {
+            Ok(evidence) => {
+                intent["status"] = json!("completed");
+                intent["evidence"] = evidence.clone();
+                work["submissionIntent"] = intent;
+                WorkItemsRepository::update_work(tx, task_id, &work)?;
+                Ok(Some(evidence))
+            }
+            Err(uncertain) => {
+                intent["status"] = json!(if uncertain { "unknown" } else { "not_sent" });
+                work["submissionIntent"] = intent;
+                WorkItemsRepository::update_work(tx, task_id, &work)?;
+                Ok(None)
+            }
+        }
+    })
 }
 
 pub struct ClaimWork {
@@ -74,6 +281,120 @@ pub struct AcceptWork {
     pub task_id: String,
     pub version: Option<i64>,
     pub reason: String,
+    pub merged_result_id: Option<String>,
+}
+
+pub struct VmMergeCall {
+    pub lead_id: String,
+    pub owner_id: String,
+    pub result_id: String,
+    pub revision: String,
+    pub request_id: String,
+}
+
+pub enum VmAcceptPreparation {
+    NotVm,
+    Merged(String),
+    Call(VmMergeCall),
+}
+
+/// Persist a merge intent before calling the VM guest. Pending or unknown
+/// identities are never resent; a completed exact merge can be replayed.
+pub fn prepare_vm_accept(
+    store: &RuntimeStore,
+    agent_id: &str,
+    task_id: &str,
+    version: Option<i64>,
+) -> Result<VmAcceptPreparation, WorkWriteError> {
+    store.transaction_with_error(|tx| {
+        let lead = event_write::checked_agent(tx, agent_id)?;
+        if lead.extra.get("executionMode").and_then(Value::as_str) != Some("vm") {
+            return Ok(VmAcceptPreparation::NotVm);
+        }
+        let work = load_work(tx, &lead.root_id.0, task_id, version)?;
+        if work["status"] != "review" {
+            return Ok(VmAcceptPreparation::NotVm);
+        }
+        let owner_id = work["owner"].as_str().unwrap_or_default().to_owned();
+        let owner = event_write::checked_agent(tx, &owner_id)?;
+        if owner.extra.get("executionMode").and_then(Value::as_str) != Some("vm") {
+            return Ok(VmAcceptPreparation::NotVm);
+        }
+        if lead.extra.get("layrProjectId") != owner.extra.get("layrProjectId") {
+            return Err(Error::InvalidRequest("The result belongs to another layr project").into());
+        }
+        let result = work["results"]
+            .as_array()
+            .and_then(|items| items.last())
+            .ok_or_else(|| invalid("runtime_work", task_id))?;
+        let result_id = result["id"]
+            .as_str()
+            .ok_or_else(|| invalid("runtime_work", task_id))?
+            .to_owned();
+        let revision = result["revision"]
+            .as_str()
+            .ok_or_else(|| invalid("runtime_work", task_id))?
+            .to_owned();
+        let rpc_id = format!("layr-accept:{result_id}");
+        if let Some(intent) = work.get("mergeIntent") {
+            if intent.get("requestId").and_then(Value::as_str) == Some(rpc_id.as_str()) {
+                match intent.get("status").and_then(Value::as_str) {
+                    Some("completed") => {
+                        return Ok(VmAcceptPreparation::Merged(result_id.to_owned()));
+                    }
+                    Some("pending" | "unknown") => {
+                        return Err(Error::Conflict(
+                            "The prior layr merge outcome is unknown; inspect it before retrying",
+                        )
+                        .into());
+                    }
+                    _ => {}
+                }
+            }
+        }
+        let mut current = work;
+        current["mergeIntent"] = json!({
+            "status":"pending",
+            "requestId":rpc_id,
+            "resultId":result_id,
+            "revision":revision,
+            "owner":owner_id,
+            "created":event_write::unix_time()?,
+        });
+        WorkItemsRepository::update_work(tx, task_id, &current)?;
+        Ok(VmAcceptPreparation::Call(VmMergeCall {
+            lead_id: lead.id.0,
+            owner_id,
+            result_id,
+            revision,
+            request_id: rpc_id,
+        }))
+    })
+}
+
+pub fn finish_vm_accept(
+    store: &RuntimeStore,
+    task_id: &str,
+    request_id: &str,
+    uncertain: Option<bool>,
+) -> Result<(), WorkWriteError> {
+    store.transaction_with_error(|tx| {
+        let mut work = WorkItemsRepository::work_record(tx, task_id)?
+            .ok_or(Error::InvalidRequest("Unknown work item"))?;
+        let mut intent = work
+            .get("mergeIntent")
+            .cloned()
+            .filter(|value| value.get("requestId").and_then(Value::as_str) == Some(request_id))
+            .ok_or(Error::Conflict("The layr merge intent changed"))?;
+        if let Some(uncertain) = uncertain {
+            intent["status"] = json!(if uncertain { "unknown" } else { "not_sent" });
+        } else {
+            intent["status"] = json!("completed");
+        }
+        work["mergeIntent"] = intent;
+        WorkItemsRepository::update_work(tx, task_id, &work)?;
+        Ok(())
+    })
 }
 
 pub enum WorkWrite {
@@ -657,6 +978,17 @@ fn decide_submit(
         "created": now,
         "resultFile": path.to_string_lossy(),
     });
+    if let Some(evidence) = &input.vm_evidence {
+        if evidence["layrStateId"] != input.revision
+            || evidence["layrProjectId"].as_str().is_none()
+            || evidence["layrLine"].as_str().is_none()
+        {
+            return Err(Error::InvalidRequest("Submit the exact layr state ID"));
+        }
+        result["layrProjectId"] = evidence["layrProjectId"].clone();
+        result["layrLine"] = evidence["layrLine"].clone();
+        result["layrStateId"] = evidence["layrStateId"].clone();
+    }
     if let Some(identity) = identity {
         result["runId"] = json!(identity.0);
         result["attemptId"] = json!(identity.1);
@@ -854,14 +1186,21 @@ fn create(
         "results": [], "decisions": [], "createdBy": actor_id,
     });
     let view = single_view(tx, &work)?;
-    assignment_needed(agent, owner, true, is_ready(&view))?;
     if !WorkItemsRepository::put_work(tx, &id, &work)? {
         return Err(Error::Conflict("Work item already exists"));
+    }
+    let mut event_inserted = false;
+    if let Some(owner) = owner.filter(|owner| *owner != agent.root_id.0)
+        && is_ready(&view)
+    {
+        let recipient = AgentRepository::get(tx, &AgentId::from(owner))?
+            .ok_or_else(|| invalid("runtime_agents", owner))?;
+        event_inserted = queue_assignment(tx, &recipient, &work)?;
     }
     event_write::save_receipt(tx, request_id, signature, &view)?;
     Ok(WorkWriteResult {
         record: view,
-        event_inserted: false,
+        event_inserted,
         artifact: None,
     })
 }
@@ -904,6 +1243,7 @@ fn mutate(
     let owner = work["owner"].as_str().map(str::to_owned);
     let previous_ready = is_ready(&single_view(tx, &work)?);
     let mut wake = false;
+    let mut assignment_owner = None;
 
     match mutation {
         WorkMutation::Update {
@@ -956,7 +1296,12 @@ fn mutate(
             let current_owner = work["owner"].as_str();
             let changed = current_owner != owner.as_deref();
             let ready = is_ready(&view);
-            assignment_needed(agent, current_owner, changed || !previous_ready, ready)?;
+            if ready
+                && (changed || !previous_ready)
+                && current_owner.is_some_and(|owner| owner != agent.root_id.0)
+            {
+                assignment_owner = current_owner.map(str::to_owned);
+            }
             if let Some(previous_owner) = owner.as_deref()
                 && (changed || previous_ready != ready)
             {
@@ -1054,6 +1399,11 @@ fn mutate(
     work["version"] = json!(version + 1);
     work["updated"] = json!(event_write::unix_time()?);
     WorkItemsRepository::update_work(tx, &task_id, &work)?;
+    if let Some(owner_id) = assignment_owner {
+        let recipient = AgentRepository::get(tx, &AgentId::from(owner_id.as_str()))?
+            .ok_or_else(|| invalid("runtime_agents", &owner_id))?;
+        wake |= queue_assignment(tx, &recipient, &work)?;
+    }
     let view = single_view(tx, &work)?;
     event_write::save_receipt(tx, request_id, signature, &view)?;
     Ok(WorkWriteResult {
@@ -1118,10 +1468,14 @@ fn submit(
     if submitter.root_id != agent.root_id {
         return Err(invalid("runtime_agents", submitter_id).into());
     }
+    validate_submission_files(&submitter, &input.files)?;
     if submitter.extra.get("executionMode").and_then(Value::as_str) == Some("vm") {
-        return Err(WorkWriteError::NotImplemented(
-            "workspace-state/submission-files",
-        ));
+        if input.vm_evidence.is_none() {
+            return Err(Error::Conflict(
+                "Layr submission evidence must be checked before saving the result",
+            )
+            .into());
+        }
     }
     event_write::refuse_remote(&submitter)?;
     let statuses = dependency_statuses(tx, &work)?;
@@ -1182,13 +1536,23 @@ fn accept(
         return Err(Error::InvalidRequest("Only the lead can accept or reject a result").into());
     }
     let work = load_work(tx, &agent.root_id.0, &input.task_id, input.version)?;
-    if work["owner"]
-        .as_str()
-        .is_some_and(|owner| owner != agent.root_id.0)
+    if let Some(owner_id) = work["owner"].as_str()
+        && owner_id != agent.root_id.0
     {
-        return Err(WorkWriteError::NotImplemented(
-            "workspace-state/agent-archive",
-        ));
+        let owner = event_write::checked_agent(tx, owner_id)?;
+        if owner.extra.get("executionMode").and_then(Value::as_str) == Some("vm") {
+            let latest_result_id = work["results"]
+                .as_array()
+                .and_then(|items| items.last())
+                .and_then(|result| result["id"].as_str())
+                .ok_or_else(|| invalid("runtime_work", &input.task_id))?;
+            if input.merged_result_id.as_deref() != Some(latest_result_id) {
+                return Err(Error::Conflict(
+                    "The layr result must be merged before it can be accepted",
+                )
+                .into());
+            }
+        }
     }
     let statuses = dependency_statuses(tx, &work)?;
     let now = event_write::unix_time()?;
@@ -1197,7 +1561,7 @@ fn accept(
     }
     let root = AgentRepository::get(tx, &agent.root_id)?
         .ok_or_else(|| invalid("runtime_agents", &agent.root_id.0))?;
-    let updated = decide_accept(
+    let mut updated = decide_accept(
         WorkSnapshot {
             record: &work,
             dependency_statuses: &statuses,
@@ -1267,9 +1631,28 @@ fn accept(
             now,
         )?;
     }
+    let archive_owner = work["owner"]
+        .as_str()
+        .filter(|owner| *owner != agent.root_id.0);
+    let archive_intent = archive_owner.map(|owner| {
+        json!({
+            "id":format!("{}:{result_id}", input.task_id),
+            "status":"pending",
+            "owner":owner,
+            "attempts":0,
+            "created":now,
+        })
+    });
+    if let Some(intent) = &archive_intent {
+        updated["archiveIntent"] = intent.clone();
+        updated["archivePending"] = json!(true);
+    }
     WorkItemsRepository::update_work(tx, &input.task_id, &updated)?;
     let mut record = single_view(tx, &updated)?;
-    record["archivePending"] = json!(false);
+    record["archivePending"] = json!(archive_owner.is_some());
+    if let Some(intent) = archive_intent {
+        record["archiveIntent"] = intent;
+    }
     event_write::save_receipt(tx, request_id, signature, &record)?;
     Ok(WorkWriteResult {
         record,
@@ -1436,16 +1819,36 @@ fn check_owner(
     Ok(())
 }
 
-fn assignment_needed(
-    agent: &AgentRecord,
-    owner: Option<&str>,
-    changed: bool,
-    ready: bool,
-) -> Result<(), Error> {
-    if owner.is_some_and(|owner| owner != agent.root_id.0) && ready && changed {
-        return Err(Error::WorkerAssignmentUnavailable);
-    }
-    Ok(())
+fn queue_assignment(
+    tx: &Transaction<'_>,
+    recipient: &AgentRecord,
+    work: &Value,
+) -> Result<bool, Error> {
+    let id = work["id"]
+        .as_str()
+        .ok_or_else(|| invalid("runtime_work", "<invalid>"))?;
+    let version = work["version"]
+        .as_i64()
+        .ok_or_else(|| invalid("runtime_work", id))?;
+    let title = work["title"]
+        .as_str()
+        .ok_or_else(|| invalid("runtime_work", id))?;
+    let updated = work["updated"]
+        .as_f64()
+        .ok_or_else(|| invalid("runtime_work", id))?;
+    event_write::enqueue_recovery_event(
+        tx,
+        recipient,
+        format!("work-ready:{id}:assignment:{version}"),
+        "work_ready",
+        json!({
+            "task":id,
+            "title":title,
+            "description":work.get("description").cloned().unwrap_or_else(|| json!(""))
+        })
+        .to_string(),
+        updated,
+    )
 }
 
 fn root_agent(tx: &Transaction<'_>, agent: &AgentRecord) -> Result<AgentRecord, Error> {
@@ -1475,6 +1878,57 @@ fn text(value: &str, empty: bool) -> Result<String, Error> {
         return Err(Error::InvalidRequest("Invalid request"));
     }
     Ok(value.to_owned())
+}
+
+fn validate_submission_files(agent: &AgentRecord, files: &[String]) -> Result<(), Error> {
+    if files.len() > 50 || files.iter().any(|path| path.chars().count() > 4096) {
+        return Err(Error::InvalidRequest("Supply up to 50 file paths"));
+    }
+    if files.is_empty() {
+        return Ok(());
+    }
+    let cwd = agent
+        .extra
+        .get("cwd")
+        .and_then(Value::as_str)
+        .filter(|cwd| !cwd.is_empty())
+        .ok_or_else(|| invalid("runtime_agents", &agent.id.0))?;
+    for raw_path in files {
+        let path = python_bounded_text(raw_path, 4096)?;
+        let expanded = if path == "~" || path.starts_with("~/") {
+            let home = std::env::var_os("HOME").ok_or(Error::InvalidRequest("Invalid request"))?;
+            PathBuf::from(home).join(
+                path.strip_prefix('~')
+                    .unwrap_or_default()
+                    .trim_start_matches('/'),
+            )
+        } else {
+            PathBuf::from(path)
+        };
+        let candidate = if expanded.is_absolute() {
+            expanded
+        } else {
+            Path::new(cwd).join(expanded)
+        };
+        weakly_canonicalize(&candidate).map_err(|_| Error::InvalidRequest("Invalid request"))?;
+    }
+    Ok(())
+}
+
+fn weakly_canonicalize(path: &Path) -> std::io::Result<PathBuf> {
+    match path.canonicalize() {
+        Ok(path) => Ok(path),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            let Some(name) = path.file_name() else {
+                return Err(error);
+            };
+            let parent = path
+                .parent()
+                .ok_or_else(|| std::io::Error::other("missing parent"))?;
+            Ok(weakly_canonicalize(parent)?.join(name))
+        }
+        Err(error) => Err(error),
+    }
 }
 
 fn python_bounded_text(value: &str, maximum: usize) -> Result<String, Error> {
@@ -1653,6 +2107,7 @@ mod actor_tests {
                 revision: "abc1234".to_owned(),
                 files: vec![],
                 state_dir: std::env::temp_dir(),
+                vm_evidence: None,
             }),
         );
         assert!(matches!(
@@ -1670,6 +2125,78 @@ mod actor_tests {
                 rusqlite::params![work["id"].as_str().expect("work id"), work.to_string()],
             )
             .expect("work row inserts");
+    }
+
+    #[test]
+    fn assigning_ready_work_persists_a_stable_worker_notification() {
+        let mut connection = database();
+        let tx = connection.transaction().expect("transaction starts");
+        let created = write_as_agent(
+            &tx,
+            "lead",
+            "lead",
+            None,
+            "create-assigned-work",
+            WorkActorWrite::Create(CreateWork {
+                actor_id: "lead".to_owned(),
+                title: "Assigned task".to_owned(),
+                description: "Do the task".to_owned(),
+                owner: Some("worker".to_owned()),
+                status: None,
+                dependencies: vec![],
+            }),
+        )
+        .expect("assigned task creates");
+        assert_eq!(created.record["version"], 1);
+        assert!(created.event_inserted);
+        let task_id = created.record["id"].as_str().expect("task ID");
+        assert_eq!(
+            events(&tx),
+            vec![(
+                format!("work-ready:{task_id}:assignment:1"),
+                "worker".to_owned(),
+                "work_ready".to_owned(),
+            )]
+        );
+        tx.commit().expect("transaction commits");
+    }
+
+    #[test]
+    fn assigning_existing_ready_work_queues_the_new_owner() {
+        let mut connection = database();
+        insert_work(
+            &connection,
+            &work("reassign", Some("lead"), "ready", json!([])),
+        );
+        let tx = connection.transaction().expect("transaction starts");
+        let updated = write_as_agent(
+            &tx,
+            "lead",
+            "lead",
+            None,
+            "reassign-ready-work",
+            WorkActorWrite::Mutate(WorkMutation::Update {
+                task_id: "reassign".to_owned(),
+                version: Some(2),
+                title: None,
+                description: None,
+                owner: Some(Some("worker".to_owned())),
+                status: None,
+                dependencies: None,
+            }),
+        )
+        .expect("task updates");
+        assert_eq!(updated.record["version"], 3);
+        assert!(updated.event_inserted);
+        assert_eq!(
+            events(&tx),
+            vec![(
+                "work-ready:reassign:assignment:3".to_owned(),
+                "worker".to_owned(),
+                "work_ready".to_owned(),
+            )]
+        );
+        tx.commit().expect("transaction commits");
     }
 
     fn events(connection: &Connection) -> Vec<(String, String, String)> {
@@ -1864,6 +2391,7 @@ mod actor_tests {
                 task_id: "accept".to_owned(),
                 version: Some(2),
                 reason: "verified".to_owned(),
+                merged_result_id: None,
             }),
         )
         .expect("lead acceptance succeeds");
@@ -1977,6 +2505,7 @@ mod actor_tests {
                 revision: "abc1234".to_owned(),
                 files: vec![],
                 state_dir: std::env::temp_dir(),
+                vm_evidence: None,
             }),
         )
         .expect("worker submission succeeds");
@@ -2019,6 +2548,7 @@ mod actor_tests {
                 revision: "abc1234".to_owned(),
                 files: vec![],
                 state_dir: std::env::temp_dir(),
+                vm_evidence: None,
             }),
         )
         .expect("lead submission succeeds");

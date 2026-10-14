@@ -16,6 +16,7 @@ use crate::monitor_policy::{
     Input, InputOutcome, MonitorError, MonitorSnapshot, Operation, ReattachProof,
 };
 use crate::monitor_receipts::{self, ResultReceipt};
+use crate::rules_engine::RuleCheck;
 use crate::{event_write, monitor_runtime, rules_tick};
 
 const BATCH: usize = 64;
@@ -110,6 +111,22 @@ impl MonitorRuntime {
     /// Handle used by committed lifecycle adapters to wake cancellation dispatch.
     pub fn dispatch_wake_handle(&self) -> Arc<Notify> {
         Arc::clone(&self.dispatch_wake)
+    }
+
+    /// Submit rule checks reserved by a committed event transaction. A lost or
+    /// uncertain native submission is left to the monitor port's receipt logic.
+    pub fn submit_event_checks(
+        &self,
+        checks: &[RuleCheck],
+        now: f64,
+    ) -> Result<usize, MonitorError> {
+        let mut submitted = 0;
+        for check in checks {
+            if rules_tick::submit_check(&self.store, check, now, self.port.as_ref())? {
+                submitted += 1;
+            }
+        }
+        Ok(submitted)
     }
 
     /// Last timer failure, cleared after a successful tick. The host can inspect

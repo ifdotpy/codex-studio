@@ -6,7 +6,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde_json::{Value, json};
 use studio_runtime_store::{
     AgentId, AgentRecord, AgentRepository, AgentStatus, EventWriteRepository, QueueEvent,
-    QueueEventId, RulesRepository, Transaction,
+    QueueEventId, Transaction,
 };
 use thiserror::Error;
 
@@ -109,8 +109,6 @@ pub fn save_plan(
             "The plan event identity is already in use",
         ));
     }
-    refuse_if_event_rule_applies(connection, &input.agent_id)?;
-
     let mut plan = match EventWriteRepository::plan(connection, &input.agent_id)? {
         Some(value) => {
             if value.get("id").and_then(Value::as_str) != Some(input.agent_id.as_str()) {
@@ -210,8 +208,6 @@ pub fn annotate(
             "The annotation event identity is already in use",
         ));
     }
-    refuse_if_event_rule_applies(connection, &input.agent_id)?;
-
     let mut record = json!({
         "id": id,
         "agent": input.agent_id.clone(),
@@ -241,23 +237,6 @@ pub fn annotate(
         record,
         event_inserted,
     })
-}
-
-fn refuse_if_event_rule_applies(
-    connection: &Transaction<'_>,
-    agent_id: &str,
-) -> Result<(), EventWriteError> {
-    let (rules, _) = RulesRepository::list(connection)?;
-    for rule in rules {
-        let record = rule.value();
-        if record.get("agent").and_then(Value::as_str) == Some(agent_id)
-            && record.get("kind").and_then(Value::as_str) == Some("event")
-            && record.get("status").and_then(Value::as_str) == Some("active")
-        {
-            return Err(EventWriteError::RuleDriverUnavailable);
-        }
-    }
-    Ok(())
 }
 
 pub(crate) fn refuse_remote(agent: &AgentRecord) -> Result<(), EventWriteError> {
@@ -729,7 +708,7 @@ mod tests {
     }
 
     #[test]
-    fn active_event_rule_refuses_before_any_write() {
+    fn unrelated_active_event_rule_does_not_block_plan_writes() {
         let mut connection = database();
         connection
             .execute(
@@ -740,14 +719,10 @@ mod tests {
                 ],
             )
             .expect("event rule inserts");
-        let before = counts(&connection);
-        assert!(matches!(
-            with_transaction(&mut connection, |transaction| {
-                save_plan(transaction, plan_input(0, "blocked", "sig"))
-            }),
-            Err(EventWriteError::RuleDriverUnavailable)
-        ));
-        assert_eq!(counts(&connection), before);
+        let result = with_transaction(&mut connection, |transaction| {
+            save_plan(transaction, plan_input(0, "allowed", "sig"))
+        });
+        assert!(result.is_ok());
     }
 
     #[test]

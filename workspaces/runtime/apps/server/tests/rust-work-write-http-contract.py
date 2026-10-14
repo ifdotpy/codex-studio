@@ -157,7 +157,7 @@ def normalize_event_id(identity, work_ids, aliases):
         parts[1] = aliases.get(parts[1], parts[1])
     elif len(parts) >= 3 and parts[0] in {"work-decision", "work-released"}:
         parts[1] = work_ids.get(parts[1], parts[1])
-    elif len(parts) == 3 and parts[0] == "work-ready":
+    elif len(parts) >= 3 and parts[0] == "work-ready":
         parts[1] = work_ids.get(parts[1], parts[1])
         parts[2] = work_ids.get(parts[2], parts[2])
     return ":".join(parts)
@@ -669,7 +669,7 @@ class WorkWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             database.execute("UPDATE runtime_agents SET record=? WHERE id=?", (json.dumps(worker), self.worker_id))
         accepted = self.post(body)
         self.assertEqual(accepted.status, 200, accepted.body[:1000])
-        self.assertEqual(self.post(body).json(), accepted.json())
+        self.assertEqual(normal_result(self.post(body).json()), normal_result(accepted.json()))
         with closing(sqlite3.connect(self.backend.state / "canvas.sqlite3")) as database:
             rows = database.execute(
                 "SELECT id FROM runtime_events WHERE kind='work_ready' AND json_extract(text,'$.task')=?",
@@ -989,14 +989,10 @@ class WorkWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         self.assertEqual(snapshot(self.backend.state), after_submit)
         before_archive = snapshot(self.backend.state)
         worker_accept = self.post({"action": "accept", "task_id": worker_id, "result": "Verified"})
-        if os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"):
-            self.assertEqual(worker_accept.status, 501, worker_accept.body[:1000])
-            self.assertEqual(worker_accept.json().get("error"), "Not implemented: requires workspace-state/agent-archive")
-            self.assertEqual(snapshot(self.backend.state), before_archive)
-        else:
-            self.assertEqual(worker_accept.status, 200, worker_accept.body[:1000])
-            self.assertEqual(worker_accept.json()["status"], "accepted")
-            self.assertEqual(worker_accept.json()["archive"]["status"], "kept")
+        self.assertEqual(worker_accept.status, 200, worker_accept.body[:1000])
+        self.assertEqual(worker_accept.json()["status"], "accepted")
+        self.assertEqual(worker_accept.json()["archive"]["status"], "kept")
+        self.assertNotEqual(snapshot(self.backend.state), before_archive)
 
         lead_task = self.post({"action": "create", "title": "Lead submission"})
         self.assertEqual(lead_task.status, 200, lead_task.body[:1000])
@@ -1027,14 +1023,17 @@ class WorkWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
                 row = database.execute("SELECT record FROM runtime_agents WHERE id=?", (self.worker_id,)).fetchone()
                 worker = json.loads(row[0]); worker["executionMode"] = "vm"
                 database.execute("UPDATE runtime_agents SET record=? WHERE id=?", (json.dumps(worker), self.worker_id))
-            before_vm_submit = snapshot(self.backend.state)
             vm_submit = self.post_as(self.worker_id, {
                 "action": "submit", "task_id": vm_id, "result": "VM result",
                 "checks": "Contract passed", "revision": "abc1234",
             })
-            self.assertEqual(vm_submit.status, 501, vm_submit.body[:1000])
-            self.assertEqual(vm_submit.json().get("error"), "Not implemented: requires workspace-state/submission-files")
-            self.assertEqual(snapshot(self.backend.state), before_vm_submit)
+            self.assertEqual(vm_submit.status, 502, vm_submit.body[:1000])
+            self.assertIn("Layr evidence request failed", vm_submit.json().get("error", ""))
+            with closing(fixture_connection(self.backend.state / "canvas.sqlite3")) as database:
+                row = database.execute("SELECT record FROM runtime_work WHERE id=?", (vm_id,)).fetchone()
+            self.assertIsNotNone(row)
+            work = json.loads(row[0])
+            self.assertIn(work.get("submissionIntent", {}).get("status"), {"not_sent", "unknown"})
 
     def test_refusals_stale_versions_deleted_agent_and_failure_roll_back_all_tables(self):
         created = self.post({"action": "create", "title": "Refusal target"})
@@ -1044,18 +1043,18 @@ class WorkWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         stale = self.post(body)
         self.assertEqual(stale.status, 400, stale.body[:1000])
         self.assertEqual(no_write_snapshot(self.backend.state), before)
-        cases = ()
-        if os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"):
-            cases = (
-                ({"action": "create", "title": "Assigned", "owner": self.worker_id}, "worker-driver/work-assignment"),
-                ({"action": "update", "task_id": created.json()["id"], "owner": self.worker_id}, "worker-driver/work-assignment"),
-            )
-        for body, dependency in cases:
-            before = no_write_snapshot(self.backend.state)
-            response = self.post(body)
-            self.assertEqual(response.status, 501, response.body[:1000])
-            self.assertEqual(response.json().get("error"), f"Not implemented: requires {dependency}")
-            self.assertEqual(no_write_snapshot(self.backend.state), before)
+        assigned = self.assert_matches_python({
+            "action": "create", "title": "Assigned", "owner": self.worker_id,
+            "id": "assigned-work-create",
+        })
+        self.assertEqual(assigned["owner"], self.worker_id)
+        self.assertEqual(
+            self.assert_matches_python({
+                "action": "update", "task_id": created.json()["id"],
+                "version": 1, "owner": self.worker_id, "id": "assigned-work-update",
+            })["owner"],
+            self.worker_id,
+        )
         cancel = {"action": "cancel", "task_id": created.json()["id"], "reason": " "}
         before = no_write_snapshot(self.backend.state)
         refused = self.post(cancel)
