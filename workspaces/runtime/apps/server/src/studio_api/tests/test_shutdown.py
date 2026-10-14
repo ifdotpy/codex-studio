@@ -202,6 +202,55 @@ class BackendShutdownTests(unittest.TestCase):
                 if mode == "thread":
                     self.assertIn("runtime-closed", stdout)
 
+    def test_blocked_shutdown_logging_cannot_delay_the_deadline_watchdog(self) -> None:
+        from codex_canvas import BackendShutdown
+
+        entered, release = threading.Event(), threading.Event()
+        shutdown = BackendShutdown()
+        shutdown.timeout_seconds = 0
+        shutdown.terminate(signal.SIGTERM, None)
+        failures: list[BaseException] = []
+        writes: list[str] = []
+
+        class BlockedLog:
+            def write(self, value: str) -> int:
+                writes.append(value)
+                entered.set()
+                if not release.wait(HANG_GUARD_SECONDS):
+                    raise RuntimeError("The fixture did not release shutdown logging")
+                return len(value)
+
+            def flush(self) -> None:
+                pass
+
+        def observe() -> None:
+            try:
+                shutdown.observe_request()
+            except BaseException as error:
+                failures.append(error)
+
+        with patch("sys.stderr", BlockedLog()):
+            observer = threading.Thread(target=observe, daemon=True)
+            observer.start()
+            try:
+                self.assertTrue(entered.wait(HANG_GUARD_SECONDS))
+                # The record has been claimed, so a concurrent caller neither
+                # emits a second record nor waits for the blocked stderr write.
+                self.assertTrue(shutdown.requested())
+                with patch("codex_canvas.os._exit", side_effect=SystemExit(1)) as exit_process:
+                    with self.assertRaises(SystemExit):
+                        shutdown.watch()
+                exit_process.assert_called_once_with(1)
+                self.assertFalse(release.is_set())
+            finally:
+                release.set()
+                observer.join(timeout=HANG_GUARD_SECONDS)
+        self.assertFalse(observer.is_alive())
+        self.assertEqual(failures, [])
+        records = [json.loads(line) for line in ''.join(writes).splitlines()]
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0]["signal"], signal.SIGTERM)
+
     def test_sigterm_during_runtime_startup_obeys_hard_deadline(self) -> None:
         with self.backend("startup") as (process, _state, _port):
             started = time.monotonic()

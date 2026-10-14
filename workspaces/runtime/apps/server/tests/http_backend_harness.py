@@ -484,7 +484,14 @@ class BackendProcess:
                 if status is not None:
                     self._raise_backend_not_ready("process exited before the ready line", status)
         if line is None:
-            self._raise_backend_not_ready("stdout closed before the ready line", self._process.poll())
+            # Pipe EOF can precede the child's exit notification. Reap within
+            # the existing startup deadline so the refusal records its actual
+            # exit status instead of racing poll() against interpreter cleanup.
+            try:
+                status = self._process.wait(timeout=max(0, deadline - time.monotonic()))
+            except subprocess.TimeoutExpired:
+                status = None
+            self._raise_backend_not_ready("stdout closed before the ready line", status)
         ready_line_at = time.monotonic()
         prefix = "Codex Canvas: "
         if not line.startswith(prefix):

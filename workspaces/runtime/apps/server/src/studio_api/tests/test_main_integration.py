@@ -2,17 +2,22 @@
 from __future__ import annotations
 
 import json
+import sqlite3
+from contextlib import closing
 from types import SimpleNamespace
 import unittest
 from urllib.parse import quote
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 from fastapi.testclient import TestClient
+from starlette.requests import Request
 
 from codex_project_folders import SidebarOrderConflict
 from codex_http_body_limits import request_body_limit
 from studio_api.app import create_app
 from studio_api.context import ApiContext
+from studio_api.accounts.models import SidebarReorderRequest
+from studio_api.accounts.router import create_router as create_account_router
 from studio_api.generate_federation_limits import OUTPUTS as FEDERATION_LIMIT_OUTPUTS
 from studio_api.generate_http_body_limits import OUTPUT as RUST_BODY_LIMITS_OUTPUT
 from studio_api.generate_http_body_limits import render_rust_http_body_limits
@@ -68,6 +73,33 @@ class MainIntegrationTests(unittest.TestCase):
         response = self.client.post("/api/projects", json=body)
         self.assertEqual(response.status_code, 409)
         self.assertEqual(response.json(), {"error": "Sidebar order changed"})
+
+    def test_sidebar_receipt_is_exact_even_when_workspace_sync_rows_changed(self) -> None:
+        context = self.client.app.state.api_context
+        route = next(route for route in create_account_router(context).routes
+                     if route.path == '/api/projects' and 'POST' in route.methods)
+        body = SidebarReorderRequest(action='reorder', request_id='order-sync-1',
+                                     expected_revision=0, groups={'project': ['b', 'a']})
+        receipt = {'revision': 1, 'groups': body.groups}
+        self.runtime.projects.return_value = receipt
+        with closing(sqlite3.connect(':memory:')) as db:
+            db.execute('CREATE TABLE sync_entities(collection,id,seq,payload,deleted)')
+            db.execute('CREATE TABLE sync_entity_meta(key,value)')
+            db.execute("INSERT INTO sync_entity_meta VALUES ('entity_tombstone_floor','0')")
+            db.execute("INSERT INTO sync_entities VALUES ('workspace','current',1,'{}',0)")
+            db.commit()
+            with patch.object(context, 'sync', return_value=SimpleNamespace(connect=lambda: db)) as sync:
+                # First apply has a changed workspace entity; exact retry has
+                # no changes since its sampled cursor. Both return the receipt.
+                for cursor in (0, 1):
+                    request = Request({'type': 'http', 'method': 'POST', 'path': '/api/projects',
+                                       'query_string': b'', 'headers': [], 'route': route,
+                                       'studio_sync_entities_after': cursor})
+                    response = route.endpoint(request, body)
+                    self.assertEqual(response.status_code, 200)
+                    self.assertEqual(json.loads(bytes(response.body)), receipt)
+                sync.assert_not_called()
+        self.assertEqual(self.runtime.projects.call_count, 2)
 
     def test_smart_rename_keeps_request_identity_and_receipt_states(self) -> None:
         body = {"id": "lead", "name": None, "request_id": "rename-1"}
