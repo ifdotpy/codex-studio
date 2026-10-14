@@ -57,6 +57,33 @@
     {
       "closures": [
         {
+          "closes": "origin/feat/wave7-p01-runtime-composition",
+          "kind": "accepted_branch",
+          "owner": "P01"
+        },
+        {
+          "closes": "Wave 7 P02 Host creation/configuration",
+          "kind": "open_task",
+          "owner": "P02"
+        },
+        {
+          "closes": "origin/feat/wave7-p18-account-catalog",
+          "kind": "accepted_branch",
+          "owner": "P18"
+        }
+      ],
+      "dependency": "account-driver/unavailable",
+      "operation_count": 4,
+      "operations": [
+        "POST /api/agents",
+        "POST /api/agents/account",
+        "POST /api/conversation",
+        "POST /api/leads"
+      ]
+    },
+    {
+      "closures": [
+        {
           "closes": "R2",
           "kind": "external_or_scope",
           "owner": "R2"
@@ -90,32 +117,6 @@
     {
       "closures": [
         {
-          "closes": "origin/feat/wave7-p01-runtime-composition",
-          "kind": "accepted_branch",
-          "owner": "P01"
-        },
-        {
-          "closes": "Wave 7 P02 Host creation/configuration",
-          "kind": "open_task",
-          "owner": "P02"
-        },
-        {
-          "closes": "origin/feat/wave7-p18-account-catalog",
-          "kind": "accepted_branch",
-          "owner": "P18"
-        }
-      ],
-      "dependency": "account-driver/unavailable",
-      "operation_count": 3,
-      "operations": [
-        "POST /api/agents",
-        "POST /api/agents/account",
-        "POST /api/leads"
-      ]
-    },
-    {
-      "closures": [
-        {
           "closes": "R1",
           "kind": "external_or_scope",
           "owner": "R1"
@@ -143,6 +144,27 @@
         "POST /api/browser/forward",
         "POST /api/multi-server",
         "POST /api/servers/orchestration"
+      ]
+    },
+    {
+      "closures": [
+        {
+          "closes": "origin/feat/wave7-p18-account-catalog",
+          "kind": "accepted_branch",
+          "owner": "P18"
+        },
+        {
+          "closes": "Wave 7 P02 Host creation/configuration",
+          "kind": "open_task",
+          "owner": "P02"
+        }
+      ],
+      "dependency": "provider-session/model-list",
+      "operation_count": 3,
+      "operations": [
+        "POST /api/agents",
+        "POST /api/conversation",
+        "POST /api/leads"
       ]
     },
     {
@@ -271,6 +293,23 @@
       "dependency": "agent-management/snapshot-limit",
       "operation_count": 2,
       "operations": ["POST /api/conversation/delete", "POST /api/stop"]
+    },
+    {
+      "closures": [
+        {
+          "closes": "origin/feat/wave7-p19-projects-radio",
+          "kind": "accepted_branch",
+          "owner": "P19"
+        },
+        {
+          "closes": "R1",
+          "kind": "external_or_scope",
+          "owner": "R1"
+        }
+      ],
+      "dependency": "cross-server-driver/local-identity",
+      "operation_count": 2,
+      "operations": ["POST /api/leads", "POST /api/projects"]
     },
     {
       "closures": [
@@ -418,23 +457,6 @@
     {
       "closures": [
         {
-          "closes": "origin/feat/wave7-p18-account-catalog",
-          "kind": "accepted_branch",
-          "owner": "P18"
-        },
-        {
-          "closes": "Wave 7 P02 Host creation/configuration",
-          "kind": "open_task",
-          "owner": "P02"
-        }
-      ],
-      "dependency": "provider-session/model-list",
-      "operation_count": 2,
-      "operations": ["POST /api/agents", "POST /api/leads"]
-    },
-    {
-      "closures": [
-        {
           "closes": "origin/feat/wave7-p15-monitors-rules",
           "kind": "accepted_branch",
           "owner": "P15"
@@ -566,23 +588,6 @@
     {
       "closures": [
         {
-          "closes": "origin/feat/wave7-p18-account-catalog",
-          "kind": "accepted_branch",
-          "owner": "P18"
-        },
-        {
-          "closes": "Wave 7 P02 Host creation/configuration",
-          "kind": "open_task",
-          "owner": "P02"
-        }
-      ],
-      "dependency": "worker-driver/settings-catalog",
-      "operation_count": 2,
-      "operations": ["POST /api/agents", "POST /api/leads"]
-    },
-    {
-      "closures": [
-        {
           "closes": "origin/feat/wave7-p10-stop-delete",
           "kind": "accepted_branch",
           "owner": "P10"
@@ -595,12 +600,24 @@
     {
       "closures": [
         {
-          "closes": "Wave 7 P02 Host creation/configuration",
-          "kind": "open_task",
-          "owner": "P02"
+          "closes": "first-cutover refusal: image workspace excluded",
+          "kind": "external_or_scope",
+          "owner": "first-cutover refusal: image workspace excluded"
         }
       ],
-      "dependency": "workspace-state/lead-workspace",
+      "dependency": "workspace-state/image-workspace",
+      "operation_count": 2,
+      "operations": ["POST /api/agents", "POST /api/leads"]
+    },
+    {
+      "closures": [
+        {
+          "closes": "first-cutover refusal: VM workspace excluded",
+          "kind": "external_or_scope",
+          "owner": "first-cutover refusal: VM workspace excluded"
+        }
+      ],
+      "dependency": "workspace-state/vm-workspace",
       "operation_count": 2,
       "operations": ["POST /api/agents", "POST /api/leads"]
     },
@@ -689,42 +706,6 @@
     {
       "closures": [
         {
-          "closes": "Wave 7 P02 Host creation/configuration",
-          "kind": "open_task",
-          "owner": "P02"
-        }
-      ],
-      "dependency": "agent-management/agent-mode-settings",
-      "operation_count": 1,
-      "operations": ["POST /api/configure"]
-    },
-    {
-      "closures": [
-        {
-          "closes": "Wave 7 P02 Host creation/configuration",
-          "kind": "open_task",
-          "owner": "P02"
-        }
-      ],
-      "dependency": "agent-management/conversation-settings",
-      "operation_count": 1,
-      "operations": ["POST /api/conversation"]
-    },
-    {
-      "closures": [
-        {
-          "closes": "Wave 7 P02 Host creation/configuration",
-          "kind": "open_task",
-          "owner": "P02"
-        }
-      ],
-      "dependency": "agent-management/empty-chat-reuse",
-      "operation_count": 1,
-      "operations": ["POST /api/leads"]
-    },
-    {
-      "closures": [
-        {
           "closes": "origin/feat/wave7-p03-message-ingress",
           "kind": "accepted_branch",
           "owner": "P03"
@@ -800,23 +781,6 @@
     {
       "closures": [
         {
-          "closes": "origin/feat/wave7-p19-projects-radio",
-          "kind": "accepted_branch",
-          "owner": "P19"
-        },
-        {
-          "closes": "R1",
-          "kind": "external_or_scope",
-          "owner": "R1"
-        }
-      ],
-      "dependency": "cross-server-driver/local-identity",
-      "operation_count": 1,
-      "operations": ["POST /api/projects"]
-    },
-    {
-      "closures": [
-        {
           "closes": "R1",
           "kind": "external_or_scope",
           "owner": "R1"
@@ -830,6 +794,18 @@
       "dependency": "cross-server-driver/peer-team-transport",
       "operation_count": 1,
       "operations": ["POST /api/peer-teams"]
+    },
+    {
+      "closures": [
+        {
+          "closes": "origin/feat/wave7-p19-projects-radio",
+          "kind": "accepted_branch",
+          "owner": "P19"
+        }
+      ],
+      "dependency": "cross-server-driver/project-binding",
+      "operation_count": 1,
+      "operations": ["POST /api/leads"]
     },
     {
       "closures": [
@@ -1005,17 +981,12 @@
     {
       "closures": [
         {
-          "closes": "origin/feat/wave7-p19-projects-radio",
-          "kind": "accepted_branch",
-          "owner": "P19"
-        },
-        {
           "closes": "Wave 7 P02 Host creation/configuration",
           "kind": "open_task",
           "owner": "P02"
         }
       ],
-      "dependency": "project-driver/chat-binding",
+      "dependency": "project-driver/folder-selection",
       "operation_count": 1,
       "operations": ["POST /api/leads"]
     },
@@ -1502,35 +1473,6 @@
     {
       "closures": [
         {
-          "closes": "origin/feat/wave7-p16-work-assignment",
-          "kind": "accepted_branch",
-          "owner": "P16"
-        },
-        {
-          "closes": "Wave 7 P02 Host creation/configuration",
-          "kind": "open_task",
-          "owner": "P02"
-        }
-      ],
-      "dependency": "worker-driver/work-assignment",
-      "operation_count": 1,
-      "operations": ["POST /api/agents"]
-    },
-    {
-      "closures": [
-        {
-          "closes": "Wave 7 P02 Host creation/configuration",
-          "kind": "open_task",
-          "owner": "P02"
-        }
-      ],
-      "dependency": "worker-driver/workspace-preparation",
-      "operation_count": 1,
-      "operations": ["POST /api/agents"]
-    },
-    {
-      "closures": [
-        {
           "closes": "origin/feat/wave7-p03-message-ingress",
           "kind": "accepted_branch",
           "owner": "P03"
@@ -1566,10 +1508,10 @@
     }
   ],
   "counts": {
-    "implemented": 77,
-    "named_dependencies": 110,
+    "implemented": 78,
+    "named_dependencies": 106,
     "not_registered": 12,
-    "partial": 71,
+    "partial": 70,
     "total": 160
   },
   "lifecycle_dependencies": {
@@ -2002,10 +1944,8 @@
       "dependencies": [
         "account-driver/unavailable",
         "provider-session/model-list",
-        "worker-driver/settings-catalog",
-        "worker-driver/work-assignment",
-        "worker-driver/workspace-preparation",
-        "workspace-state/lead-workspace"
+        "workspace-state/image-workspace",
+        "workspace-state/vm-workspace"
       ],
       "operation": "POST /api/agents",
       "status": "partial"
@@ -2102,9 +2042,9 @@
       "status": "implemented"
     },
     {
-      "dependencies": ["agent-management/agent-mode-settings"],
+      "dependencies": [],
       "operation": "POST /api/configure",
-      "status": "partial"
+      "status": "implemented"
     },
     {
       "dependencies": ["account-worker/recovery-history"],
@@ -2125,7 +2065,10 @@
       "status": "partial"
     },
     {
-      "dependencies": ["agent-management/conversation-settings"],
+      "dependencies": [
+        "account-driver/unavailable",
+        "provider-session/model-list"
+      ],
       "operation": "POST /api/conversation",
       "status": "partial"
     },
@@ -2184,11 +2127,12 @@
     {
       "dependencies": [
         "account-driver/unavailable",
-        "agent-management/empty-chat-reuse",
-        "project-driver/chat-binding",
+        "cross-server-driver/local-identity",
+        "cross-server-driver/project-binding",
+        "project-driver/folder-selection",
         "provider-session/model-list",
-        "worker-driver/settings-catalog",
-        "workspace-state/lead-workspace"
+        "workspace-state/image-workspace",
+        "workspace-state/vm-workspace"
       ],
       "operation": "POST /api/leads",
       "status": "partial"

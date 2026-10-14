@@ -87,6 +87,7 @@ EXACT_OWNERS: dict[str, list[str]] = {
     "cross-server/remote-events": ["R1"],
     "remote-transport/browser-forward": ["P17", "R1"],
     "cross-server-driver/local-identity": ["P19", "R1"],
+    "cross-server-driver/project-binding": ["P19"],
     "cross-server-driver/peer-team-transport": ["R1", "P19"],
     "cross-server-driver/project-location-read": ["P19", "R1"],
     "cross-server-driver/project-location-write": ["P19", "R1"],
@@ -106,6 +107,7 @@ EXACT_OWNERS: dict[str, list[str]] = {
     "payload-store/uploads": ["P03"],
     "payload-store/voice-audio": ["R2"],
     "project-driver/chat-binding": ["P19", "P02"],
+    "project-driver/folder-selection": ["P02"],
     "provider-service/claude-discovery": ["P18"],
     "provider-service/claude-model-catalog": ["P18"],
     "provider-session/account-rate-limits": ["P18"],
@@ -158,9 +160,11 @@ EXACT_OWNERS: dict[str, list[str]] = {
     "workspace-policy/message-admission": ["P03"],
     "workspace-state/agent-lifecycle": ["P10"],
     "workspace-state/image-execution": ["first-cutover refusal: image excluded"],
+    "workspace-state/image-workspace": ["first-cutover refusal: image workspace excluded"],
     "workspace-state/lead-workspace": ["P02"],
     "workspace-state/organization-effects": ["P16"],
     "workspace-state/peer-radio": ["P19"],
+    "workspace-state/vm-workspace": ["first-cutover refusal: VM workspace excluded"],
     "workspace-state/worker-environment": ["P19"],
     "multi-server-runtime/orchestration": ["R1"],
     "multi-server-runtime/pairing": ["R1"],
@@ -368,8 +372,8 @@ class RouteCensusContract(unittest.TestCase):
         expected = json.loads(CORPUS.read_text(encoding="utf-8"))
         self.assertEqual(actual, expected)
         self.assertEqual(actual["counts"]["total"], 160)
-        self.assertEqual(actual["counts"]["implemented"], 77)
-        self.assertEqual(actual["counts"]["partial"], 71)
+        self.assertEqual(actual["counts"]["implemented"], 78)
+        self.assertEqual(actual["counts"]["partial"], 70)
         self.assertEqual(actual["counts"]["not_registered"], 12)
 
     def test_every_partial_and_unregistered_route_has_a_named_closure(self) -> None:

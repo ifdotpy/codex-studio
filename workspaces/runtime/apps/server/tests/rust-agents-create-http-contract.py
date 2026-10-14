@@ -377,43 +377,20 @@ class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             ["other-account"],
         )
 
-    def test_rust_dependency_refusal_writes_nothing(self):
+    def test_p10_delete_commits_without_account_worker(self):
         if not os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"):
-            self.skipTest("Python reference backend implements provider settings")
-        previous = self.draft()
-        with database_connection(self.backend.state / "canvas.sqlite3") as database:
-            before = database.execute(
-                "SELECT name FROM sqlite_master WHERE type='table' "
-                "AND name LIKE 'runtime_%' ORDER BY name"
-            ).fetchall()
-            records = {
-                table[0]: database.execute(f'SELECT * FROM "{table[0]}"').fetchall()
-                for table in before
-            }
+            self.skipTest("P10 Rust deletion behavior")
+        victim = self.draft()
+        victim_id = victim["id"]
         response = self.backend.request(
             "POST",
             "/api/conversation/delete",
-            body={"id": self.agent_id},
+            body={"id": victim_id},
             headers=self.headers(),
         )
-        self.assertEqual(response.status, 501, response.body[:1000])
-        self.assertEqual(
-            response.json(),
-            {"error": "Not implemented: requires work-driver/deletion-release"},
-        )
-        with database_connection(self.backend.state / "canvas.sqlite3") as database:
-            after = database.execute(
-                "SELECT name FROM sqlite_master WHERE type='table' "
-                "AND name LIKE 'runtime_%' ORDER BY name"
-            ).fetchall()
-            self.assertEqual(after, before)
-            self.assertEqual(
-                {
-                    table[0]: database.execute(f'SELECT * FROM "{table[0]}"').fetchall()
-                    for table in after
-                },
-                records,
-            )
+        self.assertEqual(response.status, 200, response.body[:1000])
+        self.assertEqual(response.json(), {"deleted": [victim_id]})
+        self.assertTrue(self.stored(victim_id)["deletedAt"])
 
     def test_rust_agent_creation_writes_one_pending_event_and_replays(self):
         request = {
@@ -879,13 +856,16 @@ class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
                     400
                     if field in {"model", "fast_mode", "worker_defaults", "review_defaults"}
                     else 200
-                    if field == "daybreak_enabled"
+                    if field in {"daybreak_enabled", "effort"}
                     else 501
                 )
                 result = self.post("/api/conversation", {"id": self.agent_id, field: None}, expected)
                 if expected == 501:
                     self.assertIn("provider-session/model-list", result["error"])
-                self.assertEqual(no_write_snapshot(self.backend.state), before)
+                if field == "effort":
+                    self.assertEqual(self.stored(self.agent_id)["nativeEffort"], "medium")
+                else:
+                    self.assertEqual(no_write_snapshot(self.backend.state), before)
 
     def test_probe_boundaries_explicit_nulls_are_located_schema_refusals(self):
         corpus = [("/api/leads", {"cwd": str(self.backend.cwd)}, ("reuse_empty", "yolo_mode", "cwd", "account_key", "workspaceMode")),
@@ -946,9 +926,10 @@ class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         self.rust_only()
         for route, body in (("/api/leads", {"cwd": str(self.backend.cwd)}), ("/api/agents", {"cwd": str(self.backend.cwd), "prompt": "Task"})):
             for field in REVIEW_CORPUS["creationCatalogNulls"]:
-                before = no_write_snapshot(self.backend.state)
-                self.post(route, {**body, "id": str(uuid.uuid4()), field: None}, 501)
-                self.assertEqual(no_write_snapshot(self.backend.state), before)
+                agent_id = str(uuid.uuid4())
+                if field in REVIEW_CORPUS["creationCatalogNulls"]:
+                    self.post(route, {**body, "id": agent_id, field: None}, 200)
+                    self.assertIsNotNone(self.stored(agent_id))
         body = self.draft()
         original = self.stored(body["id"])
         try:
@@ -979,7 +960,7 @@ class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             path.write_bytes(original)
             self.backend.start()
 
-    def test_profiles_are_loaded_validated_and_only_catalog_profiles_are_partial(self):
+    def test_profiles_are_loaded_validated_and_resolved_from_fresh_catalog(self):
         self.rust_only()
         body = {"id": str(uuid.uuid4()), "cwd": str(self.backend.cwd), "prompt": "Task", "profile_id": "unknown-profile"}
         before = no_write_snapshot(self.backend.state)
@@ -988,15 +969,19 @@ class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         profile = {"id": "plain-profile", "name": "Plain", "role": "reviewer", "model": "gpt-6-astra", "effort": None, "instructions": "Follow the fixture instructions."}
         with database_connection(self.backend.state / "canvas.sqlite3") as db:
             db.execute("INSERT INTO runtime_profiles VALUES(?,?)", (profile["id"], json.dumps(profile)))
-        before = no_write_snapshot(self.backend.state)
-        self.post("/api/agents", {**body, "profile_id": profile["id"]}, 501)
-        self.assertEqual(no_write_snapshot(self.backend.state), before)
-        for model, status in (("gpt-6-astra", 501), (42, 500)):
+        self.post("/api/agents", {**body, "profile_id": profile["id"]}, 200)
+        self.assertEqual(self.stored(body["id"])["profileId"], profile["id"])
+        for model, status in (("gpt-6-astra", 200), (42, 500)):
+            agent_id = str(uuid.uuid4())
             with database_connection(self.backend.state / "canvas.sqlite3") as db:
                 db.execute("UPDATE runtime_profiles SET record=? WHERE id=?", (json.dumps({**profile, "model": model}), profile["id"]))
-            before = no_write_snapshot(self.backend.state)
-            self.post("/api/agents", {**body, "id": str(uuid.uuid4()), "profile_id": profile["id"]}, status)
-            self.assertEqual(no_write_snapshot(self.backend.state), before)
+            if status == 200:
+                self.post("/api/agents", {**body, "id": agent_id, "profile_id": profile["id"]}, status)
+                self.assertEqual(self.stored(agent_id)["model"], model)
+            else:
+                before = no_write_snapshot(self.backend.state)
+                self.post("/api/agents", {**body, "id": agent_id, "profile_id": profile["id"]}, status)
+                self.assertEqual(no_write_snapshot(self.backend.state), before)
 
     def test_probe_admission_completed_worker_result_file_survives_configure(self):
         self.rust_only()
@@ -1015,9 +1000,12 @@ class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
                 body = {"id": self.agent_id} if path in ("/api/configure", "/api/conversation") else {"id": str(uuid.uuid4()), "cwd": str(self.backend.cwd)}
                 if path == "/api/agents":
                     body["prompt"] = "Task"
-                before = no_write_snapshot(self.backend.state)
-                self.assertEqual(self.post(path, {**body, **preferences}, 501)["error"], "Not implemented: requires " + dependency)
-                self.assertEqual(no_write_snapshot(self.backend.state), before)
+                if preferences.get("model") == "gpt-6-astra" or preferences == {"effort": None}:
+                    self.post(path, {**body, **preferences}, 200)
+                else:
+                    before = no_write_snapshot(self.backend.state)
+                    self.assertEqual(self.post(path, {**body, **preferences}, 501)["error"], "Not implemented: requires " + dependency)
+                    self.assertEqual(no_write_snapshot(self.backend.state), before)
 
     def test_probe_refusal_configure_response_failure_rolls_back_every_write(self):
         self.rust_only()

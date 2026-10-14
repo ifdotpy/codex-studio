@@ -718,7 +718,7 @@ fn create_child(
             )?
             .ok_or(OperationError::Internal)?;
             let now = crate::event_write::unix_time().map_err(|_| OperationError::Internal)?;
-            crate::work_assignment_runtime::assign_in_transaction(tx, task_id, &id, &actor, now)
+            crate::work_assignment_runtime::assign_in_transaction(tx, task_id, id, &actor, now)
                 .map_err(|_| OperationError::Invalid("Work item assignment was rejected"))?;
         }
         Ok(result)

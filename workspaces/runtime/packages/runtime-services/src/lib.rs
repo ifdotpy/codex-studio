@@ -62,7 +62,6 @@ pub mod federation_messaging;
 pub mod historical_input_receipts;
 pub mod host_project_runtime;
 pub mod host_worker_create;
-pub mod host_worker_create;
 pub mod maintenance;
 pub mod message_admission;
 pub mod model_catalog;
