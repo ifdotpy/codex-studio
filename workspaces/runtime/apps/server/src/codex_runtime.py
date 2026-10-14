@@ -3677,14 +3677,18 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         return [agent for agent in agents if not (
             agent.get("environment") == "linux" and agent.get("layrReady"))]
 
-    def connect(self, account_key="default", *, for_login=False):
+    def connect(self, account_key="default", *, for_login=False, history_read=False):
+        """The native server of an account. `history_read` is for an account transfer that only
+        reads a source chat: its local session files stay readable after the profile's login
+        changed. Turns still need a ready account, and their connect checks it first."""
         if self.closed:
             raise RuntimeError("Runtime is stopped")
         account = self.accounts.get(account_key)
         provider = account.get("provider", "codex")
         native_auth_pending = (provider == "claude" and account.get("status") != "ready"
                                and self.accounts.allow_native_auth_attempt(account_key, account))
-        if provider == "claude" and account.get("status") != "ready" and not native_auth_pending:
+        history_only = history_read and provider == "claude" and account.get("status") == "changed"
+        if provider == "claude" and account.get("status") != "ready" and not native_auth_pending and not history_only:
             raise ValueError(account.get("error") or "Sign in with claude auth login first")
         home = self.accounts.home(account_key, for_login=for_login) if self.factory is AppServer and provider != "claude" else None
         if provider == "codex":
