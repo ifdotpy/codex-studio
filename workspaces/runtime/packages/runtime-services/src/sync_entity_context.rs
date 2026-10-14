@@ -11,24 +11,36 @@ use crate::event_write::truthy;
 use crate::sync_policy::table_exists;
 use crate::sync_views::{AgentViewContext, RoomViewContext};
 
-/// Read only the public routing identifier used in local sync projections.
-/// Credential validity and key permissions belong to the credentials reader;
-/// an unsafe or partial identity must not prevent the runtime from starting.
+/// Read the local routing identifier for sync projections before entering a writer.
+///
+/// Input-state behavior follows `codex_multi_server.py`'s `_keys()` (lines
+/// 344-400) and `local_server_id` (517-518), consumed during runtime startup at
+/// `codex_runtime.py:1601-1603`:
+///
+/// | `identity.json` input | Python behavior | Rust projection read |
+/// | --- | --- | --- |
+/// | Missing file | `_keys()` generates credentials and writes the directory/file (344-375), then returns its ID. | Return `None`; unlike `_keys()`, this projection read is read-only and does not generate credentials. |
+/// | Malformed JSON | `json.load` raises (386-392). | Refuse with an error naming `identity.json` and malformed JSON. |
+/// | Safe JSON with a usable `serverId`, without key/label fields | `_keys()` also validates credentials (393-400); sync projection needs only the public routing ID. | Return the ID; credential validation remains with the credentials reader. |
+/// | Empty or absent `serverId` | `_id` rejects it (400; definition at lines 83-86). | Refuse with an error naming `identity.json` and the ID problem. |
+/// | Unsafe directory/file permissions | `_keys()` raises `credential_permissions` (355-356, 386-391). | Refuse with an error naming `identity.json` and unsafe permissions. |
+///
+/// Keep this filesystem read outside the store transaction.
 pub(crate) fn local_server_id(state_dir: &str) -> StoreResult<Option<String>> {
     let directory = Path::new(state_dir).join("multi-server");
     let directory_metadata = match fs::symlink_metadata(&directory) {
         Ok(metadata) => metadata,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(error.into()),
+        Err(_) => return Err(invalid_identity("cannot inspect credential directory")),
     };
     if !directory_metadata.is_dir() || directory_metadata.file_type().is_symlink() {
-        return Ok(None);
+        return Err(invalid_identity("credential directory is not a directory"));
     }
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         if directory_metadata.permissions().mode() & 0o077 != 0 {
-            return Ok(None);
+            return Err(invalid_identity("unsafe credential directory permissions"));
         }
     }
 
@@ -36,34 +48,192 @@ pub(crate) fn local_server_id(state_dir: &str) -> StoreResult<Option<String>> {
     let path_metadata = match fs::symlink_metadata(&path) {
         Ok(metadata) => metadata,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(error.into()),
+        Err(_) => return Err(invalid_identity("cannot inspect identity.json")),
     };
     if !path_metadata.is_file()
         || path_metadata.file_type().is_symlink()
         || path_metadata.len() > 16_384
     {
-        return Ok(None);
+        return Err(invalid_identity("identity.json is not a bounded regular file"));
     }
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         if path_metadata.permissions().mode() & 0o077 != 0 {
-            return Ok(None);
+            return Err(invalid_identity("unsafe identity.json permissions"));
         }
     }
-    let file = File::open(&path)?;
-    if !file.metadata()?.is_file() {
-        return Ok(None);
+    let file = File::open(&path).map_err(|_| invalid_identity("cannot read identity.json"))?;
+    if !file
+        .metadata()
+        .map_err(|_| invalid_identity("cannot inspect identity.json"))?
+        .is_file()
+    {
+        return Err(invalid_identity("identity.json is not a regular file"));
     }
     let identity: Value = match serde_json::from_reader(BufReader::new(file)) {
         Ok(identity) => identity,
-        Err(_) => return Ok(None),
+        Err(_) => return Err(invalid_identity("malformed JSON in identity.json")),
     };
-    Ok(identity
-        .get("serverId")
-        .and_then(Value::as_str)
-        .filter(|server_id| !server_id.is_empty())
-        .map(str::to_owned))
+    let Some(server_id) = identity.get("serverId").and_then(Value::as_str) else {
+        return Err(invalid_identity("missing serverId"));
+    };
+    if !valid_server_id(server_id) {
+        return Err(invalid_identity("invalid serverId"));
+    }
+    Ok(Some(server_id.to_owned()))
+}
+
+fn valid_server_id(value: &str) -> bool {
+    let mut bytes = value.bytes();
+    bytes
+        .next()
+        .is_some_and(|first| first.is_ascii_alphanumeric())
+        && value.len() <= 128
+        && bytes.all(|byte| {
+            byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'.' | b':' | b'-')
+        })
+}
+
+fn invalid_identity(reason: &str) -> studio_runtime_store::StoreError {
+    studio_runtime_store::StoreError::InvalidSyncObject {
+        scope: "multi-server".to_owned(),
+        id: format!("identity.json: {reason}"),
+    }
+}
+
+#[cfg(test)]
+mod local_server_id_tests {
+    use super::local_server_id;
+    use serde_json::json;
+    use std::fs;
+
+    fn private_identity_file(root: &std::path::Path, bytes: &[u8]) -> std::path::PathBuf {
+        let directory = root.join("multi-server");
+        fs::create_dir(&directory).expect("credential directory");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&directory, fs::Permissions::from_mode(0o700))
+                .expect("private directory");
+        }
+        let path = directory.join("identity.json");
+        fs::write(&path, bytes).expect("identity file");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o600))
+                .expect("private identity file");
+        }
+        path
+    }
+
+    #[test]
+    fn missing_directory_returns_none_without_creating_files() {
+        let root = tempfile::tempdir().expect("isolated state");
+        let state = root.path().join("state");
+        assert_eq!(local_server_id(state.to_str().unwrap()).unwrap(), None);
+        assert!(!state.exists(), "the projection read must remain read-only");
+    }
+
+    #[test]
+    fn missing_file_returns_none_without_creating_files() {
+        let root = tempfile::tempdir().expect("isolated state");
+        let directory = root.path().join("multi-server");
+        fs::create_dir(&directory).expect("credential directory");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&directory, fs::Permissions::from_mode(0o700))
+                .expect("private directory");
+        }
+        assert_eq!(local_server_id(root.path().to_str().unwrap()).unwrap(), None);
+        assert!(directory.is_dir());
+        assert!(!directory.join("identity.json").exists());
+    }
+
+    #[test]
+    fn malformed_identity_refuses_with_path_and_reason() {
+        let root = tempfile::tempdir().expect("isolated state");
+        private_identity_file(root.path(), b"invalid identity");
+        let error = local_server_id(root.path().to_str().unwrap()).unwrap_err();
+        let message = error.to_string();
+        assert!(message.contains("identity.json"), "{message}");
+        assert!(message.contains("malformed JSON"), "{message}");
+    }
+
+    #[test]
+    fn safe_partial_identity_projects_its_usable_server_id() {
+        let root = tempfile::tempdir().expect("isolated state");
+        private_identity_file(root.path(), br#"{"serverId":"fixture-server"}"#);
+        assert_eq!(
+            local_server_id(root.path().to_str().unwrap()).unwrap(),
+            Some("fixture-server".to_owned())
+        );
+    }
+
+    #[test]
+    fn empty_server_id_refuses() {
+        let root = tempfile::tempdir().expect("isolated state");
+        private_identity_file(root.path(), json!({"serverId": ""}).to_string().as_bytes());
+        let error = local_server_id(root.path().to_str().unwrap()).unwrap_err();
+        let message = error.to_string();
+        assert!(message.contains("identity.json"), "{message}");
+        assert!(message.contains("serverId"), "{message}");
+    }
+
+    #[test]
+    fn missing_server_id_refuses() {
+        let root = tempfile::tempdir().expect("isolated state");
+        private_identity_file(root.path(), json!({}).to_string().as_bytes());
+        let error = local_server_id(root.path().to_str().unwrap()).unwrap_err();
+        let message = error.to_string();
+        assert!(message.contains("identity.json"), "{message}");
+        assert!(message.contains("serverId"), "{message}");
+    }
+
+    #[test]
+    fn unusable_server_id_refuses() {
+        let root = tempfile::tempdir().expect("isolated state");
+        private_identity_file(root.path(), json!({"serverId": "bad/id"}).to_string().as_bytes());
+        let error = local_server_id(root.path().to_str().unwrap()).unwrap_err();
+        let message = error.to_string();
+        assert!(message.contains("identity.json"), "{message}");
+        assert!(message.contains("serverId"), "{message}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unsafe_directory_permissions_refuse_with_path_and_reason() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory_root = tempfile::tempdir().expect("isolated state");
+        private_identity_file(directory_root.path(), br#"{"serverId":"fixture-server"}"#);
+        fs::set_permissions(
+            directory_root.path().join("multi-server"),
+            fs::Permissions::from_mode(0o755),
+        )
+        .expect("unsafe directory mode");
+        let error = local_server_id(directory_root.path().to_str().unwrap()).unwrap_err();
+        let message = error.to_string();
+        assert!(message.contains("identity.json"), "{message}");
+        assert!(message.contains("permissions"), "{message}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unsafe_file_permissions_refuse_with_path_and_reason() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let file_root = tempfile::tempdir().expect("isolated state");
+        let path = private_identity_file(file_root.path(), br#"{"serverId":"fixture-server"}"#);
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o644))
+            .expect("unsafe identity mode");
+        let error = local_server_id(file_root.path().to_str().unwrap()).unwrap_err();
+        let message = error.to_string();
+        assert!(message.contains("identity.json"), "{message}");
+        assert!(message.contains("permissions"), "{message}");
+    }
 }
 
 pub(crate) fn agent_view_context(
