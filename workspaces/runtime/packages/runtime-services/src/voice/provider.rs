@@ -461,7 +461,13 @@ fn lookup_speech_receipt_raw(
     record_id: &str,
     request_id: &str,
 ) -> Result<Option<Value>, VoiceProviderError> {
-    if let Some(receipt) = VoiceRepository::speech_receipt(connection, request_id)? {
+    let receipt = match VoiceRepository::speech_receipt(connection, request_id)? {
+        Some(receipt) => Some(receipt),
+        None => {
+            VoiceRepository::speech_receipt(connection, &speech_receipt_id(session_id, record_id))?
+        }
+    };
+    if let Some(receipt) = receipt {
         if receipt["session"] == session_id && receipt["record_id"] == record_id {
             return Ok(Some(receipt));
         }

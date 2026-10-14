@@ -148,6 +148,7 @@ pub mod turn_prepare;
 pub mod usage;
 pub mod usage_resume;
 pub mod voice;
+pub mod voice_runtime;
 pub mod wakeups;
 pub mod work_assignment_runtime;
 pub mod work_policy;
@@ -188,8 +189,13 @@ mod registration_tests {
                     .expect("services source directory entry is readable")
                     .path()
             })
-            .filter(|path| path.extension().is_some_and(|extension| extension == "rs"))
             .filter_map(|path| {
+                if path.is_dir() && path.join("mod.rs").is_file() {
+                    return path.file_name()?.to_str().map(str::to_owned);
+                }
+                if !path.extension().is_some_and(|extension| extension == "rs") {
+                    return None;
+                }
                 let stem = path.file_stem()?.to_str()?;
                 (stem != "lib").then(|| stem.to_owned())
             })
