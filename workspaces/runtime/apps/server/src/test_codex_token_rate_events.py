@@ -97,12 +97,12 @@ class TokenRateEventContracts(unittest.IsolatedAsyncioTestCase):
             mutation_count = [0]
             mutation_count_lock = threading.Lock()
 
-            def mark_second_mutation(previous):
+            def mark_second_mutation():
                 with mutation_count_lock:
                     mutation_count[0] += 1
                     if mutation_count[0] == 2:
                         second_mutation_ready.set()
-                original_after_mutation(previous)
+                original_after_mutation()
 
             rates._publish_if_changed = mark_second_mutation
             agent = {"id": "agent-a", "rootId": "agent-a", "threadId": "thread-a",
@@ -128,7 +128,10 @@ class TokenRateEventContracts(unittest.IsolatedAsyncioTestCase):
                     release_first_publish.set()
                     await asyncio.to_thread(first.join, 2)
                     await asyncio.to_thread(second.join, 2)
-                    self.assertTrue(second_publish_done.is_set())
+                    self.assertTrue(
+                        await asyncio.to_thread(second_publish_done.wait, HANG_GUARD_SECONDS),
+                        "coalesced publication did not publish the newer snapshot",
+                    )
                 self.assertEqual(published_outputs, [0, 10])
                 self.assertEqual(lock_free, [True, True])
                 event = await subscription.next_event(timeout=1)
@@ -141,47 +144,72 @@ class TokenRateEventContracts(unittest.IsolatedAsyncioTestCase):
                 subscription.close()
                 unregister_resource_hub(directory, hub)
 
-    def test_changed_snapshots_publish_after_rate_lock_release(self):
-        rates = TokenRates(clock=lambda: 100.0)
-        publications = []
+    async def test_changed_snapshots_publish_after_rate_lock_release(self):
+        with tempfile.TemporaryDirectory() as directory:
+            loop = asyncio.get_running_loop()
+            hub = ResourceHub("workspace-a", token_rates=TokenRateSnapshot(rates={}, teams={}))
+            register_resource_hub(directory, hub)
+            subscription = hub.subscribe(
+                [ResourceRef(PanelResource(kind="panel", agentId="agent-a"))],
+                loop=loop,
+            )
+            rates = TokenRates(clock=lambda: 100.0, state_dir=directory)
+            publications = []
+            publication_condition = threading.Condition()
+            lock_free = []
+            original_publisher = resource_hub.publish_token_rates
 
-        def capture(previous):
-            acquired = rates.lock.acquire(blocking=False)
-            current = rates.workspace_snapshot()
-            publications.append((previous, current, acquired))
-            if acquired:
-                rates.lock.release()
+            def capture(state_dir, snapshot):
+                acquired = rates.lock.acquire(blocking=False)
+                lock_free.append(acquired)
+                if acquired:
+                    rates.lock.release()
+                original_publisher(state_dir, snapshot)
+                with publication_condition:
+                    publications.append(snapshot)
+                    publication_condition.notify_all()
 
-        rates._publish_if_changed = capture
-        agent = {"id": "agent-a", "rootId": "agent-a", "threadId": "thread-a", "inFlight": True, "turnId": "turn-a"}
-        rates.observe(agent, "turn/started", {"turnId": "turn-a"}, "account-a", "connection-a", 100.0)
-        self.assertEqual(len(publications), 1)
-        self.assertEqual(publications[0][0], {"rates": {}, "teams": {}})
-        self.assertIn("agent-a", publications[0][1]["rates"])
-        self.assertTrue(publications[0][2])
+            async def wait_for_publications(count):
+                def wait():
+                    with publication_condition:
+                        return publication_condition.wait_for(
+                            lambda: len(publications) >= count,
+                            timeout=HANG_GUARD_SECONDS,
+                        )
 
-        rates.stream(
-            "item/agentMessage/delta",
-            {"threadId": "thread-a", "turnId": "turn-a", "delta": "x" * 40},
-            "account-a",
-            "connection-a",
-            102.0,
-        )
-        self.assertEqual(len(publications), 2)
-        self.assertTrue(publications[1][2])
-        self.assertTrue(publications[1][1]["rates"]["agent-a"]["estimated"])
+                self.assertTrue(await asyncio.to_thread(wait), f"publication {count} did not arrive")
 
-        rates.observe(agent, "turn/completed", {"turnId": "turn-a"}, "account-a", "connection-a", 103.0)
-        self.assertEqual(len(publications), 3)
-        self.assertFalse(publications[2][1]["rates"]["agent-a"]["active"])
-        self.assertTrue(publications[2][2])
+            agent = {"id": "agent-a", "rootId": "agent-a", "threadId": "thread-a",
+                     "inFlight": True, "turnId": "turn-a"}
+            try:
+                with patch.object(resource_hub, "publish_token_rates", side_effect=capture):
+                    rates.observe(agent, "turn/started", {"turnId": "turn-a"},
+                                  "account-a", "connection-a", 100.0)
+                    await wait_for_publications(1)
+                    self.assertEqual(publications[0].rates["agent-a"].outputTokens, 0)
 
-        key = ("account-a", "connection-a", "thread-a")
-        rates.expiry_timers[key].cancel()
-        rates._expire(key, "agent-a", "turn-a")
-        self.assertEqual(len(publications), 4)
-        self.assertEqual(publications[3][1], {"rates": {}, "teams": {}})
-        self.assertTrue(publications[3][2])
+                    rates.stream(
+                        "item/agentMessage/delta",
+                        {"threadId": "thread-a", "turnId": "turn-a", "delta": "x" * 40},
+                        "account-a",
+                        "connection-a",
+                        102.0,
+                    )
+                    await wait_for_publications(2)
+                    self.assertTrue(publications[1].rates["agent-a"].estimated)
+
+                    rates.observe(agent, "turn/completed", {"turnId": "turn-a"},
+                                  "account-a", "connection-a", 103.0)
+                    await wait_for_publications(3)
+                    self.assertFalse(publications[2].rates["agent-a"].active)
+
+                    self.assertEqual(len(publications), 3)
+                    self.assertEqual(lock_free, [True, True, True])
+            finally:
+                for timer in rates.expiry_timers.values():
+                    timer.cancel()
+                subscription.close()
+                unregister_resource_hub(directory, hub)
 
 
 if __name__ == "__main__":
