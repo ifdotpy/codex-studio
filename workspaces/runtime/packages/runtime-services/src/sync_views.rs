@@ -39,10 +39,10 @@ fn schema_definition<'a>(schema: &'a Value, document: &'a Value) -> &'a Value {
         .unwrap_or(schema)
 }
 
-fn collect_schema_properties(
-    schema: &Value,
-    document: &Value,
-    properties: &mut BTreeMap<String, Value>,
+fn collect_schema_properties<'a>(
+    schema: &'a Value,
+    document: &'a Value,
+    properties: &mut BTreeMap<&'a str, &'a Value>,
     depth: usize,
 ) {
     if depth > 32 {
@@ -50,11 +50,7 @@ fn collect_schema_properties(
     }
     let schema = schema_definition(schema, document);
     if let Some(fields) = schema.get("properties").and_then(Value::as_object) {
-        properties.extend(
-            fields
-                .iter()
-                .map(|(name, value)| (name.clone(), value.clone())),
-        );
+        properties.extend(fields.iter().map(|(name, value)| (name.as_str(), value)));
     }
     for keyword in ["allOf", "anyOf", "oneOf"] {
         if let Some(variants) = schema.get(keyword).and_then(Value::as_array) {
@@ -63,6 +59,46 @@ fn collect_schema_properties(
             }
         }
     }
+}
+
+type SchemaProjectionProperties = HashMap<usize, BTreeMap<&'static str, &'static Value>>;
+
+fn schema_projection_properties() -> &'static SchemaProjectionProperties {
+    static PROPERTIES: OnceLock<SchemaProjectionProperties> = OnceLock::new();
+    PROPERTIES.get_or_init(|| {
+        fn visit(
+            schema: &'static Value,
+            document: &'static Value,
+            properties: &mut SchemaProjectionProperties,
+        ) {
+            if schema.is_object() {
+                let is_schema = ["$ref", "properties", "allOf", "anyOf", "oneOf", "items"]
+                    .iter()
+                    .any(|key| schema.get(*key).is_some());
+                if is_schema {
+                    let mut fields = BTreeMap::new();
+                    collect_schema_properties(schema, document, &mut fields, 0);
+                    properties.insert(schema as *const Value as usize, fields);
+                }
+                if let Some(object) = schema.as_object() {
+                    for child in object.values() {
+                        visit(child, document, properties);
+                    }
+                }
+            } else if let Some(items) = schema.as_array() {
+                for child in items {
+                    visit(child, document, properties);
+                }
+            }
+        }
+
+        let document = openapi_document();
+        let mut properties = HashMap::new();
+        if let Some(schemas) = document.pointer("/components/schemas") {
+            visit(schemas, document, &mut properties);
+        }
+        properties
+    })
 }
 
 fn bound_sync_value(value: &Value, field: &str, agent_short_strings: bool) -> Value {
@@ -99,9 +135,8 @@ fn project_schema_value(
     let schema = schema_definition(schema, document);
     match value {
         Value::Object(source) => {
-            let mut properties = BTreeMap::new();
-            collect_schema_properties(schema, document, &mut properties, 0);
-            if properties.is_empty() {
+            let properties = schema_projection_properties().get(&(schema as *const Value as usize));
+            if properties.is_none_or(BTreeMap::is_empty) {
                 if schema.get("additionalProperties") == Some(&Value::Bool(false)) {
                     return Value::Object(Map::new());
                 }
@@ -129,23 +164,25 @@ fn project_schema_value(
                 source
                     .iter()
                     .filter_map(|(name, child)| {
-                        properties.get(name).map(|field_schema| {
-                            (name.clone(), {
-                                let short_strings = agent_short_strings
-                                    || (agent_record
-                                        && depth == 0
-                                        && AGENT_SHORT_STRING_OBJECTS.contains(&name.as_str()));
-                                project_schema_value(
-                                    child,
-                                    field_schema,
-                                    name,
-                                    document,
-                                    depth + 1,
-                                    agent_record,
-                                    short_strings,
-                                )
+                        properties
+                            .and_then(|properties| properties.get(name.as_str()))
+                            .map(|field_schema| {
+                                (name.clone(), {
+                                    let short_strings = agent_short_strings
+                                        || (agent_record
+                                            && depth == 0
+                                            && AGENT_SHORT_STRING_OBJECTS.contains(&name.as_str()));
+                                    project_schema_value(
+                                        child,
+                                        field_schema,
+                                        name,
+                                        document,
+                                        depth + 1,
+                                        agent_record,
+                                        short_strings,
+                                    )
+                                })
                             })
-                        })
                     })
                     .collect(),
             )
@@ -585,4 +622,30 @@ pub fn project_entity_view(
         }
     }
     project_persisted_record("project", &Value::Object(view))
+}
+
+#[cfg(test)]
+mod projection_plan_tests {
+    use super::{openapi_document, schema_projection_properties};
+
+    #[test]
+    fn schema_projection_plan_reuses_openapi_property_nodes() {
+        let document = openapi_document();
+        let schema = document
+            .pointer("/components/schemas/AgentEntityDto")
+            .expect("agent entity schema");
+        let property = schema
+            .pointer("/properties/id")
+            .expect("agent id property schema");
+        let plan = schema_projection_properties();
+        let properties = plan
+            .get(&(schema as *const _ as usize))
+            .expect("prepared agent property projection");
+
+        assert!(std::ptr::eq(
+            *properties.get("id").expect("id field"),
+            property
+        ));
+        assert!(std::ptr::eq(plan, schema_projection_properties()));
+    }
 }
