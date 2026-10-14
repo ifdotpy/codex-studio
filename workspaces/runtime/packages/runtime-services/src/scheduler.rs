@@ -81,7 +81,14 @@ pub(crate) fn lifecycle_transaction_with<T, E: From<StoreError>>(
 /// Run once during scheduler startup to release only persisted claims proven unsubmitted.
 pub fn recover_on_startup(store: &RuntimeStore) -> Result<usize, SchedulerError> {
     Ok(lifecycle_transaction(store, |transaction| {
-        let unsubmitted = SchedulerRepository::recover_unsubmitted(transaction)?;
+        let unsubmitted = match SchedulerRepository::recover_unsubmitted(transaction) {
+            Ok(recovered) => recovered,
+            Err(StoreError::InvalidSyncObject { scope, id }) if scope == "runtime_agents" => {
+                eprintln!("scheduler startup skipped malformed reservation row id={id}");
+                0
+            }
+            Err(error) => return Err(error),
+        };
         let submitted = SchedulerRepository::recover_submitted(transaction)?;
         Ok(unsubmitted + submitted)
     })?)
