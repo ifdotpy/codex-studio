@@ -19,6 +19,7 @@ use thiserror::Error;
 static GENERATED_WORK_ID: AtomicU64 = AtomicU64::new(0);
 
 pub struct CreateWork {
+    pub actor_id: String,
     pub title: String,
     pub description: String,
     pub owner: Option<String>,
@@ -1721,6 +1722,7 @@ mod actor_tests {
             None,
             "create-with-worker-selected",
             WorkWrite::Create(CreateWork {
+                actor_id: "lead".to_owned(),
                 title: "must be refused".to_owned(),
                 description: String::new(),
                 owner: None,
