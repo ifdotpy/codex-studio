@@ -795,7 +795,13 @@ pub fn restart_loss(snapshot: &MonitorSnapshot) -> Result<Decision, MonitorError
     decision.record["reattachRecovery"] = Value::Object(recovery);
     decision.record["status"] = json!("lost");
     decision.record["error"] = json!("Server restarted. Command outcome unknown; not rerun.");
-    decision.effects.push(Effect::ExitEvent { wake: true });
+    if !snapshot
+        .record
+        .get("ruleId")
+        .is_some_and(|rule| !rule.is_null() && rule.as_str().is_none_or(|value| !value.is_empty()))
+    {
+        decision.effects.push(Effect::ExitEvent { wake: true });
+    }
     Ok(decision)
 }
 

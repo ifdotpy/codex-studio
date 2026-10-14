@@ -4,8 +4,8 @@
 use serde_json::{Value, json};
 use studio_runtime_store::{
     AgentId, AgentRecord, AgentRepository, EventWriteRepository, MonitorsRepository, QueueEvent,
-    QueueEventId, RequestRecord, RuntimeStore, SyncDocumentsRepository, Table, Transaction,
-    monitor_runtime as repository,
+    QueueEventId, RequestRecord, RuntimeStore, SchedulerRepository, SyncDocumentsRepository, Table,
+    Transaction, monitor_runtime as repository,
 };
 
 use crate::event_write::{self, python_json};
@@ -42,6 +42,18 @@ pub fn recover_on_startup(store: &RuntimeStore, now: f64) -> Result<StartupRecov
         }
     }
     let (requests, events, monitors) = store.transaction_with::<_, MonitorError>(|tx| {
+        // Use the scheduler's canonical exact-batch validator. The general
+        // event pass below owns only the claims left after that operation.
+        if let Err(error) = SchedulerRepository::recover_unsubmitted(tx) {
+            match error {
+                studio_runtime_store::StoreError::InvalidSyncObject { scope, id }
+                    if scope == "runtime_agents" =>
+                {
+                    eprintln!("startup scheduler reservation skipped row id={id}: invalid batch");
+                }
+                error => return Err(MonitorError::Store(error)),
+            }
+        }
         let requests = recover_requests(tx)?;
         let events = recover_uncovered_events(tx)?;
         let monitors = recover_active_monitors(tx, now)?;
@@ -115,25 +127,12 @@ fn retained_question(request: &Value, agents: &std::collections::BTreeMap<String
 }
 
 fn recover_uncovered_events(tx: &Transaction<'_>) -> Result<usize, MonitorError> {
-    // The scheduler owns exact reserved batches named by a current, unsubmitted
-    // startAttempt. It restores those to pending; all other reserved/dispatching
-    // rows have no scheduler proof and must remain uncertain after restart.
+    // Exact unsubmitted batches were handled by SchedulerRepository above.
+    // Every claim still present has no validated scheduler ownership.
     Ok(tx
         .execute(
             "UPDATE runtime_events AS e SET status='uncertain',error=?1 \
-         WHERE e.status IN ('reserved','dispatching') AND NOT ( \
-           e.status='reserved' AND EXISTS ( \
-             SELECT 1 FROM runtime_agents AS a \
-             WHERE a.id=e.agent AND json_extract(a.record,'$.deletedAt') IS NULL \
-               AND json_extract(a.record,'$.status')='starting' \
-               AND json_extract(a.record,'$.autoWake')=1 \
-               AND json_extract(a.record,'$.inFlight')=1 \
-               AND json_extract(a.record,'$.startAttempt.submitted')=0 \
-               AND json_extract(a.record,'$.startAttempt.epoch')=e.epoch \
-               AND EXISTS (SELECT 1 FROM json_each(json_extract(a.record,'$.startAttempt.events')) \
-                           WHERE value=e.id) \
-           ) \
-         )",
+         WHERE e.status IN ('reserved','dispatching')",
             [RESTART_EVENT_ERROR],
         )
         .map_err(studio_runtime_store::StoreError::from)?)
@@ -161,12 +160,75 @@ fn recover_active_monitors(tx: &Transaction<'_>, now: f64) -> Result<usize, Moni
         .collect::<Result<Vec<_>, _>>()
         .map_err(studio_runtime_store::StoreError::from)?;
     drop(statement);
+    let mut recovered = 0;
     for id in &ids {
-        let (snapshot, actor) = snapshot(tx, id)?;
-        let decision = policy::restart_loss(&snapshot)?;
-        apply(tx, &snapshot, &actor, &decision, now)?;
+        let result = (|| {
+            let (snapshot, actor) = snapshot(tx, id)?;
+            let decision = policy::restart_loss(&snapshot)?;
+            let remote = event_write::truthy(actor.extra.get("remoteWorker"))
+                || event_write::truthy(actor.extra.get("remoteAnchor"));
+            if remote {
+                // Python startup marks remote-owned monitors lost and still
+                // writes the owner event; bypass the request-time remote guard.
+                for effect in &decision.effects {
+                    if let Effect::ExitEvent { wake } = effect {
+                        exit_event(tx, &actor, &decision.record, *wake, now)?;
+                    }
+                }
+                MonitorSnapshot::checked(
+                    decision.record.clone(),
+                    serde_json::to_value(&actor).map_err(studio_runtime_store::StoreError::from)?,
+                )?;
+                repository::put(tx, decision.record)?;
+                crate::sync_policy::maintain_monitor_window(tx, &|_, _, view, deleted| {
+                    deleted
+                        || studio_runtime_schema::validate("MonitorEntityDto", view)
+                            .unwrap_or(false)
+                })?;
+            } else {
+                apply(tx, &snapshot, &actor, &decision, now)?;
+            }
+            Ok::<(), MonitorError>(())
+        })();
+        if let Err(error) = result {
+            if startup_store_failure(&error) {
+                return Err(error);
+            }
+            eprintln!("startup monitor recovery skipped row id={id}: {error}");
+            continue;
+        }
+        recovered += 1;
     }
-    Ok(ids.len())
+    Ok(recovered)
+}
+
+fn startup_store_failure(error: &MonitorError) -> bool {
+    fn store_failure(error: &studio_runtime_store::StoreError) -> bool {
+        matches!(
+            error,
+            studio_runtime_store::StoreError::Sqlite(_)
+                | studio_runtime_store::StoreError::CommitOutcomeUnknown(_)
+                | studio_runtime_store::StoreError::WriterPoisoned
+                | studio_runtime_store::StoreError::StateDirectory(_)
+                | studio_runtime_store::StoreError::AlreadyOwned
+                | studio_runtime_store::StoreError::MissingDatabase(_)
+                | studio_runtime_store::StoreError::SchemaMismatch(_)
+                | studio_runtime_store::StoreError::SchemaObjectMismatch { .. }
+        )
+    }
+    match error {
+        MonitorError::Store(error) => store_failure(error),
+        MonitorError::Event(crate::event_write::EventWriteError::Store(error)) => {
+            store_failure(error)
+        }
+        MonitorError::Rules(crate::rules_tick::RulesTickError::Store(error)) => {
+            store_failure(error)
+        }
+        MonitorError::Rules(crate::rules_tick::RulesTickError::Event(
+            crate::event_write::EventWriteError::Store(error),
+        )) => store_failure(error),
+        _ => false,
+    }
 }
 
 pub fn snapshot(
