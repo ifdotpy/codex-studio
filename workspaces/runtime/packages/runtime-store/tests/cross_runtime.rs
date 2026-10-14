@@ -598,7 +598,7 @@ fn server_identity_registry_is_shared_by_store_connections_and_scoped_to_databas
             Ok(())
         })
         .expect("second database sees its own identity");
-    let mut reader = first.read().expect("reader opens");
+    let reader = first.read().expect("reader opens");
     let tx = reader
         .unchecked_transaction()
         .expect("read transaction begins");
