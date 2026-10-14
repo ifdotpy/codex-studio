@@ -142,6 +142,46 @@ async fn retained_written_receipt_replays_after_reconnect_without_sending() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn reconnect_churn_keeps_checkpoints_bounded_by_retained_generations() {
+    let state = State::new().await;
+    for generation in 1..=8 {
+        let mut peer = Peer::identity("default", generation, None);
+        let mut worker = peer.worker(state.bridge.clone()).await;
+        let port = worker.retained_session();
+        let operation = format!("retained-generation-{generation}");
+        let pending = request(&state, &port, &operation);
+        let sender = port.clone();
+        let task = tokio::spawn(async move { sender.request(pending).await });
+        let wire = peer.write("thread/read").await;
+        peer.reply(&wire, json!({"thread":{"id":"fake-thread-0"}}))
+            .await;
+        let receipt = task.await.unwrap().unwrap();
+        assert_eq!(receipt.scope.generation, generation);
+        worker.shutdown().await.unwrap();
+
+        let (retained_generations, checkpoints) = state.bridge.run(|store| {
+            let db = store.read()?;
+            let retained_generations = db.query_row(
+                "SELECT COUNT(DISTINCT json_extract(result,'$.call.scope.generation')) FROM runtime_operation_receipts WHERE id LIKE 'account-worker:retained:default:%:submitted'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )?;
+            let checkpoints = db.query_row(
+                "SELECT COUNT(*) FROM runtime_operation_receipts WHERE id LIKE 'account-worker:cursor:default:%:ack'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )?;
+            Ok((retained_generations, checkpoints))
+        }).await.unwrap();
+        assert_eq!(retained_generations, generation as i64);
+        assert!(
+            checkpoints <= retained_generations,
+            "{checkpoints} cursor checkpoints exceeded {retained_generations} retained generations"
+        );
+    }
+}
+
+#[tokio::test(start_paused = true)]
 async fn retained_unknown_receipt_stays_unknown_after_reconnect_without_sending() {
     let state = State::new().await;
     let mut first_peer = Peer::identity("default", 1, None);

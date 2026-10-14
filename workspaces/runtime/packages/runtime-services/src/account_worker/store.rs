@@ -205,8 +205,11 @@ fn retire_generations(
             if kind == "cursor" {
                 // A saved retained result can only be replayed after reconnect
                 // while its submitted intent still exists. Keep that
-                // generation's checkpoint for exactly that lifetime; otherwise
-                // checkpoint rows would grow without bound across reconnects.
+                // generation's checkpoint for exactly that lifetime. Submitted
+                // retained intents are durable, so each such generation pins at
+                // most one checkpoint; checkpoint count therefore never exceeds
+                // the number of retained receipts. Generations without retained
+                // requests retire their checkpoint during reconnect churn.
                 let retained_prefix = format!("account-worker:retained:{account}:");
                 let generation_number = generation
                     .and_then(|generation| i64::try_from(generation).ok())

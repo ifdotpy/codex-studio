@@ -30,6 +30,14 @@ struct Session {
     foreign: bool,
 }
 impl RetainedAccountSession for Session {
+    fn current_scope(&self, account: &str) -> Option<ConnectionScope> {
+        Some(ConnectionScope {
+            account: account.to_owned(),
+            connection: "fixture-connection".into(),
+            generation: 1,
+        })
+    }
+
     fn request(&self, request: ProviderRequest) -> SessionFuture {
         self.calls.fetch_add(1, Ordering::SeqCst);
         assert!(request.deadline > std::time::Instant::now());
