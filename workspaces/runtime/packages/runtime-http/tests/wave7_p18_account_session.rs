@@ -16,8 +16,8 @@ use studio_runtime_providers::{Method, RequestId, RequestTicket};
 use studio_runtime_services::{
     account_driver::AccountDriver,
     account_session_runtime::{
-        AccountSessionError, AccountSessionRuntime, ConnectionScope, ProviderRequest,
-        ProviderResponse, RequestCertainty, RetainedAccountSession, SessionFuture, SessionReceipt,
+        AccountSessionRuntime, ConnectionScope, ProviderRequest, ProviderResponse,
+        RequestCertainty, RetainedAccountSession, SessionFuture, SessionReceipt,
     },
 };
 use tower::ServiceExt;
@@ -49,6 +49,7 @@ impl RetainedAccountSession for Session {
         let mut scope = ConnectionScope {
             account: request.account.clone(),
             connection: "fixture-connection".into(),
+            generation: 1,
         };
         if self.foreign {
             scope.connection = "foreign".into();

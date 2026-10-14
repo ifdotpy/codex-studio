@@ -20,6 +20,7 @@ use studio_runtime_process::{
 use studio_runtime_services::{
     account_driver::{AccountDriver, AccountStatus, ProviderAuthReader},
     account_worker::{WorkerError, preparation::PreparationResources},
+    native_runtime::{NativeExecutableLease, NativeRuntime},
     provider_session_task::SessionTaskConfig,
     thread_prepare::{CatalogSnapshot, CatalogSource},
 };
@@ -121,6 +122,7 @@ impl HostRuntime {
         .await
     }
 
+    #[cfg(test)]
     pub async fn start_with_monitor_wake(
         state: &mut HttpState,
         store: Arc<RuntimeStore>,
@@ -128,6 +130,27 @@ impl HostRuntime {
         native_path: Option<String>,
         monitor_dispatch_wake: Arc<tokio::sync::Notify>,
         session_broker: AccountSessionBroker,
+    ) -> Result<Self, WorkerError> {
+        Self::start_with_monitor_wake_and_native_runtime(
+            state,
+            store,
+            accounts,
+            native_path,
+            monitor_dispatch_wake,
+            session_broker,
+            None,
+        )
+        .await
+    }
+
+    pub async fn start_with_monitor_wake_and_native_runtime(
+        state: &mut HttpState,
+        store: Arc<RuntimeStore>,
+        accounts: Arc<AccountDriver>,
+        native_path: Option<String>,
+        monitor_dispatch_wake: Arc<tokio::sync::Notify>,
+        session_broker: AccountSessionBroker,
+        native_runtime: Option<Arc<NativeRuntime>>,
     ) -> Result<Self, WorkerError> {
         let mut nonce = [0_u8; 16];
         getrandom::fill(&mut nonce).map_err(|_| WorkerError::TaskFailed)?;
@@ -180,6 +203,7 @@ impl HostRuntime {
             store: store.clone(),
             root: store.root().to_owned(),
             native_path,
+            native_runtime,
             resources,
             environment: std::env::vars().collect(),
         });
@@ -266,6 +290,7 @@ struct HostLauncher {
     store: Arc<RuntimeStore>,
     root: PathBuf,
     native_path: Option<String>,
+    native_runtime: Option<Arc<NativeRuntime>>,
     resources: PreparationResources,
     environment: BTreeMap<String, String>,
 }
@@ -281,8 +306,26 @@ impl AccountLauncher for HostLauncher {
                     .map_err(|_| WorkerError::TaskFailed)??;
             let mut resources = self.resources.clone();
             resources.account_home.clone_from(&home);
+            let lease = if let Some(runtime) = &self.native_runtime {
+                let status = runtime.read_state().map_err(|_| {
+                    WorkerError::PreparationRefused("native-runtime/status-read".into())
+                })?;
+                if status.as_ref().and_then(|state| state.selected()).is_some() {
+                    Some(runtime.retain_selected().map_err(|_| {
+                        WorkerError::PreparationRefused("native-runtime/selected-lease".into())
+                    })?)
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+            let executable = lease
+                .as_ref()
+                .and_then(|lease| lease.path().to_str())
+                .or(self.native_path.as_deref());
             let launch = codex_launch(
-                self.native_path.as_deref(),
+                executable,
                 self.environment.clone(),
                 home,
                 isolated,
@@ -329,6 +372,13 @@ impl AccountLauncher for HostLauncher {
                 debug_assert_eq!(generation, prepared.generation());
                 (Arc::new(prepared), generation)
             };
+            let factory = match lease {
+                Some(lease) => Arc::new(LeasedProviderTaskFactory {
+                    inner: factory,
+                    _lease: lease,
+                }) as Arc<dyn ProviderTaskFactory>,
+                None => factory,
+            };
             Ok(AccountLaunch {
                 factory,
                 options: OpenOptions {
@@ -351,6 +401,24 @@ impl AccountLauncher for HostLauncher {
                 resources,
             })
         })
+    }
+}
+
+/// Keeps the selected immutable native bundle alive as long as the retained
+/// account session factory can still launch or serve that provider session.
+struct LeasedProviderTaskFactory {
+    inner: Arc<dyn ProviderTaskFactory>,
+    _lease: NativeExecutableLease,
+}
+
+impl ProviderTaskFactory for LeasedProviderTaskFactory {
+    fn open(
+        &self,
+        handle: ProviderHandle,
+        options: OpenOptions,
+        shutdown: Shutdown,
+    ) -> studio_runtime_process::provider_seam::OpenFuture<'_> {
+        self.inner.open(handle, options, shutdown)
     }
 }
 

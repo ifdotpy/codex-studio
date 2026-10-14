@@ -19,18 +19,21 @@ pub(crate) async fn get(State(state): State<HttpState>) -> Json<Value> {
 }
 
 fn status(state: &HttpState) -> Value {
-    let native = state.native_path.as_ref().map(|path| {
-        json!({
-            "path": path, "sourcePath": path, "version": "unknown"
-        })
-    });
-    let native_runtime = json!({
-        "status": if native.is_some() { "ready" } else { "failed" },
-        "checkedAt": null,
-        "selected": native,
-        "candidates": [], "accounts": {},
-        "error": if state.native_path.is_none() { Some("No native provider configured") } else { None }
-    });
+    let supervisor = state
+        .diagnostics_supervisor
+        .as_ref()
+        .map(|port| port.snapshot());
+    let native_runtime = state
+        .native_runtime
+        .as_ref()
+        .and_then(|runtime| runtime.read_state().ok().flatten())
+        .map(|snapshot| snapshot.record().clone())
+        .unwrap_or_else(|| {
+            json!({
+                "status": "checking", "checkedAt": null, "selected": null,
+                "candidates": [], "accounts": {}
+            })
+        });
     json!({
         "application": "codex-agents", "protocol": 1, "mobileProtocol": 1,
         "backendBuild": "rust-runtime-http-skeleton", "nativeRuntime": native_runtime,
@@ -40,9 +43,14 @@ fn status(state: &HttpState) -> Value {
         ),
         "browser": {"enabled": false, "reason": "Browser diagnostics are not implemented"},
         "liveUpdate": null, "restartEnvironment": {}, "publicOrigin": null,
-        "pid": std::process::id(), "supervisorMode": false, "supervisorRequired": false,
-        "supervisorError": null, "supervisor": null, "supervisorFallback": false,
-        "supervisorNotice": null, "stateDir": state.state_dir, "linuxVm": null
+        "pid": std::process::id(),
+        "supervisorMode": supervisor.as_ref().is_some_and(|snapshot| snapshot.mode),
+        "supervisorRequired": false,
+        "supervisorError": null,
+        "supervisor": supervisor.as_ref().and_then(|snapshot| snapshot.health.clone()),
+        "supervisorFallback": supervisor.as_ref().is_some_and(|snapshot| snapshot.fallback),
+        "supervisorNotice": supervisor.and_then(|snapshot| snapshot.notice),
+        "stateDir": state.state_dir, "linuxVm": null
     })
 }
 inventory::submit! {
