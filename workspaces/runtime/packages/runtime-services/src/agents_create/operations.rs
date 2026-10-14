@@ -686,7 +686,7 @@ fn create_child(
         .get("task_id")
         .and_then(Value::as_str)
         .map(str::to_owned);
-    mutate(context, |tx| {
+    let result = mutate(context, |tx| {
         crate::host_worker_create::recheck_worker(tx, &draft, epoch, &identity)?;
         let result = super::create_agent_with_identity(tx, id, prompt, record, created, validate)?;
         if let Some(task_id) = &task_id {
