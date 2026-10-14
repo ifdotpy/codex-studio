@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
-"""Recovery validates requests and refuses without recovery-owned writes."""
-import os
+"""Recovery validates requests and leaves unknown-agent state untouched."""
 from pathlib import Path
 import sqlite3
 import sys
@@ -31,12 +30,8 @@ class RecoveryHTTPContract(TimedHTTPContractTest, unittest.TestCase):
     def test_refusal_preserves_all_recovery_rows(self):
         before = recovery_rows(self.backend.state)
         response = self.backend.request("POST", "/api/connection-recovery", body={"id": "missing"}, headers=self.headers())
-        if os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"):
-            self.assertEqual(response.status, 501, response.body)
-            self.assertEqual(response.json(), {"error": "Not implemented: requires account-worker/recovery-history"})
-        else:
-            self.assertEqual(response.status, 400, response.body)
-            self.assertEqual(response.json(), {"error": "Unknown managed agent"})
+        self.assertEqual(response.status, 400, response.body)
+        self.assertIn(response.json().get("error"), {"Unknown managed agent", "Unknown agent"})
         self.assertEqual(recovery_rows(self.backend.state), before)
 
     def test_invalid_body_is_located_before_dependency(self):

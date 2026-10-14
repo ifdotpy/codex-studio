@@ -84,6 +84,25 @@ impl RetainedSessionPort {
     pub fn is_live(&self) -> bool {
         !*self.stop.subscribe().borrow() && !self.commands.is_closed()
     }
+    pub async fn recover_connection(&self, agent_id: String) -> Result<Value, PortError> {
+        if agent_id.is_empty() || !self.is_live() {
+            return Err(PortError::Identity);
+        }
+        let (reply, receipt) = oneshot::channel();
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(300);
+        tokio::time::timeout_at(
+            deadline,
+            self.commands
+                .send(AccountCommand::ConnectionRecovery { agent_id, reply }),
+        )
+        .await
+        .map_err(|_| PortError::NotSent)?
+        .map_err(|_| PortError::NotSent)?;
+        tokio::time::timeout_at(deadline, receipt)
+            .await
+            .map_err(|_| PortError::Unknown)?
+            .map_err(|_| PortError::Unknown)?
+    }
     pub async fn request(&self, request: SessionRequest) -> Result<SessionReceipt, PortError> {
         if request.scope != self.scope || !self.is_live() {
             return Err(PortError::Identity);

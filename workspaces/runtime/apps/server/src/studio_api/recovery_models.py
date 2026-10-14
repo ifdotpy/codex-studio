@@ -1,7 +1,7 @@
 """Narrow, open persisted projections consumed by Rust recovery decisions."""
 from __future__ import annotations
 
-from typing import Annotated
+from typing import Annotated, Literal
 from pydantic import ConfigDict, Field, StrictBool, StrictInt, StrictStr
 from studio_api.models import ContractModel, JsonValue
 
@@ -42,6 +42,15 @@ class RecoveryFields(ContractModel):
     error: JsonValue = None
 
 
+class ConnectionRecoveryFields(ContractModel):
+    model_config = ConfigDict(extra="allow", strict=True)
+    __pydantic_extra__: dict[str, JsonValue] = Field(init=False)
+    requestId: StrictStr | None = None
+    requestState: Literal["pending", "result"] | None = None
+    requestBasis: JsonValue = None
+    requestReceipt: JsonValue = None
+
+
 class RecoveryAgentRecord(RecoveryFields):
     # Agents count notifications; only nested attempt records contain event IDs.
     events: Annotated[StrictInt, Field(ge=0)] = 0  # type: ignore[assignment]
@@ -58,7 +67,7 @@ class RecoveryAgentRecord(RecoveryFields):
     startAttempt: RecoveryFields | None = None
     disconnectRecovery: RecoveryFields | None = None
     restartRecovery: RecoveryFields | None = None
-    connectionRecovery: RecoveryFields | None = None
+    connectionRecovery: ConnectionRecoveryFields | None = None
     contextRepair: RecoveryFields | None = None
     contextRepairWait: RecoveryFields | None = None
     nativeThreadBlock: RecoveryFields | None = None

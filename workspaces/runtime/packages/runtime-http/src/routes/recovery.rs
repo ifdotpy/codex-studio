@@ -1,26 +1,54 @@
-//! The worker owns connection recovery. Until its history port is wired, this
-//! operation refuses before opening a transaction or starting a provider.
+//! Synchronous connection recovery runs through the owning account worker.
 use super::{
     extractors::ApiJson,
-    manifest::{Dependency, OperationStatus, RouteGroup, dependency_unavailable, post},
+    manifest::{OperationStatus, RouteGroup, post},
 };
 use crate::error::ApiError;
+use crate::router::HttpState;
 use axum::Json;
+use axum::extract::State;
 use serde_json::Value;
-const DEPENDENCIES: &[Dependency] = &[Dependency::new("account-worker/recovery-history")];
 pub(crate) fn routes() -> RouteGroup {
     RouteGroup::new(vec![post(
         "/api/connection-recovery",
-        OperationStatus::partial(DEPENDENCIES),
+        OperationStatus::Implemented,
         recover,
     )])
 }
 async fn recover(
-    ApiJson(_body): ApiJson<crate::generated::IdRequest>,
+    State(state): State<HttpState>,
+    ApiJson(body): ApiJson<crate::generated::IdRequest>,
 ) -> Result<Json<Value>, ApiError> {
-    Err(
-        dependency_unavailable("POST", "/api/connection-recovery", DEPENDENCIES)
-            .map_err(|_| ApiError::internal())?,
-    )
+    let store = state.store.clone().ok_or_else(ApiError::internal)?;
+    let id = body.id;
+    let lookup_id = id.clone();
+    let account = tokio::task::spawn_blocking(move || {
+        let connection = store.read().map_err(|_| ApiError::internal())?;
+        let agent = studio_runtime_store::AgentRepository::get(
+            &connection,
+            &studio_runtime_store::AgentId::from(lookup_id.as_str()),
+        )
+        .map_err(|_| ApiError::internal())?
+        .ok_or_else(|| ApiError::new(axum::http::StatusCode::BAD_REQUEST, "Unknown agent"))?;
+        Ok::<_, ApiError>(
+            agent
+                .extra
+                .get("accountKey")
+                .and_then(Value::as_str)
+                .unwrap_or("default")
+                .to_owned(),
+        )
+    })
+    .await
+    .map_err(|_| ApiError::internal())??;
+    let port = state
+        .account_session
+        .clone()
+        .ok_or_else(ApiError::internal)?;
+    let result = tokio::task::spawn_blocking(move || port.recover_connection(&account, &id))
+        .await
+        .map_err(|_| ApiError::internal())?
+        .map_err(|_| ApiError::internal())?;
+    Ok(Json(result))
 }
-inventory::submit! { crate::routes::manifest::RouteModuleRegistration {name:"recovery",routes:Some(routes),dependencies:&["account-worker/recovery-history"]} }
+inventory::submit! { crate::routes::manifest::RouteModuleRegistration {name:"recovery",routes:Some(routes),dependencies:&[]} }

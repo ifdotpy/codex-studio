@@ -308,6 +308,7 @@ impl RecoveryEffects for RecoveryStore<'_> {
                 }
                 _ => return self.completion.complete(tx, expected, scope, &action),
             };
+            persist_request_result(a, &mut updated, &result);
             RecoverySnapshot::from_record(updated.clone())
                 .map_err(|_| RecoveryError::CommitFailed)?;
             let record: AgentRecord =
@@ -316,6 +317,23 @@ impl RecoveryEffects for RecoveryStore<'_> {
             Ok(RecoveryOutcome::Applied(result))
         })
     }
+}
+
+fn persist_request_result(source: &Value, updated: &mut Value, result: &Value) {
+    let request_id = source["connectionRecovery"]["requestId"]
+        .as_str()
+        .filter(|id| !id.is_empty());
+    if source["connectionRecovery"]["requestState"] != "pending" || request_id.is_none() {
+        return;
+    }
+    if !updated["connectionRecovery"].is_object() {
+        updated["connectionRecovery"] = json!({});
+    }
+    updated["connectionRecovery"]["requestId"] = json!(request_id);
+    updated["connectionRecovery"]["requestState"] = json!("result");
+    updated["connectionRecovery"]["requestBasis"] =
+        source["connectionRecovery"]["requestBasis"].clone();
+    updated["connectionRecovery"]["requestReceipt"] = result.clone();
 }
 fn uncertain(tx: &Transaction<'_>, id: &str, epoch: i64) -> Result<bool, RecoveryError> {
     Ok(tx.query_row("SELECT EXISTS(SELECT 1 FROM runtime_events WHERE agent=?1 AND epoch=?2 AND status IN ('reserved','dispatching','uncertain'))",rusqlite::params![id,epoch],|r|r.get(0))?)
@@ -599,13 +617,27 @@ impl CompletionWriter for LifecycleCompletionWriter<'_> {
                         updated["connectionRecovery"]["completionDelivered"] = json!(true);
                     }
                 }
+                let result =
+                    json!({"status":"reconciled","turnId":turn_id,"outcome":turn["status"]});
+                persist_request_result(a, &mut updated, &result);
                 // This hook includes unresolved-operation holds and parent/work
                 // intents. A missing owner fails the whole transaction visibly.
                 self.delivery.terminal(tx, &mut updated, turn, *mode)?;
+                if let Some(streams) = self.stream_update.as_mut() {
+                    let batch = streams
+                        .take_post_commit()
+                        .map_err(|_| RecoveryError::CommitFailed)?;
+                    crate::account_worker::store::persist_publication_batch(
+                        tx,
+                        &scope.account,
+                        &batch,
+                    )
+                    .map_err(|_| RecoveryError::CommitFailed)?;
+                    crate::account_worker::store::persist_streams(tx, &scope.account, streams)
+                        .map_err(|_| RecoveryError::CommitFailed)?;
+                }
                 put_agent(tx, updated)?;
-                Ok(RecoveryOutcome::Applied(
-                    json!({"status":"reconciled","turnId":turn_id,"outcome":turn["status"]}),
-                ))
+                Ok(RecoveryOutcome::Applied(result))
             }
             _ => Err(RecoveryError::EffectsUnavailable),
         }
