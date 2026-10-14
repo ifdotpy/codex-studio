@@ -5,7 +5,8 @@ kernel panic in the console of the current boot, or the helper's own failure), a
 `unresponsive` for no answer during UNANSWERED_SECONDS after the guest answered in this boot.
 This module probes the guest, records both, and restarts only a failed VM, through the normal
 start path with limits. No answer does not prove death: a busy guest can refuse connections.
-It never starts a VM that a person or a command stopped.
+It never starts a VM that a person or a command stopped. It starts a VM whose last start came
+before the current Mac boot: the Mac restarted under it.
 """
 from __future__ import annotations
 
@@ -13,6 +14,8 @@ from datetime import datetime, timezone
 import json
 from pathlib import Path
 import platform
+import re
+import subprocess
 import threading
 import time
 from typing import Any, Callable
@@ -38,6 +41,24 @@ Record = dict[str, Any]
 
 def _utc(at: float) -> str:
     return datetime.fromtimestamp(at, timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+
+
+_HOST_BOOT: list[float] = []
+
+
+def host_boot_time() -> float | None:
+    """When this Mac booted, or None when macOS does not say."""
+    if not _HOST_BOOT:
+        try:
+            text = subprocess.run(['/usr/sbin/sysctl', '-n', 'kern.boottime'], capture_output=True,
+                                  text=True, timeout=5, check=True).stdout
+        except (OSError, subprocess.SubprocessError):
+            return None
+        match = re.search(r'sec = (\d+)', text)
+        if match is None:
+            return None
+        _HOST_BOOT.append(float(match.group(1)))
+    return _HOST_BOOT[0]
 
 
 def load(state_dir: Path) -> dict[str, Any]:
@@ -241,6 +262,38 @@ class Watchdog:
         self._update(record)
         return self._start(record)
 
+    def after_host_boot(self) -> str:
+        """Start the VM when its last intent is a start from before this Mac boot. A stop on
+        purpose saves its intent first, and a VM that stopped in this boot (a guest power-off, a
+        helper exit) keeps its intent from this boot, so both stay stopped."""
+        boot = host_boot_time()
+        intent = self.client.intent()
+        if (boot is None or intent.get('state') != 'running' or 'restart' in intent
+                or not isinstance(intent.get('at'), (int, float)) or intent['at'] >= boot):
+            return 'stopped'
+        try:
+            with self.client.maintenance():
+                now = self.clock()
+                reason = 'The Mac restarted while the VM ran'
+                until, rule = next_allowed(load(self.client.state_dir)['restarts'], now)
+                if until is not None:
+                    self._hold({'reason': reason, 'rule': rule, 'until': until, 'untilTime': _utc(until)})
+                    return 'limited'
+                if self.client.intent() != intent or self.client.status()['state'] != 'stopped':
+                    return 'busy'
+                record: Record = {'id': str(uuid.uuid4()), 'at': now, 'time': _utc(now), 'kind': 'host_restart',
+                                  'reason': reason, 'stage': 'starting'}
+                self._update(record)
+                self.client._write_intent('running', 'watchdog', record['id'])
+                if self.on_stopped is not None:
+                    record['chats'] = self.on_stopped(record)
+                self._update(record)
+                return self._start(record)
+        except LinuxVMError as error:
+            if error.code in {'maintenance_busy', 'lock_busy'}:
+                return 'busy'
+            raise
+
     def _finish_intent(self, restart: str) -> None:
         try:
             self.client.finish_restart(restart)
@@ -275,11 +328,11 @@ class Watchdog:
         return str(record['outcome'])
 
     def resume(self) -> str:
-        """Finish this module's own restart that a backend stop interrupted. A stopped VM
-        without one stays stopped."""
+        """Finish this module's own restart that a backend stop interrupted, or start a VM that
+        the Mac restart stopped. Any other stopped VM stays stopped."""
         restart = self.client.intent().get('restart')
         if not isinstance(restart, str):
-            return 'stopped'
+            return self.after_host_boot()
         try:
             with self.client.maintenance():
                 record = next((row for row in load(self.client.state_dir)['restarts']
