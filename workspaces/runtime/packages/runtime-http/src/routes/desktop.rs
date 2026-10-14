@@ -60,8 +60,8 @@ mod tests {
     use std::{path::Path, sync::Arc, time::Instant};
     use studio_runtime_services::provider_versions::{
         ActiveProviderConnections, Clock, ProviderPortError, ProviderProfile,
-        ProviderVersionMonitor, ProviderVersionStore, UpstreamFetch, UpstreamReply, VersionFacts,
-        VersionProbe,
+        ProviderVersionMonitor, ProviderVersionStore, SystemVersionProbe, UpstreamFetch,
+        UpstreamReply, VersionFacts, VersionProbe,
     };
     use tower::ServiceExt;
 
@@ -85,33 +85,50 @@ mod tests {
             })
     }
 
-    struct LiveSessions;
+    struct LiveSessions {
+        claude_binary: String,
+    }
     impl ActiveProviderConnections for LiveSessions {
         fn snapshot(&self) -> Vec<ProviderProfile> {
             // Offline and registry-only accounts are deliberately absent, as in Python tick().
-            vec![ProviderProfile {
-                account_key: "connected".into(),
-                provider: "codex".into(),
-                configured_binary: None,
-                server_identity: "server-7".into(),
-                connection_id: Some("connection-9".into()),
-            }]
+            vec![
+                ProviderProfile {
+                    account_key: "connected".into(),
+                    provider: "codex".into(),
+                    configured_binary: None,
+                    server_identity: "server-7".into(),
+                    connection_id: Some("connection-9".into()),
+                },
+                ProviderProfile {
+                    account_key: "claude-connected".into(),
+                    provider: "claude".into(),
+                    configured_binary: Some(self.claude_binary.clone()),
+                    server_identity: "server-8".into(),
+                    connection_id: Some("connection-11".into()),
+                },
+            ]
         }
     }
 
-    struct Probe;
+    struct Probe {
+        production: SystemVersionProbe,
+    }
     impl VersionProbe for Probe {
         fn probe(
             &self,
-            _: &ProviderProfile,
-            _: Instant,
+            profile: &ProviderProfile,
+            deadline: Instant,
         ) -> Result<VersionFacts, ProviderPortError> {
-            Ok(VersionFacts {
-                running_version: Some("0.153.3".into()),
-                installed_version: Some("0.153.3".into()),
-                available_version: Some("0.153.5".into()),
-                ..VersionFacts::default()
-            })
+            if profile.provider == "claude" {
+                self.production.probe(profile, deadline)
+            } else {
+                Ok(VersionFacts {
+                    running_version: Some("0.153.3".into()),
+                    installed_version: Some("0.153.3".into()),
+                    available_version: Some("0.153.5".into()),
+                    ..VersionFacts::default()
+                })
+            }
         }
     }
 
@@ -148,6 +165,7 @@ mod tests {
         }
         fn persist_warnings(
             &self,
+            _: &[String],
             _: &[Value],
         ) -> Result<(), studio_runtime_services::provider_versions::ProviderVersionsError> {
             Ok(())
@@ -201,11 +219,24 @@ mod tests {
     #[tokio::test]
     async fn desktop_http_projects_only_live_connection_like_python() {
         let temporary = tempfile::tempdir().expect("isolated cache directory");
+        let claude_binary = temporary.path().join("claude-version-fixture");
+        std::fs::write(&claude_binary, "#!/bin/sh\nprintf '2.1.279\\n'\n")
+            .expect("Claude CLI test double written");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&claude_binary, std::fs::Permissions::from_mode(0o700))
+                .expect("Claude CLI test double made executable");
+        }
         let monitor = ProviderVersionMonitor::start(
             Arc::new(FixtureStore),
-            Some(Arc::new(LiveSessions)),
+            Some(Arc::new(LiveSessions {
+                claude_binary: claude_binary.to_string_lossy().into_owned(),
+            })),
             temporary.path().join("cache.json"),
-            Arc::new(Probe),
+            Arc::new(Probe {
+                production: SystemVersionProbe,
+            }),
             Arc::new(Fetch),
             Arc::new(FixtureClock),
         )
@@ -269,11 +300,25 @@ mod tests {
             actual["providerVersions"]["providers"]
                 .as_array()
                 .map(Vec::len),
-            Some(1)
+            Some(2)
         );
         assert_eq!(
             actual["providerVersions"]["providers"][0]["accountKey"],
             "connected"
+        );
+        assert_eq!(
+            actual["providerVersions"]["providers"][1]["accountKey"],
+            "claude-connected"
+        );
+        assert_eq!(
+            actual["providerVersions"]["providers"][1]["runningVersion"],
+            Value::Null,
+            "Claude executable version must not be presented as the running session version"
+        );
+        assert_eq!(
+            actual["providerVersions"]["providers"][1]["message"],
+            "The exact version already running in Claude sessions is unknown.",
+            "the Claude projection uses the production probe's running-session note"
         );
         monitor.shutdown();
     }

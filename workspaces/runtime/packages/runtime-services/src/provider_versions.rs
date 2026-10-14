@@ -10,6 +10,8 @@
 //! then rechecks `(account key, server identity, connection id)` at `:245-248`.
 //! The startup integrator leaves this port absent until account-worker/session
 //! wiring exists; registry rows alone are intentionally not version profiles.
+//! The future session-snapshot supplier should call `ProviderVersionMonitor::wake`
+//! when it changes its live connection set.
 
 use std::cmp::Ordering;
 use std::fs;
@@ -198,7 +200,11 @@ pub trait Clock: Send + Sync + 'static {
 /// Durable preferences and native-notice writes used by the monitor.
 pub trait ProviderVersionStore: Send + Sync + 'static {
     fn upstream_enabled(&self) -> bool;
-    fn persist_warnings(&self, warnings: &[Value]) -> Result<(), ProviderVersionsError>;
+    fn persist_warnings(
+        &self,
+        observed_accounts: &[String],
+        warnings: &[Value],
+    ) -> Result<(), ProviderVersionsError>;
 }
 
 struct SyncProviderVersionStore(Arc<RuntimeStore>);
@@ -213,8 +219,11 @@ impl ProviderVersionStore for SyncProviderVersionStore {
         let Ok(connection) = self.0.read() else {
             return false;
         };
-        let Ok(Some(payload)) = SyncDocumentsRepository::preference_payload(&connection, "user")
-        else {
+        let payload = match SyncDocumentsRepository::preference_payload(&connection, "user") {
+            Ok(payload) => payload,
+            Err(_) => return false,
+        };
+        let Some(payload) = payload else {
             return true;
         };
         let Ok(value) = serde_json::from_str::<Value>(&payload) else {
@@ -228,7 +237,11 @@ impl ProviderVersionStore for SyncProviderVersionStore {
             .unwrap_or(true)
     }
 
-    fn persist_warnings(&self, warnings: &[Value]) -> Result<(), ProviderVersionsError> {
+    fn persist_warnings(
+        &self,
+        observed_accounts: &[String],
+        warnings: &[Value],
+    ) -> Result<(), ProviderVersionsError> {
         self.0.transaction(|transaction| {
             let raw: Option<String> = transaction
                 .query_row(
@@ -249,12 +262,17 @@ impl ProviderVersionStore for SyncProviderVersionStore {
                 Some(Value::Array(rows)) => rows.clone(),
                 _ => return Err(StoreError::InvalidSyncObject { scope: "workspace".into(), id: "current".into() }),
             };
+            let observed_accounts = observed_accounts.iter().map(String::as_str).collect::<std::collections::BTreeSet<_>>();
+            let is_observed_warning = |notice: &Value| {
+                notice.get("id").and_then(Value::as_str).is_some_and(is_provider_warning_id)
+                    && notice.get("accountKey").and_then(Value::as_str).is_some_and(|account| observed_accounts.contains(account))
+            };
             let previous = notices
                 .iter()
-                .filter(|notice| notice.get("id").and_then(Value::as_str).is_some_and(is_provider_warning_id))
+                .filter(|notice| is_observed_warning(notice))
                 .cloned()
                 .collect::<Vec<_>>();
-            notices.retain(|notice| !notice.get("id").and_then(Value::as_str).is_some_and(is_provider_warning_id));
+            notices.retain(|notice| !is_observed_warning(notice));
             for warning in warnings {
                 let id = warning.get("id").and_then(Value::as_str).ok_or(StoreError::InvalidSyncObject { scope: "workspace".into(), id: "current".into() })?;
                 if !is_provider_warning_id(id) {
@@ -355,12 +373,15 @@ impl VersionProbe for SystemVersionProbe {
             return Err(ProviderPortError);
         }
         Ok(VersionFacts {
-            running_version: Some(version.clone()),
+            // Claude's CLI executable is not the live session version. Python
+            // deliberately reports that session value as unknown.
+            running_version: (profile.provider != "claude").then(|| version.clone()),
             installed_version: Some(version),
             configured_version: None,
             available_version: None,
             error: None,
-            running_note: None,
+            running_note: (profile.provider == "claude")
+                .then(|| "The exact version already running in Claude sessions is unknown.".into()),
         })
     }
 }
@@ -479,6 +500,7 @@ struct MonitorState {
     checked_at: Option<f64>,
     upstream: std::collections::BTreeMap<String, CacheEntry>,
     upstream_enabled: bool,
+    check_requested: bool,
     stop: bool,
 }
 
@@ -528,6 +550,7 @@ impl ProviderVersionMonitor {
                 checked_at: None,
                 upstream: cache,
                 upstream_enabled: true,
+                check_requested: false,
                 stop: false,
             }),
             wake: Condvar::new(),
@@ -552,7 +575,7 @@ impl ProviderVersionMonitor {
             .connections
             .as_ref()
             .map_or_else(Vec::new, |port| port.snapshot());
-        let Ok(state) = self.state.lock() else {
+        let Ok(mut state) = self.state.lock() else {
             return json!({"checkedAt":null,"providers":[],"warnings":[]});
         };
         let active_identity = active
@@ -563,17 +586,24 @@ impl ProviderVersionMonitor {
         let providers = if current {
             state.providers.clone()
         } else {
+            state.check_requested = true;
             self.wake.notify_one();
             active
                 .iter()
                 .map(|profile| checking_row(profile, self.clock.now()))
                 .collect()
         };
-        let warnings = providers
-            .iter()
-            .flat_map(|row| warning_projection(row, state.upstream_enabled))
-            .collect::<Vec<_>>();
+        let warnings = warnings_projection(&providers, state.upstream_enabled);
         json!({"checkedAt":if current { state.checked_at } else { None },"providers":providers,"warnings":warnings})
+    }
+
+    /// Requests an immediate pass after the active-session source changes.
+    /// The integrator's session registry should call this when it updates its snapshot.
+    pub fn wake(&self) {
+        if let Ok(mut state) = self.state.lock() {
+            state.check_requested = true;
+            self.wake.notify_one();
+        }
     }
 
     /// Stops the sole worker at its next bounded port boundary.
@@ -618,6 +648,10 @@ impl ProviderVersionMonitor {
             if !self.connection_is_current(&profiles) {
                 return;
             }
+            if !matches!(profile.provider.as_str(), "codex" | "claude") {
+                providers.push(unknown_row(profile, now));
+                continue;
+            }
             let facts = self
                 .probe
                 .probe(profile, Instant::now() + PROBE_DEADLINE)
@@ -625,10 +659,6 @@ impl ProviderVersionMonitor {
                     error: Some("Could not check the provider CLI version.".into()),
                     ..VersionFacts::default()
                 });
-            if !matches!(profile.provider.as_str(), "codex" | "claude") {
-                providers.push(unknown_row(profile, now));
-                continue;
-            }
             providers.push(diagnostic(
                 profile,
                 facts,
@@ -639,10 +669,7 @@ impl ProviderVersionMonitor {
         if !self.connection_is_current(&profiles) {
             return;
         }
-        let warnings = providers
-            .iter()
-            .flat_map(|row| warning_projection(row, upstream_enabled))
-            .collect::<Vec<_>>();
+        let warnings = warnings_projection(&providers, upstream_enabled);
         if profiles.is_empty() && warnings.is_empty() {
             if let Ok(mut state) = self.state.lock() {
                 state.providers.clear();
@@ -653,7 +680,11 @@ impl ProviderVersionMonitor {
             }
             return;
         }
-        if self.persist_warnings(&warnings).is_ok()
+        let observed_accounts = profiles
+            .iter()
+            .map(|profile| profile.account_key.clone())
+            .collect::<Vec<_>>();
+        if self.persist_warnings(&observed_accounts, &warnings).is_ok()
             && let Ok(mut state) = self.state.lock()
         {
             state.providers = providers;
@@ -737,8 +768,12 @@ impl ProviderVersionMonitor {
             .collect()
     }
 
-    fn persist_warnings(&self, warnings: &[Value]) -> Result<(), ProviderVersionsError> {
-        self.store.persist_warnings(warnings)
+    fn persist_warnings(
+        &self,
+        observed_accounts: &[String],
+        warnings: &[Value],
+    ) -> Result<(), ProviderVersionsError> {
+        self.store.persist_warnings(observed_accounts, warnings)
     }
 }
 
@@ -785,17 +820,18 @@ fn monitor_loop(monitor: Weak<ProviderVersionMonitor>) {
         let Ok(state) = service.state.lock() else {
             return;
         };
-        let (state, _) = service
+        let (mut state, _) = service
             .wake
             .wait_timeout_while(
                 state,
                 Duration::from_secs(CHECK_INTERVAL_SECONDS),
-                |state| !state.stop,
+                |state| !state.stop && !state.check_requested,
             )
             .unwrap_or_else(PoisonError::into_inner);
         if state.stop {
             return;
         }
+        state.check_requested = false;
     }
 }
 
@@ -993,6 +1029,27 @@ fn warning_projection(provider: &Value, upstream_enabled: bool) -> Vec<Value> {
     }
     warnings.extend(update_warnings(provider, upstream_enabled));
     warnings
+}
+
+fn warnings_projection(providers: &[Value], upstream_enabled: bool) -> Vec<Value> {
+    let mut version_warnings = Vec::new();
+    let mut update_warnings = Vec::new();
+    for warning in providers
+        .iter()
+        .flat_map(|provider| warning_projection(provider, upstream_enabled))
+    {
+        if warning
+            .get("id")
+            .and_then(Value::as_str)
+            .is_some_and(|id| id.starts_with("provider-version:"))
+        {
+            version_warnings.push(warning);
+        } else {
+            update_warnings.push(warning);
+        }
+    }
+    version_warnings.extend(update_warnings);
+    version_warnings
 }
 
 fn read_cache(

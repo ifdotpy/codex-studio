@@ -19,11 +19,17 @@ runtime = SimpleNamespace(
     offline_accounts={"offline"},
     servers={
         "connected": SimpleNamespace(provider="codex"),
+        "claude-connected": SimpleNamespace(provider="claude"),
         "offline": SimpleNamespace(provider="codex"),
     },
-    connection_ids={"connected": "connection-9", "offline": "connection-10"},
+    connection_ids={
+        "connected": "connection-9",
+        "claude-connected": "connection-11",
+        "offline": "connection-10",
+    },
     accounts={
         "connected": {"provider": "codex"},
+        "claude-connected": {"provider": "claude"},
         "offline": {"provider": "codex"},
         "registry-only": {"provider": "codex"},
     },
@@ -34,17 +40,21 @@ with runtime.lock:
         for key, server in runtime.servers.items()
         if key not in runtime.offline_accounts
     ]
+facts = {
+    "connected": {
+        "runningVersion": "0.153.3",
+        "installedVersion": "0.153.3",
+        "availableVersion": "0.153.5",
+        "upstreamVersion": "0.154.0",
+    },
+    "claude-connected": {
+        "runningVersion": None,
+        "installedVersion": "2.1.279",
+        "runningNote": "The exact version already running in Claude sessions is unknown.",
+    },
+}
 providers = [
-    versions._diagnostic(
-        key,
-        server.provider,
-        {
-            "runningVersion": "0.153.3",
-            "installedVersion": "0.153.3",
-            "availableVersion": "0.153.5",
-            "upstreamVersion": "0.154.0",
-        },
-    )
+    versions._diagnostic(key, server.provider, facts[key])
     for key, server, _connection_id in connected
 ]
 warnings = [

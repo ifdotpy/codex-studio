@@ -2,6 +2,11 @@ use super::*;
 use std::{
     io::{BufRead, BufReader, Write},
     process::{Child, ChildStdin, ChildStdout, Command, Stdio},
+    sync::{
+        Mutex,
+        atomic::{AtomicUsize, Ordering as AtomicOrdering},
+        mpsc,
+    },
 };
 use studio_runtime_store::RuntimeStore;
 
@@ -15,6 +20,79 @@ struct PythonFixture {
     child: Child,
     input: ChildStdin,
     output: BufReader<ChildStdout>,
+}
+
+fn isolated_tempdir() -> tempfile::TempDir {
+    tempfile::Builder::new()
+        .prefix("provider-versions-")
+        .tempdir_in("/dev/shm")
+        .expect("tmpfs test directory")
+}
+
+#[derive(Default)]
+struct MutableConnections(Mutex<Vec<ProviderProfile>>);
+
+impl ActiveProviderConnections for MutableConnections {
+    fn snapshot(&self) -> Vec<ProviderProfile> {
+        self.0.lock().expect("connection fixture lock").clone()
+    }
+}
+
+struct DisabledStore;
+
+impl ProviderVersionStore for DisabledStore {
+    fn upstream_enabled(&self) -> bool {
+        false
+    }
+
+    fn persist_warnings(&self, _: &[String], _: &[Value]) -> Result<(), ProviderVersionsError> {
+        Ok(())
+    }
+}
+
+struct FixedClock;
+
+impl Clock for FixedClock {
+    fn now(&self) -> f64 {
+        200_000.0
+    }
+}
+
+struct CountingProbe {
+    calls: AtomicUsize,
+    observed: Option<mpsc::Sender<String>>,
+}
+
+impl VersionProbe for CountingProbe {
+    fn probe(
+        &self,
+        profile: &ProviderProfile,
+        _: Instant,
+    ) -> Result<VersionFacts, ProviderPortError> {
+        self.calls.fetch_add(1, AtomicOrdering::SeqCst);
+        if let Some(sender) = &self.observed {
+            let _ignored = sender.send(profile.connection_id.clone().unwrap_or_default());
+        }
+        Ok(VersionFacts {
+            running_version: Some("0.153.4".into()),
+            installed_version: Some("0.153.4".into()),
+            ..VersionFacts::default()
+        })
+    }
+}
+
+struct CountingFetch(AtomicUsize);
+
+impl UpstreamFetch for CountingFetch {
+    fn fetch(
+        &self,
+        _: &str,
+        _: Option<&str>,
+        _: Instant,
+    ) -> Result<UpstreamReply, ProviderPortError> {
+        self.0.fetch_add(1, AtomicOrdering::SeqCst);
+        Err(ProviderPortError)
+    }
 }
 
 impl PythonFixture {
@@ -170,7 +248,7 @@ fn active_connection_signature_tracks_server_and_connection_identity() {
 
 #[test]
 fn provider_update_notice_durable_failure_restart_and_replay_matrix() {
-    let temp = tempfile::tempdir().expect("isolated notice fixture");
+    let temp = isolated_tempdir();
     let mut oracle = PythonFixture::new(temp.path());
     let cases: Vec<Value> = serde_json::from_str(NOTICE_CASES).expect("notice seed corpus");
     let rust_state = temp.path().join("rust-state");
@@ -254,7 +332,12 @@ fn provider_update_notice_durable_failure_restart_and_replay_matrix() {
     let initial = read_notice_state();
     warn_write("CREATE TRIGGER provider_notice_before_insert BEFORE INSERT ON sync_entities WHEN NEW.collection='workspace' AND NEW.id='current' BEGIN SELECT RAISE(ABORT,'before durable notice write'); END; CREATE TRIGGER provider_notice_before_update BEFORE UPDATE ON sync_entities WHEN NEW.collection='workspace' AND NEW.id='current' BEGIN SELECT RAISE(ABORT,'before durable notice write'); END;")
         .expect("before-write trigger installed");
-    assert!(adapter.persist_warnings(&warnings).is_err());
+    let connected_accounts = vec!["connected".to_owned()];
+    assert!(
+        adapter
+            .persist_warnings(&connected_accounts, &warnings)
+            .is_err()
+    );
     store.transaction(|transaction| transaction.execute_batch("DROP TRIGGER provider_notice_before_insert; DROP TRIGGER provider_notice_before_update;").map_err(Into::into))
         .expect("before-write trigger removed");
     assert_eq!(
@@ -265,7 +348,11 @@ fn provider_update_notice_durable_failure_restart_and_replay_matrix() {
 
     warn_write("CREATE TRIGGER provider_notice_after_insert AFTER INSERT ON sync_entities WHEN NEW.collection='workspace' AND NEW.id='current' BEGIN SELECT RAISE(ABORT,'after durable notice write'); END; CREATE TRIGGER provider_notice_after_update AFTER UPDATE ON sync_entities WHEN NEW.collection='workspace' AND NEW.id='current' BEGIN SELECT RAISE(ABORT,'after durable notice write'); END;")
         .expect("after-write trigger installed");
-    assert!(adapter.persist_warnings(&warnings).is_err());
+    assert!(
+        adapter
+            .persist_warnings(&connected_accounts, &warnings)
+            .is_err()
+    );
     store.transaction(|transaction| transaction.execute_batch("DROP TRIGGER provider_notice_after_insert; DROP TRIGGER provider_notice_after_update;").map_err(Into::into))
         .expect("after-write trigger removed");
     assert_eq!(
@@ -274,30 +361,58 @@ fn provider_update_notice_durable_failure_restart_and_replay_matrix() {
         "transaction rolls back after write failure"
     );
 
-    adapter.persist_warnings(&warnings).expect("notice commits");
+    let disconnected_warning = json!({
+        "id":"provider-version:disconnected",
+        "accountKey":"disconnected",
+        "provider":"codex",
+        "version":"0.153.2",
+        "baseline":"0.153.4",
+        "message":"Disconnected account warning remains until that connection is observed again.",
+        "at":100_000.0
+    });
+    adapter
+        .persist_warnings(
+            &["disconnected".into()],
+            std::slice::from_ref(&disconnected_warning),
+        )
+        .expect("disconnected account warning seeded");
+    adapter
+        .persist_warnings(&connected_accounts, &warnings)
+        .expect("connected notices commit");
     let written = read_notice_state().expect("workspace entity created");
     let written_payload: Value = serde_json::from_str(&written.1).expect("sync entity JSON");
     assert_eq!(
         written_payload["value"]["nativeNotices"]
             .as_array()
             .map(Vec::len),
-        Some(3)
+        Some(4)
     );
     assert_eq!(
-        written_payload["value"]["nativeNotices"],
-        expected["warnings"]
+        written_payload["value"]["nativeNotices"][0], disconnected_warning,
+        "a pass for a connected account retains the disconnected account's warning"
     );
     assert_eq!(
-        written_payload["value"]["nativeNotices"][0],
+        written_payload["value"]["nativeNotices"][1],
         baseline_warning
     );
-    assert_eq!(written_payload["value"]["nativeNotices"][1], first);
+    assert_eq!(written_payload["value"]["nativeNotices"][2], first);
     assert_eq!(
-        written_payload["value"]["nativeNotices"][2],
+        written_payload["value"]["nativeNotices"][3],
         upstream_warning
     );
+    let written_notices = written_payload["value"]["nativeNotices"]
+        .as_array()
+        .expect("notice array");
+    let oracle_warnings = expected["warnings"]
+        .as_array()
+        .expect("oracle warnings")
+        .iter()
+        .filter(|warning| warning["accountKey"] == "connected")
+        .cloned()
+        .collect::<Vec<_>>();
+    assert_eq!(&written_notices[1..], oracle_warnings.as_slice());
     adapter
-        .persist_warnings(&warnings)
+        .persist_warnings(&connected_accounts, &warnings)
         .expect("same version replay");
     assert_eq!(
         read_notice_state(),
@@ -317,7 +432,7 @@ fn provider_update_notice_durable_failure_restart_and_replay_matrix() {
         json!({"id":"provider-update:connected:upstream","accountKey":"connected","provider":"codex","version":"0.154.0","baseline":"0.153.4","message":"reworded upstream warning","at":300_000.0,"level":"info"}),
     ];
     restarted_adapter
-        .persist_warnings(&replayed_warnings)
+        .persist_warnings(&connected_accounts, &replayed_warnings)
         .expect("restart replay");
     assert_eq!(
         restarted.read().expect("read after restart").query_row(
@@ -329,11 +444,14 @@ fn provider_update_notice_durable_failure_restart_and_replay_matrix() {
     );
     let changed = json!({"id":"provider-update:connected","accountKey":"connected","provider":"codex","version":"0.155.0","baseline":"0.153.4","message":"release 0.155.0 available","at":400_000.0,"level":"info"});
     restarted_adapter
-        .persist_warnings(&[
-            replayed_warnings[0].clone(),
-            changed.clone(),
-            replayed_warnings[2].clone(),
-        ])
+        .persist_warnings(
+            &connected_accounts,
+            &[
+                replayed_warnings[0].clone(),
+                changed.clone(),
+                replayed_warnings[2].clone(),
+            ],
+        )
         .expect("changed content under same id");
     let changed_row: (i64, String) = restarted.read().expect("read changed state").query_row(
         "SELECT seq,payload FROM sync_entities WHERE collection='workspace' AND id='current' AND deleted=0", [],
@@ -343,11 +461,136 @@ fn provider_update_notice_durable_failure_restart_and_replay_matrix() {
     let changed_payload: Value = serde_json::from_str(&changed_row.1).expect("changed entity JSON");
     assert_eq!(
         changed_payload["value"]["nativeNotices"][0],
+        disconnected_warning
+    );
+    assert_eq!(
+        changed_payload["value"]["nativeNotices"][1],
         baseline_warning
     );
-    assert_eq!(changed_payload["value"]["nativeNotices"][1], changed);
+    assert_eq!(changed_payload["value"]["nativeNotices"][2], changed);
     assert_eq!(
-        changed_payload["value"]["nativeNotices"][2],
+        changed_payload["value"]["nativeNotices"][3],
         upstream_warning
     );
+}
+
+fn profile(account: &str, provider: &str, connection: &str) -> ProviderProfile {
+    ProviderProfile {
+        account_key: account.into(),
+        provider: provider.into(),
+        configured_binary: None,
+        server_identity: format!("server-{account}"),
+        connection_id: Some(connection.into()),
+    }
+}
+
+#[test]
+fn preference_read_error_fails_closed_without_an_upstream_request() {
+    let temporary = isolated_tempdir();
+    let root = temporary.path().join("state");
+    let mut oracle = PythonFixture::new(temporary.path());
+    let cases: Vec<Value> = serde_json::from_str(NOTICE_CASES).expect("notice seed corpus");
+    oracle.call(json!({
+        "command":"case",
+        "module":"notification_dispatch",
+        "root":temporary.path().join("python-state"),
+        "rust":root,
+        "case":cases[0]
+    }));
+    std::fs::create_dir_all(&root).expect("isolated state directory exists");
+    let runtime = Arc::new(RuntimeStore::open(Some(&root)).expect("isolated store opens"));
+    runtime
+        .transaction(|transaction| {
+            transaction.execute_batch("DROP TABLE sync_entities")?;
+            Ok(())
+        })
+        .expect("preference source made unreadable");
+    let store = runtime_provider_version_store(runtime);
+    assert!(
+        !store.upstream_enabled(),
+        "preference storage error disables upstream"
+    );
+
+    let fetch = Arc::new(CountingFetch(AtomicUsize::new(0)));
+    let monitor = ProviderVersionMonitor::start(
+        store,
+        None,
+        temporary.path().join("cache.json"),
+        Arc::new(CountingProbe {
+            calls: AtomicUsize::new(0),
+            observed: None,
+        }),
+        fetch.clone(),
+        Arc::new(FixedClock),
+    )
+    .expect("monitor starts despite unreadable preferences");
+    assert!(monitor.wait_until_checked(Duration::from_secs(3)));
+    assert_eq!(fetch.0.load(AtomicOrdering::SeqCst), 0);
+    monitor.shutdown();
+}
+
+#[test]
+fn unsupported_provider_is_projected_without_launching_a_probe() {
+    let temporary = isolated_tempdir();
+    let connections = Arc::new(MutableConnections(Mutex::new(vec![profile(
+        "other",
+        "unsupported",
+        "connection-1",
+    )])));
+    let probe = Arc::new(CountingProbe {
+        calls: AtomicUsize::new(0),
+        observed: None,
+    });
+    let monitor = ProviderVersionMonitor::start(
+        Arc::new(DisabledStore),
+        Some(connections),
+        temporary.path().join("cache.json"),
+        probe.clone(),
+        Arc::new(CountingFetch(AtomicUsize::new(0))),
+        Arc::new(FixedClock),
+    )
+    .expect("monitor starts");
+    assert!(monitor.wait_until_checked(Duration::from_secs(3)));
+    assert_eq!(probe.calls.load(AtomicOrdering::SeqCst), 0);
+    assert_eq!(monitor.status()["providers"][0]["status"], "unknown");
+    monitor.shutdown();
+}
+
+#[test]
+fn connection_change_wake_starts_a_new_probe_without_waiting_for_interval() {
+    let temporary = isolated_tempdir();
+    let connections = Arc::new(MutableConnections(Mutex::new(vec![profile(
+        "connected",
+        "codex",
+        "connection-1",
+    )])));
+    let (sender, receiver) = mpsc::channel();
+    let monitor = ProviderVersionMonitor::start(
+        Arc::new(DisabledStore),
+        Some(connections.clone()),
+        temporary.path().join("cache.json"),
+        Arc::new(CountingProbe {
+            calls: AtomicUsize::new(0),
+            observed: Some(sender),
+        }),
+        Arc::new(CountingFetch(AtomicUsize::new(0))),
+        Arc::new(FixedClock),
+    )
+    .expect("monitor starts");
+    assert_eq!(
+        receiver
+            .recv_timeout(Duration::from_secs(3))
+            .expect("initial probe"),
+        "connection-1"
+    );
+    connections.0.lock().expect("connection fixture lock")[0] =
+        profile("connected", "codex", "connection-2");
+    monitor.wake();
+    assert_eq!(
+        receiver
+            .recv_timeout(Duration::from_secs(3))
+            .expect("wake-triggered probe"),
+        "connection-2"
+    );
+    monitor.shutdown();
 }
