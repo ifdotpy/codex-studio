@@ -333,6 +333,14 @@ record_newtype!(
     query = None
 );
 record_newtype!(
+    ExecutionRunRecord,
+    String,
+    table = "runtime_execution_runs",
+    schema = "PersistedExecutionRunRecord",
+    key = PayloadId,
+    query = None
+);
+record_newtype!(
     WorkspaceOperationRecord,
     String,
     table = "runtime_workspace_operations",

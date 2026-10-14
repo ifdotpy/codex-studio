@@ -471,19 +471,9 @@
       "$ref": "#/$defs/JsonValue"
     },
     "events": {
-      "anyOf": [
-        {
-          "items": {
-            "type": "string"
-          },
-          "maxItems": 32,
-          "type": "array"
-        },
-        {
-          "type": "null"
-        }
-      ],
-      "title": "Events"
+      "minimum": 0,
+      "title": "Events",
+      "type": "integer"
     },
     "executionOutcome": {
       "anyOf": [

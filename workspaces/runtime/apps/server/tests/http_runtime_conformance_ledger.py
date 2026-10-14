@@ -35,13 +35,6 @@ DEFAULT_LEDGER = DEFAULT_CACHE / "codex-studio" / "rust-runtime-http-conformance
 # service. Each exclusion is tied to that operation so it becomes stale when
 # the corresponding dependency is implemented.
 MISSING_SERVICE_TESTS: dict[str, dict[str, dict[str, str]]] = {
-    "workspaces/runtime/apps/server/tests/http-boundary-contract.py": {
-        "__main__.BoundaryContractTests.test_codex_provider_turn_uses_replay_executable": {"operation": "GET /api/transcript", "service": "transcript/event-driver", "reason": "The transcript request requires transcript/event-driver."},
-        "__main__.RestartContractTests.test_restart_serves_sync_receipt_and_provider_facts": {"operation": "GET /api/transcript", "service": "transcript/event-driver", "reason": "The transcript request requires transcript/event-driver."},
-    },
-    "workspaces/runtime/apps/server/tests/protocol-fixtures-contract.py": {
-        "__main__.ProtocolFixturesContract.test_supervisor_and_provider_fixtures_match_http_observations": {"operation": "GET /api/transcript", "service": "transcript/event-driver", "reason": "The transcript request requires transcript/event-driver."},
-    },
 }
 
 # These tests need provider turn execution, but no current route declares that
@@ -56,6 +49,13 @@ UNDECLARED_PROVIDER_TURN_TESTS: dict[str, dict[str, str]] = {
     },
     "workspaces/runtime/apps/server/tests/tool-request-http-contract.py": {
         "__main__.ToolRequestHTTPContract.test_provider_tool_request_is_recoverable_and_scoped_by_actor": "Recovering the tool request requires a provider turn; no operation declares this dependency yet.",
+    },
+    "workspaces/runtime/apps/server/tests/http-boundary-contract.py": {
+        "__main__.BoundaryContractTests.test_codex_provider_turn_uses_replay_executable": "The Rust HTTP contract fixture starts no persistent supervisor; provider-session/supervisor-transport is required to start a turn.",
+        "__main__.RestartContractTests.test_restart_serves_sync_receipt_and_provider_facts": "The Rust HTTP contract fixture starts no persistent supervisor; provider-session/supervisor-transport is required before the restart scenario can reach a turn.",
+    },
+    "workspaces/runtime/apps/server/tests/protocol-fixtures-contract.py": {
+        "__main__.ProtocolFixturesContract.test_supervisor_and_provider_fixtures_match_http_observations": "The supervisor-enabled fixture still times out before provider output reaches the transcript; the cause is not yet known and remains an open provider-session finding.",
     },
     "workspaces/runtime/apps/server/tests/yolo-contract.py": {
         "__main__.YoloHTTPContract.test_turns_after_yolo_is_disabled_use_restricted_provider_permissions": "The test executes provider turns; no operation declares this dependency yet.",
@@ -107,16 +107,13 @@ def validate_missing_service_exclusions(
 # override query/header values and top-level body fields. A value prefixed with
 # "$" names an identifier returned by seed_python_probe_state.
 PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
-    ("GET", "/api/costs"): {
-        "primary": {"query": {"account_key": "default"}, "expected": "2xx", "assert_no_write": True},
-    },
     ("POST", "/api/agents/account"): {
         "primary": {"body": {"id": "$agent", "account_key": "default"}, "replace_body": True,
                     "expected": "2xx", "assert_no_write": True},
     },
     ("POST", "/api/agents/account-transfer"): {
         "primary": {"body": {"id": "$agent", "account_key": "default", "scope": "team",
-                             "request_id": "88888888-8888-4888-8888-888888888889"}, "replace_body": True,
+                             "request_id": "60606060-6060-4060-8060-606060606060"}, "replace_body": True,
                     "expected": "501", "expected_error": "Not implemented: requires account-transfer/provider-history-executor",
                     "assert_no_write": True},
     },
@@ -360,6 +357,9 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
     },
     ("GET", "/api/work"): {
         "primary": {"query": {"agent": "$agent"}},
+    },
+    ("GET", "/api/costs"): {
+        "primary": {"query": {"account_key": "default"}, "expected": "2xx", "assert_no_write": True},
     },
     ("GET", "/api/desktop"): {
         "primary": {"query": {"account_key": "default"}},

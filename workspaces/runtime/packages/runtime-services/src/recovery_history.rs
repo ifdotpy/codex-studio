@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 pub const READ_DEADLINE: Duration = Duration::from_secs(20);
 const MAX_PAGES: usize = 128;
 const MAX_ITEMS: usize = 4096;
-const MAX_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
+pub(crate) const MAX_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ConnectionScope {

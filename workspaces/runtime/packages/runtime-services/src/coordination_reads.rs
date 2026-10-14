@@ -22,10 +22,8 @@ pub fn delivery_receipts(
             "Supply at most 100 message IDs of 1 to 200 characters",
         ));
     }
-    crate::event_write::checked_agent(connection, agent).map_err(|error| match error {
-        crate::event_write::EventWriteError::Store(error) => CoordinationError::Store(error),
-        _ => CoordinationError::InvalidRequest("Unknown or deleted managed agent"),
-    })?;
+    crate::event_write::checked_agent(connection, agent)
+        .map_err(crate::coordination::event_write_error)?;
     let mut statement = connection.prepare(
         "SELECT e.id,e.status,e.error,m.record,i.id,i.record FROM runtime_events e
         LEFT JOIN runtime_event_meta m ON m.id=e.id

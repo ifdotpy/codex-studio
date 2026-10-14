@@ -27,7 +27,18 @@ pub(crate) fn accept_thread(
         return Ok(None);
     }
     let record = agent(tx, &context.intent.agent_id)?.value();
-    let current = thread_snapshot(tx, resources, &record, &ticket.generation.to_string(), root)?;
+    let progress_directory = match &attempt.snapshot.workspace {
+        thread::WorkspaceReadiness::Ready { progress_directory } => progress_directory.clone(),
+        _ => None,
+    };
+    let current = thread_snapshot(
+        tx,
+        resources,
+        &record,
+        &ticket.generation.to_string(),
+        root,
+        progress_directory,
+    )?;
     let receipt = thread::ProviderReceipt {
         identity: thread::ReceiptIdentity {
             operation_id: format!(
@@ -61,7 +72,8 @@ pub(crate) fn accept_thread(
             json!(true),
         )?;
         let recovered = record.get("startAttempt").is_none_or(Value::is_null)
-            && record["startOutcomeHold"]["reason"] == "thread-preparation/receipt-pending";
+            && record["startOutcomeHold"]["reason"] == "thread-preparation/receipt-pending"
+            && record["startOutcomeHold"]["operationId"] == context.operation;
         if recovered {
             record["autoWake"] = json!(true);
             record["inFlight"] = json!(false);

@@ -68,6 +68,7 @@ async fn panic_after_take_after_mutation_and_with_outstanding_receipt_retains_ev
             let _ignored = gone.send(());
             TaskExit {
                 result: Ok(()),
+                cleanup_error: None,
                 recovery_needed: None,
             }
         });
@@ -179,6 +180,7 @@ async fn closure_panic_unknown_batch_does_not_return_unknown_twice() {
         Shutdown::cancelled(&mut stopped).await;
         TaskExit {
             result: Ok(()),
+            cleanup_error: None,
             recovery_needed: None,
         }
     });

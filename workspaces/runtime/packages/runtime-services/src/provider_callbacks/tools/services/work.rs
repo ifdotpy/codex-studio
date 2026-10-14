@@ -108,7 +108,6 @@ pub(super) fn execute(
     };
     let command = match action {
         "create" => WorkWrite::Create(CreateWork {
-            actor_id: who.clone(),
             title: text(args, "title")?.into(),
             description: optional("description")?.unwrap_or_default(),
             owner: optional("owner")?,

@@ -1,6 +1,7 @@
 //! Transactional provider notifications with replay-safe receipts and checked stored state.
 
 use chrono::{DateTime, SecondsFormat, Utc};
+use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use studio_runtime_providers::Frame;
@@ -21,7 +22,11 @@ pub(crate) mod notices;
 mod questions;
 #[path = "notification_dispatch/snapshot.rs"]
 mod snapshot;
-pub use effects::{NotificationDependency, NotificationEffects, UnavailableNotificationEffects};
+pub use effects::{
+    NotificationDependency, NotificationEffects, NotificationHourMetrics, NotificationObservation,
+    NotificationPostCommit, NotificationPublicationBatch, NotificationStreamMetrics,
+    UnavailableNotificationEffects,
+};
 
 #[path = "notification_dispatch/stream.rs"]
 mod stream;
@@ -45,7 +50,20 @@ pub enum DispatchOutcome {
     Unhandled { kind: String, reason: String },
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+/// Immutable server identity, resolved before entering a writer transaction.
+#[derive(Clone, Default)]
+pub struct PublicationContext {
+    server_id: Option<String>,
+}
+impl PublicationContext {
+    pub fn load(root: &std::path::Path) -> Result<Self, NotificationDispatchError> {
+        Ok(Self {
+            server_id: crate::sync_entity_context::local_server_id(&root.to_string_lossy())?,
+        })
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct ProviderDeliveryIdentity {
     pub provider_handle: String,
     pub generation: u64,
@@ -89,6 +107,10 @@ pub enum NotificationDispatchError {
     Dependency(&'static str),
     #[error(transparent)]
     Store(StoreError),
+    #[error(transparent)]
+    Budget(#[from] crate::budget::BudgetError),
+    #[error(transparent)]
+    Move(#[from] crate::agent_move::MoveError),
     #[error("JSON serialization failed")]
     Json(#[from] serde_json::Error),
 }
@@ -188,6 +210,9 @@ pub fn record_user_submission(
 pub struct NotificationDispatchResult {
     pub outcome: DispatchOutcome,
     pub stream_update: Option<NotificationStreamBuffer>,
+    /// Execute only after the caller commits. Discard on rollback/commit failure.
+    /// Replay returns an empty list, including after a lost acknowledgement.
+    pub post_commit: NotificationPublicationBatch,
 }
 
 /// The caller owns the transaction and the connection's stream buffer. Commit
@@ -198,7 +223,7 @@ pub struct NotificationDispatchResult {
 pub fn dispatch_notification(
     transaction: &Transaction<'_>,
     agent_id: &str,
-    state_dir: &str,
+    publication: &PublicationContext,
     streams: &NotificationStreamBuffer,
     identity: &ProviderDeliveryIdentity,
     notification: &Frame,
@@ -207,7 +232,7 @@ pub fn dispatch_notification(
     dispatch_notification_with_effects(
         transaction,
         agent_id,
-        state_dir,
+        publication,
         streams,
         identity,
         notification,
@@ -222,7 +247,7 @@ pub fn dispatch_notification(
 pub fn dispatch_notification_with_effects(
     transaction: &Transaction<'_>,
     agent_id: &str,
-    state_dir: &str,
+    publication: &PublicationContext,
     streams: &NotificationStreamBuffer,
     identity: &ProviderDeliveryIdentity,
     notification: &Frame,
@@ -230,154 +255,279 @@ pub fn dispatch_notification_with_effects(
     effects: &dyn NotificationEffects,
 ) -> Result<NotificationDispatchResult, NotificationDispatchError> {
     let mut next_streams = streams.clone();
+    let (kind, params, payload) = notification_parts(notification)?;
+    let mut before = None;
+    let mut fresh = false;
+    let mut post_commit = NotificationPublicationBatch::default();
     let result = in_savepoint(transaction, || {
-        if !observed_at.is_finite()
-            || observed_at < 0.0
-            || identity.provider_handle.is_empty()
-            || identity.generation == 0
-            || identity.cursor == 0
-        {
-            return Err(NotificationDispatchError::InvalidNotification);
-        }
-        let (kind, params, payload) = notification_parts(notification)?;
-        let content_signature = sha256_json(&json!({"agent": agent_id, "notification": payload}))?;
-        let identity_signature = sha256_json(&json!({
-            "providerHandle": identity.provider_handle,
-            "generation": identity.generation,
-            "cursor": identity.cursor,
-        }))?;
-        let receipt_id = format!("{DELIVERY_RECEIPT_PREFIX}{identity_signature}");
-        if let Some(receipt) =
-            NotificationDispatchRepository::notification_receipt(transaction, &receipt_id)?
-        {
-            if receipt.signature != content_signature {
-                return Err(NotificationDispatchError::ConflictingDelivery);
+        let outcome = (|| {
+            if !observed_at.is_finite()
+                || observed_at < 0.0
+                || identity
+                    .provider_handle
+                    .strip_prefix("account:")
+                    .is_none_or(str::is_empty)
+                || identity.generation == 0
+                || identity.cursor == 0
+            {
+                return Err(NotificationDispatchError::InvalidNotification);
             }
-            return decode_outcome(&receipt.result, &receipt_id);
-        }
-
-        let mut agent = NotificationDispatchRepository::agent_record(transaction, agent_id)?
-            .ok_or_else(|| stored("runtime_agents", agent_id))?;
-        if agent.get("deletedAt").is_some_and(|value| !value.is_null()) {
-            return save_outcome(
-                transaction,
-                &receipt_id,
-                &content_signature,
-                DispatchOutcome::Ignored {
-                    reason: "deleted-agent".to_owned(),
-                },
-            );
-        }
-        validate_agent(&agent, agent_id, &identity.provider_handle, &kind, &params)?;
-        let unload = kind == "thread/closed"
-            || (kind == "thread/status/changed" && params["status"]["type"] == "notLoaded");
-        if (unload || matches!(kind.as_str(), "error" | "model/safetyBuffering/updated"))
-            && let Some(thread) = params["threadId"].as_str().filter(|v| !v.is_empty())
-        {
-            let before = agent.clone();
-            let turn = params["turnId"].as_str().filter(|v| !v.is_empty());
-            let keys = next_streams
-                .selected(None)
-                .into_iter()
-                .filter(|key| {
-                    key.thread == thread
-                        && (unload || turn.is_none_or(|turn| key.turn.as_deref() == Some(turn)))
-                })
-                .collect();
-            flush_keys(
-                transaction,
-                agent_id,
-                &mut agent,
-                &mut next_streams,
-                keys,
-                unload,
-                observed_at,
-            )?;
-            if agent != before {
-                persist_agent(transaction, agent_id, &agent, state_dir)?;
-            }
-        }
-        if kind == "item/commandExecution/outputDelta" {
-            let key = command_key(identity, &params)?;
-            let delta = params["delta"]
-                .as_str()
-                .ok_or(NotificationDispatchError::InvalidNotification)?;
-            let outcome = match next_streams.enqueue_delta(key, delta, &params) {
-                EnqueueResult::Buffered => DispatchOutcome::Written,
-                EnqueueResult::Closed => DispatchOutcome::Ignored {
-                    reason: "closed-stream".into(),
-                },
-                EnqueueResult::Full => return Err(NotificationDispatchError::StreamCapacity),
-                EnqueueResult::FlushRequired => {
-                    unreachable!("command output retains a bounded tail")
+            let content_signature =
+                sha256_json(&json!({"agent": agent_id, "notification": payload}))?;
+            let identity_signature = sha256_json(&json!({
+                "providerHandle": identity.provider_handle,
+                "generation": identity.generation,
+                "cursor": identity.cursor,
+            }))?;
+            let receipt_id = format!("{DELIVERY_RECEIPT_PREFIX}{identity_signature}");
+            if let Some(receipt) =
+                NotificationDispatchRepository::notification_receipt(transaction, &receipt_id)?
+            {
+                if receipt.signature != content_signature {
+                    return Err(NotificationDispatchError::ConflictingDelivery);
                 }
-            };
-            return save_outcome(transaction, &receipt_id, &content_signature, outcome);
-        }
-        if kind == "item/completed" && params["item"]["type"] != "agentMessage" {
-            let mut scoped = params.clone();
-            scoped["itemId"] = params["item"]["id"].clone();
-            let key = command_key(identity, &scoped)?;
-            flush_selected(
-                transaction,
-                agent_id,
-                &mut agent,
-                &mut next_streams,
-                Some(&key),
-                observed_at,
-            )?;
-        }
-        if kind == "item/started" && params["item"]["type"] == "commandExecution" {
-            let mut scoped = params.clone();
-            scoped["itemId"] = params["item"]["id"].clone();
-            let key = command_key(identity, &scoped)?;
-            kinds::preserve_command_base(transaction, agent_id, &mut next_streams, &key)?;
-        }
-        if let Some(outcome) = kinds::apply(
-            transaction,
-            &mut agent,
-            &kind,
-            &params,
-            identity,
-            state_dir,
-            observed_at,
-        )? {
-            return save_outcome(transaction, &receipt_id, &content_signature, outcome);
-        }
-        let turn_id = params
-            .get("turnId")
-            .and_then(Value::as_str)
-            .filter(|turn| !turn.is_empty());
-        let stale_item = kind.starts_with("item/")
-            && turn_id
-                .is_some_and(|turn| agent.get("turnId").and_then(Value::as_str) != Some(turn));
+                return decode_outcome(&receipt.result, &receipt_id);
+            }
 
-        let before = agent.clone();
-        let outcome = match kind.as_str() {
-            "item/agentMessage/delta" => {
-                if stale_item {
+            fresh = true;
+            if let Some(notice) = notices::NoticeKind::parse(&kind)
+                && notice.is_account_notice()
+                && params["threadId"].as_str().is_none_or(str::is_empty)
+            {
+                effects.account_notice(transaction, &kind, &params, identity, observed_at)?;
+                return save_outcome(
+                    transaction,
+                    &receipt_id,
+                    &content_signature,
+                    DispatchOutcome::Written,
+                );
+            }
+            if kind == "provider/generationStarted" {
+                effects.generation_started()?;
+                return save_outcome(
+                    transaction,
+                    &receipt_id,
+                    &content_signature,
+                    DispatchOutcome::Written,
+                );
+            }
+            let mut agent = NotificationDispatchRepository::agent_record(transaction, agent_id)?
+                .ok_or_else(|| stored("runtime_agents", agent_id))?;
+            if agent.get("deletedAt").is_some_and(|value| !value.is_null()) {
+                return save_outcome(
+                    transaction,
+                    &receipt_id,
+                    &content_signature,
                     DispatchOutcome::Ignored {
-                        reason: "stale-turn-item".to_owned(),
+                        reason: "deleted-agent".to_owned(),
+                    },
+                );
+            }
+            validate_agent(&agent, agent_id, &identity.provider_handle, &kind, &params)?;
+            before = Some(agent.clone());
+            if matches!(
+                kind.as_str(),
+                "item/agentMessage/delta" | "item/commandExecution/outputDelta"
+            ) {
+                let key = command_key(agent_id, identity, &params)?;
+                let mut key = key;
+                key.method = kind.clone();
+                for effect in effects.post_commit(
+                    Some(&agent),
+                    Some(&agent),
+                    &payload,
+                    identity,
+                    observed_at,
+                    &DispatchOutcome::Written,
+                ) {
+                    if let NotificationPostCommit::Analytics { observation, .. } = effect {
+                        next_streams.stage_analytics(key.clone(), observation)?;
                     }
-                } else {
-                    match (
-                        params.get("itemId").and_then(Value::as_str),
-                        params.get("delta").and_then(Value::as_str),
-                    ) {
-                        (Some(item_id), Some(delta)) if !item_id.is_empty() => {
+                }
+            }
+            let unload = kind == "thread/closed"
+                || (kind == "thread/status/changed" && params["status"]["type"] == "notLoaded");
+            if (unload || matches!(kind.as_str(), "error" | "model/safetyBuffering/updated"))
+                && let Some(thread) = params["threadId"].as_str().filter(|v| !v.is_empty())
+            {
+                let before = agent.clone();
+                let turn = params["turnId"].as_str().filter(|v| !v.is_empty());
+                let keys = next_streams
+                    .selected(None)
+                    .into_iter()
+                    .filter(|key| {
+                        key.thread == thread
+                            && (unload || turn.is_none_or(|turn| key.turn.as_deref() == Some(turn)))
+                    })
+                    .collect();
+                flush_keys(
+                    transaction,
+                    agent_id,
+                    &mut agent,
+                    &mut next_streams,
+                    keys,
+                    unload,
+                    observed_at,
+                )?;
+                if agent != before {
+                    persist_agent(transaction, agent_id, &agent, publication)?;
+                }
+            }
+            if kind == "item/commandExecution/outputDelta" {
+                let key = command_key(agent_id, identity, &params)?;
+                let delta = params["delta"]
+                    .as_str()
+                    .ok_or(NotificationDispatchError::InvalidNotification)?;
+                let outcome = match next_streams.enqueue_delta(key, delta, &params) {
+                    EnqueueResult::Buffered => DispatchOutcome::Written,
+                    EnqueueResult::Closed => DispatchOutcome::Ignored {
+                        reason: "closed-stream".into(),
+                    },
+                    EnqueueResult::Full => return Err(NotificationDispatchError::StreamCapacity),
+                    EnqueueResult::FlushRequired => {
+                        unreachable!("command output retains a bounded tail")
+                    }
+                };
+                return save_outcome(transaction, &receipt_id, &content_signature, outcome);
+            }
+            if kind == "item/completed" && params["item"]["type"] != "agentMessage" {
+                let mut scoped = params.clone();
+                scoped["itemId"] = params["item"]["id"].clone();
+                let key = command_key(agent_id, identity, &scoped)?;
+                flush_selected(
+                    transaction,
+                    agent_id,
+                    &mut agent,
+                    &mut next_streams,
+                    Some(&key),
+                    observed_at,
+                )?;
+            }
+            if kind == "item/started" && params["item"]["type"] == "commandExecution" {
+                let mut scoped = params.clone();
+                scoped["itemId"] = params["item"]["id"].clone();
+                let key = command_key(agent_id, identity, &scoped)?;
+                kinds::preserve_command_base(transaction, agent_id, &mut next_streams, &key)?;
+            }
+            before = Some(agent.clone());
+            if let Some(outcome) = kinds::apply(
+                transaction,
+                &mut agent,
+                &kind,
+                &params,
+                identity,
+                publication,
+                observed_at,
+            )? {
+                return save_outcome(transaction, &receipt_id, &content_signature, outcome);
+            }
+            let turn_id = params
+                .get("turnId")
+                .and_then(Value::as_str)
+                .filter(|turn| !turn.is_empty());
+            let stale_item = kind.starts_with("item/")
+                && turn_id
+                    .is_some_and(|turn| agent.get("turnId").and_then(Value::as_str) != Some(turn));
+
+            let before = agent.clone();
+            let outcome = match kind.as_str() {
+                "item/agentMessage/delta" => {
+                    if stale_item {
+                        DispatchOutcome::Ignored {
+                            reason: "stale-turn-item".to_owned(),
+                        }
+                    } else {
+                        match (
+                            params.get("itemId").and_then(Value::as_str),
+                            params.get("delta").and_then(Value::as_str),
+                        ) {
+                            (Some(item_id), Some(delta)) if !item_id.is_empty() => {
+                                if write_text_notification(
+                                    transaction,
+                                    &mut agent,
+                                    &mut next_streams,
+                                    TextWriteInput {
+                                        agent_id,
+                                        account: identity
+                                            .provider_handle
+                                            .strip_prefix("account:")
+                                            .unwrap_or_default(),
+                                        generation: identity.generation,
+                                        params: &params,
+                                        item_id,
+                                        observed_at,
+                                        update: TextUpdate::Delta(delta),
+                                    },
+                                )? {
+                                    DispatchOutcome::Written
+                                } else {
+                                    DispatchOutcome::Ignored {
+                                        reason: "closed-stream".to_owned(),
+                                    }
+                                }
+                            }
+                            _ => return Err(NotificationDispatchError::InvalidNotification),
+                        }
+                    }
+                }
+                "item/started" | "item/completed" => {
+                    match params.get("item").and_then(Value::as_object) {
+                        None => return Err(NotificationDispatchError::InvalidNotification),
+                        Some(item)
+                            if item.get("type").and_then(Value::as_str) != Some("agentMessage") =>
+                        {
+                            return Err(NotificationDispatchError::InvalidNotification);
+                        }
+                        Some(item)
+                            if item
+                                .get("id")
+                                .and_then(Value::as_str)
+                                .is_none_or(str::is_empty) =>
+                        {
+                            return Err(NotificationDispatchError::InvalidNotification);
+                        }
+                        Some(_) if stale_item => DispatchOutcome::Ignored {
+                            reason: "stale-turn-item".to_owned(),
+                        },
+                        Some(item) if item.get("text").is_some_and(|text| !text.is_string()) => {
+                            return Err(NotificationDispatchError::InvalidNotification);
+                        }
+                        Some(item) => {
+                            let item_id =
+                                item.get("id").and_then(Value::as_str).unwrap_or_default();
+                            let snapshot = item.get("text").and_then(Value::as_str);
+                            let phase = item.get("phase");
+                            let update = if kind == "item/started" {
+                                TextUpdate::Started(snapshot, phase)
+                            } else {
+                                TextUpdate::Completed(snapshot, phase)
+                            };
                             if write_text_notification(
                                 transaction,
                                 &mut agent,
                                 &mut next_streams,
                                 TextWriteInput {
                                     agent_id,
-                                    identity,
+                                    account: identity
+                                        .provider_handle
+                                        .strip_prefix("account:")
+                                        .unwrap_or_default(),
+                                    generation: identity.generation,
                                     params: &params,
                                     item_id,
                                     observed_at,
-                                    update: TextUpdate::Delta(delta),
+                                    update,
                                 },
                             )? {
+                                if kind == "item/completed" && has_questions(item.get("questions"))
+                                {
+                                    questions::completed(
+                                        transaction,
+                                        &agent,
+                                        &params,
+                                        observed_at,
+                                    )?;
+                                }
                                 DispatchOutcome::Written
                             } else {
                                 DispatchOutcome::Ignored {
@@ -385,106 +535,236 @@ pub fn dispatch_notification_with_effects(
                                 }
                             }
                         }
-                        _ => return Err(NotificationDispatchError::InvalidNotification),
                     }
                 }
-            }
-            "item/started" | "item/completed" => {
-                match params.get("item").and_then(Value::as_object) {
-                    None => return Err(NotificationDispatchError::InvalidNotification),
-                    Some(item)
-                        if item.get("type").and_then(Value::as_str) != Some("agentMessage") =>
-                    {
-                        return Err(NotificationDispatchError::InvalidNotification);
+                "thread/tokenUsage/updated" => {
+                    effects.capture_usage(transaction, &mut agent, &params, observed_at)?;
+                    if crate::event_write::truthy(agent.get("movedFrom")) {
+                        effects.capture_move_cache(transaction, &agent, &params, observed_at)?;
                     }
-                    Some(item)
-                        if item
-                            .get("id")
-                            .and_then(Value::as_str)
-                            .is_none_or(str::is_empty) =>
-                    {
-                        return Err(NotificationDispatchError::InvalidNotification);
-                    }
-                    Some(_) if stale_item => DispatchOutcome::Ignored {
-                        reason: "stale-turn-item".to_owned(),
-                    },
-                    Some(item) if item.get("text").is_some_and(|text| !text.is_string()) => {
-                        return Err(NotificationDispatchError::InvalidNotification);
-                    }
-                    Some(item) => {
-                        let item_id = item.get("id").and_then(Value::as_str).unwrap_or_default();
-                        let snapshot = item.get("text").and_then(Value::as_str);
-                        let phase = item.get("phase");
-                        let update = if kind == "item/started" {
-                            TextUpdate::Started(snapshot, phase)
-                        } else {
-                            TextUpdate::Completed(snapshot, phase)
-                        };
-                        if write_text_notification(
-                            transaction,
-                            &mut agent,
-                            &mut next_streams,
-                            TextWriteInput {
-                                agent_id,
-                                identity,
-                                params: &params,
-                                item_id,
-                                observed_at,
-                                update,
-                            },
-                        )? {
-                            if kind == "item/completed" && has_questions(item.get("questions")) {
-                                questions::completed(transaction, &agent, &params, observed_at)?;
-                            }
-                            DispatchOutcome::Written
-                        } else {
-                            DispatchOutcome::Ignored {
-                                reason: "closed-stream".to_owned(),
-                            }
-                        }
-                    }
+                    apply_token_usage(&mut agent, &params, observed_at)?
                 }
-            }
-            "thread/tokenUsage/updated" => {
-                effects.capture_usage(transaction, &mut agent, &params, observed_at)?;
-                if crate::event_write::truthy(agent.get("movedFrom")) {
-                    effects.capture_move_cache(transaction, &agent, &params, observed_at)?;
-                }
-                apply_token_usage(&mut agent, &params, observed_at)?
-            }
-            _ => return Err(NotificationDispatchError::InvalidNotification),
-        };
+                _ => return Err(NotificationDispatchError::InvalidNotification),
+            };
 
-        if kind == "item/agentMessage/delta" || matches!(outcome, DispatchOutcome::Ignored { .. }) {
-            if agent != before {
-                persist_agent(transaction, agent_id, &agent, state_dir)?;
+            if kind == "item/agentMessage/delta"
+                || matches!(outcome, DispatchOutcome::Ignored { .. })
+            {
+                if agent != before {
+                    persist_agent(transaction, agent_id, &agent, publication)?;
+                }
+                return save_outcome(transaction, &receipt_id, &content_signature, outcome);
             }
-            return save_outcome(transaction, &receipt_id, &content_signature, outcome);
+            if !stale_item
+                && !matches!(
+                    outcome,
+                    DispatchOutcome::Ignored { .. } | DispatchOutcome::Unhandled { .. }
+                )
+            {
+                update_common_agent_fields(&mut agent, &kind, &params, observed_at)?;
+            }
+            if !matches!(outcome, DispatchOutcome::Ignored { .. }) {
+                persist_agent(transaction, agent_id, &agent, publication)?;
+            }
+            save_outcome(transaction, &receipt_id, &content_signature, outcome)
+        })()?;
+        if fresh {
+            let after = if before.is_some() {
+                NotificationDispatchRepository::agent_record(transaction, agent_id)?
+            } else {
+                None
+            };
+            if matches!(
+                kind.as_str(),
+                "item/agentMessage/delta" | "item/commandExecution/outputDelta"
+            ) && matches!(&outcome, DispatchOutcome::Ignored { reason } if reason == "stale-turn-item")
+            {
+                let mut key = command_key(agent_id, identity, &params)?;
+                key.method = kind.clone();
+                if let Some(agent) = &before {
+                    next_streams.flush_analytics(&key, agent);
+                }
+            }
+            let mut current = effects.post_commit(
+                before.as_ref(),
+                after.as_ref(),
+                &payload,
+                identity,
+                observed_at,
+                &outcome,
+            );
+            if matches!(
+                kind.as_str(),
+                "item/agentMessage/delta" | "item/commandExecution/outputDelta"
+            ) {
+                current
+                    .retain(|effect| !matches!(effect, NotificationPostCommit::Analytics { .. }));
+            }
+            for effect in &mut current {
+                if let NotificationPostCommit::TokenRateAssociation(observation) = effect {
+                    enrich_association(transaction, agent_id, observation)?;
+                }
+            }
+            for effect in current {
+                next_streams.queue_effect(effect);
+            }
+            post_commit = next_streams.take_post_commit()?;
         }
-        if !stale_item
-            && !matches!(
-                outcome,
-                DispatchOutcome::Ignored { .. } | DispatchOutcome::Unhandled { .. }
-            )
-        {
-            update_common_agent_fields(&mut agent, &kind, &params, observed_at)?;
-        }
-        if !matches!(outcome, DispatchOutcome::Ignored { .. }) {
-            persist_agent(transaction, agent_id, &agent, state_dir)?;
-        }
-        save_outcome(transaction, &receipt_id, &content_signature, outcome)
+        Ok(outcome)
     });
     result.map(|outcome| NotificationDispatchResult {
         outcome,
         stream_update: (next_streams != *streams).then_some(next_streams),
+        post_commit,
     })
 }
 
+/// Shared completion formatter for recovery; its caller owns the recovery receipt.
+/// No provider cursor is fabricated and no commit/publication happens here.
+pub fn recover_task_in_transaction(
+    tx: &Transaction<'_>,
+    agent: &Value,
+    previous: &Value,
+    item: &Value,
+    at: f64,
+) -> Result<(), NotificationDispatchError> {
+    in_savepoint(tx, || {
+        if !at.is_finite()
+            || at < 0.0
+            || previous["agent"] != agent["id"]
+            || previous["itemId"] != item["id"]
+            || previous["type"] != item["type"]
+        {
+            return Err(NotificationDispatchError::InvalidNotification);
+        }
+        use studio_runtime_store::{Table, TaskId, TaskRecord};
+        let task_id = previous["id"]
+            .as_str()
+            .ok_or(NotificationDispatchError::InvalidNotification)?;
+        let current = Table::<TaskRecord>::new(tx).get(&TaskId::from(task_id))?;
+        let stored_agent = NotificationDispatchRepository::agent_record(
+            tx,
+            agent["id"]
+                .as_str()
+                .ok_or(NotificationDispatchError::InvalidNotification)?,
+        )?;
+        if current.as_ref().map(|record| record.value()) != Some(previous)
+            || stored_agent.as_ref() != Some(agent)
+        {
+            return Err(NotificationDispatchError::InvalidNotification);
+        }
+        let snapshot = snapshot::NotificationSnapshot::from_records(
+            agent.clone(),
+            Some(previous.clone()),
+            None,
+        )?;
+        if previous["status"] != "running" {
+            return Ok(());
+        }
+        let params = json!({"item":item,"turnId":previous["turnId"]});
+        if let Some(task) = items::task_transition(
+            snapshot.agent(),
+            "item/completed",
+            &params,
+            snapshot.task(),
+            true,
+            at,
+        )? {
+            kinds::put_task(tx, &task)?;
+            kinds::write_historical_item(
+                tx,
+                agent["id"]
+                    .as_str()
+                    .ok_or(NotificationDispatchError::InvalidNotification)?,
+                &params,
+                &task,
+                at,
+            )?;
+        }
+        Ok(())
+    })
+}
+
+impl NotificationStreamBuffer {
+    /// Canonical recovered completion without a fabricated delivery or receipt.
+    /// The recovery closure owns this retained/staged account buffer. Persist the
+    /// mutated agent and returned buffer with terminal settlement, then install
+    /// the buffer and publish its ordered batch only after commit.
+    #[allow(dead_code, clippy::too_many_arguments)] // wired by the recovery integrator
+    pub(crate) fn recover_agent_message_in_transaction(
+        &self,
+        tx: &Transaction<'_>,
+        agent: &mut Value,
+        account: &str,
+        generation: u64,
+        turn: &Value,
+        item: &Value,
+        at: f64,
+    ) -> Result<Option<NotificationStreamBuffer>, NotificationDispatchError> {
+        let mut next = self.clone();
+        let mut staged_agent = agent.clone();
+        in_savepoint(tx, || {
+            let agent_id = agent["id"]
+                .as_str()
+                .ok_or(NotificationDispatchError::InvalidNotification)?;
+            let item_id = item["id"]
+                .as_str()
+                .filter(|id| !id.is_empty())
+                .ok_or(NotificationDispatchError::InvalidNotification)?;
+            if !at.is_finite()
+                || at < 0.0
+                || generation == 0
+                || account.is_empty()
+                || item["type"] != "agentMessage"
+                || turn["id"].as_str().is_none_or(str::is_empty)
+                || agent["turnId"] != turn["id"]
+                || item.get("text").is_some_and(|text| !text.is_string())
+            {
+                return Err(NotificationDispatchError::InvalidNotification);
+            }
+            let params = json!({"threadId":agent["threadId"],"turnId":turn["id"],"item":item});
+            validate_agent(
+                agent,
+                agent_id,
+                &format!("account:{account}"),
+                "item/completed",
+                &params,
+            )?;
+            write_text_notification(
+                tx,
+                &mut staged_agent,
+                &mut next,
+                TextWriteInput {
+                    agent_id,
+                    account,
+                    generation,
+                    params: &params,
+                    item_id,
+                    observed_at: at,
+                    update: TextUpdate::Completed(
+                        item.get("text").and_then(Value::as_str),
+                        item.get("phase"),
+                    ),
+                },
+            )?;
+            if has_questions(item.get("questions")) {
+                questions::completed(tx, &staged_agent, &params, at)?;
+            }
+            update_common_agent_fields(&mut staged_agent, "item/completed", &params, at)?;
+            Ok(())
+        })?;
+        *agent = staged_agent;
+        Ok((next != *self).then_some(next))
+    }
+}
+
 fn command_key(
+    agent_id: &str,
     identity: &ProviderDeliveryIdentity,
     params: &Value,
 ) -> Result<StreamKey, NotificationDispatchError> {
     Ok(StreamKey {
+        agent_id: agent_id.to_owned(),
         account: identity
             .provider_handle
             .strip_prefix("account:")
@@ -517,7 +797,8 @@ enum TextUpdate<'a> {
 
 struct TextWriteInput<'a> {
     agent_id: &'a str,
-    identity: &'a ProviderDeliveryIdentity,
+    account: &'a str,
+    generation: u64,
     params: &'a Value,
     item_id: &'a str,
     observed_at: f64,
@@ -660,7 +941,8 @@ fn write_text_notification(
 ) -> Result<bool, NotificationDispatchError> {
     let TextWriteInput {
         agent_id,
-        identity,
+        account,
+        generation,
         params,
         item_id,
         observed_at,
@@ -677,12 +959,9 @@ fn write_text_notification(
         .filter(|turn| !turn.is_empty())
         .map(str::to_owned);
     let key = StreamKey {
-        account: identity
-            .provider_handle
-            .strip_prefix("account:")
-            .unwrap_or_default()
-            .to_owned(),
-        generation: identity.generation,
+        agent_id: agent_id.to_owned(),
+        account: account.to_owned(),
+        generation,
         thread: thread.to_owned(),
         turn: turn.clone(),
         item: item_id.to_owned(),
@@ -715,12 +994,25 @@ fn write_text_notification(
         .unwrap_or_default();
     if matches!(update, TextUpdate::Started(..)) {
         for existing in streams.selected(Some(&key)) {
-            if streams.preserve_base(&existing, sha256_hex(previous.as_bytes())) {
+            let snapshot = match update {
+                TextUpdate::Started(Some(text), _) => Some(text),
+                _ => None,
+            };
+            let replaced = if let Some(snapshot) = snapshot {
+                streams.set_snapshot_base(&existing, sha256_hex(snapshot.as_bytes()))
+            } else {
+                streams.preserve_base(&existing, sha256_hex(previous.as_bytes()))
+            };
+            if replaced {
                 NotificationDispatchRepository::put_stream_base(
                     transaction,
                     &stream_base_id(&existing),
-                    Some(&previous),
+                    Some(snapshot.unwrap_or(&previous)),
                 )?;
+            } else if snapshot.is_some() {
+                // An unflushed provider snapshot supersedes the buffered text
+                // that preceded it; later deltas append to the snapshot.
+                streams.replace_unflushed_with_snapshot(&existing);
             }
         }
     }
@@ -794,7 +1086,7 @@ fn write_text_notification(
 pub fn flush_notification_streams(
     transaction: &Transaction<'_>,
     agent_id: &str,
-    state_dir: &str,
+    publication: &PublicationContext,
     streams: &NotificationStreamBuffer,
     observed_at: f64,
 ) -> Result<Option<NotificationStreamBuffer>, NotificationDispatchError> {
@@ -813,7 +1105,7 @@ pub fn flush_notification_streams(
             observed_at,
         )?;
         if agent != before {
-            persist_agent(transaction, agent_id, &agent, state_dir)?;
+            persist_agent(transaction, agent_id, &agent, publication)?;
         }
         Ok((next != *streams).then_some(next))
     })
@@ -822,13 +1114,50 @@ pub fn flush_notification_streams(
 pub(crate) fn prune_inactive_streams(
     transaction: &Transaction<'_>,
     streams: &mut NotificationStreamBuffer,
+    observed_at: f64,
+    recovering: bool,
 ) -> Result<(), NotificationDispatchError> {
     for key in streams.selected(None) {
         let active: bool = transaction.query_row(
             "SELECT EXISTS(SELECT 1 FROM runtime_agents WHERE COALESCE(json_extract(record,'$.accountKey'),'default')=?1 AND json_extract(record,'$.threadId')=?2 AND (?3 IS NULL OR json_extract(record,'$.turnId')=?3) AND json_extract(record,'$.deletedAt') IS NULL AND (json_extract(record,'$.inFlight')=1 OR json_extract(record,'$.status') IN ('running','starting','approval')))",
             rusqlite::params![key.account,key.thread,key.turn], |row| row.get(0),
         ).map_err(StoreError::from)?;
+        if active && recovering && !streams.has_pending(&key) && streams.has_base(&key) {
+            let owner = stream_owner(transaction, &key)?;
+            if let Some((id, raw)) = owner {
+                let mut projection: Value =
+                    serde_json::from_str(&raw).map_err(|_| stored("runtime_agents", &id))?;
+                projection["turnId"] = json!(key.turn);
+                projection["deletedAt"] = Value::Null;
+                flush_one_stream(
+                    transaction,
+                    &id,
+                    &mut projection,
+                    streams,
+                    &key,
+                    observed_at,
+                    false,
+                )?;
+            }
+            continue;
+        }
         if !active {
+            if let Some((id, raw)) = stream_owner(transaction, &key)? {
+                let mut projection: Value =
+                    serde_json::from_str(&raw).map_err(|_| stored("runtime_agents", &id))?;
+                projection["turnId"] = json!(key.turn);
+                projection["deletedAt"] = Value::Null;
+                flush_one_stream(
+                    transaction,
+                    &id,
+                    &mut projection,
+                    streams,
+                    &key,
+                    observed_at,
+                    true,
+                )?;
+                continue;
+            }
             NotificationDispatchRepository::put_stream_base(
                 transaction,
                 &stream_base_id(&key),
@@ -836,6 +1165,65 @@ pub(crate) fn prune_inactive_streams(
             )?;
             streams.close(&key);
         }
+    }
+    Ok(())
+}
+
+fn stream_owner(
+    transaction: &Transaction<'_>,
+    key: &StreamKey,
+) -> Result<Option<(String, String)>, NotificationDispatchError> {
+    let owner = if key.agent_id.is_empty() {
+        transaction.query_row(
+            "SELECT id,record FROM runtime_agents WHERE COALESCE(json_extract(record,'$.accountKey'),'default')=?1 AND json_extract(record,'$.threadId')=?2",
+            rusqlite::params![key.account, key.thread],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+        ).optional()
+    } else {
+        transaction
+            .query_row(
+                "SELECT id,record FROM runtime_agents WHERE id=?1 AND COALESCE(json_extract(record,'$.accountKey'),'default')=?2",
+                rusqlite::params![key.agent_id, key.account],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+            )
+            .optional()
+    };
+    owner.map_err(|error| StoreError::from(error).into())
+}
+
+fn flush_one_stream(
+    transaction: &Transaction<'_>,
+    agent_id: &str,
+    agent: &mut Value,
+    streams: &mut NotificationStreamBuffer,
+    key: &StreamKey,
+    observed_at: f64,
+    close: bool,
+) -> Result<(), NotificationDispatchError> {
+    if key.method == "item/commandExecution/outputDelta" {
+        kinds::flush_command(
+            transaction,
+            agent_id,
+            agent,
+            streams,
+            key,
+            close,
+            observed_at,
+        )?;
+    } else {
+        flush_text_stream(
+            transaction,
+            agent_id,
+            agent,
+            streams,
+            key,
+            observed_at,
+            None,
+        )?;
+    }
+    if close {
+        NotificationDispatchRepository::put_stream_base(transaction, &stream_base_id(key), None)?;
+        streams.close(key);
     }
     Ok(())
 }
@@ -909,6 +1297,11 @@ fn flush_keys(
         {
             continue;
         }
+        if agent.get("deletedAt").is_none_or(Value::is_null)
+            && key.method != "item/commandExecution/outputDelta"
+        {
+            streams.flush_analytics(&key, agent);
+        }
         if agent.get("deletedAt").is_some_and(|v| !v.is_null())
             || (key.method != "item/commandExecution/outputDelta"
                 && key
@@ -978,6 +1371,7 @@ fn flush_text_stream(
         .transpose()?
         .unwrap_or_default();
     let previous = durable_stream_base(transaction, streams, key)?.unwrap_or(previous);
+    streams.flush_analytics(key, agent);
     if let Some((text, count, params)) = streams.flush_with_delta(key, &previous, delta) {
         NotificationDispatchRepository::put_stream_base(transaction, &stream_base_id(key), None)?;
         let phase = old
@@ -1004,10 +1398,47 @@ fn flush_text_stream(
             agent["events"]
                 .as_u64()
                 .unwrap_or_default()
-                .saturating_add(count - 1),
+                .saturating_add(count.saturating_sub(1)),
         );
         agent["activity"] = json!({"phase":"writing", "at":observed_at});
         agent["tail"] = Value::String(suffix(&text, 300));
+    }
+    Ok(())
+}
+
+fn enrich_association(
+    tx: &Transaction<'_>,
+    agent_id: &str,
+    observation: &mut NotificationObservation,
+) -> Result<(), NotificationDispatchError> {
+    let p = &mut observation.params;
+    let kind = p["item"]["type"].as_str().unwrap_or_default();
+    if !matches!(
+        observation.method.as_str(),
+        "item/started" | "item/completed"
+    ) || matches!(kind, "reasoning" | "userMessage" | "agentMessage")
+        || (kind == "commandExecution"
+            && observation.method == "item/completed"
+            && p["item"]["aggregatedOutput"].is_null())
+    {
+        return Ok(());
+    }
+    let id = format!(
+        "{agent_id}:{}",
+        p["item"]["id"].as_str().unwrap_or_default()
+    );
+    // The existing item writer owns timing derivation. Reuse its stored output,
+    // because Python mutates the item in the association arguments in place.
+    if let Some((record, _)) = NotificationDispatchRepository::notification_item(tx, agent_id, &id)?
+    {
+        let text = saved_text(tx, &id, &record)?;
+        if let Ok(displayed) = serde_json::from_str::<Value>(&text) {
+            for field in ["startedAtMs", "completedAtMs", "durationMs"] {
+                if let Some(value) = displayed.get(field) {
+                    p["item"][field] = value.clone();
+                }
+            }
+        }
     }
     Ok(())
 }
@@ -1143,17 +1574,16 @@ fn persist_agent(
     transaction: &Transaction<'_>,
     agent_id: &str,
     agent: &Value,
-    state_dir: &str,
+    publication: &PublicationContext,
 ) -> Result<(), NotificationDispatchError> {
     let mut normalized = agent.clone();
     crate::agents_create::mode_fields(&mut normalized);
     let agent = &normalized;
     NotificationDispatchRepository::put_agent_record(transaction, agent_id, agent)?;
-    let project_server_id = crate::sync_entity_context::local_server_id(state_dir)?;
     let context = crate::sync_entity_context::agent_view_context(
         transaction,
         agent,
-        project_server_id.as_deref(),
+        publication.server_id.as_deref(),
     )
     .map_err(|_| stored("runtime_agents", agent_id))?;
     let view = crate::sync_views::agent_entity_view(agent, &context)
@@ -1264,7 +1694,7 @@ mod tests {
 
     use super::{
         DispatchOutcome, NotificationStreamBuffer, PreparedSubmission, ProviderDeliveryIdentity,
-        SubmittedInput, record_user_submission,
+        PublicationContext, SubmittedInput, record_user_submission,
     };
     use studio_runtime_providers::{Frame, LineDecoder};
     use studio_runtime_store::{NotificationDispatchRepository, TranscriptRepository};
@@ -1274,26 +1704,34 @@ mod tests {
     fn dispatch_notification(
         transaction: &rusqlite::Transaction<'_>,
         agent: &str,
-        state: &str,
+        _state: &str,
         streams: &mut NotificationStreamBuffer,
         identity: &ProviderDeliveryIdentity,
         frame: &Frame,
         at: f64,
     ) -> Result<DispatchOutcome, super::NotificationDispatchError> {
-        let result =
-            super::dispatch_notification(transaction, agent, state, streams, identity, frame, at)?;
+        let publication = PublicationContext::default();
+        let result = super::dispatch_notification(
+            transaction,
+            agent,
+            &publication,
+            streams,
+            identity,
+            frame,
+            at,
+        )?;
         if let Some(update) = result.stream_update {
             *streams = update;
         }
         if let Some(update) =
-            super::flush_notification_streams(transaction, agent, state, streams, at)?
+            super::flush_notification_streams(transaction, agent, &publication, streams, at)?
         {
             *streams = update;
         }
         Ok(result.outcome)
     }
 
-    fn database() -> Connection {
+    pub(super) fn database() -> Connection {
         let connection = Connection::open_in_memory().expect("memory database opens");
         connection
             .execute_batch(
@@ -1318,7 +1756,7 @@ mod tests {
         connection
     }
 
-    fn frame(value: &Value) -> Frame {
+    pub(super) fn frame(value: &Value) -> Frame {
         let mut bytes = serde_json::to_vec(value).expect("notification serializes");
         bytes.push(b'\n');
         LineDecoder::new()
@@ -1359,9 +1797,9 @@ mod tests {
     fn stale_safety_notice_keeps_current_turn_stream_pending() {
         let mut connection = database();
         let tx = connection.transaction().expect("transaction");
-        let initial = super::dispatch_notification(&tx,"agent",".",&NotificationStreamBuffer::default(),&identity(1),&frame(&json!({"method":"item/agentMessage/delta","params":{"threadId":"thread","turnId":"turn","itemId":"answer","delta":"pending"}})),1234.5).expect("buffer delta");
+        let initial = super::dispatch_notification(&tx,"agent",&PublicationContext::default(),&NotificationStreamBuffer::default(),&identity(1),&frame(&json!({"method":"item/agentMessage/delta","params":{"threadId":"thread","turnId":"turn","itemId":"answer","delta":"pending"}})),1234.5).expect("buffer delta");
         let streams = initial.stream_update.expect("staged stream");
-        let result = super::dispatch_notification(&tx,"agent",".",&streams,&identity(2),&frame(&json!({"method":"model/safetyBuffering/updated","params":{"threadId":"thread","turnId":"old-turn","showBufferingUi":true}})),1234.5).expect("stale notice");
+        let result = super::dispatch_notification(&tx,"agent",&PublicationContext::default(),&streams,&identity(2),&frame(&json!({"method":"model/safetyBuffering/updated","params":{"threadId":"thread","turnId":"old-turn","showBufferingUi":true}})),1234.5).expect("stale notice");
         assert!(
             result.stream_update.is_none(),
             "unrelated turn must not consume pending text"
@@ -1376,13 +1814,13 @@ mod tests {
     fn injected_unload_refusal_keeps_pending_text_and_has_no_receipt() {
         let mut connection = database();
         let tx = connection.transaction().expect("transaction");
-        let initial = super::dispatch_notification(&tx,"agent",".",&NotificationStreamBuffer::default(),&identity(1),&frame(&json!({"method":"item/agentMessage/delta","params":{"threadId":"thread","turnId":"turn","itemId":"answer","delta":"pending"}})),1234.5).expect("buffer delta");
+        let initial = super::dispatch_notification(&tx,"agent",&PublicationContext::default(),&NotificationStreamBuffer::default(),&identity(1),&frame(&json!({"method":"item/agentMessage/delta","params":{"threadId":"thread","turnId":"turn","itemId":"answer","delta":"pending"}})),1234.5).expect("buffer delta");
         let streams = initial.stream_update.expect("staged stream");
         let before = streams.clone();
         let result = super::dispatch_notification_with_effects(
             &tx,
             "agent",
-            ".",
+            &PublicationContext::default(),
             &streams,
             &identity(2),
             &frame(&json!({"method":"thread/closed","params":{"threadId":"thread"}})),
@@ -1450,7 +1888,7 @@ mod tests {
             let result = super::dispatch_notification(
                 &tx,
                 "agent",
-                ".",
+                &PublicationContext::default(),
                 &streams,
                 &identity(1),
                 &frame(
@@ -1486,6 +1924,7 @@ mod tests {
             assert!(matches!(
                 streams.enqueue_delta(
                     super::stream::StreamKey {
+                        agent_id: "agent".into(),
                         account: "default".into(),
                         generation: 7,
                         thread: "thread".into(),
@@ -1506,7 +1945,7 @@ mod tests {
         let result = super::dispatch_notification(
             &tx,
             "agent",
-            ".",
+            &PublicationContext::default(),
             &streams,
             &identity(1),
             &frame(
@@ -1995,3 +2434,7 @@ mod tests {
         assert!(payload["value"]["startAttempt"].get("id").is_none());
     }
 }
+
+#[cfg(test)]
+#[path = "notification_dispatch/review_tests.rs"]
+mod review_tests;

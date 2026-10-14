@@ -181,6 +181,11 @@ pub(super) fn dispatch(
     now: f64,
 ) -> Result<CallbackDecision, CallbackError> {
     let call = ToolCall::parse(input, context)?;
+    if let Some(decision) = store.transaction_with(|tx| {
+        storage::saved_decision(tx, &ReplyIdentity::new(context, &input.id), input)
+    })? {
+        return Ok(decision);
+    }
     // Admission commits before any execution. All enabled services are local,
     // transactional writes. External effects need a durable admission adapter.
     store.transaction_with(|tx| {
@@ -205,8 +210,8 @@ pub(super) fn dispatch(
         let snapshot = storage::snapshot(tx, context)?;
         snapshot.active()?;
         let identity = ReplyIdentity::new(context, &input.id);
-        if let Some(reply) = storage::saved_reply(tx, &identity, input)? {
-            return Ok(CallbackDecision::Answer(reply));
+        if let Some(decision) = storage::saved_decision(tx, &identity, input)? {
+            return Ok(decision);
         }
         let uncertain: i64 = tx.query_row(
             "SELECT count(*) FROM runtime_operation_receipts WHERE json_extract(result,'$.toolRequest')=?1 AND json_extract(result,'$.delivery') IN ('submitted','unknown')",

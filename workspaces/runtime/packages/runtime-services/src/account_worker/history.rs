@@ -1,41 +1,7 @@
 //! Terminal transcript effects share the lifecycle transaction and its replay receipt.
+use crate::notification_dispatch::notices::error_message as message;
 use serde_json::{Value, json};
 use studio_runtime_store::{AgentRecord, NotificationDispatchRepository, StoreResult, Transaction};
-const ERROR_MESSAGES: &[(&str, &str)] = &[
-    (
-        "cyberPolicy",
-        "Codex refused this turn under its cybersecurity policy.",
-    ),
-    (
-        "misalignmentPolicyViolation",
-        "Codex refused this turn under its safety policy.",
-    ),
-    (
-        "tooManyDenials",
-        "Codex stopped this turn after too many denied actions. Review the request and approval settings before trying again.",
-    ),
-    (
-        "flexUnavailable",
-        "The selected model is temporarily unavailable on the flexible processing tier. Try again later or choose another model.",
-    ),
-    ("default", "Codex reported an error."),
-];
-pub(crate) fn message(error: &Value) -> String {
-    let kind = error["codexErrorInfo"].as_str().or_else(|| {
-        error["codexErrorInfo"]
-            .as_object()
-            .and_then(|o| o.keys().next().map(String::as_str))
-    });
-    if let Some((_, message)) = ERROR_MESSAGES.iter().find(|(k, _)| Some(*k) == kind) {
-        return (*message).into();
-    }
-    error["message"]
-        .as_str()
-        .or_else(|| error.as_str())
-        .filter(|s| !s.is_empty())
-        .unwrap_or(ERROR_MESSAGES[4].1)
-        .into()
-}
 pub(crate) fn terminal(
     tx: &Transaction<'_>,
     agent: &AgentRecord,

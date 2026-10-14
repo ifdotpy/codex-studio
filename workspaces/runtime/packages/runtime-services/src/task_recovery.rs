@@ -24,20 +24,36 @@ impl TaskRecoverySnapshot {
         aliases: Vec<String>,
         receipts: Vec<(String, Value)>,
     ) -> Result<Self, InvalidRecoveryRecord> {
-        let agent = RecoverySnapshot::from_record(agent)?;
+        let agent_id = agent["id"].as_str().unwrap_or("<missing>").to_owned();
+        let task_id = task["id"].as_str().unwrap_or("<missing>").to_owned();
+        Self::from_stored_records(&agent_id, &task_id, agent, task, aliases, receipts)
+    }
+    pub(crate) fn from_stored_records(
+        agent_id: &str,
+        task_id: &str,
+        agent: Value,
+        task: Value,
+        aliases: Vec<String>,
+        receipts: Vec<(String, Value)>,
+    ) -> Result<Self, InvalidRecoveryRecord> {
+        let located = |table: &str, id: &str| InvalidRecoveryRecord {
+            location: format!("{table}.{id}"),
+        };
+        let agent = RecoverySnapshot::from_record(agent)
+            .map_err(|_| located("runtime_agents", agent_id))?;
         if !studio_runtime_schema::validate("RecoveryTaskRecord", &task)
-            .map_err(|_| invalid("schema"))?
+            .map_err(|_| located("runtime_tasks", task_id))?
             || aliases.len() > MAX_RECEIPTS
             || receipts.len() > MAX_RECEIPTS
         {
-            return Err(invalid("task"));
+            return Err(located("runtime_tasks", task_id));
         }
         for (key, receipt) in &receipts {
             if key.is_empty()
                 || !studio_runtime_schema::validate("RecoveryToolReceipt", receipt)
-                    .map_err(|_| invalid("schema"))?
+                    .map_err(|_| located("runtime_tool_requests", key))?
             {
-                return Err(invalid("receipt"));
+                return Err(located("runtime_tool_requests", key));
             }
         }
         Ok(Self {
@@ -160,12 +176,6 @@ impl TaskRecoverySnapshot {
         }
     }
 }
-fn invalid(field: &str) -> InvalidRecoveryRecord {
-    InvalidRecoveryRecord {
-        location: format!("runtime_tasks.{field}"),
-    }
-}
-
 /// The worker supplies payload resolution and its canonical task completion
 /// writer. It rechecks owner scope, the raw task and aliases/receipts atomically.
 pub trait TaskRecoveryEffects {

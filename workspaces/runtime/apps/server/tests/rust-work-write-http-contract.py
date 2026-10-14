@@ -3,8 +3,6 @@
 
 from __future__ import annotations
 
-from test_isolation import isolate_supervisor_environment
-
 import importlib.util
 import json
 import os
@@ -15,11 +13,26 @@ import unittest
 from contextlib import closing
 from pathlib import Path
 
+HERE = Path(os.path.abspath(os.path.dirname(__file__)))
+sys.path.insert(0, str(HERE))
+sys.path.insert(0, str(HERE.parents[4] / "workspaces/runtime/packages/runtime-services/tests/turn_lifecycle"))
+from oracle_guard import OracleGuard
+
+_oracle_guard = OracleGuard()
+_filesystem_audit_events = {"open", "os.listdir", "os.scandir", "os.stat", "os.lstat", "os.fstatat"}
+sys.addaudithook(
+    lambda event, args: _oracle_guard.audit(event, args)
+    if event in _filesystem_audit_events
+    else None
+)
+os.stat = lambda path, *args, **kwargs: _oracle_guard.metadata(_oracle_guard.stat, path, *args, **kwargs)
+os.lstat = lambda path, *args, **kwargs: _oracle_guard.metadata(_oracle_guard.lstat, path, *args, **kwargs)
+
+from test_isolation import isolate_supervisor_environment
 
 isolate_supervisor_environment()
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from runtime_test_environment import make_runtime
-HERE = Path(__file__).resolve().parent
 from http_backend_harness import BackendProcess, TimedHTTPContractTest, _report_contract_backend_timing, no_write_snapshot
 from codex_sync_entities import register_functions
 
@@ -27,6 +40,7 @@ _fixture_spec = importlib.util.spec_from_file_location("work_write_runtime_fixtu
 _fixture = importlib.util.module_from_spec(_fixture_spec)
 assert _fixture_spec.loader is not None
 _fixture_spec.loader.exec_module(_fixture)
+_oracle_guard.self_test()
 
 
 def quiet_runtime(state):
@@ -54,13 +68,13 @@ def pause_agent(backend, agent_id: str) -> None:
 def seed_agents(backend) -> tuple[str, str]:
     runtime = quiet_runtime(backend.state)
     try:
-        root = runtime.create({"name": "Work write lead", "cwd": str(backend.cwd), "prompt": "Work write contracts", "autoWake": True}, defer=True)
-        root.update(status="idle", autoWake=True)
+        root = runtime.create({"name": "Work write lead", "cwd": str(backend.cwd), "prompt": "Work write contracts", "autoWake": True, "workspaceMode": "worktree"}, defer=True)
+        root.update(status="idle", autoWake=True, executionMode="native", workspaceMode="worktree", environment="host")
         with runtime.db() as database:
             runtime.put(database, "agents", root)
         worker = runtime.create({"name": "Work write worker", "cwd": str(backend.cwd), "prompt": "Receive decisions", "autoWake": True}, parent=root["id"], defer=True)
-        root.update(status="paused", autoWake=False, concurrency=32, subagentConcurrencyVersion=2, agentMode="multi", moveImportPending=True)
-        worker.update(status="paused", autoWake=False, worktree=False, moveImportPending=True)
+        root.update(status="paused", autoWake=False, concurrency=32, subagentConcurrencyVersion=2, agentMode="multi", moveImportPending=True, executionMode="native", workspaceMode="worktree", environment="host")
+        worker.update(status="paused", autoWake=False, worktree=False, moveImportPending=True, executionMode="native", workspaceMode="worktree", environment="host")
         with runtime.db() as database:
             runtime.put(database, "agents", root)
             runtime.put(database, "agents", worker)
@@ -81,24 +95,23 @@ def start_backend_with_seeded_agents(test_case):
     return backend, agent_ids
 
 
-def _normal(value, work_ids=None):
-    if isinstance(value, str) and work_ids:
-        for identity, alias in sorted(work_ids.items(), key=lambda item: -len(item[0])):
-            value = value.replace(identity, alias)
+def _normal(value, work_ids=None, aliases=None, field=None):
+    aliases = aliases or {}
+    if isinstance(value, str):
+        if field in {"id", "task", "task_id", "resultId", "dependencies"}:
+            return aliases.get(value, (work_ids or {}).get(value, value))
+        if field == "resultFile":
+            return aliases.get(value, value)
         return value
-    if isinstance(value, list):
-        return [_normal(item, work_ids) for item in value]
+    if isinstance(value, (list, tuple)):
+        normalized = [_normal(item, work_ids, aliases, field) for item in value]
+        return normalized if isinstance(value, list) else tuple(normalized)
     if isinstance(value, dict):
         result = {}
         for key, item in value.items():
-            if key in {"created", "updated"}:
+            if key in {"created", "updated", "enqueuedAt"}:
                 continue
-            if key == "id" and isinstance(item, str) and work_ids and item in work_ids:
-                result[key] = work_ids[item]
-            elif isinstance(item, str) and work_ids and item in work_ids:
-                result[key] = work_ids[item]
-            else:
-                result[key] = _normal(item, work_ids)
+            result[key] = _normal(item, work_ids, aliases, key)
         return result
     return value
 
@@ -122,16 +135,60 @@ def snapshot(state: Path):
             agents.append((identity, _normal(record)))
         receipts = [(identity, signature, _normal(json.loads(result), work_ids)) for identity, signature, result in database.execute("SELECT id,signature,result FROM runtime_operation_receipts ORDER BY id")]
         events = []
-        for row in database.execute("SELECT id,agent,kind,text,created,epoch,turn_id,error FROM runtime_events ORDER BY id"):
-            identity, agent, kind, body, created, epoch, turn_id, error = row
+        for row in database.execute("SELECT id,agent,kind,text,status,created,epoch,turn_id,error FROM runtime_events"):
+            identity, agent, kind, body, status, created, epoch, turn_id, error = row
             try:
                 body = _normal(json.loads(body), work_ids)
             except (TypeError, ValueError):
                 pass
             # Durable event parity ignores the dispatch-owned status column.
-            events.append((_normal(identity, work_ids), agent, kind, body, epoch, turn_id, error))
-        return {"runtime_work": normalized_work, "runtime_agents": agents,
-                "runtime_operation_receipts": receipts, "runtime_events": events}
+            events.append((identity, agent, kind, body, epoch, turn_id, error))
+        event_meta = [
+            (identity, _normal(json.loads(record), work_ids))
+            for identity, record in database.execute(
+                "SELECT id,record FROM runtime_event_meta ORDER BY id"
+            )
+        ]
+        return {
+            "runtime_work": normalized_work,
+            "runtime_agents": agents,
+            "runtime_operation_receipts": receipts,
+            "runtime_events": events,
+            "runtime_event_meta": event_meta,
+            "_work_ids": work_ids,
+        }
+
+
+def normalize_event_id(identity, work_ids, aliases):
+    parts = identity.split(":")
+    if len(parts) == 2 and parts[0] == "work-result":
+        parts[1] = aliases.get(parts[1], parts[1])
+    elif len(parts) >= 3 and parts[0] in {"work-decision", "work-released"}:
+        parts[1] = work_ids.get(parts[1], parts[1])
+    elif len(parts) == 3 and parts[0] == "work-ready":
+        parts[1] = work_ids.get(parts[1], parts[1])
+        parts[2] = work_ids.get(parts[2], parts[2])
+    return ":".join(parts)
+
+
+def compare_snapshots(expected_state, actual_state, aliases):
+    actual_work_ids = actual_state.pop("_work_ids")
+    expected_work_ids = expected_state.pop("_work_ids")
+    actual_state = _normal(actual_state, actual_work_ids, aliases)
+    expected_state = _normal(expected_state, expected_work_ids, aliases)
+    for state, work_ids in ((actual_state, actual_work_ids), (expected_state, expected_work_ids)):
+        state["runtime_events"] = sorted(
+            [
+                (normalize_event_id(row[0], work_ids, aliases), *row[1:])
+                for row in state["runtime_events"]
+            ],
+            key=lambda row: (row[0], json.dumps(row[1:], ensure_ascii=False, sort_keys=True, separators=(",", ":"))),
+        )
+        state["runtime_event_meta"] = sorted(
+            (normalize_event_id(identity, work_ids, aliases), record)
+            for identity, record in state["runtime_event_meta"]
+        )
+    return actual_state, expected_state
 
 
 def reference_action(backend, agent_id: str, body: dict):
@@ -150,12 +207,114 @@ def reference_action(backend, agent_id: str, body: dict):
         return result, expected
 
 
-def normal_result(value):
+def reference_actions(backend, agent_id: str, bodies: list[dict]):
+    """Apply a complete independent Python action chain to a DB copy."""
+    with tempfile.TemporaryDirectory(prefix="work-write-python-chain-") as directory:
+        state = Path(directory) / "state"
+        state.mkdir()
+        with closing(sqlite3.connect(backend.state / "canvas.sqlite3")) as source, closing(
+            sqlite3.connect(state / "canvas.sqlite3")
+        ) as target:
+            source.backup(target)
+        runtime = quiet_runtime(state)
+        try:
+            results = [
+                runtime.work_action(agent_id, {"agent": agent_id, **body}, body.get("id"))
+                for body in bodies
+            ]
+        finally:
+            runtime.close()
+        return results, snapshot(state)
+
+
+def normal_result(value, aliases=None):
     if isinstance(value, dict):
         value = {key: item for key, item in value.items() if key not in {"_syncEntities", "_syncEntitiesAfter"}}
-        if "rootId" in value and "title" in value and "owner" in value:
-            value = {**value, "id": "<work-item>"}
-    return _normal(value)
+    return _normal(value, aliases=aliases)
+
+
+def result_id_aliases(expected_state, actual_state):
+    aliases = {}
+    expected_work_ids = expected_state["_work_ids"]
+    actual_work_ids = actual_state["_work_ids"]
+    for identity in expected_work_ids.keys() - actual_work_ids.keys():
+        aliases[identity] = expected_work_ids[identity]
+    for identity in actual_work_ids.keys() - expected_work_ids.keys():
+        aliases[identity] = actual_work_ids[identity]
+    expected_work = dict(expected_state["runtime_work"])
+    actual_work = dict(actual_state["runtime_work"])
+    result_index = 0
+    for work_id in expected_work.keys() & actual_work.keys():
+        before_results = expected_work[work_id].get("results", [])
+        after_results = actual_work[work_id].get("results", [])
+        for before, after in zip(before_results, after_results):
+            if isinstance(before.get("id"), str) and isinstance(after.get("id"), str):
+                alias = f"<result-{result_index}>"
+                aliases[before["id"]] = alias
+                aliases[after["id"]] = alias
+                if isinstance(before.get("resultFile"), str) and isinstance(after.get("resultFile"), str):
+                    file_alias = f"<result-file-{result_index}>"
+                    aliases[before["resultFile"]] = file_alias
+                    aliases[after["resultFile"]] = file_alias
+                result_index += 1
+    return aliases
+
+
+def python_action(backend, agent_id, body):
+    """Run the Python writer on a clone, then install its rows as live fixtures."""
+    table_names = (
+        "runtime_work",
+        "runtime_events",
+        "runtime_event_meta",
+        "runtime_operation_receipts",
+    )
+    with tempfile.TemporaryDirectory(prefix="work-write-python-action-") as directory:
+        cloned_db = Path(directory) / "canvas.sqlite3"
+        with closing(sqlite3.connect(backend.state / "canvas.sqlite3")) as source, closing(
+            sqlite3.connect(cloned_db)
+        ) as target:
+            source.backup(target)
+
+        runtime = quiet_runtime(Path(directory))
+        try:
+            result = runtime.work_action(agent_id, {"agent": agent_id, **body}, body.get("id"))
+        finally:
+            runtime.close()
+
+        with closing(sqlite3.connect(cloned_db)) as reference, closing(
+            fixture_connection(backend.state / "canvas.sqlite3")
+        ) as live, live:
+            for table in table_names:
+                columns = [row[1] for row in reference.execute(f'PRAGMA table_info("{table}")')]
+                keys = [row[1] for row in reference.execute(f'PRAGMA table_info("{table}")') if row[5]]
+                if not columns or not keys:
+                    continue
+                selected = ",".join(f'"{column}"' for column in columns)
+                key_indexes = [columns.index(key) for key in keys]
+                before_rows = {
+                    tuple(row[index] for index in key_indexes): tuple(row)
+                    for row in live.execute(f'SELECT {selected} FROM "{table}"')
+                }
+                changed = []
+                for row in reference.execute(f'SELECT {selected} FROM "{table}"'):
+                    identity = tuple(row[index] for index in key_indexes)
+                    if before_rows.get(identity) != tuple(row):
+                        changed.append(tuple(row))
+                if changed:
+                    placeholders = ",".join("?" for _ in columns)
+                    live.executemany(
+                        f'INSERT OR REPLACE INTO "{table}" ({selected}) VALUES ({placeholders})',
+                        changed,
+                    )
+    return result
+
+
+def python_error(backend, agent_id, body):
+    try:
+        reference_action(backend, agent_id, body)
+    except ValueError as error:
+        return str(error)
+    raise AssertionError("Python accepted a refusal case")
 
 
 class WorkWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
@@ -167,19 +326,396 @@ class WorkWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
     def tearDownClass(cls) -> None:
         cls.backend.stop()
 
+    def setUp(self) -> None:
+        super().setUp()
+        with closing(fixture_connection(self.backend.state / "canvas.sqlite3")) as database, database:
+            row = database.execute("SELECT record FROM runtime_agents WHERE id=?", (self.worker_id,)).fetchone()
+            worker = json.loads(row[0])
+            worker.update(executionMode="native", workspaceMode="worktree", environment="host")
+            database.execute("UPDATE runtime_agents SET record=? WHERE id=?", (json.dumps(worker), self.worker_id))
+
     def headers(self):
         return {"Origin": self.backend.origin or "", "X-Canvas-Token": self.backend.session["token"], "X-Studio-API-Schema": self.backend.schema_hash}
 
     def post(self, body):
         return self.backend.request("POST", "/api/work", body={"agent": self.agent_id, **body}, headers=self.headers())
 
+    def post_as(self, agent_id, body):
+        return self.backend.request("POST", "/api/work", body={"agent": agent_id, **body}, headers=self.headers())
+
     def assert_matches_python(self, body):
-        expected_result, expected_state = reference_action(self.backend, self.agent_id, body)
-        response = self.post(body)
+        return self.assert_matches_python_as(self.agent_id, body)
+
+    def assert_matches_python_as(self, agent_id, body):
+        expected_result, expected_state = reference_action(self.backend, agent_id, body)
+        response = self.post_as(agent_id, body)
         self.assertEqual(response.status, 200, response.body[:1000])
-        self.assertEqual(normal_result(response.json()), normal_result(expected_result))
-        self.assertEqual(snapshot(self.backend.state), expected_state)
+        actual_state = snapshot(self.backend.state)
+        aliases = result_id_aliases(expected_state, actual_state)
+        self.assertEqual(normal_result(response.json(), aliases), normal_result(expected_result, aliases))
+        actual_state, expected_state = compare_snapshots(expected_state, actual_state, aliases)
+        for table, actual_rows in actual_state.items():
+            if actual_rows != expected_state[table]:
+                self.fail(f"{table} differs (result ID aliases={aliases!r}): actual={actual_rows!r}; expected={expected_state[table]!r}")
         return response.json()
+
+    def test_http_lead_and_unassigned_submit_create_work_review(self):
+        lead_owned = python_action(self.backend, self.agent_id, {
+            "action": "create", "title": "Lead-owned submit", "owner": self.agent_id,
+        })
+        self.assert_matches_python({
+            "action": "submit", "task_id": lead_owned["id"], "version": lead_owned["version"],
+            "result": "lead evidence", "checks": "checked", "revision": "abc1234",
+            "id": "http-lead-submit-review-event",
+        })
+        unassigned = python_action(self.backend, self.agent_id, {
+            "action": "create", "title": "Unassigned submit",
+        })
+        self.assert_matches_python({
+            "action": "submit", "task_id": unassigned["id"], "version": unassigned["version"],
+            "result": "unassigned evidence", "checks": "checked", "revision": "abc1234",
+            "id": "http-unassigned-submit-review-event",
+        })
+
+    def test_rust_submit_accept_chain_matches_independent_python_chain(self):
+        task = python_action(self.backend, self.agent_id, {
+            "action": "create", "title": "Independent action chain", "owner": self.agent_id,
+        })
+        submit_body = {
+            "action": "submit", "task_id": task["id"], "version": task["version"],
+            "result": "chain result", "checks": "chain checks", "revision": "abc1234",
+            "files": ["src/chain.rs"], "id": "independent-chain-submit",
+        }
+        expected_results, expected_state = reference_actions(
+            self.backend,
+            self.agent_id,
+            [submit_body, {
+                "action": "accept", "task_id": task["id"],
+                "version": task["version"] + 1, "result": "chain accepted",
+                "id": "independent-chain-accept",
+            }],
+        )
+        submitted = self.post(submit_body)
+        self.assertEqual(submitted.status, 200, submitted.body[:1000])
+        accepted = self.post({
+            "action": "accept", "task_id": task["id"], "version": submitted.json()["version"],
+            "result": "chain accepted", "id": "independent-chain-accept",
+        })
+        self.assertEqual(accepted.status, 200, accepted.body[:1000])
+        actual_state = snapshot(self.backend.state)
+        aliases = result_id_aliases(expected_state, actual_state)
+        self.assertEqual(normal_result(submitted.json(), aliases), normal_result(expected_results[0], aliases))
+        self.assertEqual(normal_result(accepted.json(), aliases), normal_result(expected_results[1], aliases))
+        actual_state, expected_state = compare_snapshots(expected_state, actual_state, aliases)
+        self.assertEqual(actual_state, expected_state)
+
+    def test_accept_remote_dependent_is_501_and_atomic(self):
+        if not os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"):
+            self.skipTest("the Python backend routes remote work through federation")
+        review = python_action(self.backend, self.agent_id, {
+            "action": "create", "title": "Remote dependent review", "owner": self.agent_id,
+        })
+        claim = python_action(self.backend, self.agent_id, {
+            "action": "claim", "task_id": review["id"], "owner": self.agent_id,
+        })
+        submitted = python_action(self.backend, self.agent_id, {
+            "action": "submit", "task_id": review["id"], "version": claim["version"],
+            "result": "review me", "checks": "checked", "revision": "abc1234",
+        })
+        dependent = python_action(self.backend, self.agent_id, {
+            "action": "create", "title": "Remote dependent", "owner": self.worker_id,
+            "status": "blocked", "dependencies": [review["id"]],
+        })
+        with closing(fixture_connection(self.backend.state / "canvas.sqlite3")) as database, database:
+            row = database.execute("SELECT record FROM runtime_agents WHERE id=?", (self.worker_id,)).fetchone()
+            worker = json.loads(row[0])
+            worker["remoteWorker"] = {"server": "remote-server", "link": "remote-link"}
+            database.execute("UPDATE runtime_agents SET record=? WHERE id=?", (json.dumps(worker), self.worker_id))
+        body = {
+            "action": "accept", "task_id": review["id"], "version": submitted["version"],
+            "result": "verified", "id": "remote-dependent-accept",
+        }
+        before = snapshot(self.backend.state)
+        refused = self.post(body)
+        self.assertEqual(refused.status, 501, refused.body[:1000])
+        self.assertEqual(refused.json().get("error"), "Not implemented: requires cross-server/remote-events")
+        self.assertEqual(snapshot(self.backend.state), before)
+        with closing(fixture_connection(self.backend.state / "canvas.sqlite3")) as database, database:
+            row = database.execute("SELECT record FROM runtime_agents WHERE id=?", (self.worker_id,)).fetchone()
+            worker = json.loads(row[0])
+            worker.pop("remoteWorker", None)
+            database.execute("UPDATE runtime_agents SET record=? WHERE id=?", (json.dumps(worker), self.worker_id))
+        accepted = self.post(body)
+        self.assertEqual(accepted.status, 200, accepted.body[:1000])
+        self.assertEqual(self.post(body).json(), accepted.json())
+        with closing(sqlite3.connect(self.backend.state / "canvas.sqlite3")) as database:
+            rows = database.execute(
+                "SELECT id FROM runtime_events WHERE kind='work_ready' AND json_extract(text,'$.task')=?",
+                (dependent["id"],),
+            ).fetchall()
+        self.assertEqual(len(rows), 1)
+
+    def test_claim_submit_accept_differential_python_written_states(self):
+        claimed = python_action(self.backend, self.agent_id, {"action": "create", "title": "Claim oracle"})
+        self.assert_matches_python_as(self.agent_id, {
+            "action": "claim", "task_id": claimed["id"], "owner": self.worker_id,
+        })
+
+        submitted = python_action(self.backend, self.agent_id, {"action": "create", "title": "Submit oracle"})
+        worker_claim = python_action(self.backend, self.agent_id, {
+            "action": "claim", "task_id": submitted["id"], "owner": self.worker_id,
+        })
+        self.assert_matches_python_as(self.agent_id, {
+            "action": "submit", "task_id": submitted["id"], "version": worker_claim["version"],
+            "result": "worker evidence", "checks": "checks passed", "revision": "abc1234",
+            "files": ["src/lib.rs"], "id": "work-diff-submit",
+        })
+
+        reviewed = python_action(self.backend, self.agent_id, {"action": "create", "title": "Accept oracle"})
+        lead_claim = python_action(self.backend, self.agent_id, {
+            "action": "claim", "task_id": reviewed["id"], "owner": self.agent_id,
+        })
+        lead_submit = python_action(self.backend, self.agent_id, {
+            "action": "submit", "task_id": reviewed["id"], "version": lead_claim["version"],
+            "result": "lead evidence", "checks": "checks passed", "revision": "abc1234",
+        })
+        python_action(self.backend, self.agent_id, {
+            "action": "create", "title": "Wake after acceptance", "owner": self.worker_id,
+            "status": "blocked", "dependencies": [reviewed["id"]],
+        })
+        accept_body = {
+            "action": "accept", "task_id": reviewed["id"], "version": lead_submit["version"],
+            "result": "reviewed", "id": "work-diff-accept",
+        }
+        self.assert_matches_python_as(self.worker_id, accept_body)
+        self.assert_matches_python_as(self.worker_id, accept_body)
+        conflict = {**accept_body, "result": "changed decision"}
+        expected_error = python_error(self.backend, self.worker_id, conflict)
+        before = snapshot(self.backend.state)
+        response = self.post_as(self.worker_id, conflict)
+        self.assertEqual(response.status, 400, response.body[:1000])
+        self.assertEqual(response.json().get("error"), expected_error)
+        self.assertEqual(snapshot(self.backend.state), before)
+
+    def test_claim_submit_accept_validation_edges_are_no_write(self):
+        item = python_action(self.backend, self.agent_id, {"action": "create", "title": "Validation oracle"})
+        claim = python_action(self.backend, self.agent_id, {"action": "claim", "task_id": item["id"], "owner": self.worker_id})
+        bad_submissions = (
+            {"result": "\u001c", "checks": "checks", "revision": "abc1234"},
+            {"result": "result", "checks": "\u001c", "revision": "abc1234"},
+            {"result": "result", "checks": "checks", "revision": "abc1234", "files": [" " * 4096 + "x"]},
+        )
+        for index, fields in enumerate(bad_submissions):
+            body = {"action": "submit", "task_id": item["id"], "version": claim["version"], "id": f"invalid-submit-{index}", **fields}
+            before = snapshot(self.backend.state)
+            response = self.post(body)
+            self.assertEqual(response.status, 400, response.body[:1000])
+            self.assertEqual(snapshot(self.backend.state), before)
+
+        review = python_action(self.backend, self.agent_id, {"action": "create", "title": "Blank accept"})
+        claim = python_action(self.backend, self.agent_id, {"action": "claim", "task_id": review["id"], "owner": self.agent_id})
+        submit = python_action(self.backend, self.agent_id, {
+            "action": "submit", "task_id": review["id"], "version": claim["version"],
+            "result": "result", "checks": "checks", "revision": "abc1234",
+        })
+        before = snapshot(self.backend.state)
+        response = self.post_as(self.worker_id, {
+            "action": "accept", "task_id": review["id"], "version": submit["version"],
+            "result": "\u001c", "id": "blank-accept",
+        })
+        self.assertEqual(response.status, 400, response.body[:1000])
+        self.assertEqual(snapshot(self.backend.state), before)
+
+    def test_claim_submit_accept_stale_versions_match_python_and_replay_conflicts(self):
+        task = python_action(self.backend, self.agent_id, {"action": "create", "title": "Stale claim"})
+        python_action(self.backend, self.agent_id, {
+            "action": "claim", "task_id": task["id"], "owner": self.worker_id,
+        })
+        body = {"action": "claim", "task_id": task["id"], "version": task["version"],
+                "owner": self.worker_id, "id": "stale-claim"}
+        expected_error = python_error(self.backend, self.agent_id, body)
+        before = snapshot(self.backend.state)
+        response = self.post(body)
+        self.assertEqual(response.status, 400, response.body[:1000])
+        self.assertEqual(response.json().get("error"), expected_error)
+        self.assertEqual(snapshot(self.backend.state), before)
+
+        submitted = python_action(self.backend, self.agent_id, {"action": "create", "title": "Stale submit"})
+        python_action(self.backend, self.agent_id, {
+            "action": "claim", "task_id": submitted["id"], "owner": self.worker_id,
+        })
+        body = {"action": "submit", "task_id": submitted["id"], "version": submitted["version"],
+                "result": "result", "checks": "checks", "revision": "abc1234", "id": "stale-submit"}
+        expected_error = python_error(self.backend, self.agent_id, body)
+        before = snapshot(self.backend.state)
+        response = self.post(body)
+        self.assertEqual(response.status, 400, response.body[:1000])
+        self.assertEqual(response.json().get("error"), expected_error)
+        self.assertEqual(snapshot(self.backend.state), before)
+
+        reviewed = python_action(self.backend, self.agent_id, {"action": "create", "title": "Stale accept"})
+        claim = python_action(self.backend, self.agent_id, {
+            "action": "claim", "task_id": reviewed["id"], "owner": self.agent_id,
+        })
+        submit = python_action(self.backend, self.agent_id, {
+            "action": "submit", "task_id": reviewed["id"], "version": claim["version"],
+            "result": "result", "checks": "checks", "revision": "abc1234",
+        })
+        body = {"action": "accept", "task_id": reviewed["id"], "version": submit["version"] - 1,
+                "result": "reviewed", "id": "stale-accept"}
+        expected_error = python_error(self.backend, self.worker_id, body)
+        before = snapshot(self.backend.state)
+        response = self.post_as(self.worker_id, body)
+        self.assertEqual(response.status, 400, response.body[:1000])
+        self.assertEqual(response.json().get("error"), expected_error)
+        self.assertEqual(snapshot(self.backend.state), before)
+
+    def test_claim_submit_accept_blocked_and_terminal_transitions_match_python(self):
+        blocker = python_action(self.backend, self.agent_id, {
+            "action": "create", "title": "Unaccepted prerequisite", "status": "blocked",
+        })
+        dependent = python_action(self.backend, self.agent_id, {
+            "action": "create", "title": "Blocked dependent", "owner": self.worker_id,
+            "dependencies": [blocker["id"]],
+        })
+        claim = {
+            "action": "claim", "task_id": dependent["id"], "version": dependent["version"],
+            "owner": self.worker_id, "id": "blocked-claim",
+        }
+        self.assert_python_refusal_without_write(self.agent_id, claim)
+
+        ready = python_action(self.backend, self.agent_id, {"action": "create", "title": "No result yet"})
+        self.assert_python_refusal_without_write(self.agent_id, {
+            "action": "accept", "task_id": ready["id"], "version": ready["version"],
+            "result": "premature", "id": "accept-before-submit",
+        })
+
+        owned = python_action(self.backend, self.agent_id, {
+            "action": "create", "title": "Terminal submit", "owner": self.agent_id,
+        })
+        submitted = python_action(self.backend, self.agent_id, {
+            "action": "submit", "task_id": owned["id"], "version": owned["version"],
+            "result": "result", "checks": "checked", "revision": "abc1234",
+        })
+        accepted = python_action(self.backend, self.agent_id, {
+            "action": "accept", "task_id": owned["id"], "version": submitted["version"],
+            "result": "verified",
+        })
+        self.assert_python_refusal_without_write(self.agent_id, {
+            "action": "submit", "task_id": owned["id"], "version": accepted["version"],
+            "result": "late result", "checks": "checked", "revision": "abc1234",
+            "id": "submit-after-accept",
+        })
+        self.assert_python_refusal_without_write(self.agent_id, {
+            "action": "accept", "task_id": owned["id"], "version": accepted["version"],
+            "result": "second decision", "id": "accept-after-accept",
+        })
+
+    def assert_python_refusal_without_write(self, agent_id, body):
+        expected_error = python_error(self.backend, agent_id, body)
+        before = snapshot(self.backend.state)
+        response = self.post_as(agent_id, body)
+        self.assertEqual(response.status, 400, response.body[:1000])
+        self.assertEqual(response.json().get("error"), expected_error)
+        self.assertEqual(snapshot(self.backend.state), before)
+
+    def test_submit_accept_store_failpoints_and_artifact_replay(self):
+        metadata_failpoint = (
+            ("event metadata", "CREATE TRIGGER fail_point BEFORE INSERT ON runtime_event_meta BEGIN SELECT RAISE(ABORT,'injected'); END"),
+        ) if os.environ.get("STUDIO_HTTP_BACKEND_COMMAND") else ()
+        if metadata_failpoint:
+            # Recovery-pending agents intentionally persist queue events without
+            # timing metadata; clear that fixture flag so this case reaches the
+            # runtime_event_meta store call it is meant to fail.
+            with closing(fixture_connection(self.backend.state / "canvas.sqlite3")) as database, database:
+                row = database.execute(
+                    "SELECT record FROM runtime_agents WHERE id=?", (self.agent_id,)
+                ).fetchone()
+                lead = json.loads(row[0])
+                lead.pop("moveImportPending", None)
+                lead.update(status="running", autoWake=True)
+                database.execute(
+                    "UPDATE runtime_agents SET record=? WHERE id=?",
+                    (json.dumps(lead), self.agent_id),
+                )
+        submit_failures = (
+            ("work_review event", "CREATE TRIGGER fail_point BEFORE INSERT ON runtime_events WHEN NEW.kind='work_review' BEGIN SELECT RAISE(ABORT,'injected'); END"),
+            *metadata_failpoint,
+            ("work update", "CREATE TRIGGER fail_point BEFORE UPDATE ON runtime_work BEGIN SELECT RAISE(ABORT,'injected'); END"),
+            ("operation receipt", "CREATE TRIGGER fail_point BEFORE INSERT ON runtime_operation_receipts BEGIN SELECT RAISE(ABORT,'injected'); END"),
+        )
+        for label, trigger in submit_failures:
+            task = python_action(self.backend, self.agent_id, {"action": "create", "title": f"Submit failpoint {label}"})
+            claim = python_action(self.backend, self.agent_id, {"action": "claim", "task_id": task["id"], "owner": self.worker_id})
+            body = {"action": "submit", "task_id": task["id"], "version": claim["version"],
+                    "result": "result", "checks": "checks", "revision": "abc1234", "id": f"fail-submit-{label}"}
+            before = snapshot(self.backend.state)
+            with closing(fixture_connection(self.backend.state / "canvas.sqlite3")) as database, database:
+                database.execute(trigger)
+            failed = self.post(body)
+            self.assertNotEqual(failed.status, 200, f"{label}: {failed.body[:1000]}")
+            self.assertEqual(snapshot(self.backend.state), before, label)
+            with closing(fixture_connection(self.backend.state / "canvas.sqlite3")) as database, database:
+                database.execute("DROP TRIGGER fail_point")
+
+        accept_failures = (
+            ("review event close", "CREATE TRIGGER fail_point BEFORE UPDATE ON runtime_events WHEN OLD.kind='work_review' BEGIN SELECT RAISE(ABORT,'injected'); END"),
+            ("decision event", "CREATE TRIGGER fail_point BEFORE INSERT ON runtime_events WHEN NEW.kind='work_decision' BEGIN SELECT RAISE(ABORT,'injected'); END"),
+            *metadata_failpoint,
+            ("work update", "CREATE TRIGGER fail_point BEFORE UPDATE ON runtime_work BEGIN SELECT RAISE(ABORT,'injected'); END"),
+            ("operation receipt", "CREATE TRIGGER fail_point BEFORE INSERT ON runtime_operation_receipts BEGIN SELECT RAISE(ABORT,'injected'); END"),
+        )
+        for label, trigger in accept_failures:
+            task = python_action(self.backend, self.agent_id, {"action": "create", "title": f"Accept failpoint {label}"})
+            claim = python_action(self.backend, self.agent_id, {"action": "claim", "task_id": task["id"], "owner": self.agent_id})
+            submit = python_action(self.backend, self.agent_id, {
+                "action": "submit", "task_id": task["id"], "version": claim["version"],
+                "result": "result", "checks": "checks", "revision": "abc1234",
+            })
+            with closing(fixture_connection(self.backend.state / "canvas.sqlite3")) as database, database:
+                review_id = f"work-result:{submit['results'][-1]['id']}"
+                if metadata_failpoint:
+                    # Python enqueue marks a paused recovery fixture cancelled;
+                    # this failpoint specifically exercises closing a pending review.
+                    database.execute(
+                        "UPDATE runtime_events SET status='pending' WHERE id=?",
+                        (review_id,),
+                    )
+                review_event = database.execute(
+                    "SELECT agent,status FROM runtime_events WHERE id=?",
+                    (review_id,),
+                ).fetchone()
+            if metadata_failpoint:
+                self.assertEqual(review_event, (self.agent_id, "pending"))
+            body = {"action": "accept", "task_id": task["id"], "version": submit["version"], "result": "verified", "id": f"fail-accept-{label}"}
+            before = snapshot(self.backend.state)
+            with closing(fixture_connection(self.backend.state / "canvas.sqlite3")) as database, database:
+                database.execute(trigger)
+            failed = self.post(body)
+            self.assertNotEqual(failed.status, 200, f"{label}: {failed.body[:1000]}")
+            self.assertEqual(snapshot(self.backend.state), before, label)
+            with closing(fixture_connection(self.backend.state / "canvas.sqlite3")) as database, database:
+                database.execute("DROP TRIGGER fail_point")
+
+        task = python_action(self.backend, self.agent_id, {"action": "create", "title": "Artifact replay"})
+        claim = python_action(self.backend, self.agent_id, {"action": "claim", "task_id": task["id"], "owner": self.agent_id})
+        task_dir = self.backend.state / "results" / task["id"]
+        task_dir.parent.mkdir(parents=True, exist_ok=True)
+        task_dir.write_text("block directory")
+        body = {"action": "submit", "task_id": task["id"], "version": claim["version"],
+                "result": "committed result", "checks": "checks", "revision": "abc1234", "id": "artifact-crash-replay"}
+        failed = self.post(body)
+        self.assertNotEqual(failed.status, 200, failed.body[:1000])
+        committed = snapshot(self.backend.state)
+        task_dir.unlink()
+        replay = self.post(body)
+        self.assertEqual(replay.status, 200, replay.body[:1000])
+        artifact = Path(replay.json()["results"][-1]["resultFile"])
+        self.assertTrue(artifact.is_file())
+        self.assertEqual(snapshot(self.backend.state), committed)
+        conflict = self.post({**body, "result": "changed committed result"})
+        self.assertEqual(conflict.status, 400, conflict.body[:1000])
+        self.assertEqual(snapshot(self.backend.state), committed)
 
     def test_create_matches_python_fields_receipt_replay_and_dependency_state(self):
         dependency = self.post({"action": "create", "title": "Accepted dependency"})
@@ -202,6 +738,82 @@ class WorkWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         self.assertEqual(conflict.status, 400, conflict.body[:1000])
         self.assertEqual(no_write_snapshot(self.backend.state), before)
 
+    def test_claim_submit_accept_and_host_result_artifact(self):
+        worker_task = self.post({"action": "create", "title": "Worker submission"})
+        self.assertEqual(worker_task.status, 200, worker_task.body[:1000])
+        worker_id = worker_task.json()["id"]
+        claimed = self.assert_matches_python({
+            "action": "claim", "task_id": worker_id, "owner": self.worker_id,
+        })
+        self.assertEqual(claimed["owner"], self.worker_id)
+        submit = {
+            "action": "submit", "task_id": worker_id, "version": claimed["version"],
+            "result": "Worker result", "checks": "Contract passed", "revision": "abc1234",
+            "files": ["src/example.rs"], "id": "work-submit-replay",
+        }
+        response = self.post_as(self.worker_id, submit)
+        self.assertEqual(response.status, 200, response.body[:1000])
+        result = response.json()["results"][-1]
+        self.assertEqual(result["agent"], self.worker_id)
+        self.assertEqual(result["text"], "Worker result")
+        self.assertEqual(result["checks"], "Contract passed")
+        result_path = Path(result["resultFile"])
+        self.assertTrue(result_path.is_file())
+        self.assertIn("Worker result", result_path.read_text())
+        after_submit = snapshot(self.backend.state)
+        replay = self.post_as(self.worker_id, submit)
+        self.assertEqual(replay.status, 200, replay.body[:1000])
+        self.assertEqual(normal_result(replay.json()), normal_result(response.json()))
+        self.assertEqual(snapshot(self.backend.state), after_submit)
+        before_archive = snapshot(self.backend.state)
+        worker_accept = self.post({"action": "accept", "task_id": worker_id, "result": "Verified"})
+        if os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"):
+            self.assertEqual(worker_accept.status, 501, worker_accept.body[:1000])
+            self.assertEqual(worker_accept.json().get("error"), "Not implemented: requires workspace-state/agent-archive")
+            self.assertEqual(snapshot(self.backend.state), before_archive)
+        else:
+            self.assertEqual(worker_accept.status, 200, worker_accept.body[:1000])
+            self.assertEqual(worker_accept.json()["status"], "accepted")
+            self.assertEqual(worker_accept.json()["archive"]["status"], "kept")
+
+        lead_task = self.post({"action": "create", "title": "Lead submission"})
+        self.assertEqual(lead_task.status, 200, lead_task.body[:1000])
+        lead_id = lead_task.json()["id"]
+        lead_claim = self.post({"action": "claim", "task_id": lead_id, "owner": self.agent_id})
+        self.assertEqual(lead_claim.status, 200, lead_claim.body[:1000])
+        lead_submit = self.post({
+            "action": "submit", "task_id": lead_id, "version": lead_claim.json()["version"],
+            "result": "Lead result", "checks": "Contract passed", "revision": "abc1234",
+            "id": "lead-submit-replay",
+        })
+        self.assertEqual(lead_submit.status, 200, lead_submit.body[:1000])
+        accepted = self.post({
+            "action": "accept", "task_id": lead_id, "version": lead_submit.json()["version"],
+            "result": "Verified on host", "id": "lead-accept-replay",
+        })
+        self.assertEqual(accepted.status, 200, accepted.body[:1000])
+        self.assertEqual(accepted.json()["status"], "accepted")
+        self.assertEqual(accepted.json()["archive"]["status"], "skipped")
+        if os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"):
+            self.assertEqual(accepted.json()["archivePending"], False)
+            vm_task = self.post({"action": "create", "title": "VM submission"})
+            self.assertEqual(vm_task.status, 200, vm_task.body[:1000])
+            vm_id = vm_task.json()["id"]
+            vm_claim = self.post({"action": "claim", "task_id": vm_id, "owner": self.worker_id})
+            self.assertEqual(vm_claim.status, 200, vm_claim.body[:1000])
+            with closing(fixture_connection(self.backend.state / "canvas.sqlite3")) as database, database:
+                row = database.execute("SELECT record FROM runtime_agents WHERE id=?", (self.worker_id,)).fetchone()
+                worker = json.loads(row[0]); worker["executionMode"] = "vm"
+                database.execute("UPDATE runtime_agents SET record=? WHERE id=?", (json.dumps(worker), self.worker_id))
+            before_vm_submit = snapshot(self.backend.state)
+            vm_submit = self.post_as(self.worker_id, {
+                "action": "submit", "task_id": vm_id, "result": "VM result",
+                "checks": "Contract passed", "revision": "abc1234",
+            })
+            self.assertEqual(vm_submit.status, 501, vm_submit.body[:1000])
+            self.assertEqual(vm_submit.json().get("error"), "Not implemented: requires workspace-state/submission-files")
+            self.assertEqual(snapshot(self.backend.state), before_vm_submit)
+
     def test_refusals_stale_versions_deleted_agent_and_failure_roll_back_all_tables(self):
         created = self.post({"action": "create", "title": "Refusal target"})
         self.assertEqual(created.status, 200, created.body[:1000])
@@ -215,9 +827,6 @@ class WorkWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             cases = (
                 ({"action": "create", "title": "Assigned", "owner": self.worker_id}, "worker-driver/work-assignment"),
                 ({"action": "update", "task_id": created.json()["id"], "owner": self.worker_id}, "worker-driver/work-assignment"),
-                ({"action": "claim", "task_id": created.json()["id"]}, "worker-driver/work-assignment"),
-                ({"action": "submit", "task_id": created.json()["id"], "result": "done", "checks": "ok", "revision": "abc"}, "workspace-state/submission-files"),
-                ({"action": "accept", "task_id": created.json()["id"], "result": "verified"}, "workspace-state/agent-archive"),
             )
         for body, dependency in cases:
             before = no_write_snapshot(self.backend.state)

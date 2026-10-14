@@ -43,6 +43,8 @@ class RecoveryFields(ContractModel):
 
 
 class RecoveryAgentRecord(RecoveryFields):
+    # Agents count notifications; only nested attempt records contain event IDs.
+    events: Annotated[StrictInt, Field(ge=0)] = 0  # type: ignore[assignment]
     id: Annotated[StrictStr, Field(min_length=1)]
     rootId: StrictStr
     epoch: Annotated[StrictInt, Field(ge=0, le=9007199254740991)]

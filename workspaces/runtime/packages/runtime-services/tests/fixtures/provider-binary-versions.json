@@ -1,0 +1,237 @@
+{
+  "versions": [
+    "1.2.3",
+    "codex-cli 1.2.3",
+    "Claude Code v2.1.278 (Claude Code)",
+    "2.0.0-beta.2",
+    "2.0.0-beta.11",
+    "2.0.0+build.4",
+    "1.2.3-alpha.",
+    "prefix 9.8.7-rc.1 trailing",
+    "latest",
+    "18446744073709551616.0.0",
+    "1.0.0-18446744073709551616",
+    "00018446744073709551616.0002.0003-00011"
+  ],
+  "nativeVersions": [
+    "1.2.3",
+    "1.2.3-beta.2",
+    "1.2.3+build.4",
+    "1.2.3-alpha.",
+    "1.2.3 trailing",
+    "1.2.3-",
+    "18446744073709551616.0.0",
+    "1.0.0-18446744073709551616",
+    "00018446744073709551616.0002.0003-00011+build.1"
+  ],
+  "hashes": [
+    [
+      "codex",
+      "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    ],
+    [
+      "codex-code-mode-host",
+      "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    ]
+  ],
+  "comparisons": [
+    {
+      "installed": "1.2.3-2",
+      "available": "1.2.3-beta.1",
+      "source": "installed"
+    },
+    {
+      "installed": "1.2.3",
+      "available": "1.2.3",
+      "source": "upstream"
+    },
+    {
+      "installed": "2.0.0-beta.1",
+      "available": "2.0.0-beta.2",
+      "source": "installed"
+    },
+    {
+      "installed": "2.0.0",
+      "available": "2.1.0",
+      "source": "upstream"
+    },
+    {
+      "installed": "2.2.0",
+      "available": "2.1.0",
+      "source": "upstream"
+    },
+    {
+      "installed": "latest",
+      "available": "9.0.0",
+      "source": "installed"
+    },
+    {
+      "installed": null,
+      "available": "9.0.0",
+      "source": "upstream"
+    },
+    {
+      "installed": "18446744073709551616.0.0-10",
+      "available": "18446744073709551616.0.0-11",
+      "source": "upstream"
+    },
+    {
+      "installed": "18446744073709551616.0.0",
+      "available": "18446744073709551617.0.0",
+      "source": "installed"
+    },
+    {
+      "installed": "1.0.0-18446744073709551616",
+      "available": "1.0.0-18446744073709551617",
+      "source": "installed"
+    }
+  ],
+  "diagnostics": [
+    {
+      "accountKey": "default",
+      "provider": "codex",
+      "runningVersion": "0.153.3",
+      "installedVersion": "0.153.5",
+      "configuredVersion": null,
+      "availableVersion": "0.153.6",
+      "upstreamVersion": "0.153.7",
+      "error": null,
+      "runningNote": null,
+      "at": 1800000000.0
+    },
+    {
+      "accountKey": "claude-worker",
+      "provider": "claude",
+      "runningVersion": null,
+      "installedVersion": "Claude Code 2.1.278",
+      "configuredVersion": "2.1.277",
+      "availableVersion": "2.2.0",
+      "upstreamVersion": null,
+      "error": null,
+      "runningNote": "The exact version already running in Claude sessions is unknown.",
+      "at": 1800000000.0
+    },
+    {
+      "accountKey": "codex-unknown",
+      "provider": "codex",
+      "runningVersion": null,
+      "installedVersion": null,
+      "configuredVersion": null,
+      "availableVersion": null,
+      "upstreamVersion": null,
+      "error": "Could not check the provider CLI version.",
+      "runningNote": null,
+      "at": 1800000000.0
+    },
+    {
+      "accountKey": "codex-error-absent",
+      "provider": "codex",
+      "at": 1800000000.0
+    },
+    {
+      "accountKey": "codex-error-null",
+      "provider": "codex",
+      "runningVersion": null,
+      "installedVersion": null,
+      "configuredVersion": null,
+      "availableVersion": null,
+      "upstreamVersion": null,
+      "error": null,
+      "runningNote": null,
+      "at": 1800000000.0
+    },
+    {
+      "accountKey": "codex-error-empty",
+      "provider": "codex",
+      "runningVersion": "",
+      "installedVersion": "",
+      "configuredVersion": "",
+      "availableVersion": "",
+      "upstreamVersion": "",
+      "error": "",
+      "runningNote": "",
+      "at": 1800000000.0
+    }
+  ],
+  "fullVersions": [
+    "999999999999999999999999999999999999.0.0",
+    "1.999999999999999999999999999999999999.0",
+    "1.0.999999999999999999999999999999999999",
+    "1.0.0-999999999999999999999999999999999999",
+    "1.0.0-alpha.999999999999999999999999999999999999",
+    "x0000000000000000000000000000000000002.03.004-00009 trailing",
+    "1.0.0-alpha..1",
+    "1.0.0+metadata",
+    "1.0.0-rc.1+metadata"
+  ],
+  "fullNativeVersions": [
+    "999999999999999999999999999999999999.0.0",
+    "1.999999999999999999999999999999999999.0",
+    "1.0.999999999999999999999999999999999999",
+    "1.0.0-999999999999999999999999999999999999",
+    "1.0.0-alpha..1+build.7",
+    "01.002.0003-0009+meta.1",
+    "1.0.0+",
+    "1.0.0-"
+  ],
+  "fullComparisons": [
+    {
+      "installed": "999999999999999999999999999999999999.0.0-9",
+      "available": "999999999999999999999999999999999999.0.0-10",
+      "source": "installed"
+    },
+    {
+      "installed": "999999999999999999999999999999999998.0.0",
+      "available": "999999999999999999999999999999999999.0.0",
+      "source": "upstream"
+    },
+    {
+      "installed": "1.0.0-alpha..1",
+      "available": "1.0.0-alpha..2",
+      "source": "installed"
+    },
+    {
+      "installed": "1.0.0-rc.9",
+      "available": "1.0.0-rc.10",
+      "source": "upstream"
+    }
+  ],
+  "fullDiagnostics": [
+    {
+      "accountKey": "codex-empty-running-only",
+      "provider": "codex",
+      "runningVersion": "",
+      "at": 1800000000.0
+    },
+    {
+      "accountKey": "codex-empty-error-with-running-null",
+      "provider": "codex",
+      "runningVersion": null,
+      "installedVersion": null,
+      "configuredVersion": null,
+      "error": "",
+      "runningNote": "",
+      "at": 1800000000.0
+    },
+    {
+      "accountKey": "codex-error-with-empty-profile-versions",
+      "provider": "codex",
+      "runningVersion": null,
+      "installedVersion": "",
+      "configuredVersion": "",
+      "error": "read failed",
+      "runningNote": null,
+      "at": 1800000000.0
+    },
+    {
+      "accountKey": "claude-empty-installed-nonempty-configured",
+      "provider": "claude",
+      "runningVersion": null,
+      "installedVersion": "",
+      "configuredVersion": "2.1.277",
+      "error": "",
+      "runningNote": "profile note",
+      "at": 1800000000.0
+    }
+  ]
+}

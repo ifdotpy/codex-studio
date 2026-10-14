@@ -6,12 +6,18 @@ use std::time::Instant;
 use studio_runtime_store::Transaction;
 
 pub(crate) struct CommitGuard {
+    native_params: Option<Value>,
     selection: gates::ExecutionSelection,
     token: crate::workspace_ready::ReadyToken,
     resources: PreparationResources,
     thread: thread::Snapshot,
     compiler_snapshot: Option<turn::PreparationSnapshot>,
     state_root: std::path::PathBuf,
+    filesystem: FilesystemSnapshot,
+}
+pub(crate) struct Admission {
+    selection: gates::ExecutionSelection,
+    filesystem: FilesystemSnapshot,
 }
 pub(crate) struct RequestPreparation {
     pub intent: TurnIntent,
@@ -103,7 +109,11 @@ fn catalog(
         )),
     }
 }
-fn preconditions(tx: &Transaction<'_>, intent: &TurnIntent) -> Result<Value, WorkerError> {
+fn preconditions(
+    tx: &Transaction<'_>,
+    intent: &TurnIntent,
+    filesystem: &FilesystemSnapshot,
+) -> Result<Value, WorkerError> {
     let record = agent(tx, &intent.agent_id)?.value();
     if record["epoch"] != intent.epoch
         || record["startAttempt"]["id"] != intent.attempt_id
@@ -115,7 +125,7 @@ fn preconditions(tx: &Transaction<'_>, intent: &TurnIntent) -> Result<Value, Wor
     {
         return Err(refusal("preparation/ownership-changed".into()));
     }
-    if intent.provider != "codex"
+    if !matches!(intent.provider.as_str(), "codex" | "claude")
         || ["claudePreInputRetry", "claudeAuthWait"]
             .iter()
             .any(|k| record.get(*k).is_some_and(|v| !v.is_null()))
@@ -125,7 +135,7 @@ fn preconditions(tx: &Transaction<'_>, intent: &TurnIntent) -> Result<Value, Wor
         ));
     }
     gates::budget_admission(record.get("tokenBudget")).map_err(|e| refusal(e.to_string()))?;
-    authorize(tx, intent)?;
+    authorize(tx, intent, filesystem)?;
     for selected in &intent.events {
         let current = studio_runtime_store::QueueEventRepository::get(
             tx,
@@ -168,10 +178,11 @@ pub(crate) fn admit(
     store: &RuntimeStore,
     resources: &PreparationResources,
     intent: &TurnIntent,
-) -> Result<gates::ExecutionSelection, WorkerError> {
+) -> Result<Admission, WorkerError> {
+    let filesystem = FilesystemSnapshot::capture(store, &intent.agent_id)?;
     let (identity, observation) = catalog(resources, intent)?;
     scheduler::lifecycle_transaction_with(store, |tx| {
-        let record = preconditions(tx, intent)?;
+        let record = preconditions(tx, intent, &filesystem)?;
         let observed = gates::ExecutionSnapshot::from_record(&record, identity.clone())
             .map_err(|e| refusal(e.to_string()))?;
         let mut selected =
@@ -188,7 +199,10 @@ pub(crate) fn admit(
                 native.map_or(gates::StoredField::Null, gates::StoredField::Value);
             selected.catalog_precondition = Some((catalog.identity.clone(), catalog.expires_at));
         }
-        Ok(selected)
+        Ok(Admission {
+            selection: selected,
+            filesystem,
+        })
     })
 }
 pub(crate) fn workspace(
@@ -257,13 +271,20 @@ pub(crate) fn prepare_ready(
     intent: &TurnIntent,
     method: Method,
     generation: u64,
-    selection: gates::ExecutionSelection,
+    admission: Admission,
     token: crate::workspace_ready::ReadyToken,
 ) -> Result<RequestPreparation, WorkerError> {
+    let Admission {
+        selection,
+        mut filesystem,
+    } = admission;
+    // Workspace provisioning may have created the progress directory.
+    filesystem.progress_directory =
+        FilesystemSnapshot::capture(store, &intent.agent_id)?.progress_directory;
     let (identity, _) = catalog(resources, intent)?;
     let (mut snapshot, mut turn_snapshot, events, mut prepared_intent) =
         scheduler::lifecycle_transaction_with(store, |tx| {
-            let record = preconditions(tx, intent)?;
+            let record = preconditions(tx, intent, &filesystem)?;
             let mut frozen = selection
                 .freeze_record(&record, &identity, Instant::now())
                 .map_err(|e| refusal(e.to_string()))?;
@@ -281,6 +302,7 @@ pub(crate) fn prepare_ready(
                 &frozen,
                 &generation.to_string(),
                 store.root(),
+                filesystem.progress_directory.clone(),
             )?;
             let (turn_snapshot, events) =
                 submission_snapshot(tx, resources, &frozen, intent, store.root())?;
@@ -291,12 +313,14 @@ pub(crate) fn prepare_ready(
             Ok::<_, WorkerError>((snapshot, turn_snapshot, events, prepared_intent))
         })?;
     let mut guard = CommitGuard {
+        native_params: None,
         selection,
         token,
         resources: resources.clone(),
         thread: snapshot.clone(),
         compiler_snapshot: None,
         state_root: store.root().to_path_buf(),
+        filesystem,
     };
     if method == Method::ThreadResume {
         let method = if snapshot.actor.thread_id.is_some() {
@@ -375,7 +399,7 @@ pub(crate) fn prepare_ready(
         "clientUserMessageId".into(),
         json!(compiled.event_ids.first()),
     );
-    let submission = crate::notification_dispatch::PreparedSubmission {
+    let mut submission = crate::notification_dispatch::PreparedSubmission {
         first_event_id: compiled.event_ids[0].clone(),
         submitted_at: turn_snapshot.prepared_at,
         created_at: prepared_intent.events[0].created,
@@ -397,6 +421,25 @@ pub(crate) fn prepare_ready(
             .collect(),
         assets: json!(compiled.transcript.assets),
     };
+    if intent.provider == "claude" {
+        let prepared = scheduler::lifecycle_transaction_with(store, |tx| {
+            Ok::<_, WorkerError>(crate::claude_input_recovery::runtime::start_input(
+                tx,
+                &intent.agent_id,
+                &intent.attempt_id,
+                claude_transport(&intent.account_key, generation)?,
+                Value::Object(params.clone()),
+                submission.text.clone(),
+            )?)
+        })?;
+        params = prepared
+            .params
+            .as_object()
+            .cloned()
+            .ok_or_else(|| invalid("claude params"))?;
+        submission.text = prepared.text;
+    }
+    guard.native_params = Some(Value::Object(params.clone()));
     prepared_intent.thread_id = snapshot.actor.thread_id;
     Ok(RequestPreparation {
         intent: prepared_intent,
@@ -421,7 +464,7 @@ pub(crate) fn commit(
     context: &Pending,
     guard: &CommitGuard,
 ) -> Result<(), WorkerError> {
-    let record = preconditions(tx, &context.intent)?;
+    let record = preconditions(tx, &context.intent, &guard.filesystem)?;
     let (identity, _) = catalog(&guard.resources, &context.intent)?;
     let mut frozen = guard
         .selection
@@ -470,6 +513,7 @@ pub(crate) fn commit(
         &current,
         &guard.thread.account.connection_id,
         &guard.state_root,
+        guard.filesystem.progress_directory.clone(),
     )?;
     if current != guard.thread {
         return Err(refusal("thread-preparation/snapshot-changed".into()));
@@ -487,6 +531,10 @@ pub(crate) fn commit(
         }
         frozen["complaintsPresented"] = json!(compiled.agent_patch.complaints_presented);
     }
+    frozen
+        .as_object_mut()
+        .ok_or_else(|| invalid("agent"))?
+        .remove("preparationWake");
     if let Some(attempt) = frozen
         .get_mut("startAttempt")
         .and_then(Value::as_object_mut)
@@ -586,4 +634,39 @@ pub(crate) fn persist_compilation(
         )?;
     }
     Ok(())
+}
+
+/// Binding comes from the retained account generation, never the native reply.
+pub(crate) fn claude_transport(
+    account: &str,
+    generation: u64,
+) -> Result<crate::claude_input_recovery::TransportSnapshot, WorkerError> {
+    decode(
+        json!({"accountKey":account,"connectionId":generation.to_string(),"supervisorIdentity":null,"closed":false}),
+        "retained Claude binding",
+    )
+}
+pub(crate) fn commit_claude(
+    tx: &Transaction<'_>,
+    intent: &TurnIntent,
+    request_id: &str,
+    generation: u64,
+    submission: &crate::notification_dispatch::PreparedSubmission,
+    guard: &CommitGuard,
+) -> Result<bool, WorkerError> {
+    crate::claude_input_recovery::runtime::submission::commit_start(
+        tx,
+        intent,
+        request_id,
+        crate::claude_input_recovery::runtime::SubmittedBinding {
+            transport: claude_transport(&intent.account_key, generation)?,
+            generation,
+        },
+        guard
+            .native_params
+            .as_ref()
+            .ok_or_else(|| invalid("Claude prepared params"))?,
+        submission,
+    )?;
+    Ok(true)
 }

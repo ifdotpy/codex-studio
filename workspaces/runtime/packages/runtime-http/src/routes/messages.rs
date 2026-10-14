@@ -141,9 +141,17 @@ async fn post_message(
         .unwrap_or("queue")
         .to_owned();
     let result = tokio::task::spawn_blocking(move || {
+        let prepared = studio_runtime_services::message_admission::PreparedAdmission::load(
+            &store.read().map_err(|_| ApiError::internal())?,
+            &body.room,
+        )
+        .map_err(coordination_error)?;
+        #[cfg(test)]
+        ingress_tests::support::after_preparation(&body.room);
+        let admission = state.message_admission.as_deref().unwrap_or(&prepared);
         let posted = store
             .transaction_with_error(|transaction| {
-                coordination::post_message_with_delivery(
+                coordination::post_message_with_admission(
                     transaction,
                     coordination::PostManagedMessage {
                         room: &body.room,
@@ -152,15 +160,14 @@ async fn post_message(
                         delivery: &delivery,
                         assets: &assets,
                     },
+                    admission,
                 )
             })
             .map_err(coordination_error)?;
         let value = super::generated_json::<crate::generated::StudioApiWorkModelsMessageReceipt>(
-            posted.receipt,
+            posted.receipt.clone(),
         )?;
-        if posted.event_inserted {
-            wake.notify_one();
-        }
+        posted.notify_committed(|| wake.notify_one());
         Ok::<Value, ApiError>(value)
     })
     .await
@@ -296,3 +303,7 @@ inventory::submit! {
         ],
     }
 }
+
+#[cfg(test)]
+#[path = "../../../runtime-services/tests/wave7_p03_gate_tests/http.rs"]
+mod ingress_tests;

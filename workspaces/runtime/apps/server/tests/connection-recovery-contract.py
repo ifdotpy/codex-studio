@@ -26,7 +26,8 @@ spec = importlib.util.spec_from_file_location('turn_fixture', Path(__file__).wit
 fixture = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(fixture)
 from codex_canvas import Canvas, make_server
-from codex_connection_recovery import recover, tick as connection_recovery_tick
+from codex_connection_recovery import (eligible, recover, tick as connection_recovery_tick,
+                                       disconnected_preparation_eligible)
 from studio_api.testing import read_session_token
 
 
@@ -96,7 +97,6 @@ class ConnectionRecoveryContract(unittest.TestCase):
         self.assertEqual(self.server.calls, [])
 
     def test_disconnected_preparation_refuses_submitted_changed_or_native_action_receipts(self):
-        from codex_connection_recovery import disconnected_preparation_eligible
         agent = self.unsubmitted_disconnect()
         for field, value in [('submitted', True), ('epoch', agent['epoch'] + 1), ('action', 'review'),
                              ('activeAtReservation', True), ('observedTurnId', 'accepted-turn')]:
@@ -107,6 +107,17 @@ class ConnectionRecoveryContract(unittest.TestCase):
         changed = copy.deepcopy(agent)
         changed['disconnectRecovery']['threadId'] = 'different-thread'
         self.assertFalse(disconnected_preparation_eligible(changed))
+
+    def test_structured_disconnect_error_does_not_crash_recovery_eligibility(self):
+        agent = self.unsubmitted_disconnect()
+        agent['error'] = {'type': 'RuntimeError', 'message': 'Codex disconnected'}
+
+        self.assertFalse(disconnected_preparation_eligible(agent))
+        for turn_id in (None, 'native-turn'):
+            with self.subTest(turn_id=turn_id):
+                changed = copy.deepcopy(agent)
+                changed['turnId'] = turn_id
+                self.assertFalse(eligible(changed))
 
     def test_disconnected_preparation_keeps_whole_batch_when_one_input_is_uncertain(self):
         self.unsubmitted_disconnect(event_ids=['first-unsent', 'uncertain-input'])

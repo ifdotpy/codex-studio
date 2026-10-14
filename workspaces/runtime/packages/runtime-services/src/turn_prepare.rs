@@ -436,7 +436,7 @@ fn context(s: &PreparationSnapshot) -> Result<(String, ContextManifest), Prepare
 
 // Retain producer order only when rewritten payload bytes become summary evidence.
 // serde owns tokenization and validation; duplicate keys keep their first position.
-enum OrderedJson {
+pub(crate) enum OrderedJson {
     Scalar(Value),
     Object(Vec<(String, OrderedJson)>),
     Array(Vec<OrderedJson>),

@@ -19,6 +19,11 @@ use crate::validation::Registry;
 
 #[derive(Clone)]
 pub struct HttpState {
+    /// Host policy; absent uses pre-resolved workspace paths and the named budget refusal.
+    pub message_admission:
+        Option<Arc<dyn studio_runtime_services::message_admission::MessageAdmission>>,
+    pub(crate) callback_runtime:
+        Option<Arc<studio_runtime_services::callback_runtime::CallbackRuntime>>,
     pub claude_login: Option<Arc<studio_runtime_services::claude_login::service::LoginService>>,
     pub(crate) multi_server_boundary:
         Option<Arc<studio_runtime_services::multi_server_pairing::MultiServerBoundary>>,
@@ -40,6 +45,8 @@ pub struct HttpState {
     pub(crate) tool_catalog: Option<Arc<studio_runtime_services::thread_prepare::CatalogSnapshot>>,
     pub(crate) model_catalog: studio_runtime_services::model_catalog::ModelCatalogService,
     pub(crate) capabilities_cache: Arc<studio_runtime_services::catalog_reads::CapabilitiesCache>,
+    pub(crate) resource_notifications:
+        Arc<studio_runtime_services::resource_notify::ResourceNotifications>,
     pub(crate) sync_changes: Arc<ChangeNotificationHub>,
     pub(crate) token_rates: Arc<TokenRateHub>,
     pub(crate) event_wake: Arc<Notify>,
@@ -70,6 +77,8 @@ impl HttpState {
             store.set_commit_notifier(move || changes.notify_one());
         }
         Self {
+            message_admission: None,
+            callback_runtime: None,
             account_driver: None,
             claude_login: None,
             voice_provider: None,
@@ -87,8 +96,13 @@ impl HttpState {
             tool_catalog: None,
             model_catalog,
             capabilities_cache: Arc::new(Default::default()),
-            sync_changes,
-            token_rates: Arc::new(TokenRateHub::new()),
+            resource_notifications: Arc::new(
+                studio_runtime_services::resource_notify::ResourceNotifications::new(Arc::clone(
+                    &sync_changes,
+                )),
+            ),
+            sync_changes: Arc::clone(&sync_changes),
+            token_rates: Arc::new(TokenRateHub::with_change_hub(Arc::clone(&sync_changes))),
             event_wake: Arc::new(Notify::new()),
             etag_operations: BTreeSet::new(),
         }
@@ -99,6 +113,15 @@ impl HttpState {
         boundary: Arc<studio_runtime_services::multi_server_pairing::MultiServerBoundary>,
     ) -> Self {
         self.multi_server_boundary = Some(boundary);
+        self
+    }
+
+    /// Attach the retained provider callback reply adapter.
+    pub fn with_callback_runtime(
+        mut self,
+        runtime: Arc<studio_runtime_services::callback_runtime::CallbackRuntime>,
+    ) -> Self {
+        self.callback_runtime = Some(runtime);
         self
     }
 
@@ -140,6 +163,18 @@ impl HttpState {
     /// Shared post-commit signal for durable event writers and the scheduler.
     pub fn event_wake_handle(&self) -> Arc<Notify> {
         Arc::clone(&self.event_wake)
+    }
+
+    pub fn model_catalog_handle(
+        &self,
+    ) -> studio_runtime_services::model_catalog::ModelCatalogService {
+        self.model_catalog.clone()
+    }
+
+    pub fn resource_notifications_handle(
+        &self,
+    ) -> Arc<studio_runtime_services::resource_notify::ResourceNotifications> {
+        Arc::clone(&self.resource_notifications)
     }
 
     pub fn sync_changes_handle(&self) -> Arc<ChangeNotificationHub> {

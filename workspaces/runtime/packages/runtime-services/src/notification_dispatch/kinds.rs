@@ -19,7 +19,7 @@ pub(super) fn apply(
     method: &str,
     p: &Value,
     identity: &ProviderDeliveryIdentity,
-    state_dir: &str,
+    publication: &super::PublicationContext,
     at: f64,
 ) -> Result<Option<DispatchOutcome>, NotificationDispatchError> {
     let id = agent["id"]
@@ -31,22 +31,6 @@ pub(super) fn apply(
         .strip_prefix("account:")
         .ok_or(NotificationDispatchError::InvalidNotification)?;
     if let Some(kind) = notices::NoticeKind::parse(method) {
-        if p["threadId"].as_str().is_none_or(str::is_empty)
-            && matches!(
-                kind,
-                notices::NoticeKind::Warning
-                    | notices::NoticeKind::Guardian
-                    | notices::NoticeKind::Config
-                    | notices::NoticeKind::Deprecation
-                    | notices::NoticeKind::McpStartup
-                    | notices::NoticeKind::McpLogin
-                    | notices::NoticeKind::StrictReview
-                    | notices::NoticeKind::AuthStarted
-                    | notices::NoticeKind::AuthCompleted
-            )
-        {
-            return Ok(Some(required(NotificationDependency::AccountNotice)));
-        }
         let item_id = format!(
             "{id}:native-notice:hook:{}",
             p["run"]["id"].as_str().unwrap_or_default()
@@ -74,7 +58,7 @@ pub(super) fn apply(
         }
         if let Some(next) = decision.agent {
             *agent = next;
-            persist_agent(tx, &id, agent, state_dir)?;
+            persist_agent(tx, &id, agent, publication)?;
         }
         return Ok(Some(DispatchOutcome::Written));
     }
@@ -82,7 +66,6 @@ pub(super) fn apply(
         "account/login/completed" => Some(NotificationDependency::AccountLogin),
         "account/updated" => Some(NotificationDependency::AccountRefresh),
         "account/rateLimits/updated" => Some(NotificationDependency::RateLimits),
-        "provider/generationStarted" => Some(NotificationDependency::TokenRate),
         "command/exec/outputDelta" => Some(NotificationDependency::MonitorOutput),
         "turn/started" | "turn/completed" => Some(NotificationDependency::TurnLifecycle),
         kind if kind.starts_with("thread/realtime/") => Some(NotificationDependency::Realtime),
@@ -96,14 +79,14 @@ pub(super) fn apply(
         if dependency == NotificationDependency::Realtime {
             // With no configured voice session, Python retains these as thread events.
             update_common_agent_fields(agent, method, p, at)?;
-            persist_agent(tx, &id, agent, state_dir)?;
+            persist_agent(tx, &id, agent, publication)?;
         } else if dependency == NotificationDependency::ThreadUnloaded
             && agent["nativeRelease"]["threadId"] == p["threadId"]
             && !agent["nativeRelease"].is_null()
         {
             agent["nativeRelease"]["closedAt"] = json!(at);
             agent["nativeRelease"]["resetPending"] = json!(false);
-            persist_agent(tx, &id, agent, state_dir)?;
+            persist_agent(tx, &id, agent, publication)?;
         }
         return Ok(Some(required(dependency)));
     }
@@ -111,7 +94,7 @@ pub(super) fn apply(
         let before = agent.clone();
         questions::resolved(tx, agent, p, account, identity.generation, at)?;
         if *agent != before {
-            persist_agent(tx, &id, agent, state_dir)?;
+            persist_agent(tx, &id, agent, publication)?;
         }
         return Ok(Some(DispatchOutcome::Written));
     }
@@ -274,7 +257,7 @@ pub(super) fn apply(
         _ => {}
     }
     update_common_agent_fields(agent, method, p, at)?;
-    persist_agent(tx, &id, agent, state_dir)?;
+    persist_agent(tx, &id, agent, publication)?;
     Ok(Some(DispatchOutcome::Written))
 }
 fn turn(agent: &Value, params: &Value) -> Value {
@@ -287,7 +270,10 @@ fn turn(agent: &Value, params: &Value) -> Value {
 fn required(service: NotificationDependency) -> DispatchOutcome {
     DispatchOutcome::RequiresService { service }
 }
-fn put_task(tx: &Transaction<'_>, task: &Value) -> Result<(), NotificationDispatchError> {
+pub(super) fn put_task(
+    tx: &Transaction<'_>,
+    task: &Value,
+) -> Result<(), NotificationDispatchError> {
     checked("runtime_tasks", task)?;
     Table::<TaskRecord>::new(tx).put(&TaskRecord::from_value(task.clone())?)?;
     let migrated: bool = tx
@@ -353,6 +339,7 @@ pub(super) fn flush_command(
         .turn
         .as_deref()
         .is_some_and(|turn| agent["turnId"] != turn);
+    streams.flush_analytics(key, agent);
     if stale
         && !task
             .as_ref()
@@ -451,7 +438,7 @@ fn command_base(saved: Option<&Value>, task: Option<&Value>) -> String {
     super::suffix(text, items::TOOL_OUTPUT_CHARS)
 }
 
-fn write_historical_item(
+pub(super) fn write_historical_item(
     tx: &Transaction<'_>,
     agent: &str,
     p: &Value,

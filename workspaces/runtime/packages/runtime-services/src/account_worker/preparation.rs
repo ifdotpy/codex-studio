@@ -5,7 +5,7 @@ use super::*;
 #[cfg(test)]
 pub(super) use pipeline::prepare;
 pub(super) use pipeline::{
-    CommitGuard, admit, commit, persist_compilation, prepare_ready, workspace,
+    CommitGuard, admit, commit, commit_claude, persist_compilation, prepare_ready, workspace,
 };
 pub use receipts::remember_delivered_manifests;
 pub(super) use receipts::{accept_thread, accept_turn};

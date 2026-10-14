@@ -60,10 +60,13 @@ struct CacheEntry {
 
 struct CatalogInner {
     executable: Option<PathBuf>,
+    #[cfg(test)]
+    refresh_factory: Mutex<Option<Arc<dyn ProviderTaskFactory>>>,
     cache: Mutex<HashMap<(String, String, String), CacheEntry>>,
     next_generation: Mutex<u64>,
     on_change: ChangeCallback,
-    tasks: Mutex<Vec<tokio::task::JoinHandle<()>>>,
+    tasks: tokio::sync::Mutex<Vec<tokio::task::JoinHandle<()>>>,
+    cleanup_error: Arc<Mutex<Option<String>>>,
     stop: Shutdown,
 }
 
@@ -122,10 +125,13 @@ impl ModelCatalogService {
     pub fn with_change_callback(executable: Option<String>, on_change: ChangeCallback) -> Self {
         Self(Arc::new(CatalogInner {
             executable: executable.map(PathBuf::from),
+            #[cfg(test)]
+            refresh_factory: Mutex::new(None),
             cache: Mutex::new(HashMap::new()),
             next_generation: Mutex::new(0),
             on_change,
-            tasks: Mutex::new(Vec::new()),
+            tasks: tokio::sync::Mutex::new(Vec::new()),
+            cleanup_error: Arc::default(),
             stop: Shutdown::default(),
         }))
     }
@@ -194,18 +200,58 @@ impl ModelCatalogService {
         let stop = self.0.stop.clone();
         let account = account_key.to_owned();
         let home = home.to_owned();
-        let mut tasks = self.0.tasks.lock().expect("catalog task registry");
+        let mut tasks = self.0.tasks.lock().await;
         if *self.0.stop.subscribe().borrow() {
             return CatalogRead::Unavailable;
         }
-        tasks.retain(|task| !task.is_finished());
+        let mut index = 0;
+        while index < tasks.len() {
+            if tasks[index].is_finished() {
+                if let Err(error) = (&mut tasks[index]).await {
+                    *self.0.cleanup_error.lock().expect("catalog cleanup report") =
+                        Some(error.to_string());
+                }
+                drop(tasks.remove(index));
+            } else {
+                index += 1;
+            }
+        }
+        let cleanup_error = self.0.cleanup_error.clone();
+        #[cfg(test)]
+        let refresh_factory = self
+            .0
+            .refresh_factory
+            .lock()
+            .expect("fixture factory")
+            .clone();
         tasks.push(tokio::spawn(async move {
+            #[cfg(test)]
+            if let Some(factory) = refresh_factory {
+                let _permit = permit;
+                let result = read_session_with_shutdown(
+                    factory,
+                    ProviderLaunchSpec::new(
+                        vec!["fixture".into()],
+                        Default::default(),
+                        std::env::temp_dir(),
+                    ),
+                    Instant::now(),
+                    stop,
+                    cleanup_error,
+                )
+                .await;
+                if let Some(inner) = service.upgrade() {
+                    store_result(&inner, &cache_key, generation, result);
+                }
+                return;
+            }
             let result = read_provider_catalog(
                 permit,
                 executable.as_deref(),
                 &home,
                 account != "default",
                 stop,
+                cleanup_error,
             )
             .await;
             if let Some(inner) = service.upgrade() {
@@ -228,18 +274,27 @@ impl ModelCatalogService {
             });
     }
     pub async fn shutdown(&self) -> std::io::Result<()> {
-        let tasks = {
-            let mut tasks = self.0.tasks.lock().expect("catalog tasks");
-            self.0.stop.cancel();
-            std::mem::take(&mut *tasks)
-        };
-        let mut result = Ok(());
-        for task in tasks {
+        self.0.stop.cancel();
+        // Handles remain registry-owned while awaiting: cancelling this drain
+        // cannot detach unfinished cleanup, and the next shutdown resumes it.
+        let mut tasks = self.0.tasks.lock().await;
+        while let Some(task) = tasks.last_mut() {
             if let Err(error) = task.await {
-                result = Err(std::io::Error::other(error));
+                *self.0.cleanup_error.lock().expect("catalog cleanup report") =
+                    Some(error.to_string());
             }
+            drop(tasks.pop());
         }
-        result
+        match self
+            .0
+            .cleanup_error
+            .lock()
+            .expect("catalog cleanup report")
+            .as_ref()
+        {
+            Some(error) => Err(std::io::Error::other(error.clone())),
+            None => Ok(()),
+        }
     }
 }
 
@@ -285,6 +340,7 @@ async fn read_provider_catalog(
     home: &str,
     isolated: bool,
     stop: Shutdown,
+    cleanup_error: Arc<Mutex<Option<String>>>,
 ) -> Result<Value, ()> {
     provider_exchange::run_admitted(
         admission,
@@ -292,6 +348,7 @@ async fn read_provider_catalog(
         home,
         isolated,
         provider_exchange::ExchangeSpec {
+            cleanup_report: Some(cleanup_error),
             timeout: CATALOG_TIMEOUT,
             shutdown: stop,
             initialize_operation: OperationId("catalog-initialize".into()),
@@ -311,7 +368,14 @@ async fn read_session(
     launch: ProviderLaunchSpec,
     started: Instant,
 ) -> Result<Value, ()> {
-    read_session_with_shutdown(factory, launch, started, Shutdown::default()).await
+    read_session_with_shutdown(
+        factory,
+        launch,
+        started,
+        Shutdown::default(),
+        Arc::default(),
+    )
+    .await
 }
 #[cfg(test)]
 async fn read_session_with_shutdown(
@@ -319,12 +383,14 @@ async fn read_session_with_shutdown(
     launch: ProviderLaunchSpec,
     started: Instant,
     shutdown: Shutdown,
+    cleanup_error: Arc<Mutex<Option<String>>>,
 ) -> Result<Value, ()> {
     provider_exchange::run_with_factory(
         factory,
         launch,
         started,
         provider_exchange::ExchangeSpec {
+            cleanup_report: Some(cleanup_error),
             timeout: CATALOG_TIMEOUT,
             shutdown,
             initialize_operation: OperationId("catalog-initialize".into()),
@@ -342,7 +408,21 @@ async fn next_event(
     session: &mut SessionHandle,
 ) -> Result<crate::provider_session_task::SessionEvent, ()> {
     let event = session.events.recv().await.ok_or(())?;
-    // This catalog is deliberately ephemeral: consuming the entry settles it.
+    settle_catalog_event(session, event).await
+}
+
+#[cfg(test)]
+tokio::task_local! { static SETTLEMENT_GATE: std::sync::Arc<(tokio::sync::Notify,tokio::sync::Notify)>; }
+async fn settle_catalog_event(
+    session: &mut SessionHandle,
+    event: crate::provider_session_task::SessionEvent,
+) -> Result<crate::provider_session_task::SessionEvent, ()> {
+    #[cfg(test)]
+    if let Ok(gate) = SETTLEMENT_GATE.try_with(Arc::clone) {
+        gate.0.notify_one();
+        gate.1.notified().await;
+    }
+    // This ephemeral reader still owns the taken event throughout settlement.
     if let Some(journal) = &event.journal {
         session
             .control
@@ -362,8 +442,10 @@ async fn catalog_drive<T>(
     loop {
         tokio::select! { biased;
             result = &mut future => return result.map_err(|_|()),
-            event = next_event(session) => {
-                let event = event?;
+            event = session.events.recv() => {
+                // recv is cancellation safe; settlement owns the event only
+                // after this branch wins, so a command cannot drop its outcomes.
+                let event = settle_catalog_event(session, event.ok_or(())?).await?;
                 if !event.outcomes.is_empty() {
                     if pending.len() == crate::provider_session_task::MAX_UNSETTLED { return Err(()); }
                     pending.push_back(event);
@@ -498,12 +580,19 @@ fn duration_ms(duration: Duration) -> u64 {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+    use crate::provider_session_task::SessionTaskConfig;
     use std::collections::BTreeMap;
     use studio_runtime_process::ProviderLaunchSpec;
     use studio_runtime_process::{EventCursor, provider_seam::*};
     use studio_runtime_providers::Frame;
     use tokio::sync::{mpsc, watch};
 
+    pub(crate) fn set_refresh_factory(
+        service: &ModelCatalogService,
+        factory: Arc<dyn ProviderTaskFactory>,
+    ) {
+        *service.0.refresh_factory.lock().expect("fixture factory") = Some(factory);
+    }
     pub(crate) fn expire_fixture(service: &ModelCatalogService) {
         for entry in service.0.cache.lock().expect("cache").values_mut() {
             entry.expires_at = Some(Instant::now());
@@ -529,7 +618,118 @@ pub(crate) mod tests {
         assert!(store_result(&service.0, &key, 7, Ok(value)));
     }
 
-    struct Script(Vec<Value>, usize);
+    #[tokio::test]
+    async fn cancelled_shutdown_keeps_refresh_join_ownership() {
+        let service = ModelCatalogService::new(None);
+        let (release, wait) = tokio::sync::oneshot::channel::<()>();
+        service.0.tasks.lock().await.push(tokio::spawn(async move {
+            wait.await.expect("release refresh");
+        }));
+        let first = service.clone();
+        let drain = tokio::spawn(async move { first.shutdown().await });
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while !*service.0.stop.subscribe().borrow() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("drain starts");
+        drain.abort();
+        assert!(drain.await.expect_err("cancelled drain").is_cancelled());
+        assert_eq!(
+            service.0.tasks.lock().await.len(),
+            1,
+            "unfinished refresh remains owned"
+        );
+        release.send(()).expect("refresh retained");
+        service.shutdown().await.expect("resumed drain");
+        assert!(service.0.tasks.lock().await.is_empty());
+        *service.0.cleanup_error.lock().expect("report") =
+            Some("provider child 12345 outlived reap grace; termination is unconfirmed".into());
+        let error = service
+            .shutdown()
+            .await
+            .expect_err("cleanup failure remains observable");
+        assert!(error.to_string().contains("12345"));
+    }
+
+    #[tokio::test]
+    async fn command_receipt_cannot_cancel_a_taken_catalog_event() {
+        let factory = Arc::new(Script::new(vec![], 0));
+        let mut session = SessionHandle::open(
+            factory,
+            ProviderHandle::for_account("catalog"),
+            OpenOptions {
+                clock: SessionClock::default(),
+                launch: ProviderLaunchSpec::new(
+                    vec!["script".into()],
+                    BTreeMap::new(),
+                    "/var/tmp".into(),
+                ),
+                expected_generation: Some(Generation(1)),
+            },
+            SessionTaskConfig {
+                generation: Generation(1),
+                claude: false,
+                timeout_ms: 30_000,
+                initialize_operation: OperationId("initialize".into()),
+                request_id_prefix: None,
+                recovered: vec![],
+                initialize_params: json!({}),
+            },
+        )
+        .await
+        .expect("session");
+        let (events, receiver) = mpsc::channel(1);
+        session.events = receiver;
+        events
+            .send(crate::provider_session_task::SessionEvent {
+                journal: None,
+                outcomes: vec![SessionOutcome::GenerationClosed { generation: 7 }],
+            })
+            .await
+            .expect("event");
+        let gate = Arc::new((tokio::sync::Notify::new(), tokio::sync::Notify::new()));
+        let (reply, receipt) = tokio::sync::oneshot::channel::<()>();
+        let barrier = gate.clone();
+        let task = tokio::spawn(SETTLEMENT_GATE.scope(gate, async move {
+            let mut pending = std::collections::VecDeque::new();
+            catalog_drive(
+                &mut session,
+                async { receipt.await.map_err(|_| SessionTaskError::Closed) },
+                &mut pending,
+            )
+            .await
+            .expect("command");
+            assert_eq!(
+                pending.len(),
+                1,
+                "taken event and its outcomes must survive command completion"
+            );
+            assert!(matches!(
+                pending[0].outcomes[0],
+                SessionOutcome::GenerationClosed { generation: 7 }
+            ));
+            session.shutdown().await;
+        }));
+        tokio::time::timeout(Duration::from_secs(10), barrier.0.notified())
+            .await
+            .expect("event taken");
+        reply
+            .send(())
+            .expect("command becomes ready during settlement");
+        barrier.1.notify_one();
+        tokio::time::timeout(Duration::from_secs(10), task)
+            .await
+            .expect("settlement deadline")
+            .expect("reader");
+    }
+
+    struct Script {
+        pages: Vec<Value>,
+        flood: usize,
+        panic_on_exit: bool,
+    }
     impl ProviderTaskFactory for Script {
         fn open(
             &self,
@@ -537,8 +737,9 @@ pub(crate) mod tests {
             options: OpenOptions,
             shutdown: Shutdown,
         ) -> OpenFuture<'_> {
-            let pages = self.0.clone();
-            let flood = self.1;
+            let pages = self.pages.clone();
+            let flood = self.flood;
+            let panic_on_exit = self.panic_on_exit;
             Box::pin(async move {
                 let (commands, mut inbox) = mpsc::channel::<AdapterCommand>(LANE_CAPACITY);
                 let (entries, journal) = mpsc::channel(LANE_CAPACITY);
@@ -633,9 +834,13 @@ pub(crate) mod tests {
                         }
                     };
                     tokio::select! { _ = serve => {}, _ = stop.changed() => {} }
+                    if panic_on_exit {
+                        panic!("injected provider task join failure");
+                    }
                     drop(state);
                     TaskExit {
                         result: Ok(()),
+                        cleanup_error: None,
                         recovery_needed: None,
                     }
                 });
@@ -645,9 +850,26 @@ pub(crate) mod tests {
             })
         }
     }
+    impl Script {
+        fn new(pages: Vec<Value>, flood: usize) -> Self {
+            Self {
+                pages,
+                flood,
+                panic_on_exit: false,
+            }
+        }
+
+        fn panics_on_exit(pages: Vec<Value>) -> Self {
+            Self {
+                pages,
+                flood: 0,
+                panic_on_exit: true,
+            }
+        }
+    }
     async fn scripted(pages: Vec<Value>) -> Result<Value, ()> {
         read_session(
-            Arc::new(Script(pages, 0)),
+            Arc::new(Script::new(pages, 0)),
             ProviderLaunchSpec::new(vec!["scripted".into()], BTreeMap::new(), "/var/tmp".into()),
             Instant::now(),
         )
@@ -757,8 +979,55 @@ pub(crate) mod tests {
     #[tokio::test(start_paused = true)]
     async fn missing_reply_uses_the_exchange_deadline() {
         let started = Instant::now();
-        assert_eq!(scripted(vec![]).await, Err(()));
+        let service = ModelCatalogService::new(None);
+        let result = read_session_with_shutdown(
+            Arc::new(Script::new(vec![], 0)),
+            ProviderLaunchSpec::new(vec!["scripted".into()], BTreeMap::new(), "/var/tmp".into()),
+            started,
+            service.0.stop.clone(),
+            service.0.cleanup_error.clone(),
+        )
+        .await;
+        assert_eq!(result, Err(()));
         assert_eq!(started.elapsed(), CATALOG_TIMEOUT);
+        assert!(
+            service
+                .0
+                .cleanup_error
+                .lock()
+                .expect("cleanup report")
+                .is_none()
+        );
+        service
+            .shutdown()
+            .await
+            .expect("request timeout was cleaned up");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn provider_task_join_failure_fails_catalog_shutdown() {
+        let service = ModelCatalogService::new(None);
+        let result = read_session_with_shutdown(
+            Arc::new(Script::panics_on_exit(vec![json!({
+                "data": [],
+                "nextCursor": null
+            })])),
+            ProviderLaunchSpec::new(vec!["scripted".into()], BTreeMap::new(), "/var/tmp".into()),
+            Instant::now(),
+            service.0.stop.clone(),
+            service.0.cleanup_error.clone(),
+        )
+        .await;
+        assert_eq!(result, Err(()));
+        let error = service
+            .shutdown()
+            .await
+            .expect_err("unconfirmed provider cleanup must fail catalog shutdown");
+        assert!(
+            error
+                .to_string()
+                .contains("provider task exited without a cleanup receipt")
+        );
     }
 
     #[tokio::test(start_paused = true)]
@@ -856,7 +1125,7 @@ pub(crate) mod tests {
         let page = json!({"data":[],"nextCursor":null});
         assert_eq!(
             read_session(
-                Arc::new(Script(vec![page.clone()], LANE_CAPACITY * 4)),
+                Arc::new(Script::new(vec![page.clone()], LANE_CAPACITY * 4)),
                 ProviderLaunchSpec::new(
                     vec!["scripted".into()],
                     BTreeMap::new(),

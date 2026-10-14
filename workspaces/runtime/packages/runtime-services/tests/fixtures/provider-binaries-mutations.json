@@ -1,0 +1,94 @@
+[
+  {
+    "id": "PB01",
+    "description": "reverse numeric versus text prerelease ordering",
+    "file": "workspaces/runtime/packages/runtime-services/src/provider_binaries.rs",
+    "edits": [
+      {
+        "before": "(PrereleasePart::Numeric(_), PrereleasePart::Text(_)) => Ordering::Less,",
+        "after": "(PrereleasePart::Numeric(_), PrereleasePart::Text(_)) => Ordering::Greater,"
+      }
+    ],
+    "witnesses": ["assertion: numeric prerelease sorts before text prerelease"]
+  },
+  {
+    "id": "PB02",
+    "description": "report equal installed and available versions as an update",
+    "file": "workspaces/runtime/packages/runtime-services/src/provider_binaries.rs",
+    "edits": [
+      {
+        "before": "(available_key > installed).then(|| UpdateNotice {",
+        "after": "(available_key >= installed).then(|| UpdateNotice {"
+      }
+    ],
+    "witnesses": [
+      "comparisons: equal 1.2.3 installed and available versions produce no notice"
+    ]
+  },
+  {
+    "id": "PB03",
+    "description": "suppress warning at the tested baseline version",
+    "file": "workspaces/runtime/packages/runtime-services/src/provider_binaries.rs",
+    "edits": [
+      {
+        "before": "if current >= parse_version(baseline)? {",
+        "after": "if current > parse_version(baseline)? {"
+      }
+    ],
+    "witnesses": ["diagnostics: running version equals the provider baseline"]
+  },
+  {
+    "id": "PB04",
+    "description": "hash the input vector rather than the canonical bundle map",
+    "file": "workspaces/runtime/packages/runtime-services/src/provider_binaries.rs",
+    "edits": [
+      {
+        "before": ".collect::<std::collections::BTreeMap<_, _>>();",
+        "after": ".collect::<Vec<_>>();"
+      }
+    ],
+    "witnesses": ["hashes: canonical bundle digest matches the Python oracle"]
+  },
+  {
+    "id": "PB05",
+    "description": "sort large core integers as plain strings",
+    "file": "workspaces/runtime/packages/runtime-services/src/provider_binaries.rs",
+    "edits": [
+      {
+        "before": "self.0\n            .len()\n            .cmp(&other.0.len())\n            .then_with(|| self.0.cmp(&other.0))",
+        "after": "self.0.cmp(&other.0)"
+      }
+    ],
+    "witnesses": [
+      "comparisons: Python-sized core and prerelease integers preserve numeric order"
+    ]
+  },
+  {
+    "id": "PB06",
+    "description": "reverse explicit candidate discovery precedence",
+    "file": "workspaces/runtime/packages/runtime-services/src/provider_binaries.rs",
+    "edits": [
+      {
+        "before": ".chain(inputs.explicit_path)\n            .chain(inputs.path_lookup)",
+        "after": ".chain(inputs.path_lookup)\n            .chain(inputs.explicit_path)"
+      }
+    ],
+    "witnesses": [
+      "discovery: explicit runtime path precedes command lookup and PATH entries"
+    ]
+  },
+  {
+    "id": "PB07",
+    "description": "accept a companion symlink outside the native bundle directory",
+    "file": "workspaces/runtime/packages/runtime-services/src/provider_binaries.rs",
+    "edits": [
+      {
+        "before": "if identity.path.parent() != Some(directory) {",
+        "after": "if false && identity.path.parent() != Some(directory) {"
+      }
+    ],
+    "witnesses": [
+      "identity: symlinked companion must resolve inside the binary source directory"
+    ]
+  }
+]

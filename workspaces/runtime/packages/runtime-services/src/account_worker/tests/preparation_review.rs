@@ -5,7 +5,7 @@ async fn change_agent(state: &State, key: &'static str, value: Value) {
     let id = state.agent.clone();
     state
         .bridge
-        .worker_run(move |store| {
+        .worker_run("preparation-review", move |store| {
             store.transaction_with(|tx| {
                 let mut row = AgentRepository::get(tx, &AgentId::from(id.as_str()))?.unwrap();
                 row.extra.insert(key.into(), value);
@@ -170,7 +170,7 @@ pub(super) async fn scenario_late_context_change_refuses_submission() {
     let epoch = state.epoch;
     let prepared = state
         .bridge
-        .worker_run(move |store| {
+        .worker_run("preparation-review", move |store| {
             let intent = store::claim(store, "default", &id, epoch)?.unwrap();
             preparation::prepare(store, &test_resources()?, &intent, Method::TurnStart, 1)
         })
@@ -179,7 +179,7 @@ pub(super) async fn scenario_late_context_change_refuses_submission() {
     change_agent(&state, "agentModeRevision", json!(444)).await;
     state
         .bridge
-        .worker_run(move |store| {
+        .worker_run("preparation-review", move |store| {
             let operation = format!("account:default:{}:turn/start", prepared.intent.attempt_id);
             let request = RecoveredRequest {
                 ticket: studio_runtime_providers::RequestTicket {
@@ -230,7 +230,12 @@ async fn late_context_change_refuses_submission() {
 #[tokio::test]
 async fn missing_native_effort_uses_shared_catalog_published_after_construction() {
     let state = State::new().await;
-    let service = crate::model_catalog::ModelCatalogService::new(None);
+    let service = crate::model_catalog::ModelCatalogService::new(Some(
+        std::env::temp_dir()
+            .join("absent-provider-for-test")
+            .to_string_lossy()
+            .into_owned(),
+    ));
     let resources = preparation::PreparationResources::bundled(
         String::new(),
         service.clone(),
@@ -272,7 +277,7 @@ pub(super) async fn scenario_sibling_completion_does_not_refuse_non_lead() {
     let epoch = state.epoch;
     let prepared = state
         .bridge
-        .worker_run(move |store| {
+        .worker_run("preparation-review", move |store| {
             store.transaction(|tx| {
                 let original = AgentRepository::get(tx, &AgentId::from(id.as_str()))?
                     .unwrap()
@@ -297,7 +302,7 @@ pub(super) async fn scenario_sibling_completion_does_not_refuse_non_lead() {
         .unwrap();
     state
         .bridge
-        .worker_run(|store| {
+        .worker_run("preparation-review", |store| {
             store.transaction_with(|tx| {
                 let mut sibling = AgentRepository::get(tx, &AgentId::from("sibling"))?.unwrap();
                 sibling.status = studio_runtime_store::AgentStatus::Completed;
@@ -309,7 +314,7 @@ pub(super) async fn scenario_sibling_completion_does_not_refuse_non_lead() {
         .unwrap();
     state
         .bridge
-        .worker_run(move |store| {
+        .worker_run("preparation-review", move |store| {
             let operation = format!("account:default:{}:turn/start", prepared.intent.attempt_id);
             let request = RecoveredRequest {
                 ticket: studio_runtime_providers::RequestTicket {
@@ -369,7 +374,12 @@ async fn cold_and_expired_catalogs_hold_the_attempt_without_failing_it() {
             })
             .await
             .unwrap();
-        let catalog = crate::model_catalog::ModelCatalogService::new(None);
+        let catalog = crate::model_catalog::ModelCatalogService::new(Some(
+            std::env::temp_dir()
+                .join("absent-provider-for-test")
+                .to_string_lossy()
+                .into_owned(),
+        ));
         let page = json!({"data":[{"model":"fake-model","defaultReasoningEffort":"medium","supportedReasoningEfforts":[{"reasoningEffort":"medium"}]}]});
         if expired {
             crate::model_catalog::tests::publish_fixture(&catalog, "default", "", page.clone());

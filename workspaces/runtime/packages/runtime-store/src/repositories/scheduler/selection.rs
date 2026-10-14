@@ -1,6 +1,98 @@
 use super::*;
 
 impl SchedulerRepository {
+    /// Return one bounded account/agent page for worker startup and recovery.
+    /// The account cursor wraps when it reaches the final account; per-account
+    /// agent cursors are supplied by the caller and wrap at the final agent.
+    pub fn account_wake_page(
+        connection: &Connection,
+        after_account: &str,
+        after_agents: &BTreeMap<String, String>,
+        account_limit: usize,
+        agent_limit: usize,
+    ) -> StoreResult<BTreeMap<String, Vec<(String, i64)>>> {
+        const TARGETS: &str = "WITH targets AS (
+ SELECT a.id, COALESCE(json_extract(a.record,'$.accountKey'),'default') account,
+ json_type(a.record,'$.accountKey') account_type,
+ json_extract(a.record,'$.epoch') epoch,
+ (json_extract(a.record,'$.status')='queued'
+  AND json_extract(a.record,'$.autoWake')=1
+  AND COALESCE(json_extract(a.record,'$.inFlight'),0)=0
+  AND COALESCE(json_extract(a.record,'$.nativeFailureHold'),0)=0
+  AND EXISTS(SELECT 1 FROM runtime_events e WHERE e.agent=a.id
+     AND e.epoch=json_extract(a.record,'$.epoch') AND e.status='pending')) pending,
+ ((COALESCE(json_extract(a.record,'$.provider'),'codex')='codex'
+   AND json_extract(a.record,'$.startAttempt.submitted')=1
+   AND json_extract(a.record,'$.startAttempt.connectionGeneration') IS NOT NULL
+   AND json_extract(a.record,'$.status') IN ('starting','running','waiting','paused','interrupted'))
+ OR (json_type(a.record,'$.disconnectRecovery')='object' AND (
+   COALESCE(json_extract(a.record,'$.status'),'') NOT IN ('completed','waiting','paused','parked')
+   OR json_extract(a.record,'$.disconnectRecovery.stage') IS NOT NULL))
+ OR (json_type(a.record,'$.restartRecovery')='object' AND (
+   COALESCE(json_extract(a.record,'$.status'),'') NOT IN ('completed','waiting','paused','parked')
+   OR COALESCE(json_extract(a.record,'$.restartRecovery.stage'),'')
+      NOT IN ('finished','continued','reattached','input_restored')))) recovery
+ FROM runtime_agents a WHERE json_extract(a.record,'$.deletedAt') IS NULL
+ AND COALESCE(json_extract(a.record,'$.remoteWorker'),0)=0
+ AND COALESCE(json_extract(a.record,'$.remoteAnchor'),0)=0)
+";
+        let invalid: Option<String> = connection
+            .query_row(
+                &format!(
+                    "{TARGETS} SELECT id FROM targets WHERE (pending OR recovery)
+        AND (account='' OR account_type NOT IN ('null','text')) LIMIT 1"
+                ),
+                [],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if let Some(id) = invalid {
+            return Err(crate::StoreError::InvalidStoredObject {
+                table: "runtime_agents",
+                id,
+            });
+        }
+
+        let mut account_statement = connection.prepare(&format!(
+            "{TARGETS} SELECT DISTINCT account FROM targets
+             WHERE (pending OR recovery) AND account>?1 ORDER BY account LIMIT ?2"
+        ))?;
+        let mut read_accounts = |after: &str| -> rusqlite::Result<Vec<String>> {
+            account_statement
+                .query_map(rusqlite::params![after, account_limit as i64], |row| {
+                    row.get(0)
+                })?
+                .collect()
+        };
+        let mut accounts = read_accounts(after_account)?;
+        if accounts.is_empty() && !after_account.is_empty() {
+            accounts = read_accounts("")?;
+        }
+
+        let mut agent_statement = connection.prepare(&format!(
+            "{TARGETS} SELECT id,epoch FROM targets
+             WHERE pending AND account=?1 AND id>?2 ORDER BY id LIMIT ?3"
+        ))?;
+        let mut result = BTreeMap::new();
+        for account in accounts {
+            let after = after_agents.get(&account).map(String::as_str).unwrap_or("");
+            let mut read_agents = |after: &str| -> rusqlite::Result<Vec<(String, i64)>> {
+                agent_statement
+                    .query_map(
+                        rusqlite::params![account, after, agent_limit as i64],
+                        |row| Ok((row.get(0)?, row.get(1)?)),
+                    )?
+                    .collect()
+            };
+            let mut agents = read_agents(after)?;
+            if agents.is_empty() && !after.is_empty() {
+                agents = read_agents("")?;
+            }
+            result.insert(account, agents);
+        }
+        Ok(result)
+    }
+
     /// The same metadata identity used by claim replay and submit authorization.
     /// Diagnostic timing fields may change while preparation is running.
     pub fn input_metadata_identity(metadata: &Value) -> Value {

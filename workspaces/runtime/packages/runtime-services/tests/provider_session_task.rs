@@ -120,6 +120,7 @@ fn fake_with_stop_barrier(
         let _ignored = gone.send(());
         TaskExit {
             result: Ok(()),
+            cleanup_error: None,
             recovery_needed: (!initialized).then_some(InitializationRecovery {
                 handle,
                 generation: Some(Generation(1)),

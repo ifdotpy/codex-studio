@@ -406,32 +406,37 @@ expiry and late replies, full-queue shutdown, and restart between Submitted and
 Written. `just test-rust-runtime-corpora` compares Python-written pre-states and
 real lifecycle/dispatch transactions and every before/after bridge boundary in
 the scripted scenarios. The default suite keeps representative crash witnesses;
-full matrix timing separates scenario replay from replacement recovery. The
+targets use operation name and occurrence. A fired fail point is sticky and
+unwinds the worker; cleanup cannot turn it into a handled store error. Recovery
+compares acknowledged text and completion marks with provider payloads, checks
+replacement writes for duplication, recovers a second time, and executes a new
+turn on the same account. Full matrix timing separates scenario replay from
+replacement recovery. The
 separately selected
 `just test-rust-runtime-corpora-mutations` tests the same wiring against seeded
 regressions, including transcript notices and the context exception's boundary.
 
 The bridge rechecks account ownership in claim and submission transactions.
 Lifecycle rejection/NotSent settlement retires transport receipts atomically.
-Stop and notification interrupts are durable pending effects. Each replacement
+Stop and notification interrupts are durable pending effects, replayed in their committed order. Accepted settlement retires the Submit effect and its transport guard together. Each replacement
 recovers proven-unsubmitted claims for its own account, restores the stored
 attempt for journal delivery, and defers callback admission until initialization.
 Only explicit admission refusal proves NotSent; unrelated failures preserve Unknown.
 
-Acknowledged journal prefixes are compacted into one cursor checkpoint. Unresolved
+Acknowledged journal prefixes are compacted into one cursor checkpoint; Written callback replay advances that prefix too. Generation reconciliation retires old checkpoints, recovery markers and abandoned transport/journal records. Unresolved
 requests and pending effects remain indexed by account. Journal receipts retain a
 digest, not another copy of the provider payload. Stream deltas commit in the same
 transaction as cursor eligibility. Their pending text is bounded by
 `STREAM_FLUSH_BYTES` in [`store.rs`](src/account_worker/store.rs); canonical
 transcript/search rewriting occurs on completion, that threshold, or Python's
-`codex_streaming.FLUSH_SECONDS` cadence. Assistant text is never truncated. The
+`codex_streaming.FLUSH_SECONDS` cadence (750 ms). The elapsed deadline is checked before effect processing and ahead of ready command/event lanes. Assistant text is never truncated. The
 command-output buffer uses Python's character-tail rule; command item dispatch is
 still a named gap of the notification service.
 
 A flushed base normally comes from the canonical item. Only an `item/started`
 that replaces this visible text needs a temporary base receipt. Its hash and the
 base row commit together; the next flush or close deletes the row, and recovery
-prunes streams no longer active. No blob store or schema was added. A flush costs
+materializes committed pending text before pruning streams no longer active. A flush reloads the durable batch, so a failed journal operation cannot erase it by leaving an empty live buffer. No blob store or schema was added. A flush costs
 O(total item text); per-delta work handles bounded preview and pending text rather
 than copying the accumulated answer. The corpus compares these exceptional bases
 to Python's live buffer before excluding the validated internal receipt rows.
@@ -449,9 +454,14 @@ repository's exact `reattach_*` corpus output unchanged.
 
 Catalog refreshes share the semaphore in [`model_catalog.rs`](src/model_catalog.rs).
 Registry reads prune removed accounts and replaced homes. The service retains
-refresh task handles; server shutdown cancels and drains them. Catalog requests
+refresh task handles; server shutdown cancels and drains them without losing a
+handle if the caller cancels that wait. The bound is four active refresh tasks,
+not four surviving OS children: if a killed child outlives its one-second reap
+grace, cleanup reports its PID and unconfirmed termination, and shutdown returns
+that error. Catalog requests
 drain session events while awaiting command receipts, preserving bounded-lane
-progress. The ephemeral adapter also bounds the child reap after sending kill.
+progress. Selection receives an event first; its settlement cannot be cancelled
+by a concurrently ready command receipt. The ephemeral adapter also bounds the child reap after sending kill.
 
 ### Known gaps before server wiring
 

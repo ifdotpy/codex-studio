@@ -1,0 +1,56 @@
+[
+  {
+    "id": "WB1",
+    "description": "release-blocked-work-as-ready",
+    "file": "workspaces/runtime/packages/runtime-store/src/repositories/work_items.rs",
+    "edits": [
+      {
+        "before": "if status == \"blocked\" {\n                    \"blocked\"\n                } else {",
+        "after": "if false && status == \"blocked\" {\n                    \"blocked\"\n                } else {"
+      }
+    ],
+    "witnesses": [
+      "service_releases_failed_worker_claim_and_emits_recovery_event"
+    ]
+  },
+  {
+    "id": "WB2",
+    "description": "do-not-advance-released-work-version",
+    "file": "workspaces/runtime/packages/runtime-store/src/repositories/work_items.rs",
+    "edits": [
+      {
+        "before": "version.checked_add(1)",
+        "after": "version.checked_add(0)"
+      }
+    ],
+    "witnesses": [
+      "service_releases_failed_worker_claim_and_emits_recovery_event"
+    ]
+  },
+  {
+    "id": "WB3",
+    "description": "ignore-continuation-turn-identity",
+    "file": "workspaces/runtime/packages/runtime-services/src/work_write.rs",
+    "edits": [
+      {
+        "before": "record.get(turn_field).and_then(Value::as_str) == last_turn",
+        "after": "true"
+      }
+    ],
+    "witnesses": ["continuation_identity_only_preserves_an_exact_pending_retry"]
+  },
+  {
+    "id": "WB4",
+    "description": "change-recovery-event-identity",
+    "file": "workspaces/runtime/packages/runtime-services/src/work_write.rs",
+    "edits": [
+      {
+        "before": "work-released:{id}:{}",
+        "after": "work-released-mutant:{id}:{}"
+      }
+    ],
+    "witnesses": [
+      "service_releases_failed_worker_claim_and_emits_recovery_event"
+    ]
+  }
+]

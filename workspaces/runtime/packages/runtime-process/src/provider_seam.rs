@@ -249,6 +249,8 @@ pub struct InitializationRecovery {
 #[derive(Debug)]
 pub struct TaskExit {
     pub result: Result<(), AdapterError>,
+    /// Cleanup failures are distinct from the completed request outcome.
+    pub cleanup_error: Option<String>,
     /// Some means socket cleanup finished but protocol cleanup did not. Persist
     /// this exact handle/generation and do not manufacture a successful close.
     pub recovery_needed: Option<InitializationRecovery>,
@@ -279,6 +281,8 @@ pub struct ProviderAttachment {
     pub(crate) shutdown: Shutdown,
     pub(crate) task: Option<JoinHandle<TaskExit>>,
 }
+
+const PROVIDER_CLEANUP_UNCONFIRMED: &str = "provider task exited without a cleanup receipt";
 
 impl ProviderAttachment {
     /// Construct another bounded implementation or a deterministic test factory.
@@ -312,10 +316,12 @@ impl ProviderAttachment {
         let result = match self.task.as_mut() {
             Some(task) => task.await.unwrap_or_else(|_| TaskExit {
                 result: Err(AdapterError::TaskFailed),
+                cleanup_error: Some(PROVIDER_CLEANUP_UNCONFIRMED.into()),
                 recovery_needed: self.status.borrow().initialization_recovery(),
             }),
             None => TaskExit {
                 result: Err(AdapterError::TaskFailed),
+                cleanup_error: None,
                 recovery_needed: None,
             },
         };

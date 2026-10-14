@@ -23,7 +23,7 @@ impl ProviderHandle {
 pub struct ProviderLaunchSpec {
     pub command: Vec<String>,
     pub environment: BTreeMap<String, String>,
-    pub cwd: PathBuf,
+    pub cwd: Option<PathBuf>,
     /// Recovered native-to-session request IDs installed before replay starts.
     pub retained_response_ids: BTreeMap<u64, u64>,
     /// Cursor already handled by runtime state, used to make an uncertain ACK idempotent.
@@ -31,12 +31,19 @@ pub struct ProviderLaunchSpec {
 }
 
 impl ProviderLaunchSpec {
+    /// Preserve Python supervisor launches, whose working directory is inherited.
+    #[must_use]
+    pub fn with_inherited_cwd(mut self) -> Self {
+        self.cwd = None;
+        self
+    }
+
     #[must_use]
     pub fn new(command: Vec<String>, environment: BTreeMap<String, String>, cwd: PathBuf) -> Self {
         Self {
             command,
             environment,
-            cwd,
+            cwd: Some(cwd),
             retained_response_ids: BTreeMap::new(),
             handled_cursor: 0,
         }
