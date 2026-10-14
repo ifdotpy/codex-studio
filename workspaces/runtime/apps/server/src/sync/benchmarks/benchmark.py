@@ -13,6 +13,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from codex_sync import SyncStore
 from codex_sync_entities import ensure_tables, put
+from studio_api.sync.protocol import SYNC_ENTITY_SCOPE
 
 
 def percentile(values, percent):
@@ -35,7 +36,7 @@ def run(iterations):
             db.executescript("CREATE TABLE analytics_usage(id TEXT PRIMARY KEY, record TEXT); CREATE VIRTUAL TABLE search_fts USING fts5(text);")
             ensure_tables(db)
         store = SyncStore(connect, lambda key: {"items": []})
-        first = store.pull("state:entities:v1")
+        first = store.pull(SYNC_ENTITY_SCOPE)
         after = first["checkpoint"]["seq"]
         timings = {"analyticsChurn": [], "uiWrites": []}
         bytes_out = {"analyticsChurn": 0, "uiWrites": 0}
@@ -45,7 +46,7 @@ def run(iterations):
                 db.execute("INSERT INTO analytics_usage VALUES (?, '{}')", (f"a{i}",))
                 db.execute("INSERT INTO search_fts VALUES (?)", (f"search {i}",))
             started = time.perf_counter_ns()
-            result = store.pull("state:entities:v1", after)
+            result = store.pull(SYNC_ENTITY_SCOPE, after)
             timings["analyticsChurn"].append((time.perf_counter_ns() - started) / 1e6)
             bytes_out["analyticsChurn"] += sum(len(row["payload"].encode()) for row in result["documents"])
             documents["analyticsChurn"] += len(result["documents"])
@@ -54,7 +55,7 @@ def run(iterations):
                     "id": f"project-{i}", "path": f"/benchmark/project-{i}", "name": "team",
                 })
             started = time.perf_counter_ns()
-            result = store.pull("state:entities:v1", after)
+            result = store.pull(SYNC_ENTITY_SCOPE, after)
             timings["uiWrites"].append((time.perf_counter_ns() - started) / 1e6)
             bytes_out["uiWrites"] += sum(len(row["payload"].encode()) for row in result["documents"])
             documents["uiWrites"] += len(result["documents"])

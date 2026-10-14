@@ -10,6 +10,7 @@ from contextlib import contextmanager
 from typing import Any, Callable, ContextManager, Iterator
 from codex_records import JsonObject
 from codex_shared_values import SYNC_BATCH_LIMIT, SYNC_ENTITY_PAGE_LIMIT, TRANSCRIPT_MAX_TOMBSTONES
+from studio_api.sync.protocol import SYNC_ENTITY_SCOPE
 from codex_startup_memory import mark as startup_memory_mark
 from codex_sqlite import scope as sqlite_scope
 
@@ -134,7 +135,7 @@ class SyncStore:
         """Read one bounded durable stream batch; never retain per-client events."""
         after = int(after)
         limit = min(SYNC_BATCH_LIMIT, max(1, int(limit)))
-        if scope == 'state:entities:v1':
+        if scope == SYNC_ENTITY_SCOPE:
             from codex_sync_entities import entity_tombstone_floor, max_seq
             with self.connection("SyncStore.stream_entities") as db:
                 high, floor = max_seq(db), entity_tombstone_floor(db)
@@ -531,10 +532,10 @@ class SyncStore:
              initial_high: int = 0, reset_support: bool = False,
              priority_id: str | None = None) -> dict[str, Any]:
         after = max(0, int(after))
-        page_limit = SYNC_ENTITY_PAGE_LIMIT if scope == 'state:entities:v1' else SYNC_BATCH_LIMIT
+        page_limit = SYNC_ENTITY_PAGE_LIMIT if scope == SYNC_ENTITY_SCOPE else SYNC_BATCH_LIMIT
         limit = min(page_limit, max(1, int(limit)))
         self._ensure_versions()
-        if scope == 'state:entities:v1':
+        if scope == SYNC_ENTITY_SCOPE:
             # This path has no cached compare-and-replace state. SQLite keeps
             # its read snapshot and maintenance writes consistent. A scope
             # stripe would queue readers behind unrelated transcript work.

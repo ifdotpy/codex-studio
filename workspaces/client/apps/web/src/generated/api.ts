@@ -36413,3 +36413,4 @@ export type WorkspaceEntityDto = components["schemas"]["WorkspaceEntityDto"];
 export type SyncEntityPayload = components["schemas"]["SyncEntityPayload"];
 
 export const SYNC_PROTOCOL_VERSION = 3 as const;
+export const SYNC_ENTITY_SCOPE = "state:entities:v1" as const;

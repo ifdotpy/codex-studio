@@ -24,7 +24,7 @@ from studio_api.sync.preferences import (
     PreferencePushResponse,
     merge_preferences,
 )
-from studio_api.sync.protocol import SYNC_PROTOCOL_VERSION
+from studio_api.sync.protocol import SYNC_ENTITY_SCOPE, SYNC_PROTOCOL_VERSION
 from studio_api.responses import (
     API_BOUNDARY_RESPONSE_HEADERS,
     API_CONTEXT_RESPONSE_HEADERS,
@@ -225,7 +225,7 @@ def create_router(context: ApiContext) -> APIRouter:
             "protocolVersion": SYNC_PROTOCOL_VERSION,
             "supportedVersions": [SYNC_PROTOCOL_VERSION],
             "capabilities": capabilities,
-            "scopes": ["state:entities:v1", "transcript:<agent-id>", "drafts"],
+            "scopes": [SYNC_ENTITY_SCOPE, "transcript:<agent-id>", "drafts"],
             "pullEndpoint": "/api/sync/pull",
             "streamEndpoint": "/api/sync/stream",
             "maxEntityPage": SYNC_ENTITY_PAGE_LIMIT,
@@ -242,7 +242,7 @@ def create_router(context: ApiContext) -> APIRouter:
     )
     def pull(
         request: Request,
-        scope: str = Query(default="state:entities:v1", min_length=1),
+        scope: str = Query(default=SYNC_ENTITY_SCOPE, min_length=1),
         after: SafeQueryInt = Query(default=0, ge=0, le=MAX_SAFE_INTEGER),
         limit: SafeQueryInt = Query(
             default=SYNC_BATCH_LIMIT,
@@ -261,7 +261,7 @@ def create_router(context: ApiContext) -> APIRouter:
         priority_id = priorityId
         store = _sync_store(context)
         projection = store.pull(scope, after, limit, fresh_flag, initial_high, reset_flag, priority_id)
-        if scope == "state:entities:v1":
+        if scope == SYNC_ENTITY_SCOPE:
             from studio_api.sync.entity_response import response_entity_document
 
             valid_documents = [

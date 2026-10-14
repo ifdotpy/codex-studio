@@ -8,17 +8,19 @@ import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from codex_layout import WEB_ROOT
+from codex_layout import REPOSITORY_ROOT, WEB_ROOT
 from studio_api.generate_types import (
     OPENAPI_AUTHORITY,
+    SYNC_PROTOCOL_NODE_OUTPUT,
     SYNC_PROTOCOL_OUTPUT,
     SYNC_PROTOCOL_PYTHON_OUTPUT,
     render_sync_protocol_python,
+    render_sync_protocol_node,
     render_sync_protocol_rust,
     render_sync_protocol_typescript,
 )
 from studio_api.sync.models import SyncProtocolResponse
-from studio_api.sync.protocol import SYNC_PROTOCOL_VERSION
+from studio_api.sync.protocol import SYNC_ENTITY_SCOPE, SYNC_PROTOCOL_VERSION
 from studio_api.sync.resources.models import (
     ResourceChangeEvent,
     ResourceHeartbeatEvent,
@@ -36,6 +38,7 @@ def single_value(schema):
 class SyncProtocolContract(unittest.TestCase):
     def test_shared_owner_preserves_the_supported_openapi_version(self):
         self.assertEqual(SYNC_PROTOCOL_VERSION, 3)
+        self.assertEqual(SYNC_ENTITY_SCOPE, "state:entities:v1")
         schema = SyncProtocolResponse.model_json_schema()["properties"]
         self.assertEqual(single_value(schema["protocolVersion"]), SYNC_PROTOCOL_VERSION)
         self.assertEqual(single_value(schema["supportedVersions"]["items"]), SYNC_PROTOCOL_VERSION)
@@ -60,6 +63,31 @@ class SyncProtocolContract(unittest.TestCase):
         self.assertTrue(
             api_types.endswith(f"\n{render_sync_protocol_typescript(document)}\n")
         )
+        self.assertEqual(
+            SYNC_PROTOCOL_NODE_OUTPUT.read_text(encoding="utf-8"),
+            render_sync_protocol_node(document),
+        )
+        sources = (
+            "workspaces/runtime/apps/server/src/codex_api_client.py",
+            "workspaces/runtime/apps/server/src/codex_sync.py",
+            "workspaces/runtime/apps/server/src/codex_http_traces.py",
+            "workspaces/runtime/apps/server/src/studio_api/sync/router.py",
+            "workspaces/runtime/apps/server/src/studio_api/testing.py",
+            "workspaces/runtime/packages/runtime-http/src/routes/sync_documents.rs",
+            "workspaces/runtime/packages/runtime-services/src/sync_policy.rs",
+            "workspaces/client/apps/web/src/sync/client.ts",
+            "workspaces/client/apps/web/src/sync/entitySequence.ts",
+            "workspaces/client/apps/web/src/sync/pullContract.ts",
+            "workspaces/client/apps/web/src/sync/uiPreferenceConnection.ts",
+            "workspaces/client/apps/web/src/api.ts",
+            "workspaces/runtime/apps/server/src/sync/benchmarks/benchmark.py",
+            "workspaces/runtime/apps/server/src/studio_api/benchmarks/runtime_load/identity.mjs",
+        )
+        for source in sources:
+            with self.subTest(source=source):
+                contents = (REPOSITORY_ROOT / source).read_text(encoding="utf-8")
+                self.assertIn("SYNC_ENTITY_SCOPE", contents)
+                self.assertNotIn('"state:entities:v1"', contents)
 
 
 if __name__ == "__main__":
