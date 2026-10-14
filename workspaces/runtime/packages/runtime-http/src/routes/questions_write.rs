@@ -108,24 +108,17 @@ async fn delete_question(
     ApiJson(body): ApiJson<crate::generated::QuestionBody>,
 ) -> Result<Json<Value>, ApiError> {
     let id = body.id;
-    if let Some(runtime) = state.callback_runtime.clone() {
-        let value =
-            tokio::task::spawn_blocking(move || runtime.delete_question(&id, callback_clock()?))
-                .await
-                .map_err(|_| ApiError::internal())?
-                .map_err(callback_error)?;
-        state.event_wake.notify_one();
-        return Ok(Json(generated_receipt(value)?));
-    }
-    let store = state.store.clone().ok_or_else(ApiError::internal)?;
-    let validators = state.validators.clone();
-    let result = write(store, move |transaction| {
-        questions_write::delete_question(transaction, &id, |record| {
-            validators.validate_table_record("runtime_requests", record)
-        })
-    })
-    .await?;
-    Ok(Json(generated_receipt(result)?))
+    let runtime = state.callback_runtime.clone().ok_or_else(|| {
+        dependency_unavailable("POST", "/api/questions/delete", &QUESTION_ANSWER_DEPENDENCY)
+            .unwrap_or_else(|_| ApiError::internal())
+    })?;
+    let value =
+        tokio::task::spawn_blocking(move || runtime.delete_question(&id, callback_clock()?))
+            .await
+            .map_err(|_| ApiError::internal())?
+            .map_err(callback_error)?;
+    state.event_wake.notify_one();
+    Ok(Json(generated_receipt(value)?))
 }
 
 async fn complaints(

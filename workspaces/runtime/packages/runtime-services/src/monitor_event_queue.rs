@@ -17,6 +17,10 @@ use crate::notification_dispatch::NotificationDispatchError;
 
 const MAX_EVENTS: usize = 128;
 const MAX_BYTES: usize = 1024 * 1024;
+// Keep enough room for one bounded liveness result and the definitive exit
+// receipt after the output stream reaches its normal admission limit.
+const RESERVED_EVENTS: usize = 2;
+const RESERVED_BYTES: usize = 64 * 1024;
 
 /// Append `command/exec/outputDelta` while the provider notification receipt is
 /// still in its caller's transaction. A full queue aborts that transaction, so
@@ -69,8 +73,8 @@ pub fn enqueue_output_in_transaction(
         .iter()
         .filter_map(|item| item["byteLength"].as_u64())
         .sum::<u64>();
-    if queue.len() >= MAX_EVENTS
-        || queued_bytes.saturating_add(bytes.len() as u64) > MAX_BYTES as u64
+    if queue.len() >= MAX_EVENTS - RESERVED_EVENTS
+        || queued_bytes.saturating_add(bytes.len() as u64) > (MAX_BYTES - RESERVED_BYTES) as u64
     {
         return Err(NotificationDispatchError::StreamCapacity);
     }
@@ -141,6 +145,19 @@ pub fn next(store: &RuntimeStore) -> Result<Option<Delivery>, MonitorError> {
             },
         }));
     }
+    if kind == "probe" {
+        return Ok(Some(Delivery {
+            id,
+            operation,
+            cursor,
+            event: MonitorEvent::Probe {
+                generation: item["generation"].as_i64().ok_or(
+                    MonitorError::InvalidDeliveryIdentity("monitor probe generation"),
+                )?,
+                result: item["result"].clone(),
+            },
+        }));
+    }
     if kind != "output" {
         return Err(MonitorError::InvalidDeliveryIdentity("monitor event kind"));
     }
@@ -171,6 +188,70 @@ pub fn next(store: &RuntimeStore) -> Result<Option<Delivery>, MonitorError> {
     }))
 }
 
+/// Persist a completed liveness request behind already-received output. The
+/// cursor is stable per monitor generation, so a lost queue write is replayable.
+pub fn enqueue_probe(
+    store: &RuntimeStore,
+    id: &str,
+    operation: &Operation,
+    generation: i64,
+    result: &Value,
+) -> Result<(), MonitorError> {
+    let cursor = format!("liveness:{id}:{generation}");
+    store.transaction_with(|tx| {
+        let Some(record) = MonitorsRepository::get(tx, &id.to_owned())? else {
+            return Err(MonitorError::Refused("Unknown command watch"));
+        };
+        let mut value = record.value().clone();
+        if value.get("operation") != Some(&serde_json::to_value(operation).unwrap_or(Value::Null)) {
+            return Err(MonitorError::InvalidDeliveryIdentity(
+                "monitor probe operation changed",
+            ));
+        }
+        if value["streamAckCursor"].as_str() == Some(&cursor) {
+            return Ok(());
+        }
+        let queue = value
+            .get_mut("streamQueue")
+            .and_then(Value::as_array_mut)
+            .ok_or(MonitorError::InvalidDeliveryIdentity(
+                "monitor output queue",
+            ))?;
+        if let Some(existing) = queue.iter().find(|item| item["cursor"] == cursor) {
+            if existing["kind"] == "probe"
+                && existing["generation"] == generation
+                && existing["result"] == *result
+            {
+                return Ok(());
+            }
+            return Err(MonitorError::InvalidDeliveryIdentity(
+                "conflicting monitor probe",
+            ));
+        }
+        if queue.len() >= MAX_EVENTS - 1
+            || queue
+                .iter()
+                .filter_map(|item| item["byteLength"].as_u64())
+                .sum::<u64>()
+                .saturating_add(result.to_string().len() as u64)
+                > MAX_BYTES as u64
+        {
+            return Err(MonitorError::Refused("Monitor output queue is full"));
+        }
+        queue.push(json!({
+            "kind":"probe",
+            "cursor":cursor,
+            "generation":generation,
+            "result":result,
+            "byteLength":result.to_string().len(),
+            "operation":operation,
+        }));
+        Table::<MonitorRecord>::new(tx)
+            .put(&MonitorRecord::from_value(value).map_err(StoreError::from)?)?;
+        Ok(())
+    })
+}
+
 /// Persist the definitive result after all previously journaled output deltas.
 /// The broker receipt makes this operation replayable after a crash.
 pub fn enqueue_exit(
@@ -182,6 +263,13 @@ pub fn enqueue_exit(
     error: Option<&str>,
     finished: f64,
 ) -> Result<(), MonitorError> {
+    let error = error.map(|value| {
+        let mut end = value.len().min(12_000);
+        while !value.is_char_boundary(end) {
+            end -= 1;
+        }
+        &value[..end]
+    });
     store.transaction_with(|tx| {
         let Some(record) = MonitorsRepository::get(tx, &id.to_owned())? else {
             return Err(MonitorError::Refused("Unknown command watch"));
@@ -213,7 +301,13 @@ pub fn enqueue_exit(
                 "conflicting monitor result",
             ));
         }
-        if queue.len() > MAX_EVENTS {
+        let queued_bytes = queue
+            .iter()
+            .filter_map(|item| item["byteLength"].as_u64())
+            .sum::<u64>();
+        let error_bytes = error.map_or(0, |value| value.len()) as u64;
+        if queue.len() >= MAX_EVENTS || queued_bytes.saturating_add(error_bytes) > MAX_BYTES as u64
+        {
             return Err(MonitorError::Refused("Monitor output queue is full"));
         }
         queue.push(json!({
@@ -222,6 +316,7 @@ pub fn enqueue_exit(
             "code":code,
             "error":error,
             "finished":finished,
+            "byteLength":error_bytes,
             "operation":operation,
         }));
         let record = MonitorRecord::from_value(value).map_err(StoreError::from)?;

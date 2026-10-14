@@ -199,6 +199,20 @@ fn account_worker_monitor_output_is_durable_ordered_and_exactly_acknowledged() {
     monitor_event_queue::acknowledge(&store, &exit).expect("ack exit");
     monitor_event_queue::enqueue_exit(&store, id, &operation, "result:monitor", Some(0), None, 9.0)
         .expect("replay acknowledged result without duplicating it");
+    let probe_result = json!({"exitCode":1,"output":"still responsive"});
+    monitor_event_queue::enqueue_probe(&store, id, &operation, 8, &probe_result)
+        .expect("enqueue completed liveness probe");
+    let probe = monitor_event_queue::next(&store)
+        .expect("read probe queue")
+        .expect("probe result");
+    assert_eq!(probe.cursor, format!("liveness:{id}:8"));
+    assert!(matches!(
+        &probe.event,
+        MonitorEvent::Probe { generation: 8, result } if result == &probe_result
+    ));
+    monitor_event_queue::acknowledge(&store, &probe).expect("ack probe");
+    monitor_event_queue::enqueue_probe(&store, id, &operation, 8, &probe_result)
+        .expect("replay acknowledged probe without duplicating it");
     assert!(
         monitor_event_queue::next(&store)
             .expect("empty output queue")

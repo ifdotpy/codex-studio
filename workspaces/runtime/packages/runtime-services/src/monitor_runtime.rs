@@ -866,24 +866,54 @@ pub fn create_in_transaction(
     if repository::active_count(tx)? >= 64 {
         return Err(MonitorError::Refused("Maximum 64 active command watches"));
     }
-    // Workspace admission is supplied by the turn path; until installed this API can
-    // persist approval requests only, which have no command side effect.
-    if record["status"] == "starting" {
-        return Err(MonitorError::Unavailable(
-            "workspace-state/monitor-admission",
-        ));
-    }
     repository::put(tx, record.clone())?;
-    let approval = studio_runtime_store::RequestRecord::from_value(json!({
-        "id":format!("monitor-approval:{id}"), "method":"monitor/approve", "agent":actor_id,
-        "params":{"monitorId":id,"command":record["command"],"cwd":record["cwd"]}, "status":"pending", "createdAt":now
-    })).map_err(studio_runtime_store::StoreError::from)?;
-    Table::new(tx).put(&approval)?;
-    let view = crate::sync_views::project_persisted_record("request", approval.value())
-        .ok_or_else(|| invalid(id, "request"))?;
-    SyncDocumentsRepository::put_entity(tx, "request", approval.id(), view, false)?;
+    if record["status"] == "approval" {
+        let approval = studio_runtime_store::RequestRecord::from_value(json!({
+            "id":format!("monitor-approval:{id}"), "method":"monitor/approve", "agent":actor_id,
+            "params":{"monitorId":id,"command":record["command"],"cwd":record["cwd"]}, "status":"pending", "createdAt":now
+        })).map_err(studio_runtime_store::StoreError::from)?;
+        Table::new(tx).put(&approval)?;
+        let view = crate::sync_views::project_persisted_record("request", approval.value())
+            .ok_or_else(|| invalid(id, "request"))?;
+        SyncDocumentsRepository::put_entity(tx, "request", approval.id(), view, false)?;
+    }
     crate::sync_policy::maintain_monitor_window(tx, &|_, _, view, deleted| {
         deleted || studio_runtime_schema::validate("MonitorEntityDto", view).unwrap_or(false)
     })?;
     Ok(record)
+}
+
+/// Attach a rule-check identity and retained account to a monitor admitted by
+/// the shared workspace path. The update shares the admission transaction and
+/// renderer projection so callback and output consumers see one persisted row.
+pub fn bind_rule_in_transaction(
+    tx: &Transaction<'_>,
+    monitor_id: &str,
+    rule_id: &str,
+    account_key: &str,
+) -> Result<Value, MonitorError> {
+    let record = MonitorsRepository::get(tx, &monitor_id.to_owned())?
+        .ok_or(MonitorError::Refused("Unknown command watch"))?;
+    let mut value = record.value().clone();
+    if !matches!(value["status"].as_str(), Some("starting" | "approval"))
+        || (value
+            .get("ruleId")
+            .and_then(Value::as_str)
+            .is_some_and(|saved| !saved.is_empty() && saved != rule_id))
+        || value
+            .get("accountKey")
+            .and_then(Value::as_str)
+            .is_some_and(|saved| !saved.is_empty() && saved != account_key)
+    {
+        return Err(MonitorError::Refused(
+            "Rule monitor admission identity changed",
+        ));
+    }
+    value["ruleId"] = json!(rule_id);
+    value["accountKey"] = json!(account_key);
+    repository::put(tx, value.clone())?;
+    crate::sync_policy::maintain_monitor_window(tx, &|_, _, view, deleted| {
+        deleted || studio_runtime_schema::validate("MonitorEntityDto", view).unwrap_or(false)
+    })?;
+    Ok(value)
 }

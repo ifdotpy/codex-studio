@@ -720,14 +720,6 @@ pub fn start(
     {
         return Err(MonitorError::Refused("Monitor start ownership changed"));
     }
-    if snapshot
-        .fields
-        .rule_id
-        .as_deref()
-        .is_some_and(|id| !id.is_empty())
-    {
-        return Err(MonitorError::Unavailable("rule-driver/monitor-admission"));
-    }
     if params.get("processId").and_then(Value::as_str) != Some(snapshot.id())
         || params.get("cwd") != snapshot.record.get("cwd")
         || params.get("timeoutMs") != snapshot.record.get("timeout_ms")
