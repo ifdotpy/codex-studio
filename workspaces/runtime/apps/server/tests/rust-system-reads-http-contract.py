@@ -243,6 +243,8 @@ class SystemReadsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             "runtimeLockOperations",
             "supervisor",
         }
+        if self.rust_backend:
+            expected_fields.add("blockingPoolMetrics")
         self.assertEqual(set(response.json()), expected_fields, response.body[:2000])
         self.assertEqual(
             database_snapshot(self.backend.state / "canvas.sqlite3"),

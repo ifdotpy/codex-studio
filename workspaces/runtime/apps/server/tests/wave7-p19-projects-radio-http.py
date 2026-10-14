@@ -145,7 +145,12 @@ class HostProjectsRadio(TimedHTTPContractTest, unittest.TestCase):
 
     def test_05_peer_team_save_delete_and_move(self):
         path = str(self.backend.cwd)
-        # The earlier conversion advanced the project's peer-team revision.
+        # Server-suite slicing gives every test a fresh backend, so reproduce
+        # the conversion that advanced this project's peer-team revision.
+        converted = self.post(dict(action="convert", path=path, member="a", target="c",
+            expected_revision=0, request_id="p19-team-prior-conversion"))
+        self.assertEqual(converted.status, 200, converted.body[:1000])
+        self.assertEqual(converted.json()["peerTeamsRevision"], 1)
         saved = self.post(dict(action="save", path=path, request_id="p19-team-save", expected_revision=1,
             team_id="33333333-3333-4333-8333-333333333333", name="Second", members=["c", "d"]))
         self.assertEqual(saved.status, 200, saved.body[:1000])
