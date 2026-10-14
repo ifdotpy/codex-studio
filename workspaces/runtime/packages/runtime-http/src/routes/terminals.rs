@@ -74,8 +74,8 @@ async fn require_reconciled_driver(state: &HttpState) -> Result<(), ApiError> {
         Ok(())
     } else {
         Err(ApiError::new(
-            StatusCode::NOT_IMPLEMENTED,
-            "Not implemented: requires terminal-driver/restart-cleanup",
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Terminal restart cleanup is still pending",
         ))
     }
 }
@@ -330,5 +330,79 @@ inventory::submit! {
         name: "terminals",
         routes: Some(routes),
         dependencies: ROUTE_DEPENDENCIES,
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use std::sync::Arc;
+
+    use axum::body::{Body, to_bytes};
+    use axum::extract::ConnectInfo;
+    use axum::http::{Request, StatusCode};
+    use serde_json::{Value, json};
+    use studio_runtime_store::{RuntimeStore, TerminalsRepository};
+    use tower::ServiceExt;
+
+    #[tokio::test]
+    async fn pending_restart_cleanup_returns_retryable_error_without_terminal_writes() {
+        let tmpfs = std::env::var_os("CS_TERMINAL_TEST_STATE_DIR")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| std::env::temp_dir().join("cs-terminals-test-state"));
+        std::fs::create_dir_all(&tmpfs).expect("tmpfs state parent");
+        let root = tempfile::Builder::new()
+            .prefix("terminal-http-gate-")
+            .tempdir_in(tmpfs)
+            .expect("isolated terminal HTTP state");
+        let store = Arc::new(RuntimeStore::open(Some(root.path())).expect("runtime store"));
+        let before = TerminalsRepository::list(&store.read().expect("read before request"))
+            .expect("read terminal rows before request");
+        let state = crate::router::HttpState::new(
+            "token".into(),
+            "workspace".into(),
+            None,
+            root.path().to_string_lossy().into_owned(),
+            12345,
+            None,
+            Some(store.clone()),
+            None,
+        )
+        .with_terminal_write_gate(Arc::new(|| false));
+        let app = crate::router::router(state).expect("HTTP router composes the terminal route");
+        let body = json!({"id":"pending-recovery-create","agent":"agent"});
+        let request = Request::builder()
+            .method("POST")
+            .uri("/api/terminals/create")
+            .header("host", "127.0.0.1:12345")
+            .header("content-type", "application/json")
+            .header("x-canvas-token", "token")
+            .header("x-canvas-workspace", "workspace")
+            .header(
+                crate::schema::API_SCHEMA_HASH_HEADER,
+                crate::schema::api_schema_hash(),
+            )
+            .body(Body::from(body.to_string()))
+            .expect("terminal request builds");
+        let mut request = request;
+        request
+            .extensions_mut()
+            .insert(ConnectInfo(std::net::SocketAddr::from((
+                [127, 0, 0, 1],
+                54321,
+            ))));
+        let response = app.oneshot(request).await.expect("terminal response");
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let bytes = to_bytes(response.into_body(), 4096)
+            .await
+            .expect("response body reads");
+        let body: Value = serde_json::from_slice(&bytes).expect("error envelope parses");
+        assert_eq!(
+            body,
+            json!({"error":"Terminal restart cleanup is still pending"})
+        );
+        let after = TerminalsRepository::list(&store.read().expect("read after request"))
+            .expect("read terminal rows after request");
+        assert_eq!(after.len(), before.len());
+        assert_eq!(after, before);
     }
 }
