@@ -65,6 +65,8 @@ pub mod historical_input_receipts;
 pub mod host_project_runtime;
 pub mod host_worker_create;
 pub mod maintenance;
+#[allow(dead_code)] // The managed-tools callback caller is integrated by its owning package.
+pub(crate) mod managed_child_create;
 pub(crate) mod managed_host_tools;
 pub mod message_admission;
 pub mod model_catalog;
