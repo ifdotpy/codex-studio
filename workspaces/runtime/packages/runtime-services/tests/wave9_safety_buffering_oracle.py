@@ -1,4 +1,5 @@
 """Exercise the real Python safety action and stage transitions without a provider."""
+import ast
 import json
 import sqlite3
 import sys
@@ -26,6 +27,9 @@ AGENT = {
     "accountKey": "acct",
     "threadId": "thread",
     "turnId": "turn",
+    "model": "model-slow",
+    "nativeEffort": "low",
+    "role": "implementer",
     "cwd": "/synthetic/project",
     "inFlight": True,
     "autoWake": True,
@@ -38,6 +42,43 @@ AGENT = {
         "fasterModel": "model-fast",
     },
 }
+
+
+def load_codex_runtime_helpers():
+    """Execute the real parameter methods without importing native backend bindings."""
+    source_path = ROOT / "workspaces/runtime/apps/server/src/codex_runtime.py"
+    tree = ast.parse(source_path.read_text())
+    runtime = next(
+        node for node in tree.body
+        if isinstance(node, ast.ClassDef) and node.name == "Runtime"
+    )
+    methods = [
+        node for node in runtime.body
+        if isinstance(node, ast.FunctionDef)
+        and node.name in {"new_thread_params", "turn_permissions", "role_guidance"}
+    ]
+    helpers = ast.ClassDef(
+        name="CodexRuntimeHelpers",
+        bases=[],
+        keywords=[],
+        body=methods,
+        decorator_list=[],
+    )
+    constants = [
+        node for node in tree.body
+        if isinstance(node, ast.Assign)
+        and any(
+            isinstance(target, ast.Name) and target.id in {"THREAD_CONFIG", "INSTRUCTIONS"}
+            for target in node.targets
+        )
+    ]
+    module = ast.fix_missing_locations(ast.Module(body=constants + [helpers], type_ignores=[]))
+    namespace = {"REPOSITORY_ROOT": ROOT}
+    exec(compile(module, str(source_path), "exec"), namespace)
+    return namespace["CodexRuntimeHelpers"]
+
+
+CodexRuntime = load_codex_runtime_helpers()
 
 
 def prepare_template(root: Path) -> None:
@@ -129,10 +170,20 @@ class RuntimePort:
         return agent["epoch"] == operation["epoch"] and agent["accountKey"] == operation["accountKey"]
 
     def new_thread_params(self, _agent):
-        return {}
+        return CodexRuntime.new_thread_params(self, _agent)
 
     def turn_permissions(self, _agent):
-        return {}
+        return CodexRuntime.turn_permissions(self, _agent)
+
+    @staticmethod
+    def role_guidance(agent):
+        return CodexRuntime.role_guidance(agent)
+
+    def progress_file(self, _agent):
+        return None
+
+    def tool_definitions(self, _agent):
+        return []
 
     def submit_reserved(self, _server, method, params):
         self.request_id += 1
@@ -149,7 +200,9 @@ class RuntimePort:
 
 def run_path():
     runtime = RuntimePort()
-    with patch.object(safety, "Timer", NoTimer):
+    with patch.object(safety, "Timer", NoTimer), patch(
+        "codex_browser.configure_browser", lambda _runtime, _agent, params: params
+    ):
         safety.action(runtime, "agent", {"safety": "retry", "turnId": "turn"})
         for stage, result in [
             ("turns", {"data": [{"id": "turn", "status": "inProgress"}]}),

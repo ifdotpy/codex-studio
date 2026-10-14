@@ -7,7 +7,9 @@ use std::sync::Arc;
 use std::{
     path::{Path, PathBuf},
     process::Command,
-    sync::{Mutex, OnceLock},
+    sync::{Mutex, OnceLock, mpsc},
+    thread,
+    time::Duration,
 };
 use studio_runtime_providers::{Method, RequestId, RequestTicket};
 use studio_runtime_services::{
@@ -156,6 +158,49 @@ impl AccountSessionPort for Session<'_> {
     }
 }
 
+struct BlockingSession {
+    scope: ConnectionScope,
+    entered: Mutex<Option<mpsc::Sender<()>>>,
+    release: Mutex<mpsc::Receiver<()>>,
+    calls: Mutex<Vec<String>>,
+}
+
+impl AccountSessionPort for BlockingSession {
+    fn current_scope(&self, account: &str) -> Option<ConnectionScope> {
+        (account == self.scope.account).then(|| self.scope.clone())
+    }
+
+    fn provider_request(
+        &self,
+        request: ProviderRequest,
+    ) -> Result<SessionReceipt, AccountSessionError> {
+        assert_eq!(request.method, Method::ThreadTurnsList);
+        assert_eq!(request.expected_scope, Some(self.scope.clone()));
+        self.calls
+            .lock()
+            .expect("calls")
+            .push(request.operation.clone());
+        if let Some(entered) = self.entered.lock().expect("entered").take() {
+            entered.send(()).expect("notify blocked provider");
+        }
+        self.release
+            .lock()
+            .expect("release")
+            .recv()
+            .expect("release blocked provider");
+        Ok(SessionReceipt {
+            scope: self.scope.clone(),
+            operation: request.operation,
+            ticket: None,
+            certainty: RequestCertainty::Written,
+            result: Some(ProviderResponse::Reply(
+                json!({"data":[{"id":"turn","status":"inProgress"}]}),
+            )),
+            not_sent_reason: None,
+        })
+    }
+}
+
 #[test]
 fn action_runs_python_corpus_stage_path_and_commits_each_intent_before_dispatch() {
     let (template, corpus) = python_corpus();
@@ -207,12 +252,11 @@ fn action_runs_python_corpus_stage_path_and_commits_each_intent_before_dispatch(
             actual["method"].as_str(),
             Some("thread/fork" | "turn/start")
         ) {
-            for (key, value) in expected["params"].as_object().expect("Python params") {
-                if key == "clientUserMessageId" {
-                    continue;
-                }
-                assert_eq!(actual["params"][key], *value, "stage {index} param {key}");
-            }
+            assert_eq!(
+                without_generated_client_id(actual["params"].clone()),
+                without_generated_client_id(expected["params"].clone()),
+                "complete normalized params at stage {index}"
+            );
         } else {
             assert_eq!(actual["params"], expected["params"], "stage {index}");
         }
@@ -249,6 +293,98 @@ fn action_runs_python_corpus_stage_path_and_commits_each_intent_before_dispatch(
     assert_eq!(
         session.calls.lock().expect("calls")[6]["params"]["clientUserMessageId"],
         operation["attemptId"]
+    );
+}
+
+fn without_generated_client_id(mut params: Value) -> Value {
+    params
+        .as_object_mut()
+        .expect("provider params object")
+        .remove("clientUserMessageId");
+    params
+}
+
+#[test]
+fn late_provider_receipt_preserves_concurrent_cancel_and_does_not_advance() {
+    let (template, _) = python_corpus();
+    let root = tempfile::tempdir().expect("state copy");
+    for file in ["canvas.sqlite3", "analytics.sqlite3"] {
+        std::fs::copy(template.join(file), root.path().join(file)).expect("Python-written DB");
+    }
+    let store = Arc::new(RuntimeStore::open(Some(root.path())).expect("open state"));
+    let scope = ConnectionScope {
+        account: "acct".into(),
+        connection: "connection".into(),
+        generation: 1,
+    };
+    let (entered_tx, entered_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel();
+    let session = Arc::new(BlockingSession {
+        scope,
+        entered: Mutex::new(Some(entered_tx)),
+        release: Mutex::new(release_rx),
+        calls: Mutex::default(),
+    });
+    let retry_store = Arc::clone(&store);
+    let retry_session = Arc::clone(&session);
+    let worker = thread::spawn(move || {
+        safety_buffering::execute_action(
+            &retry_store,
+            retry_session.as_ref(),
+            &test_resources(),
+            "agent",
+            RequestActor {
+                agent: "agent".into(),
+                epoch: 7,
+            },
+            "turn",
+            "retry",
+        )
+    });
+    entered_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("provider request reached blocked boundary");
+    let cancelled = safety_buffering::execute_action(
+        &store,
+        session.as_ref(),
+        &test_resources(),
+        "agent",
+        RequestActor {
+            agent: "agent".into(),
+            epoch: 7,
+        },
+        "turn",
+        "cancel",
+    )
+    .expect("concurrent cancellation commits");
+    assert_eq!(cancelled["stage"], "cancelled");
+    release_tx.send(()).expect("release provider");
+    let late = worker
+        .join()
+        .expect("retry worker")
+        .expect("late receipt handling");
+    assert_eq!(late["stage"], "cancelled");
+    assert_eq!(session.calls.lock().expect("calls").len(), 1);
+    let connection = store.read().expect("read state");
+    let raw: String = connection
+        .query_row(
+            "SELECT record FROM runtime_safety_retries WHERE id='agent:turn'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("cancelled retry record");
+    let operation: Value = serde_json::from_str(&raw).expect("retry record");
+    assert_eq!(operation["stage"], "cancelled");
+    assert_eq!(operation["receipts"]["turns"][0]["certainty"], "written");
+    assert_eq!(
+        operation["receipts"]["turns"][0]["result"]["data"][0]["id"],
+        "turn"
+    );
+    assert!(
+        operation
+            .get("responses")
+            .and_then(|value| value.get("turns"))
+            .is_none()
     );
 }
 
