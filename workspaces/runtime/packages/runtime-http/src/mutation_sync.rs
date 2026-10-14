@@ -201,21 +201,16 @@ async fn read_bounded_body(body: Body, limit: usize) -> BoundedBody {
             Ok(chunk) => chunk,
             Err(error) => {
                 let prefix = Bytes::from(bytes);
-                let resumed = futures_util::stream::iter([
-                    Ok::<Bytes, axum::Error>(prefix),
-                    Err(error),
-                ])
-                .chain(stream);
+                let resumed =
+                    futures_util::stream::iter([Ok::<Bytes, axum::Error>(prefix), Err(error)])
+                        .chain(stream);
                 return BoundedBody::PassThrough(Body::from_stream(resumed));
             }
         };
         if bytes.len().saturating_add(chunk.len()) > limit {
             let prefix = Bytes::from(bytes);
-            let resumed = futures_util::stream::iter([
-                Ok::<Bytes, axum::Error>(prefix),
-                Ok(chunk),
-            ])
-            .chain(stream);
+            let resumed = futures_util::stream::iter([Ok::<Bytes, axum::Error>(prefix), Ok(chunk)])
+                .chain(stream);
             return BoundedBody::PassThrough(Body::from_stream(resumed));
         }
         bytes.extend_from_slice(&chunk);
@@ -234,7 +229,10 @@ fn splice_envelope(bytes: &[u8], entities: &[Value], after: Option<i64>) -> Opti
         return None;
     }
     let open = bytes.iter().position(|byte| !byte.is_ascii_whitespace())?;
-    let has_members = close > open + 1 && bytes[open + 1..close].iter().any(|byte| !byte.is_ascii_whitespace());
+    let has_members = close > open + 1
+        && bytes[open + 1..close]
+            .iter()
+            .any(|byte| !byte.is_ascii_whitespace());
     let mut additions = Vec::new();
     if has_members {
         additions.push(b',');
@@ -303,7 +301,10 @@ mod tests {
         reader
             .pragma_update(None, "query_only", "ON")
             .expect("set query-only mode");
-        assert_eq!(sample_entity_cursor(&reader).expect("sample cursor with writer held"), 6);
+        assert_eq!(
+            sample_entity_cursor(&reader).expect("sample cursor with writer held"),
+            6
+        );
         let delta = read_entity_delta(&reader, 5).expect("read delta with writer held");
         assert_eq!(delta.rows.len(), 1);
         assert_eq!(delta.rows[0].sequence, 6);
@@ -339,7 +340,10 @@ mod tests {
                 [],
             )
             .expect("raise tombstone floor");
-        assert_eq!(sample_entity_cursor(&connection).expect("sample cursor"), 12);
+        assert_eq!(
+            sample_entity_cursor(&connection).expect("sample cursor"),
+            12
+        );
     }
 
     #[test]
