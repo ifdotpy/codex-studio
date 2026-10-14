@@ -9,6 +9,8 @@ use studio_runtime_store::{EventWriteRepository, NotificationDispatchRepository}
 
 pub(super) const PUBLICATION_DRAIN_LIMIT: usize = 64;
 pub(super) const MAX_PENDING_PUBLICATION_RECEIPTS: usize = 256;
+pub(super) const MAX_COALESCED_TOKEN_RATE_EFFECTS: usize = 64;
+const MAX_COALESCED_TOKEN_RATE_BYTES: usize = 256 * 1024;
 
 fn invalid(id: &str) -> WorkerError {
     StoreError::InvalidSyncObject {
@@ -1348,14 +1350,12 @@ fn coalesce_token_rate_receipt(
                     .map_err(|_| invalid(&id))?,
             );
         }
-        if let Some(existing) = effects
-            .iter_mut()
-            .find(|existing| same_token_rate_coalesce_key(existing, effect))
-        {
-            merge_token_rate_effect(existing, effect)?;
-        } else {
-            effects.push(effect.clone());
+        if effects.len().saturating_sub(1) >= MAX_COALESCED_TOKEN_RATE_EFFECTS {
+            return Err(WorkerError::Capacity);
         }
+        // Keep each provider delivery identity intact. Rewriting earlier deltas
+        // under a later cursor can double-project them after a partial drain.
+        effects.push(effect.clone());
         let primary = effects.first().ok_or_else(|| invalid(&id))?;
         value["effect"] = serde_json::to_value(primary).map_err(|_| invalid(&id))?;
         if effects.len() > 1 {
@@ -1368,90 +1368,16 @@ fn coalesce_token_rate_receipt(
                 .remove("coalescedEffects");
         }
         value["tokenRateCoalesced"] = json!(true);
+        let serialized = value.to_string();
+        if serialized.len() > MAX_COALESCED_TOKEN_RATE_BYTES {
+            return Err(WorkerError::Capacity);
+        }
         tx.execute(
             "UPDATE runtime_operation_receipts SET result=?2 WHERE id=?1",
-            params![id, value.to_string()],
+            params![id, serialized],
         )?;
     } else {
         return Err(WorkerError::Capacity);
-    }
-    Ok(())
-}
-
-fn token_rate_coalesce_key(
-    effect: &crate::notification_dispatch::NotificationPostCommit,
-) -> Option<(u8, String, String)> {
-    use crate::notification_dispatch::NotificationPostCommit as Effect;
-    let (kind, observation) = match effect {
-        Effect::TokenRateStream(observation) => (1, observation),
-        Effect::TokenRateAssociation(observation) => (2, observation),
-        Effect::TokenRateUsage(observation) => (3, observation),
-        _ => return None,
-    };
-    let agent = observation.agent.as_ref()?.get("id")?.as_str()?.to_owned();
-    let thread = observation.params["threadId"].as_str().unwrap_or_default();
-    let turn = observation.params["turnId"]
-        .as_str()
-        .or_else(|| observation.params["turn"]["id"].as_str())
-        .unwrap_or_default();
-    let item = if kind == 2 {
-        format!(
-            "{}:{}:{}",
-            observation.method,
-            observation.params["itemId"].as_str().unwrap_or_default(),
-            observation.params["item"]["id"]
-                .as_str()
-                .unwrap_or_default()
-        )
-    } else {
-        String::new()
-    };
-    let discriminator = format!("{thread}:{turn}:{item}");
-    Some((kind, agent, discriminator))
-}
-
-fn same_token_rate_coalesce_key(
-    left: &crate::notification_dispatch::NotificationPostCommit,
-    right: &crate::notification_dispatch::NotificationPostCommit,
-) -> bool {
-    token_rate_coalesce_key(left).is_some_and(|key| token_rate_coalesce_key(right) == Some(key))
-}
-
-fn merge_token_rate_effect(
-    existing: &mut crate::notification_dispatch::NotificationPostCommit,
-    incoming: &crate::notification_dispatch::NotificationPostCommit,
-) -> Result<(), WorkerError> {
-    use crate::notification_dispatch::NotificationPostCommit as Effect;
-    match (existing, incoming) {
-        (Effect::TokenRateStream(previous), Effect::TokenRateStream(next)) => {
-            let previous_characters = previous.params["coalescedDeltaCharacters"]
-                .as_u64()
-                .or_else(|| {
-                    previous.params["delta"]
-                        .as_str()
-                        .map(|value| value.chars().count() as u64)
-                })
-                .unwrap_or_default();
-            let next_characters = next.params["coalescedDeltaCharacters"]
-                .as_u64()
-                .or_else(|| {
-                    next.params["delta"]
-                        .as_str()
-                        .map(|value| value.chars().count() as u64)
-                })
-                .unwrap_or_default();
-            let mut merged = next.clone();
-            merged.params["coalescedDeltaCharacters"] =
-                json!(previous_characters.saturating_add(next_characters));
-            *previous = merged;
-        }
-        (Effect::TokenRateUsage(previous), Effect::TokenRateUsage(next)) => {
-            *previous = next.clone();
-        }
-        (Effect::TokenRateAssociation(previous), Effect::TokenRateAssociation(next)) => {
-            *previous = next.clone();
-        }
-        _ => return Err(WorkerError::Capacity),
     }
     Ok(())
 }

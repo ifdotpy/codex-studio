@@ -423,11 +423,57 @@ pub fn capture_notification_effect(
     }
     let generation = i64::try_from(generation).map_err(|_| CaptureError::Invalid("/generation"))?;
     let cursor = i64::try_from(cursor).map_err(|_| CaptureError::Invalid("/cursor"))?;
+    let effect_bit = if capture_kind == "analytics" {
+        1_i64
+    } else {
+        2_i64
+    };
     store.analytics_transaction(|tx, canvas| {
         tx.execute(
             "CREATE TABLE IF NOT EXISTS analytics_capture_effect_receipts (provider TEXT NOT NULL,generation INTEGER NOT NULL,cursor INTEGER NOT NULL,effect TEXT NOT NULL,PRIMARY KEY(provider,generation,cursor,effect))",
             [],
         )?;
+        tx.execute_batch(
+            "CREATE TABLE IF NOT EXISTS analytics_capture_receipt_migrations (id INTEGER PRIMARY KEY CHECK(id=1));\
+             CREATE TABLE IF NOT EXISTS analytics_capture_legacy_watermarks (provider TEXT PRIMARY KEY,generation INTEGER NOT NULL,cursor INTEGER NOT NULL,effects INTEGER NOT NULL);",
+        )?;
+        let migrated: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM analytics_capture_receipt_migrations WHERE id=1)",
+            [],
+            |row| row.get(0),
+        )?;
+        if !migrated {
+            let legacy_exists: bool = tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='analytics_capture_receipts')",
+                [],
+                |row| row.get(0),
+            )?;
+            if legacy_exists {
+                tx.execute(
+                    "INSERT OR IGNORE INTO analytics_capture_legacy_watermarks(provider,generation,cursor,effects) SELECT provider,generation,cursor,effects FROM analytics_capture_receipts",
+                    [],
+                )?;
+            }
+            tx.execute(
+                "INSERT INTO analytics_capture_receipt_migrations(id) VALUES (1)",
+                [],
+            )?;
+        }
+        let legacy: Option<(i64, i64, i64)> = tx
+            .query_row(
+                "SELECT generation,cursor,effects FROM analytics_capture_legacy_watermarks WHERE provider=?1",
+                [provider_handle],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .optional()?;
+        if legacy.is_some_and(|(saved_generation, saved_cursor, effects)| {
+            generation < saved_generation
+                || generation == saved_generation
+                    && (cursor < saved_cursor
+                        || cursor == saved_cursor && effects & effect_bit != 0)
+        }) {
+            return Ok(false);
+        }
         let inserted = tx.execute(
             "INSERT OR IGNORE INTO analytics_capture_effect_receipts(provider,generation,cursor,effect) VALUES (?1,?2,?3,?4)",
             params![provider_handle, generation, cursor, capture_kind],

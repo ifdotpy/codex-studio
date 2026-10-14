@@ -600,6 +600,12 @@ fn publication_bound_keeps_state_invalidation_and_token_rate_usage() {
             .iter()
             .any(|effect| effect["TokenRateAssociation"].is_object())
     );
+    assert_eq!(effects[0]["TokenRateStream"]["delivery"]["cursor"], 256);
+    assert_eq!(effects[1]["TokenRateUsage"]["delivery"]["cursor"], 300);
+    assert_eq!(
+        effects[2]["TokenRateAssociation"]["delivery"]["cursor"],
+        300
+    );
     let invalidations: i64 = store
         .read()
         .expect("read publication marker")
@@ -627,6 +633,51 @@ fn publication_bound_keeps_state_invalidation_and_token_rate_usage() {
     assert_eq!(snapshot["rates"]["agent"]["turnId"], "turn");
     assert_eq!(snapshot["rates"]["agent"]["outputTokens"], 10.0);
     assert_eq!(pending_count(&store), 0);
+    std::fs::remove_dir_all(root).expect("remove test state");
+}
+
+#[test]
+fn saturated_publication_coalescing_has_a_hard_effect_bound() {
+    let (root, store) = test_store();
+    let backlog = NotificationPublicationBatch {
+        sequence: 1,
+        effects: std::iter::once(token_rate_started_effect(1))
+            .chain((2..=store::MAX_PENDING_PUBLICATION_RECEIPTS as u64).map(publication_effect))
+            .collect(),
+        analytics_overflow: 0,
+    };
+    store
+        .transaction_with(|tx| store::persist_publication_batch(tx, "default", &backlog))
+        .expect("fill publication receipts to the bound");
+    let bounded = NotificationPublicationBatch {
+        sequence: 2,
+        effects: (300..300 + store::MAX_COALESCED_TOKEN_RATE_EFFECTS as u64 + 1)
+            .map(publication_effect)
+            .collect(),
+        analytics_overflow: 0,
+    };
+    assert!(
+        store
+            .transaction_with(|tx| store::persist_publication_batch(tx, "default", &bounded))
+            .is_err()
+    );
+    assert_eq!(
+        pending_count(&store),
+        store::MAX_PENDING_PUBLICATION_RECEIPTS as i64
+    );
+    let coalesced: i64 = store
+        .read()
+        .expect("read saturated receipt")
+        .query_row(
+            "SELECT count(*) FROM runtime_operation_receipts WHERE id LIKE 'account-worker:notification-publication:default:%' AND json_type(result,'$.coalescedEffects') IS NOT NULL",
+            [],
+            |row| row.get(0),
+        )
+        .expect("count committed coalesced payloads");
+    assert_eq!(
+        coalesced, 0,
+        "failed batch must roll back all coalesced payloads"
+    );
     std::fs::remove_dir_all(root).expect("remove test state");
 }
 
@@ -713,6 +764,67 @@ fn production_sink_replay_keeps_analytics_rows_unchanged() {
 }
 
 #[test]
+fn analytics_receipt_upgrade_preserves_legacy_delivery_watermark() {
+    let (root, store) = test_store();
+    seed_analytics_agent(&store);
+    let agent = rate_agent();
+    let prepared = crate::analytics_capture::PreparedCapture::event(
+        &agent,
+        "turn/started",
+        &json!({"turnId":"turn"}),
+        10.0,
+        10.0,
+        crate::analytics_capture::CaptureSource::Live,
+    )
+    .expect("prepare legacy capture replay");
+    let analytics =
+        rusqlite::Connection::open(root.join("analytics.sqlite3")).expect("open analytics DB");
+    analytics
+        .execute_batch(
+            "CREATE TABLE analytics_capture_receipts (provider TEXT PRIMARY KEY,generation INTEGER NOT NULL,cursor INTEGER NOT NULL,effects INTEGER NOT NULL);\
+             INSERT INTO analytics_capture_receipts VALUES ('account:default',7,50,1);",
+        )
+        .expect("seed the prior receipt schema");
+
+    assert!(
+        !crate::analytics_capture::capture_notification_effect(
+            &store,
+            "account:default",
+            7,
+            50,
+            "analytics",
+            &prepared,
+            None,
+        )
+        .expect("deduplicate a legacy receipt")
+    );
+    assert!(
+        crate::analytics_capture::capture_notification_effect(
+            &store,
+            "account:default",
+            7,
+            51,
+            "analytics",
+            &prepared,
+            None,
+        )
+        .expect("capture after the legacy watermark")
+    );
+
+    let analytics =
+        rusqlite::Connection::open(root.join("analytics.sqlite3")).expect("reopen analytics DB");
+    let migrated: (i64, i64, i64) = analytics
+        .query_row(
+            "SELECT generation,cursor,effects FROM analytics_capture_legacy_watermarks WHERE provider='account:default'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .expect("read migrated watermark");
+    assert_eq!(migrated, (7, 50, 1));
+    std::fs::remove_dir_all(root).expect("remove test state");
+}
+
+#[test]
 fn delayed_analytics_capture_is_not_rejected_by_a_later_cursor() {
     let (root, store) = test_store();
     let agent = rate_agent();
@@ -767,7 +879,7 @@ fn analytics_counts(root: &std::path::Path) -> (i64, i64, i64) {
         .expect("turn rows");
     let captures = db
         .query_row(
-            "SELECT count(*) FROM analytics_capture_receipts",
+            "SELECT count(*) FROM analytics_capture_effect_receipts",
             [],
             |row| row.get(0),
         )
