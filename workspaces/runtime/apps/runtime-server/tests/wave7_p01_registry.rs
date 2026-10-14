@@ -18,7 +18,7 @@ use std::{
 use studio_runtime_process::{
     EventCursor, Generation, OperationId, ProviderHandle, ProviderLaunchSpec, provider_seam::*,
 };
-use studio_runtime_providers::{Frame, RequestId, ResponseBody};
+use studio_runtime_providers::{Frame, Method, NotificationFrame, RequestId, ResponseBody};
 use studio_runtime_services::{
     account_worker::{WorkerError, preparation::PreparationResources},
     event_write::{AnnotationWrite, annotate},
@@ -27,6 +27,8 @@ use studio_runtime_services::{
 };
 use studio_runtime_store::{RuntimeStore, StoreError};
 use tokio::sync::{Notify, mpsc, watch};
+
+const TEST_HANG_GUARD: std::time::Duration = std::time::Duration::from_secs(300);
 
 struct Fixture {
     _root: tempfile::TempDir,
@@ -106,6 +108,40 @@ fn dispatch_template() -> &'static FixtureTemplate {
     })
 }
 
+fn recovery_template() -> &'static FixtureTemplate {
+    static TEMPLATE: std::sync::OnceLock<FixtureTemplate> = std::sync::OnceLock::new();
+    TEMPLATE.get_or_init(|| {
+        let root = tempfile::tempdir().unwrap();
+        let source = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../server/src");
+        let script = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/wave7_p01_fixture.py");
+        let mut command = std::process::Command::new(prepared_python::prepared_python(&source));
+        command
+            .args(["-B"])
+            .arg(&script)
+            .arg(root.path())
+            .arg("recovery");
+        let result = prepared_python::output_with_timeout(
+            &mut command,
+            &script,
+            prepared_python::PYTHON_ORACLE_TIMEOUT,
+        )
+        .unwrap_or_else(|error| panic!("wave7_p01_fixture.py recovery: {error}"));
+        assert!(
+            result.status.success(),
+            "wave7_p01_fixture.py recovery: {}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        let agents = serde_json::from_slice(&result.stdout).unwrap();
+        let mut entries = Vec::new();
+        snapshot_fixture(root.path(), root.path(), &mut entries);
+        FixtureTemplate {
+            _root: root,
+            entries,
+            agents,
+        }
+    })
+}
+
 impl Fixture {
     fn new() -> Self {
         Self::build("dispatch")
@@ -138,6 +174,29 @@ impl Fixture {
                     Ok(())
                 })
                 .unwrap();
+            return Self {
+                _root: root,
+                store,
+                agents: template.agents.clone(),
+            };
+        }
+        if mode == "recovery" {
+            use std::os::unix::fs::PermissionsExt;
+
+            let template = recovery_template();
+            let root = tempfile::tempdir().unwrap();
+            for entry in &template.entries {
+                let path = root.path().join(&entry.path);
+                if let Some(contents) = &entry.contents {
+                    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+                    std::fs::write(&path, contents).unwrap();
+                } else {
+                    std::fs::create_dir_all(&path).unwrap();
+                }
+                std::fs::set_permissions(path, std::fs::Permissions::from_mode(entry.mode))
+                    .unwrap();
+            }
+            let store = Arc::new(RuntimeStore::open(Some(root.path())).unwrap());
             return Self {
                 _root: root,
                 store,
@@ -187,6 +246,54 @@ impl Fixture {
             })
             .unwrap();
     }
+
+    fn event_status(&self, id: &str) -> String {
+        self.store
+            .read()
+            .unwrap()
+            .query_row(
+                "SELECT status FROM runtime_events WHERE id=?1",
+                [id],
+                |row| row.get(0),
+            )
+            .unwrap()
+    }
+}
+
+async fn wait_for_durable_event_status(fixture: &Fixture, id: &str, expected: &str) {
+    tokio::time::timeout(TEST_HANG_GUARD, async {
+        loop {
+            if fixture.event_status(id) == expected {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("durable event {id} status {expected:?} hang guard"));
+}
+
+async fn wait_for_durable_agent_status(fixture: &Fixture, agent_id: &str, expected: &str) {
+    tokio::time::timeout(TEST_HANG_GUARD, async {
+        loop {
+            let status: String = fixture
+                .store
+                .read()
+                .unwrap()
+                .query_row(
+                    "SELECT json_extract(record,'$.status') FROM runtime_agents WHERE id=?1",
+                    [agent_id],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            if status == expected {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("durable agent {agent_id} status {expected:?} hang guard"));
 }
 
 struct Scripted {
@@ -194,9 +301,12 @@ struct Scripted {
     active: Arc<AtomicUsize>,
     writes: mpsc::UnboundedSender<(String, Value)>,
     unknown_writes: bool,
+    unknown_first_launch_only: bool,
+    launches: AtomicUsize,
     failures: AtomicUsize,
     stops: Arc<Mutex<Vec<Shutdown>>>,
     opened_notice: Arc<Notify>,
+    ready_notice: Arc<Notify>,
 }
 impl AccountLauncher for Scripted {
     fn launch(&self, account: String) -> LaunchFuture<'_> {
@@ -208,13 +318,17 @@ impl AccountLauncher for Scripted {
             {
                 return Err(WorkerError::TaskFailed);
             }
+            let launch = self.launches.fetch_add(1, Ordering::SeqCst);
+            let unknown_writes =
+                self.unknown_writes && (!self.unknown_first_launch_only || launch == 0);
             let factory = Arc::new(WireFactory {
                 opened: self.opened.clone(),
                 active: self.active.clone(),
                 writes: self.writes.clone(),
-                unknown_writes: self.unknown_writes,
+                unknown_writes,
                 stops: self.stops.clone(),
                 opened_notice: self.opened_notice.clone(),
+                ready_notice: self.ready_notice.clone(),
             });
             Ok(AccountLaunch {
                 factory,
@@ -249,6 +363,7 @@ impl AccountLauncher for Scripted {
 struct WireFactory {
     stops: Arc<Mutex<Vec<Shutdown>>>,
     opened_notice: Arc<Notify>,
+    ready_notice: Arc<Notify>,
     opened: Arc<Mutex<Vec<String>>>,
     active: Arc<AtomicUsize>,
     writes: mpsc::UnboundedSender<(String, Value)>,
@@ -263,9 +378,11 @@ impl ProviderTaskFactory for WireFactory {
         let active = self.active.clone();
         let writes = self.writes.clone();
         let unknown_writes = self.unknown_writes;
+        let ready_notice = self.ready_notice.clone();
         Box::pin(async move {
             let (commands, mut inbox) = mpsc::channel::<AdapterCommand>(16);
             let (events, journal) = mpsc::channel(16);
+            let response_events = events.clone();
             let (status, observed) = watch::channel(AttachmentStatus {
                 handle: handle.clone(),
                 open_attempted: true,
@@ -281,6 +398,7 @@ impl ProviderTaskFactory for WireFactory {
             let mut stop = shutdown.subscribe();
             let task = tokio::spawn(async move {
                 let _status = status;
+                let events = response_events;
                 let mut sequence = 0;
                 loop {
                     let command = tokio::select! { biased; _=Shutdown::cancelled(&mut stop)=>break, c=inbox.recv()=>match c { Some(c)=>c,None=>break } };
@@ -290,6 +408,7 @@ impl ProviderTaskFactory for WireFactory {
                             reply,
                             observed,
                         } => {
+                            let mut observed_message = None;
                             let receipt = match write.message()["method"].as_str() {
                                 Some("initialize") => CommandReceipt::CachedInitialize(json!({})),
                                 Some("initialized") => CommandReceipt::Written {
@@ -314,9 +433,7 @@ impl ProviderTaskFactory for WireFactory {
                                     }
                                 }
                                 _ => {
-                                    writes
-                                        .send((handle.as_str().into(), write.message().clone()))
-                                        .unwrap();
+                                    observed_message = Some(write.message().clone());
                                     if unknown_writes {
                                         // This mode models a lost acceptance response.
                                         CommandReceipt::Unknown
@@ -329,7 +446,61 @@ impl ProviderTaskFactory for WireFactory {
                                 }
                             };
                             let _ignored = reply.send(receipt);
-                            tokio::select! { biased; _=Shutdown::cancelled(&mut stop)=>break, _=observed=>{} }
+                            let observed = tokio::select! {
+                                biased;
+                                result = observed => result.is_ok(),
+                                _ = Shutdown::cancelled(&mut stop) => false,
+                            };
+                            if observed {
+                                if write.message()["method"] == "initialized" {
+                                    ready_notice.notify_one();
+                                }
+                                if let Some(message) = observed_message {
+                                    if message["method"] == "turn/start" && !unknown_writes {
+                                        sequence += 1;
+                                        events
+                                            .send(JournalEntry {
+                                                received_at_ms: 0,
+                                                cursor: EventCursor(sequence),
+                                                generation: Generation(7),
+                                                payload: JournalPayload::Frame(Frame::Response {
+                                                    id: serde_json::from_value::<RequestId>(
+                                                        message["id"].clone(),
+                                                    )
+                                                    .unwrap(),
+                                                    body: ResponseBody::Result(
+                                                        json!({"turn":{"id":"turn"}}),
+                                                    ),
+                                                    fields: Default::default(),
+                                                }),
+                                            })
+                                            .await
+                                            .unwrap();
+                                        sequence += 1;
+                                        events
+                                            .send(JournalEntry {
+                                                received_at_ms: 0,
+                                                cursor: EventCursor(sequence),
+                                                generation: Generation(7),
+                                                payload: JournalPayload::Frame(Frame::Notification(
+                                                    NotificationFrame {
+                                                        method: Method::TurnCompleted,
+                                                        params: Some(json!({
+                                                            "threadId": message["params"]["threadId"],
+                                                            "turn": {"id":"turn","status":"completed"}
+                                                        })),
+                                                        fields: Default::default(),
+                                                    },
+                                                )),
+                                            })
+                                            .await
+                                            .unwrap();
+                                    }
+                                    writes.send((handle.as_str().into(), message)).unwrap();
+                                }
+                            } else {
+                                break;
+                            }
                         }
                         AdapterCommand::Ack { cursor, reply } => {
                             let _ignored = reply.send(CommandReceipt::Acknowledged(cursor));
@@ -355,6 +526,16 @@ fn scripted() -> (Arc<Scripted>, mpsc::UnboundedReceiver<(String, Value)>) {
 fn scripted_with_unknown_writes(
     unknown_writes: bool,
 ) -> (Arc<Scripted>, mpsc::UnboundedReceiver<(String, Value)>) {
+    scripted_with_unknown_write_policy(unknown_writes, false)
+}
+fn scripted_with_unknown_first_launch() -> (Arc<Scripted>, mpsc::UnboundedReceiver<(String, Value)>)
+{
+    scripted_with_unknown_write_policy(true, true)
+}
+fn scripted_with_unknown_write_policy(
+    unknown_writes: bool,
+    unknown_first_launch_only: bool,
+) -> (Arc<Scripted>, mpsc::UnboundedReceiver<(String, Value)>) {
     let (writes, rx) = mpsc::unbounded_channel();
     (
         Arc::new(Scripted {
@@ -362,9 +543,12 @@ fn scripted_with_unknown_writes(
             active: Arc::default(),
             writes,
             unknown_writes,
+            unknown_first_launch_only,
+            launches: AtomicUsize::new(0),
             failures: AtomicUsize::new(0),
             stops: Arc::default(),
             opened_notice: Arc::default(),
+            ready_notice: Arc::default(),
         }),
         rx,
     )
@@ -435,7 +619,7 @@ async fn two_accounts_are_independent_and_shutdown_joins_all_attachments() {
 async fn start_failure_preserves_input_and_post_commit_notify_dispatches_it() {
     let fixture = tokio::task::spawn_blocking(Fixture::new).await.unwrap();
     fixture.enqueue(0, "retry-start");
-    let (launcher, mut writes) = scripted();
+    let (launcher, mut writes) = scripted_with_unknown_writes(false);
     launcher.failures.store(1, Ordering::SeqCst);
     let mut registry = AccountRegistry::new(fixture.store.clone(), launcher.clone())
         .await
@@ -446,15 +630,26 @@ async fn start_failure_preserves_input_and_post_commit_notify_dispatches_it() {
     wake.notify_one();
     let task = tokio::spawn(registry.run(wake, stop.clone()));
     assert_eq!(
-        tokio::time::timeout(std::time::Duration::from_secs(10), writes.recv())
+        tokio::time::timeout(TEST_HANG_GUARD, writes.recv())
             .await
             .expect("provider write hang guard")
             .unwrap()
             .0,
         "account:default"
     );
+    wait_for_durable_event_status(&fixture, "annotation:retry-start", "delivered").await;
+    wait_for_durable_agent_status(
+        &fixture,
+        fixture.agents[0]["id"].as_str().unwrap(),
+        "completed",
+    )
+    .await;
     stop.cancel();
-    task.await.unwrap().unwrap();
+    tokio::time::timeout(TEST_HANG_GUARD, task)
+        .await
+        .expect("account registry shutdown hang guard")
+        .unwrap()
+        .unwrap();
     assert_eq!(launcher.active.load(Ordering::SeqCst), 0);
 }
 
@@ -479,7 +674,7 @@ async fn accepted_http_message_wakes_retained_worker_and_receipt_replay_does_not
     );
     let wake = state.event_wake_handle();
     let app = studio_runtime_http::router(state.clone()).unwrap();
-    let (launcher, mut writes) = scripted();
+    let (launcher, mut writes) = scripted_with_unknown_writes(false);
     let registry = AccountRegistry::new(fixture.store.clone(), launcher.clone())
         .await
         .unwrap();
@@ -507,15 +702,30 @@ async fn accepted_http_message_wakes_retained_worker_and_receipt_replay_does_not
         let bytes = to_bytes(response.into_body(), 1024 * 1024).await.unwrap();
         assert_eq!(status, 200, "{}", String::from_utf8_lossy(&bytes));
     }
-    let (account, request) =
-        tokio::time::timeout(std::time::Duration::from_secs(10), writes.recv())
-            .await
-            .expect("provider write hang guard")
-            .unwrap();
+    let (account, request) = tokio::time::timeout(TEST_HANG_GUARD, writes.recv())
+        .await
+        .expect("provider write hang guard")
+        .unwrap();
     assert_eq!(account, "account:default");
     assert_eq!(request["method"], "turn/start");
+    wait_for_durable_event_status(
+        &fixture,
+        "b2ba3b37-4ef4-467d-b215-155c09c088e6",
+        "delivered",
+    )
+    .await;
+    wait_for_durable_agent_status(
+        &fixture,
+        fixture.agents[0]["id"].as_str().unwrap(),
+        "completed",
+    )
+    .await;
     stop.cancel();
-    task.await.unwrap().unwrap();
+    tokio::time::timeout(TEST_HANG_GUARD, task)
+        .await
+        .expect("account registry shutdown hang guard")
+        .unwrap()
+        .unwrap();
     assert_eq!(launcher.opened.lock().unwrap().len(), 1);
     assert!(writes.try_recv().is_err());
     assert_eq!(launcher.active.load(Ordering::SeqCst), 0);
@@ -526,12 +736,22 @@ async fn accepted_http_message_wakes_retained_worker_and_receipt_replay_does_not
 async fn shutdown_between_worker_start_and_wake_handoff_leaves_committed_input_recoverable() {
     let fixture = tokio::task::spawn_blocking(Fixture::new).await.unwrap();
     fixture.enqueue(0, "before-wake-handoff");
-    let (launcher, mut writes) = scripted();
+    let (launcher, mut writes) = scripted_with_unknown_writes(false);
     let mut registry = AccountRegistry::new(fixture.store.clone(), launcher.clone())
         .await
         .unwrap();
     registry.start("default").await.unwrap();
-    registry.shutdown().await.unwrap();
+    tokio::time::timeout(TEST_HANG_GUARD, launcher.ready_notice.notified())
+        .await
+        .expect("provider initialization hang guard");
+    assert_eq!(
+        fixture.event_status("annotation:before-wake-handoff"),
+        "pending"
+    );
+    tokio::time::timeout(TEST_HANG_GUARD, registry.shutdown())
+        .await
+        .expect("initial registry shutdown hang guard")
+        .unwrap();
     assert!(writes.try_recv().is_err());
     assert_eq!(launcher.active.load(Ordering::SeqCst), 0);
     let mut restarted = AccountRegistry::new(fixture.store.clone(), launcher.clone())
@@ -539,14 +759,24 @@ async fn shutdown_between_worker_start_and_wake_handoff_leaves_committed_input_r
         .unwrap();
     restarted.reconcile(None).await.unwrap();
     assert_eq!(
-        tokio::time::timeout(std::time::Duration::from_secs(10), writes.recv())
+        tokio::time::timeout(TEST_HANG_GUARD, writes.recv())
             .await
             .expect("provider write hang guard")
             .unwrap()
             .0,
         "account:default"
     );
-    restarted.shutdown().await.unwrap();
+    wait_for_durable_event_status(&fixture, "annotation:before-wake-handoff", "delivered").await;
+    wait_for_durable_agent_status(
+        &fixture,
+        fixture.agents[0]["id"].as_str().unwrap(),
+        "completed",
+    )
+    .await;
+    tokio::time::timeout(TEST_HANG_GUARD, restarted.shutdown())
+        .await
+        .expect("restarted registry shutdown hang guard")
+        .unwrap();
     assert!(writes.try_recv().is_err());
 }
 
@@ -639,20 +869,20 @@ async fn connection_loss_replaces_worker_before_delivering_new_input() {
         Ok(())
     }).unwrap();
     fixture.enqueue(0, "unknown-before-disconnect");
-    let (launcher, mut writes) = scripted();
+    let (launcher, mut writes) = scripted_with_unknown_first_launch();
     let registry = AccountRegistry::new(fixture.store.clone(), launcher.clone())
         .await
         .unwrap();
     let wake = Arc::new(Notify::new());
     let stop = Shutdown::default();
     let task = tokio::spawn(registry.run(wake.clone(), stop.clone()));
-    let first = tokio::time::timeout(std::time::Duration::from_secs(10), writes.recv())
+    let first = tokio::time::timeout(TEST_HANG_GUARD, writes.recv())
         .await
-        .unwrap()
+        .expect("initial provider write hang guard")
         .unwrap();
     assert_eq!(first.1["method"], "turn/start");
     launcher.stops.lock().unwrap()[0].cancel();
-    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+    tokio::time::timeout(TEST_HANG_GUARD, async {
         loop {
             if launcher.opened.lock().unwrap().len() == 2 {
                 break;
@@ -664,9 +894,9 @@ async fn connection_loss_replaces_worker_before_delivering_new_input() {
     .expect("replacement worker hang guard");
     fixture.enqueue(1, "new-input-after-disconnect");
     wake.notify_one();
-    let second = tokio::time::timeout(std::time::Duration::from_secs(10), writes.recv())
+    let second = tokio::time::timeout(TEST_HANG_GUARD, writes.recv())
         .await
-        .unwrap()
+        .expect("post-disconnect provider write hang guard")
         .unwrap();
     assert_eq!(second.0, "account:default");
     assert_eq!(second.1["method"], "turn/start");
@@ -674,8 +904,24 @@ async fn connection_loss_replaces_worker_before_delivering_new_input() {
         first.1["params"]["threadId"],
         second.1["params"]["threadId"]
     );
+    wait_for_durable_event_status(
+        &fixture,
+        "annotation:new-input-after-disconnect",
+        "delivered",
+    )
+    .await;
+    wait_for_durable_agent_status(
+        &fixture,
+        fixture.agents[1]["id"].as_str().unwrap(),
+        "completed",
+    )
+    .await;
     stop.cancel();
-    task.await.unwrap().unwrap();
+    tokio::time::timeout(TEST_HANG_GUARD, task)
+        .await
+        .expect("account registry shutdown hang guard")
+        .unwrap()
+        .unwrap();
     assert_eq!(launcher.opened.lock().unwrap().len(), 2);
     assert_eq!(launcher.active.load(Ordering::SeqCst), 0);
     assert!(
@@ -1343,11 +1589,10 @@ async fn host_start_reattaches_python_launch_and_delivers_http_input() {
         .body(axum::body::Body::from(body.to_string()))
         .unwrap();
     assert_eq!(app.clone().oneshot(request).await.unwrap().status(), 200);
-    let (mut reported, _) =
-        tokio::time::timeout(std::time::Duration::from_secs(15), observer.accept())
-            .await
-            .expect("host delivery hang guard")
-            .unwrap();
+    let (mut reported, _) = tokio::time::timeout(TEST_HANG_GUARD, observer.accept())
+        .await
+        .expect("host delivery hang guard")
+        .unwrap();
     let mut bytes = Vec::new();
     reported.read_to_end(&mut bytes).await.unwrap();
     let request: Value = serde_json::from_slice(&bytes).unwrap();
@@ -1364,7 +1609,7 @@ async fn host_start_reattaches_python_launch_and_delivers_http_input() {
     );
 
     let agent_id = fixture.agents[0]["id"].as_str().unwrap();
-    let terminal_agent = tokio::time::timeout(std::time::Duration::from_secs(15), async {
+    let terminal_agent = tokio::time::timeout(TEST_HANG_GUARD, async {
         loop {
             let row = fixture
                 .store

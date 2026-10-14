@@ -6,6 +6,8 @@ use crate::event_write::{AnnotationWrite, annotate};
 use std::{path::PathBuf, process::Command};
 use studio_runtime_process::{EventCursor, ProviderLaunchSpec, provider_seam::*};
 use tokio::sync::oneshot;
+
+const FIXTURE_LOCK_HANG_GUARD: std::time::Duration = std::time::Duration::from_secs(300);
 fn test_resources() -> Result<preparation::PreparationResources, WorkerError> {
     preparation::PreparationResources::bundled(
         String::new(),
@@ -250,20 +252,15 @@ fn template() -> (PathBuf, Value) {
     let digest = studio_runtime_store::sha256_hex(CREATE_AGENTS.as_bytes());
     let root = parent.join(format!("template-{}", &digest[..16]));
     let lock = std::fs::File::create(parent.join("template.lock")).unwrap();
-    let started = std::time::Instant::now();
-    loop {
-        match lock.try_lock() {
-            Ok(()) => break,
-            Err(std::fs::TryLockError::WouldBlock) => {
-                assert!(
-                    started.elapsed() < std::time::Duration::from_secs(30),
-                    "fixture lock deadline"
-                );
-                std::thread::sleep(std::time::Duration::from_millis(5));
-            }
-            Err(error) => panic!("fixture lock: {error}"),
-        }
-    }
+    let (lock_ready, acquired_lock) = std::sync::mpsc::sync_channel(1);
+    std::thread::spawn(move || {
+        let result = lock.lock().map(|()| lock);
+        lock_ready.send(result).ok();
+    });
+    let _lock = acquired_lock
+        .recv_timeout(FIXTURE_LOCK_HANG_GUARD)
+        .expect("fixture lock acquisition hang guard")
+        .expect("fixture lock acquisition");
     let manifest = root.join("agents.json");
     if !manifest.exists() {
         std::fs::create_dir_all(&root).unwrap();
