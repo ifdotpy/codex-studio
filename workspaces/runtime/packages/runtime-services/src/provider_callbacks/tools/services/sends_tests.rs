@@ -1,3 +1,5 @@
+#![allow(clippy::unwrap_used)]
+
 use super::*;
 use crate::managed_host_tools::{PostCommitPort, SendPort};
 use std::{path::PathBuf, process::Command, sync::OnceLock};

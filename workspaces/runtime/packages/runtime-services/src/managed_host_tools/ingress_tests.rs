@@ -1,4 +1,4 @@
-#![allow(clippy::unwrap_used)]
+#![allow(clippy::duplicate_mod, clippy::unwrap_used)]
 
 #[path = "../../tests/support/prepared_python.rs"]
 mod prepared_python;
