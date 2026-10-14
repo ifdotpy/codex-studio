@@ -19,6 +19,10 @@ use studio_runtime_store::{RuntimeStore, StoreError, SyncDocumentsRepository};
 use crate::error::ApiError;
 use crate::router::HttpState;
 
+const ENTITY_PROJECTION_PREPARATION_MAX_ATTEMPTS: usize = 3;
+const ENTITY_PROJECTION_PREPARATION_CONFLICT: &str =
+    "Entity projection inputs kept changing while preparing the sync response; retry the pull";
+
 pub(crate) fn routes() -> RouteGroup {
     RouteGroup::new(vec![
         get("/api/sync/protocol", OperationStatus::Implemented, protocol),
@@ -282,27 +286,91 @@ fn pull_with_maintenance(
     priority_id: Option<&str>,
     generation: i64,
 ) -> Result<Value, ApiError> {
-    let maintenance_lock = store
-        .lock_entity_projection_maintenance()
-        .map_err(map_sync_store_error)?;
-    let generation_before_vault_read = store.committed_change_generation();
-    let (reader, vault_snapshot) = capture_project_vault_snapshot(store, state_dir)?;
-    let vault_signature = vault_snapshot.signature();
-    let observed_generation = store.committed_change_generation();
-    if generation_before_vault_read == observed_generation
-        && !store
-            .entity_projections_need_maintenance(&vault_signature)
-            .map_err(map_sync_store_error)?
-    {
-        let response = store
-            .read_transaction(|transaction| {
+    pull_with_maintenance_interleaved(
+        store,
+        state_dir,
+        validators,
+        after,
+        limit,
+        fresh,
+        initial_high,
+        reset_support,
+        priority_id,
+        generation,
+        &mut || {},
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn pull_with_maintenance_interleaved(
+    store: &RuntimeStore,
+    state_dir: &str,
+    validators: &crate::validation::Registry,
+    after: i64,
+    limit: i64,
+    fresh: bool,
+    initial_high: i64,
+    reset_support: bool,
+    priority_id: Option<&str>,
+    generation: i64,
+    before_room_recheck: &mut dyn FnMut(),
+) -> Result<Value, ApiError> {
+    for _ in 0..ENTITY_PROJECTION_PREPARATION_MAX_ATTEMPTS {
+        let maintenance_lock = store
+            .lock_entity_projection_maintenance()
+            .map_err(map_sync_store_error)?;
+        let generation_before_vault_read = store.committed_change_generation();
+        let (reader, vault_snapshot) = capture_project_vault_snapshot(store, state_dir)?;
+        let vault_signature = vault_snapshot.signature();
+        let observed_generation = store.committed_change_generation();
+        if generation_before_vault_read == observed_generation
+            && !store
+                .entity_projections_need_maintenance(&vault_signature)
+                .map_err(map_sync_store_error)?
+        {
+            let response = store
+                .read_transaction(|transaction| {
+                    pull_entities(
+                        transaction,
+                        state_dir,
+                        false,
+                        None,
+                        None,
+                        None,
+                        after,
+                        limit,
+                        fresh,
+                        initial_high,
+                        reset_support,
+                        priority_id,
+                        generation,
+                        validators,
+                    )
+                })
+                .map_err(map_sync_store_error)?;
+            drop(maintenance_lock);
+            if store.committed_change_generation() == observed_generation {
+                return Ok(response);
+            }
+            continue;
+        }
+
+        let project_server_id = store.local_server_id().map_err(map_sync_store_error)?;
+        let rooms = studio_runtime_services::sync_entity_context::RoomDirectory::prepare(&reader)
+            .map_err(map_sync_store_error)?;
+        before_room_recheck();
+        let (response, committed_generation) = store
+            .transaction_with_commit_generation(|transaction| {
+                if !rooms.matches(transaction)? {
+                    return Ok(None);
+                }
                 pull_entities(
                     transaction,
                     state_dir,
-                    false,
-                    None,
-                    None,
-                    None,
+                    true,
+                    project_server_id.as_deref(),
+                    Some(&vault_snapshot),
+                    Some(&rooms),
                     after,
                     limit,
                     fresh,
@@ -312,54 +380,24 @@ fn pull_with_maintenance(
                     generation,
                     validators,
                 )
+                .map(Some)
             })
             .map_err(map_sync_store_error)?;
+        let Some(response) = response else {
+            drop(maintenance_lock);
+            continue;
+        };
+        store
+            .mark_entity_projections_maintained(committed_generation, vault_signature)
+            .map_err(map_sync_store_error)?;
         drop(maintenance_lock);
-        if store.committed_change_generation() == observed_generation {
-            return Ok(response);
-        }
-        return pull_with_maintenance(
-            store,
-            state_dir,
-            validators,
-            after,
-            limit,
-            fresh,
-            initial_high,
-            reset_support,
-            priority_id,
-            generation,
-        );
+        return Ok(response);
     }
 
-    let project_server_id = store.local_server_id().map_err(map_sync_store_error)?;
-    let rooms = studio_runtime_services::sync_entity_context::RoomDirectory::prepare(&reader)
-        .map_err(map_sync_store_error)?;
-    let (response, committed_generation) = store
-        .transaction_with_commit_generation(|transaction| {
-            pull_entities(
-                transaction,
-                state_dir,
-                true,
-                project_server_id.as_deref(),
-                Some(&vault_snapshot),
-                Some(&rooms),
-                after,
-                limit,
-                fresh,
-                initial_high,
-                reset_support,
-                priority_id,
-                generation,
-                validators,
-            )
-        })
-        .map_err(map_sync_store_error)?;
-    store
-        .mark_entity_projections_maintained(committed_generation, vault_signature)
-        .map_err(map_sync_store_error)?;
-    drop(maintenance_lock);
-    Ok(response)
+    Err(ApiError::new(
+        StatusCode::CONFLICT,
+        ENTITY_PROJECTION_PREPARATION_CONFLICT,
+    ))
 }
 
 fn capture_project_vault_snapshot(
@@ -531,11 +569,6 @@ fn pull_entities(
         let rooms = rooms.ok_or(StoreError::RecordContract(
             "entity projection maintenance is missing its room directory",
         ))?;
-        if !rooms.matches(transaction)? {
-            return Err(StoreError::RecordContract(
-                "entity projection inputs changed after filesystem preparation",
-            ));
-        }
         sync_policy::seed_workspace_projection(
             transaction,
             state_dir,
@@ -716,9 +749,122 @@ fn query_integer(query: &QueryParams, name: &str, default: i64) -> Result<i64, A
 
 #[cfg(test)]
 mod vault_maintenance_tests {
-    use super::pull_with_maintenance;
+    use super::{
+        ENTITY_PROJECTION_PREPARATION_MAX_ATTEMPTS, pull_with_maintenance,
+        pull_with_maintenance_interleaved,
+    };
+    use axum::response::IntoResponse;
     use serde_json::{Value, json};
     use studio_runtime_store::{ProjectsRepository, RuntimeStore, SyncDocumentsRepository};
+
+    fn maintenance_fixture() -> (
+        tempfile::TempDir,
+        RuntimeStore,
+        Value,
+        crate::validation::Registry,
+        String,
+    ) {
+        let directory = tempfile::tempdir().expect("isolated state directory");
+        let store = RuntimeStore::open(Some(directory.path())).expect("runtime store opens");
+        let project_path = directory
+            .path()
+            .join("Project")
+            .to_string_lossy()
+            .into_owned();
+        std::fs::create_dir_all(&project_path).expect("project directory is created");
+        let project = json!({
+            "id": project_path,
+            "path": project_path,
+            "projectAliases": [],
+        });
+        store
+            .transaction(|transaction| ProjectsRepository::put_project(transaction, &project))
+            .expect("project source is stored");
+        let validators = crate::validation::Registry::compile(&[(
+            "GET".to_owned(),
+            "/api/sync/pull".to_owned(),
+        )])
+        .expect("sync pull validators compile");
+        let state_dir = store.root().to_string_lossy().into_owned();
+        store
+            .mark_entity_projections_maintained(store.committed_change_generation(), "stale".into())
+            .expect("force one projection refresh");
+        (directory, store, project, validators, state_dir)
+    }
+
+    #[test]
+    fn stale_room_snapshot_retries_after_an_injected_interleaving() {
+        let (_directory, store, project, validators, state_dir) = maintenance_fixture();
+        let mut interleavings = 0;
+        let mut before_recheck = || {
+            interleavings += 1;
+            if interleavings == 1 {
+                let mut updated = project.clone();
+                updated["name"] = json!("changed during filesystem preparation");
+                store
+                    .transaction(|transaction| {
+                        ProjectsRepository::put_project(transaction, &updated)
+                    })
+                    .expect("injected project update commits");
+            }
+        };
+
+        let response = pull_with_maintenance_interleaved(
+            &store,
+            &state_dir,
+            &validators,
+            0,
+            100,
+            false,
+            0,
+            false,
+            None,
+            0,
+            &mut before_recheck,
+        )
+        .expect("pull retries against the updated room snapshot");
+
+        assert!(response["documents"].is_array());
+        assert_eq!(interleavings, 2, "the stale preparation is retried once");
+    }
+
+    #[tokio::test]
+    async fn repeated_room_snapshot_interleavings_return_conflict_after_bounded_retries() {
+        let (_directory, store, project, validators, state_dir) = maintenance_fixture();
+        let mut interleavings = 0;
+        let mut before_recheck = || {
+            interleavings += 1;
+            let mut updated = project.clone();
+            updated["name"] = json!(format!("concurrent update {interleavings}"));
+            store
+                .transaction(|transaction| ProjectsRepository::put_project(transaction, &updated))
+                .expect("injected project update commits");
+        };
+
+        let error = pull_with_maintenance_interleaved(
+            &store,
+            &state_dir,
+            &validators,
+            0,
+            100,
+            false,
+            0,
+            false,
+            None,
+            0,
+            &mut before_recheck,
+        )
+        .expect_err("persistent room updates exhaust the retry budget");
+        let response = error.into_response();
+
+        assert_eq!(response.status(), axum::http::StatusCode::CONFLICT);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("conflict response body is readable");
+        let body: Value = serde_json::from_slice(&body).expect("conflict response is JSON");
+        assert_eq!(body["error"], super::ENTITY_PROJECTION_PREPARATION_CONFLICT);
+        assert_eq!(interleavings, ENTITY_PROJECTION_PREPARATION_MAX_ATTEMPTS);
+    }
 
     #[test]
     fn entity_pull_reprojects_when_cached_vault_changes_without_a_store_write() {
