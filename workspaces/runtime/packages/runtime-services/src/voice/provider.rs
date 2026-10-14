@@ -904,6 +904,8 @@ pub enum VoiceProviderError {
     AdapterUnavailable,
     #[error("Not implemented: requires {0}")]
     RequiresDependency(&'static str),
+    #[error(transparent)]
+    Monitor(#[from] crate::monitor_policy::MonitorError),
     #[error("voice operation failed")]
     Operation,
 }
@@ -1204,11 +1206,151 @@ pub async fn speech(
 
 enum ApprovalDispatch {
     Replay(Value),
+    MonitorUnavailable,
+    Monitor {
+        request_id: String,
+    },
     Send {
         request_id: String,
         context: VoiceProviderContext,
         rpc_id: VoiceRpcId,
     },
+}
+
+/// Whether this exact voice approval speech points at a command-watch request.
+/// The HTTP adapter uses this to select the monitor transaction and wake lane.
+pub fn is_monitor_approval(
+    store: &RuntimeStore,
+    agent_id: &str,
+    speech_id: &str,
+) -> Result<bool, VoiceProviderError> {
+    let connection = store.read()?;
+    let Some(speech) = VoiceRepository::record(&connection, speech_id)? else {
+        return Ok(false);
+    };
+    if speech.agent != agent_id || speech.kind != "orchestrator" {
+        return Ok(false);
+    }
+    let metadata: Value =
+        serde_json::from_str(&speech.payload).map_err(|_| VoiceProviderError::Operation)?;
+    let Some(request_id) = metadata.get("request_id").and_then(Value::as_str) else {
+        return Ok(false);
+    };
+    let request = connection
+        .query_row(
+            "SELECT record FROM runtime_requests WHERE id=?1",
+            [request_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?;
+    let Some(request) = request else {
+        return Ok(false);
+    };
+    let request: Value =
+        serde_json::from_str(&request).map_err(|_| VoiceProviderError::Operation)?;
+    Ok(request.get("method").and_then(Value::as_str) == Some("monitor/approve"))
+}
+
+/// Complete a monitor approval through the monitor owner. The monitor update
+/// is itself transactional and idempotent; if it proves no write, release the
+/// voice receipt for a same-identity retry.
+pub async fn approve_monitor(
+    store: std::sync::Arc<RuntimeStore>,
+    agent_id: String,
+    session_id: String,
+    speech_id: String,
+    transcript_id: String,
+    now: f64,
+    start_dispatch_available: bool,
+) -> Result<Value, VoiceProviderError> {
+    let store_for_reserve = std::sync::Arc::clone(&store);
+    let (request_id, replay) = tokio::task::spawn_blocking(move || {
+        match reserve_approval(
+            &store_for_reserve,
+            &agent_id,
+            &session_id,
+            &speech_id,
+            &transcript_id,
+            start_dispatch_available,
+        )? {
+            ApprovalDispatch::Replay(value) => Ok((String::new(), Some(value))),
+            ApprovalDispatch::MonitorUnavailable => Err(VoiceProviderError::RequiresDependency(
+                "monitor-driver/start-dispatch",
+            )),
+            ApprovalDispatch::Monitor { request_id } => Ok((request_id, None)),
+            ApprovalDispatch::Send { .. } => Err(VoiceProviderError::Operation),
+        }
+    })
+    .await
+    .map_err(|_| VoiceProviderError::Operation)??;
+    if let Some(value) = replay {
+        return Ok(value);
+    }
+    let request_for_answer = request_id.clone();
+    let data = serde_json::json!({"decision":"accept"});
+    let answer_store = std::sync::Arc::clone(&store);
+    let answer = tokio::task::spawn_blocking(move || {
+        crate::monitor_runtime::answer_approval(
+            &answer_store,
+            &request_for_answer,
+            &data,
+            now,
+            start_dispatch_available,
+        )
+    })
+    .await
+    .map_err(|_| VoiceProviderError::Operation)?;
+    match answer {
+        Ok(Some(answer)) if answer.accepted => {
+            let result = answer.response;
+            let saved =
+                serde_json::to_string(&result).map_err(|_| VoiceProviderError::Operation)?;
+            let update_store = std::sync::Arc::clone(&store);
+            let update_id = request_id.clone();
+            tokio::task::spawn_blocking(move || {
+                update_store.transaction_with_error(|transaction| -> Result<_, VoiceProviderError> {
+                    transaction.execute(
+                        "UPDATE voice_approvals SET status='accepted',result=?1 WHERE id=?2 AND status='uncertain'",
+                        rusqlite::params![saved, update_id],
+                    )?;
+                    Ok(())
+                })
+            })
+            .await
+            .map_err(|_| VoiceProviderError::Operation)??;
+            Ok(result)
+        }
+        Ok(_) => {
+            release_monitor_approval(&store, &request_id).await?;
+            Err(VoiceProviderError::RequiresDependency(
+                "monitor-approval/voice",
+            ))
+        }
+        Err(error) => {
+            release_monitor_approval(&store, &request_id).await?;
+            Err(VoiceProviderError::Monitor(error))
+        }
+    }
+}
+
+async fn release_monitor_approval(
+    store: &std::sync::Arc<RuntimeStore>,
+    request_id: &str,
+) -> Result<(), VoiceProviderError> {
+    let store = std::sync::Arc::clone(store);
+    let id = request_id.to_owned();
+    tokio::task::spawn_blocking(move || {
+        store.transaction_with_error(|transaction| -> Result<_, VoiceProviderError> {
+            transaction.execute(
+                "UPDATE voice_approvals SET status='not_sent' WHERE id=?1 AND status='uncertain'",
+                [id],
+            )?;
+            Ok(())
+        })
+    })
+    .await
+    .map_err(|_| VoiceProviderError::Operation)??;
+    Ok(())
 }
 
 pub async fn approve(
@@ -1232,12 +1374,23 @@ pub async fn approve(
             &reserve_session,
             &reserve_speech,
             &reserve_transcript,
+            false,
         )
     })
     .await
     .map_err(|_| VoiceProviderError::Operation)??;
     let (request_id, context, rpc_id) = match reservation {
         ApprovalDispatch::Replay(value) => return Ok(value),
+        ApprovalDispatch::MonitorUnavailable => {
+            return Err(VoiceProviderError::RequiresDependency(
+                "monitor-approval/voice",
+            ));
+        }
+        ApprovalDispatch::Monitor { .. } => {
+            return Err(VoiceProviderError::RequiresDependency(
+                "monitor-approval/voice",
+            ));
+        }
         ApprovalDispatch::Send {
             request_id,
             context,
@@ -1294,6 +1447,7 @@ fn reserve_approval(
     session_id: &str,
     speech_id: &str,
     transcript_id: &str,
+    monitor_runtime_available: bool,
 ) -> Result<ApprovalDispatch, VoiceProviderError> {
     store.transaction_with_error(|transaction| -> Result<_, VoiceProviderError> {
         let actor = super::checked_agent(transaction, agent_id)
@@ -1351,7 +1505,31 @@ fn reserve_approval(
                 let value = result.as_ref().ok_or(VoiceProviderError::Operation)?;
                 return Ok(ApprovalDispatch::Replay(serde_json::from_str(value).map_err(|_| VoiceProviderError::Operation)?));
             }
-            if status != "not_sent" {
+            if status == "uncertain" {
+                let current: String = transaction.query_row(
+                    "SELECT record FROM runtime_requests WHERE id=?1",
+                    [&request_id],
+                    |row| row.get(0),
+                ).optional()?.ok_or(VoiceProviderError::ContextUnavailable)?;
+                let current: Value = serde_json::from_str(&current)
+                    .map_err(|_| VoiceProviderError::Operation)?;
+                if current.get("method").and_then(Value::as_str) != Some("monitor/approve") {
+                    return Err(VoiceProviderError::Unknown);
+                }
+                if current.get("status").and_then(Value::as_str) == Some("answered")
+                    && current.get("answerDecision").and_then(Value::as_str) == Some("accept")
+                {
+                    let replay = json!({"status":"answered","replayed":true});
+                    transaction.execute(
+                        "UPDATE voice_approvals SET status='accepted',result=?1 WHERE id=?2",
+                        rusqlite::params![serde_json::to_string(&replay).map_err(|_| VoiceProviderError::Operation)?, request_id],
+                    )?;
+                    return Ok(ApprovalDispatch::Replay(replay));
+                }
+                if current.get("status").and_then(Value::as_str) != Some("pending") {
+                    return Err(VoiceProviderError::Unknown);
+                }
+            } else if status != "not_sent" {
                 return Err(VoiceProviderError::Unknown);
             }
         }
@@ -1363,21 +1541,40 @@ fn reserve_approval(
         let current: Value = serde_json::from_str(&current)
             .map_err(|_| VoiceProviderError::Operation)?;
         let method = current.get("method").and_then(Value::as_str);
-        if method == Some("monitor/approve") {
-            return Err(VoiceProviderError::RequiresDependency("monitor-approval/voice"));
-        }
-        let rpc_id = current.get("rpcId").and_then(parse_rpc_id)
-            .ok_or(VoiceProviderError::ContextUnavailable)?;
         let fingerprint = super::approval_fingerprint(&current);
         if current.get("agent").and_then(Value::as_str) != Some(agent_id)
             || current.get("status").and_then(Value::as_str) != Some("pending")
-            || !method.is_some_and(|method| super::APPROVAL_METHODS.contains(&method) && method != "monitor/approve")
+            || !method.is_some_and(|method| super::APPROVAL_METHODS.contains(&method))
             || metadata.get("fingerprint").and_then(Value::as_str) != Some(fingerprint.as_str())
             || current.get("epoch").and_then(Value::as_i64) != Some(actor.epoch)
             || actor.extra.get("autoWake").and_then(Value::as_bool) != Some(true)
         {
             return Err(VoiceProviderError::ContextChanged);
         }
+        if method == Some("monitor/approve") {
+            if !monitor_runtime_available {
+                return Ok(ApprovalDispatch::MonitorUnavailable);
+            }
+            let has_native_session: bool = transaction.query_row(
+                "SELECT EXISTS(SELECT 1 FROM voice_sessions WHERE id=?1 AND native_thread IS NOT NULL)",
+                [session_id],
+                |row| row.get(0),
+            )?;
+            if has_native_session {
+                return Err(VoiceProviderError::ContextChanged);
+            }
+            if previous.is_some() {
+                transaction.execute("UPDATE voice_approvals SET status='uncertain' WHERE id=?1", [&request_id])?;
+            } else {
+                transaction.execute(
+                    "INSERT INTO voice_approvals(id,agent,speech,transcript,status,result) VALUES(?1,?2,?3,?4,'uncertain',NULL)",
+                    rusqlite::params![request_id, agent_id, speech_id, transcript_id],
+                )?;
+            }
+            return Ok(ApprovalDispatch::Monitor { request_id });
+        }
+        let rpc_id = current.get("rpcId").and_then(parse_rpc_id)
+            .ok_or(VoiceProviderError::ContextUnavailable)?;
         let session = load_row(transaction, session_id, agent_id)?
             .ok_or(policy::VoiceError::UnknownSession)?;
         let session = VoiceSession::from_row(session)?;
@@ -1478,23 +1675,29 @@ fn reserve_speech(
         let session = load_row(transaction, session_id, agent_id)?
             .ok_or(policy::VoiceError::UnknownSession)?;
         let session = VoiceSession::from_row(session)?;
-        let record = VoiceRepository::record(transaction, record_id)?
-            .ok_or(policy::VoiceError::UnknownSession)?;
-        super::validate_record(&record)?;
-        if record.agent != agent_id || record.kind != "orchestrator" {
-            return Err(policy::VoiceError::UnknownSession.into());
-        }
         if let Some(old) = lookup_speech_receipt_raw(transaction, session_id, record_id, request_id)? {
             if old["session"] != session_id || old["record_id"] != record_id {
                 return Err(VoiceProviderError::Policy(policy::VoiceError::SessionIdentityConflict));
             }
             if let Some(marker) = old["error"].as_str().and_then(|error| error.strip_prefix("voice-content-sha256:")) {
                 let stored = marker.split('|').next().unwrap_or_default();
-                if stored != studio_runtime_store::sha256_hex(record.text.as_bytes()) {
+                let record = VoiceRepository::record(transaction, record_id)?
+                    .ok_or(policy::VoiceError::UnknownSession)?;
+                super::validate_record(&record)?;
+                if record.agent != agent_id
+                    || record.kind != "orchestrator"
+                    || stored != studio_runtime_store::sha256_hex(record.text.as_bytes())
+                {
                     return Err(policy::VoiceError::SessionIdentityConflict.into());
                 }
             }
             return Ok(None);
+        }
+        let record = VoiceRepository::record(transaction, record_id)?
+            .ok_or(policy::VoiceError::UnknownSession)?;
+        super::validate_record(&record)?;
+        if record.agent != agent_id || record.kind != "orchestrator" {
+            return Err(policy::VoiceError::UnknownSession.into());
         }
         if session.ended().is_some() || session.state() != Some(policy::VoiceSessionState::Ready) {
             return Err(VoiceProviderError::Policy(policy::VoiceError::UnknownSession));

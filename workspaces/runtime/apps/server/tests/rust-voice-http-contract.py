@@ -417,7 +417,7 @@ class VoiceHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         return sorted(path.name for path in audio.iterdir()) if audio.exists() else []
 
     @unittest.skipUnless(os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"), "Rust backend only")
-    def test_provider_operations_refuse_without_writes(self):
+    def test_provider_operations_match_python_without_live_voice_transport(self):
         # Runtime.__init__ expires pending native requests during startup
         # (codex_runtime.py's restart recovery retains only matching
         # agent/asyncQuestion requests). This approval fixture was written
@@ -437,7 +437,6 @@ class VoiceHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         before = no_write_snapshot(self.backend.state)
         requests = (
             ("start", {"agent": self.lead_id, "session_id": "unused", "sdp": "offer"}),
-            ("end", {"agent": self.lead_id, "session_id": "active-without-worker"}),
             ("speech", {
                 "agent": self.lead_id, "session_id": "active-without-worker",
                 "record_id": "python-courier-record",
@@ -450,9 +449,21 @@ class VoiceHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         for action, body in requests:
             with self.subTest(action=action):
                 response = self.request(f"/api/voice/{action}", body)
-                self.assertEqual(response.status, 501, response.body[:1000])
-                self.assertIn("Not implemented: requires ", response.json()["error"])
+                self.assertEqual(response.status, 400, response.body[:1000])
                 self.assertEqual(no_write_snapshot(self.backend.state), before)
+        ended_session = self.request("/api/voice/end", {
+            "agent": self.lead_id, "session_id": "active-without-worker",
+        })
+        self.assertEqual(ended_session.status, 200, ended_session.body[:1000])
+        self.assertEqual(ended_session.json()["state"], "ended")
+        # Match the local end behavior while keeping this fixture isolated for
+        # the following projection test. Python chooses the latest stored
+        # session by created timestamp too (codex_voice.py:100).
+        with sqlite3.connect(self.backend.state / "canvas.sqlite3") as connection:
+            connection.execute(
+                "DELETE FROM voice_sessions WHERE id='active-without-worker' AND agent=?",
+                (self.lead_id,),
+            )
         ended = self.request("/api/voice/end", {
             "agent": self.lead_id, "session_id": "python-session",
         })

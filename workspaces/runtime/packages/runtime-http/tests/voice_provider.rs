@@ -1,3 +1,4 @@
+use axum::Extension;
 use axum::body::{Body, to_bytes};
 use axum::extract::ConnectInfo;
 use axum::http::{Request, StatusCode};
@@ -13,6 +14,16 @@ use studio_runtime_services::voice::runtime::{
 };
 use studio_runtime_store::RuntimeStore;
 use tower::ServiceExt;
+
+#[path = "../../runtime-services/tests/wave7_p15_support/fixtures.rs"]
+#[allow(dead_code, unused_imports)]
+mod monitor_fixtures;
+#[path = "../../runtime-services/tests/wave7_p15_support/mod.rs"]
+#[allow(dead_code)]
+mod monitor_support;
+#[path = "../../runtime-services/tests/support/prepared_python.rs"]
+#[allow(dead_code)]
+mod prepared_python_support;
 
 #[path = "../../runtime-services/tests/multi_server/common.rs"]
 #[allow(dead_code)]
@@ -288,6 +299,173 @@ async fn installed_provider_lifts_start_speech_approve_and_end_over_http() {
 }
 
 #[tokio::test]
+async fn voice_monitor_approval_uses_monitor_transaction_and_dispatch_wake() {
+    use studio_runtime_store::{RequestRecord, Table};
+
+    let root = monitor_fixtures::tempdir();
+    let mut case = monitor_fixtures::corpus(root.path())
+        .into_iter()
+        .find(|case| case["name"] == "finish-0-None-False")
+        .expect("running monitor case");
+    case["before"]["status"] = json!("approval");
+    case["actor"]["isLead"] = json!(true);
+    case["before"]
+        .as_object_mut()
+        .expect("monitor record")
+        .remove("operation");
+    let store = Arc::new(monitor_fixtures::store(root.path(), "voice-monitor"));
+    monitor_fixtures::seed(&store, &case);
+    let agent = case["actor"]["id"].as_str().expect("agent id").to_owned();
+    let monitor_id = case["before"]["id"].as_str().expect("monitor id");
+    let request_id = format!("monitor-approval:{monitor_id}");
+    store
+        .transaction(|tx| {
+            let request = json!({
+                "id":request_id,
+                "method":"monitor/approve",
+                "agent":agent,
+                "epoch":case["before"]["epoch"],
+                "params":{"monitorId":monitor_id,"command":case["before"]["command"],"cwd":case["before"]["cwd"]},
+                "status":"pending",
+                "createdAt":1000.0
+            });
+            let fingerprint = studio_runtime_store::sha256_hex(
+                studio_runtime_store::python_json(&request).as_bytes(),
+            );
+            tx.execute(
+                "INSERT INTO runtime_requests(id,record) VALUES(?1,?2)",
+                rusqlite::params![request_id, request.to_string()],
+            )?;
+            tx.execute(
+                "INSERT INTO voice_sessions(id,agent,created,state) VALUES('voice-monitor-session',?1,1,'ready')",
+                [&agent],
+            )?;
+            tx.execute(
+                "INSERT INTO voice_records(id,agent,session,kind,text,item_id,previous_item_id,payload,created) VALUES('voice-monitor-speech',?1,'','orchestrator','approval','','',?2,1)",
+                rusqlite::params![agent, json!({"request_id":request_id,"fingerprint":fingerprint}).to_string()],
+            )?;
+            tx.execute(
+                "INSERT INTO voice_records(id,agent,session,kind,text,item_id,previous_item_id,payload,created) VALUES('voice-monitor-playback',?1,'voice-monitor-session','playback','played','','',?2,2)",
+                rusqlite::params![agent, json!({"record_id":"voice-monitor-speech"}).to_string()],
+            )?;
+            tx.execute(
+                "INSERT INTO voice_records(id,agent,session,kind,text,item_id,previous_item_id,payload,created) VALUES('voice-monitor-transcript',?1,'voice-monitor-session','user','разрешаю','','','{}',3)",
+                [&agent],
+            )?;
+            Ok(())
+        })
+        .expect("seed voice monitor approval");
+
+    let approval_body = json!({
+        "agent":agent,"session_id":"voice-monitor-session",
+        "speech_id":"voice-monitor-speech","transcript_id":"voice-monitor-transcript"
+    });
+    let app_without_runtime = router(HttpState::new(
+        "token".into(),
+        "workspace".into(),
+        None,
+        root.path().to_string_lossy().into_owned(),
+        4620,
+        None,
+        Some(store.clone()),
+        None,
+    ))
+    .expect("router without monitor runtime");
+    let before_refusal = database_snapshot(&store);
+    let (status, refused) = post(
+        &app_without_runtime,
+        "/api/voice/approve",
+        approval_body.clone(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_IMPLEMENTED, "{refused}");
+    assert_eq!(database_snapshot(&store), before_refusal);
+
+    let state = HttpState::new(
+        "token".into(),
+        "workspace".into(),
+        None,
+        root.path().to_string_lossy().into_owned(),
+        4620,
+        None,
+        Some(store.clone()),
+        None,
+    );
+    let port = Arc::new(monitor_support::Port::default());
+    let runtime = Arc::new(
+        studio_runtime_services::monitor_runtime_wiring::MonitorRuntime::new(
+            store.clone(),
+            port.clone(),
+            state.event_wake_handle(),
+        ),
+    );
+    let app = router(state)
+        .expect("router")
+        .layer(Extension(runtime.clone()));
+    let (status, response) = post(
+        &app,
+        "/api/voice/approve",
+        json!({
+            "agent":agent,"session_id":"voice-monitor-session",
+            "speech_id":"voice-monitor-speech","transcript_id":"voice-monitor-transcript"
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{response}");
+    assert_eq!(response["status"], "answered");
+    let request = Table::<RequestRecord>::new(&store.read().expect("read request"))
+        .get(&request_id)
+        .expect("get monitor approval")
+        .expect("monitor approval");
+    assert_eq!(request.value()["answerDecision"], "accept");
+
+    // A saved accepted voice receipt must replay without the optional runtime.
+    let (status, replayed) = post(
+        &app_without_runtime,
+        "/api/voice/approve",
+        approval_body.clone(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{replayed}");
+    assert_eq!(replayed["status"], response["status"]);
+    assert_ne!(replayed["replayed"], true);
+
+    // Simulate a crash after the monitor transaction committed but before the
+    // accepted response was copied into the voice receipt.
+    store
+        .transaction(|tx| {
+            tx.execute(
+                "UPDATE voice_approvals SET status='uncertain',result=NULL WHERE id=?1",
+                [&request_id],
+            )?;
+            Ok(())
+        })
+        .expect("simulate crash window");
+    let (status, recovered) = post(&app_without_runtime, "/api/voice/approve", approval_body).await;
+    assert_eq!(status, StatusCode::OK, "{recovered}");
+    assert_eq!(recovered["status"], "answered");
+    assert_eq!(recovered["replayed"], true);
+    let receipt: (String, Option<String>) = store
+        .read()
+        .expect("read recovered receipt")
+        .query_row(
+            "SELECT status,result FROM voice_approvals WHERE id=?1",
+            [&request_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .expect("read recovered voice approval receipt");
+    assert_eq!(receipt.0, "accepted");
+    let saved: Value = serde_json::from_str(receipt.1.as_deref().expect("saved voice receipt"))
+        .expect("valid saved voice receipt");
+    assert_eq!(saved, json!({"status":"answered","replayed":true}));
+
+    runtime
+        .tick(1001.0)
+        .expect("dispatch accepted monitor start");
+    assert_eq!(port.starts.lock().expect("monitor starts").len(), 1);
+}
+
+#[tokio::test]
 async fn providerless_routes_refuse_all_four_actions_without_writes() {
     let (_root, store, _port) = fixture();
     let state = HttpState::new(
@@ -340,6 +518,43 @@ fn voice_row_counts(store: &RuntimeStore) -> Vec<i64> {
                     row.get(0)
                 })
                 .expect("count rows")
+        })
+        .collect()
+}
+
+fn database_snapshot(store: &RuntimeStore) -> Vec<(String, Vec<Vec<rusqlite::types::Value>>)> {
+    let connection = store.read().expect("read database snapshot");
+    let tables = {
+        let mut statement = connection
+            .prepare(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name",
+            )
+            .expect("prepare table list");
+        statement
+            .query_map([], |row| row.get::<_, String>(0))
+            .expect("query table list")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("collect table list")
+    };
+    tables
+        .into_iter()
+        .map(|table| {
+            let quoted_table = table.replace('"', "\"\"");
+            let mut statement = connection
+                .prepare(&format!("SELECT * FROM \"{quoted_table}\""))
+                .expect("prepare snapshot table");
+            let column_count = statement.column_count();
+            let mut rows = statement.query([]).expect("query snapshot table");
+            let mut values = Vec::new();
+            while let Some(row) = rows.next().expect("read snapshot row") {
+                values.push(
+                    (0..column_count)
+                        .map(|column| row.get(column).expect("read snapshot value"))
+                        .collect::<Vec<rusqlite::types::Value>>(),
+                );
+            }
+            values.sort_by_key(|row| format!("{row:?}"));
+            (table, values)
         })
         .collect()
 }
