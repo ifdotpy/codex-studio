@@ -19,6 +19,15 @@ pub(crate) async fn get(State(state): State<HttpState>) -> Json<Value> {
 }
 
 fn status(state: &HttpState) -> Value {
+    let backend_build = std::env::var("CODEX_BACKEND_BUILD")
+        .ok()
+        .filter(|value| {
+            value.len() == 64
+                && value
+                    .bytes()
+                    .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+        })
+        .unwrap_or_else(|| "rust-runtime-http-skeleton".to_owned());
     let supervisor = state
         .diagnostics_supervisor
         .as_ref()
@@ -36,7 +45,8 @@ fn status(state: &HttpState) -> Value {
         });
     json!({
         "application": "codex-agents", "protocol": 1, "mobileProtocol": 1,
-        "backendBuild": "rust-runtime-http-skeleton", "nativeRuntime": native_runtime,
+        "backendKind": "rust",
+        "backendBuild": backend_build, "nativeRuntime": native_runtime,
         "providerVersions": state.provider_versions.as_ref().map_or_else(
             || json!({"checkedAt": null, "providers": [], "warnings": []}),
             |monitor| monitor.status(),
