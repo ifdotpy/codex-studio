@@ -85,6 +85,11 @@ impl NotificationEffects for RuntimeNotificationEffects {
                 before.or(after),
             )));
         }
+        // Runtime monitor output is consumed by its transactional queue path;
+        // Python returns before generic notification analytics for this frame.
+        if method == "command/exec/outputDelta" {
+            return result;
+        }
         let Some(before) = before else {
             return result;
         };
