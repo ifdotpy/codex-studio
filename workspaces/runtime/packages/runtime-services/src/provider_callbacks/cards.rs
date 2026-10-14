@@ -504,6 +504,15 @@ fn card_context(tx: &Transaction<'_>, card: &Value) -> Result<CallbackContext, C
     })
 }
 
+fn provider_context(tx: &Transaction<'_>, card: &Value) -> Result<CallbackContext, CallbackError> {
+    card_context(tx, card).map_err(|error| match error {
+        CallbackError::Stored(_) | CallbackError::Stale => {
+            CallbackError::Dependency("provider-session/question-answer")
+        }
+        error => error,
+    })
+}
+
 pub fn prepare_user_answer(
     store: &RuntimeStore,
     id: &str,
@@ -548,7 +557,7 @@ fn prepare_answer_in(
             ),
         });
     }
-    let context = card_context(tx, &card)?;
+    let context = provider_context(tx, &card)?;
     let reply = answer_in(tx, &context, id, data, now)?;
     if delete {
         let key = reply.identity.key();
@@ -595,6 +604,10 @@ pub fn prepare_delete(
         }
         let method = card["method"].as_str().unwrap_or_default();
         if card["status"] == "pending" && method != "agent/asyncQuestion" {
+            // A native answer is only possible for a card tied to a live
+            // provider request. Missing callback identity is a named refusal,
+            // checked before prepare_answer_in writes durable intent.
+            provider_context(tx, &card)?;
             let data = if method == "mcpServer/elicitation/request" {
                 json!({"decision":"cancel"})
             } else {

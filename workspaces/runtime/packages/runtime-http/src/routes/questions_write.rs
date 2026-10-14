@@ -7,19 +7,20 @@ use axum::extract::State;
 use axum::http::StatusCode;
 use serde_json::{Value, json};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use studio_runtime_services::questions_write::{self, ComplaintResponseWrite, QuestionsWriteError};
 use studio_runtime_store::{RuntimeStore, Transaction};
 
 use crate::error::ApiError;
 use crate::router::HttpState;
 
-const CALLBACK_REPLY_DEPENDENCY: [Dependency; 1] = [Dependency::new("callback-runtime/reply-port")];
-
-const ANSWER_DEPENDENCIES: [Dependency; 3] = [
+const ANSWER_DEPENDENCIES: [Dependency; 4] = [
+    Dependency::new("provider-session/question-answer"),
     Dependency::new("question-answer/async-question"),
     Dependency::new("question-answer/browser-open"),
-    Dependency::new("cross-server/remote-events"),
+    Dependency::new("question-answer/monitor-approval"),
 ];
+const DELETE_DEPENDENCIES: [Dependency; 1] = [Dependency::new("provider-session/question-answer")];
 
 pub(crate) fn routes() -> RouteGroup {
     RouteGroup::new(vec![
@@ -31,7 +32,7 @@ pub(crate) fn routes() -> RouteGroup {
         post("/api/complaints", OperationStatus::Implemented, complaints),
         post(
             "/api/questions/delete",
-            OperationStatus::Implemented,
+            OperationStatus::partial(&DELETE_DEPENDENCIES),
             delete_question,
         ),
         post(
@@ -88,21 +89,49 @@ async fn answer(
             super::generated_json::<crate::generated::AnswerResult>(answer.response)?,
         ));
     }
-    let runtime = state
-        .callback_runtime
-        .clone()
-        .ok_or_else(|| ApiError::dependency(CALLBACK_REPLY_DEPENDENCY[0].name()))?;
+    // Native callback delivery requires the retained reply runtime. Without
+    // it, refuse before parsing callback-only stored context or writing.
+    let Some(runtime) = state.callback_runtime.clone() else {
+        return Err(answer_unavailable());
+    };
     let value = studio_runtime_process::blocking_pool::spawn_blocking(
         "runtime-http/routes/questions_write",
         move || runtime.answer(&id, &data, callback_clock()?),
     )
     .await
     .map_err(|_| ApiError::internal())?
-    .map_err(callback_error)?;
+    .map_err(answer_callback_error)?;
     state.event_wake.notify_one();
     Ok(Json(
         super::generated_json::<crate::generated::AnswerResult>(value)?,
     ))
+}
+
+fn answer_unavailable() -> ApiError {
+    ApiError::new(
+        StatusCode::NOT_IMPLEMENTED,
+        format!(
+            "Not implemented: requires {}",
+            ANSWER_DEPENDENCIES
+                .iter()
+                .map(|dependency| dependency.name())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    )
+}
+
+fn answer_callback_error(
+    error: studio_runtime_services::provider_callbacks::CallbackError,
+) -> ApiError {
+    if matches!(
+        error,
+        studio_runtime_services::provider_callbacks::CallbackError::Dependency(_)
+    ) {
+        answer_unavailable()
+    } else {
+        callback_error(error)
+    }
 }
 
 fn monitor_approval_error(
@@ -144,7 +173,6 @@ fn callback_error(error: studio_runtime_services::provider_callbacks::CallbackEr
         }
     }
 }
-
 async fn defer_question(
     State(state): State<HttpState>,
     ApiJson(body): ApiJson<crate::generated::QuestionDeferBody>,
@@ -169,21 +197,30 @@ async fn delete_question(
     ApiJson(body): ApiJson<crate::generated::QuestionBody>,
 ) -> Result<Json<crate::generated::MutationReceipt>, ApiError> {
     let id = body.id;
-    let runtime = state
-        .callback_runtime
-        .clone()
-        .ok_or_else(|| ApiError::dependency(CALLBACK_REPLY_DEPENDENCY[0].name()))?;
-    let value = studio_runtime_process::blocking_pool::spawn_blocking(
-        "runtime-http/routes/questions_write",
-        move || runtime.delete_question(&id, callback_clock()?),
-    )
-    .await
-    .map_err(|_| ApiError::internal())?
-    .map_err(callback_error)?;
-    state.event_wake.notify_one();
+    let result = if let Some(runtime) = state.callback_runtime.clone() {
+        studio_runtime_process::blocking_pool::spawn_blocking(
+            "runtime-http/routes/questions_write",
+            move || runtime.delete_question(&id, callback_clock()?),
+        )
+        .await
+        .map_err(|_| ApiError::internal())?
+        .map_err(callback_error)?
+    } else {
+        let store = state.store.clone().ok_or_else(ApiError::internal)?;
+        let validators = state.validators.clone();
+        write(store, move |transaction| {
+            questions_write::delete_question(transaction, &id, |record| {
+                validators.validate_table_record("runtime_requests", record)
+            })
+        })
+        .await?
+    };
+    if state.callback_runtime.is_some() {
+        state.event_wake.notify_one();
+    }
     Ok(Json(super::generated_json::<
         crate::generated::MutationReceipt,
-    >(value)?))
+    >(result)?))
 }
 
 async fn complaints(
@@ -208,6 +245,8 @@ async fn complaints(
     let version = body.version.flatten().unwrap_or(-1);
     let validators = state.validators.clone();
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
+    let event_inserted = Arc::new(AtomicBool::new(false));
+    let inserted = event_inserted.clone();
     let signature = match action.as_str() {
         "submit" => {
             if lead_id.trim().is_empty() {
@@ -237,7 +276,7 @@ async fn complaints(
         _ => return Err(ApiError::internal()),
     };
     let result = write(store, move |transaction| {
-        if action == "submit" {
+        let result = if action == "submit" {
             questions_write::submit_complaint(transaction, &lead_id, &request_id, &text, |record| {
                 validators.validate_table_record("runtime_complaints", record)
             })
@@ -254,10 +293,14 @@ async fn complaints(
                 },
                 |record| validators.validate_table_record("runtime_complaints", record),
             )
-        }
+        }?;
+        inserted.store(result.wake_event_worker, Ordering::Relaxed);
+        Ok(result.record)
     })
     .await?;
-    state.event_wake.notify_one();
+    if event_inserted.load(Ordering::Relaxed) {
+        state.event_wake.notify_one();
+    }
     Ok(Json(super::generated_json::<
         crate::generated::ComplaintRecordResponse,
     >(result)?))
@@ -278,7 +321,7 @@ fn api_error(error: QuestionsWriteError) -> ApiError {
         QuestionsWriteError::Conflict(message) => ApiError::new(StatusCode::CONFLICT, message),
         QuestionsWriteError::QuestionAnswerUnavailable => ApiError::new(
             StatusCode::NOT_IMPLEMENTED,
-            "Not implemented: requires callback-runtime/reply-port",
+            "Not implemented: requires provider-session/question-answer",
         ),
         QuestionsWriteError::InvalidStoredObject { object, id } => ApiError::new(
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -302,6 +345,13 @@ inventory::submit! {
     crate::routes::manifest::RouteModuleRegistration {
         name: "questions_write",
         routes: Some(routes),
-        dependencies: &["callback-runtime/reply-port", "question-answer/async-question", "question-answer/browser-open", "cross-server/remote-events"],
+        dependencies: &[
+            "callback-runtime/reply-port",
+            "provider-session/question-answer",
+            "question-answer/async-question",
+            "question-answer/browser-open",
+            "question-answer/monitor-approval",
+            "cross-server/remote-events",
+        ],
     }
 }

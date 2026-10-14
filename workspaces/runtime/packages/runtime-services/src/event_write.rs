@@ -6,7 +6,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde_json::{Value, json};
 use studio_runtime_store::{
     AgentId, AgentRecord, AgentRepository, AgentStatus, EventWriteRepository, QueueEvent,
-    QueueEventId, Transaction,
+    QueueEventId, RulesRepository, Transaction,
 };
 use thiserror::Error;
 
@@ -109,6 +109,7 @@ pub fn save_plan(
             "The plan event identity is already in use",
         ));
     }
+    refuse_active_event_rule(connection, &input.agent_id)?;
     let mut plan = match EventWriteRepository::plan(connection, &input.agent_id)? {
         Some(value) => {
             if value.get("id").and_then(Value::as_str) != Some(input.agent_id.as_str()) {
@@ -208,6 +209,7 @@ pub fn annotate(
             "The annotation event identity is already in use",
         ));
     }
+    refuse_active_event_rule(connection, &input.agent_id)?;
     let mut record = json!({
         "id": id,
         "agent": input.agent_id.clone(),
@@ -242,6 +244,22 @@ pub fn annotate(
 pub(crate) fn refuse_remote(agent: &AgentRecord) -> Result<(), EventWriteError> {
     if truthy(agent.extra.get("remoteWorker")) || truthy(agent.extra.get("remoteAnchor")) {
         return Err(EventWriteError::RemoteEventsUnavailable);
+    }
+    Ok(())
+}
+
+fn refuse_active_event_rule(
+    connection: &Transaction<'_>,
+    agent_id: &str,
+) -> Result<(), EventWriteError> {
+    let (rules, _) = RulesRepository::list(connection)?;
+    if rules.iter().any(|rule| {
+        let record = rule.value();
+        record.get("agent").and_then(Value::as_str) == Some(agent_id)
+            && record.get("kind").and_then(Value::as_str) == Some("event")
+            && record.get("status").and_then(Value::as_str) == Some("active")
+    }) {
+        return Err(EventWriteError::RuleDriverUnavailable);
     }
     Ok(())
 }
@@ -775,7 +793,7 @@ mod tests {
     }
 
     #[test]
-    fn unrelated_active_event_rule_does_not_block_plan_writes() {
+    fn active_event_rule_refuses_plan_writes_without_changes() {
         let mut connection = database();
         connection
             .execute(
@@ -786,10 +804,15 @@ mod tests {
                 ],
             )
             .expect("event rule inserts");
+        let before = counts(&connection);
         let result = with_transaction(&mut connection, |transaction| {
             save_plan(transaction, plan_input(0, "allowed", "sig"))
         });
-        assert!(result.is_ok());
+        assert!(matches!(
+            result,
+            Err(EventWriteError::RuleDriverUnavailable)
+        ));
+        assert_eq!(counts(&connection), before);
     }
 
     #[test]
