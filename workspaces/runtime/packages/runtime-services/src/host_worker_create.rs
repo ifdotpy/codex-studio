@@ -37,22 +37,50 @@ pub fn resolve_worker_base(
     if selected.is_empty() || selected.chars().count() > 1024 {
         return Err(CreateError::InvalidCreation("base ref is invalid"));
     }
-    let commit = git_value(path, &["rev-parse", "--verify", "--end-of-options", &format!("{selected}^{{commit}}")])?;
-    let main_candidates = ["main@{upstream}", "@{upstream}", "origin/main", "main"];
+    let commit = git_value(
+        path,
+        &[
+            "rev-parse",
+            "--verify",
+            "--end-of-options",
+            &format!("{selected}^{{commit}}"),
+        ],
+    )?;
+    let main_candidates = ["main@{upstream}", "origin/main", "main"];
     let mut main = None;
     for candidate in main_candidates {
-        if let Ok(value) = git_value(path, &["rev-parse", "--verify", "--quiet", "--end-of-options", &format!("{candidate}^{{commit}}")]) {
+        if let Ok(value) = git_value(
+            path,
+            &[
+                "rev-parse",
+                "--verify",
+                "--quiet",
+                "--end-of-options",
+                &format!("{candidate}^{{commit}}"),
+            ],
+        ) {
             main = Some((candidate.to_owned(), value));
             break;
         }
     }
     let behind = main.as_ref().and_then(|(_, target)| {
-        if target == &commit { return Some(0); }
-        let count = git_value(path, &["rev-list", "--count", &format!("{commit}..{target}")]).ok()?;
+        if target == &commit {
+            return None;
+        }
+        let count = git_value(
+            path,
+            &["rev-list", "--count", &format!("{commit}..{target}")],
+        )
+        .ok()?;
         count.parse::<i64>().ok()
     });
     validate_base(Some(selected), Some(&commit))?;
-    Ok((selected.to_owned(), commit, main.map(|(reference, _)| reference), behind))
+    Ok((
+        selected.to_owned(),
+        commit,
+        main.map(|(reference, _)| reference),
+        behind,
+    ))
 }
 
 fn git_value(path: &Path, args: &[&str]) -> Result<String, CreateError> {
@@ -71,7 +99,9 @@ fn git_value(path: &Path, args: &[&str]) -> Result<String, CreateError> {
         .map_err(|_| CreateError::InvalidCreation("base commit is invalid"))?
         .trim()
         .to_owned();
-    if value.is_empty() { return Err(CreateError::InvalidCreation("base commit is invalid")); }
+    if value.is_empty() {
+        return Err(CreateError::InvalidCreation("base commit is invalid"));
+    }
     Ok(value)
 }
 
@@ -294,8 +324,16 @@ pub fn prepare_work_item(
     if !worktree {
         draft["workspaceMode"] = json!("shared");
     }
-    draft["workerBaseRef"] = if worktree { json!(base_ref) } else { Value::Null };
-    draft["workerBaseCommit"] = if worktree { json!(base_commit) } else { Value::Null };
+    draft["workerBaseRef"] = if worktree {
+        json!(base_ref)
+    } else {
+        Value::Null
+    };
+    draft["workerBaseCommit"] = if worktree {
+        json!(base_commit)
+    } else {
+        Value::Null
+    };
     draft["model"] = json!(settings.model);
     draft["effort"] = json!(settings.effort);
     draft["nativeEffort"] = json!(settings.native_effort);
@@ -773,14 +811,34 @@ mod tests {
     #[test]
     fn work_item_options_set_role_workspace_and_execution_settings() {
         let fixture = worker_draft_fixture_with_options(
-            "Review", "Inspect the change", "reviewer", false, true, false,
+            "Review",
+            "Inspect the change",
+            "reviewer",
+            false,
+            true,
+            false,
         );
-        assert_eq!(field(&fixture.draft, "role").and_then(Value::as_str), Some("reviewer"));
-        assert_eq!(field(&fixture.draft, "worktree").and_then(Value::as_bool), Some(false));
-        assert_eq!(field(&fixture.draft, "workspaceMode").and_then(Value::as_str), Some("shared"));
+        assert_eq!(
+            field(&fixture.draft, "role").and_then(Value::as_str),
+            Some("reviewer")
+        );
+        assert_eq!(
+            field(&fixture.draft, "worktree").and_then(Value::as_bool),
+            Some(false)
+        );
+        assert_eq!(
+            field(&fixture.draft, "workspaceMode").and_then(Value::as_str),
+            Some("shared")
+        );
         assert_eq!(field(&fixture.draft, "workerBaseRef"), Some(&Value::Null));
-        assert_eq!(field(&fixture.draft, "fastMode").and_then(Value::as_bool), Some(true));
-        assert_eq!(field(&fixture.draft, "daybreakEnabled").and_then(Value::as_bool), Some(false));
+        assert_eq!(
+            field(&fixture.draft, "fastMode").and_then(Value::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            field(&fixture.draft, "daybreakEnabled").and_then(Value::as_bool),
+            Some(false)
+        );
     }
 
     #[test]

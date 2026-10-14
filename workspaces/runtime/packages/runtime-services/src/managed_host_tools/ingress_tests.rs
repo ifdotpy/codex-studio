@@ -1282,3 +1282,128 @@ fn queued_managed_tool_request_can_be_cancelled_before_dispatch() {
     assert_eq!(cancelled["cancelRequested"], true);
     assert_eq!(intent_count(&store, "spawn"), 0);
 }
+
+struct AllowWorkspace;
+impl crate::monitor_runtime::WorkspaceAdmission for AllowWorkspace {
+    fn check(
+        &self,
+        _: &studio_runtime_store::Transaction<'_>,
+        _: &studio_runtime_store::AgentRecord,
+    ) -> Result<(), crate::monitor_policy::MonitorError> {
+        Ok(())
+    }
+}
+
+struct CreationEnvironment;
+impl crate::managed_child_create::ManagedCreationEnvironment for CreationEnvironment {
+    fn account_identity(
+        &self,
+        _: &str,
+    ) -> Result<crate::host_worker_create::AccountIdentity, Error> {
+        Ok(crate::host_worker_create::AccountIdentity {
+            provider: Some("codex".to_owned()),
+            home: None,
+            account_id: None,
+            email: None,
+        })
+    }
+    fn catalog(&self) -> &dyn crate::host_worker_create::CreationCatalog {
+        &Self
+    }
+    fn prepare_workspace(
+        &self,
+        _: &Actor,
+        _: &Value,
+        _: &str,
+    ) -> Result<Box<dyn crate::monitor_runtime::WorkspaceAdmission + Send + Sync>, Error> {
+        Ok(Box::new(AllowWorkspace))
+    }
+}
+impl crate::host_worker_create::CreationCatalog for CreationEnvironment {
+    fn resolve(
+        &self,
+        _: &str,
+        _: &crate::host_worker_create::AccountIdentity,
+        model: &str,
+        effort: Option<&str>,
+        fast_mode: bool,
+        daybreak_enabled: bool,
+    ) -> Result<crate::host_worker_create::ExecutionSettings, crate::agents_create::CreateError>
+    {
+        Ok(crate::host_worker_create::ExecutionSettings {
+            model: model.to_owned(),
+            effort: effort.map(str::to_owned),
+            native_effort: effort.unwrap_or("medium").to_owned(),
+            fast_mode,
+            daybreak_enabled,
+            cyber_access_program: "standard".to_owned(),
+        })
+    }
+}
+
+#[test]
+fn spawn_child_and_first_turn_failpoints_roll_back_the_batch() {
+    for failpoint in ["child", "first-turn"] {
+        let (_root, store, context) = fixture();
+        let actor_value = {
+            let read = store.read().unwrap();
+            studio_runtime_store::AgentRepository::get(
+                &read,
+                &studio_runtime_store::AgentId::from(context.agent.as_str()),
+            )
+            .unwrap()
+            .unwrap()
+            .value()
+        };
+        let actor = Actor::from_record(&actor_value, &context.agent, context.epoch).unwrap();
+        let request_id = format!("spawn-failpoint-{failpoint}");
+        let child_id = uuid::Uuid::new_v5(
+            &uuid::Uuid::NAMESPACE_URL,
+            format!("{request_id}:0").as_bytes(),
+        )
+        .to_string();
+        store
+            .transaction_with::<_, StoreError>(|tx| {
+                let sql = if failpoint == "child" {
+                    format!("CREATE TRIGGER reject_child BEFORE INSERT ON runtime_agents WHEN NEW.id='{child_id}' BEGIN SELECT RAISE(ABORT,'child failpoint'); END;")
+                } else {
+                    format!("CREATE TRIGGER reject_initial BEFORE INSERT ON runtime_events WHEN NEW.id='{child_id}:initial' BEGIN SELECT RAISE(ABORT,'first turn failpoint'); END;")
+                };
+                tx.execute_batch(&sql)?;
+                Ok(())
+            })
+            .unwrap();
+        let args =
+            json!({"agents":[{"name":"Worker","prompt":"Do the task","workspace":"shared"}]});
+        assert!(
+            crate::managed_child_create::spawn_agents(
+                &store,
+                &actor,
+                &args,
+                &request_id,
+                20.0,
+                &CreationEnvironment,
+            )
+            .is_err(),
+            "expected {failpoint} write failure"
+        );
+        let read = store.read().unwrap();
+        assert!(
+            studio_runtime_store::AgentRepository::get(
+                &read,
+                &studio_runtime_store::AgentId::from(child_id.as_str()),
+            )
+            .unwrap()
+            .is_none(),
+            "child row survived {failpoint} failure"
+        );
+        let events: i64 = read
+            .query_row(
+                "SELECT COUNT(*) FROM runtime_events WHERE id=?1",
+                [format!("{child_id}:initial")],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(events, 0, "initial event survived {failpoint} failure");
+    }
+}
