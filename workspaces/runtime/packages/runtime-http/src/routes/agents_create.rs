@@ -135,21 +135,19 @@ impl CreationCatalog for RouteCreationCatalog<'_> {
 }
 
 pub(crate) fn routes() -> RouteGroup {
-    const LEAD_DEPENDENCIES: [Dependency; 7] = [
+    const LEAD_DEPENDENCIES: [Dependency; 6] = [
         Dependency::new("account-driver/unavailable"),
         Dependency::new("cross-server-driver/local-identity"),
         Dependency::new("cross-server-driver/project-binding"),
         Dependency::new("provider-session/model-list"),
         Dependency::new("project-driver/folder-selection"),
-        Dependency::new("workspace-state/image-workspace"),
         Dependency::new("workspace-state/vm-workspace"),
     ];
     const RENAME_DEPENDENCIES: [Dependency; 1] =
         [Dependency::new("provider-session/title-generation")];
-    const AGENT_DEPENDENCIES: [Dependency; 4] = [
+    const AGENT_DEPENDENCIES: [Dependency; 3] = [
         Dependency::new("account-driver/unavailable"),
         Dependency::new("provider-session/model-list"),
-        Dependency::new("workspace-state/image-workspace"),
         Dependency::new("workspace-state/vm-workspace"),
     ];
     const CONVERSATION_DEPENDENCIES: [Dependency; 2] = [
@@ -496,11 +494,13 @@ fn operation_error(error: OperationError) -> ApiError {
     }
     let status = match &error {
         OperationError::Unavailable(_)
+        | OperationError::PlatformRefusal(_)
         | OperationError::Create(MutationError::CapabilityUnavailable(_))
         | OperationError::Create(MutationError::TitleGenerationUnavailable) => {
             StatusCode::NOT_IMPLEMENTED
         }
         OperationError::Internal
+        | OperationError::Workspace(_)
         | OperationError::Store(_)
         | OperationError::Create(
             MutationError::Store(_) | MutationError::InvalidStoredObject { .. },
@@ -528,7 +528,6 @@ inventory::submit! {
         "provider-session/model-list",
         "provider-session/title-generation",
         "worker-driver/settings-catalog",
-        "workspace-state/image-workspace",
         "workspace-state/vm-workspace",
         ],
     }
