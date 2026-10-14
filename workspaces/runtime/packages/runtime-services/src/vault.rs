@@ -63,6 +63,7 @@ pub struct DeskResult {
 pub struct VaultHostCommand {
     python: PathBuf,
     server_source: PathBuf,
+    desk_program_override: Option<PathBuf>,
 }
 
 impl VaultHostCommand {
@@ -70,7 +71,14 @@ impl VaultHostCommand {
         Self {
             python,
             server_source,
+            desk_program_override: None,
         }
+    }
+
+    /// Override the host executable for an isolated fake command.
+    pub fn with_desk_program(mut self, program: PathBuf) -> Self {
+        self.desk_program_override = Some(program);
+        self
     }
 
     pub fn writer(&self, source: &str) -> String {
@@ -79,6 +87,26 @@ impl VaultHostCommand {
             &self.server_source.join("codex_vault.py"),
             source,
         )
+    }
+
+    pub async fn run_desk<F>(
+        &self,
+        args: &[String],
+        timeout: Duration,
+        on_output: &mut F,
+    ) -> Result<DeskResult, VaultError>
+    where
+        F: FnMut(bool, &str) + Send,
+    {
+        let environment: BTreeMap<OsString, OsString> = std::env::vars_os().collect();
+        run_desk_with_environment_and_program(
+            args,
+            timeout,
+            &environment,
+            self.desk_program_override.as_deref(),
+            on_output,
+        )
+        .await
     }
 }
 
@@ -92,9 +120,10 @@ where
     F: FnMut(bool, &str) + Send,
 {
     let environment: BTreeMap<OsString, OsString> = std::env::vars_os().collect();
-    run_desk_with_environment(args, timeout, &environment, on_output).await
+    run_desk_with_environment_and_program(args, timeout, &environment, None, on_output).await
 }
 
+#[cfg(test)]
 async fn run_desk_with_environment<F>(
     args: &[String],
     timeout: Duration,
@@ -104,11 +133,27 @@ async fn run_desk_with_environment<F>(
 where
     F: FnMut(bool, &str) + Send,
 {
+    run_desk_with_environment_and_program(args, timeout, environment, None, on_output).await
+}
+
+async fn run_desk_with_environment_and_program<F>(
+    args: &[String],
+    timeout: Duration,
+    environment: &BTreeMap<OsString, OsString>,
+    program_override: Option<&Path>,
+    on_output: &mut F,
+) -> Result<DeskResult, VaultError>
+where
+    F: FnMut(bool, &str) + Send,
+{
     use studio_runtime_process::stream_child::{
         ChildEvent, ChildSpec, ExitReason, OutputStream, StreamChild,
     };
 
-    let program = resolve_desk_program(environment)?;
+    let program = match program_override {
+        Some(program) => program.to_owned(),
+        None => resolve_desk_program(environment)?,
+    };
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let mut child = StreamChild::spawn(ChildSpec {
         program,
@@ -742,7 +787,15 @@ mod tests {
         .unwrap();
         fs::set_permissions(&fake, fs::Permissions::from_mode(0o755)).unwrap();
         let environment = BTreeMap::from([
-            (OsString::from("PATH"), bin.as_os_str().to_owned()),
+            (
+                OsString::from("PATH"),
+                std::env::join_paths([
+                    bin.as_path(),
+                    std::path::Path::new("/usr/bin"),
+                    std::path::Path::new("/bin"),
+                ])
+                .unwrap(),
+            ),
             (OsString::from("HOME"), root.path().as_os_str().to_owned()),
         ]);
         let args = vec!["aws-profiles".to_owned(), "--json".to_owned()];

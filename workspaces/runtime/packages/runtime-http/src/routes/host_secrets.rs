@@ -237,13 +237,18 @@ async fn setup_facts(
     .map_err(vault_error)?;
     let args = vec!["aws-profiles".to_owned(), "--json".to_owned()];
     let mut ignore_output = |_: bool, _: &str| {};
-    let output = studio_runtime_services::vault::run_desk(
-        &args,
-        studio_runtime_services::vault::DESK_COMMAND_TIMEOUT,
-        &mut ignore_output,
-    )
-    .await
-    .map_err(vault_error)?;
+    let host_command = state
+        .vault_host_command
+        .as_ref()
+        .ok_or_else(ApiError::internal)?;
+    let output = host_command
+        .run_desk(
+            &args,
+            studio_runtime_services::vault::DESK_COMMAND_TIMEOUT,
+            &mut ignore_output,
+        )
+        .await
+        .map_err(vault_error)?;
     if output.timed_out {
         return Err(ApiError::new(
             StatusCode::BAD_REQUEST,
@@ -557,7 +562,11 @@ mod tests {
         }
     }
 
-    fn app(state_dir: &std::path::Path, guest: Option<Arc<dyn GuestRpc>>) -> axum::Router {
+    fn app(
+        state_dir: &std::path::Path,
+        guest: Option<Arc<dyn GuestRpc>>,
+        host_command: Option<studio_runtime_services::vault::VaultHostCommand>,
+    ) -> axum::Router {
         let state = HttpState::new(
             "test-token".to_owned(),
             "test-workspace".to_owned(),
@@ -568,10 +577,11 @@ mod tests {
             None,
             None,
         );
-        let state = match guest {
+        let mut state = match guest {
             Some(guest) => state.with_project_secrets_guest_rpc(guest),
             None => state,
         };
+        state.vault_host_command = host_command;
         crate::router::router(state).expect("runtime HTTP router starts")
     }
 
@@ -600,6 +610,8 @@ mod tests {
 
     #[tokio::test]
     async fn vault_setup_facts_route_uses_the_host_command_and_cached_project() {
+        use std::os::unix::fs::PermissionsExt;
+
         let state = tempfile::tempdir().unwrap();
         let project = state.path().join("linux-vm/layr-projects/p1");
         std::fs::create_dir_all(&project).unwrap();
@@ -608,7 +620,21 @@ mod tests {
             br#"{"projectId":"p1","source":"/tmp/Project One"}"#,
         )
         .unwrap();
-        let app = app(state.path(), None);
+        let bin = state.path().join("bin");
+        std::fs::create_dir(&bin).unwrap();
+        let fake = bin.join("layr-desk");
+        std::fs::write(
+            &fake,
+            "#!/bin/sh\n[ \"$1\" = aws-profiles ] && [ \"$2\" = --json ] || exit 91\nprintf '%s\\n' '{\"profiles\":[{\"name\":\"fixture\"}]}'\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let host_command = studio_runtime_services::vault::VaultHostCommand::new(
+            std::path::PathBuf::from("/tmp/python"),
+            std::path::PathBuf::from("/tmp/server"),
+        )
+        .with_desk_program(fake);
+        let app = app(state.path(), None, Some(host_command));
         let request = authorized_request_at("/api/vault/setup/facts", json!({"projectId":"p1"}));
 
         let response = app.oneshot(request).await.unwrap();
@@ -657,7 +683,7 @@ mod tests {
     async fn project_secret_set_calls_guest_and_never_returns_the_value() {
         let state = tempfile::tempdir().unwrap();
         let fake = Arc::new(FakeGuest::default());
-        let app = app(state.path(), Some(fake.clone()));
+        let app = app(state.path(), Some(fake.clone()), None);
         let request = authorized_request(
             json!({"projectId":"p1","name":"TOKEN","value":"generated-test-value","requestId":"req-1"}),
         );
@@ -680,7 +706,7 @@ mod tests {
     #[tokio::test]
     async fn project_secret_route_refuses_without_guest_and_writes_nothing() {
         let state = tempfile::tempdir().unwrap();
-        let app = app(state.path(), None);
+        let app = app(state.path(), None, None);
         let request = authorized_request(
             json!({"projectId":"p1","name":"TOKEN","value":"generated-test-value","requestId":"req-1"}),
         );
