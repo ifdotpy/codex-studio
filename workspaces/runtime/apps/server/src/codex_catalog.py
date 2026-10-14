@@ -9,7 +9,11 @@ import threading
 import time
 from collections.abc import Callable
 
-from codex_shared_values import MODEL_CATALOG_CACHE_TTL_SECONDS, MODEL_CATALOG_ITEMS_PER_PAGE
+from codex_shared_values import (
+    MODEL_CATALOG_ADMISSION_WAIT_SECONDS,
+    MODEL_CATALOG_CACHE_TTL_SECONDS,
+    MODEL_CATALOG_ITEMS_PER_PAGE,
+)
 
 
 _LOGGER = logging.getLogger(__name__)
@@ -41,7 +45,8 @@ class ModelCatalogCache:
     """
 
     def __init__(
-        self, *, ttl=MODEL_CATALOG_CACHE_TTL_SECONDS, wait_seconds=5, clock=time.monotonic
+        self, *, ttl=MODEL_CATALOG_CACHE_TTL_SECONDS,
+        wait_seconds=MODEL_CATALOG_ADMISSION_WAIT_SECONDS, clock=time.monotonic
     ):
         self.ttl = ttl
         self.wait_seconds = wait_seconds
