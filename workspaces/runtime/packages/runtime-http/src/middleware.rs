@@ -3,7 +3,8 @@ use std::net::{IpAddr, SocketAddr};
 use std::panic::AssertUnwindSafe;
 use std::time::Duration;
 
-use axum::body::{Body, to_bytes};
+use axum::body::{Body, HttpBody, to_bytes};
+use axum::extract::MatchedPath;
 use axum::extract::{ConnectInfo, State};
 use axum::http::{HeaderMap, HeaderValue, Method, Request, StatusCode, header};
 use axum::middleware::Next;
@@ -255,6 +256,34 @@ pub(crate) async fn boundary(
     }
 
     next.run(request).await
+}
+
+/// Capture value-free HTTP timing under Axum's matched route template. This
+/// layer never reads request or response bodies and discards requests without
+/// a registered route template.
+pub(crate) async fn diagnostics_http_timing(request: Request<Body>, next: Next) -> Response {
+    let method = request.method().as_str().to_owned();
+    let route = request
+        .extensions()
+        .get::<MatchedPath>()
+        .map(|path| path.as_str().to_owned());
+    let started = std::time::Instant::now();
+    let response = next.run(request).await;
+    if let Some(route) = route {
+        let response_bytes = response
+            .body()
+            .size_hint()
+            .exact()
+            .and_then(|size| usize::try_from(size).ok())
+            .unwrap_or_default();
+        studio_runtime_services::diagnostics::record_http_request(
+            &method,
+            &route,
+            started.elapsed(),
+            response_bytes,
+        );
+    }
+    response
 }
 
 pub(crate) fn validated_header_values(

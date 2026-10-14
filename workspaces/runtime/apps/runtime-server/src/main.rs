@@ -29,6 +29,9 @@ const DEFAULT_PORT: u16 = 4620;
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     studio_runtime_process::child_priority::ChildPriority::from_environment();
+    studio_runtime_services::diagnostics::mark_startup_memory(
+        studio_runtime_services::diagnostics::StartupMemoryMark::ProcessStarted,
+    );
     let args = env::args().skip(1).collect::<Vec<_>>();
     if args.first().map(String::as_str) == Some("state-check") {
         let state_dir = args
@@ -50,6 +53,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let token = data_encoding::HEXLOWER.encode(&token);
     let configured_state_dir = env::var_os("CODEX_AGENTS_STATE_DIR").map(PathBuf::from);
     let store = Arc::new(RuntimeStore::open(configured_state_dir.as_deref())?);
+    studio_runtime_services::diagnostics::mark_startup_memory(
+        studio_runtime_services::diagnostics::StartupMemoryMark::StoreOpened,
+    );
     studio_runtime_services::maintenance::remove_review_assignments(&store)?;
     let credentials =
         Arc::new(studio_runtime_services::federation_credentials::Credentials::default());
@@ -224,6 +230,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             return Err(error);
         }
     };
+    studio_runtime_services::diagnostics::mark_startup_memory(
+        studio_runtime_services::diagnostics::StartupMemoryMark::HttpReady,
+    );
     let (monitor_shutdown, _) = watch::channel(false);
     let monitor_task = studio_runtime_services::monitor_runtime_wiring::start(
         monitor_runtime,

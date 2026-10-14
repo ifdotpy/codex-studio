@@ -53,6 +53,7 @@ pub mod coordination;
 pub mod coordination_reads;
 pub mod cost_usage;
 pub mod costs;
+pub mod diagnostics;
 pub mod event_write;
 pub mod federation;
 pub mod federation_credentials;

@@ -39,9 +39,11 @@ use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
 use std::io::BufReader;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use rusqlite::trace::{TraceEvent, TraceEventCodes};
 pub use rusqlite::{Connection, Error as SqliteError, ErrorCode, Transaction};
 use rusqlite::{OpenFlags, TransactionBehavior};
 use thiserror::Error;
@@ -95,6 +97,72 @@ pub use repositories::workspace_ready;
 pub use repositories::workspace_views::{WorkspaceTaskRow, WorkspaceViewsRepository};
 
 const DATABASE_BUSY_TIMEOUT_MS: u32 = 15_000;
+
+/// Value-free observations emitted by the optional diagnostics callback.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum StoreDiagnosticsEvent {
+    WriterTransaction {
+        wait: Duration,
+        hold: Duration,
+    },
+    SqlProfile {
+        database: StoreDatabaseKind,
+        elapsed: Duration,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum StoreDatabaseKind {
+    Canvas,
+    Analytics,
+    Other,
+}
+
+/// The callback must be nonblocking; diagnostics collectors should use a
+/// try-lock and discard the sample if contended.
+pub type StoreDiagnosticsCallback = fn(StoreDiagnosticsEvent);
+
+static DIAGNOSTICS_CALLBACK: OnceLock<Mutex<Option<StoreDiagnosticsCallback>>> = OnceLock::new();
+static DIAGNOSTICS_ENABLED: AtomicBool = AtomicBool::new(false);
+
+fn diagnostics_callback() -> &'static Mutex<Option<StoreDiagnosticsCallback>> {
+    DIAGNOSTICS_CALLBACK.get_or_init(|| Mutex::new(None))
+}
+
+fn emit_diagnostic(event: StoreDiagnosticsEvent) {
+    let callback = match diagnostics_callback().try_lock() {
+        Ok(callback) => *callback,
+        Err(std::sync::TryLockError::Poisoned(error)) => *error.into_inner(),
+        Err(std::sync::TryLockError::WouldBlock) => None,
+    };
+    if let Some(callback) = callback {
+        callback(event);
+    }
+}
+
+fn profile_statement(event: TraceEvent<'_>) {
+    if let TraceEvent::Profile(_statement, elapsed) = event {
+        emit_diagnostic(StoreDiagnosticsEvent::SqlProfile {
+            database: StoreDatabaseKind::Canvas,
+            elapsed,
+        });
+    }
+}
+
+fn install_profile(connection: &mut Connection) {
+    let enabled = diagnostics_callback()
+        .try_lock()
+        .map(|callback| callback.is_some())
+        .unwrap_or(false);
+    connection.trace_v2(
+        if enabled {
+            TraceEventCodes::SQLITE_TRACE_PROFILE
+        } else {
+            TraceEventCodes::empty()
+        },
+        enabled.then_some(profile_statement),
+    );
+}
 
 struct IdentityEntry {
     server_id: Option<String>,
@@ -298,6 +366,20 @@ impl RuntimeStore {
         *slot = Some(Arc::new(notifier));
     }
 
+    /// Install or clear the optional value-free diagnostics observer.
+    pub fn set_diagnostics_callback(&self, callback: Option<StoreDiagnosticsCallback>) {
+        if let Ok(mut current) = diagnostics_callback().lock() {
+            DIAGNOSTICS_ENABLED.store(callback.is_some(), Ordering::Release);
+            *current = callback;
+        }
+        if let Ok(mut writer) = self.writer.lock() {
+            install_profile(&mut writer);
+        }
+        if let Ok(mut reader) = self.version_reader.lock() {
+            install_profile(&mut reader);
+        }
+    }
+
     fn notify_commit(&self) {
         let notifier = self
             .commit_notifier
@@ -327,26 +409,38 @@ impl RuntimeStore {
     where
         E: From<StoreError>,
     {
+        let diagnostics_enabled = DIAGNOSTICS_ENABLED.load(Ordering::Acquire);
+        let waiting = diagnostics_enabled.then(Instant::now);
         let mut writer = self.writer.lock().map_err(|_| StoreError::WriterPoisoned)?;
-        let transaction = writer
-            .transaction_with_behavior(TransactionBehavior::Immediate)
-            .map_err(StoreError::from)
-            .map_err(E::from)?;
-        match operation(&transaction) {
-            Ok(value) => {
-                transaction
-                    .commit()
-                    .map_err(StoreError::CommitOutcomeUnknown)?;
-                self.notify_commit();
-                Ok(value)
+        let wait = waiting.map_or(Duration::ZERO, |started| started.elapsed());
+        let holding = diagnostics_enabled.then(Instant::now);
+        let outcome = (|| {
+            let transaction = writer
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .map_err(StoreError::from)
+                .map_err(E::from)?;
+            match operation(&transaction) {
+                Ok(value) => {
+                    transaction
+                        .commit()
+                        .map_err(StoreError::CommitOutcomeUnknown)?;
+                    self.notify_commit();
+                    Ok(value)
+                }
+                Err(error) => {
+                    // Dropping rolls back best-effort. Preserve the operation's
+                    // error if SQLite also reports a rollback failure.
+                    drop(transaction);
+                    Err(error)
+                }
             }
-            Err(error) => {
-                // Dropping rolls back best-effort. Preserve the operation's
-                // error if SQLite also reports a rollback failure.
-                drop(transaction);
-                Err(error)
-            }
+        })();
+        let hold = holding.map_or(Duration::ZERO, |started| started.elapsed());
+        drop(writer);
+        if diagnostics_enabled {
+            emit_diagnostic(StoreDiagnosticsEvent::WriterTransaction { wait, hold });
         }
+        outcome
     }
 
     pub fn transaction_with_error<T, E>(
@@ -361,10 +455,11 @@ impl RuntimeStore {
 
     /// Open an independent read-only, query-only connection to the main DB.
     pub fn read(&self) -> StoreResult<Connection> {
-        let connection = open_database(
+        let mut connection = open_database(
             &self.root.join("canvas.sqlite3"),
             OpenFlags::SQLITE_OPEN_READ_ONLY,
         )?;
+        install_profile(&mut connection);
         connection.pragma_update(None, "query_only", "ON")?;
         Ok(connection)
     }
@@ -519,9 +614,57 @@ fn invalid_local_identity(reason: &str) -> StoreError {
 }
 
 fn open_database(path: &Path, flags: OpenFlags) -> StoreResult<Connection> {
-    let connection = Connection::open_with_flags(path, flags)?;
+    let mut connection = Connection::open_with_flags(path, flags)?;
+    install_profile(&mut connection);
     connection.busy_timeout(std::time::Duration::from_millis(u64::from(
         DATABASE_BUSY_TIMEOUT_MS,
     )))?;
     Ok(connection)
+}
+
+#[cfg(test)]
+mod diagnostics_hook_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    static EVENTS: AtomicUsize = AtomicUsize::new(0);
+
+    fn count_event(_event: StoreDiagnosticsEvent) {
+        EVENTS.fetch_add(1, Ordering::Relaxed);
+    }
+
+    #[test]
+    fn optional_hook_observes_writer_and_sql_timing_and_can_be_cleared() {
+        let directory = tempfile::tempdir().expect("temporary state directory");
+        let writer = Connection::open_in_memory().expect("writer connection");
+        let reader = Connection::open_in_memory().expect("reader connection");
+        let store = RuntimeStore {
+            root: directory.path().to_path_buf(),
+            _runtime_lock: RuntimeLock::acquire(directory.path()).expect("runtime lock"),
+            writer: Mutex::new(writer),
+            version_reader: Mutex::new(reader),
+            identity_registry_path: directory.path().join("canvas.sqlite3"),
+            commit_notifier: Mutex::new(None),
+        };
+        EVENTS.store(0, Ordering::Relaxed);
+        store.set_diagnostics_callback(Some(count_event));
+        store
+            .transaction(|transaction| {
+                transaction.execute_batch("CREATE TABLE measured(value INTEGER);")?;
+                transaction.execute("INSERT INTO measured(value) VALUES (1)", [])?;
+                Ok(())
+            })
+            .expect("transaction succeeds");
+        assert!(EVENTS.load(Ordering::Relaxed) >= 3);
+
+        store.set_diagnostics_callback(None);
+        let previous = EVENTS.load(Ordering::Relaxed);
+        store
+            .transaction(|transaction| {
+                transaction.execute("INSERT INTO measured(value) VALUES (2)", [])?;
+                Ok(())
+            })
+            .expect("transaction succeeds with no observer");
+        assert_eq!(EVENTS.load(Ordering::Relaxed), previous);
+    }
 }

@@ -212,7 +212,7 @@ def create_router(context: ApiContext) -> APIRouter:
     @router.get(
         "/api/diagnostics",
         response_model=DiagnosticsResponse,
-        responses=api_read_responses(errors=(404,)),
+        responses=api_read_responses(errors=(404, 501)),
     )
     def diagnostics(request: Request) -> Response:
         runtime = context.runtime
