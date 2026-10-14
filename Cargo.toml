@@ -37,6 +37,7 @@ unwrap_used = "warn"
 [workspace.dependencies]
 base64 = { version = "=0.23.1", default-features = false, features = ["alloc"] }
 data-encoding = "=2.11.1"
+file-rotate = "=0.8.0"
 http-range-header = "=0.4.2"
 inventory = "=0.3.25"
 libc = "=0.2.190"

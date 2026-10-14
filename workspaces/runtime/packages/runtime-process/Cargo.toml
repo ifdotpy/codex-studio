@@ -8,6 +8,7 @@ publish.workspace = true
 
 [dependencies]
 chrono.workspace = true
+file-rotate.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 studio-runtime-providers = { path = "../runtime-providers" }

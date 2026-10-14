@@ -51,6 +51,7 @@ pub(crate) type ExchangeFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T, ()
 
 pub(crate) struct ExchangeSpec {
     pub cleanup_report: Option<Arc<std::sync::Mutex<Option<String>>>>,
+    pub stderr_log: Option<studio_runtime_process::operational_log::OperationalLog>,
     pub timeout: Duration,
     pub shutdown: Shutdown,
     pub initialize_operation: OperationId,
@@ -112,6 +113,7 @@ where
                 deadline: started + spec.timeout,
                 max_frame_bytes: MAX_FRAME_BYTES,
                 max_output_bytes: MAX_OUTPUT_BYTES,
+                stderr_log: spec.stderr_log.clone(),
             },
         );
         run_with_factory_admitted(_admission, factory, launch, started, spec, exchange).await

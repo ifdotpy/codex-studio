@@ -1,7 +1,9 @@
 //! Temporary stdio children behind the async provider seam. A task owns the
 //! process group through bounded cleanup even if its caller drops. A reap timeout
 //! reports the child identity; it does not prove termination or cap surviving children.
-use crate::{child_priority::ChildPriority, provider_seam::*, *};
+use crate::{
+    child_priority::ChildPriority, operational_log::OperationalLog, provider_seam::*, *,
+};
 use process_wrap::tokio::{CommandWrap, ProcessGroup};
 use std::{io, process::Stdio};
 use studio_runtime_providers::{DecodedJournalPayload, decode_journal_entry};
@@ -15,6 +17,7 @@ use tokio::{
 // POSIX ESRCH: the process group exited before the stop signal.
 const NO_SUCH_PROCESS: i32 = 3;
 const REAP_GRACE: std::time::Duration = std::time::Duration::from_secs(1);
+const STDERR_LINE_LIMIT: usize = 64 * 1024;
 
 async fn reap_with_deadline<T>(
     pid: Option<u32>,
@@ -34,6 +37,7 @@ pub struct StdioProviderTaskFactory {
     pub deadline: Instant,
     pub max_frame_bytes: usize,
     pub max_output_bytes: usize,
+    pub stderr_log: Option<OperationalLog>,
 }
 
 impl ProviderTaskFactory for StdioProviderTaskFactory {
@@ -105,6 +109,7 @@ impl StdioProviderTaskFactory {
             let deadline = self.deadline;
             let frame_limit = self.max_frame_bytes;
             let output_limit = self.max_output_bytes;
+            let stderr_log = self.stderr_log.clone();
             let mut stop = shutdown.subscribe();
             let task = tokio::spawn(async move {
                 let exchange = async {
@@ -131,9 +136,7 @@ impl StdioProviderTaskFactory {
                             output_limit
                         ),
                         async {
-                            tokio::io::copy(&mut stderr, &mut tokio::io::sink())
-                                .await
-                                .map_err(process_error)?;
+                            drain_stderr(&mut stderr, stderr_log.as_ref()).await?;
                             Ok(())
                         },
                     )?;
@@ -170,6 +173,55 @@ impl StdioProviderTaskFactory {
                 commands, journal, status, shutdown, task,
             ))
         })
+    }
+}
+
+pub(crate) async fn drain_stderr(
+    stderr: &mut (impl AsyncRead + Unpin),
+    log: Option<&OperationalLog>,
+) -> Result<(), AdapterError> {
+    if log.is_none() {
+        tokio::io::copy(stderr, &mut tokio::io::sink())
+            .await
+            .map_err(process_error)?;
+        return Ok(());
+    }
+    let log = log.ok_or(AdapterError::InvalidConfiguration)?;
+    let mut reader = BufReader::new(stderr);
+    let mut bytes = [0_u8; 8192];
+    let mut line = Vec::new();
+    let mut discarding = false;
+    loop {
+        let count = tokio::io::AsyncReadExt::read(&mut reader, &mut bytes)
+            .await
+            .map_err(process_error)?;
+        if count == 0 {
+            if discarding {
+                log.note_dropped_line();
+            } else if !line.is_empty() {
+                log.write_line(&line);
+            }
+            return Ok(());
+        }
+        for byte in &bytes[..count] {
+            if !discarding {
+                if line.len() == STDERR_LINE_LIMIT {
+                    line.clear();
+                    discarding = true;
+                } else {
+                    line.push(*byte);
+                }
+            }
+            if *byte == b'\n' {
+                if discarding {
+                    log.note_dropped_line();
+                    discarding = false;
+                } else {
+                    log.write_line(&line);
+                    line.clear();
+                }
+            }
+        }
     }
 }
 
