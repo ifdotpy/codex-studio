@@ -170,7 +170,10 @@ pub fn decide_workspace(
             );
         }
     }
-    if !actor.worktree && actor.workspace_mode.as_deref() != Some("worktree") {
+    // Python assigns `worktree` only to implementer workers and gates worktree
+    // creation on that flag (`codex_runtime.py:5001-5002, 6307-6308`). A lead may
+    // retain a `workspaceMode` preference of `worktree` while using its shared cwd.
+    if !actor.worktree {
         return match cwd {
             Some(cwd) => WorkspaceDecision::Ready {
                 token: ReadyToken::new(record, cwd.clone()),

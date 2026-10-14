@@ -297,9 +297,10 @@ fn reservations_defer_capture_and_refuse_restore_or_replaced_ownership() {
 }
 
 #[test]
-fn shared_workspace_requires_directory_and_stopped_or_deleted_actor_defers() {
+fn shared_workspace_ignores_worktree_preference_and_stopped_or_deleted_actor_defers() {
     let (mut record, _, _) = input();
     record["worktree"] = json!(false);
+    record["workspaceMode"] = json!("worktree");
     let actor: WorkspaceActor = serde_json::from_value(record.clone()).expect("actor");
     assert!(matches!(
         decide_workspace(

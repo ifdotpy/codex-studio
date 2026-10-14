@@ -528,7 +528,7 @@ class SchemaContractTests(unittest.TestCase):
     def test_generated_document_does_not_loosen_main_constraint_baseline(self) -> None:
         baseline_path = Path(__file__).with_name("openapi_constraint_baseline.json")
         manifest = json.loads(baseline_path.read_text(encoding="utf-8"))
-        self.assertEqual(manifest["sourceCommit"], "a3024407")
+        self.assertEqual(manifest["sourceCommit"], "51d376b7")
         self.assertEqual(manifest["sourcePath"], "workspaces/runtime/packages/runtime-http/openapi.json")
         baseline_document = manifest["document"]
         self.assertIsInstance(baseline_document, dict)
