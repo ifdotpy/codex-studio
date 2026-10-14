@@ -9,7 +9,7 @@ from codex_runtime import Runtime
 
 state = pathlib.Path(sys.argv[1])
 workspace = pathlib.Path(sys.argv[2])
-turn_id = sys.argv[3] or None
+turn_id = "" if sys.argv[3] == "__empty__" else (sys.argv[3] or None)
 agent_id = "wave9-checkpoint-restore-agent"
 runtime = Runtime(state)
 try:

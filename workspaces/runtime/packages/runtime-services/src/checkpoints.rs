@@ -494,6 +494,7 @@ pub fn restore(
             .record
             .get("turnId")
             .and_then(Value::as_str)
+            .filter(|turn| !turn.is_empty())
             .is_some()
         {
             "thread/fork"
@@ -849,7 +850,12 @@ fn restore_fork_params(
         "cwd":cwd,
         "config":resources.thread_config,
     });
-    if let Some(turn) = checkpoint.record.get("turnId").and_then(Value::as_str) {
+    if let Some(turn) = checkpoint
+        .record
+        .get("turnId")
+        .and_then(Value::as_str)
+        .filter(|turn| !turn.is_empty())
+    {
         params["lastTurnId"] = json!(turn);
     }
     if let Some(model) = agent.get("model") {

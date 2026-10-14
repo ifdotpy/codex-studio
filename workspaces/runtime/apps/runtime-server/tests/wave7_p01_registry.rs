@@ -525,7 +525,11 @@ async fn checkpoint_restore_http_uses_the_composed_retained_broker_for_fork_and_
     use std::process::Command;
     use tower::ServiceExt;
 
-    for (case, turn_id) in [("fork", "turn-before-restore"), ("start", "")] {
+    for (case, turn_id) in [
+        ("fork", "turn-before-restore"),
+        ("start", ""),
+        ("empty-turn-start", "__empty__"),
+    ] {
         let root = tempfile::tempdir().unwrap();
         let state_dir = root.path().join("state");
         std::fs::create_dir_all(&state_dir).unwrap();
