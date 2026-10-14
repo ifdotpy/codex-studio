@@ -17,6 +17,28 @@ pub trait GuestRpc: Send + Sync {
     ) -> Result<Value, GuestCallError>;
 }
 
+#[cfg(unix)]
+impl GuestRpc for super::linux_vm_guest::UnixGuestRpc {
+    fn call(
+        &self,
+        method: &str,
+        params: &Value,
+        request_id: Option<&str>,
+        timeout: Duration,
+    ) -> Result<Value, GuestCallError> {
+        super::linux_vm_guest::GuestRpc::call(self, method, params, request_id, timeout).map_err(
+            |error| GuestCallError {
+                code: error.code().unwrap_or("guest_error").to_owned(),
+                detail: error
+                    .detail()
+                    .unwrap_or("Linux VM guest request failed")
+                    .to_owned(),
+                uncertain: error.uncertain(),
+            },
+        )
+    }
+}
+
 /// Guest errors preserve their protocol classification while avoiding derived Debug output.
 pub struct GuestCallError {
     pub code: String,

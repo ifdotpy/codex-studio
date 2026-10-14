@@ -145,6 +145,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     .with_account_driver(account_driver.clone())
     .with_provider_versions(provider_versions)
     .with_credentials(credentials);
+    #[cfg(unix)]
+    {
+        let guest = studio_runtime_services::linux_vm_guest::UnixGuestRpc::for_runtime_state(
+            &PathBuf::from(&state_dir),
+        );
+        state = state.with_project_secrets_guest_rpc(Arc::new(guest));
+    }
     account_driver.recover_codex_logins()?;
     let home = env::var_os("HOME")
         .map(PathBuf::from)
