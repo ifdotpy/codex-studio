@@ -340,6 +340,13 @@ def no_write_snapshot(
                 retained_rows = []
                 for row in rows:
                     values = dict(zip(columns, row, strict=True))
+                    row_json_fields = {}
+                    if table in BACKGROUND_OWNED_ROW_JSON_FIELDS and "id" in columns:
+                        row_json_fields = next((
+                            fields
+                            for prefix, fields in BACKGROUND_OWNED_ROW_JSON_FIELDS[table].items()
+                            if isinstance(values.get("id"), str) and values["id"].startswith(prefix)
+                        ), {})
                     if table == "runtime_events" and values.get("id") in baseline_events.get(database_path.name, {}):
                         # The dispatcher advances an already-existing event's
                         # status independently of this refused request
