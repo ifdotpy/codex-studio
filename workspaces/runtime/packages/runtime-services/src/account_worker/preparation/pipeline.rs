@@ -2,6 +2,7 @@
 use super::*;
 use crate::{submit_gates as gates, thread_prepare as thread, turn_prepare as turn};
 use snapshot::*;
+use std::path::PathBuf;
 use std::time::Instant;
 use studio_runtime_store::Transaction;
 
@@ -329,8 +330,14 @@ pub(crate) fn prepare_native_thread(
 ) -> Result<super::PreparedNativeThread, WorkerError> {
     let mut snapshot =
         prepare_native_snapshot(store, resources, agent_id, attempt_id, generation, true)?;
+    if snapshot.actor.native_teleport_tool.is_none() && snapshot.actor.thread_id.is_some() {
+        snapshot.actor.native_teleport_tool = Some(thread::SessionTool::Move);
+    }
     snapshot.actor.thread_id = None;
     snapshot.catalog.saved_thread_id = None;
+    // A fresh restore start still uses the source agent's saved tool catalog,
+    // which Python's new_thread_params preserves when threadId is present.
+    snapshot.actor.native_tool_source = Some(snapshot.catalog.source);
     match thread::plan(
         &snapshot,
         attempt_id,
@@ -382,7 +389,11 @@ fn prepare_native_snapshot(
         events: Vec::new(),
     };
     let admission = admit_for_purpose(store, resources, &intent, allow_paused_start)?;
-    let token = workspace(store, &intent)?;
+    let token = if allow_paused_start {
+        None
+    } else {
+        Some(workspace(store, &intent)?)
+    };
     let filesystem = FilesystemSnapshot::capture(store, agent_id)?;
     let (identity, _) = catalog(resources, &intent)?;
     scheduler::lifecycle_transaction_with(store, |tx| {
@@ -391,9 +402,21 @@ fn prepare_native_snapshot(
             .selection
             .freeze_record(&current, &identity, Instant::now())
             .map_err(catalog_admission_error)?;
-        let cwd = token
-            .validate(tx)?
-            .map_err(|_| refusal("workspace-readiness/token-stale".into()))?;
+        let cwd = if let Some(token) = &token {
+            token
+                .validate(tx)?
+                .map_err(|_| refusal("workspace-readiness/token-stale".into()))?
+        } else {
+            let cwd = intent
+                .cwd
+                .as_ref()
+                .map(PathBuf::from)
+                .ok_or_else(|| refusal("workspace-readiness/cwd-required".into()))?;
+            if std::fs::canonicalize(&cwd).ok().as_ref() != Some(&cwd) || !cwd.is_dir() {
+                return Err(refusal("workspace-readiness/cwd-unavailable".into()));
+            }
+            cwd
+        };
         let mut frozen = frozen;
         frozen["cwd"] = json!(cwd);
         thread_snapshot(
