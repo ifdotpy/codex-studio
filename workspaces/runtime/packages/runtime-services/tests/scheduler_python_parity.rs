@@ -276,7 +276,9 @@ fn submitted_marker_survives_settlement_write_failure() {
     let record = AgentRepository::get(&store.read().expect("read"), &AgentId::from(agent.as_str()))
         .expect("agent")
         .expect("present");
-    assert_eq!(record.status, AgentStatus::Interrupted);
+    // Python restart recovery restores an accepted submission to the queue
+    // until native history confirms its outcome (codex_restart_recovery.py).
+    assert_eq!(record.status, AgentStatus::Queued);
     assert_eq!(record.extra["restartRecovery"]["stage"], "held");
 }
 #[test]
