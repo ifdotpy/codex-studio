@@ -17,7 +17,9 @@
       "direction": "in",
       "responseFor": "thread/read",
       "timestamp": 0,
-      "message": { "result": { "thread": { "id": "$threadId", "cwd": "." } } }
+      "message": {
+        "result": { "thread": { "id": "$threadId", "cwd": "$cwd" } }
+      }
     },
     "thread/turns/list": {
       "direction": "in",
@@ -40,6 +42,12 @@
           ]
         }
       }
+    },
+    "thread/fork": {
+      "direction": "in",
+      "responseFor": "thread/fork",
+      "timestamp": 0,
+      "message": { "result": { "thread": { "id": "branch-thread" } } }
     }
   }
 }
