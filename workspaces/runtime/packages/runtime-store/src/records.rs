@@ -492,9 +492,21 @@ impl<'connection, R: JsonRecord> Table<'connection, R> {
         id: &R::Id,
         predicate: Option<RecordPredicate<'_>>,
     ) -> StoreResult<Option<R>> {
-        Ok(self
-            .get_with_raw_matching(id, predicate)?
-            .map(|(record, _)| record))
+        ensure_query::<R>(predicate, RecordOrder::RowId)?;
+        let (where_sql, mut values) = predicate_sql(predicate);
+        let id_predicate = where_sql.map_or_else(String::new, |sql| format!(" AND {sql}"));
+        values.insert(0, SqlValue::Text(id.as_ref().to_owned()));
+        let sql = format!(
+            "SELECT record FROM {} WHERE id = ?1{id_predicate}",
+            quoted_table::<R>()
+        );
+        let mut statement = self.connection.prepare(&sql)?;
+        let mut rows = statement.query(params_from_iter(values.iter()))?;
+        let Some(row) = rows.next()? else {
+            return Ok(None);
+        };
+        let encoded = stored_text_ref(row.get_ref(0)?, R::TABLE, id.as_ref())?;
+        decode_record::<R>(id.as_ref(), encoded).map(Some)
     }
 
     /// Keep the original JSON text for consumers whose contract depends on
