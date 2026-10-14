@@ -154,20 +154,7 @@ fn validate(request: &SessionRequest) -> Result<(), PortError> {
     }
     let actorless_read = request.transfer.is_none()
         && request.actor.is_none()
-        && matches!(
-            request.method,
-            Method::ThreadList
-                | Method::ThreadLoadedList
-                | Method::ModelList
-                | Method::ClaudeDiagnostics
-                | Method::OperationStatus
-                | Method::AccountRead
-                | Method::ThreadRead
-                | Method::ThreadTurnsList
-        )
-        && (request.method != Method::ThreadList || request.params.get("threadId").is_none())
-        && (request.method != Method::AccountRead
-            || request.params == json!({"refreshToken": false}));
+        && valid_actorless_read_shape(request.method, &request.params);
     let deleted_voice_stop = request
         .deleted_actor_session
         .as_ref()
@@ -187,6 +174,20 @@ fn validate(request: &SessionRequest) -> Result<(), PortError> {
                             .is_some_and(|id| !id.is_empty())
                 })
         });
+    // These are the exact actor-bound calls issued by codex_native_voice.py:
+    // _submit_start (lines 107-111), _stop_native (418), and speech (455).
+    // Require the connection snapshot so a delayed voice operation cannot
+    // cross a provider reconnect.
+    let voice_request = request.transfer.is_none()
+        && request.deleted_actor_session.is_none()
+        && request.actor.is_some()
+        && request.expected_scope.as_ref() == Some(&request.scope)
+        && match request.method {
+            Method::ThreadRealtimeStart => valid_voice_start(request),
+            Method::ThreadRealtimeStop => valid_voice_stop(request, "voice:stop:"),
+            Method::ThreadRealtimeAppendSpeech => valid_voice_speech(request),
+            _ => false,
+        };
     let actor_method = request.transfer.is_none()
         && request.actor.is_some()
         && matches!(
@@ -214,6 +215,7 @@ fn validate(request: &SessionRequest) -> Result<(), PortError> {
                 | Method::CommandExecResize
                 | Method::CommandExecTerminate
         )
+        || voice_request
         || deleted_voice_stop;
     let transfer_method = request.transfer.as_ref().is_some_and(|transfer| {
         matches!(
@@ -349,6 +351,149 @@ fn valid_settings_update(request: &SessionRequest) -> bool {
         }
     })
 }
+
+pub(super) fn valid_actorless_read_shape(method: Method, params: &Value) -> bool {
+    let Some(params) = params.as_object() else {
+        return false;
+    };
+    let only = |required: &[&str], optional: &[&str]| {
+        required.iter().all(|key| params.contains_key(*key))
+            && params
+                .keys()
+                .all(|key| required.contains(&key.as_str()) || optional.contains(&key.as_str()))
+    };
+    match method {
+        // Python codex_runtime.py:11661 always passes limit=50 and cursor (possibly null).
+        Method::ThreadList => {
+            only(&["limit", "cursor"], &[])
+                && params.get("limit") == Some(&json!(50))
+                && (params.get("cursor") == Some(&Value::Null)
+                    || params
+                        .get("cursor")
+                        .and_then(Value::as_str)
+                        .is_some_and(|cursor| !cursor.is_empty()))
+        }
+        // Python codex_native_sweep.py:_loaded uses limit=100 and optional cursor.
+        Method::ThreadLoadedList => valid_page_read_shape(params, &["limit"], 100),
+        // Python codex_catalog.py sends {limit,cursor?}; the history reader
+        // codex_model_catalog_reader.py additionally sends includeHidden=true.
+        Method::ModelList => {
+            valid_page_read_shape(params, &["limit"], 100)
+                || (valid_page_read_shape(params, &["limit", "includeHidden"], 100)
+                    && params.get("includeHidden") == Some(&json!(true)))
+        }
+        // Python codex_diagnostics.py sends an empty object.
+        Method::ClaudeDiagnostics => params.is_empty(),
+        // Python codex_runtime.py:3904 requests only this stable monitor identity.
+        Method::OperationStatus => {
+            only(&["operationId"], &[])
+                && params
+                    .get("operationId")
+                    .and_then(Value::as_str)
+                    .is_some_and(|id| id.starts_with("monitor:") && id.len() > "monitor:".len())
+        }
+        // Python codex_runtime.py:11680-11684 imports only visible thread state.
+        Method::ThreadRead => {
+            only(&["threadId", "includeTurns"], &[])
+                && params
+                    .get("threadId")
+                    .and_then(Value::as_str)
+                    .is_some_and(|id| !id.is_empty())
+                && params.get("includeTurns") == Some(&json!(false))
+        }
+        Method::ThreadTurnsList => {
+            only(&["threadId", "limit", "sortDirection", "itemsView"], &[])
+                && params
+                    .get("threadId")
+                    .and_then(Value::as_str)
+                    .is_some_and(|id| !id.is_empty())
+                && params.get("limit") == Some(&json!(20))
+                && params.get("sortDirection") == Some(&json!("desc"))
+                && params.get("itemsView") == Some(&json!("full"))
+        }
+        Method::AccountRead => {
+            only(&["refreshToken"], &[]) && params.get("refreshToken") == Some(&json!(false))
+        }
+        _ => false,
+    }
+}
+
+fn valid_page_read_shape(
+    params: &serde_json::Map<String, Value>,
+    required: &[&str],
+    limit: u64,
+) -> bool {
+    required.iter().all(|key| params.contains_key(*key))
+        && params
+            .keys()
+            .all(|key| required.contains(&key.as_str()) || key == "cursor")
+        && params.get("limit") == Some(&json!(limit))
+        && params
+            .get("cursor")
+            .is_none_or(|cursor| cursor.as_str().is_some_and(|value| !value.is_empty()))
+}
+
+fn valid_voice_start(request: &SessionRequest) -> bool {
+    let Some(session_id) = request.operation.strip_prefix("voice:start:") else {
+        return false;
+    };
+    if session_id.is_empty() || session_id.len() > 120 {
+        return false;
+    }
+    let Some(params) = request.params.as_object() else {
+        return false;
+    };
+    let Some(transport) = params.get("transport").and_then(Value::as_object) else {
+        return false;
+    };
+    params.len() == 7
+        && params
+            .get("threadId")
+            .and_then(Value::as_str)
+            .is_some_and(|id| !id.is_empty())
+        && params.get("version") == Some(&json!("v3"))
+        && params.get("outputModality") == Some(&json!("audio"))
+        && params.get("realtimeSessionId").and_then(Value::as_str) == Some(session_id)
+        && params.get("clientManagedHandoffs") == Some(&json!(false))
+        && params.get("flushTranscriptTailOnSessionEnd") == Some(&json!(false))
+        && transport.len() == 2
+        && transport.get("type") == Some(&json!("webrtc"))
+        && transport
+            .get("sdp")
+            .and_then(Value::as_str)
+            .is_some_and(|sdp| sdp.starts_with("v=0") && sdp.len() <= 100_000)
+}
+
+fn valid_voice_stop(request: &SessionRequest, operation_prefix: &str) -> bool {
+    let Some(session_id) = request.operation.strip_prefix(operation_prefix) else {
+        return false;
+    };
+    !session_id.is_empty()
+        && session_id.len() <= 120
+        && request.params.as_object().is_some_and(|params| {
+            params.len() == 1
+                && params
+                    .get("threadId")
+                    .and_then(Value::as_str)
+                    .is_some_and(|thread_id| !thread_id.is_empty())
+        })
+}
+
+fn valid_voice_speech(request: &SessionRequest) -> bool {
+    let Some(receipt_id) = request.operation.strip_prefix("voice:speech:") else {
+        return false;
+    };
+    !receipt_id.is_empty()
+        && receipt_id.len() <= 480
+        && request.params.as_object().is_some_and(|params| {
+            params.len() == 2
+                && params
+                    .get("threadId")
+                    .and_then(Value::as_str)
+                    .is_some_and(|thread_id| !thread_id.is_empty())
+                && params.get("text").and_then(Value::as_str).is_some()
+        })
+}
 #[derive(Clone, serde::Serialize, serde::Deserialize, PartialEq)]
 pub(super) struct Call {
     scope: ConnectionScope,
@@ -449,6 +594,55 @@ mod validation_tests {
     }
 
     #[test]
+    fn actorless_reads_accept_only_documented_exact_parameter_shapes() {
+        let cases = [
+            (Method::ThreadList, json!({"limit":50,"cursor":null})),
+            (Method::ThreadLoadedList, json!({"limit":100})),
+            (
+                Method::ThreadLoadedList,
+                json!({"limit":100,"cursor":"next"}),
+            ),
+            (Method::ModelList, json!({"limit":100})),
+            (Method::ModelList, json!({"limit":100,"cursor":"next"})),
+            (Method::ModelList, json!({"limit":100,"includeHidden":true})),
+            (Method::ClaudeDiagnostics, json!({})),
+            (
+                Method::OperationStatus,
+                json!({"operationId":"monitor:fixture"}),
+            ),
+            (Method::AccountRead, json!({"refreshToken":false})),
+            (
+                Method::ThreadRead,
+                json!({"threadId":"fixture-thread","includeTurns":false}),
+            ),
+            (
+                Method::ThreadTurnsList,
+                json!({"threadId":"fixture-thread","limit":20,"sortDirection":"desc","itemsView":"full"}),
+            ),
+        ];
+        for (method, params) in cases {
+            assert!(
+                valid_actorless_read_shape(method, &params),
+                "{method:?}: {params}"
+            );
+            let mut extended = params;
+            extended["unapproved"] = json!(true);
+            assert!(
+                !valid_actorless_read_shape(method, &extended),
+                "{method:?} accepted extra params: {extended}"
+            );
+        }
+        assert!(!valid_actorless_read_shape(
+            Method::ThreadRead,
+            &json!({"threadId":"fixture-thread"})
+        ));
+        assert!(!valid_actorless_read_shape(
+            Method::ThreadTurnsList,
+            &json!({"threadId":"fixture-thread","limit":10,"sortDirection":"desc","itemsView":"full"})
+        ));
+    }
+
+    #[test]
     fn thread_settings_update_requires_exact_native_action_shape() {
         let mut request = turns_request("full", 1, true);
         request.method = Method::ThreadSettingsUpdate;
@@ -465,8 +659,62 @@ mod validation_tests {
 
         request.params["unexpected"] = json!(true);
         assert_eq!(validate(&request), Err(PortError::Invalid));
-        request.params.as_object_mut().unwrap().remove("unexpected");
+        request.params = json!({
+            "threadId":"fixture-thread",
+            "model":"fixture-model",
+            "serviceTier":"default"
+        });
         request.operation = "native-action".into();
+        assert_eq!(validate(&request), Err(PortError::Invalid));
+    }
+
+    #[test]
+    fn voice_calls_require_exact_actor_scope_and_provider_shapes() {
+        let mut request = turns_request("full", 1, true);
+        request.expected_scope = Some(request.scope.clone());
+        request.operation = "voice:start:session-1".into();
+        request.method = Method::ThreadRealtimeStart;
+        request.params = json!({
+            "threadId":"fixture-thread",
+            "version":"v3",
+            "outputModality":"audio",
+            "realtimeSessionId":"session-1",
+            "clientManagedHandoffs":false,
+            "flushTranscriptTailOnSessionEnd":false,
+            "transport":{"type":"webrtc","sdp":"v=0 fixture-offer"}
+        });
+        assert!(validate(&request).is_ok());
+
+        request.params["unexpected"] = json!(true);
+        assert_eq!(validate(&request), Err(PortError::Invalid));
+        request.params = json!({
+            "threadId":"fixture-thread",
+            "version":"v3",
+            "outputModality":"audio",
+            "realtimeSessionId":"other-session",
+            "clientManagedHandoffs":false,
+            "flushTranscriptTailOnSessionEnd":false,
+            "transport":{"type":"webrtc","sdp":"v=0 fixture-offer"}
+        });
+        request.params["realtimeSessionId"] = json!("other-session");
+        assert_eq!(validate(&request), Err(PortError::Invalid));
+        request.params["realtimeSessionId"] = json!("session-1");
+        request.expected_scope = None;
+        assert_eq!(validate(&request), Err(PortError::Invalid));
+
+        request.expected_scope = Some(request.scope.clone());
+        request.method = Method::ThreadRealtimeStop;
+        request.operation = "voice:stop:session-1".into();
+        request.params = json!({"threadId":"fixture-thread"});
+        assert!(validate(&request).is_ok());
+        request.operation = "voice:other:session-1".into();
+        assert_eq!(validate(&request), Err(PortError::Invalid));
+
+        request.method = Method::ThreadRealtimeAppendSpeech;
+        request.operation = "voice:speech:receipt-1".into();
+        request.params = json!({"threadId":"fixture-thread","text":"hello"});
+        assert!(validate(&request).is_ok());
+        request.params["extra"] = json!(1);
         assert_eq!(validate(&request), Err(PortError::Invalid));
     }
 
