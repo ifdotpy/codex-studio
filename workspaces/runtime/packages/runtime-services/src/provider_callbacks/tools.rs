@@ -229,7 +229,9 @@ pub(super) fn dispatch_with_ports<P: crate::managed_host_tools::Ports>(
             return Ok(false);
         }
         if record["connectionId"] != context.connection
-            || record.pointer("/supervisor/generation").and_then(Value::as_u64)
+            || record
+                .pointer("/supervisor/generation")
+                .and_then(Value::as_u64)
                 != Some(context.generation)
         {
             return Err(CallbackError::Stale);

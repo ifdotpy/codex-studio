@@ -121,12 +121,8 @@ async fn forward(
             })?,
     };
     let forwarder = state.browser_forwarder.ok_or_else(|| {
-        dependency_unavailable(
-            "POST",
-            "/api/browser/forward",
-            &FORWARD_DEPENDENCIES,
-        )
-        .unwrap_or_else(|_| ApiError::internal())
+        dependency_unavailable("POST", "/api/browser/forward", &FORWARD_DEPENDENCIES)
+            .unwrap_or_else(|_| ApiError::internal())
     })?;
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)

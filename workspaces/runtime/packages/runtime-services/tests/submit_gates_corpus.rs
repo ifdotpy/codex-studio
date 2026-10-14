@@ -108,10 +108,12 @@ fn catalog(case: &Value, now: Instant) -> Option<CatalogObservation> {
                 // cyber grant list used by the gate.
                 let mut projected = model.clone();
                 if let Some(programs) = model["access_programs"]["cyber"].as_array() {
-                    projected["access_programs"] = json!(programs
-                        .iter()
-                        .filter_map(Value::as_str)
-                        .collect::<Vec<_>>());
+                    projected["access_programs"] = json!(
+                        programs
+                            .iter()
+                            .filter_map(Value::as_str)
+                            .collect::<Vec<_>>()
+                    );
                 } else if model.get("access_programs").is_some() {
                     projected["access_programs"] = Value::Null;
                 }
