@@ -6,7 +6,9 @@ use crate::provider_session_task::{
 };
 use serde_json::{Value, json};
 use std::collections::HashMap;
+use std::future::Future;
 use std::path::PathBuf;
+use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 #[cfg(test)]
@@ -33,11 +35,167 @@ const MAX_CATALOG_RESPONSE_BYTES: usize = MODEL_CATALOG_MAX_RESPONSE_BYTES;
 const MAX_CATALOG_PAGES: usize = MODEL_CATALOG_MAX_PAGES;
 pub type ChangeCallback = Arc<dyn Fn() + Send + Sync + 'static>;
 
+#[derive(Clone, Debug, thiserror::Error, PartialEq, Eq)]
+pub enum ModelListError {
+    #[error("Unknown account")]
+    UnknownAccount,
+    #[error("Account provider changed")]
+    ProviderMismatch,
+    #[error("Invalid model/list params")]
+    InvalidParams,
+    #[error("Model catalog is pending")]
+    Pending,
+    #[error("Model catalog is unavailable")]
+    Unavailable,
+}
+
+/// Shared catalog surface used by rename and the HTTP model route.
+pub trait ModelListPort: Send + Sync {
+    fn list<'a>(
+        &'a self,
+        account_key: &'a str,
+        provider: &'a str,
+        params: Value,
+    ) -> Pin<Box<dyn Future<Output = Result<Value, ModelListError>> + Send + 'a>>;
+}
+
+impl ModelListPort for ModelCatalogService {
+    fn list<'a>(
+        &'a self,
+        account_key: &'a str,
+        provider: &'a str,
+        params: Value,
+    ) -> Pin<Box<dyn Future<Output = Result<Value, ModelListError>> + Send + 'a>> {
+        Box::pin(self.list_models(account_key, provider, params))
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum CatalogRead {
     Ready(Value),
     Pending,
     Unavailable,
+}
+
+async fn read_account_session_catalog(
+    session: Arc<dyn crate::account_session_runtime::AccountSessionPort>,
+    account: String,
+    provider: String,
+    stop: Shutdown,
+) -> Result<Value, ()> {
+    if provider != "claude" {
+        return Err(());
+    }
+    let mut shutdown = stop.subscribe();
+    let mut rows = Vec::new();
+    // A refresh is a new durable provider read. Page retries within this refresh
+    // keep their identity; a later refresh must not replay an expired receipt.
+    static REFRESH_SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    let refresh_id = format!(
+        "{}-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|_| ())?
+            .as_nanos(),
+        REFRESH_SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    );
+    let mut first_page = None;
+    let mut cursor: Option<String> = None;
+    let mut seen_cursors = std::collections::HashSet::new();
+    let mut seen_models = std::collections::HashSet::new();
+    let mut total_bytes = 0_usize;
+    for page_index in 0..MAX_CATALOG_PAGES {
+        let mut params = json!({"limit": MODEL_CATALOG_ITEMS_PER_PAGE});
+        if let Some(cursor) = &cursor {
+            params
+                .as_object_mut()
+                .ok_or(())?
+                .insert("cursor".into(), Value::String(cursor.clone()));
+        }
+        let session_clone = session.clone();
+        let account_clone = account.clone();
+        let current_scope = session.current_scope(&account).ok_or(())?;
+        let operation = format!(
+            "model-list:{account}:{refresh_id}:{page_index}:{}",
+            cursor.as_deref().unwrap_or("first")
+        );
+        let request = tokio::task::spawn_blocking(move || {
+            use crate::account_session_runtime::{
+                ProviderRequest, ProviderResponse, RequestCertainty,
+            };
+            use std::time::Instant;
+            let receipt = session_clone
+                .provider_request(ProviderRequest {
+                    account: account_clone,
+                    operation: operation.clone(),
+                    actor: None,
+                    expected_scope: Some(current_scope.clone()),
+                    method: studio_runtime_providers::Method::ModelList,
+                    params,
+                    deadline: Instant::now() + CATALOG_TIMEOUT,
+                })
+                .map_err(|_| ())?;
+            if receipt.scope != current_scope
+                || receipt.operation != operation
+                || receipt.certainty != RequestCertainty::Written
+                || receipt.ticket.is_none()
+            {
+                return Err(());
+            }
+            match receipt.result {
+                Some(ProviderResponse::Reply(value)) => Ok(value),
+                Some(ProviderResponse::Rejected(_)) | None => Err(()),
+            }
+        });
+        let response = tokio::select! {
+            _ = Shutdown::cancelled(&mut shutdown) => return Err(()),
+            result = tokio::time::timeout(CATALOG_TIMEOUT, request) => {
+                result.map_err(|_| ())?.map_err(|_| ())??
+            },
+        };
+        let bytes = serde_json::to_vec(&response).map_err(|_| ())?.len();
+        if bytes > MAX_CATALOG_PAGE_BYTES {
+            return Err(());
+        }
+        total_bytes = total_bytes.checked_add(bytes).ok_or(())?;
+        if total_bytes > MAX_CATALOG_RESPONSE_BYTES {
+            return Err(());
+        }
+        let object = response.as_object().ok_or(())?;
+        let data = object.get("data").and_then(Value::as_array).ok_or(())?;
+        if first_page.is_none() {
+            first_page = Some(object.clone());
+        }
+        for row in data {
+            let model = row
+                .as_object()
+                .and_then(|row| row.get("model"))
+                .and_then(Value::as_str)
+                .filter(|model| !model.trim().is_empty())
+                .ok_or(())?;
+            if !seen_models.insert(model.to_owned()) {
+                return Err(());
+            }
+            rows.push(row.clone());
+        }
+        match object.get("nextCursor") {
+            None | Some(Value::Null) => {
+                let mut result = first_page.ok_or(())?;
+                result.insert("data".into(), Value::Array(rows));
+                if page_index > 0 || result.contains_key("nextCursor") {
+                    result.insert("nextCursor".into(), Value::Null);
+                }
+                return Ok(Value::Object(result));
+            }
+            Some(Value::String(value))
+                if !value.is_empty() && seen_cursors.insert(value.clone()) =>
+            {
+                cursor = Some(value.clone())
+            }
+            _ => return Err(()),
+        }
+    }
+    Err(())
 }
 
 /// Admission reads never expose the display cache's stale fallback. The caller
@@ -70,6 +228,8 @@ struct CatalogInner {
     #[cfg(test)]
     refresh_factory: Mutex<Option<Arc<dyn ProviderTaskFactory>>>,
     cache: Mutex<HashMap<(String, String, String), CacheEntry>>,
+    accounts: Mutex<HashMap<String, (String, String)>>,
+    account_session: Mutex<Option<Arc<dyn crate::account_session_runtime::AccountSessionPort>>>,
     next_generation: Mutex<u64>,
     on_change: ChangeCallback,
     tasks: tokio::sync::Mutex<Vec<tokio::task::JoinHandle<()>>>,
@@ -146,6 +306,8 @@ impl ModelCatalogService {
             #[cfg(test)]
             refresh_factory: Mutex::new(None),
             cache: Mutex::new(HashMap::new()),
+            accounts: Mutex::new(HashMap::new()),
+            account_session: Mutex::new(None),
             next_generation: Mutex::new(0),
             on_change,
             tasks: tokio::sync::Mutex::new(Vec::new()),
@@ -162,7 +324,16 @@ impl ModelCatalogService {
         provider: &str,
         retry: bool,
     ) -> CatalogRead {
-        if provider != "codex" || *self.0.stop.subscribe().borrow() {
+        if !matches!(provider, "codex" | "claude")
+            || *self.0.stop.subscribe().borrow()
+            || (provider == "claude"
+                && self
+                    .0
+                    .account_session
+                    .lock()
+                    .ok()
+                    .is_none_or(|session| session.is_none()))
+        {
             return CatalogRead::Unavailable;
         }
 
@@ -237,6 +408,13 @@ impl ModelCatalogService {
 
         let service = Arc::downgrade(&self.0);
         let executable = self.0.executable.clone();
+        let account_session = self
+            .0
+            .account_session
+            .lock()
+            .ok()
+            .and_then(|session| session.clone());
+        let provider = provider.to_owned();
         let stop = self.0.stop.clone();
         let account = account_key.to_owned();
         let home = home.to_owned();
@@ -270,16 +448,24 @@ impl ModelCatalogService {
                 }
                 return;
             }
-            let result = read_provider_catalog(
-                permit,
-                executable.as_deref(),
-                &home,
-                account != "default",
-                stop,
-                cleanup_error,
-                stderr_log,
-            )
-            .await;
+            let result = if provider == "claude" {
+                if let Some(session) = account_session {
+                    read_account_session_catalog(session, account.clone(), provider, stop).await
+                } else {
+                    Err(())
+                }
+            } else {
+                read_provider_catalog(
+                    permit,
+                    executable.as_deref(),
+                    &home,
+                    account != "default",
+                    stop,
+                    cleanup_error,
+                    stderr_log,
+                )
+                .await
+            };
             if let Some(inner) = service.upgrade() {
                 store_result(&inner, &cache_key, generation, result);
             }
@@ -287,6 +473,23 @@ impl ModelCatalogService {
         stale.map_or(CatalogRead::Pending, CatalogRead::Ready)
     }
     pub fn retain_accounts(&self, accounts: &[Value]) {
+        if let Ok(mut profiles) = self.0.accounts.lock() {
+            profiles.clear();
+            profiles.extend(accounts.iter().filter_map(|account| {
+                let id = account.get("id")?.as_str()?.to_owned();
+                let home = account
+                    .get("home")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_owned();
+                let provider = account
+                    .get("provider")
+                    .and_then(Value::as_str)
+                    .unwrap_or("codex")
+                    .to_owned();
+                Some((id, (home, provider)))
+            }));
+        }
         self.0
             .cache
             .lock()
@@ -298,6 +501,53 @@ impl ModelCatalogService {
                         && account["provider"].as_str().unwrap_or("codex") == key.2
                 })
             });
+    }
+
+    /// Return the registered provider/home identity for transfer validation.
+    #[must_use]
+    pub fn account_profile(&self, account: &str) -> Option<(String, String)> {
+        self.0.accounts.lock().ok()?.get(account).cloned()
+    }
+    /// Attach the account registry's retained provider session. The catalog
+    /// never launches a second provider for Claude model reads.
+    pub fn set_account_session(
+        &self,
+        session: Option<Arc<dyn crate::account_session_runtime::AccountSessionPort>>,
+    ) {
+        if let Ok(mut current) = self.0.account_session.lock() {
+            *current = session;
+        }
+    }
+
+    pub fn model_list_port(&self) -> Arc<dyn ModelListPort> {
+        Arc::new(self.clone())
+    }
+
+    async fn list_models(
+        &self,
+        account: &str,
+        provider: &str,
+        params: Value,
+    ) -> Result<Value, ModelListError> {
+        if params != json!({"limit": MODEL_CATALOG_ITEMS_PER_PAGE}) {
+            return Err(ModelListError::InvalidParams);
+        }
+        let (home, actual_provider) = self
+            .0
+            .accounts
+            .lock()
+            .map_err(|_| ModelListError::Unavailable)?
+            .get(account)
+            .cloned()
+            .ok_or(ModelListError::UnknownAccount)?;
+        if actual_provider != provider {
+            return Err(ModelListError::ProviderMismatch);
+        }
+        match self.read(account, &home, provider, false).await {
+            CatalogRead::Ready(value) => Ok(value),
+            CatalogRead::Pending => Err(ModelListError::Pending),
+            CatalogRead::Unavailable => Err(ModelListError::Unavailable),
+        }
     }
     pub async fn shutdown(&self) -> std::io::Result<()> {
         self.0.stop.cancel();
@@ -613,10 +863,167 @@ pub(crate) mod tests {
     use super::*;
     use crate::provider_session_task::SessionTaskConfig;
     use std::collections::BTreeMap;
+    use std::sync::Mutex as StdMutex;
     use studio_runtime_process::ProviderLaunchSpec;
     use studio_runtime_process::{EventCursor, provider_seam::*};
     use studio_runtime_providers::Frame;
     use tokio::sync::{mpsc, watch};
+
+    struct AccountSessionPages {
+        pages: StdMutex<Vec<Value>>,
+        params: StdMutex<Vec<Value>>,
+        operations: StdMutex<Vec<String>>,
+    }
+    impl crate::account_session_runtime::AccountSessionPort for AccountSessionPages {
+        fn current_scope(
+            &self,
+            account: &str,
+        ) -> Option<crate::account_session_runtime::ConnectionScope> {
+            Some(crate::account_session_runtime::ConnectionScope {
+                account: account.to_owned(),
+                connection: "claude-connection".into(),
+                generation: 4,
+            })
+        }
+
+        fn provider_request(
+            &self,
+            request: crate::account_session_runtime::ProviderRequest,
+        ) -> Result<
+            crate::account_session_runtime::SessionReceipt,
+            crate::account_session_runtime::AccountSessionError,
+        > {
+            use crate::account_session_runtime::{
+                ProviderResponse, RequestCertainty, SessionReceipt,
+            };
+            self.params.lock().expect("params").push(request.params);
+            self.operations
+                .lock()
+                .expect("operations")
+                .push(request.operation.clone());
+            if self.pages.lock().expect("pages").is_empty() {
+                return Err(
+                    crate::account_session_runtime::AccountSessionError::InvalidResponse(
+                        "/".into(),
+                    ),
+                );
+            }
+            let scope = self.current_scope(&request.account).expect("test scope");
+            Ok(SessionReceipt {
+                scope,
+                operation: request.operation,
+                ticket: Some(studio_runtime_providers::RequestTicket {
+                    id: studio_runtime_providers::RequestId::String("catalog-test".into()),
+                    generation: 4,
+                    method: studio_runtime_providers::Method::ModelList,
+                }),
+                certainty: RequestCertainty::Written,
+                result: Some(ProviderResponse::Reply(
+                    self.pages.lock().expect("pages").remove(0),
+                )),
+                not_sent_reason: None,
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn claude_catalog_uses_retained_session_and_paginates_python_params() {
+        let session = Arc::new(AccountSessionPages {
+            pages: StdMutex::new(vec![
+                json!({"data":[{"model":"one"}],"nextCursor":"next","metadata":true}),
+                json!({"data":[{"model":"two"}],"nextCursor":null}),
+            ]),
+            params: StdMutex::new(Vec::new()),
+            operations: StdMutex::new(Vec::new()),
+        });
+        let result = read_account_session_catalog(
+            session.clone(),
+            "account".into(),
+            "claude".into(),
+            Shutdown::default(),
+        )
+        .await
+        .expect("catalog pages");
+        assert_eq!(
+            result,
+            json!({
+                "data":[{"model":"one"},{"model":"two"}],
+                "nextCursor":null,
+                "metadata":true
+            })
+        );
+        assert_eq!(
+            session.params.lock().expect("params").as_slice(),
+            &[
+                json!({"limit":MODEL_CATALOG_ITEMS_PER_PAGE}),
+                json!({"limit":MODEL_CATALOG_ITEMS_PER_PAGE,"cursor":"next"}),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn each_catalog_refresh_has_a_fresh_durable_operation_identity() {
+        let session = Arc::new(AccountSessionPages {
+            pages: StdMutex::new(vec![
+                json!({"data":[{"model":"one"}]}),
+                json!({"data":[{"model":"one"}]}),
+            ]),
+            params: StdMutex::new(Vec::new()),
+            operations: StdMutex::new(Vec::new()),
+        });
+        for _ in 0..2 {
+            read_account_session_catalog(
+                session.clone(),
+                "account".into(),
+                "claude".into(),
+                Shutdown::default(),
+            )
+            .await
+            .expect("catalog refresh");
+        }
+        let operations = session.operations.lock().expect("operations");
+        assert_eq!(operations.len(), 2);
+        assert_ne!(operations[0], operations[1]);
+        assert!(
+            operations
+                .iter()
+                .all(|operation| operation.starts_with("model-list:account:"))
+        );
+    }
+
+    #[tokio::test]
+    async fn shared_model_list_checks_request_and_account_identity() {
+        let service = ModelCatalogService::new(None);
+        service.retain_accounts(&[json!({
+            "id":"claude-account",
+            "home":"/home/claude",
+            "provider":"claude"
+        })]);
+        let port = service.model_list_port();
+        assert_eq!(
+            port.list(
+                "missing",
+                "claude",
+                json!({"limit": MODEL_CATALOG_ITEMS_PER_PAGE})
+            )
+            .await,
+            Err(ModelListError::UnknownAccount)
+        );
+        assert_eq!(
+            port.list(
+                "claude-account",
+                "codex",
+                json!({"limit": MODEL_CATALOG_ITEMS_PER_PAGE})
+            )
+            .await,
+            Err(ModelListError::ProviderMismatch)
+        );
+        assert_eq!(
+            port.list("claude-account", "claude", json!({"cursor":"caller-owned"}))
+                .await,
+            Err(ModelListError::InvalidParams)
+        );
+    }
 
     pub(crate) fn set_refresh_factory(
         service: &ModelCatalogService,

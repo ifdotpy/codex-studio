@@ -412,7 +412,7 @@ async fn rename(
                     "Not implemented: requires account-driver/unavailable",
                 )
             })?;
-        let home = account.get("home").and_then(Value::as_str).ok_or_else(|| {
+        let _home = account.get("home").and_then(Value::as_str).ok_or_else(|| {
             ApiError::new(
                 StatusCode::NOT_IMPLEMENTED,
                 "Not implemented: requires provider-session/model-list",
@@ -422,13 +422,19 @@ async fn rename(
             .get("provider")
             .and_then(Value::as_str)
             .unwrap_or("codex");
-        let catalog = match state
-            .model_catalog
-            .read(&account_key, home, provider, false)
+        let model_list = state.model_catalog.model_list_port();
+        let catalog = match model_list
+            .list(
+                &account_key,
+                provider,
+                serde_json::json!({
+                    "limit": studio_runtime_schema::shared_values::MODEL_CATALOG_ITEMS_PER_PAGE
+                }),
+            )
             .await
         {
-            studio_runtime_services::model_catalog::CatalogRead::Ready(value) => value,
-            _ => {
+            Ok(value) => value,
+            Err(_) => {
                 return Err(ApiError::new(
                     StatusCode::NOT_IMPLEMENTED,
                     "Not implemented: requires provider-session/model-list",

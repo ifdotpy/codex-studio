@@ -204,6 +204,118 @@ impl studio_runtime_services::account_session_runtime::RetainedAccountSession
         })
     }
 
+    fn transfer_request(
+        &self,
+        request: studio_runtime_services::account_session_runtime::TransferProviderRequest,
+    ) -> studio_runtime_services::account_session_runtime::SessionFuture {
+        use studio_runtime_services::{
+            account_session_runtime::{
+                AccountSessionError, NotSentReason, ProviderResponse, RequestCertainty,
+                SessionReceipt,
+            },
+            account_worker::retained::{RequestResult, SessionRequest, TransferAuthorization},
+        };
+        let session = self
+            .sessions
+            .read()
+            .ok()
+            .and_then(|sessions| sessions.get(&request.source_account).cloned());
+        Box::pin(async move {
+            let not_sent = |reason| SessionReceipt {
+                scope: request.expected_scope.clone(),
+                operation: request.operation.clone(),
+                ticket: None,
+                certainty: RequestCertainty::NotSent,
+                result: None,
+                not_sent_reason: Some(reason),
+            };
+            let Some(session) = session.filter(|session| session.is_live()) else {
+                return Ok(not_sent(NotSentReason::NoLiveAccountWorker));
+            };
+            if session.scope() != &request.expected_scope
+                || request.expected_scope.account != request.source_account
+            {
+                return Ok(not_sent(NotSentReason::ExpectedScopeMismatch));
+            }
+            let allowed_params = request.params.as_object().is_some_and(|params| {
+                params.len() == 1
+                    && params.get("threadId").and_then(serde_json::Value::as_str)
+                        == Some(request.thread_id.as_str())
+            });
+            if !allowed_params
+                || !matches!(
+                    request.method.as_str(),
+                    "thread/queue/list" | "thread/backgroundTerminals/list" | "thread/unsubscribe"
+                )
+                || !request.operation.starts_with(&format!(
+                    "transfer:{}:{}:",
+                    request.transfer_id, request.member
+                ))
+                || tokio::time::Instant::from_std(request.deadline) <= tokio::time::Instant::now()
+            {
+                return Err(AccountSessionError::Refused(
+                    "Invalid account transfer source preflight",
+                ));
+            }
+            let transfer = TransferAuthorization {
+                transfer_id: request.transfer_id,
+                member: request.member,
+                source_account: request.source_account,
+                thread_id: request.thread_id,
+            };
+            let scope = request.expected_scope.clone();
+            let operation = request.operation.clone();
+            let response = session
+                .request(SessionRequest {
+                    scope: scope.clone(),
+                    expected_scope: Some(scope.clone()),
+                    operation: operation.clone(),
+                    actor: None,
+                    transfer: Some(transfer),
+                    method: request.method,
+                    params: request.params,
+                    deadline: request.deadline,
+                })
+                .await;
+            match response {
+                Ok(receipt) if receipt.scope == scope && receipt.operation == operation => {
+                    let (certainty, result) = match receipt.result {
+                        RequestResult::Reply(value) => (
+                            RequestCertainty::Written,
+                            Some(ProviderResponse::Reply(value)),
+                        ),
+                        RequestResult::Rejected(value) => (
+                            RequestCertainty::Written,
+                            Some(ProviderResponse::Rejected(value)),
+                        ),
+                        RequestResult::NotSent => (RequestCertainty::NotSent, None),
+                        RequestResult::Unknown => (RequestCertainty::Unknown, None),
+                    };
+                    Ok(SessionReceipt {
+                        scope: receipt.scope,
+                        operation: receipt.operation,
+                        ticket: Some(receipt.ticket),
+                        certainty,
+                        result,
+                        not_sent_reason: None,
+                    })
+                }
+                Ok(_) => Err(AccountSessionError::Unknown),
+                Err(studio_runtime_services::account_worker::retained::PortError::NotSent)
+                | Err(studio_runtime_services::account_worker::retained::PortError::Identity)
+                | Err(
+                    studio_runtime_services::account_worker::retained::PortError::ScopeMismatch,
+                ) => Ok(not_sent(NotSentReason::WorkerNotSent)),
+                Err(studio_runtime_services::account_worker::retained::PortError::Unknown) => {
+                    Err(AccountSessionError::Unknown)
+                }
+                Err(_) => Err(AccountSessionError::Refused(
+                    "Account transfer source request was rejected",
+                )),
+            }
+        })
+    }
+
     fn callback_barrier(
         &self,
         account: String,
@@ -289,6 +401,7 @@ async fn dispatch_request(
         expected_scope: request.expected_scope.clone(),
         operation: request.operation.clone(),
         actor: request.actor,
+        transfer: None,
         method: request.method,
         params: request.params,
         deadline: request.deadline,

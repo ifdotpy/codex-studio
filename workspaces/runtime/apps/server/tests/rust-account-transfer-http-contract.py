@@ -3,7 +3,6 @@
 from __future__ import annotations
 from test_isolation import isolate_supervisor_environment
 import json
-import os
 from pathlib import Path
 import sqlite3
 import sys
@@ -32,7 +31,7 @@ class AccountTransferHTTPContract(TimedHTTPContractTest, unittest.TestCase):
                 def put(self,db,table,record): db.execute('INSERT OR REPLACE INTO runtime_'+table+'(id,record) VALUES(?,?)',(record['id'],json.dumps(record)))
                 def agent(self,key,db): return json.loads(db.execute('SELECT record FROM runtime_agents WHERE id=?',(key,)).fetchone()[0])
             ports=Ports(); transfers=object.__new__(AccountTransfers); transfers.rt=ports
-            for name in ('cancel','finish','refuse','replay'):
+            for name in ('cancel','finish','refuse','replay','late-root'):
                 key=str(uuid.uuid4()); cls.operations[name]=key
                 agent=dict(id=name,rootId=name,epoch=0,status='idle',name=name,isLead=True,autoWake=False,accountKey='default',cwd=str(cls.backend.cwd),model='gpt-6-astra',accountTransferId=key)
                 ports.put(db,'agents',agent)
@@ -68,9 +67,23 @@ class AccountTransferHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         self.assertEqual(result.status,200,result.body)
         self.assertEqual(result.json()['id'],self.operations['replay'])
         self.assertEqual(self.stored('replay'),before)
-        conflict=self.post(dict(request_id=self.operations['replay'],id='replay',account_key='default',scope='subagents'))
+    def test_new_request_adopts_descendants_created_during_active_transfer(self):
+        with sqlite3.connect(self.backend.state/'canvas.sqlite3') as db:
+            db.execute('INSERT INTO runtime_agents(id,record) VALUES(?,?)',('late',json.dumps(dict(
+                id='late',rootId='late-root',epoch=1,status='idle',name='Late member',isLead=False,
+                autoWake=False,accountKey='default',provider='codex',model='gpt-6-astra',cwd=str(self.backend.cwd)))))
+        request_id=str(uuid.uuid4())
+        result=self.post(dict(request_id=request_id,id='late-root',account_key='default',scope='team'))
+        self.assertEqual(result.status,200,result.body)
+        self.assertEqual(result.json()['members']['late']['phase'],'completed')
+        with sqlite3.connect(self.backend.state/'canvas.sqlite3') as db:
+            operation=json.loads(db.execute('SELECT record FROM runtime_account_transfers WHERE id=?',
+                (self.operations['late-root'],)).fetchone()[0])
+            self.assertEqual(operation['requests'][request_id],dict(leadId='late-root',targetAccountKey='default',scope='team'))
+        before=self.stored('late-root')
+        conflict=self.post(dict(request_id=self.operations['late-root'],id='late-root',account_key='default',scope='subagents'))
         self.assertEqual(conflict.status,400,conflict.body)
-        self.assertEqual(self.stored('replay'),before)
+        self.assertEqual(self.stored('late-root'),before)
     def test_same_account_selection_is_read_only(self):
         before=self.stored('replay')
         result=self.post(dict(id='replay',account_key='default'),'/api/agents/account')
@@ -103,18 +116,48 @@ class AccountTransferHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         finally:
             with sqlite3.connect(self.backend.state/'canvas.sqlite3') as db:
                 db.execute('DROP TRIGGER selection_fail')
-    def test_new_request_needs_executor_without_writes(self):
-        if not os.environ.get('STUDIO_HTTP_BACKEND_COMMAND'):
-            self.skipTest('Rust executor boundary witness')
-        before=self.stored('replay')
+    def test_new_request_starts_transfer_and_exact_replay_is_read_only(self):
+        request_id=str(uuid.uuid4())
+        body=dict(request_id=request_id,id='empty',account_key='default',scope='team')
+        result=self.post(body)
+        self.assertEqual(result.status,200,result.body)
+        self.assertEqual(result.json()['id'],request_id)
+        self.assertEqual(result.json()['targetAccountKey'],'default')
+        self.assertEqual(result.json()['members']['empty']['phase'],'completed')
         with sqlite3.connect(self.backend.state/'canvas.sqlite3') as db:
-            rows=db.execute('SELECT id,record FROM runtime_account_transfers ORDER BY id').fetchall()
-        result=self.post(dict(request_id=str(uuid.uuid4()),id='replay',account_key='default',scope='team'))
-        self.assertEqual(result.status,501,result.body)
-        self.assertEqual(result.json()['error'],'Not implemented: requires account-transfer/provider-history-executor')
-        self.assertEqual(self.stored('replay'),before)
+            stored=db.execute('SELECT record FROM runtime_account_transfers WHERE id=?',(request_id,)).fetchone()
+            self.assertIsNotNone(stored)
+            before=stored[0]
+        replay=self.post(body)
+        self.assertEqual(replay.status,200,replay.body)
+        self.assertEqual(replay.json()['id'],request_id)
+        self.assertEqual(replay.json()['status'],result.json()['status'])
+        self.assertEqual(replay.json()['members'],result.json()['members'])
         with sqlite3.connect(self.backend.state/'canvas.sqlite3') as db:
-            self.assertEqual(db.execute('SELECT id,record FROM runtime_account_transfers ORDER BY id').fetchall(),rows)
+            self.assertEqual(db.execute('SELECT record FROM runtime_account_transfers WHERE id=?',(request_id,)).fetchone()[0],before)
+    def test_new_request_refusals_do_not_write(self):
+        with sqlite3.connect(self.backend.state/'canvas.sqlite3') as db:
+            before=db.execute('SELECT id,record FROM runtime_account_transfers ORDER BY id').fetchall()
+            lead_before=db.execute("SELECT record FROM runtime_agents WHERE id='empty'").fetchone()[0]
+        cases=[
+            (dict(request_id=str(uuid.uuid4()),id='empty',account_key='missing-account',scope='team'), 'unknown account'),
+            (dict(request_id=str(uuid.uuid4()),id='empty',account_key='default',scope='invalid'), 'invalid scope'),
+        ]
+        for body,_label in cases:
+            result=self.post(body)
+            self.assertEqual(result.status,400,result.body)
+            with sqlite3.connect(self.backend.state/'canvas.sqlite3') as db:
+                self.assertEqual(db.execute('SELECT id,record FROM runtime_account_transfers ORDER BY id').fetchall(),before)
+                self.assertEqual(db.execute("SELECT record FROM runtime_agents WHERE id='empty'").fetchone()[0],lead_before)
+        with sqlite3.connect(self.backend.state/'canvas.sqlite3') as db:
+            db.execute("UPDATE runtime_agents SET record=json_set(record,'$.excludedAccountKeys',json_array('blocked')) WHERE id='empty'")
+            excluded_before=db.execute("SELECT record FROM runtime_agents WHERE id='empty'").fetchone()[0]
+            rows_before=db.execute('SELECT id,record FROM runtime_account_transfers ORDER BY id').fetchall()
+        result=self.post(dict(request_id=str(uuid.uuid4()),id='empty',account_key='blocked',scope='team'))
+        self.assertEqual(result.status,400,result.body)
+        with sqlite3.connect(self.backend.state/'canvas.sqlite3') as db:
+            self.assertEqual(db.execute('SELECT id,record FROM runtime_account_transfers ORDER BY id').fetchall(),rows_before)
+            self.assertEqual(db.execute("SELECT record FROM runtime_agents WHERE id='empty'").fetchone()[0],excluded_before)
     def test_validation_is_located(self):
         result=self.post(dict(request_id='',action='retry'))
         self.assertEqual(result.status,400,result.body)

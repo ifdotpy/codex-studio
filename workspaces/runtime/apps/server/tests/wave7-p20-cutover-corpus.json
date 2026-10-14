@@ -997,7 +997,7 @@
           "owner": "P18"
         }
       ],
-      "dependency": "provider-service/claude-model-catalog",
+      "dependency": "provider-session/model-list",
       "operation_count": 1,
       "operations": ["GET /api/models"]
     },
@@ -1556,7 +1556,7 @@
       "status": "implemented"
     },
     {
-      "dependencies": ["provider-service/claude-model-catalog"],
+      "dependencies": ["provider-session/model-list"],
       "operation": "GET /api/models",
       "status": "partial"
     },

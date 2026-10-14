@@ -444,6 +444,418 @@ impl Snapshot {
         Ok(self.decision(op, self.agents.clone(), vec![]))
     }
 
+    /// Persist the stable provider operation and current connection scope before
+    /// crossing the retained-session boundary. A changed replay is refused.
+    pub fn provider_intent(
+        &self,
+        agent: &str,
+        operation: &str,
+        scope: Value,
+        method: &str,
+        params: Value,
+    ) -> Result<Decision, TransferError> {
+        let member = &self.operation["members"][agent];
+        if !self.pending()
+            || self.phase(agent)? != Phase::Reading
+            || operation.is_empty()
+            || !matches!(method, "thread/start" | "thread/fork")
+            || !params.is_object()
+            || !scope.is_object()
+        {
+            return Err(TransferError::Refused(
+                "The transfer is not ready for provider submission",
+            ));
+        }
+        validate_source_for_submission(member, self.agent(agent)?)?;
+        let intent = json!({"operation":operation,"scope":scope,"method":method,"params":params});
+        if let Some(saved) = member.get("providerIntent") {
+            if saved == &intent {
+                if self.phase(agent)? == Phase::Reading {
+                    let mut op = self.operation.clone();
+                    op["members"][agent]["phase"] = json!(if flag(member, "lazy") {
+                        "lazy_submitted"
+                    } else {
+                        "submitted"
+                    });
+                    op["members"][agent]["nativeMethod"] = json!(method);
+                    op["members"][agent]["nativeParams"] = params;
+                    return Ok(self.decision(op, self.agents.clone(), vec![]));
+                }
+                return Ok(self.decision(self.operation.clone(), self.agents.clone(), vec![]));
+            }
+            return Err(TransferError::Refused(
+                "The transfer provider intent changed; inspect its receipt",
+            ));
+        }
+        let mut op = self.operation.clone();
+        op["members"][agent]["providerIntent"] = intent;
+        op["members"][agent]["phase"] = json!(if flag(member, "lazy") {
+            "lazy_submitted"
+        } else {
+            "submitted"
+        });
+        op["members"][agent]["nativeMethod"] = json!(method);
+        op["members"][agent]["nativeParams"] = params;
+        Ok(self.decision(op, self.agents.clone(), vec![]))
+    }
+
+    /// Journal a provider read independently from the final thread mutation.
+    /// An existing Written receipt is replayed, NotSent may retry the same
+    /// operation, and an intent without a receipt is held as uncertain.
+    pub fn provider_read_intent(
+        &self,
+        agent: &str,
+        operation: &str,
+        account: &str,
+        scope: Value,
+        method: &str,
+        params: Value,
+    ) -> Result<Decision, TransferError> {
+        let member = &self.operation["members"][agent];
+        let source_guard = matches!(
+            method,
+            "thread/queue/list" | "thread/backgroundTerminals/list" | "thread/unsubscribe"
+        ) && member.get("sourceAccountKey").and_then(Value::as_str)
+            == Some(account)
+            && member.get("sourceThreadId").and_then(Value::as_str)
+                == params.get("threadId").and_then(Value::as_str)
+            && params
+                .as_object()
+                .is_some_and(|params| params.len() == 1 && params.contains_key("threadId"))
+            && operation.starts_with(&format!("transfer:{}:{agent}:", self.identity.id));
+        if !self.pending()
+            || self.phase(agent)? != Phase::Reading
+            || operation.is_empty()
+            || account.is_empty()
+            || (!matches!(method, "model/list" | "thread/read" | "thread/turns/list")
+                && !source_guard)
+            || !params.is_object()
+            || !scope.is_object()
+        {
+            return Err(TransferError::Refused(
+                "The transfer is not ready for a provider read",
+            ));
+        }
+        let intent = json!({"operation":operation,"account":account,"scope":scope,
+            "method":method,"params":params});
+        if let Some(intents) = member.get("providerReadIntents").and_then(Value::as_object) {
+            if let Some(saved) = intents.get(operation) {
+                if saved != &intent {
+                    return Err(TransferError::Refused("The provider read intent changed"));
+                }
+                let receipt = member
+                    .get("providerReadReceipts")
+                    .and_then(Value::as_object)
+                    .and_then(|receipts| receipts.get(operation));
+                match receipt.and_then(|saved| saved["certainty"].as_str()) {
+                    Some("written") => {
+                        return Ok(self.decision(
+                            self.operation.clone(),
+                            self.agents.clone(),
+                            vec![],
+                        ));
+                    }
+                    Some("not_sent") => {}
+                    Some("unknown") | None => {
+                        return Err(TransferError::Refused(
+                            "The provider read outcome is unknown; it was not repeated",
+                        ));
+                    }
+                    _ => return Err(invalid("account transfer", "/members/providerReadReceipts")),
+                }
+            } else {
+                let mut op = self.operation.clone();
+                op["members"][agent]["providerReadIntents"][operation] = intent;
+                return Ok(self.decision(op, self.agents.clone(), vec![]));
+            }
+        } else {
+            let mut op = self.operation.clone();
+            let mut intents = serde_json::Map::new();
+            intents.insert(operation.to_owned(), intent);
+            op["members"][agent]["providerReadIntents"] = Value::Object(intents);
+            return Ok(self.decision(op, self.agents.clone(), vec![]));
+        }
+        Ok(self.decision(self.operation.clone(), self.agents.clone(), vec![]))
+    }
+
+    pub fn provider_read_receipt(
+        &self,
+        agent: &str,
+        operation: &str,
+        receipt: Value,
+        result: Option<Value>,
+        certainty: &str,
+    ) -> Result<Decision, TransferError> {
+        let member = &self.operation["members"][agent];
+        let intent = member
+            .get("providerReadIntents")
+            .and_then(Value::as_object)
+            .and_then(|intents| intents.get(operation))
+            .ok_or(TransferError::Refused(
+                "Provider read receipt has no durable intent",
+            ))?;
+        let existing = member
+            .get("providerReadReceipts")
+            .and_then(Value::as_object)
+            .and_then(|receipts| receipts.get(operation));
+        if existing == Some(&receipt) {
+            return Ok(self.decision(self.operation.clone(), self.agents.clone(), vec![]));
+        }
+        if self.phase(agent)? != Phase::Reading
+            || !matches!(certainty, "written" | "not_sent" | "unknown")
+            || receipt["operation"] != operation
+            || receipt["scope"] != intent["scope"]
+            || receipt["certainty"] != certainty
+            || (certainty == "not_sent" && !receipt["ticket"].is_null())
+            || (certainty != "not_sent" && receipt["ticket"].is_null())
+            || (certainty == "written" && result.is_none())
+        {
+            return Err(TransferError::Refused(
+                "Provider read receipt does not match its intent",
+            ));
+        }
+        let mut op = self.operation.clone();
+        op["members"][agent]["providerReadReceipts"][operation] = json!({
+            "receipt":receipt,"result":result,"certainty":certainty
+        });
+        if certainty == "unknown" {
+            op["members"][agent]["phase"] = json!("unknown");
+            op["members"][agent]["error"] =
+                json!("Provider read outcome is unknown; no request was repeated");
+        }
+        Ok(self.decision(op, self.agents.clone(), vec![]))
+    }
+
+    /// Freeze validated destination settings and an optional portable archive
+    /// before any native thread mutation is authorized.
+    pub fn prepared_member(
+        &self,
+        agent: &str,
+        target_settings: Value,
+        portable_history: Option<Value>,
+    ) -> Result<Decision, TransferError> {
+        if !self.pending() || self.phase(agent)? != Phase::Reading || !target_settings.is_object() {
+            return Err(TransferError::Refused(
+                "The transfer is not ready for destination settings",
+            ));
+        }
+        let current = self.agent(agent)?;
+        let member = &self.operation["members"][agent];
+        if member.get("settings") != Some(&settings_snapshot(current))
+            || member.get("pendingSettings").unwrap_or(&Value::Null)
+                != current.get("pendingSettings").unwrap_or(&Value::Null)
+            || member
+                .get("pendingSettingsAccountKey")
+                .unwrap_or(&Value::Null)
+                != current
+                    .get("pendingSettingsAccountKey")
+                    .unwrap_or(&Value::Null)
+        {
+            return Err(TransferError::Refused(
+                "Agent settings changed during transfer",
+            ));
+        }
+        let mut op = self.operation.clone();
+        op["members"][agent]["targetSettings"] = target_settings;
+        if let Some(history) = portable_history {
+            op["members"][agent]["portableHistory"] = history;
+        }
+        Ok(self.decision(op, self.agents.clone(), vec![]))
+    }
+
+    /// Store the exact provider receipt before interpreting its result. Unknown
+    /// is durable and never authorizes another mutation.
+    pub fn provider_receipt(
+        &self,
+        agent: &str,
+        operation: &str,
+        receipt: Value,
+        written_result: Option<Value>,
+        certainty: &str,
+    ) -> Result<Decision, TransferError> {
+        let member = &self.operation["members"][agent];
+        let exact_replay = member["providerIntent"]["operation"] == operation
+            && member["providerReceipts"]
+                .as_array()
+                .is_some_and(|receipts| receipts.iter().any(|saved| saved == &receipt));
+        if exact_replay {
+            return Ok(self.decision(self.operation.clone(), self.agents.clone(), vec![]));
+        }
+        if member["providerIntent"]["operation"] != operation
+            || !matches!(
+                self.phase(agent)?,
+                Phase::Submitted | Phase::LazySubmitted | Phase::Unknown
+            )
+            || !matches!(certainty, "written" | "not_sent" | "unknown")
+            || receipt["operation"] != operation
+            || receipt["scope"] != member["providerIntent"]["scope"]
+            || receipt["certainty"] != certainty
+            || (certainty == "not_sent" && !receipt["ticket"].is_null())
+            || (certainty != "not_sent" && receipt["ticket"].is_null())
+        {
+            return Err(TransferError::Refused(
+                "The provider receipt does not match this transfer intent",
+            ));
+        }
+        let mut op = self.operation.clone();
+        let current = &mut op["members"][agent];
+        if let Some(receipts) = current["providerReceipts"].as_array_mut() {
+            if receipts.iter().any(|saved| saved == &receipt) {
+                return Ok(self.decision(self.operation.clone(), self.agents.clone(), vec![]));
+            }
+            receipts.push(receipt);
+        } else {
+            current["providerReceipts"] = json!([receipt]);
+        }
+        match certainty {
+            "written"
+                if written_result
+                    .as_ref()
+                    .and_then(|v| v.pointer("/thread/id"))
+                    .and_then(Value::as_str)
+                    .is_some_and(|id| !id.is_empty()) =>
+            {
+                current["phase"] = json!("ready");
+                current["result"] = written_result.unwrap_or(Value::Null);
+                current["error"] = Value::Null;
+            }
+            "not_sent" => {
+                current["phase"] = json!(if flag(current, "lazy") {
+                    "lazy"
+                } else {
+                    "waiting"
+                });
+                current["error"] = json!(
+                    "Provider proved the transfer request was not sent; retry with the same operation id"
+                );
+                current
+                    .as_object_mut()
+                    .expect("member is an object")
+                    .remove("nativeMethod");
+                current
+                    .as_object_mut()
+                    .expect("member is an object")
+                    .remove("nativeParams");
+            }
+            _ => {
+                current["phase"] = json!("unknown");
+                current["error"] =
+                    json!("Native transfer outcome is unknown; no request was repeated");
+            }
+        }
+        Ok(self.decision(op, self.agents.clone(), vec![]))
+    }
+
+    /// Adopt a saved Written thread receipt only after checking the source
+    /// snapshot and target settings again in the same store transaction.
+    pub fn adopt_receipt(&self, agent: &str) -> Result<Decision, TransferError> {
+        if self.phase(agent)? != Phase::Ready {
+            return Err(TransferError::Refused(
+                "The transfer has no adoptable thread receipt",
+            ));
+        }
+        let mut op = self.operation.clone();
+        let target_account = op["targetAccountKey"].clone();
+        let member = op["members"][agent].clone();
+        let result = member
+            .get("result")
+            .cloned()
+            .ok_or(TransferError::Refused("The transfer receipt is missing"))?;
+        let target_thread = result
+            .pointer("/thread/id")
+            .and_then(Value::as_str)
+            .filter(|id| !id.is_empty())
+            .ok_or(TransferError::Refused(
+                "The transfer receipt has no thread identity",
+            ))?;
+        let target_settings = member
+            .get("targetSettings")
+            .and_then(Value::as_object)
+            .ok_or(TransferError::Requires(SETTINGS_REQUIRED))?
+            .clone();
+        let current = self.agent(agent)?;
+        let source =
+            member
+                .get("source")
+                .and_then(Value::as_object)
+                .ok_or(TransferError::Refused(
+                    "The transfer source snapshot is missing",
+                ))?;
+        for key in ["epoch", "threadId", "cwd"] {
+            if current.get(key).unwrap_or(&Value::Null) != source.get(key).unwrap_or(&Value::Null) {
+                return Err(TransferError::Refused(
+                    "Agent state changed after history export; saved thread was not adopted",
+                ));
+            }
+        }
+        let Some(receipt) = member
+            .get("providerReceipts")
+            .and_then(Value::as_array)
+            .and_then(|receipts| receipts.last())
+        else {
+            return Err(TransferError::Refused(
+                "The transfer provider receipt is not Written",
+            ));
+        };
+        if receipt["certainty"] != "written"
+            || receipt["operation"] != member["providerIntent"]["operation"]
+            || receipt["scope"] != member["providerIntent"]["scope"]
+            || receipt["ticket"].is_null()
+        {
+            return Err(TransferError::Refused(
+                "The transfer provider receipt is not the exact Written intent",
+            ));
+        }
+        let mut agents = self.agents.clone();
+        let a = agents
+            .get_mut(agent)
+            .ok_or(TransferError::Refused("Unknown transfer member"))?;
+        a["threadId"] = json!(target_thread);
+        a["turnId"] = Value::Null;
+        a["executionSettingsAccountKey"] = target_account;
+        for (key, value) in target_settings {
+            a[key] = value;
+        }
+        if member.get("portableHistory").is_some() {
+            a["portableHistory"] = member["portableHistory"].clone();
+        }
+        a.as_object_mut()
+            .expect("agent is an object")
+            .remove("lazyAccountTransfer");
+        a.as_object_mut()
+            .expect("agent is an object")
+            .remove("accountTransferId");
+        a.as_object_mut()
+            .expect("agent is an object")
+            .remove("error");
+        a.as_object_mut()
+            .expect("agent is an object")
+            .remove("nativeFailureHold");
+        a.as_object_mut()
+            .expect("agent is an object")
+            .remove("prepareAttempt");
+        let history = json!({"transferId":self.identity.id,"accountKey":member["sourceAccountKey"],
+            "threadId":member["sourceThreadId"],"provider":member["provider"],
+            "targetAccountKey":self.identity.target_account_key,"targetProvider":self.operation["targetProvider"],
+            "targetThreadId":target_thread,"result":result});
+        let history_rows = a["accountHistory"].as_array_mut();
+        if let Some(rows) = history_rows {
+            rows.push(history);
+        } else {
+            a["accountHistory"] = json!([history]);
+        }
+        op["members"][agent]["phase"] = json!("completed");
+        op["members"][agent]["error"] = Value::Null;
+        if op["members"].as_object().is_some_and(|members| {
+            members
+                .values()
+                .all(|m| matches!(m["phase"].as_str(), Some("completed" | "left")))
+        }) {
+            op["status"] = json!("completed");
+        }
+        Ok(self.decision(op, agents, vec![]))
+    }
+
     /// Record a transport ticket before the caller sends. A returned saved result
     /// or an uncertain phase never authorizes dispatch, even after restart.
     pub fn submit(
@@ -469,37 +881,7 @@ impl Snapshot {
             return Err(TransferError::Refused("Invalid native transfer request"));
         }
         let agent = &self.agents[id];
-        if flag(agent, "inFlight")
-            || matches!(
-                agent["status"].as_str(),
-                Some("running" | "starting" | "approval")
-            )
-            || truthy(agent.get("workspaceOperation"))
-        {
-            return Err(TransferError::Refused(
-                "Waiting for the current turn or workspace operation",
-            ));
-        }
-        let source = m
-            .get("source")
-            .and_then(Value::as_object)
-            .ok_or_else(|| invalid("account transfer", "/members/source"))?;
-        if source.is_empty()
-            || source
-                .iter()
-                .any(|(field, value)| agent.get(field).unwrap_or(&Value::Null) != value)
-            || m.get("settings") != Some(&settings_snapshot(agent))
-            || agent.get("pendingSettings").unwrap_or(&Value::Null)
-                != m.get("pendingSettings").unwrap_or(&Value::Null)
-            || agent
-                .get("pendingSettingsAccountKey")
-                .unwrap_or(&Value::Null)
-                != m.get("pendingSettingsAccountKey").unwrap_or(&Value::Null)
-        {
-            return Err(TransferError::Refused(
-                "Agent state changed during transfer. Its original session is preserved.",
-            ));
-        }
+        validate_source_for_submission(m, agent)?;
         let mut op = self.operation.clone();
         let m = &mut op["members"][id];
         m["phase"] = json!(if flag(m, "lazy") {
@@ -951,4 +1333,396 @@ fn settings_snapshot(agent: &Value) -> Value {
     }
     result["provider"] = agent.get("provider").cloned().unwrap_or(json!("codex"));
     result
+}
+
+fn validate_source_for_submission(member: &Value, agent: &Value) -> Result<(), TransferError> {
+    if flag(agent, "inFlight")
+        || matches!(
+            agent["status"].as_str(),
+            Some("running" | "starting" | "approval")
+        )
+        || truthy(agent.get("workspaceOperation"))
+    {
+        return Err(TransferError::Refused(
+            "Waiting for the current turn or workspace operation",
+        ));
+    }
+    let source = member
+        .get("source")
+        .and_then(Value::as_object)
+        .ok_or_else(|| invalid("account transfer", "/members/source"))?;
+    if source.is_empty()
+        || source
+            .iter()
+            .any(|(field, value)| agent.get(field).unwrap_or(&Value::Null) != value)
+        || member.get("settings") != Some(&settings_snapshot(agent))
+        || agent.get("pendingSettings").unwrap_or(&Value::Null)
+            != member.get("pendingSettings").unwrap_or(&Value::Null)
+        || agent
+            .get("pendingSettingsAccountKey")
+            .unwrap_or(&Value::Null)
+            != member
+                .get("pendingSettingsAccountKey")
+                .unwrap_or(&Value::Null)
+    {
+        return Err(TransferError::Refused(
+            "Agent state changed during transfer. Its original session is preserved.",
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod provider_receipt_tests {
+    use super::*;
+
+    fn snapshot() -> Snapshot {
+        let operation = json!({
+            "id":"transfer", "leadId":"agent", "targetAccountKey":"target",
+            "status":"pending", "created":1.0, "scope":"team",
+            "members":{"agent":{"phase":"lazy", "sourceAccountKey":"source",
+                "sourceThreadId":"source-thread", "lazy":true}}
+        });
+        let agent = json!({
+            "id":"agent", "rootId":"agent", "epoch":7, "status":"idle",
+            "accountKey":"target", "accountTransferId":"transfer",
+            "lazyAccountTransfer":{"id":"transfer"}, "model":"model-a"
+        });
+        Snapshot::read(
+            &operation.to_string(),
+            [("agent".into(), agent.to_string())],
+        )
+        .expect("test fixture operation succeeds")
+    }
+
+    fn after(decision: Decision) -> Snapshot {
+        Snapshot::read(
+            &decision.operation.to_string(),
+            decision
+                .agents
+                .into_iter()
+                .map(|(id, agent)| (id, agent.to_string())),
+        )
+        .expect("test fixture operation succeeds")
+    }
+
+    fn intent(snapshot: &Snapshot) -> Decision {
+        after(
+            snapshot
+                .begin_read("agent")
+                .expect("test fixture operation succeeds"),
+        )
+        .provider_intent(
+            "agent",
+            "transfer:agent:thread-start",
+            json!({"account":"target","connection":"connection-1"}),
+            "thread/start",
+            json!({"model":"model-a"}),
+        )
+        .expect("test fixture operation succeeds")
+    }
+
+    #[test]
+    fn provider_intent_precedes_receipt_and_exact_replay_is_idempotent() {
+        let submitted = after(intent(&snapshot()));
+        let member = &submitted.operation["members"]["agent"];
+        assert_eq!(member["phase"], "lazy_submitted");
+        assert_eq!(
+            member["providerIntent"]["operation"],
+            "transfer:agent:thread-start"
+        );
+        assert!(member.get("providerReceipts").is_none());
+
+        let receipt = json!({"operation":"transfer:agent:thread-start", "scope":{"account":"target","connection":"connection-1"}, "certainty":"written", "ticket":{"id":9}});
+        let result = Some(json!({"thread":{"id":"target-thread"}}));
+        let recorded = submitted
+            .provider_receipt(
+                "agent",
+                "transfer:agent:thread-start",
+                receipt.clone(),
+                result.clone(),
+                "written",
+            )
+            .expect("test fixture operation succeeds");
+        let recorded = after(recorded);
+        assert_eq!(recorded.operation["members"]["agent"]["phase"], "ready");
+        assert_eq!(
+            recorded.operation["members"]["agent"]["providerReceipts"][0],
+            receipt
+        );
+        let replay = recorded
+            .provider_receipt(
+                "agent",
+                "transfer:agent:thread-start",
+                receipt,
+                result,
+                "written",
+            )
+            .expect("test fixture operation succeeds");
+        assert!(!replay.changed);
+    }
+
+    #[test]
+    fn adoption_requires_saved_written_receipt_and_validated_target_settings() {
+        let reading = after(
+            snapshot()
+                .begin_read("agent")
+                .expect("test fixture operation succeeds"),
+        );
+        let reading = after(
+            reading
+                .prepared_member("agent", json!({"model":"model-b"}), None)
+                .expect("test fixture operation succeeds"),
+        );
+        let submitted = after(
+            reading
+                .provider_intent(
+                    "agent",
+                    "transfer:agent:thread-start",
+                    json!({"account":"target","connection":"connection-1"}),
+                    "thread/start",
+                    json!({"model":"model-b"}),
+                )
+                .expect("test fixture operation succeeds"),
+        );
+        let ready = after(submitted.provider_receipt(
+            "agent", "transfer:agent:thread-start",
+            json!({"operation":"transfer:agent:thread-start", "scope":{"account":"target","connection":"connection-1"}, "certainty":"written", "ticket":{"id":11}}),
+            Some(json!({"thread":{"id":"target-thread"}})), "written",
+        ).expect("test fixture operation succeeds"));
+        let adopted = after(
+            ready
+                .adopt_receipt("agent")
+                .expect("test fixture operation succeeds"),
+        );
+        assert_eq!(adopted.operation["members"]["agent"]["phase"], "completed");
+        assert_eq!(
+            adopted
+                .agent("agent")
+                .expect("test fixture operation succeeds")["threadId"],
+            "target-thread"
+        );
+        assert_eq!(
+            adopted
+                .agent("agent")
+                .expect("test fixture operation succeeds")["model"],
+            "model-b"
+        );
+        assert_eq!(
+            adopted
+                .agent("agent")
+                .expect("test fixture operation succeeds")["accountHistory"][0]["targetThreadId"],
+            "target-thread"
+        );
+    }
+
+    #[test]
+    fn not_sent_releases_retry_with_same_operation_and_unknown_stays_held() {
+        let first = after(intent(&snapshot()));
+        let receipt = json!({"operation":"transfer:agent:thread-start", "scope":{"account":"target","connection":"connection-1"}, "certainty":"not_sent", "ticket":null});
+        let released = after(
+            first
+                .provider_receipt(
+                    "agent",
+                    "transfer:agent:thread-start",
+                    receipt,
+                    None,
+                    "not_sent",
+                )
+                .expect("test fixture operation succeeds"),
+        );
+        assert_eq!(released.operation["members"]["agent"]["phase"], "lazy");
+        let retry = after(intent(&released));
+        assert_eq!(
+            retry.operation["members"]["agent"]["providerIntent"]["operation"],
+            "transfer:agent:thread-start"
+        );
+
+        let unknown = after(retry.provider_receipt(
+            "agent", "transfer:agent:thread-start",
+            json!({"operation":"transfer:agent:thread-start", "scope":{"account":"target","connection":"connection-1"}, "certainty":"unknown", "ticket":{"id":10}}),
+            None, "unknown",
+        ).expect("test fixture operation succeeds"));
+        assert_eq!(unknown.operation["members"]["agent"]["phase"], "unknown");
+        assert!(
+            unknown
+                .provider_intent(
+                    "agent",
+                    "transfer:agent:thread-start",
+                    json!({"account":"target","connection":"connection-1"}),
+                    "thread/start",
+                    json!({"model":"model-a"}),
+                )
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn provider_read_journal_replays_written_and_holds_uncertain_calls() {
+        let reading = after(
+            snapshot()
+                .begin_read("agent")
+                .expect("test fixture operation succeeds"),
+        );
+        let intent = |snapshot: &Snapshot| {
+            snapshot.provider_read_intent(
+                "agent",
+                "account-transfer:transfer:agent:model-list:0",
+                "target",
+                json!({"account":"target","connection":"conn","generation":4}),
+                "model/list",
+                json!({"limit":100}),
+            )
+        };
+        let prepared = after(intent(&reading).expect("test fixture operation succeeds"));
+        let op_id = "account-transfer:transfer:agent:model-list:0";
+        let receipt = json!({"operation":op_id,"scope":{"account":"target","connection":"conn","generation":4},
+            "certainty":"written","ticket":{"generation":4,"id":"claude:4","method":"model/list"}});
+        let response = json!({"kind":"reply","value":{"data":[],"nextCursor":null}});
+        let recorded = after(
+            prepared
+                .provider_read_receipt(
+                    "agent",
+                    op_id,
+                    receipt.clone(),
+                    Some(response.clone()),
+                    "written",
+                )
+                .expect("test fixture operation succeeds"),
+        );
+        assert_eq!(
+            recorded.operation["members"]["agent"]["providerReadIntents"][op_id]["params"]["limit"],
+            100
+        );
+        assert!(
+            !intent(&recorded)
+                .expect("test fixture operation succeeds")
+                .changed
+        );
+        assert_eq!(
+            recorded.operation["members"]["agent"]["providerReadReceipts"][op_id]["result"],
+            response
+        );
+
+        let not_sent = after(
+            recorded
+                .provider_read_intent(
+                    "agent",
+                    "account-transfer:transfer:agent:thread-read",
+                    "source",
+                    json!({"account":"source","connection":"source-conn","generation":2}),
+                    "thread/read",
+                    json!({"threadId":"source-thread","includeTurns":false}),
+                )
+                .expect("test fixture operation succeeds"),
+        );
+        let read_op = "account-transfer:transfer:agent:thread-read";
+        let not_sent_receipt = json!({"operation":read_op,"scope":{"account":"source","connection":"source-conn","generation":2},
+            "certainty":"not_sent","ticket":null});
+        let released = after(
+            not_sent
+                .provider_read_receipt("agent", read_op, not_sent_receipt, None, "not_sent")
+                .expect("test fixture operation succeeds"),
+        );
+        assert!(
+            !intent(&released)
+                .expect("test fixture operation succeeds")
+                .changed
+        );
+        assert!(
+            !released
+                .provider_read_intent(
+                    "agent",
+                    read_op,
+                    "source",
+                    json!({"account":"source","connection":"source-conn","generation":2}),
+                    "thread/read",
+                    json!({"threadId":"source-thread","includeTurns":false}),
+                )
+                .is_err()
+        );
+
+        let unknown = after(
+            released
+                .provider_read_intent(
+                    "agent",
+                    "account-transfer:transfer:agent:turns:0",
+                    "source",
+                    json!({"account":"source","connection":"source-conn","generation":2}),
+                    "thread/turns/list",
+                    json!({"threadId":"source-thread"}),
+                )
+                .expect("test fixture operation succeeds"),
+        );
+        let unknown_op = "account-transfer:transfer:agent:turns:0";
+        let unknown_receipt = json!({"operation":unknown_op,"scope":{"account":"source","connection":"source-conn","generation":2},
+            "certainty":"unknown","ticket":{"generation":2,"id":5,"method":"thread/turns/list"}});
+        let held = after(
+            unknown
+                .provider_read_receipt("agent", unknown_op, unknown_receipt, None, "unknown")
+                .expect("test fixture operation succeeds"),
+        );
+        assert_eq!(held.operation["members"]["agent"]["phase"], "unknown");
+        assert!(intent(&held).is_err());
+    }
+
+    #[test]
+    fn source_queue_preflight_requires_transfer_scope_and_exact_receipt() {
+        let reading = after(
+            snapshot()
+                .begin_read("agent")
+                .expect("test fixture operation succeeds"),
+        );
+        let params = json!({"threadId":"source-thread"});
+        let scope = json!({"account":"source","connection":"source-conn","generation":2});
+        assert!(
+            reading
+                .provider_read_intent(
+                    "agent",
+                    "untrusted:queue",
+                    "source",
+                    scope.clone(),
+                    "thread/queue/list",
+                    params.clone(),
+                )
+                .is_err()
+        );
+        let operation = "transfer:transfer:agent:queue-before";
+        let intent = after(
+            reading
+                .provider_read_intent(
+                    "agent",
+                    operation,
+                    "source",
+                    scope.clone(),
+                    "thread/queue/list",
+                    params.clone(),
+                )
+                .expect("test fixture operation succeeds"),
+        );
+        assert_eq!(
+            intent.operation["members"]["agent"]["providerReadIntents"][operation]["params"],
+            params
+        );
+        let receipt = json!({"operation":operation,"scope":scope,"certainty":"written",
+            "ticket":{"generation":2,"id":"queue-ticket","method":"thread/queue/list"}});
+        let response = json!({"data":[],"nextCursor":null});
+        let recorded = after(
+            intent
+                .provider_read_receipt(
+                    "agent",
+                    operation,
+                    receipt,
+                    Some(json!({"kind":"reply","value":response})),
+                    "written",
+                )
+                .expect("test fixture operation succeeds"),
+        );
+        assert_eq!(recorded.operation["members"]["agent"]["phase"], "reading");
+        assert_eq!(
+            recorded.operation["members"]["agent"]["providerReadReceipts"][operation]["result"]["value"]
+                ["data"],
+            json!([])
+        );
+    }
 }

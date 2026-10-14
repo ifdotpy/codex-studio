@@ -449,6 +449,7 @@ pub async fn account_read(
             expected_scope: None,
             operation,
             actor: Some(actor),
+            transfer: None,
             method: Method::AccountRead,
             params: json!({}),
             deadline,

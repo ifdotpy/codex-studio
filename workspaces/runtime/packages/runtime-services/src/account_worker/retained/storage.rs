@@ -1,6 +1,35 @@
 use super::*;
+use rusqlite::OptionalExtension;
 pub(super) fn authorize(tx: &rusqlite::Transaction<'_>, call: &Call) -> Result<bool, WorkerError> {
     let Some(actor) = call.actor.as_ref() else {
+        if let Some(transfer) = call.transfer.as_ref() {
+            let Some(raw) =
+                studio_runtime_store::AccountTransferRepository::get(tx, &transfer.transfer_id)?
+            else {
+                return Ok(false);
+            };
+            let operation: Value = match serde_json::from_str(&raw) {
+                Ok(operation) => operation,
+                Err(_) => return Ok(false),
+            };
+            let member = &operation["members"][&transfer.member];
+            return Ok(operation["status"] == "pending"
+                && operation["id"] == transfer.transfer_id
+                && member.is_object()
+                && member["sourceAccountKey"] == transfer.source_account
+                && member["sourceThreadId"] == transfer.thread_id
+                && call.scope.account == transfer.source_account
+                && call.params.get("threadId").and_then(Value::as_str)
+                    == Some(transfer.thread_id.as_str())
+                && call.operation.starts_with(&format!(
+                    "transfer:{}:{}:",
+                    transfer.transfer_id, transfer.member
+                ))
+                && matches!(
+                    call.method.as_str(),
+                    "thread/queue/list" | "thread/backgroundTerminals/list" | "thread/unsubscribe"
+                ));
+        }
         return Ok(match call.method.as_str() {
             "thread/list" => call.params.get("threadId").is_none(),
             "thread/loaded/list" | "model/list" | "claude/diagnostics" => true,
@@ -47,6 +76,49 @@ pub(super) fn authorize(tx: &rusqlite::Transaction<'_>, call: &Call) -> Result<b
         && !studio_runtime_store::truthy(agent_record.extra.get("deletedAt"))
         && agent_record.extra.get("deleted") != Some(&json!(true));
     let actor_identity = common_identity && agent_record.epoch == actor.epoch;
+    let repair_fork = if call.method == "thread/fork" {
+        let repair = &agent_record.extra["contextRepair"];
+        let source = &repair["source"];
+        let snapshot = &repair["snapshot"];
+        let fork_params = &repair["forkParams"];
+        let path_is_absolute = |value: &Value| {
+            value
+                .as_str()
+                .is_some_and(|path| std::path::Path::new(path).is_absolute())
+        };
+        repair["id"].as_str().is_some_and(|id| {
+            !id.is_empty()
+                && repair["agent"] == actor.agent
+                && repair["phase"] == "submitted"
+                && repair["rpcMethod"] == "thread/fork"
+                && repair["forkOperation"] == call.operation
+                && source["id"] == actor.agent
+                && source["epoch"].as_i64() == Some(actor.epoch)
+                && source["accountKey"].as_str() == Some(call.scope.account.as_str())
+                && source["threadId"].as_str()
+                    == agent_record.extra.get("threadId").and_then(Value::as_str)
+                && path_is_absolute(&snapshot["sourcePath"])
+                && path_is_absolute(&snapshot["copyPath"])
+                && snapshot["sourceSha256"]
+                    .as_str()
+                    .is_some_and(|value| !value.is_empty())
+                && snapshot["sourceBytes"].as_u64().is_some()
+                && snapshot["sourceFileIdentity"].is_object()
+                && snapshot["copySha256"]
+                    .as_str()
+                    .is_some_and(|value| !value.is_empty())
+                && snapshot["copyBytes"].as_u64().is_some()
+                && snapshot["eventIds"].is_array()
+                && snapshot["importThreadId"].as_str()
+                    == call.params.get("threadId").and_then(Value::as_str)
+                && snapshot["copyPath"].as_str() == call.params.get("path").and_then(Value::as_str)
+                && fork_params == &call.params
+                && call.params.get("excludeTurns") == Some(&json!(true))
+                && call.params.get("deferGoalContinuation") == Some(&json!(true))
+        })
+    } else {
+        false
+    };
     // Stop commits the next epoch before asking the retained provider session
     // to interrupt the previous turn. Permit only that exact prior epoch for
     // turn/interrupt, while the agent is no longer eligible to wake.
@@ -66,8 +138,109 @@ pub(super) fn authorize(tx: &rusqlite::Transaction<'_>, call: &Call) -> Result<b
     } else {
         false
     };
+    let config_operation = call.operation.strip_prefix("monitor-config:");
+    let config_monitor_id = config_operation.and_then(|rest| rest.split(':').next());
+    let config_read = call.method == "config/read"
+        && config_operation.is_some_and(|rest| rest.split(':').count() == 2)
+        && config_monitor_id.is_some_and(|id| !id.is_empty())
+        && call.params.get("includeLayers") == Some(&json!(false))
+        && call.params.as_object().is_some_and(|params| {
+            params
+                .keys()
+                .all(|key| matches!(key.as_str(), "cwd" | "includeLayers"))
+        })
+        && call.params.get("cwd").is_some_and(|cwd| {
+            cwd.as_str().is_some_and(|cwd| {
+                agent_record.extra.get("cwd").and_then(Value::as_str) == Some(cwd)
+            })
+        })
+        && if let Some(monitor_id) = config_monitor_id {
+            tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM runtime_monitors WHERE id=?1 AND json_extract(record,'$.agent')=?2 AND json_extract(record,'$.epoch')=?3 AND COALESCE(json_extract(record,'$.accountKey'),'default')=?4 AND json_extract(record,'$.cwd')=?5 AND json_extract(record,'$.status') IN ('starting','running'))",
+                rusqlite::params![monitor_id, actor.agent, actor.epoch, call.scope.account, call.params["cwd"].as_str()],
+                |row| row.get::<_, i64>(0),
+            )? != 0
+        } else {
+            false
+        };
+    let monitor_method = matches!(
+        call.method.as_str(),
+        "command/exec" | "command/exec/write" | "command/exec/resize" | "command/exec/terminate"
+    );
+    let process_id = call.params.get("processId").and_then(Value::as_str);
+    let (monitor_id, liveness_generation) = match call.operation.strip_prefix("liveness:") {
+        Some(rest) => rest
+            .split_once(':')
+            .map_or((process_id, None), |(id, generation)| {
+                (Some(id), Some(generation))
+            }),
+        None => (process_id, None),
+    };
+    let monitor_matches = if monitor_method {
+        if let Some(monitor_id) = monitor_id {
+            let record = tx
+                .query_row(
+                    "SELECT record FROM runtime_monitors WHERE id=?1",
+                    [monitor_id],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()?;
+            record.is_some_and(|raw| {
+                serde_json::from_str::<Value>(&raw).is_ok_and(|monitor| {
+                    monitor.get("agent").and_then(Value::as_str) == Some(actor.agent.as_str())
+                        && monitor.get("epoch").and_then(Value::as_i64) == Some(actor.epoch)
+                        && monitor
+                            .get("accountKey")
+                            .and_then(Value::as_str)
+                            .unwrap_or("default")
+                            == call.scope.account
+                        && match call.method.as_str() {
+                            "command/exec" => {
+                                let regular = call.operation == format!("monitor:{monitor_id}")
+                                    && process_id == Some(monitor_id)
+                                    && matches!(
+                                        monitor.get("status").and_then(Value::as_str),
+                                        Some("starting" | "running")
+                                    );
+                                let liveness = liveness_generation.is_some_and(|generation| {
+                                    !generation.is_empty()
+                                        && process_id == Some(call.operation.as_str())
+                                        && monitor.get("status").and_then(Value::as_str)
+                                            == Some("running")
+                                });
+                                (regular || liveness)
+                                    && call.params.get("cwd") == monitor.get("cwd")
+                            }
+                            "command/exec/write" | "command/exec/resize" => {
+                                call.operation
+                                    .starts_with(&format!("monitor-input:{monitor_id}:"))
+                                    && call.operation.len()
+                                        > format!("monitor-input:{monitor_id}:").len()
+                                    && monitor.get("status").and_then(Value::as_str)
+                                        == Some("running")
+                            }
+                            "command/exec/terminate" => {
+                                call.operation == format!("monitor-cancel:{monitor_id}")
+                                    && monitor.get("status").and_then(Value::as_str)
+                                        == Some("running")
+                            }
+                            _ => false,
+                        }
+                })
+            })
+        } else {
+            false
+        }
+    } else {
+        false
+    };
     Ok((actor_identity || stopped_turn_interrupt)
-        && (thread_matches || thread_start || ephemeral_turn))
+        && (thread_matches
+            || (actor_identity && repair_fork)
+            || thread_start
+            || ephemeral_turn
+            || config_read
+            || monitor_matches))
 }
 
 fn thread_started_for_actor(

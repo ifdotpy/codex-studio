@@ -265,8 +265,11 @@ The Python account mutation points that a later owner must port are `refresh`,
 temporary stdio process-group attachment. The cache returns pending immediately,
 serves stale values during one refresh, and applies a single exchange deadline
 to initialization and pagination. The process adapter stops and reaps the child
-before a refresh result is published. Claude catalogs retain their named
-`provider-service/claude-model-catalog` dependency. The temporary adapter requires
+before a refresh result is published. Claude catalogs use the account's retained
+provider session for bounded `model/list` pagination and share the account cache;
+until the account-session adapter is wired, the route names
+`provider-session/model-list` as its remaining dependency. The public
+`ModelListPort` is shared with agent rename. The temporary Codex adapter requires
 Unix; other platforms report the catalog unavailable.
 
 `model_catalog.rs` owns pagination, validation, cache, and pending/unavailable

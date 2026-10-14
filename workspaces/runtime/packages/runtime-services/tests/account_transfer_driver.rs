@@ -11,8 +11,11 @@ use std::{
     },
 };
 use studio_runtime_services::{
+    account_session_runtime::ConnectionScope,
     account_transfer::{Action, Ticket},
-    account_transfer_driver::{self as driver, DispatchOutcome, TransferTransport},
+    account_transfer_driver::{
+        self as driver, DispatchOutcome, ProviderReceipt, TransferDispatch, TransferTransport,
+    },
 };
 use studio_runtime_store::{AccountTransferRepository, RuntimeStore};
 const OP: &str = "41e0b552-0b0c-4c5c-9c37-2e7483cd05c9";
@@ -67,13 +70,32 @@ struct Native<'a> {
     result: Option<Value>,
 }
 impl TransferTransport for Native<'_> {
-    fn send(&self, _ticket: &Ticket, _method: &str, _params: &Value) -> Option<Value> {
+    fn send(
+        &self,
+        ticket: &Ticket,
+        scope: &ConnectionScope,
+        method: &str,
+        _params: &Value,
+    ) -> TransferDispatch {
         self.calls.fetch_add(1, Ordering::SeqCst);
         // Acquiring the writer here would deadlock if native work ran in a transaction.
         self.store
             .transaction(|_| Ok(()))
             .expect("no transaction held during effect");
-        self.result.clone()
+        TransferDispatch {
+            receipt: json!({
+                "operation": ticket.request,
+                "scope": scope,
+                "certainty": if self.result.is_some() {"written"} else {"unknown"},
+                "ticket": {"generation": scope.generation, "id": "request-1", "method": method}
+            }),
+            result: self.result.clone(),
+            certainty: if self.result.is_some() {
+                "written"
+            } else {
+                "unknown"
+            },
+        }
     }
 }
 fn durable_reservation_precedes_native_and_unknown_is_never_resent() {
@@ -90,6 +112,11 @@ fn durable_reservation_precedes_native_and_unknown_is_never_resent() {
             &store,
             &native,
             &ticket(),
+            ConnectionScope {
+                account: "target".into(),
+                connection: "connection-1".into(),
+                generation: 1
+            },
             "thread/fork",
             json!({"threadId":"source-thread"}),
             11.0
@@ -98,16 +125,42 @@ fn durable_reservation_precedes_native_and_unknown_is_never_resent() {
         DispatchOutcome::Unknown
     );
     assert_eq!(operation(&store)["members"]["lead"]["phase"], "unknown");
-    assert!(driver::send_once(&store, &native, &ticket(), "thread/fork", json!({}), 12.0).is_err());
+    assert!(
+        driver::send_once(
+            &store,
+            &native,
+            &ticket(),
+            ConnectionScope {
+                account: "target".into(),
+                connection: "connection-1".into(),
+                generation: 1
+            },
+            "thread/fork",
+            json!({}),
+            12.0
+        )
+        .is_err()
+    );
     assert_eq!(native.calls.load(Ordering::SeqCst), 1);
     drop(native);
     drop(store);
     let store = RuntimeStore::open(Some(root.path())).expect("restart");
     driver::recover(&store, 13.0).expect("recover");
-    driver::receive(
+    let scope = ConnectionScope {
+        account: "target".into(),
+        connection: "connection-1".into(),
+        generation: 1,
+    };
+    driver::provider_receipt(
         &store,
-        &ticket(),
-        Some(json!({"thread":{"id":"saved-fork"}})),
+        ProviderReceipt {
+            operation: OP,
+            agent: "lead",
+            provider_operation: "request-1",
+            receipt: json!({"operation":"request-1","scope":scope,"certainty":"written","ticket":{"generation":1,"id":"request-1","method":"thread/fork"}}),
+            result: Some(json!({"thread":{"id":"saved-fork"}})),
+            certainty: "written",
+        },
         14.0,
     )
     .expect("exact late receipt");
@@ -115,10 +168,16 @@ fn durable_reservation_precedes_native_and_unknown_is_never_resent() {
         operation(&store)["members"]["lead"]["result"]["thread"]["id"],
         "saved-fork"
     );
-    driver::receive(
+    driver::provider_receipt(
         &store,
-        &ticket(),
-        Some(json!({"thread":{"id":"saved-fork"}})),
+        ProviderReceipt {
+            operation: OP,
+            agent: "lead",
+            provider_operation: "request-1",
+            receipt: json!({"operation":"request-1","scope":scope,"certainty":"written","ticket":{"generation":1,"id":"request-1","method":"thread/fork"}}),
+            result: Some(json!({"thread":{"id":"saved-fork"}})),
+            certainty: "written",
+        },
         15.0,
     )
     .expect("replay saved receipt");
@@ -176,9 +235,9 @@ fn replay_and_conflict_have_no_writes() {
     let root = state();
     let store = RuntimeStore::open(Some(root.path())).expect("open");
     let before = operation(&store);
-    driver::request(&store, OP, "lead", "target", "team").expect("exact replay");
+    driver::request(&store, OP, "lead", "target", "team", "codex", 2.0).expect("exact replay");
     assert_eq!(operation(&store), before);
-    assert!(driver::request(&store, OP, "lead", "changed", "team").is_err());
+    assert!(driver::request(&store, OP, "lead", "changed", "team", "codex", 3.0).is_err());
     assert_eq!(operation(&store), before);
     assert!(
         driver::request(
@@ -186,7 +245,9 @@ fn replay_and_conflict_have_no_writes() {
             "52e0b552-0b0c-4c5c-9c37-2e7483cd05c9",
             "lead",
             "target",
-            "team"
+            "team",
+            "codex",
+            4.0
         )
         .is_err()
     );

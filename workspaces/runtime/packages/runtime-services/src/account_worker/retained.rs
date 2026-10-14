@@ -11,12 +11,20 @@ pub struct RequestActor {
     pub agent: String,
     pub epoch: i64,
 }
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct TransferAuthorization {
+    pub transfer_id: String,
+    pub member: String,
+    pub source_account: String,
+    pub thread_id: String,
+}
 #[derive(Clone)]
 pub struct SessionRequest {
     pub scope: ConnectionScope,
     pub expected_scope: Option<ConnectionScope>,
     pub operation: String,
     pub actor: Option<RequestActor>,
+    pub transfer: Option<TransferAuthorization>,
     pub method: Method,
     pub params: Value,
     pub deadline: Instant,
@@ -130,6 +138,10 @@ impl RetainedSessionPort {
     }
 }
 fn validate(request: &SessionRequest) -> Result<(), PortError> {
+    let turn_view = request.params.get("itemsView").and_then(Value::as_str);
+    let turn_limit = request.params.get("limit").and_then(Value::as_u64);
+    let valid_turn_view = turn_view == Some("full")
+        || (turn_view == Some("notLoaded") && request.actor.is_some() && turn_limit == Some(1));
     if request
         .expected_scope
         .as_ref()
@@ -137,7 +149,8 @@ fn validate(request: &SessionRequest) -> Result<(), PortError> {
     {
         return Err(PortError::ScopeMismatch);
     }
-    let actorless_read = request.actor.is_none()
+    let actorless_read = request.transfer.is_none()
+        && request.actor.is_none()
         && matches!(
             request.method,
             Method::ThreadList
@@ -146,30 +159,59 @@ fn validate(request: &SessionRequest) -> Result<(), PortError> {
                 | Method::ClaudeDiagnostics
                 | Method::OperationStatus
                 | Method::ThreadRead
+                | Method::AccountRead
                 | Method::ThreadTurnsList
         )
         && (request.method != Method::ThreadList || request.params.get("threadId").is_none());
-    let actor_method = matches!(
-        request.method,
-        Method::ThreadRead
-            | Method::AccountRead
-            | Method::ThreadTurnsList
-            | Method::ThreadItemsList
-            | Method::ThreadBackgroundTerminalsList
-            | Method::ThreadStart
-            | Method::TurnStart
-            | Method::ThreadFork
-            | Method::ThreadCompactStart
-            | Method::ReviewStart
-            | Method::ClaudeState
-            | Method::ClaudeCommands
-            | Method::ClaudeSettings
-            | Method::ClaudeStopTask
-            | Method::ThreadRollback
-            | Method::ThreadQueueList
-            | Method::TurnInterrupt
-    );
-    if !(actorless_read || (request.actor.is_some() && actor_method))
+    let actor_method = request.transfer.is_none()
+        && request.actor.is_some()
+        && matches!(
+            request.method,
+            Method::ThreadRead
+                | Method::ThreadTurnsList
+                | Method::ThreadItemsList
+                | Method::ThreadBackgroundTerminalsList
+                | Method::ThreadStart
+                | Method::TurnStart
+                | Method::ThreadFork
+                | Method::ThreadCompactStart
+                | Method::ReviewStart
+                | Method::ClaudeState
+                | Method::ClaudeCommands
+                | Method::ClaudeSettings
+                | Method::ClaudeStopTask
+                | Method::ThreadRollback
+                | Method::ThreadQueueList
+                | Method::TurnInterrupt
+                | Method::ConfigRead
+                | Method::CommandExec
+                | Method::CommandExecWrite
+                | Method::CommandExecResize
+                | Method::CommandExecTerminate
+        );
+    let transfer_method = request.transfer.as_ref().is_some_and(|transfer| {
+        matches!(
+            request.method,
+            Method::ThreadQueueList
+                | Method::ThreadBackgroundTerminalsList
+                | Method::ThreadUnsubscribe
+        ) && !transfer.transfer_id.is_empty()
+            && !transfer.member.is_empty()
+            && !transfer.source_account.is_empty()
+            && !transfer.thread_id.is_empty()
+            && request.scope.account == transfer.source_account
+            && request
+                .params
+                .as_object()
+                .is_some_and(|params| params.len() == 1 && params.contains_key("threadId"))
+            && request.params.get("threadId").and_then(Value::as_str)
+                == Some(transfer.thread_id.as_str())
+            && request.operation.starts_with(&format!(
+                "transfer:{}:{}:",
+                transfer.transfer_id, transfer.member
+            ))
+    });
+    if !(actorless_read || actor_method || transfer_method)
         || request.operation.is_empty()
         || request.operation.len() > 1024
         || request.params.to_string().len() > 2 * 1024 * 1024
@@ -187,13 +229,33 @@ fn validate(request: &SessionRequest) -> Result<(), PortError> {
                 .unwrap_or(0)
                 > 20
                 || request.params.get("sortDirection").and_then(Value::as_str) != Some("desc")
-                || request.params.get("itemsView").and_then(Value::as_str) != Some("full")))
+                // full is used by codex_runtime.py import_thread;
+                // notLoaded is bounded in codex_safety_buffering.py.
+                || !valid_turn_view))
         || (request.method == Method::OperationStatus
             && !request
                 .params
                 .get("operationId")
                 .and_then(Value::as_str)
                 .is_some_and(|id| id.starts_with("monitor:") && id.len() > "monitor:".len()))
+        || (request.method == Method::ConfigRead
+            && (request.params.get("includeLayers") != Some(&json!(false))
+                || request.params.as_object().is_none_or(|params| {
+                    params
+                        .keys()
+                        .any(|key| !matches!(key.as_str(), "cwd" | "includeLayers"))
+                })))
+        || (matches!(
+            request.method,
+            Method::CommandExec
+                | Method::CommandExecWrite
+                | Method::CommandExecResize
+                | Method::CommandExecTerminate
+        ) && request
+            .params
+            .get("processId")
+            .and_then(Value::as_str)
+            .is_none_or(str::is_empty))
     {
         return Err(PortError::Invalid);
     }
@@ -204,6 +266,7 @@ pub(super) struct Call {
     scope: ConnectionScope,
     operation: String,
     actor: Option<RequestActor>,
+    transfer: Option<TransferAuthorization>,
     method: String,
     params: Value,
 }
@@ -241,3 +304,107 @@ mod storage;
 pub(super) use storage::recover;
 
 pub mod consumers;
+
+#[cfg(test)]
+mod validation_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn turns_request(items_view: &str, limit: u64, actor: bool) -> SessionRequest {
+        SessionRequest {
+            scope: ConnectionScope {
+                account: "default".into(),
+                connection: "fixture-connection".into(),
+                generation: 1,
+            },
+            expected_scope: None,
+            operation: "fixture-operation".into(),
+            actor: actor.then(|| RequestActor {
+                agent: "fixture-agent".into(),
+                epoch: 1,
+            }),
+            transfer: None,
+            method: Method::ThreadTurnsList,
+            params: json!({
+                "threadId":"fixture-thread",
+                "limit":limit,
+                "sortDirection":"desc",
+                "itemsView":items_view
+            }),
+            deadline: std::time::Instant::now() + std::time::Duration::from_secs(1),
+        }
+    }
+
+    #[test]
+    fn only_safety_buffering_gets_bounded_not_loaded_turns() {
+        assert!(validate(&turns_request("notLoaded", 1, true)).is_ok());
+        assert_eq!(
+            validate(&turns_request("notLoaded", 2, true)),
+            Err(PortError::Invalid)
+        );
+        assert_eq!(
+            validate(&turns_request("notLoaded", 1, false)),
+            Err(PortError::Invalid)
+        );
+        assert!(validate(&turns_request("full", 20, false)).is_ok());
+        assert_eq!(
+            validate(&turns_request("full", 21, false)),
+            Err(PortError::Invalid)
+        );
+    }
+
+    #[test]
+    fn monitor_requests_require_actor_and_narrow_config_shape() {
+        let mut request = turns_request("full", 1, true);
+        request.method = Method::ConfigRead;
+        request.params = json!({"cwd":"/fixture/workspace", "includeLayers":false});
+        assert!(validate(&request).is_ok());
+        request.params["includeLayers"] = json!(true);
+        assert_eq!(validate(&request), Err(PortError::Invalid));
+        request.params = json!({"cwd":"/fixture/workspace", "includeLayers":false, "other":true});
+        assert_eq!(validate(&request), Err(PortError::Invalid));
+
+        request.method = Method::CommandExec;
+        request.params = json!({"processId":"monitor-fixture"});
+        request.actor = None;
+        assert_eq!(validate(&request), Err(PortError::Invalid));
+        request.actor = Some(RequestActor {
+            agent: "fixture-agent".into(),
+            epoch: 1,
+        });
+        assert!(validate(&request).is_ok());
+        request.params = json!({});
+        assert_eq!(validate(&request), Err(PortError::Invalid));
+    }
+
+    #[test]
+    fn transfer_source_requests_are_thread_and_method_scoped() {
+        let mut request = turns_request("full", 1, false);
+        request.scope.account = "source-account".into();
+        request.expected_scope = Some(request.scope.clone());
+        request.operation = "transfer:transfer-a:agent-a:queue-check".into();
+        request.method = Method::ThreadQueueList;
+        request.params = json!({"threadId":"source-thread"});
+        request.transfer = Some(TransferAuthorization {
+            transfer_id: "transfer-a".into(),
+            member: "agent-a".into(),
+            source_account: "source-account".into(),
+            thread_id: "source-thread".into(),
+        });
+        assert!(validate(&request).is_ok());
+
+        request.params["threadId"] = json!("another-thread");
+        assert_eq!(validate(&request), Err(PortError::Invalid));
+        request.params = json!({"threadId":"source-thread", "cursor":"page"});
+        assert_eq!(validate(&request), Err(PortError::Invalid));
+        request.params = json!({"threadId":"source-thread"});
+        request.operation = "provider:agent-a:queue-check".into();
+        assert_eq!(validate(&request), Err(PortError::Invalid));
+
+        request.operation = "transfer:transfer-a:agent-a:unsubscribe".into();
+        request.method = Method::ThreadUnsubscribe;
+        assert!(validate(&request).is_ok());
+        request.method = Method::ThreadFork;
+        assert_eq!(validate(&request), Err(PortError::Invalid));
+    }
+}
