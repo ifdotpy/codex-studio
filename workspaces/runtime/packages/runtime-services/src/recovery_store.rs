@@ -81,6 +81,7 @@ impl RecoveryEffects for RecoveryStore<'_> {
                     observation,
                     complete_history,
                     idle_twice,
+                    confirmed_not_applied,
                 } => {
                     use crate::recovery_absence::{StartAbsenceDecision, start_absence};
                     if !expected.eligibility().unconfirmed_start {
@@ -95,9 +96,12 @@ impl RecoveryEffects for RecoveryStore<'_> {
                     {
                         return Ok(RecoveryOutcome::Superseded);
                     }
-                    let decision =
-                        start_absence(expected, &current, *complete_history, *idle_twice);
-                    let attempt = &a["startAttempt"];
+                    let decision = if *confirmed_not_applied {
+                        StartAbsenceDecision::Restore
+                    } else {
+                        start_absence(expected, &current, *complete_history, *idle_twice)
+                    };
+                    let attempt = expected.start_attempt();
                     match decision {
                         StartAbsenceDecision::Restore => {
                             let mut rows = Vec::new();
@@ -128,16 +132,29 @@ impl RecoveryEffects for RecoveryStore<'_> {
                                 row.error = None;
                                 QueueEventRepository::put(tx, &row)?;
                             }
-                            let object =
-                                updated.as_object_mut().ok_or(RecoveryError::CommitFailed)?;
-                            object.remove("startAttempt");
-                            object.remove("startOutcomeHold");
-                            updated["status"] = json!("queued");
+                            if *confirmed_not_applied {
+                                let object =
+                                    updated.as_object_mut().ok_or(RecoveryError::CommitFailed)?;
+                                object.remove("startAttempt");
+                                object.remove("startOutcomeHold");
+                                object.remove("nativeFailureHold");
+                                object.remove("contextRepairWait");
+                                updated["status"] = json!("queued");
+                                updated["autoWake"] = json!(true);
+                                updated["restartRecovery"]["stage"] = json!("finished");
+                                updated["restartRecovery"]["reconciledAt"] = json!(current.at);
+                            } else {
+                                let object =
+                                    updated.as_object_mut().ok_or(RecoveryError::CommitFailed)?;
+                                object.remove("startAttempt");
+                                object.remove("startOutcomeHold");
+                                updated["status"] = json!("queued");
+                                updated["turnRecovery"] = json!({"at":current.at,"turnId":null,"outcome":"input_absent","source":"replaced_native_child","attemptId":attempt["id"]});
+                            }
                             updated["inFlight"] = json!(false);
                             updated["error"] = Value::Null;
                             updated["activity"] = Value::Null;
                             updated["activeTools"] = json!([]);
-                            updated["turnRecovery"] = json!({"at":current.at,"turnId":null,"outcome":"input_absent","source":"replaced_native_child","attemptId":attempt["id"]});
                             json!({"status":"input_restored"})
                         }
                         StartAbsenceDecision::Hold => {
@@ -152,7 +169,14 @@ impl RecoveryEffects for RecoveryStore<'_> {
                             updated["error"] = json!(reason);
                             updated["activity"] = Value::Null;
                             updated["activeTools"] = json!([]);
-                            updated["startAttempt"]["executionOutcome"] = json!("unknown");
+                            if a["restartRecovery"]["stage"] == "held"
+                                && !a["contextRepairWait"].is_null()
+                            {
+                                updated["restartRecovery"]["startAttempt"]["executionOutcome"] =
+                                    json!("unknown");
+                            } else {
+                                updated["startAttempt"]["executionOutcome"] = json!("unknown");
+                            }
                             updated["startOutcomeHold"] = json!({"stage":"held","at":current.at,"attemptId":attempt["id"],"threadId":a["threadId"],"connectionId":scope.connection,"evidence":"complete_history_absent_idle_twice_journal_drained"});
                             self.completion.start_held(
                                 tx,
@@ -365,7 +389,7 @@ impl CompletionWriter for LifecycleCompletionWriter<'_> {
         let a = expected.record();
         let id = text(a, "id")?;
         let epoch = a["epoch"].as_i64().ok_or(RecoveryError::CommitFailed)?;
-        let attempt = &a["startAttempt"];
+        let attempt = expected.start_attempt();
         match action {
             RecoveryAction::AcceptStart { turn } => {
                 if !expected.eligibility().unconfirmed_start || !valid_turn(turn, a, None) {

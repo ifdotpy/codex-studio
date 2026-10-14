@@ -336,6 +336,37 @@ fn exact_start_requires_unique_complete_client_receipt() {
 }
 
 #[test]
+fn exact_start_reports_only_explicit_not_applied_receipts_as_negative_proof() {
+    let mut reader = Reader {
+        replies: vec![Ok(json!({"data":[{
+            "id":"rejected",
+            "threadId":"thread",
+            "status":"failed",
+            "items":[],
+            "clientUserMessageId":"event",
+            "startOutcome":"not_applied"
+        }]}))]
+        .into(),
+        ..Default::default()
+    };
+    assert_eq!(
+        HistoryRead::new(&mut reader, scope(), Instant::now() + READ_DEADLINE)
+            .exact_start_outcome("thread", "event")
+            .expect("explicit negative receipt"),
+        studio_runtime_services::recovery_history::ExactStart::NotApplied
+    );
+    let mut unavailable = Reader {
+        replies: vec![Err(HistoryError::Unavailable)].into(),
+        ..Default::default()
+    };
+    assert_eq!(
+        HistoryRead::new(&mut unavailable, scope(), Instant::now() + READ_DEADLINE)
+            .exact_start_outcome("thread", "event"),
+        Err(HistoryError::Unavailable)
+    );
+}
+
+#[test]
 fn legacy_start_matches_python_complete_history() {
     let output = std::process::Command::new(python_test_support::prepared_python(
         &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src"),

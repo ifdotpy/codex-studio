@@ -110,9 +110,8 @@ impl RecoveryReader for RetainedRecoveryReader<'_> {
         self.ready(scope, deadline)?;
         self.port.barrier(scope, deadline)?;
         self.ready(scope, deadline)?;
-        if !self.current(scope)?.journal_drained {
-            return Err(HistoryError::Unavailable);
-        }
+        // The retained-session barrier is the authoritative proof that earlier
+        // notifications have committed; the cached observation may predate it.
         Ok(())
     }
 }
@@ -154,7 +153,7 @@ impl RecoveryJob {
                 a["accountKey"],
                 a["threadId"],
                 a["turnId"],
-                a["startAttempt"]["id"],
+                self.agent().start_attempt()["id"],
                 a["disconnectRecovery"]["connectionId"],
                 a["disconnectRecovery"]["at"],
                 a["restartRecovery"]["at"],
@@ -430,6 +429,12 @@ fn due(job: &RecoveryJob, at: f64) -> bool {
             if !e.unconfirmed_start && (a["inFlight"] != true || a["deletedAt"].is_string()) {
                 return false;
             }
+            if e.unconfirmed_start
+                && a["restartRecovery"]["stage"] == "held"
+                && a.get("contextRepairWait").is_some_and(|v| !v.is_null())
+            {
+                return true;
+            }
             let mut activity = a["activity"]["at"]
                 .as_f64()
                 .filter(|v| *v != 0.)
@@ -442,7 +447,9 @@ fn due(job: &RecoveryJob, at: f64) -> bool {
                 activity = activity.max(last.timestamp_millis() as f64 / 1000.);
             }
             if e.unconfirmed_start {
-                activity = a["startAttempt"]["created"].as_f64().unwrap_or(activity);
+                activity = job.agent().start_attempt()["created"]
+                    .as_f64()
+                    .unwrap_or(activity);
             }
             at - activity
                 >= if e.unconfirmed_start {
