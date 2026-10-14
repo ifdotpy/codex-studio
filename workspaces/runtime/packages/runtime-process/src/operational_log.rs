@@ -402,10 +402,12 @@ mod tests {
         });
         use tokio::io::AsyncWriteExt;
         input.write_all(b"first\n").await.expect("first line");
-        tokio::task::spawn_blocking(move || started_rx.recv())
-            .await
-            .expect("wait for fake disk")
-            .expect("fake disk started");
+        crate::blocking_pool::spawn_blocking("runtime-process/operational_log", move || {
+            started_rx.recv()
+        })
+        .await
+        .expect("wait for fake disk")
+        .expect("fake disk started");
         input
             .write_all(b"queued\ndropped\n")
             .await

@@ -51,49 +51,54 @@ async fn run(
     cancel: bool,
 ) -> Result<Json<Value>, ApiError> {
     let store = state.store.ok_or_else(ApiError::internal)?;
-    let value = tokio::task::spawn_blocking(move || {
-        let now = studio_runtime_services::event_write::unix_time()
-            .map_err(|_| ToolRequestError::InvalidRequest("The system clock is unavailable"))?;
-        let operation = |tx: &studio_runtime_store::Transaction<'_>| {
-            let action = match (id.as_deref(), cancel) {
-                (Some(id), true) => Action::Cancel(id),
-                (Some(id), false) => Action::Get(id),
-                _ => Action::List,
-            };
-            let value = tool_requests::execute(tx, &actor, action, now)?;
-            let canonical = value["id"].as_str().unwrap_or("list").to_owned();
-            let response = if cancel {
-                super::generated_json::<
-                    crate::generated::CancelToolRequestApiToolRequestsCancelPostResponse,
-                >(value)
-            } else {
-                super::generated_json::<crate::generated::ToolRequestsApiToolRequestsGetResponse>(
-                    value,
-                )
-            };
-            response.map_err(|_| {
-                ToolRequestError::Store(studio_runtime_store::system_reads::invalid(
-                    "runtime_tool_requests",
-                    &canonical,
-                ))
-            })
-        };
-        if cancel {
-            store.transaction_with_error(operation)
-        } else {
-            match store.read_transaction_with_error(|tx| operation(tx)) {
-                Err(ToolRequestError::Store(studio_runtime_store::StoreError::Sqlite(
-                    studio_runtime_store::SqliteError::SqliteFailure(error, _),
-                ))) if error.code == studio_runtime_store::ErrorCode::ReadOnly => {
-                    store.transaction_with_error(|tx| operation(tx))
+    let value =
+        studio_runtime_process::blocking_pool::spawn_blocking(
+            "runtime-http/routes/tool_requests",
+            move || {
+                let now = studio_runtime_services::event_write::unix_time().map_err(|_| {
+                    ToolRequestError::InvalidRequest("The system clock is unavailable")
+                })?;
+                let operation = |tx: &studio_runtime_store::Transaction<'_>| {
+                    let action = match (id.as_deref(), cancel) {
+                        (Some(id), true) => Action::Cancel(id),
+                        (Some(id), false) => Action::Get(id),
+                        _ => Action::List,
+                    };
+                    let value = tool_requests::execute(tx, &actor, action, now)?;
+                    let canonical = value["id"].as_str().unwrap_or("list").to_owned();
+                    let response = if cancel {
+                        super::generated_json::<
+                            crate::generated::CancelToolRequestApiToolRequestsCancelPostResponse,
+                        >(value)
+                    } else {
+                        super::generated_json::<
+                            crate::generated::ToolRequestsApiToolRequestsGetResponse,
+                        >(value)
+                    };
+                    response.map_err(|_| {
+                        ToolRequestError::Store(studio_runtime_store::system_reads::invalid(
+                            "runtime_tool_requests",
+                            &canonical,
+                        ))
+                    })
+                };
+                if cancel {
+                    store.transaction_with_error(operation)
+                } else {
+                    match store.read_transaction_with_error(|tx| operation(tx)) {
+                        Err(ToolRequestError::Store(studio_runtime_store::StoreError::Sqlite(
+                            studio_runtime_store::SqliteError::SqliteFailure(error, _),
+                        ))) if error.code == studio_runtime_store::ErrorCode::ReadOnly => {
+                            store.transaction_with_error(|tx| operation(tx))
+                        }
+                        result => result,
+                    }
                 }
-                result => result,
-            }
-        }
-    })
-    .await
-    .map_err(|_| ApiError::internal())?
-    .map_err(error)?;
+            },
+        )
+        .await
+        .map_err(|_| ApiError::internal())?
+        .map_err(error)?;
     Ok(Json(value))
 }
 fn error(error: ToolRequestError) -> ApiError {

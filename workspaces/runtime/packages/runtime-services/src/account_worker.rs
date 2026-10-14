@@ -150,10 +150,13 @@ impl StoreBridge {
             .await
             .map_err(|_| WorkerError::Closed)?;
         let store = self.store.clone();
-        tokio::task::spawn_blocking(move || {
-            let _permit = permit;
-            operation(&store)
-        })
+        studio_runtime_process::blocking_pool::spawn_blocking(
+            "runtime-services/account_worker",
+            move || {
+                let _permit = permit;
+                operation(&store)
+            },
+        )
         .await
         .map_err(|_| WorkerError::TaskFailed)?
     }
@@ -176,10 +179,13 @@ impl StoreBridge {
             .map_err(|_| WorkerError::Closed)?;
         let store = self.store.clone();
         // The blocking owner retains its permit even if its caller is cancelled.
-        let result = tokio::task::spawn_blocking(move || {
-            let _permit = permit;
-            operation(&store)
-        })
+        let result = studio_runtime_process::blocking_pool::spawn_blocking(
+            "runtime-services/account_worker",
+            move || {
+                let _permit = permit;
+                operation(&store)
+            },
+        )
         .await
         .map_err(|_| WorkerError::TaskFailed)?;
         #[cfg(test)]
@@ -896,15 +902,17 @@ impl Worker {
                 &pin,
                 now,
                 move |_| async move {
-                    let status = tokio::task::spawn_blocking(move || {
-                        driver_for_probe.get(&account_for_probe)
-                    })
+                    let status = studio_runtime_process::blocking_pool::spawn_blocking(
+                        "runtime-services/account_worker",
+                        move || driver_for_probe.get(&account_for_probe),
+                    )
                     .await
                     .ok()
                     .and_then(std::result::Result::ok);
-                    let current = tokio::task::spawn_blocking(move || {
-                        driver_for_pin.internal_record(&account_for_pin)
-                    })
+                    let current = studio_runtime_process::blocking_pool::spawn_blocking(
+                        "runtime-services/account_worker",
+                        move || driver_for_pin.internal_record(&account_for_pin),
+                    )
                     .await
                     .ok()
                     .and_then(std::result::Result::ok)

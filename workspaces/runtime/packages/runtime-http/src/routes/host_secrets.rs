@@ -250,7 +250,10 @@ async fn guest_call(
     call: impl FnOnce(&dyn GuestRpc) -> Result<Value, ProjectSecretsError> + Send + 'static,
 ) -> Result<Json<Value>, ApiError> {
     let rpc = guest(state)?;
-    let result = tokio::task::spawn_blocking(move || call(rpc.as_ref()))
+    let result = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-http/routes/host_secrets",
+        move || call(rpc.as_ref()),
+    )
         .await
         .map_err(|_| {
             let message = if mutation {

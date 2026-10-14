@@ -43,63 +43,66 @@ async fn log(
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
     let state_dir = state.state_dir.clone();
     let response_id = id.clone();
-    let prepared = tokio::task::spawn_blocking(move || {
-        let connection = store.read().map_err(|_| ApiError::internal())?;
-        let monitor = MonitorsRepository::get(&connection, &id)
-            .map_err(store_read_error)?
-            .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "Unknown monitor"))?;
-        let monitor_id = monitor.id().as_ref();
-        let value = monitor.value();
-        let owner = value
-            .get("agent")
-            .and_then(Value::as_str)
-            .ok_or_else(|| invalid_monitor(monitor_id))?;
-        let agent = AgentRepository::get(&connection, &AgentId::from(owner))
-            .map_err(store_read_error)?
-            .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "Unknown agent"))?;
-        let agent_value = agent.value();
-        if agent_value.get("deletedAt").is_some_and(is_truthy) {
-            return Err(ApiError::new(
-                StatusCode::BAD_REQUEST,
-                "This agent was deleted",
-            ));
-        }
-        let path = value
-            .get("log")
-            .and_then(Value::as_str)
-            .ok_or_else(|| invalid_monitor(monitor_id))?;
-        let tail = value
-            .get("tail")
-            .and_then(Value::as_str)
-            .ok_or_else(|| invalid_monitor(monitor_id))?
-            .as_bytes()
-            .to_vec();
-        let bytes = value
-            .get("bytes")
-            .and_then(Value::as_u64)
-            .ok_or_else(|| invalid_monitor(monitor_id))?;
-        let (mut source, size) = open_log(&state_dir, path, monitor_id, tail)?;
-        let truncated = bytes > size;
-        let (start, end, status) = match range.as_deref() {
-            Some(range) => match byte_range(range, size) {
-                Some((start, end)) => (start, end, StatusCode::PARTIAL_CONTENT),
-                None => return Ok(Prepared::unsatisfiable(size)),
-            },
-            None => (0, size, StatusCode::OK),
-        };
-        if let LogSource::File(file) = &mut source {
-            file.seek(SeekFrom::Start(start))
-                .map_err(|_| ApiError::internal())?;
-        }
-        Ok::<_, ApiError>(Prepared {
-            source,
-            size,
-            truncated,
-            start,
-            end,
-            status,
-        })
-    })
+    let prepared = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-http/routes/monitors",
+        move || {
+            let connection = store.read().map_err(|_| ApiError::internal())?;
+            let monitor = MonitorsRepository::get(&connection, &id)
+                .map_err(store_read_error)?
+                .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "Unknown monitor"))?;
+            let monitor_id = monitor.id().as_ref();
+            let value = monitor.value();
+            let owner = value
+                .get("agent")
+                .and_then(Value::as_str)
+                .ok_or_else(|| invalid_monitor(monitor_id))?;
+            let agent = AgentRepository::get(&connection, &AgentId::from(owner))
+                .map_err(store_read_error)?
+                .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "Unknown agent"))?;
+            let agent_value = agent.value();
+            if agent_value.get("deletedAt").is_some_and(is_truthy) {
+                return Err(ApiError::new(
+                    StatusCode::BAD_REQUEST,
+                    "This agent was deleted",
+                ));
+            }
+            let path = value
+                .get("log")
+                .and_then(Value::as_str)
+                .ok_or_else(|| invalid_monitor(monitor_id))?;
+            let tail = value
+                .get("tail")
+                .and_then(Value::as_str)
+                .ok_or_else(|| invalid_monitor(monitor_id))?
+                .as_bytes()
+                .to_vec();
+            let bytes = value
+                .get("bytes")
+                .and_then(Value::as_u64)
+                .ok_or_else(|| invalid_monitor(monitor_id))?;
+            let (mut source, size) = open_log(&state_dir, path, monitor_id, tail)?;
+            let truncated = bytes > size;
+            let (start, end, status) = match range.as_deref() {
+                Some(range) => match byte_range(range, size) {
+                    Some((start, end)) => (start, end, StatusCode::PARTIAL_CONTENT),
+                    None => return Ok(Prepared::unsatisfiable(size)),
+                },
+                None => (0, size, StatusCode::OK),
+            };
+            if let LogSource::File(file) = &mut source {
+                file.seek(SeekFrom::Start(start))
+                    .map_err(|_| ApiError::internal())?;
+            }
+            Ok::<_, ApiError>(Prepared {
+                source,
+                size,
+                truncated,
+                start,
+                end,
+                status,
+            })
+        },
+    )
     .await
     .map_err(|_| ApiError::internal())??;
     prepared.response(&response_id)
@@ -180,12 +183,15 @@ impl Prepared {
                             return Ok::<_, std::io::Error>(None);
                         }
                         let limit = remaining.min(LOG_CHUNK_BYTES) as usize;
-                        let (file, chunk) = tokio::task::spawn_blocking(move || {
-                            let mut chunk = vec![0; limit];
-                            let count = file.read(&mut chunk)?;
-                            chunk.truncate(count);
-                            Ok::<_, std::io::Error>((file, chunk))
-                        })
+                        let (file, chunk) = studio_runtime_process::blocking_pool::spawn_blocking(
+                            "runtime-http/routes/monitors",
+                            move || {
+                                let mut chunk = vec![0; limit];
+                                let count = file.read(&mut chunk)?;
+                                chunk.truncate(count);
+                                Ok::<_, std::io::Error>((file, chunk))
+                            },
+                        )
                         .await
                         .map_err(std::io::Error::other)??;
                         if chunk.is_empty() {

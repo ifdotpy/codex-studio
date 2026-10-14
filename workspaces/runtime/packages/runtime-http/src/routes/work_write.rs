@@ -139,14 +139,17 @@ pub(crate) async fn work_action(
         let receipt_agent = agent.clone();
         let request = request_id.clone();
         let receipt_signature = signature.clone();
-        let receipt = tokio::task::spawn_blocking(move || {
-            work_write::read_work_receipt(
-                &store,
-                &receipt_agent,
-                request.as_deref(),
-                &receipt_signature,
-            )
-        })
+        let receipt = studio_runtime_process::blocking_pool::spawn_blocking(
+            "runtime-http/routes/work_write",
+            move || {
+                work_write::read_work_receipt(
+                    &store,
+                    &receipt_agent,
+                    request.as_deref(),
+                    &receipt_signature,
+                )
+            },
+        )
         .await
         .map_err(|_| ApiError::internal())?
         .map_err(write_error)?;
@@ -204,17 +207,20 @@ async fn prepare_vm_accept(
     let request = request_id.map(str::to_owned);
     let request_signature = signature.to_owned();
     let reason = input.reason.clone();
-    let preparation = tokio::task::spawn_blocking(move || {
-        prepare(
-            &store_for_prepare,
-            &agent_id,
-            &task_id,
-            expected_version,
-            request.as_deref(),
-            &request_signature,
-            &reason,
-        )
-    })
+    let preparation = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-http/routes/work_write",
+        move || {
+            prepare(
+                &store_for_prepare,
+                &agent_id,
+                &task_id,
+                expected_version,
+                request.as_deref(),
+                &request_signature,
+                &reason,
+            )
+        },
+    )
     .await
     .map_err(|_| ApiError::internal())?
     .map_err(write_error)?;
@@ -230,14 +236,17 @@ async fn prepare_vm_accept(
             let operation_id = call.request_id.clone();
             let task_id = input.task_id.clone();
             let runtime_state = std::path::PathBuf::from(state.state_dir.clone());
-            let response = tokio::task::spawn_blocking(move || {
-                UnixGuestRpc::for_runtime_state(&runtime_state).call(
-                    "line.merge",
-                    &params,
-                    Some(&operation_id),
-                    Duration::from_secs(20),
-                )
-            })
+            let response = studio_runtime_process::blocking_pool::spawn_blocking(
+                "runtime-http/routes/work_write",
+                move || {
+                    UnixGuestRpc::for_runtime_state(&runtime_state).call(
+                        "line.merge",
+                        &params,
+                        Some(&operation_id),
+                        Duration::from_secs(20),
+                    )
+                },
+            )
             .await
             .map_err(|_| ApiError::internal())?;
             let result_id = call.result_id;
@@ -246,9 +255,12 @@ async fn prepare_vm_accept(
                     let store_for_finish = store.clone();
                     let task_for_finish = task_id.clone();
                     let request = call.request_id;
-                    tokio::task::spawn_blocking(move || {
-                        finish_vm_accept(&store_for_finish, &task_for_finish, &request, None)
-                    })
+                    studio_runtime_process::blocking_pool::spawn_blocking(
+                        "runtime-http/routes/work_write",
+                        move || {
+                            finish_vm_accept(&store_for_finish, &task_for_finish, &request, None)
+                        },
+                    )
                     .await
                     .map_err(|_| ApiError::internal())?
                     .map_err(write_error)?;
@@ -258,9 +270,12 @@ async fn prepare_vm_accept(
                     let store_for_finish = store.clone();
                     let request = call.request_id;
                     let uncertain = error.uncertain();
-                    tokio::task::spawn_blocking(move || {
-                        finish_vm_accept(&store_for_finish, &task_id, &request, Some(uncertain))
-                    })
+                    studio_runtime_process::blocking_pool::spawn_blocking(
+                        "runtime-http/routes/work_write",
+                        move || {
+                            finish_vm_accept(&store_for_finish, &task_id, &request, Some(uncertain))
+                        },
+                    )
                     .await
                     .map_err(|_| ApiError::internal())?
                     .map_err(write_error)?;
@@ -295,15 +310,18 @@ async fn prepare_vm_submission(
     let request = request_id.map(str::to_owned);
     let signature_owned = signature.to_owned();
     let input_for_prepare = input.clone();
-    let preparation = tokio::task::spawn_blocking(move || {
-        prepare(
-            &store_for_prepare,
-            &agent_id,
-            request.as_deref(),
-            &signature_owned,
-            &input_for_prepare,
-        )
-    })
+    let preparation = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-http/routes/work_write",
+        move || {
+            prepare(
+                &store_for_prepare,
+                &agent_id,
+                request.as_deref(),
+                &signature_owned,
+                &input_for_prepare,
+            )
+        },
+    )
     .await
     .map_err(|_| ApiError::internal())?
     .map_err(write_error)?;
@@ -325,14 +343,17 @@ async fn prepare_vm_submission(
             input.vm_evidence_request_id = Some(request_id.clone());
             let expected_revision = call.revision.clone();
             let runtime_state = std::path::PathBuf::from(state.state_dir.clone());
-            let response = tokio::task::spawn_blocking(move || {
-                UnixGuestRpc::for_runtime_state(&runtime_state).call(
-                    "line.evidence",
-                    &params,
-                    Some(&request_id),
-                    Duration::from_secs(20),
-                )
-            })
+            let response = studio_runtime_process::blocking_pool::spawn_blocking(
+                "runtime-http/routes/work_write",
+                move || {
+                    UnixGuestRpc::for_runtime_state(&runtime_state).call(
+                        "line.evidence",
+                        &params,
+                        Some(&request_id),
+                        Duration::from_secs(20),
+                    )
+                },
+            )
             .await
             .map_err(|_| ApiError::internal())?;
             let response = match response {
@@ -342,14 +363,17 @@ async fn prepare_vm_submission(
                     let task_id = input.task_id.clone();
                     let operation_id = call.request_id;
                     let uncertain = error.uncertain();
-                    tokio::task::spawn_blocking(move || {
-                        finish_vm_submission(
-                            &store_for_finish,
-                            &task_id,
-                            &operation_id,
-                            Err(uncertain),
-                        )
-                    })
+                    studio_runtime_process::blocking_pool::spawn_blocking(
+                        "runtime-http/routes/work_write",
+                        move || {
+                            finish_vm_submission(
+                                &store_for_finish,
+                                &task_id,
+                                &operation_id,
+                                Err(uncertain),
+                            )
+                        },
+                    )
                     .await
                     .map_err(|_| ApiError::internal())?
                     .map_err(write_error)?;
@@ -363,9 +387,12 @@ async fn prepare_vm_submission(
                 let store_for_finish = store.clone();
                 let task_id = input.task_id.clone();
                 let operation_id = call.request_id;
-                tokio::task::spawn_blocking(move || {
-                    finish_vm_submission(&store_for_finish, &task_id, &operation_id, Err(false))
-                })
+                studio_runtime_process::blocking_pool::spawn_blocking(
+                    "runtime-http/routes/work_write",
+                    move || {
+                        finish_vm_submission(&store_for_finish, &task_id, &operation_id, Err(false))
+                    },
+                )
                 .await
                 .map_err(|_| ApiError::internal())?
                 .map_err(write_error)?;
@@ -385,9 +412,12 @@ async fn prepare_vm_submission(
                 let store_for_finish = store.clone();
                 let task_id = input.task_id.clone();
                 let operation_id = call.request_id;
-                tokio::task::spawn_blocking(move || {
-                    finish_vm_submission(&store_for_finish, &task_id, &operation_id, Err(false))
-                })
+                studio_runtime_process::blocking_pool::spawn_blocking(
+                    "runtime-http/routes/work_write",
+                    move || {
+                        finish_vm_submission(&store_for_finish, &task_id, &operation_id, Err(false))
+                    },
+                )
                 .await
                 .map_err(|_| ApiError::internal())?
                 .map_err(write_error)?;
@@ -399,9 +429,12 @@ async fn prepare_vm_submission(
             let store_for_finish = store.clone();
             let task_id = input.task_id.clone();
             let operation_id = call.request_id;
-            let evidence = tokio::task::spawn_blocking(move || {
-                finish_vm_submission(&store_for_finish, &task_id, &operation_id, Ok(evidence))
-            })
+            let evidence = studio_runtime_process::blocking_pool::spawn_blocking(
+                "runtime-http/routes/work_write",
+                move || {
+                    finish_vm_submission(&store_for_finish, &task_id, &operation_id, Ok(evidence))
+                },
+            )
             .await
             .map_err(|_| ApiError::internal())?
             .map_err(write_error)?
@@ -426,56 +459,59 @@ async fn commit(
     let is_accept = matches!(&command, WorkWrite::Accept(_));
     let has_monitor = runtime.is_some();
     let request_id_for_archive = request_id.clone();
-    let (result, checks, rule_now) = tokio::task::spawn_blocking(move || {
-        let (result, checks, rule_now) = store
-            .transaction_with_error(|tx| -> Result<_, WorkCommitError> {
-                let result =
-                    work_write::write(tx, &agent, request_id.as_deref(), &signature, command)?;
-                let mut checks = Vec::new();
-                let mut rule_now = 0.0;
-                if is_submit && result.event_inserted {
-                    let submission = result.record["results"]
-                        .as_array()
-                        .and_then(|results| results.last())
-                        .ok_or_else(|| WorkCommitError::Store)?;
-                    let root = result.record["rootId"].as_str().unwrap_or_default();
-                    let result_id = submission["id"].as_str().unwrap_or_default();
-                    let key = format!("work-result:{result_id}");
-                    let text = serde_json::to_string(&serde_json::json!({
-                        "task": result.record["id"],
-                        "title": result.record["title"],
-                        "result": submission,
-                    }))
-                    .map_err(studio_runtime_store::StoreError::from)?;
-                    rule_now = submission["created"].as_f64().unwrap_or_default();
-                    let mut after_rowid = 0;
-                    loop {
-                        let (report, batch) =
-                            studio_runtime_services::rules_tick::event_in_transaction(
-                                tx,
-                                studio_runtime_services::rules_tick::RuleEvent {
-                                    agent_id: root,
-                                    kind: "work_review",
-                                    text: &text,
-                                    key: &key,
-                                    now: rule_now,
-                                },
-                                after_rowid,
-                                has_monitor,
-                            )?;
-                        checks.extend(batch);
-                        let Some(next) = report.next_rowid else { break };
-                        after_rowid = next;
+    let (result, checks, rule_now) = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-http/routes/work_write",
+        move || {
+            let (result, checks, rule_now) = store
+                .transaction_with_error(|tx| -> Result<_, WorkCommitError> {
+                    let result =
+                        work_write::write(tx, &agent, request_id.as_deref(), &signature, command)?;
+                    let mut checks = Vec::new();
+                    let mut rule_now = 0.0;
+                    if is_submit && result.event_inserted {
+                        let submission = result.record["results"]
+                            .as_array()
+                            .and_then(|results| results.last())
+                            .ok_or_else(|| WorkCommitError::Store)?;
+                        let root = result.record["rootId"].as_str().unwrap_or_default();
+                        let result_id = submission["id"].as_str().unwrap_or_default();
+                        let key = format!("work-result:{result_id}");
+                        let text = serde_json::to_string(&serde_json::json!({
+                            "task": result.record["id"],
+                            "title": result.record["title"],
+                            "result": submission,
+                        }))
+                        .map_err(studio_runtime_store::StoreError::from)?;
+                        rule_now = submission["created"].as_f64().unwrap_or_default();
+                        let mut after_rowid = 0;
+                        loop {
+                            let (report, batch) =
+                                studio_runtime_services::rules_tick::event_in_transaction(
+                                    tx,
+                                    studio_runtime_services::rules_tick::RuleEvent {
+                                        agent_id: root,
+                                        kind: "work_review",
+                                        text: &text,
+                                        key: &key,
+                                        now: rule_now,
+                                    },
+                                    after_rowid,
+                                    has_monitor,
+                                )?;
+                            checks.extend(batch);
+                            let Some(next) = report.next_rowid else { break };
+                            after_rowid = next;
+                        }
                     }
-                }
-                Ok((result, checks, rule_now))
-            })
-            .map_err(commit_error)?;
-        if result.event_inserted {
-            wake.notify_one();
-        }
-        Ok::<_, ApiError>((result, checks, rule_now))
-    })
+                    Ok((result, checks, rule_now))
+                })
+                .map_err(commit_error)?;
+            if result.event_inserted {
+                wake.notify_one();
+            }
+            Ok::<_, ApiError>((result, checks, rule_now))
+        },
+    )
     .await
     .map_err(|_| ApiError::internal())??;
     if !checks.is_empty() {
@@ -487,10 +523,13 @@ async fn commit(
             .map_err(|_| ApiError::internal())?;
     }
     if let Some(artifact) = result.artifact {
-        tokio::task::spawn_blocking(move || work_write::write_result_artifact(&artifact))
-            .await
-            .map_err(|_| ApiError::internal())?
-            .map_err(|_| ApiError::internal())?;
+        studio_runtime_process::blocking_pool::spawn_blocking(
+            "runtime-http/routes/work_write",
+            move || work_write::write_result_artifact(&artifact),
+        )
+        .await
+        .map_err(|_| ApiError::internal())?
+        .map_err(|_| ApiError::internal())?;
     }
     if is_accept && result.record["status"] == "accepted" {
         return finalize_accepted_archive(&state, result.record, request_id_for_archive.as_deref())
@@ -507,7 +546,7 @@ async fn finalize_accepted_archive(
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
     let work_id = record["id"].as_str().unwrap_or_default().to_owned();
     let work_id_for_read = work_id.clone();
-    let result = tokio::task::spawn_blocking(move || -> Result<(Value, Value, bool), ApiError> {
+    let result = studio_runtime_process::blocking_pool::spawn_blocking("runtime-http/routes/work_write", move || -> Result<(Value, Value, bool), ApiError> {
         let connection = store.read().map_err(|_| ApiError::internal())?;
         let work = studio_runtime_store::WorkItemsRepository::work_record(&connection, &work_id_for_read)
             .map_err(|_| ApiError::internal())?

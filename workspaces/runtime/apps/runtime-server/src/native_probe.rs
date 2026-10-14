@@ -527,9 +527,12 @@ mod tests {
             .expect("probe runtime");
         let probe = SystemCompatibilityProbe::new(runtime.handle().clone());
         let version = runtime.block_on(async move {
-            tokio::task::spawn_blocking(move || probe.version(&executable))
-                .await
-                .expect("version probe task")
+            studio_runtime_process::blocking_pool::spawn_blocking(
+                "runtime-server/native_probe",
+                move || probe.version(&executable),
+            )
+            .await
+            .expect("version probe task")
         });
         assert_eq!(version.expect("valid version"), "1.2.3");
     }
@@ -596,9 +599,12 @@ else:
             .expect("probe runtime");
         let probe = SystemCompatibilityProbe::new(runtime.handle().clone());
         let result = runtime.block_on(async move {
-            tokio::task::spawn_blocking(move || probe.check(&bundle, NativePlatform::LinuxX64))
-                .await
-                .expect("compatibility probe task")
+            studio_runtime_process::blocking_pool::spawn_blocking(
+                "runtime-server/native_probe",
+                move || probe.check(&bundle, NativePlatform::LinuxX64),
+            )
+            .await
+            .expect("compatibility probe task")
         });
         let result = result.expect("compatibility result");
         let CompatibilityResult::Approved(evidence) = result else {

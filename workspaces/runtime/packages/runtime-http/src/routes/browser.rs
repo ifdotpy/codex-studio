@@ -49,9 +49,19 @@ impl PairedExchange for SignedBrowserExchange {
                 .checked_duration_since(Instant::now())
                 .filter(|v| !v.is_zero())
                 .ok_or(BrowserError::Unknown)?;
-            let outcome = tokio::task::spawn_blocking(move || {
-                driver.exchange_with_timeout(&server, &action, &payload, &request_id, now, timeout)
-            })
+            let outcome = studio_runtime_process::blocking_pool::spawn_blocking(
+                "runtime-http/routes/browser",
+                move || {
+                    driver.exchange_with_timeout(
+                        &server,
+                        &action,
+                        &payload,
+                        &request_id,
+                        now,
+                        timeout,
+                    )
+                },
+            )
             .await
             .map_err(|_| BrowserError::Exchange)?
             .unwrap_or(DeliveryOutcome::Unknown);

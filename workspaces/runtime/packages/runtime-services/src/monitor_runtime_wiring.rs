@@ -547,7 +547,7 @@ pub fn start(
                 }
                 _ = runtime.dispatch_wake.notified() => {
                     let tick_runtime = runtime.clone();
-                    match tokio::task::spawn_blocking(move || tick_runtime.tick(event_write::unix_time()?)).await {
+                    match studio_runtime_process::blocking_pool::spawn_blocking("runtime-services/monitor_runtime_wiring", move || tick_runtime.tick(event_write::unix_time()?)).await {
                         Ok(Err(error)) if error.store_failure_for_task() => return Err(error),
                         Ok(Err(_)) => {},
                         Ok(Ok(())) => {},
@@ -556,7 +556,7 @@ pub fn start(
                 }
                 _ = timer.tick() => {
                     let tick_runtime = runtime.clone();
-                    match tokio::task::spawn_blocking(move || tick_runtime.tick(event_write::unix_time()?)).await {
+                    match studio_runtime_process::blocking_pool::spawn_blocking("runtime-services/monitor_runtime_wiring", move || tick_runtime.tick(event_write::unix_time()?)).await {
                         Ok(Err(error)) if error.store_failure_for_task() => return Err(error),
                         Ok(Err(_)) => {},
                         Ok(Ok(())) => {},

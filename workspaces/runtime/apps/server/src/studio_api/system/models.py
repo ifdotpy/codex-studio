@@ -873,6 +873,23 @@ class SupervisorDiagnostics(ContractModel):
     health: SupervisorHealth | SupervisorError | None = None
 
 
+class BlockingPoolGroupMetrics(ContractModel):
+    group: str
+    count: SafeInt
+    queueWaitAvgMs: float
+    queueWaitMaxMs: float
+    closureAvgMs: float
+    closureMaxMs: float
+
+
+class BlockingPoolMetrics(ContractModel):
+    enabled: bool
+    queued: SafeInt
+    running: SafeInt
+    peakOccupancy: SafeInt
+    groups: list[BlockingPoolGroupMetrics]
+
+
 class DiagnosticsResponse(ResponseModel):
     at: str
     processTree: ProcessTree
@@ -890,6 +907,7 @@ class DiagnosticsResponse(ResponseModel):
     searchMigrationError: str | None
     runtimeLockOperations: list[RuntimeLockOperation]
     supervisor: SupervisorDiagnostics
+    blockingPoolMetrics: BlockingPoolMetrics | None = None
 
 
 class DirectoryEntry(ContractModel):

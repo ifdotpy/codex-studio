@@ -48,10 +48,13 @@ async fn models(
     let catalog = state.model_catalog.clone();
     catalog.set_account_session(state.account_session.clone());
     let driver = state.account_driver.clone();
-    let snapshot = tokio::task::spawn_blocking(move || match driver {
-        Some(driver) => driver.snapshot().map_err(|_| ApiError::internal()),
-        None => Ok(account_policy.accounts()),
-    })
+    let snapshot = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-http/routes/models",
+        move || match driver {
+            Some(driver) => driver.snapshot().map_err(|_| ApiError::internal()),
+            None => Ok(account_policy.accounts()),
+        },
+    )
     .await
     .map_err(|_| ApiError::internal())??;
     catalog.retain_accounts(&snapshot.accounts);

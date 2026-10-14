@@ -14867,6 +14867,90 @@
         "title": "AutoPairRequest",
         "type": "object"
       },
+      "BlockingPoolGroupMetrics": {
+        "additionalProperties": false,
+        "properties": {
+          "closureAvgMs": {
+            "title": "Closureavgms",
+            "type": "number"
+          },
+          "closureMaxMs": {
+            "title": "Closuremaxms",
+            "type": "number"
+          },
+          "count": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "title": "Count",
+            "type": "integer"
+          },
+          "group": {
+            "title": "Group",
+            "type": "string"
+          },
+          "queueWaitAvgMs": {
+            "title": "Queuewaitavgms",
+            "type": "number"
+          },
+          "queueWaitMaxMs": {
+            "title": "Queuewaitmaxms",
+            "type": "number"
+          }
+        },
+        "required": [
+          "group",
+          "count",
+          "queueWaitAvgMs",
+          "queueWaitMaxMs",
+          "closureAvgMs",
+          "closureMaxMs"
+        ],
+        "title": "BlockingPoolGroupMetrics",
+        "type": "object"
+      },
+      "BlockingPoolMetrics": {
+        "additionalProperties": false,
+        "properties": {
+          "enabled": {
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "groups": {
+            "items": {
+              "$ref": "#/components/schemas/BlockingPoolGroupMetrics"
+            },
+            "title": "Groups",
+            "type": "array"
+          },
+          "peakOccupancy": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "title": "Peakoccupancy",
+            "type": "integer"
+          },
+          "queued": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "title": "Queued",
+            "type": "integer"
+          },
+          "running": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "title": "Running",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "enabled",
+          "queued",
+          "running",
+          "peakOccupancy",
+          "groups"
+        ],
+        "title": "BlockingPoolMetrics",
+        "type": "object"
+      },
       "BranchDraft": {
         "additionalProperties": false,
         "properties": {
@@ -23806,6 +23890,17 @@
           "at": {
             "title": "At",
             "type": "string"
+          },
+          "blockingPoolMetrics": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/BlockingPoolMetrics"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
           },
           "executions": {
             "$ref": "#/components/schemas/ExecutionLedger"

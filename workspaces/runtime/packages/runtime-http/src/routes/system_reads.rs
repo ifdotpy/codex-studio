@@ -58,41 +58,44 @@ async fn directories(
     if !local {
         let store = state.store.clone().ok_or_else(ApiError::internal)?;
         let server = server.to_owned();
-        let paired = tokio::task::spawn_blocking(move || {
-            let mut connection = store.read().map_err(|_| ApiError::internal())?;
-            let tx = connection.transaction().map_err(|_| ApiError::internal())?;
-            use studio_runtime_store::system_reads as records;
-            let client =
-                records::get(&tx, "runtime_access_clients", &server).map_err(ApiError::stored)?;
-            if let Some(client) = client {
-                // The table schema has checked the complete access record;
-                // directories consumes only this typed pairing projection.
-                #[derive(serde::Deserialize)]
-                struct AccessSelection {
-                    kind: String,
-                    status: String,
-                    revoked: Option<f64>,
+        let paired = studio_runtime_process::blocking_pool::spawn_blocking(
+            "runtime-http/routes/system_reads",
+            move || {
+                let mut connection = store.read().map_err(|_| ApiError::internal())?;
+                let tx = connection.transaction().map_err(|_| ApiError::internal())?;
+                use studio_runtime_store::system_reads as records;
+                let client = records::get(&tx, "runtime_access_clients", &server)
+                    .map_err(ApiError::stored)?;
+                if let Some(client) = client {
+                    // The table schema has checked the complete access record;
+                    // directories consumes only this typed pairing projection.
+                    #[derive(serde::Deserialize)]
+                    struct AccessSelection {
+                        kind: String,
+                        status: String,
+                        revoked: Option<f64>,
+                    }
+                    let client: AccessSelection = serde_json::from_value(client).map_err(|_| {
+                        ApiError::stored(records::invalid("runtime_access_clients", &server))
+                    })?;
+                    return Ok::<bool, ApiError>(
+                        client.kind == "server"
+                            && client.status == "paired"
+                            && client.revoked.unwrap_or(0.0) == 0.0,
+                    );
                 }
-                let client: AccessSelection = serde_json::from_value(client).map_err(|_| {
-                    ApiError::stored(records::invalid("runtime_access_clients", &server))
-                })?;
-                return Ok::<bool, ApiError>(
-                    client.kind == "server"
-                        && client.status == "paired"
-                        && client.revoked.unwrap_or(0.0) == 0.0,
-                );
-            }
-            if records::get(&tx, "runtime_access_discovered", &server)
-                .map_err(ApiError::stored)?
-                .is_some()
-            {
-                return Err(ApiError::new(
-                    StatusCode::NOT_IMPLEMENTED,
-                    "Not implemented: requires multi-server/discovery-pairing",
-                ));
-            }
-            Ok(false)
-        })
+                if records::get(&tx, "runtime_access_discovered", &server)
+                    .map_err(ApiError::stored)?
+                    .is_some()
+                {
+                    return Err(ApiError::new(
+                        StatusCode::NOT_IMPLEMENTED,
+                        "Not implemented: requires multi-server/discovery-pairing",
+                    ));
+                }
+                Ok(false)
+            },
+        )
         .await
         .map_err(|_| ApiError::internal())??;
         if !paired {
@@ -111,10 +114,13 @@ async fn directories(
         .typed_value("path")
         .and_then(Value::as_str)
         .map(str::to_owned);
-    let result = tokio::task::spawn_blocking(move || system_reads::directories(path.as_deref()))
-        .await
-        .map_err(|_| ApiError::internal())?
-        .map_err(directory_error)?;
+    let result = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-http/routes/system_reads",
+        move || system_reads::directories(path.as_deref()),
+    )
+    .await
+    .map_err(|_| ApiError::internal())?
+    .map_err(directory_error)?;
     super::generated_json::<crate::generated::DirectoriesResponse>(
         serde_json::to_value(result).map_err(|_| ApiError::internal())?,
     )
@@ -150,32 +156,36 @@ async fn diagnostics(State(state): State<HttpState>) -> Result<Json<Value>, ApiE
         durable_input_pending,
         executions,
         migrations,
-    ) = tokio::task::spawn_blocking(move || {
-        let provider = provider_port.snapshot();
-        let supervisor = supervisor_port.snapshot();
-        let (process_tree, host_resources) = studio_runtime_services::diagnostics::system_snapshot(
-            studio_runtime_services::diagnostics::current_process_id(),
-        );
-        let Some(process_tree) = process_tree else {
-            return Err(named_dependency_error(&DIAGNOSTICS_DEPENDENCIES[2..3]));
-        };
-        let connection = store.read().map_err(|_| ApiError::internal())?;
-        let pending = studio_runtime_services::diagnostics::durable_input_pending(&connection)
-            .map_err(|_| ApiError::internal())?;
-        let ledger = studio_runtime_services::diagnostics::execution_ledger(&connection)
-            .map_err(|_| ApiError::internal())?;
-        let migrations = studio_runtime_services::diagnostics::migration_status(&connection)
-            .map_err(|_| ApiError::internal())?;
-        Ok::<_, ApiError>((
-            provider,
-            supervisor,
-            process_tree,
-            host_resources,
-            pending,
-            ledger,
-            migrations,
-        ))
-    })
+    ) = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-http/routes/system_reads",
+        move || {
+            let provider = provider_port.snapshot();
+            let supervisor = supervisor_port.snapshot();
+            let (process_tree, host_resources) =
+                studio_runtime_services::diagnostics::system_snapshot(
+                    studio_runtime_services::diagnostics::current_process_id(),
+                );
+            let Some(process_tree) = process_tree else {
+                return Err(named_dependency_error(&DIAGNOSTICS_DEPENDENCIES[2..3]));
+            };
+            let connection = store.read().map_err(|_| ApiError::internal())?;
+            let pending = studio_runtime_services::diagnostics::durable_input_pending(&connection)
+                .map_err(|_| ApiError::internal())?;
+            let ledger = studio_runtime_services::diagnostics::execution_ledger(&connection)
+                .map_err(|_| ApiError::internal())?;
+            let migrations = studio_runtime_services::diagnostics::migration_status(&connection)
+                .map_err(|_| ApiError::internal())?;
+            Ok::<_, ApiError>((
+                provider,
+                supervisor,
+                process_tree,
+                host_resources,
+                pending,
+                ledger,
+                migrations,
+            ))
+        },
+    )
     .await
     .map_err(|_| ApiError::internal())??;
 
@@ -205,6 +215,23 @@ async fn diagnostics(State(state): State<HttpState>) -> Result<Json<Value>, ApiE
         "notice": supervisor.notice,
         "health": supervisor.health,
     });
+    let blocking_pool_metrics = {
+        let snapshot = studio_runtime_process::blocking_pool::snapshot();
+        serde_json::json!({
+            "enabled": snapshot.enabled,
+            "queued": snapshot.queued,
+            "running": snapshot.running,
+            "peakOccupancy": snapshot.peak_occupancy,
+            "groups": snapshot.groups.into_iter().map(|group| serde_json::json!({
+                "group": group.group,
+                "count": group.count,
+                "queueWaitAvgMs": group.queue_wait_avg_ms,
+                "queueWaitMaxMs": group.queue_wait_max_ms,
+                "closureAvgMs": group.closure_avg_ms,
+                "closureMaxMs": group.closure_max_ms,
+            })).collect::<Vec<_>>(),
+        })
+    };
     let value = serde_json::json!({
         "at": studio_runtime_services::diagnostics::now_rfc3339(),
         "processTree": process_tree,
@@ -222,6 +249,7 @@ async fn diagnostics(State(state): State<HttpState>) -> Result<Json<Value>, ApiE
         "searchMigrationError": null,
         "runtimeLockOperations": studio_runtime_services::diagnostics::runtime_lock_operations(),
         "supervisor": supervisor,
+        "blockingPoolMetrics": blocking_pool_metrics,
     });
     let mut value = value;
     redact_untrusted_diagnostic_text(&mut value);
@@ -238,21 +266,25 @@ async fn ui_summary(State(state): State<HttpState>) -> Result<Json<Value>, ApiEr
     let store = state.store.ok_or_else(ApiError::internal)?;
     let account_driver = state.account_driver;
     let account_policy = state.account_policy;
-    let value = tokio::task::spawn_blocking(move || {
-        let accounts = if let Some(driver) = account_driver {
-            Some(
-                driver
-                    .listing_snapshot()
-                    .map_err(|_| ApiError::internal())?,
-            )
-        } else {
-            account_policy.map(|policy| policy.accounts())
-        };
-        let mut connection = store.read().map_err(|_| ApiError::internal())?;
-        let transaction = connection.transaction().map_err(|_| ApiError::internal())?;
-        let value = system_reads::ui_summary(&transaction, accounts).map_err(ApiError::stored)?;
-        super::generated_json::<crate::generated::UiSummaryResponse>(value)
-    })
+    let value = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-http/routes/system_reads",
+        move || {
+            let accounts = if let Some(driver) = account_driver {
+                Some(
+                    driver
+                        .listing_snapshot()
+                        .map_err(|_| ApiError::internal())?,
+                )
+            } else {
+                account_policy.map(|policy| policy.accounts())
+            };
+            let mut connection = store.read().map_err(|_| ApiError::internal())?;
+            let transaction = connection.transaction().map_err(|_| ApiError::internal())?;
+            let value =
+                system_reads::ui_summary(&transaction, accounts).map_err(ApiError::stored)?;
+            super::generated_json::<crate::generated::UiSummaryResponse>(value)
+        },
+    )
     .await
     .map_err(|_| ApiError::internal())??;
     Ok(Json(value))
@@ -505,6 +537,7 @@ mod diagnostics_http_tests {
             "searchMigrationError",
             "runtimeLockOperations",
             "supervisor",
+            "blockingPoolMetrics",
         ];
         assert_eq!(
             value.as_object().map(|fields| fields.len()),

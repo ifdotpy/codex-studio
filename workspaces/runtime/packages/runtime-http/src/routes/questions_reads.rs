@@ -35,19 +35,22 @@ pub(crate) async fn questions(
         .and_then(Value::as_str)
         .map(str::to_owned);
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
-    let value = tokio::task::spawn_blocking(move || {
-        let (agents, records) = store
-            .read_transaction(|transaction| {
-                Ok((
-                    QuestionsReadsRepository::agents(transaction)?,
-                    QuestionsReadsRepository::questions(transaction)?,
-                ))
-            })
-            .map_err(map_store_error)?;
-        let value = questions_reads::question_history(agent_id.as_deref(), agents, records)
-            .map_err(questions_error)?;
-        Ok::<_, ApiError>(value)
-    })
+    let value = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-http/routes/questions_reads",
+        move || {
+            let (agents, records) = store
+                .read_transaction(|transaction| {
+                    Ok((
+                        QuestionsReadsRepository::agents(transaction)?,
+                        QuestionsReadsRepository::questions(transaction)?,
+                    ))
+                })
+                .map_err(map_store_error)?;
+            let value = questions_reads::question_history(agent_id.as_deref(), agents, records)
+                .map_err(questions_error)?;
+            Ok::<_, ApiError>(value)
+        },
+    )
     .await
     .map_err(|_| ApiError::internal())??;
     Ok(Json(value))
@@ -63,12 +66,15 @@ pub(crate) async fn complaint(
         .unwrap_or_default()
         .to_owned();
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
-    let value = tokio::task::spawn_blocking(move || {
-        let connection = store.read().map_err(|_| ApiError::internal())?;
-        let stored =
-            QuestionsReadsRepository::complaint(&connection, &id).map_err(map_store_error)?;
-        questions_reads::complaint_detail(stored).map_err(questions_error)
-    })
+    let value = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-http/routes/questions_reads",
+        move || {
+            let connection = store.read().map_err(|_| ApiError::internal())?;
+            let stored =
+                QuestionsReadsRepository::complaint(&connection, &id).map_err(map_store_error)?;
+            questions_reads::complaint_detail(stored).map_err(questions_error)
+        },
+    )
     .await
     .map_err(|_| ApiError::internal())??;
     Ok(Json(value))
@@ -84,19 +90,22 @@ pub(crate) async fn checkpoints(
         .and_then(Value::as_str)
         .map(str::to_owned);
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
-    let value = tokio::task::spawn_blocking(move || {
-        let (agents, records) = store
-            .read_transaction(|transaction| {
-                Ok((
-                    QuestionsReadsRepository::agents(transaction)?,
-                    QuestionsReadsRepository::checkpoints(transaction)?,
-                ))
-            })
-            .map_err(map_store_error)?;
-        let value = questions_reads::checkpoint_list(agent_id.as_deref(), agents, records)
-            .map_err(questions_error)?;
-        Ok::<_, ApiError>(value)
-    })
+    let value = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-http/routes/questions_reads",
+        move || {
+            let (agents, records) = store
+                .read_transaction(|transaction| {
+                    Ok((
+                        QuestionsReadsRepository::agents(transaction)?,
+                        QuestionsReadsRepository::checkpoints(transaction)?,
+                    ))
+                })
+                .map_err(map_store_error)?;
+            let value = questions_reads::checkpoint_list(agent_id.as_deref(), agents, records)
+                .map_err(questions_error)?;
+            Ok::<_, ApiError>(value)
+        },
+    )
     .await
     .map_err(|_| ApiError::internal())??;
     checkpoint_response(value, headers)

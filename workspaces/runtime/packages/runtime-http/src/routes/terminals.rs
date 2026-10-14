@@ -67,9 +67,12 @@ async fn require_reconciled_driver(state: &HttpState) -> Result<(), ApiError> {
     let Some(gate) = state.terminal_write_gate_handle() else {
         return Ok(());
     };
-    let reconciled = tokio::task::spawn_blocking(move || gate())
-        .await
-        .map_err(|_| ApiError::internal())?;
+    let reconciled = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-http/routes/terminals",
+        move || gate(),
+    )
+    .await
+    .map_err(|_| ApiError::internal())?;
     if reconciled {
         Ok(())
     } else {
@@ -82,10 +85,13 @@ async fn require_reconciled_driver(state: &HttpState) -> Result<(), ApiError> {
 
 async fn listing(State(state): State<HttpState>) -> Result<Json<Value>, ApiError> {
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
-    let result = tokio::task::spawn_blocking(move || terminal_driver::listing(&store))
-        .await
-        .map_err(|_| ApiError::internal())?
-        .map_err(terminal_error)?;
+    let result = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-http/routes/terminals",
+        move || terminal_driver::listing(&store),
+    )
+    .await
+    .map_err(|_| ApiError::internal())?
+    .map_err(terminal_error)?;
     Ok(Json(
         super::generated_json::<crate::generated::TerminalList>(result)?,
     ))
@@ -110,13 +116,16 @@ async fn output(
         .and_then(Value::as_i64)
         .unwrap_or(65_536);
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
-    let result = tokio::task::spawn_blocking(move || {
-        if history {
-            terminal_driver::history_output(&store, &id, offset, limit)
-        } else {
-            terminal_driver::output(&store, &id, offset)
-        }
-    })
+    let result = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-http/routes/terminals",
+        move || {
+            if history {
+                terminal_driver::history_output(&store, &id, offset, limit)
+            } else {
+                terminal_driver::output(&store, &id, offset)
+            }
+        },
+    )
     .await
     .map_err(|_| ApiError::internal())?
     .map_err(terminal_error)?;
@@ -139,11 +148,13 @@ async fn create(
             .ok_or_else(|| ApiError::validation(vec![Value::String("body".into())]))?
             .to_owned();
         let agent_store = store.clone();
-        let (agent, agent_cwd, cwd) =
-            tokio::task::spawn_blocking(move || checked_agent_cwd(&agent_store, &agent_id))
-                .await
-                .map_err(|_| ApiError::internal())?
-                .map_err(terminal_body_error)?;
+        let (agent, agent_cwd, cwd) = studio_runtime_process::blocking_pool::spawn_blocking(
+            "runtime-http/routes/terminals",
+            move || checked_agent_cwd(&agent_store, &agent_id),
+        )
+        .await
+        .map_err(|_| ApiError::internal())?
+        .map_err(terminal_body_error)?;
         let dimension = |name: &str, default| match body.get(name) {
             None => Ok(default),
             Some(value) => value.as_u64().ok_or(TerminalError::InvalidRequest),
@@ -163,19 +174,22 @@ async fn create(
         let driver = state
             .terminal_driver_handle()
             .ok_or_else(ApiError::internal)?;
-        let result = tokio::task::spawn_blocking(move || {
-            driver.create(TerminalCreate {
-                request_id: &request_id,
-                agent: &agent,
-                agent_cwd: &agent_cwd,
-                cwd: &cwd,
-                columns,
-                rows,
-                shell: &shell,
-                environment,
-                submitted_request: &body,
-            })
-        })
+        let result = studio_runtime_process::blocking_pool::spawn_blocking(
+            "runtime-http/routes/terminals",
+            move || {
+                driver.create(TerminalCreate {
+                    request_id: &request_id,
+                    agent: &agent,
+                    agent_cwd: &agent_cwd,
+                    cwd: &cwd,
+                    columns,
+                    rows,
+                    shell: &shell,
+                    environment,
+                    submitted_request: &body,
+                })
+            },
+        )
         .await
         .map_err(|_| ApiError::internal())?
         .map_err(terminal_body_error)?;
@@ -213,10 +227,13 @@ async fn action(
             .unwrap_or_default()
             .to_owned();
         let is_input = action == "input";
-        let result = tokio::task::spawn_blocking(move || driver.action(&action, &body))
-            .await
-            .map_err(|_| ApiError::internal())?
-            .map_err(terminal_body_error)?;
+        let result = studio_runtime_process::blocking_pool::spawn_blocking(
+            "runtime-http/routes/terminals",
+            move || driver.action(&action, &body),
+        )
+        .await
+        .map_err(|_| ApiError::internal())?
+        .map_err(terminal_body_error)?;
         if is_input {
             Ok(Json(super::generated_json::<
                 crate::generated::TerminalInputResult,

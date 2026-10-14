@@ -119,35 +119,38 @@ async fn read_account_session_catalog(
             "model-list:{account}:{refresh_id}:{page_index}:{}",
             cursor.as_deref().unwrap_or("first")
         );
-        let request = tokio::task::spawn_blocking(move || {
-            use crate::account_session_runtime::{
-                ProviderRequest, ProviderResponse, RequestCertainty,
-            };
-            use std::time::Instant;
-            let receipt = session_clone
-                .provider_request(ProviderRequest {
-                    account: account_clone,
-                    operation: operation.clone(),
-                    actor: None,
-                    deleted_actor_session: None,
-                    expected_scope: Some(current_scope.clone()),
-                    method: studio_runtime_providers::Method::ModelList,
-                    params,
-                    deadline: Instant::now() + CATALOG_TIMEOUT,
-                })
-                .map_err(|_| ())?;
-            if receipt.scope != current_scope
-                || receipt.operation != operation
-                || receipt.certainty != RequestCertainty::Written
-                || receipt.ticket.is_none()
-            {
-                return Err(());
-            }
-            match receipt.result {
-                Some(ProviderResponse::Reply(value)) => Ok(value),
-                Some(ProviderResponse::Rejected(_)) | None => Err(()),
-            }
-        });
+        let request = studio_runtime_process::blocking_pool::spawn_blocking(
+            "runtime-services/model_catalog",
+            move || {
+                use crate::account_session_runtime::{
+                    ProviderRequest, ProviderResponse, RequestCertainty,
+                };
+                use std::time::Instant;
+                let receipt = session_clone
+                    .provider_request(ProviderRequest {
+                        account: account_clone,
+                        operation: operation.clone(),
+                        actor: None,
+                        deleted_actor_session: None,
+                        expected_scope: Some(current_scope.clone()),
+                        method: studio_runtime_providers::Method::ModelList,
+                        params,
+                        deadline: Instant::now() + CATALOG_TIMEOUT,
+                    })
+                    .map_err(|_| ())?;
+                if receipt.scope != current_scope
+                    || receipt.operation != operation
+                    || receipt.certainty != RequestCertainty::Written
+                    || receipt.ticket.is_none()
+                {
+                    return Err(());
+                }
+                match receipt.result {
+                    Some(ProviderResponse::Reply(value)) => Ok(value),
+                    Some(ProviderResponse::Rejected(_)) | None => Err(()),
+                }
+            },
+        );
         let response = tokio::select! {
             _ = Shutdown::cancelled(&mut shutdown) => return Err(()),
             result = tokio::time::timeout(CATALOG_TIMEOUT, request) => {
@@ -342,21 +345,32 @@ impl ModelCatalogService {
         // Own task-slot registration before marking the cache pending. If this
         // future is cancelled while waiting for the registry, no orphaned
         // pending entry can suppress future refresh attempts.
+        loop {
+            let finished = {
+                let mut tasks = self.0.tasks.lock().await;
+                if *self.0.stop.subscribe().borrow() {
+                    return CatalogRead::Unavailable;
+                }
+                tasks
+                    .iter()
+                    .position(tokio::task::JoinHandle::is_finished)
+                    .map(|index| tasks.swap_remove(index))
+            };
+            let Some(mut task) = finished else {
+                break;
+            };
+            if let Err(error) = (&mut task).await {
+                *self.0.cleanup_error.lock().expect("catalog cleanup report") =
+                    Some(error.to_string());
+            }
+            drop(task);
+        }
+        // Acquire the task registry before reserving the cache entry. Once
+        // Pending is published below, task registration is synchronous while
+        // this guard is held, so cancellation cannot strand an unowned refresh.
         let mut tasks = self.0.tasks.lock().await;
         if *self.0.stop.subscribe().borrow() {
             return CatalogRead::Unavailable;
-        }
-        let mut index = 0;
-        while index < tasks.len() {
-            if tasks[index].is_finished() {
-                if let Err(error) = (&mut tasks[index]).await {
-                    *self.0.cleanup_error.lock().expect("catalog cleanup report") =
-                        Some(error.to_string());
-                }
-                drop(tasks.remove(index));
-            } else {
-                index += 1;
-            }
         }
         // Registry acquisition and completed-task cleanup can suspend. Sample
         // freshness only after those waits so an entry cannot expire while this
@@ -1093,8 +1107,19 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
-    async fn cancelled_read_waiting_for_task_registry_does_not_reserve_cache_entry() {
+    async fn cancelled_read_waiting_for_task_registry_does_not_leave_pending_entry() {
         let service = ModelCatalogService::new(None);
+        let key = ("account".to_owned(), "/home".to_owned(), "codex".to_owned());
+        service.0.cache.lock().expect("cache").insert(
+            key.clone(),
+            CacheEntry {
+                generation: 7,
+                value: Some(json!({"models":[{"model":"stale"}]})),
+                expires_at: Some(Instant::now()),
+                error: false,
+                pending: false,
+            },
+        );
         let task_guard = service.0.tasks.lock().await;
         {
             let read = service.read("account", "/home", "codex", false);
@@ -1107,13 +1132,11 @@ pub(crate) mod tests {
         }
         drop(task_guard);
 
-        assert!(
-            !service
-                .0
-                .cache
-                .lock()
-                .expect("catalog cache")
-                .contains_key(&("account".to_owned(), "/home".to_owned(), "codex".to_owned(),))
+        let cache = service.0.cache.lock().expect("catalog cache");
+        assert!(!cache[&key].pending);
+        assert_eq!(
+            cache[&key].value,
+            Some(json!({"models":[{"model":"stale"}]}))
         );
     }
 

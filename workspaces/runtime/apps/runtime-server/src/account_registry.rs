@@ -725,10 +725,12 @@ impl AccountRegistry {
         let store = self.store.clone();
         let after_account = self.after_account.clone();
         let after_agent = self.after_agent.clone();
-        let targets =
-            tokio::task::spawn_blocking(move || target_page(&store, &after_account, &after_agent))
-                .await
-                .map_err(|_| WorkerError::TaskFailed)??;
+        let targets = studio_runtime_process::blocking_pool::spawn_blocking(
+            "runtime-server/account_registry",
+            move || target_page(&store, &after_account, &after_agent),
+        )
+        .await
+        .map_err(|_| WorkerError::TaskFailed)??;
         let mut failure = None;
         for (account, pending_agents) in targets {
             if stopped() {
@@ -790,7 +792,7 @@ impl AccountRegistry {
     /// its durable radio_turn events use the same retained account workers.
     async fn tick_radio(&mut self) -> Result<(), WorkerError> {
         let store = self.store.clone();
-        let has_rooms = tokio::task::spawn_blocking(move || -> Result<bool, WorkerError> {
+        let has_rooms = studio_runtime_process::blocking_pool::spawn_blocking("runtime-server/account_registry", move || -> Result<bool, WorkerError> {
             let db = store.read()?;
             db.query_row(
                 "SELECT EXISTS(SELECT 1 FROM runtime_rooms WHERE json_type(record,'$.radio')='object')",
@@ -806,14 +808,17 @@ impl AccountRegistry {
         }
         let now = (self.radio_clock)();
         let store = self.store.clone();
-        let effects = tokio::task::spawn_blocking(move || {
-            let prepared = PreparedHost::load(&store)?;
-            prepared.recheck_paths()?;
-            store.transaction_with(|tx| {
-                let mut ingress = RuntimeRadioIngress;
-                radio_runtime::tick(tx, &prepared, &mut ingress, now)
-            })
-        })
+        let effects = studio_runtime_process::blocking_pool::spawn_blocking(
+            "runtime-server/account_registry",
+            move || {
+                let prepared = PreparedHost::load(&store)?;
+                prepared.recheck_paths()?;
+                store.transaction_with(|tx| {
+                    let mut ingress = RuntimeRadioIngress;
+                    radio_runtime::tick(tx, &prepared, &mut ingress, now)
+                })
+            },
+        )
         .await
         .map_err(|_| WorkerError::TaskFailed)?
         .map_err(|error| WorkerError::PreparationRefused(error.to_string()))?;
@@ -830,11 +835,20 @@ impl AccountRegistry {
             let sender = worker.radio_interrupt_sender();
             let store = self.store.clone();
             let now = (self.radio_clock)();
-            tokio::task::spawn_blocking(move || {
-                let prepared = PreparedHost::load(&store)?;
-                let mut transport = RuntimeRadioInterrupt { sender };
-                radio_runtime::handoff_interrupt(&store, &prepared, &effect, &mut transport, now)
-            })
+            studio_runtime_process::blocking_pool::spawn_blocking(
+                "runtime-server/account_registry",
+                move || {
+                    let prepared = PreparedHost::load(&store)?;
+                    let mut transport = RuntimeRadioInterrupt { sender };
+                    radio_runtime::handoff_interrupt(
+                        &store,
+                        &prepared,
+                        &effect,
+                        &mut transport,
+                        now,
+                    )
+                },
+            )
             .await
             .map_err(|_| WorkerError::TaskFailed)?
             .map_err(|error| WorkerError::PreparationRefused(error.to_string()))?;
