@@ -19,6 +19,10 @@ pub enum CoordinationError {
     RequiresDependency(&'static str),
     #[error("invalid stored object {object}/{id}")]
     InvalidStored { object: &'static str, id: String },
+    #[error("{0}")]
+    AdmissionDenied(String),
+    #[error(transparent)]
+    BudgetRuntime(#[from] crate::budget_runtime::BudgetRuntimeError),
     #[error(transparent)]
     Store(#[from] StoreError),
 }

@@ -172,16 +172,20 @@ class MessageIngressHTTP(TimedHTTPContractTest, unittest.TestCase):
                 db.execute("DELETE FROM runtime_workspace_operations WHERE id='broken-operation'")
 
     @unittest.skipUnless(os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"), "named Rust dependencies")
-    def test_unavailable_admission_never_writes_an_event(self):
-        for fields, dependency in (({"tokenBudget": 0}, "budget-policy/message-admission"),
-                                   ({"workspaceOperation": "restore"}, "workspace-policy/message-admission")):
+    def test_budget_and_workspace_admission_never_write_an_event(self):
+        for fields in ({"tokenBudget": 0}, {"workspaceOperation": "restore"}):
             _fixture.update_agent(self.backend, self.agent, fields)
             before = no_write_snapshot(self.backend.state)
             response = self.request("POST", "/api/messages", {
                 "id": "05050505-0505-0505-0505-050505050505", "room": self.agent, "text": "blocked",
             })
-            self.assertEqual(response.status, 501, response.body)
-            self.assertEqual(response.json()["error"], "Not implemented: requires " + dependency)
+            if "tokenBudget" in fields:
+                self.assertEqual(response.status, 400, response.body)
+                self.assertTrue(response.json()["error"].startswith("Team token budget"))
+            else:
+                self.assertEqual(response.status, 501, response.body)
+                self.assertEqual(response.json()["error"],
+                                 "Not implemented: requires workspace-policy/message-admission")
             self.assertEqual(no_write_snapshot(self.backend.state), before)
             _fixture.update_agent(self.backend, self.agent, {}, remove=tuple(fields))
 

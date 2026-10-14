@@ -381,6 +381,12 @@ fn voice_error(error: VoiceError) -> ApiError {
                 StatusCode::INTERNAL_SERVER_ERROR,
                 format!("Invalid stored object {object}/{id}"),
             ),
+            studio_runtime_services::coordination::CoordinationError::AdmissionDenied(message) => {
+                ApiError::new(StatusCode::BAD_REQUEST, message)
+            }
+            studio_runtime_services::coordination::CoordinationError::BudgetRuntime(_) => {
+                ApiError::internal()
+            }
             studio_runtime_services::coordination::CoordinationError::Store(_) => {
                 ApiError::internal()
             }

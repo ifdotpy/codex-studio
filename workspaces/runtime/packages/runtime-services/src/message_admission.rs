@@ -6,7 +6,9 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use serde_json::{Value, json};
-use studio_runtime_store::{AgentId, AgentRecord, AgentRepository, Connection, Transaction};
+use studio_runtime_store::{
+    AgentId, AgentRecord, AgentRepository, Connection, RuntimeStore, Transaction,
+};
 
 use crate::coordination::CoordinationError;
 
@@ -140,6 +142,85 @@ impl MessageAdmission for PreparedAdmission {
         }
         Ok(())
     }
+}
+
+/// Message ingress adapter that combines P03's workspace snapshot with P09's
+/// history-backed budget policy. Filesystem history is read before the caller's
+/// writer transaction; durable bindings are rechecked inside that transaction.
+pub struct MessageIngressAdmission<'a> {
+    workspace: PreparedAdmission,
+    store: &'a RuntimeStore,
+    histories: BTreeMap<String, crate::budget::HistoryObservation>,
+    now: f64,
+}
+
+impl<'a> MessageIngressAdmission<'a> {
+    pub fn load(
+        store: &'a RuntimeStore,
+        connection: &Connection,
+        recipient: &str,
+    ) -> Result<Self, CoordinationError> {
+        let workspace = PreparedAdmission::load(connection, recipient)?;
+        let histories = match AgentRepository::get(connection, &AgentId::from(recipient))? {
+            Some(agent) => {
+                let root = AgentRepository::get(connection, &agent.root_id)?;
+                if root.as_ref().is_some_and(|root| {
+                    root.extra
+                        .get("tokenBudget")
+                        .is_some_and(|budget| !budget.is_null())
+                }) {
+                    crate::budget_runtime::read_histories(store, &agent.root_id.0)?
+                } else {
+                    BTreeMap::new()
+                }
+            }
+            None => BTreeMap::new(),
+        };
+        Ok(Self {
+            workspace,
+            store,
+            histories,
+            now: unix_time(),
+        })
+    }
+}
+
+impl MessageAdmission for MessageIngressAdmission<'_> {
+    fn workspace(
+        &self,
+        tx: &Transaction<'_>,
+        agent: &AgentRecord,
+    ) -> Result<Vec<Value>, CoordinationError> {
+        self.workspace.workspace(tx, agent)
+    }
+
+    fn budget(
+        &self,
+        tx: &Transaction<'_>,
+        agent: &AgentRecord,
+        root: &AgentRecord,
+    ) -> Result<(), CoordinationError> {
+        let decision = crate::budget_runtime::admission(
+            self.store,
+            tx,
+            &agent.value(),
+            &root.value(),
+            &self.histories,
+            self.now,
+        )
+        .map_err(|error| CoordinationError::BudgetRuntime(error.into()))?;
+        if let Some(denial) = decision.denial {
+            return Err(CoordinationError::AdmissionDenied(denial.message));
+        }
+        Ok(())
+    }
+}
+
+fn unix_time() -> f64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0.0, |duration| duration.as_secs_f64())
 }
 
 fn cwd(agent: &AgentRecord) -> Result<&str, CoordinationError> {

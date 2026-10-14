@@ -831,10 +831,12 @@ class MessagesNoWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
                 "id": message_id, "room": agent_id, "text": "Must be refused",
             }, headers=self.headers())
             self.assertNotEqual(response.status, 200, response.body[:1000])
-            if os.environ.get("STUDIO_HTTP_BACKEND_COMMAND") and index in {3, 4}:
+            if os.environ.get("STUDIO_HTTP_BACKEND_COMMAND") and index == 3:
                 self.assertEqual(response.status, 501, response.body[:1000])
-                expected = "workspace-policy/message-admission" if index == 3 else "budget-policy/message-admission"
-                self.assertIn(expected, response.json()["error"])
+                self.assertIn("workspace-policy/message-admission", response.json()["error"])
+            if os.environ.get("STUDIO_HTTP_BACKEND_COMMAND") and index == 4:
+                self.assertEqual(response.status, 400, response.body[:1000])
+                self.assertTrue(response.json()["error"].startswith("Team token budget"))
             self.assertEqual(no_write_snapshot(self.backend.state), before)
             update_agent(self.backend, agent_id, {}, remove=tuple(fields))
 

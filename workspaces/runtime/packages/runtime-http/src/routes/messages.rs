@@ -11,8 +11,7 @@ use super::manifest::{Dependency, OperationStatus, RouteGroup, get, post};
 use crate::error::ApiError;
 use crate::router::HttpState;
 
-const MESSAGE_SEND_DEPENDENCIES: [Dependency; 6] = [
-    Dependency::new("budget-policy/message-admission"),
+const MESSAGE_SEND_DEPENDENCIES: [Dependency; 5] = [
     Dependency::new("capacity-retry/store"),
     Dependency::new("cross-server/remote-events"),
     Dependency::new("federation-driver/rooms"),
@@ -141,14 +140,32 @@ async fn post_message(
         .unwrap_or("queue")
         .to_owned();
     let result = tokio::task::spawn_blocking(move || {
-        let prepared = studio_runtime_services::message_admission::PreparedAdmission::load(
-            &store.read().map_err(|_| ApiError::internal())?,
-            &body.room,
-        )
-        .map_err(coordination_error)?;
+        let connection = store.read().map_err(|_| ApiError::internal())?;
+        let prepared: Box<dyn studio_runtime_services::message_admission::MessageAdmission + '_> =
+            if state.message_admission.is_some() {
+                Box::new(
+                    studio_runtime_services::message_admission::PreparedAdmission::load(
+                        &connection,
+                        &body.room,
+                    )
+                    .map_err(coordination_error)?,
+                )
+            } else {
+                Box::new(
+                    studio_runtime_services::message_admission::MessageIngressAdmission::load(
+                        &store,
+                        &connection,
+                        &body.room,
+                    )
+                    .map_err(coordination_error)?,
+                )
+            };
         #[cfg(test)]
         ingress_tests::support::after_preparation(&body.room);
-        let admission = state.message_admission.as_deref().unwrap_or(&prepared);
+        let admission = state
+            .message_admission
+            .as_deref()
+            .unwrap_or(prepared.as_ref());
         let posted = store
             .transaction_with_error(|transaction| {
                 coordination::post_message_with_admission(
@@ -277,6 +294,10 @@ fn coordination_error(error: CoordinationError) -> ApiError {
             ApiError::new(StatusCode::BAD_REQUEST, message)
         }
         CoordinationError::InvalidStored { object, id } => invalid_stored(object, &id),
+        CoordinationError::AdmissionDenied(message) => {
+            ApiError::new(StatusCode::BAD_REQUEST, message)
+        }
+        CoordinationError::BudgetRuntime(_) => ApiError::internal(),
         CoordinationError::Store(error) => ApiError::stored(error),
     }
 }
@@ -293,7 +314,6 @@ inventory::submit! {
         name: "messages",
         routes: Some(routes),
         dependencies: &[
-            "budget-policy/message-admission",
             "capacity-retry/store",
             "cross-server/remote-events",
             "event-driver/message-send",
