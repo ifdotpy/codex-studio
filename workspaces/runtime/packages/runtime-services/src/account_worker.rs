@@ -599,10 +599,9 @@ struct Worker {
 }
 impl Worker {
     async fn run(mut self) -> Result<(), WorkerError> {
-        let mut result = self.serve().await;
-        if let Err(error) = self.drain_managed_callbacks().await {
-            result = Err(error);
-        }
+        let result = self.serve().await;
+        let drain_result = self.drain_managed_callbacks().await;
+        let result = result.and(drain_result);
         if let Some(recovery) = self.restart_recovery.take() {
             recovery.abort();
             let _joined = recovery.await;
