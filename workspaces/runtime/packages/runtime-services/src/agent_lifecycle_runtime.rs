@@ -105,8 +105,11 @@ pub fn execute(
 ) -> Result<Value, ManagementError> {
     let reader = store.read()?;
     let rooms = crate::sync_entity_context::RoomDirectory::prepare(&reader)?;
-    let result = store
-        .transaction_with_error(|tx| execute_in_transaction(tx, action, now, ports, &rooms))?;
+    let projects = studio_runtime_store::ProjectsRepository::list(&reader)?;
+    let vault_snapshot = crate::sync_policy::ProjectVaultSnapshot::capture(store.root(), &projects);
+    let result = store.transaction_with_error(|tx| {
+        execute_in_transaction(tx, action, now, ports, &rooms, &vault_snapshot)
+    })?;
     // A lost wake cannot roll back the committed intent. Restart drains the same
     // effect; report an internal failure, never a no-write capability refusal.
     ports.committed().map_err(|_| {
@@ -125,6 +128,7 @@ pub fn execute_in_transaction(
     now: f64,
     ports: &dyn LifecyclePorts,
     rooms: &crate::sync_entity_context::RoomDirectory,
+    vault_snapshot: &crate::sync_policy::ProjectVaultSnapshot,
 ) -> Result<Value, ManagementError> {
-    crate::agent_management_store::execute_with_ports(tx, action, now, rooms, ports)
+    crate::agent_management_store::execute_with_ports(tx, action, now, rooms, vault_snapshot, ports)
 }
