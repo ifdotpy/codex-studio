@@ -4,8 +4,6 @@ pub mod child_priority;
 mod client;
 mod ports;
 mod protocol;
-#[cfg(unix)]
-pub mod provider_direct;
 mod provider_launch;
 pub mod provider_seam;
 mod provider_shared;

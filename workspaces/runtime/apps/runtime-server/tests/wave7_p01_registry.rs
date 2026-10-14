@@ -282,7 +282,7 @@ async fn image_workspace_pending_event_is_refused_before_account_provider_launch
     let agent_id = fixture.agents[0]["id"].as_str().unwrap();
     fixture
         .store
-        .transaction_with(|tx| {
+        .transaction(|tx| {
             tx.execute(
                 "UPDATE runtime_agents SET record=json_set(record,'$.workspaceMode','image') WHERE id=?1",
                 [agent_id],
