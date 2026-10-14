@@ -140,10 +140,15 @@ fn create(
     let existing = replay(&read)?;
     drop(read);
     if existing.is_some() {
-        return context.store.transaction_with_error(|tx| {
+        let replayed = context.store.transaction_with_error(|tx| {
             let current = replay(tx)?.ok_or(CreateError::Conflict)?;
-            Ok(sync_projection(tx, &current)?)
-        });
+            Ok::<Value, OperationError>(sync_projection(tx, &current)?)
+        })?;
+        #[cfg(target_os = "macos")]
+        if workspace == "image" {
+            provision_image_workspace(&replayed, &id)?;
+        }
+        return Ok(replayed);
     }
     let read = context.store.read()?;
     let previous = previous_lead(&read, request.previous.as_deref(), &validate)?;
@@ -704,8 +709,8 @@ fn create_child(
 }
 
 /// Record image intent so readiness can remount the durable ASIF state. On macOS,
-/// `provision_image_workspace` mirrors Python's `codex_runtime.py:5878` call to
-/// `codex_workspace_images.create_workspace`, after its base-build start path.
+/// provisioning is queued like Python's `codex_runtime.py:5757` base-build callback;
+/// Python provisions with `create_workspace` at line 5878 after the base is ready.
 fn set_image_workspace_fields(record: &mut Value, root: &str) {
     record["workspaceMode"] = json!("image");
     record["imageWorkspace"] = json!(true);
@@ -726,7 +731,7 @@ fn provision_image_workspace(result: &Value, fallback_id: &str) -> Result<(), Op
         .or_else(|| result.get("cwd"))
         .and_then(Value::as_str)
         .ok_or(OperationError::Internal)?;
-    crate::image_workspace::create_workspace(PathBuf::from(root).as_path(), id)
+    crate::image_workspace::start_workspace_provision(PathBuf::from(root).as_path(), id)
         .map(|_| ())
         .map_err(|error| OperationError::Workspace(error.to_string()))
 }
