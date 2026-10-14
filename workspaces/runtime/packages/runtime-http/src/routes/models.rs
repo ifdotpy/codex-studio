@@ -18,8 +18,7 @@ const WORKER_PENDING_MESSAGE: &str =
 const UNAVAILABLE_MESSAGE: &str =
     "Model catalog unavailable; no workers were created: provider request failed";
 const ACCOUNT_UNAVAILABLE_MESSAGE: &str = "Account is unavailable";
-const CLAUDE_CATALOG_DEPENDENCY: &[Dependency] =
-    &[Dependency::new("provider-service/claude-model-catalog")];
+const CLAUDE_CATALOG_DEPENDENCY: &[Dependency] = &[Dependency::new("provider-session/model-list")];
 
 pub(crate) fn routes() -> RouteGroup {
     RouteGroup::new(vec![get(
@@ -44,6 +43,7 @@ async fn models(
         .clone()
         .ok_or_else(ApiError::internal)?;
     let catalog = state.model_catalog.clone();
+    catalog.set_account_session(state.account_session.clone());
     let driver = state.account_driver.clone();
     let snapshot = tokio::task::spawn_blocking(move || match driver {
         Some(driver) => driver.snapshot().map_err(|_| ApiError::internal()),
@@ -72,14 +72,6 @@ async fn account_catalog(
     retry: bool,
 ) -> Result<Value, (StatusCode, Value)> {
     let account = account_context(snapshot, account_key)?;
-    if account.provider == "claude" {
-        return Err((
-            StatusCode::NOT_IMPLEMENTED,
-            json!({
-                "error": "Not implemented: requires provider-service/claude-model-catalog"
-            }),
-        ));
-    }
     match catalog
         .read(&account.key, &account.home, &account.provider, retry)
         .await
@@ -90,8 +82,12 @@ async fn account_catalog(
             json!({"error": PENDING_MESSAGE, "catalogPending": true}),
         )),
         CatalogRead::Unavailable => Err((
-            StatusCode::BAD_REQUEST,
-            json!({"error": UNAVAILABLE_MESSAGE}),
+            if account.provider == "claude" {
+                StatusCode::NOT_IMPLEMENTED
+            } else {
+                StatusCode::BAD_REQUEST
+            },
+            json!({"error": if account.provider == "claude" { "Not implemented: requires provider-session/model-list" } else { UNAVAILABLE_MESSAGE }}),
         )),
     }
 }
@@ -286,7 +282,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn direct_claude_catalog_names_the_missing_provider_service() {
+    async fn direct_claude_catalog_names_the_missing_provider_session_capability() {
         let snapshot =
             snapshot(json!({"id":"claude-account", "provider":"claude", "status":"ready"}));
         let error = account_catalog(
@@ -300,7 +296,7 @@ mod tests {
         assert_eq!(error.0, StatusCode::NOT_IMPLEMENTED);
         assert_eq!(
             error.1,
-            json!({"error":"Not implemented: requires provider-service/claude-model-catalog"})
+            json!({"error":"Not implemented: requires provider-session/model-list"})
         );
     }
 
@@ -328,7 +324,7 @@ mod tests {
                 "method":"GET",
                 "path":"/api/models",
                 "status":"partial",
-                "dependencies":["provider-service/claude-model-catalog"]
+                "dependencies":["provider-session/model-list"]
             })
         );
     }
@@ -338,6 +334,6 @@ inventory::submit! {
     crate::routes::manifest::RouteModuleRegistration {
         name: "models",
         routes: Some(routes),
-        dependencies: &["provider-service/claude-model-catalog"],
+        dependencies: &["provider-session/model-list"],
     }
 }

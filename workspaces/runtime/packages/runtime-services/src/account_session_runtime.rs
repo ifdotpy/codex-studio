@@ -74,6 +74,16 @@ pub trait AccountSessionPort: Send + Sync {
     fn read_limits(&self, _account: &str) -> Result<Value, AccountSessionError> {
         Err(AccountSessionError::Requires(LIMITS_REQUIRED))
     }
+    /// Read one model/list page from the account's retained provider session.
+    /// The model-catalog service owns pagination, response validation and cache.
+    fn model_list(
+        &self,
+        _account: &str,
+        _provider: &str,
+        _params: Value,
+    ) -> Result<Value, AccountSessionError> {
+        Err(AccountSessionError::Requires("provider-session/model-list"))
+    }
 }
 
 pub const LIMITS_REQUIRED: &str = "provider-session/account-rate-limits";
@@ -365,6 +375,53 @@ impl AccountSessionRuntime {
     }
 }
 impl AccountSessionPort for AccountSessionRuntime {
+    fn model_list(
+        &self,
+        account: &str,
+        provider: &str,
+        params: Value,
+    ) -> Result<Value, AccountSessionError> {
+        if !matches!(provider, "codex" | "claude") || !params.is_object() {
+            return Err(AccountSessionError::InvalidResponse("/".into()));
+        }
+        let snapshot = self.driver.listing_snapshot().map_err(account_error)?;
+        let profile = snapshot
+            .accounts
+            .iter()
+            .find(|row| row["id"].as_str() == Some(account))
+            .ok_or(AccountSessionError::Refused("Unknown account"))?;
+        if profile
+            .get("provider")
+            .and_then(Value::as_str)
+            .unwrap_or("codex")
+            != provider
+        {
+            return Err(AccountSessionError::Refused("Account provider changed"));
+        }
+        let operation = format!(
+            "model-list:{}",
+            crate::event_write::request_signature(
+                &serde_json::json!({"account": account, "provider": provider, "params": params}),
+            )
+        );
+        let receipt = self.exchange(
+            account,
+            false,
+            operation,
+            "model/list",
+            params,
+            Duration::from_secs(
+                studio_runtime_schema::shared_values::MODEL_CATALOG_OPERATION_TIMEOUT_SECONDS,
+            ),
+        )?;
+        if receipt.certainty != RequestCertainty::Written {
+            return Err(AccountSessionError::Requires("provider-session/model-list"));
+        }
+        receipt
+            .result
+            .ok_or_else(|| AccountSessionError::InvalidResponse("/".into()))
+    }
+
     fn read_limits(&self, account: &str) -> Result<Value, AccountSessionError> {
         let snapshot = self.driver.snapshot().map_err(account_error)?;
         if !snapshot
