@@ -101,6 +101,7 @@ impl AccountSessionBroker {
     }
 
     #[cfg(test)]
+    #[allow(dead_code)]
     pub(crate) fn attach_test_session(
         &self,
         account: String,
