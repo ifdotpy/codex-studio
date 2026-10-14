@@ -336,11 +336,13 @@ pub fn send_followup(
     send_followup_inner(
         transaction,
         Some((input.sender_id, input.sender_epoch)),
-        input.recipient_id,
-        input.id,
-        input.text,
-        input.delivery,
-        input.now,
+        FollowupInput {
+            recipient_id: input.recipient_id,
+            id: input.id,
+            text: input.text,
+            delivery: input.delivery,
+            now: input.now,
+        },
         admission,
     )
 }
@@ -362,25 +364,38 @@ pub fn send_system_followup(
     send_followup_inner(
         transaction,
         None,
-        input.recipient_id,
-        input.id,
-        input.text,
-        input.delivery,
-        input.now,
+        FollowupInput {
+            recipient_id: input.recipient_id,
+            id: input.id,
+            text: input.text,
+            delivery: input.delivery,
+            now: input.now,
+        },
         admission,
     )
+}
+
+struct FollowupInput<'a> {
+    recipient_id: &'a str,
+    id: &'a str,
+    text: &'a str,
+    delivery: &'a str,
+    now: f64,
 }
 
 fn send_followup_inner(
     transaction: &Transaction<'_>,
     sender_identity: Option<(&str, i64)>,
-    recipient_id: &str,
-    id: &str,
-    text: &str,
-    delivery: &str,
-    now: f64,
+    input: FollowupInput<'_>,
     admission: &dyn crate::message_admission::MessageAdmission,
 ) -> Result<PostMessageResult, CoordinationError> {
+    let FollowupInput {
+        recipient_id,
+        id,
+        text,
+        delivery,
+        now,
+    } = input;
     let text = crate::event_write::python_strip(text);
     if text.is_empty() || text.chars().count() > 32_000 {
         return Err(CoordinationError::InvalidRequest(
@@ -1158,8 +1173,8 @@ mod tests {
             &connection,
             &studio_runtime_store::AgentId::from("lead"),
         )
-        .unwrap()
-        .unwrap();
+        .expect("lead lookup succeeds")
+        .expect("lead exists");
         lead.status = studio_runtime_store::AgentStatus::Running;
         lead.extra.insert("autoWake".into(), json!(true));
         lead.extra.insert("inFlight".into(), json!(true));
@@ -1217,7 +1232,8 @@ mod tests {
                 |row| row.get(0),
             )
             .expect("event metadata exists");
-        let metadata: serde_json::Value = serde_json::from_str(&metadata).unwrap();
+        let metadata: serde_json::Value =
+            serde_json::from_str(&metadata).expect("metadata is valid JSON");
         assert_eq!(metadata["delivery"], "after_turn");
         assert_eq!(metadata["assets"], json!([]));
         assert!(metadata.get("senderId").is_none());

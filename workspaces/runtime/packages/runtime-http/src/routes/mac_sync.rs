@@ -272,34 +272,41 @@ mod tests {
 
     #[tokio::test]
     async fn resolve_http_uses_a_fake_guest_endpoint_and_writes_vm_choice() {
-        let state_dir = tempfile::tempdir().unwrap();
+        let state_dir = tempfile::tempdir().expect("fixture operation succeeds");
         let project = state_dir.path().join("layr-projects/p1");
         let folder = state_dir.path().join("mac-folder");
         let socket_dir = state_dir.path().join("linux-vm");
-        std::fs::create_dir_all(project.join("sync")).unwrap();
-        std::fs::create_dir_all(&folder).unwrap();
-        std::fs::create_dir_all(&socket_dir).unwrap();
+        std::fs::create_dir_all(project.join("sync")).expect("fixture operation succeeds");
+        std::fs::create_dir_all(&folder).expect("fixture operation succeeds");
+        std::fs::create_dir_all(&socket_dir).expect("fixture operation succeeds");
         std::fs::write(
             project.join("project.json"),
             json!({"projectId":"p1","source":folder}).to_string(),
         )
-        .unwrap();
+        .expect("fixture operation succeeds");
         std::fs::write(
             project.join("sync/held.json"),
             json!({"file.txt":{"h":"old","why":"conflict"}}).to_string(),
         )
-        .unwrap();
-        std::fs::write(project.join("sync/status.json"), json!({"state":"conflict","conflicts":["file.txt"],"choices":[],"withAgent":[],"deletes":0}).to_string()).unwrap();
-        std::fs::write(folder.join("file.txt"), b"mac").unwrap();
-        let listener = UnixListener::bind(socket_dir.join("guest.sock")).unwrap();
+        .expect("fixture operation succeeds");
+        std::fs::write(project.join("sync/status.json"), json!({"state":"conflict","conflicts":["file.txt"],"choices":[],"withAgent":[],"deletes":0}).to_string()).expect("fixture operation succeeds");
+        std::fs::write(folder.join("file.txt"), b"mac").expect("fixture operation succeeds");
+        let listener =
+            UnixListener::bind(socket_dir.join("guest.sock")).expect("fixture operation succeeds");
         let server = std::thread::spawn(move || {
             for _ in 0..2 {
-                let (stream, _) = listener.accept().unwrap();
+                let (stream, _) = listener.accept().expect("fixture operation succeeds");
                 let mut reader = BufReader::new(stream);
                 let mut line = String::new();
-                reader.read_line(&mut line).unwrap();
-                let request: Value = serde_json::from_str(&line).unwrap();
-                let result = match request["method"].as_str().unwrap() {
+                reader
+                    .read_line(&mut line)
+                    .expect("fixture operation succeeds");
+                let request: Value =
+                    serde_json::from_str(&line).expect("fixture operation succeeds");
+                let result = match request["method"]
+                    .as_str()
+                    .expect("fixture operation succeeds")
+                {
                     "sync.mac.head" => json!({"mainStateId":"main-1"}),
                     "sync.mac.read" => {
                         json!({"kind":"file","mode":420,"data":"Z3Vlc3Q=","eof":true})
@@ -307,7 +314,8 @@ mod tests {
                     other => panic!("unexpected guest method: {other}"),
                 };
                 let mut stream = reader.into_inner();
-                writeln!(stream, "{}", json!({"id":request["id"],"result":result})).unwrap();
+                writeln!(stream, "{}", json!({"id":request["id"],"result":result}))
+                    .expect("fixture operation succeeds");
             }
         });
         let state = crate::router::HttpState::new(
@@ -320,7 +328,7 @@ mod tests {
             None,
             None,
         );
-        let app = crate::router::router(state).unwrap();
+        let app = crate::router::router(state).expect("fixture operation succeeds");
         let request = axum::http::Request::builder()
             .method("POST")
             .uri("/api/mac-sync/resolve")
@@ -332,42 +340,50 @@ mod tests {
             )
             .header("content-type", "application/json")
             .extension(axum::extract::ConnectInfo(
-                "127.0.0.1:12345".parse::<std::net::SocketAddr>().unwrap(),
+                "127.0.0.1:12345"
+                    .parse::<std::net::SocketAddr>()
+                    .expect("fixture operation succeeds"),
             ))
             .body(Body::from(
                 json!({"projectId":"p1","path":"file.txt","choice":"vm"}).to_string(),
             ))
-            .unwrap();
-        let response = app.oneshot(request).await.unwrap();
+            .expect("fixture operation succeeds");
+        let response = app
+            .oneshot(request)
+            .await
+            .expect("fixture operation succeeds");
         assert_eq!(response.status(), StatusCode::OK);
         let bytes = axum::body::to_bytes(response.into_body(), 1024 * 1024)
             .await
-            .unwrap();
-        let value = serde_json::from_slice::<Value>(&bytes).unwrap();
+            .expect("fixture operation succeeds");
+        let value = serde_json::from_slice::<Value>(&bytes).expect("fixture operation succeeds");
         assert_eq!(value["mainStateId"], "main-1");
         assert_eq!(value["status"]["state"], "synced");
-        assert_eq!(std::fs::read(folder.join("file.txt")).unwrap(), b"guest");
-        server.join().unwrap();
+        assert_eq!(
+            std::fs::read(folder.join("file.txt")).expect("fixture operation succeeds"),
+            b"guest"
+        );
+        server.join().expect("fixture operation succeeds");
     }
 
     #[tokio::test]
     async fn config_http_contract_and_invalid_resolve_refusal_are_quiescent() {
-        let state_dir = tempfile::tempdir().unwrap();
+        let state_dir = tempfile::tempdir().expect("fixture operation succeeds");
         let project = state_dir.path().join("layr-projects/p1");
         let folder = state_dir.path().join("mac-folder");
-        std::fs::create_dir_all(project.join("sync")).unwrap();
-        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::create_dir_all(project.join("sync")).expect("fixture operation succeeds");
+        std::fs::create_dir_all(&folder).expect("fixture operation succeeds");
         std::fs::write(
             project.join("project.json"),
             json!({"projectId":"p1","source":folder}).to_string(),
         )
-        .unwrap();
+        .expect("fixture operation succeeds");
         std::fs::write(
             project.join("sync/status.json"),
             json!({"state":"syncing","conflicts":[],"choices":[],"withAgent":[],"deletes":0})
                 .to_string(),
         )
-        .unwrap();
+        .expect("fixture operation succeeds");
         let state = crate::router::HttpState::new(
             "fixture-token".into(),
             "fixture".into(),
@@ -378,7 +394,7 @@ mod tests {
             None,
             None,
         );
-        let app = crate::router::router(state).unwrap();
+        let app = crate::router::router(state).expect("fixture operation succeeds");
         let request = |uri: &'static str, body: Value| {
             axum::http::Request::builder()
                 .method("POST")
@@ -391,12 +407,15 @@ mod tests {
                 )
                 .header("content-type", "application/json")
                 .extension(axum::extract::ConnectInfo(
-                    "127.0.0.1:12345".parse::<std::net::SocketAddr>().unwrap(),
+                    "127.0.0.1:12345"
+                        .parse::<std::net::SocketAddr>()
+                        .expect("fixture operation succeeds"),
                 ))
                 .body(Body::from(body.to_string()))
-                .unwrap()
+                .expect("fixture operation succeeds")
         };
-        let before = std::fs::read(project.join("sync/status.json")).unwrap();
+        let before =
+            std::fs::read(project.join("sync/status.json")).expect("fixture operation succeeds");
         let refused = app
             .clone()
             .oneshot(request(
@@ -404,10 +423,10 @@ mod tests {
                 json!({"projectId":"p1","path":"file.txt","choice":"both"}),
             ))
             .await
-            .unwrap();
+            .expect("fixture operation succeeds");
         assert_eq!(refused.status(), StatusCode::BAD_REQUEST);
         assert_eq!(
-            std::fs::read(project.join("sync/status.json")).unwrap(),
+            std::fs::read(project.join("sync/status.json")).expect("fixture operation succeeds"),
             before
         );
         assert!(!project.join("sync/round.lock").exists());
@@ -418,12 +437,12 @@ mod tests {
                 json!({"projectId":"p1","enabled":false,"allowDeletes":false}),
             ))
             .await
-            .unwrap();
+            .expect("fixture operation succeeds");
         assert_eq!(response.status(), StatusCode::OK);
         let bytes = axum::body::to_bytes(response.into_body(), 1024 * 1024)
             .await
-            .unwrap();
-        let value: Value = serde_json::from_slice(&bytes).unwrap();
+            .expect("fixture operation succeeds");
+        let value: Value = serde_json::from_slice(&bytes).expect("fixture operation succeeds");
         assert_eq!(value["state"], "paused");
         assert_eq!(value["enabled"], false);
         assert!(project.join("sync/config.json").is_file());

@@ -180,20 +180,30 @@ pub fn resolve(
         "vm" => {
             write_mac(&root, rel, &kind, &data, mode)?;
             if kind == ABSENT {
-                manifest.as_object_mut().unwrap().remove(rel);
+                manifest
+                    .as_object_mut()
+                    .ok_or(MacSyncError::Invalid)?
+                    .remove(rel);
             } else {
                 manifest[rel] = json!({"k":kind,"s":data.len(),"m":0,"x":mode,"h":hex_sha(&data),"b":main_state});
             }
-            held.as_object_mut().unwrap().remove(rel);
+            held.as_object_mut()
+                .ok_or(MacSyncError::Invalid)?
+                .remove(rel);
         }
         "mac" => {
             if kind == ABSENT {
-                manifest.as_object_mut().unwrap().remove(rel);
+                manifest
+                    .as_object_mut()
+                    .ok_or(MacSyncError::Invalid)?
+                    .remove(rel);
             } else {
                 manifest[rel] =
                     json!({"k":kind,"s":-1,"m":0,"x":mode,"h":hex_sha(&data),"b":main_state});
             }
-            held.as_object_mut().unwrap().remove(rel);
+            held.as_object_mut()
+                .ok_or(MacSyncError::Invalid)?
+                .remove(rel);
         }
         "agent" => {
             let path = contained_path(&root, rel)?;
@@ -320,15 +330,12 @@ pub fn resolve(
         _ => unreachable!(),
     }
     choices.retain(|value| value.as_str() != Some(rel));
-    let conflicts = held
-        .as_object()
-        .unwrap()
+    let held_object = held.as_object().ok_or(MacSyncError::Invalid)?;
+    let conflicts = held_object
         .iter()
         .filter_map(|(path, value)| (value["why"] == "conflict").then_some(path.clone()))
         .collect::<Vec<_>>();
-    let with_agent = held
-        .as_object()
-        .unwrap()
+    let with_agent = held_object
         .iter()
         .filter_map(|(path, value)| (value["why"] == "agent").then_some(path.clone()))
         .collect::<Vec<_>>();
@@ -344,21 +351,25 @@ pub fn resolve(
     status["conflicts"] = json!(conflicts);
     status["withAgent"] = json!(with_agent);
     status["rescan"] = json!(rescan);
-    status["state"] = json!(if !conflicts.is_empty()
-        || !status["choices"].as_array().unwrap().is_empty()
-    {
-        "conflict"
-    } else if !status["withAgent"].as_array().unwrap().is_empty() {
-        "waiting"
-    } else {
-        "synced"
-    });
+    status["state"] = json!(
+        if !conflicts.is_empty() || choices.iter().any(Value::is_string) {
+            "conflict"
+        } else if !with_agent.is_empty() {
+            "waiting"
+        } else {
+            "synced"
+        }
+    );
     status["at"] = json!(now_seconds());
     save_json(&manifest_path, &manifest)?;
     save_json(&held_path, &held)?;
     save_json(&status_path, &status)?;
     if choice == "agent" {
-        let _ = fs::remove_file(&intent_path);
+        match fs::remove_file(&intent_path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(MacSyncError::Io(error)),
+        }
     }
     let source = project_record["source"]
         .as_str()
@@ -742,11 +753,14 @@ mod tests {
             _timeout: Duration,
             _on_frame: &mut dyn FnMut(Value) -> Result<(), GuestError>,
         ) -> Result<Value, GuestError> {
-            self.calls.lock().unwrap().push((
-                method.to_owned(),
-                params.clone(),
-                request_id.map(str::to_owned),
-            ));
+            self.calls
+                .lock()
+                .expect("fixture operation succeeds")
+                .push((
+                    method.to_owned(),
+                    params.clone(),
+                    request_id.map(str::to_owned),
+                ));
             if method == "sync.mac.handoff" && self.unknown_handoff {
                 return Err(GuestError::Transport {
                     message: "fake endpoint closed after write".to_owned(),
@@ -767,32 +781,36 @@ mod tests {
     }
 
     fn setup() -> (tempfile::TempDir, PathBuf) {
-        let state = tempfile::tempdir().unwrap();
+        let state = tempfile::tempdir().expect("fixture operation succeeds");
         let project = state.path().join("layr-projects/p1");
         let folder = state.path().join("mac-folder");
-        fs::create_dir_all(&project).unwrap();
-        fs::create_dir_all(&folder).unwrap();
+        fs::create_dir_all(&project).expect("fixture operation succeeds");
+        fs::create_dir_all(&folder).expect("fixture operation succeeds");
         fs::write(
             project.join("project.json"),
             json!({"projectId":"p1","source":folder}).to_string(),
         )
-        .unwrap();
-        fs::create_dir_all(project.join("sync")).unwrap();
-        fs::write(folder.join("file.txt"), b"mac version").unwrap();
+        .expect("fixture operation succeeds");
+        fs::create_dir_all(project.join("sync")).expect("fixture operation succeeds");
+        fs::write(folder.join("file.txt"), b"mac version").expect("fixture operation succeeds");
         fs::write(
             project.join("sync/held.json"),
             json!({"file.txt":{"h":"old","why":"conflict"}}).to_string(),
         )
-        .unwrap();
-        fs::write(project.join("sync/status.json"), json!({"state":"conflict","conflicts":["file.txt"],"choices":[],"withAgent":[],"deletes":0}).to_string()).unwrap();
+        .expect("fixture operation succeeds");
+        fs::write(project.join("sync/status.json"), json!({"state":"conflict","conflicts":["file.txt"],"choices":[],"withAgent":[],"deletes":0}).to_string()).expect("fixture operation succeeds");
         (state, folder)
     }
 
     #[test]
     fn vm_resolution_writes_the_guest_version_and_clears_the_conflict() {
         let (state, folder) = setup();
-        let result = resolve(state.path(), "p1", "file.txt", "vm", &FakeGuest::default()).unwrap();
-        assert_eq!(fs::read(folder.join("file.txt")).unwrap(), b"guest version");
+        let result = resolve(state.path(), "p1", "file.txt", "vm", &FakeGuest::default())
+            .expect("fixture operation succeeds");
+        assert_eq!(
+            fs::read(folder.join("file.txt")).expect("fixture operation succeeds"),
+            b"guest version"
+        );
         assert_eq!(result.response["choice"], "vm");
         assert_eq!(result.response["status"]["state"], "synced");
         assert!(result.handoff_id.is_none());
@@ -802,7 +820,8 @@ mod tests {
     fn agent_handoff_uses_a_stable_guest_operation_and_mac_conflict_identity() {
         let (state, _) = setup();
         let guest = FakeGuest::default();
-        let result = resolve(state.path(), "p1", "file.txt", "agent", &guest).unwrap();
+        let result = resolve(state.path(), "p1", "file.txt", "agent", &guest)
+            .expect("fixture operation succeeds");
         assert_eq!(result.response["line"], "mac-conflict");
         assert!(
             result
@@ -814,25 +833,29 @@ mod tests {
             result
                 .handoff_text
                 .as_deref()
-                .unwrap()
+                .expect("fixture operation succeeds")
                 .contains("layr state handoff-1")
         );
-        let calls = guest.calls.lock().unwrap();
+        let calls = guest.calls.lock().expect("fixture operation succeeds");
         let handoff = calls
             .iter()
             .find(|call| call.0 == "sync.mac.handoff")
-            .unwrap();
+            .expect("fixture operation succeeds");
         assert_eq!(handoff.2.as_deref(), handoff.1["operationId"].as_str());
         assert!(calls.iter().any(|call| call.0 == "upload.commit"));
-        let identity = result.handoff_id.clone().unwrap();
+        let identity = result
+            .handoff_id
+            .clone()
+            .expect("fixture operation succeeds");
         drop(calls);
-        let repeated = resolve(state.path(), "p1", "file.txt", "agent", &guest).unwrap();
+        let repeated = resolve(state.path(), "p1", "file.txt", "agent", &guest)
+            .expect("fixture operation succeeds");
         assert_eq!(repeated.handoff_id.as_deref(), Some(identity.as_str()));
         assert_eq!(
             guest
                 .calls
                 .lock()
-                .unwrap()
+                .expect("fixture operation succeeds")
                 .iter()
                 .filter(|call| call.0 == "sync.mac.handoff")
                 .count(),
@@ -854,7 +877,7 @@ mod tests {
         let calls_before_restart = guest
             .calls
             .lock()
-            .unwrap()
+            .expect("fixture operation succeeds")
             .iter()
             .filter(|call| call.0 == "sync.mac.handoff")
             .count();
@@ -863,7 +886,7 @@ mod tests {
             state.path().join("mac-folder/file.txt"),
             b"changed after unknown",
         )
-        .unwrap();
+        .expect("fixture operation succeeds");
         assert!(matches!(
             resolve(state.path(), "p1", "file.txt", "agent", &guest),
             Err(MacSyncError::HandoffUnknown)
@@ -872,7 +895,7 @@ mod tests {
             guest
                 .calls
                 .lock()
-                .unwrap()
+                .expect("fixture operation succeeds")
                 .iter()
                 .filter(|call| call.0 == "sync.mac.handoff")
                 .count(),
@@ -888,7 +911,7 @@ mod tests {
             &directory.join("handoff-intent.json"),
             &json!({"operationId":"unresolved","state":"sending"}),
         )
-        .unwrap();
+        .expect("fixture operation succeeds");
         let guest = FakeGuest::default();
         assert!(matches!(
             resolve(state.path(), "p1", "file.txt", "agent", &guest),
@@ -898,7 +921,7 @@ mod tests {
             !guest
                 .calls
                 .lock()
-                .unwrap()
+                .expect("fixture operation succeeds")
                 .iter()
                 .any(|call| call.0 == "sync.mac.handoff")
         );
@@ -914,22 +937,24 @@ mod tests {
             &directory.join("handoff-intent.json"),
             &json!({"operationId":operation,"state":"completed","result":{"line":"mac-conflict","stateId":"handoff-recovered","mainStateId":"main-1"}}),
         )
-        .unwrap();
+        .expect("fixture operation succeeds");
         let guest = FakeGuest::default();
-        let result = resolve(state.path(), "p1", "file.txt", "agent", &guest).unwrap();
+        let result = resolve(state.path(), "p1", "file.txt", "agent", &guest)
+            .expect("fixture operation succeeds");
         assert_eq!(result.response["stateId"], "handoff-recovered");
         assert_eq!(
             guest
                 .calls
                 .lock()
-                .unwrap()
+                .expect("fixture operation succeeds")
                 .iter()
                 .filter(|call| call.0 == "sync.mac.handoff")
                 .count(),
             0
         );
         assert_eq!(
-            read_json(&directory.join("held.json"), json!({})).unwrap()["file.txt"]["stateId"],
+            read_json(&directory.join("held.json"), json!({})).expect("fixture operation succeeds")
+                ["file.txt"]["stateId"],
             "handoff-recovered"
         );
     }
@@ -937,11 +962,18 @@ mod tests {
     #[test]
     fn config_refuses_unrecorded_projects_and_returns_the_public_status_shape() {
         let (state, folder) = setup();
-        let status = configure(state.path(), "p1", Some(false), false).unwrap();
+        let status =
+            configure(state.path(), "p1", Some(false), false).expect("fixture operation succeeds");
         assert_eq!(status["state"], "paused");
         assert_eq!(status["enabled"], false);
         assert_eq!(status["folder"], folder.to_string_lossy().as_ref());
-        assert_eq!(status.as_object().unwrap().len(), 9);
+        assert_eq!(
+            status
+                .as_object()
+                .expect("fixture operation succeeds")
+                .len(),
+            9
+        );
         assert!(matches!(
             configure(state.path(), "absent", None, false),
             Err(MacSyncError::NoProject)

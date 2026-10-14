@@ -183,6 +183,17 @@ fn allocated_disk_bytes(vm_dir: &Path) -> u64 {
         .sum()
 }
 
+#[cfg(unix)]
+fn allocated_bytes(metadata: &fs::Metadata) -> u64 {
+    use std::os::unix::fs::MetadataExt;
+    metadata.blocks().saturating_mul(512)
+}
+
+#[cfg(not(unix))]
+fn allocated_bytes(metadata: &fs::Metadata) -> u64 {
+    metadata.len()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -207,9 +218,16 @@ mod tests {
     fn settings_defaults_round_trip_through_python_file_names() {
         let directory = tempfile::tempdir().expect("temporary state directory");
         let expected = VmSettings::defaults();
-        assert_eq!(get_settings(directory.path()).unwrap(), expected);
-        set_settings(directory.path(), expected, &StoppedControl).unwrap();
-        assert_eq!(get_settings(directory.path()).unwrap(), expected);
+        assert_eq!(
+            get_settings(directory.path()).expect("fixture operation succeeds"),
+            expected
+        );
+        set_settings(directory.path(), expected, &StoppedControl)
+            .expect("fixture operation succeeds");
+        assert_eq!(
+            get_settings(directory.path()).expect("fixture operation succeeds"),
+            expected
+        );
         assert!(directory.path().join("settings.json").is_file());
     }
 
@@ -220,14 +238,22 @@ mod tests {
             cpus: 1,
             ..VmSettings::defaults()
         };
-        atomic_json(&directory.path().join("settings.json"), &fallback).unwrap();
-        assert_eq!(get_settings(directory.path()).unwrap(), fallback);
+        atomic_json(&directory.path().join("settings.json"), &fallback)
+            .expect("fixture operation succeeds");
+        assert_eq!(
+            get_settings(directory.path()).expect("fixture operation succeeds"),
+            fallback
+        );
         let configured = VmSettings {
             cpus: fallback.cpus + 1,
             ..fallback
         };
-        atomic_json(&directory.path().join("config.json"), &configured).unwrap();
-        assert_eq!(get_settings(directory.path()).unwrap(), configured);
+        atomic_json(&directory.path().join("config.json"), &configured)
+            .expect("fixture operation succeeds");
+        assert_eq!(
+            get_settings(directory.path()).expect("fixture operation succeeds"),
+            configured
+        );
     }
 
     #[test]
@@ -242,41 +268,43 @@ mod tests {
         );
         let directory = tempfile::tempdir().expect("temporary state directory");
         let initial = VmSettings::defaults();
-        atomic_json(&directory.path().join("config.json"), &initial).unwrap();
-        let err = set_settings(
+        atomic_json(&directory.path().join("config.json"), &initial)
+            .expect("fixture operation succeeds");
+        let result = set_settings(
             directory.path(),
             VmSettings {
                 system_disk_bytes: initial.system_disk_bytes - GIB,
                 ..initial
             },
             &StoppedControl,
-        )
-        .unwrap_err();
-        assert!(matches!(err, SettingsError::DiskShrink));
+        );
+        assert!(matches!(result, Err(SettingsError::DiskShrink)));
     }
 
     #[test]
     fn provisioned_disks_grow_without_shrinking_existing_files() {
         let directory = tempfile::tempdir().expect("temporary state directory");
         let current = VmSettings::defaults();
-        atomic_json(&directory.path().join("config.json"), &current).unwrap();
-        fs::write(directory.path().join("system.raw"), []).unwrap();
-        fs::write(directory.path().join("data.raw"), []).unwrap();
+        atomic_json(&directory.path().join("config.json"), &current)
+            .expect("fixture operation succeeds");
+        fs::write(directory.path().join("system.raw"), []).expect("fixture operation succeeds");
+        fs::write(directory.path().join("data.raw"), []).expect("fixture operation succeeds");
         let desired = VmSettings {
             system_disk_bytes: current.system_disk_bytes + GIB,
             data_disk_bytes: current.data_disk_bytes + GIB,
             ..current
         };
-        set_settings(directory.path(), desired, &StoppedControl).unwrap();
+        set_settings(directory.path(), desired, &StoppedControl)
+            .expect("fixture operation succeeds");
         assert_eq!(
             fs::metadata(directory.path().join("system.raw"))
-                .unwrap()
+                .expect("fixture operation succeeds")
                 .len(),
             desired.system_disk_bytes
         );
         assert_eq!(
             fs::metadata(directory.path().join("data.raw"))
-                .unwrap()
+                .expect("fixture operation succeeds")
                 .len(),
             desired.data_disk_bytes
         );
@@ -301,26 +329,17 @@ mod tests {
     fn running_vm_settings_refusal_has_no_write() {
         let directory = tempfile::tempdir().expect("temporary state directory");
         let settings = VmSettings::defaults();
-        atomic_json(&directory.path().join("settings.json"), &settings).unwrap();
-        let original = fs::read(directory.path().join("settings.json")).unwrap();
+        atomic_json(&directory.path().join("settings.json"), &settings)
+            .expect("fixture operation succeeds");
+        let original =
+            fs::read(directory.path().join("settings.json")).expect("fixture operation succeeds");
         assert!(matches!(
             set_settings(directory.path(), settings, &RunningControl),
             Err(SettingsError::Running)
         ));
         assert_eq!(
-            fs::read(directory.path().join("settings.json")).unwrap(),
+            fs::read(directory.path().join("settings.json")).expect("fixture operation succeeds"),
             original
         );
     }
-}
-
-#[cfg(unix)]
-fn allocated_bytes(metadata: &fs::Metadata) -> u64 {
-    use std::os::unix::fs::MetadataExt;
-    metadata.blocks().saturating_mul(512)
-}
-
-#[cfg(not(unix))]
-fn allocated_bytes(metadata: &fs::Metadata) -> u64 {
-    metadata.len()
 }

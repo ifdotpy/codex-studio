@@ -31,7 +31,6 @@ async fn get_settings(State(state): State<HttpState>) -> Result<Json<Value>, Api
         .await
         .map_err(|_| ApiError::internal())?
         .map(Json)
-        .map_err(|error| error)
 }
 
 async fn set_settings(
@@ -46,7 +45,6 @@ async fn set_settings(
         .await
         .map_err(|_| ApiError::internal())?
         .map(Json)
-        .map_err(|error| error)
 }
 
 fn vm_dir(state: &HttpState) -> std::path::PathBuf {
@@ -101,17 +99,23 @@ mod tests {
     async fn settings_post_runs_through_http_with_a_fake_control_socket() {
         let state_dir = tempfile::tempdir().expect("temporary state directory");
         let vm_dir = state_dir.path().join("linux-vm");
-        std::fs::create_dir_all(&vm_dir).unwrap();
-        let listener = UnixListener::bind(vm_dir.join("control.sock")).unwrap();
+        std::fs::create_dir_all(&vm_dir).expect("fixture operation succeeds");
+        let listener =
+            UnixListener::bind(vm_dir.join("control.sock")).expect("fixture operation succeeds");
         let server = std::thread::spawn(move || {
             for _ in 0..2 {
-                let (stream, _) = listener.accept().unwrap();
+                let (stream, _) = listener.accept().expect("fixture operation succeeds");
                 let mut reader = BufReader::new(stream);
                 let mut line = String::new();
-                reader.read_line(&mut line).unwrap();
-                let id = serde_json::from_str::<Value>(&line).unwrap()["id"].clone();
+                reader
+                    .read_line(&mut line)
+                    .expect("fixture operation succeeds");
+                let id = serde_json::from_str::<Value>(&line).expect("fixture operation succeeds")
+                    ["id"]
+                    .clone();
                 let mut stream = reader.into_inner();
-                writeln!(stream, "{}", json!({"id":id,"result":{"state":"stopped"}})).unwrap();
+                writeln!(stream, "{}", json!({"id":id,"result":{"state":"stopped"}}))
+                    .expect("fixture operation succeeds");
             }
         });
         let state = crate::router::HttpState::new(
@@ -139,22 +143,24 @@ mod tests {
                     )
                     .header("content-type", "application/json")
                     .extension(axum::extract::ConnectInfo(
-                        "127.0.0.1:12345".parse::<std::net::SocketAddr>().unwrap(),
+                        "127.0.0.1:12345"
+                            .parse::<std::net::SocketAddr>()
+                            .expect("fixture operation succeeds"),
                     ))
                     .body(Body::from(body.to_string()))
-                    .unwrap(),
+                    .expect("fixture operation succeeds"),
             )
             .await
-            .unwrap();
+            .expect("fixture operation succeeds");
         assert_eq!(response.status(), StatusCode::OK);
         let bytes = axum::body::to_bytes(response.into_body(), 1024 * 1024)
             .await
-            .unwrap();
-        let value = serde_json::from_slice::<Value>(&bytes).unwrap();
+            .expect("fixture operation succeeds");
+        let value = serde_json::from_slice::<Value>(&bytes).expect("fixture operation succeeds");
         assert_eq!(value["settings"]["cpus"], 1);
         assert_eq!(value["state"], "stopped");
         assert_eq!(value["allocatedDiskBytes"], 0);
-        server.join().unwrap();
+        server.join().expect("fixture operation succeeds");
     }
 
     #[tokio::test]
@@ -182,27 +188,29 @@ mod tests {
                     crate::schema::api_schema_hash(),
                 )
                 .extension(axum::extract::ConnectInfo(
-                    "127.0.0.1:12345".parse::<std::net::SocketAddr>().unwrap(),
+                    "127.0.0.1:12345"
+                        .parse::<std::net::SocketAddr>()
+                        .expect("fixture operation succeeds"),
                 ));
             if body.is_some() {
                 builder = builder.header("content-type", "application/json");
             }
             builder
                 .body(body.map_or_else(Body::empty, |value| Body::from(value.to_string())))
-                .unwrap()
+                .expect("fixture operation succeeds")
         };
         let response = app
             .clone()
             .oneshot(request(axum::http::Method::GET, None))
             .await
-            .unwrap();
+            .expect("fixture operation succeeds");
         assert_eq!(response.status(), StatusCode::OK);
         let value: Value = serde_json::from_slice(
             &axum::body::to_bytes(response.into_body(), 1024 * 1024)
                 .await
-                .unwrap(),
+                .expect("fixture operation succeeds"),
         )
-        .unwrap();
+        .expect("fixture operation succeeds");
         assert_eq!(value["state"], "stopped");
         assert_eq!(value["settings"]["memoryBytes"], 4 * 1024 * 1024 * 1024u64);
         let before = std::fs::read_dir(state_dir.path().join("linux-vm"))
@@ -215,7 +223,7 @@ mod tests {
                 Some(json!({"cpus":0,"memoryBytes":4294967296u64,"systemDiskBytes":17179869184u64,"dataDiskBytes":137438953472u64})),
             ))
             .await
-            .unwrap();
+            .expect("fixture operation succeeds");
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
         let after = std::fs::read_dir(state_dir.path().join("linux-vm"))
             .ok()
