@@ -104,6 +104,52 @@ fn apply(
     }
     .apply(expected, &scope(), action)
 }
+struct NoRecoveryDelivery;
+impl studio_runtime_services::recovery_store::RecoveryDelivery for NoRecoveryDelivery {
+    fn start_held(
+        &mut self,
+        _: &Transaction<'_>,
+        _: &serde_json::Value,
+        _: &str,
+        _: &str,
+    ) -> Result<(), RecoveryError> {
+        Ok(())
+    }
+    fn terminal(
+        &mut self,
+        _: &Transaction<'_>,
+        _: &mut serde_json::Value,
+        _: &serde_json::Value,
+        _: studio_runtime_services::recovery::CompletionMode,
+    ) -> Result<(), RecoveryError> {
+        Ok(())
+    }
+}
+fn apply_lifecycle(
+    store: &RuntimeStore,
+    expected: &RecoverySnapshot,
+    action: RecoveryAction,
+) -> Result<RecoveryOutcome, RecoveryError> {
+    use studio_runtime_services::recovery_store::{
+        LifecycleCompletionWriter, RecoveryMessageWriter,
+    };
+    let mut delivery = NoRecoveryDelivery;
+    let mut write_message: &mut RecoveryMessageWriter<'_> = &mut |_, _, _, _, _, _, _| Ok(None);
+    let mut completion = LifecycleCompletionWriter {
+        at: 100.0,
+        delivery: &mut delivery,
+        write_message: &mut write_message,
+        stream_update: None,
+    };
+    RecoveryStore {
+        store,
+        connection_current: &|_| true,
+        completion: &mut completion,
+        at: 100.0,
+        observation_current: &|_| None,
+    }
+    .apply(expected, &scope(), action)
+}
 fn events(store: &RuntimeStore) -> Vec<(String, String)> {
     store
         .read()
@@ -270,6 +316,94 @@ fn recovery_transaction_restart_matrix() {
     stale_epoch_connection_and_uncertain_input_write_nothing();
     preparation_transaction_failpoints_roll_back_every_row();
     orphan_requires_the_completed_turn_receipt_and_no_uncertain_input();
+    queued_active_wait_is_adopted_and_keeps_input_pending();
+    queued_active_wait_terminal_is_reconciled_and_saved();
+}
+
+fn queued_active_snapshot(store: &RuntimeStore) -> RecoverySnapshot {
+    let cases: Vec<serde_json::Value> =
+        serde_json::from_str(include_str!("recovery/cases.json")).expect("recovery corpus");
+    let mut agent = cases
+        .iter()
+        .find(|case| case["name"] == "queued-active")
+        .expect("queued active fixture")["agent"]
+        .clone();
+    agent["connectionRecovery"]["requestId"] = json!("queued-recovery");
+    agent["connectionRecovery"]["requestState"] = json!("pending");
+    agent["connectionRecovery"]["requestBasis"] = json!([]);
+    agent["connectionRecovery"]["requestReceipt"] = serde_json::Value::Null;
+    lifecycle_transaction(store, |tx| {
+        let record = studio_runtime_store::AgentRecord::from_value(agent.clone())
+            .expect("valid agent fixture");
+        AgentRepository::put(tx, &record)?;
+        tx.execute(
+            "UPDATE runtime_events SET status='pending',turn_id=NULL,error=NULL WHERE id='event'",
+            [],
+        )?;
+        Ok(())
+    })
+    .expect("seed queued active wait");
+    snapshot(store)
+}
+
+fn queued_active_wait_is_adopted_and_keeps_input_pending() {
+    let root = fixture();
+    let store = RuntimeStore::open(Some(root.path())).expect("store");
+    let before = queued_active_snapshot(&store);
+    let turn = json!({"id":"turn","threadId":"thread","status":"inProgress","items":[],"itemsView":"full"});
+    let result = apply_lifecycle(&store, &before, RecoveryAction::AdoptQueuedWait { turn })
+        .expect("adopt active native turn");
+    assert_eq!(
+        result,
+        RecoveryOutcome::Applied(json!({"status":"adopted","turnId":"turn"}))
+    );
+    let after = snapshot(&store).record().clone();
+    assert_eq!(after["status"], "running");
+    assert_eq!(after["inFlight"], true);
+    assert!(after.get("startAttempt").is_none());
+    assert!(after.get("contextRepairWait").is_none());
+    assert_eq!(after["connectionRecovery"]["queuedInputPreserved"], true);
+    assert_eq!(after["connectionRecovery"]["requestState"], "result");
+    assert_eq!(
+        after["connectionRecovery"]["requestReceipt"]["status"],
+        "adopted"
+    );
+    assert_eq!(events(&store), vec![("event".into(), "pending".into())]);
+}
+
+fn queued_active_wait_terminal_is_reconciled_and_saved() {
+    use studio_runtime_services::recovery::CompletionMode;
+    let root = fixture();
+    let store = RuntimeStore::open(Some(root.path())).expect("store");
+    let before = queued_active_snapshot(&store);
+    let turn =
+        json!({"id":"turn","threadId":"thread","status":"completed","items":[],"itemsView":"full"});
+    let result = apply_lifecycle(
+        &store,
+        &before,
+        RecoveryAction::Terminal {
+            turn,
+            native_state: "idle".into(),
+            mode: CompletionMode::QueuedActiveWait,
+        },
+    )
+    .expect("reconcile exact terminal turn");
+    assert_eq!(
+        result,
+        RecoveryOutcome::Applied(
+            json!({"status":"reconciled","turnId":"turn","outcome":"completed"})
+        )
+    );
+    let after = snapshot(&store).record().clone();
+    assert_eq!(after["status"], "completed");
+    assert_eq!(after["turnId"], serde_json::Value::Null);
+    assert_eq!(after["connectionRecovery"]["requestState"], "result");
+    assert_eq!(
+        after["connectionRecovery"]["requestReceipt"]["status"],
+        "reconciled"
+    );
+    assert_eq!(after["connectionRecovery"]["queuedInputPreserved"], true);
+    assert_eq!(events(&store), vec![("event".into(), "pending".into())]);
 }
 
 fn oracle(name: &str) -> Vec<serde_json::Value> {

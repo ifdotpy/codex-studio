@@ -28,6 +28,9 @@ pub enum RecoveryAction {
     AcceptStart {
         turn: Value,
     },
+    AdoptQueuedWait {
+        turn: Value,
+    },
     RestorePreparation {
         disconnected: bool,
     },
@@ -259,13 +262,73 @@ pub fn recover_connection(
     {
         return Ok(RecoveryOutcome::Superseded);
     }
-    if e.queued_active_wait {
-        return Err(RecoveryError::EffectsUnavailable);
-    }
     if !e.connection {
         return Ok(RecoveryOutcome::Superseded);
     }
     let mut read = HistoryRead::new(reader, scope.clone(), Instant::now() + READ_DEADLINE);
+    if e.queued_active_wait {
+        let thread = a["threadId"]
+            .as_str()
+            .filter(|s| !s.is_empty())
+            .ok_or(HistoryError::Invalid("threadId"))?;
+        let turn_id = a["turnId"]
+            .as_str()
+            .filter(|s| !s.is_empty())
+            .ok_or(HistoryError::Invalid("turnId"))?;
+        let first_state = read.thread_document(thread)?;
+        let first_turn = latest_turn(&mut read, thread)?;
+        let second_state = read.thread_document(thread)?;
+        let second_turn = latest_turn(&mut read, thread)?;
+        let Some(turn) = second_turn else {
+            return Ok(RecoveryOutcome::Unconfirmed);
+        };
+        let Some(first_turn) = first_turn else {
+            return Ok(RecoveryOutcome::Unconfirmed);
+        };
+        let first_native = first_state["status"]["type"].as_str();
+        let second_native = second_state["status"]["type"].as_str();
+        if first_turn["id"] != turn_id
+            || turn["id"] != turn_id
+            || first_native != second_native
+            || first_turn["status"] != turn["status"]
+            || first_turn["error"] != turn["error"]
+            || crate::event_write::truthy(first_state["status"].get("activeFlags"))
+            || crate::event_write::truthy(second_state["status"].get("activeFlags"))
+        {
+            return Ok(RecoveryOutcome::Unconfirmed);
+        }
+        let action = match (second_native, turn["status"].as_str()) {
+            (Some("active"), Some("inProgress" | "running")) => {
+                RecoveryAction::AdoptQueuedWait { turn }
+            }
+            (Some("idle" | "notLoaded"), Some("completed" | "failed" | "interrupted")) => {
+                let Some(full_turn) = read.exact_turn(thread, turn_id)? else {
+                    return Ok(RecoveryOutcome::Unconfirmed);
+                };
+                if full_turn["status"] != turn["status"] {
+                    return Ok(RecoveryOutcome::Unconfirmed);
+                }
+                let final_state = read.thread_document(thread)?;
+                let final_turn = latest_turn(&mut read, thread)?;
+                if final_state["status"]["type"] != json!(second_native)
+                    || crate::event_write::truthy(final_state["status"].get("activeFlags"))
+                    || final_turn.as_ref().is_none_or(|latest| {
+                        latest["id"] != turn_id || latest["status"] != turn["status"]
+                    })
+                {
+                    return Ok(RecoveryOutcome::Unconfirmed);
+                }
+                RecoveryAction::Terminal {
+                    turn: full_turn,
+                    native_state: second_native.unwrap().into(),
+                    mode: CompletionMode::QueuedActiveWait,
+                }
+            }
+            _ => return Ok(RecoveryOutcome::Unconfirmed),
+        };
+        read.barrier()?;
+        return effects.apply(snapshot, &scope, action);
+    }
     let action = if e.preparation || e.disconnected_preparation {
         RecoveryAction::RestorePreparation {
             disconnected: e.disconnected_preparation,
@@ -326,6 +389,25 @@ pub fn recover_connection(
     };
     read.barrier()?;
     effects.apply(snapshot, &scope, action)
+}
+fn latest_turn(read: &mut HistoryRead<'_>, thread: &str) -> Result<Option<Value>, HistoryError> {
+    let page = read.call(
+        HistoryMethod::Turns,
+        json!({"threadId":thread,"limit":1,"sortDirection":"desc","itemsView":"notLoaded"}),
+    )?;
+    let rows = page["data"]
+        .as_array()
+        .ok_or(HistoryError::Invalid("data"))?;
+    if rows.len() > 1 {
+        return Err(HistoryError::Invalid("latest turn"));
+    }
+    if rows
+        .first()
+        .is_some_and(|turn| turn.get("threadId").is_some_and(|id| id != thread))
+    {
+        return Err(HistoryError::Identity);
+    }
+    Ok(rows.first().cloned())
 }
 fn idle(state: &Value) -> bool {
     matches!(state["type"].as_str(), Some("idle" | "notLoaded"))

@@ -408,6 +408,76 @@ impl CompletionWriter for LifecycleCompletionWriter<'_> {
         let id = text(a, "id")?;
         let epoch = a["epoch"].as_i64().ok_or(RecoveryError::CommitFailed)?;
         let attempt = expected.start_attempt();
+        if let RecoveryAction::AdoptQueuedWait { turn } = action {
+            if !expected.eligibility().queued_active_wait
+                || !matches!(turn["status"].as_str(), Some("inProgress" | "running"))
+                || turn["id"] != a["turnId"]
+                || turn
+                    .get("threadId")
+                    .is_some_and(|thread| thread != &a["threadId"])
+            {
+                return Ok(RecoveryOutcome::Superseded);
+            }
+            let attempt_id = text(attempt, "id")?;
+            let Some(events) = attempt["events"].as_array() else {
+                return Ok(RecoveryOutcome::Unconfirmed);
+            };
+            let mut rows = Vec::new();
+            for event in events {
+                let Some(event_id) = event.as_str() else {
+                    return Ok(RecoveryOutcome::Unconfirmed);
+                };
+                let Some(row) = QueueEventRepository::get(tx, &QueueEventId::from(event_id))?
+                else {
+                    return Ok(RecoveryOutcome::Unconfirmed);
+                };
+                if row.agent.0 != id
+                    || row.epoch != epoch
+                    || row.status != "pending"
+                    || row.turn_id.is_some()
+                {
+                    return Ok(RecoveryOutcome::Unconfirmed);
+                }
+                rows.push(event_id);
+            }
+            if uncertain(tx, id, epoch)? {
+                return Ok(RecoveryOutcome::Unconfirmed);
+            }
+            let mut updated = a.clone();
+            let mut wait = updated
+                .get("contextRepairWait")
+                .cloned()
+                .ok_or(RecoveryError::CommitFailed)?;
+            wait["status"] = json!("superseded");
+            wait["reason"] = json!("The exact native turn was confirmed");
+            wait["finishedAt"] = json!(self.at);
+            updated["lastContextRepairWait"] = wait;
+            let Some(fields) = updated.as_object_mut() else {
+                return Err(RecoveryError::CommitFailed);
+            };
+            fields.remove("contextRepairWait");
+            fields.remove("startAttempt");
+            updated["status"] = json!("running");
+            updated["inFlight"] = json!(true);
+            updated["error"] = Value::Null;
+            let mut connection = updated
+                .get("connectionRecovery")
+                .cloned()
+                .filter(Value::is_object)
+                .unwrap_or(json!({}));
+            connection["at"] = json!(self.at);
+            connection["turnId"] = turn["id"].clone();
+            connection["outcome"] = json!("active");
+            connection["source"] = json!("native_thread_read");
+            connection["queuedInputPreserved"] = json!(true);
+            connection["attemptId"] = json!(attempt_id);
+            connection["eventIds"] = json!(rows);
+            let result = json!({"status":"adopted","turnId":turn["id"]});
+            updated["connectionRecovery"] = connection;
+            persist_request_result(a, &mut updated, &result);
+            put_agent(tx, updated)?;
+            return Ok(RecoveryOutcome::Applied(result));
+        }
         match action {
             RecoveryAction::AcceptStart { turn } => {
                 if !expected.eligibility().unconfirmed_start || !valid_turn(turn, a, None) {
@@ -465,9 +535,7 @@ impl CompletionWriter for LifecycleCompletionWriter<'_> {
             } => {
                 if matches!(
                     mode,
-                    CompletionMode::Restart
-                        | CompletionMode::QueuedRestart
-                        | CompletionMode::QueuedActiveWait
+                    CompletionMode::Restart | CompletionMode::QueuedRestart
                 ) {
                     return Err(RecoveryError::Dependency(
                         "turn-recovery/restart-completion",
@@ -612,6 +680,9 @@ impl CompletionWriter for LifecycleCompletionWriter<'_> {
                     updated["turnRecovery"] = json!({"at":self.at,"turnId":turn_id,"outcome":turn["status"],"source":"native_thread_read"});
                 } else {
                     updated["connectionRecovery"] = json!({"at":self.at,"turnId":turn_id,"outcome":turn["status"],"source":"native_thread_read","previousError":a["error"]});
+                    if *mode == CompletionMode::QueuedActiveWait {
+                        updated["connectionRecovery"]["queuedInputPreserved"] = json!(true);
+                    }
                     if normal {
                         updated["connectionRecovery"]["automatic"] = json!(true);
                         updated["connectionRecovery"]["completionDelivered"] = json!(true);
