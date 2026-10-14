@@ -12,7 +12,7 @@ use std::io::Write;
 #[cfg(unix)]
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -28,6 +28,36 @@ const STATE_SCHEMA: u64 = 2;
 const BASE_BUILD_COOLDOWN: Duration = Duration::from_secs(300);
 const BASE_BUILD_WAIT: Duration = Duration::from_secs(900);
 const BASE_BUILD_POLL: Duration = Duration::from_millis(50);
+static BASE_BUILD_WORKERS: OnceLock<Mutex<BTreeSet<String>>> = OnceLock::new();
+
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub(crate) fn fsevents_history_lost(events: &[(u64, u32)]) -> bool {
+    events
+        .iter()
+        .any(|(_, flags)| flags & (0x2 | 0x4 | 0x8) != 0)
+}
+
+fn active_build_workers() -> &'static Mutex<BTreeSet<String>> {
+    BASE_BUILD_WORKERS.get_or_init(|| Mutex::new(BTreeSet::new()))
+}
+
+fn reserve_build_worker(key: &str) {
+    if let Ok(mut workers) = active_build_workers().lock() {
+        workers.insert(key.to_owned());
+    }
+}
+
+fn release_build_worker(key: &str) {
+    if let Ok(mut workers) = active_build_workers().lock() {
+        workers.remove(key);
+    }
+}
+
+fn build_worker_active(key: &str) -> bool {
+    active_build_workers()
+        .lock()
+        .is_ok_and(|workers| workers.contains(key))
+}
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -176,6 +206,14 @@ impl<B: WorkspaceBackend + 'static> WorkspaceLifecycle<B> {
         {
             return Ok(json!({"state":"missing","version":null,"error":null}));
         }
+        // Python's status lookup treats a build owned by another process as
+        // missing. That lets provisioning recover after a server restart
+        // instead of trusting a durable `building` row whose worker is gone.
+        if state.get("state").and_then(Value::as_str) == Some("building")
+            && state.get("builderPid").and_then(Value::as_u64) != Some(std::process::id() as u64)
+        {
+            return Ok(json!({"state":"missing","version":null,"error":null}));
+        }
         Ok(json!({
             "state":state.get("state").cloned().unwrap_or(Value::Null),
             "version":state.get("version").cloned().unwrap_or(Value::Null),
@@ -195,7 +233,9 @@ impl<B: WorkspaceBackend + 'static> WorkspaceLifecycle<B> {
         let root = root_path(root)?;
         self.backend.supported(&root)?;
         let key = repo_key(&root);
-        let lock = FileLock::exclusive(&self.base_dir(&key).join(".build.lock"))?;
+        let Some(lock) = FileLock::try_exclusive(&self.base_dir(&key).join(".build.lock"))? else {
+            return Ok(status_view(&read_json(&self.base_state(&key))?));
+        };
         let state_path = self.base_state(&key);
         let current = read_json(&state_path)?;
         if current.get("state").and_then(Value::as_str) == Some("ready")
@@ -213,8 +253,10 @@ impl<B: WorkspaceBackend + 'static> WorkspaceLifecycle<B> {
             let mut refreshing = current.clone();
             refreshing["refreshingVersion"] = json!(version);
             write_json(&state_path, &refreshing)?;
+            reserve_build_worker(&key);
             drop(lock);
-            if let Err(error) = self.spawn_base_build(root, key, version, Some(current)) {
+            if let Err(error) = self.spawn_base_build(root, key.clone(), version, Some(current)) {
+                release_build_worker(&key);
                 let mut failed = read_json(&state_path)?;
                 failed
                     .as_object_mut()
@@ -227,7 +269,10 @@ impl<B: WorkspaceBackend + 'static> WorkspaceLifecycle<B> {
             return Ok(status_view(&refreshing));
         }
         if current.get("state").and_then(Value::as_str) == Some("building") {
-            return Ok(status_view(&current));
+            let owner_pid = current.get("builderPid").and_then(Value::as_u64);
+            if owner_pid == Some(u64::from(std::process::id())) && build_worker_active(&key) {
+                return Ok(status_view(&current));
+            }
         }
         if current.get("state").and_then(Value::as_str) == Some("failed") && !retry_failed {
             let failed_at = current
@@ -246,8 +291,10 @@ impl<B: WorkspaceBackend + 'static> WorkspaceLifecycle<B> {
             "error":null,"startedAt":now_seconds(),"builderPid":std::process::id()
         });
         write_json(&state_path, &pending)?;
+        reserve_build_worker(&key);
         drop(lock);
         if let Err(error) = self.spawn_base_build(root, key.clone(), version, None) {
+            release_build_worker(&key);
             let mut failed = read_json(&state_path)?;
             failed["state"] = json!("failed");
             failed["error"] = json!(error.to_string());
@@ -271,7 +318,10 @@ impl<B: WorkspaceBackend + 'static> WorkspaceLifecycle<B> {
         };
         thread::Builder::new()
             .name(format!("image-base-{}", &key[..8]))
-            .spawn(move || lifecycle.build_base(&root, &key, &version, refresh_from.as_ref()))
+            .spawn(move || {
+                let _guard = BuildWorkerGuard(key.clone());
+                lifecycle.build_base(&root, &key, &version, refresh_from.as_ref());
+            })
             .map(|_| ())
             .map_err(|error| ImageWorkspaceError::Backend(error.to_string()))
     }
@@ -566,6 +616,60 @@ impl<B: WorkspaceBackend + 'static> WorkspaceLifecycle<B> {
         Ok(json!({"mount":mount,"path":workspace_root}))
     }
 
+    /// Persist a creating row and hand all base/image work to a worker thread.
+    pub fn start_workspace_provision(
+        &self,
+        root: &Path,
+        agent_id: &str,
+    ) -> Result<Value, ImageWorkspaceError> {
+        let root = root_path(root)?;
+        let agent_id = safe_id(agent_id)?.to_owned();
+        self.backend.supported(&root)?;
+        let key = repo_key(&root);
+        let agent_key = format!("agent:{agent_id}");
+        let agent_dir = self.store.join("agents").join(&agent_id);
+        let state_path = agent_dir.join("agent.json");
+        let mount = self.store.join("mnt").join(&agent_id);
+        let _lock = FileLock::exclusive(&agent_dir.join(".workspace.lock"))?;
+        let mut state = read_json(&state_path)?;
+        if state.is_null() {
+            state = json!({
+                "schema":STATE_SCHEMA,"repoRoot":root,"repoKey":key,"agentId":agent_id,
+                "baseVersion":null,"baseImage":null,"image":null,"mount":mount,
+                "state":"creating","createdAt":now_seconds()
+            });
+            write_json(&state_path, &state)?;
+        }
+        if build_worker_active(&agent_key) {
+            return Ok(json!({"state":state.get("state"),"mount":mount,"path":mount.join("repo")}));
+        }
+        reserve_build_worker(&agent_key);
+        drop(_lock);
+        let lifecycle = Self {
+            store: self.store.clone(),
+            backend: Arc::clone(&self.backend),
+        };
+        let failed_path = state_path.clone();
+        let worker_key = agent_key.clone();
+        let spawn = thread::Builder::new()
+            .name(format!("image-agent-{agent_id}"))
+            .spawn(move || {
+                let _guard = BuildWorkerGuard(worker_key);
+                if let Err(error) = lifecycle.create_workspace(&root, &agent_id)
+                    && let Ok(mut state) = read_json(&failed_path)
+                {
+                    state["state"] = json!("failed");
+                    state["error"] = json!(error.to_string());
+                    let _persist = write_json(&failed_path, &state);
+                }
+            });
+        if let Err(error) = spawn {
+            release_build_worker(&agent_key);
+            return Err(ImageWorkspaceError::Backend(error.to_string()));
+        }
+        Ok(json!({"state":"creating","mount":mount,"path":mount.join("repo")}))
+    }
+
     pub fn ensure_mounted(&self, agent_id: &str) -> Result<Value, ImageWorkspaceError> {
         let agent_id = safe_id(agent_id)?;
         let agent_dir = self.store.join("agents").join(agent_id);
@@ -788,6 +892,22 @@ pub fn create_workspace(root: &Path, agent_id: &str) -> Result<Value, ImageWorks
     }
 }
 
+pub fn start_workspace_provision(
+    root: &Path,
+    agent_id: &str,
+) -> Result<Value, ImageWorkspaceError> {
+    require_platform()?;
+    #[cfg(target_os = "macos")]
+    {
+        production().start_workspace_provision(root, agent_id)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (root, agent_id);
+        Err(ImageWorkspaceError::UnsupportedPlatform)
+    }
+}
+
 pub fn supported(root: &Path) -> Result<(), ImageWorkspaceError> {
     require_platform()?;
     #[cfg(target_os = "macos")]
@@ -982,6 +1102,26 @@ impl FileLock {
         flock(file.as_raw_fd(), FlockArg::LockExclusive).map_err(std::io::Error::other)?;
         Ok(Self(file))
     }
+
+    #[allow(deprecated)]
+    fn try_exclusive(path: &Path) -> Result<Option<Self>, ImageWorkspaceError> {
+        use nix::fcntl::{FlockArg, flock};
+        use std::os::fd::AsRawFd;
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        let file = OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(path)?;
+        match flock(file.as_raw_fd(), FlockArg::LockExclusiveNonblock) {
+            Ok(()) => Ok(Some(Self(file))),
+            Err(nix::errno::Errno::EWOULDBLOCK) => Ok(None),
+            Err(error) => Err(std::io::Error::other(error).into()),
+        }
+    }
 }
 #[cfg(unix)]
 impl Drop for FileLock {
@@ -1006,6 +1146,17 @@ impl FileLock {
                 .write(true)
                 .open(path)?,
         ))
+    }
+
+    fn try_exclusive(path: &Path) -> Result<Option<Self>, ImageWorkspaceError> {
+        Self::exclusive(path).map(Some)
+    }
+}
+
+struct BuildWorkerGuard(String);
+impl Drop for BuildWorkerGuard {
+    fn drop(&mut self) {
+        release_build_worker(&self.0);
     }
 }
 
@@ -1382,6 +1533,7 @@ mod tests {
     struct FakeBackend {
         store: PathBuf,
         fail_once: Mutex<Option<&'static str>>,
+        copy_delay: Duration,
     }
 
     impl FakeBackend {
@@ -1436,6 +1588,7 @@ mod tests {
             excludes: &[String],
             check: &dyn Fn() -> Result<(), ImageWorkspaceError>,
         ) -> Result<(), ImageWorkspaceError> {
+            thread::sleep(self.copy_delay);
             copy_fake(source, destination, source, excludes)?;
             check()?;
             self.fail("copy")
@@ -1583,6 +1736,14 @@ mod tests {
         assert_eq!(fs::read(&seeded).expect("seed remains"), before);
     }
 
+    #[test]
+    fn fsevents_id_progress_is_not_history_loss_but_dropped_history_is() {
+        assert!(!fsevents_history_lost(&[(101, 0), (102, 0x10)]));
+        assert!(fsevents_history_lost(&[(102, 0x2)]));
+        assert!(fsevents_history_lost(&[(102, 0x4)]));
+        assert!(fsevents_history_lost(&[(102, 0x8)]));
+    }
+
     fn wait_for_build(manager: &WorkspaceLifecycle<FakeBackend>, root: &Path) -> Value {
         let deadline = std::time::Instant::now() + Duration::from_secs(5);
         loop {
@@ -1599,6 +1760,82 @@ mod tests {
     }
 
     #[test]
+    fn async_workspace_provision_returns_while_base_copy_is_blocked() {
+        let fixture = tempfile::tempdir().expect("fixture");
+        let store = fixture.path().join("store");
+        let project = fixture.path().join("project");
+        fs::create_dir_all(&project).expect("project");
+        fs::write(project.join("file.txt"), "base").expect("source");
+        let manager = WorkspaceLifecycle::with_backend(
+            &store,
+            FakeBackend {
+                store: store.clone(),
+                fail_once: Mutex::new(None),
+                copy_delay: Duration::from_millis(400),
+            },
+        );
+        let started = std::time::Instant::now();
+        let pending = manager
+            .start_workspace_provision(&project, "async-agent")
+            .expect("provision enqueued");
+        assert_eq!(pending["state"], "creating");
+        assert!(started.elapsed() < Duration::from_millis(200));
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            let row = manager
+                .list_workspaces()
+                .expect("workspace rows")
+                .into_iter()
+                .find(|row| row["agentId"] == "async-agent")
+                .expect("durable creating row");
+            if row["state"] == "ready" {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "async workspace ready"
+            );
+            thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    #[test]
+    fn stale_foreign_builder_row_is_restarted() {
+        let fixture = tempfile::tempdir().expect("fixture");
+        let store = fixture.path().join("store");
+        let project = fixture.path().join("project");
+        fs::create_dir_all(&project).expect("project");
+        fs::write(project.join("file.txt"), "base").expect("source");
+        let manager = WorkspaceLifecycle::with_backend(
+            &store,
+            FakeBackend {
+                store: store.clone(),
+                fail_once: Mutex::new(None),
+                copy_delay: Duration::ZERO,
+            },
+        );
+        let key = repo_key(&project.canonicalize().expect("canonical project"));
+        write_json(
+            &manager.base_state(&key),
+            &json!({"schema":STATE_SCHEMA,"state":"building","repoRoot":project,
+                "repoKey":key,"changeDetector":"git-v1","version":"v-1",
+                "error":null,"startedAt":now_seconds(),"builderPid":u64::MAX}),
+        )
+        .expect("seed stale builder");
+        assert_eq!(
+            manager.base_status(&project).expect("stale builder status")["state"],
+            "missing"
+        );
+        assert_eq!(
+            manager.start_base_build(&project).expect("restart")["state"],
+            "building"
+        );
+        assert_eq!(wait_for_build(&manager, &project)["state"], "ready");
+        let ready = read_json(&manager.base_state(&key)).expect("ready row");
+        assert_ne!(ready["version"], "v-1");
+    }
+
+    #[test]
     fn fake_backend_lifecycle_recovers_failpoints_and_syncs_changed_content() {
         let fixture = tempfile::tempdir().expect("fixture");
         let store = fixture.path().join("store");
@@ -1608,6 +1845,7 @@ mod tests {
         let backend = FakeBackend {
             store: store.clone(),
             fail_once: Mutex::new(Some("copy")),
+            copy_delay: Duration::ZERO,
         };
         let manager = WorkspaceLifecycle::with_backend(&store, backend);
 

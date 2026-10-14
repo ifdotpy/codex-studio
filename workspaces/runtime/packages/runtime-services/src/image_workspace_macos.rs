@@ -1,13 +1,297 @@
 //! macOS ASIF implementation of the Python `WorkspaceBackend` protocol.
 #![cfg(target_os = "macos")]
 use super::*;
+use std::ffi::{CStr, c_char, c_void};
 use std::io::{Read, Seek, SeekFrom};
 use std::process::{Child, Command, Output, Stdio};
+use std::sync::{Condvar, Mutex};
 use std::thread;
 
 #[link(name = "CoreServices", kind = "framework")]
 unsafe extern "C" {
     fn FSEventsGetCurrentEventId() -> u64;
+    fn FSEventStreamCreate(
+        allocator: *const c_void,
+        callback: unsafe extern "C" fn(
+            *mut c_void,
+            *mut c_void,
+            usize,
+            *const *const c_char,
+            *const u32,
+            *const u64,
+        ),
+        context: *const FSEventStreamContext,
+        paths: *mut c_void,
+        since: u64,
+        latency: f64,
+        flags: u32,
+    ) -> *mut c_void;
+    fn FSEventStreamSetDispatchQueue(stream: *mut c_void, queue: *mut c_void);
+    fn FSEventStreamStart(stream: *mut c_void) -> bool;
+    fn FSEventStreamStop(stream: *mut c_void);
+    fn FSEventStreamInvalidate(stream: *mut c_void);
+    fn FSEventStreamRelease(stream: *mut c_void);
+}
+
+#[link(name = "CoreFoundation", kind = "framework")]
+unsafe extern "C" {
+    fn CFStringCreateWithFileSystemRepresentation(
+        allocator: *const c_void,
+        path: *const c_char,
+    ) -> *mut c_void;
+    fn CFArrayCreate(
+        allocator: *const c_void,
+        values: *const *const c_void,
+        count: isize,
+        callbacks: *const c_void,
+    ) -> *mut c_void;
+    fn CFRelease(value: *const c_void);
+}
+
+#[link(name = "System")]
+unsafe extern "C" {
+    fn dispatch_get_global_queue(identifier: isize, flags: usize) -> *mut c_void;
+}
+
+#[repr(C)]
+struct FSEventStreamContext {
+    version: isize,
+    info: *mut c_void,
+    retain: *const c_void,
+    release: *const c_void,
+    copy_description: *const c_void,
+}
+
+#[derive(Clone, Debug)]
+struct FSEvent {
+    path: PathBuf,
+    flags: u32,
+    id: u64,
+}
+
+#[derive(Default)]
+struct EventCollector {
+    events: Mutex<Vec<FSEvent>>,
+    done: Mutex<bool>,
+    ready: Condvar,
+}
+
+unsafe extern "C" fn collect_fsevents(
+    _stream: *mut c_void,
+    info: *mut c_void,
+    count: usize,
+    paths: *const *const c_char,
+    flags: *const u32,
+    ids: *const u64,
+) {
+    if info.is_null() || paths.is_null() || flags.is_null() || ids.is_null() {
+        return;
+    }
+    // SAFETY: `info` points to the stack-owned collector, which lives until the stream is released.
+    let collector = unsafe { &*(info.cast::<EventCollector>()) };
+    let paths = unsafe { std::slice::from_raw_parts(paths, count) };
+    let flags = unsafe { std::slice::from_raw_parts(flags, count) };
+    let ids = unsafe { std::slice::from_raw_parts(ids, count) };
+    if let Ok(mut events) = collector.events.lock() {
+        for index in 0..count {
+            if !paths[index].is_null() {
+                let path = unsafe { CStr::from_ptr(paths[index]) }
+                    .to_string_lossy()
+                    .into_owned();
+                events.push(FSEvent {
+                    path: PathBuf::from(path),
+                    flags: flags[index],
+                    id: ids[index],
+                });
+            }
+        }
+    }
+    if flags.iter().any(|value| value & 0x10 != 0) {
+        if let Ok(mut done) = collector.done.lock() {
+            *done = true;
+            collector.ready.notify_all();
+        }
+    }
+}
+
+#[derive(Debug)]
+enum FSEventError {
+    HistoryLost,
+    Other(String),
+}
+
+fn read_events(root: &Path, since: u64) -> Result<(Vec<FSEvent>, u64), FSEventError> {
+    // SAFETY: CoreServices documents this as a process-wide monotonic event counter.
+    let current = unsafe { FSEventsGetCurrentEventId() };
+    if since >= current {
+        return Ok((Vec::new(), current));
+    }
+    let path = std::ffi::CString::new(root.as_os_str().as_encoded_bytes())
+        .map_err(|error| FSEventError::Other(error.to_string()))?;
+    // SAFETY: CoreFoundation copies the filesystem representation into an owned CFString.
+    let cf_path =
+        unsafe { CFStringCreateWithFileSystemRepresentation(std::ptr::null(), path.as_ptr()) };
+    if cf_path.is_null() {
+        return Err(FSEventError::Other("Could not create FSEvents path".into()));
+    }
+    let values = [cf_path as *const c_void];
+    // SAFETY: `values` remains valid for the duration of CFArrayCreate and the array retains values.
+    let array = unsafe { CFArrayCreate(std::ptr::null(), values.as_ptr(), 1, std::ptr::null()) };
+    if array.is_null() {
+        unsafe { CFRelease(cf_path) };
+        return Err(FSEventError::Other(
+            "Could not create FSEvents path array".into(),
+        ));
+    }
+    let collector = EventCollector::default();
+    let mut context = FSEventStreamContext {
+        version: 0,
+        info: (&collector as *const EventCollector).cast_mut().cast(),
+        retain: std::ptr::null(),
+        release: std::ptr::null(),
+        copy_description: std::ptr::null(),
+    };
+    // SAFETY: The callback and context outlive the stream; path array is valid until stream creation returns.
+    let stream = unsafe {
+        FSEventStreamCreate(
+            std::ptr::null(),
+            collect_fsevents,
+            &context,
+            array,
+            since,
+            0.1,
+            0x10 | 0x2,
+        )
+    };
+    if stream.is_null() {
+        unsafe { CFRelease(array) };
+        unsafe { CFRelease(cf_path) };
+        return Err(FSEventError::Other("FSEventStreamCreate failed".into()));
+    }
+    let queue = unsafe { dispatch_get_global_queue(0, 0) };
+    unsafe { FSEventStreamSetDispatchQueue(stream, queue) };
+    if !unsafe { FSEventStreamStart(stream) } {
+        unsafe { FSEventStreamRelease(stream) };
+        unsafe { CFRelease(array) };
+        unsafe { CFRelease(cf_path) };
+        return Err(FSEventError::Other("FSEventStreamStart failed".into()));
+    }
+    let done = collector
+        .done
+        .lock()
+        .map_err(|_| FSEventError::Other("FSEvents lock poisoned".into()))?;
+    let (done, timeout) = collector
+        .ready
+        .wait_timeout_while(done, Duration::from_secs(120), |done| !*done)
+        .map_err(|_| FSEventError::Other("FSEvents wait poisoned".into()))?;
+    drop(done);
+    unsafe {
+        FSEventStreamStop(stream);
+        FSEventStreamInvalidate(stream);
+        FSEventStreamRelease(stream);
+    }
+    unsafe { CFRelease(array) };
+    unsafe { CFRelease(cf_path) };
+    if timeout.timed_out() {
+        return Err(FSEventError::Other("FSEvents history timed out".into()));
+    }
+    let events = collector
+        .events
+        .lock()
+        .map_err(|_| FSEventError::Other("FSEvents lock poisoned".into()))?
+        .clone();
+    if super::fsevents_history_lost(
+        &events
+            .iter()
+            .map(|event| (event.id, event.flags))
+            .collect::<Vec<_>>(),
+    ) {
+        return Err(FSEventError::HistoryLost);
+    }
+    let newest = events.iter().map(|event| event.id).max().unwrap_or(since);
+    Ok((events, newest))
+}
+
+fn is_excluded(path: &Path, excludes: &[String]) -> bool {
+    excludes
+        .iter()
+        .any(|item| path == Path::new(item) || path.starts_with(item))
+}
+
+fn nested_excludes(path: &Path, excludes: &[String]) -> Vec<PathBuf> {
+    excludes
+        .iter()
+        .filter_map(|item| {
+            Path::new(item)
+                .strip_prefix(path)
+                .ok()
+                .map(Path::to_path_buf)
+        })
+        .collect()
+}
+
+fn rsync_folder(
+    source: &Path,
+    target: &Path,
+    excludes: &[String],
+) -> Result<(), ImageWorkspaceError> {
+    let mut args = vec!["-a".to_owned(), "--delete".to_owned()];
+    args.extend(excludes.iter().map(|item| {
+        let item = item.trim_matches('/');
+        if item == ".git/index" || item.ends_with("/.git/index") {
+            format!("--exclude=/{item}")
+        } else {
+            format!("--exclude=/{item}/***")
+        }
+    }));
+    args.push(format!("{}/", source.display()));
+    args.push(format!("{}/", target.display()));
+    run(
+        "/usr/bin/rsync",
+        &args.iter().map(String::as_str).collect::<Vec<_>>(),
+        Duration::from_secs(1800),
+    )?;
+    Ok(())
+}
+
+fn sync_event_path(
+    source: &Path,
+    target: &Path,
+    excludes: &[PathBuf],
+) -> Result<(), ImageWorkspaceError> {
+    let metadata = match fs::symlink_metadata(source) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            if target.is_dir() && !target.is_symlink() {
+                fs::remove_dir_all(target)?;
+            } else {
+                let _remove = fs::remove_file(target);
+            }
+            return Ok(());
+        }
+        Err(error) => return Err(error.into()),
+    };
+    if metadata.is_dir() && !metadata.file_type().is_symlink() {
+        let excludes = excludes
+            .iter()
+            .map(|path| path.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        return rsync_folder(source, target, &excludes);
+    }
+    if let Some(parent) = target.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    if target.is_dir() && !target.is_symlink() {
+        fs::remove_dir_all(target)?;
+    } else {
+        let _remove = fs::remove_file(target);
+    }
+    if metadata.file_type().is_symlink() {
+        std::os::unix::fs::symlink(fs::read_link(source)?, target)?;
+    } else {
+        fs::copy(source, target)?;
+    }
+    Ok(())
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -36,12 +320,35 @@ impl WorkspaceBackend for MacAsifBackend {
 
     fn base_needs_refresh(&self, root: &Path, state: &Value) -> Result<bool, ImageWorkspaceError> {
         let Some(prior) = state.get("token").and_then(Value::as_u64) else {
-            return Ok(true);
+            return Ok(false);
         };
-        Ok(self
-            .current_event_id(root)?
-            .and_then(|value| value.as_u64())
-            .is_some_and(|current| current != prior))
+        let events = match read_events(root, prior) {
+            Ok((events, _)) => events,
+            Err(_) => return Ok(true),
+        };
+        if events.len() >= 1000 {
+            return Ok(true);
+        }
+        let changed_bytes = events
+            .iter()
+            .filter_map(|event| {
+                let path = if event.path.is_absolute() {
+                    event.path.clone()
+                } else {
+                    root.join(&event.path)
+                };
+                path.metadata()
+                    .ok()
+                    .filter(|metadata| metadata.is_file())
+                    .map(|metadata| metadata.len())
+            })
+            .fold(0u64, u64::saturating_add);
+        let base_bytes = state
+            .get("image")
+            .and_then(Value::as_str)
+            .and_then(|path| self.private_bytes(Path::new(path)).ok().flatten())
+            .unwrap_or(0);
+        Ok(changed_bytes >= (16 * 1024 * 1024u64).max(base_bytes.saturating_mul(35) / 100))
     }
 
     fn open_base_staging(
@@ -159,54 +466,87 @@ impl WorkspaceBackend for MacAsifBackend {
         token: Option<&Value>,
         excludes: &[String],
     ) -> Result<WorkspaceDelta, ImageWorkspaceError> {
-        // Reconcile the full tree because this backend does not retain an
-        // FSEvents stream between Rust server processes. The itemized output
-        // preserves changed-path reporting; the root scan requests a base refresh.
-        let mut args = vec![
-            "-a".to_owned(),
-            "--delete".to_owned(),
-            "--itemize-changes".to_owned(),
-            "--out-format=%i\t%n".to_owned(),
-        ];
-        args.extend(excludes.iter().map(|value| {
-            let value = value.trim_matches('/');
-            if value.ends_with("/.git/index") || value == ".git/index" {
-                format!("--exclude=/{value}")
-            } else {
-                format!("--exclude=/{value}/***")
+        let since = token.and_then(Value::as_u64).unwrap_or(0);
+        let (events, newest) = match read_events(root, since) {
+            Ok(events) => events,
+            Err(FSEventError::HistoryLost) => {
+                rsync_folder(root, target, excludes)?;
+                return Ok(WorkspaceDelta {
+                    token: self.current_event_id(root)?,
+                    changed_paths: vec![".".into()],
+                    history_lost: true,
+                    scan_paths: vec![".".into()],
+                    refresh_base: true,
+                });
             }
-        }));
-        args.push(format!("{}/", root.display()));
-        args.push(format!("{}/", target.display()));
-        let args = args.iter().map(String::as_str).collect::<Vec<_>>();
-        let output = run("/usr/bin/rsync", &args, Duration::from_secs(1800))?;
-        let mut changed_paths = output
-            .stdout
-            .split(|byte| *byte == b'\n')
-            .filter_map(|line| line.split_once(|byte| *byte == b'\t'))
-            .map(|(_, path)| String::from_utf8_lossy(path).into_owned())
-            .filter(|path| !path.is_empty())
-            .collect::<Vec<_>>();
-        changed_paths.sort();
-        changed_paths.dedup();
-        if output.stdout.len() >= 1024 * 1024 {
-            changed_paths = vec![".".into()];
-        }
-        let current = self.current_event_id(root)?;
-        let history_lost = token
-            .and_then(Value::as_u64)
-            .zip(current.as_ref().and_then(Value::as_u64))
-            .is_some_and(|(prior, now)| prior != now);
-        Ok(WorkspaceDelta {
-            token: current,
-            changed_paths,
-            history_lost,
-            scan_paths: if history_lost {
-                vec![".".into()]
+            Err(FSEventError::Other(error)) => return Err(ImageWorkspaceError::Backend(error)),
+        };
+        let mut changed_paths = BTreeSet::new();
+        let mut scan_paths = BTreeSet::new();
+        for event in events {
+            let relative = if event.path.is_absolute() {
+                let Ok(relative) = event.path.strip_prefix(root) else {
+                    continue;
+                };
+                relative.to_path_buf()
             } else {
-                Vec::new()
-            },
-            refresh_base: history_lost,
+                event.path.clone()
+            };
+            if is_excluded(&relative, excludes) {
+                continue;
+            }
+            let label = relative.to_string_lossy().replace('\\', "/");
+            let label = if label.is_empty() {
+                ".".to_owned()
+            } else {
+                label
+            };
+            if event.flags & 0x1 != 0 {
+                changed_paths.insert(label.clone());
+                scan_paths.insert(label.clone());
+                let source = root.join(&relative);
+                let destination = target.join(&relative);
+                if relative.as_os_str().is_empty() {
+                    rsync_folder(root, target, excludes)?;
+                    return Ok(WorkspaceDelta {
+                        token: Some(json!(newest)),
+                        changed_paths: vec![".".into()],
+                        history_lost: false,
+                        scan_paths: vec![".".into()],
+                        refresh_base: true,
+                    });
+                }
+                let nested = nested_excludes(&relative, excludes);
+                if source.is_dir() && !source.is_symlink() {
+                    rsync_folder(
+                        &source,
+                        &destination,
+                        &nested
+                            .iter()
+                            .map(|p| p.to_string_lossy().into_owned())
+                            .collect::<Vec<_>>(),
+                    )?;
+                } else {
+                    sync_event_path(&source, &destination, &nested)?;
+                }
+            } else if relative.as_os_str().is_empty() {
+                continue;
+            } else {
+                changed_paths.insert(label);
+                sync_event_path(
+                    &root.join(&relative),
+                    &target.join(&relative),
+                    &nested_excludes(&relative, excludes),
+                )?;
+            }
+        }
+        let root_scan = scan_paths.contains(".");
+        Ok(WorkspaceDelta {
+            token: Some(json!(newest)),
+            changed_paths: changed_paths.into_iter().collect(),
+            history_lost: false,
+            scan_paths: scan_paths.into_iter().collect(),
+            refresh_base: root_scan,
         })
     }
 
