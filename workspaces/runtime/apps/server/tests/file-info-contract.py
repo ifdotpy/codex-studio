@@ -3,11 +3,15 @@
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
 
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+
 import base64
 import importlib.util
 import json
 import os
-from pathlib import Path
 import threading
 import unittest
 from unittest.mock import patch

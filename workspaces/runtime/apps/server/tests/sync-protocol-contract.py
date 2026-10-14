@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 """Keep sync protocol version ownership and generated clients aligned."""
 
+from test_isolation import isolate_supervisor_environment
+
+isolate_supervisor_environment()
+
 import json
 import sys
 from pathlib import Path

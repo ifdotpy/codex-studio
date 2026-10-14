@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 """Cross-language parity for signed multi-server transport byte limits."""
 
+from test_isolation import isolate_supervisor_environment
+
+isolate_supervisor_environment()
+
 import sys
 from pathlib import Path
 import unittest

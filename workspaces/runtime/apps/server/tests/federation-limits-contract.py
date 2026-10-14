@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 """Parity and boundary contract for federation message and batch limits."""
 
+from test_isolation import isolate_supervisor_environment
+
+isolate_supervisor_environment()
+
 import sys
 import sqlite3
 from pathlib import Path
