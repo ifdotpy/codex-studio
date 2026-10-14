@@ -492,9 +492,21 @@ impl<'connection, R: JsonRecord> Table<'connection, R> {
         id: &R::Id,
         predicate: Option<RecordPredicate<'_>>,
     ) -> StoreResult<Option<R>> {
-        Ok(self
-            .get_with_raw_matching(id, predicate)?
-            .map(|(record, _)| record))
+        ensure_query::<R>(predicate, RecordOrder::RowId)?;
+        let (where_sql, mut values) = predicate_sql(predicate);
+        let id_predicate = where_sql.map_or_else(String::new, |sql| format!(" AND {sql}"));
+        values.insert(0, SqlValue::Text(id.as_ref().to_owned()));
+        let sql = format!(
+            "SELECT record FROM {} WHERE id = ?1{id_predicate}",
+            quoted_table::<R>()
+        );
+        let mut statement = self.connection.prepare(&sql)?;
+        let mut rows = statement.query(params_from_iter(values.iter()))?;
+        let Some(row) = rows.next()? else {
+            return Ok(None);
+        };
+        let encoded = stored_text_ref(row.get_ref(0)?, R::TABLE, id.as_ref())?;
+        decode_record::<R>(id.as_ref(), encoded).map(Some)
     }
 
     /// Keep the original JSON text for consumers whose contract depends on
@@ -534,11 +546,23 @@ impl<'connection, R: JsonRecord> Table<'connection, R> {
         predicate: Option<RecordPredicate<'_>>,
         order: RecordOrder,
     ) -> StoreResult<Vec<R>> {
-        Ok(self
-            .list_with_raw_matching(predicate, order)?
-            .into_iter()
-            .map(|(record, _)| record)
-            .collect())
+        ensure_query::<R>(predicate, order)?;
+        let (where_sql, values) = predicate_sql(predicate);
+        let where_clause = where_sql.map_or_else(String::new, |sql| format!(" WHERE {sql}"));
+        let sql = format!(
+            "SELECT id,record FROM {}{where_clause} ORDER BY {}",
+            quoted_table::<R>(),
+            order.sql()
+        );
+        let mut statement = self.connection.prepare(&sql)?;
+        let mut rows = statement.query(params_from_iter(values.iter()))?;
+        let mut records = Vec::new();
+        while let Some(row) = rows.next()? {
+            let id = stored_text(row.get_ref(0)?, R::TABLE, "<invalid id>")?;
+            let encoded = stored_text_ref(row.get_ref(1)?, R::TABLE, &id)?;
+            records.push(decode_record::<R>(&id, encoded)?);
+        }
+        Ok(records)
     }
 
     pub fn list_with_raw(&self) -> StoreResult<Vec<(R, String)>> {
@@ -900,6 +924,25 @@ fn stored_text(value: ValueRef<'_>, table: &'static str, id: &str) -> StoreResul
     match value {
         ValueRef::Text(bytes) => {
             String::from_utf8(bytes.to_vec()).map_err(|_| crate::StoreError::InvalidStoredObject {
+                table,
+                id: id.to_owned(),
+            })
+        }
+        _ => Err(crate::StoreError::InvalidStoredObject {
+            table,
+            id: id.to_owned(),
+        }),
+    }
+}
+
+fn stored_text_ref<'row>(
+    value: ValueRef<'row>,
+    table: &'static str,
+    id: &str,
+) -> StoreResult<&'row str> {
+    match value {
+        ValueRef::Text(bytes) => {
+            std::str::from_utf8(bytes).map_err(|_| crate::StoreError::InvalidStoredObject {
                 table,
                 id: id.to_owned(),
             })
