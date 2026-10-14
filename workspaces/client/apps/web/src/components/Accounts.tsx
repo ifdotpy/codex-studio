@@ -11,7 +11,15 @@ import NativeRuntimeStatus from "./NativeRuntimeStatus";
 import { watchResourceReads } from "./watchResourceReads";
 import { useAccountLimits } from "../usage/useAccountLimits";
 import { accountLimits } from "../usage/accountUsage";
-import { Button, Group, Menu, Modal, Stack, TextInput } from "@mantine/core";
+import {
+  Button,
+  Group,
+  Menu,
+  Modal,
+  Stack,
+  TextInput,
+  Tooltip,
+} from "@mantine/core";
 import {
   Check,
   ChevronDown,
@@ -529,6 +537,41 @@ export function AccountTransferStatus({
   );
 }
 
+/** One line next to the model picker while a team moves to another account. The details,
+ * with Retry and Cancel, are in the model settings; the tooltip shows the same reasons. */
+export function AccountTransferChip({
+  transfer,
+}: {
+  transfer?: NonNullable<Agent["accountTransfer"]>;
+}) {
+  if (!transfer || transfer.status !== "pending") return null;
+  const blocked = Array.isArray(transfer.blocked) ? transfer.blocked : [];
+  const left =
+    Number(transfer.total ?? 0) - Number(transfer.completed ?? 0) ||
+    Number(transfer.nativeHistoryPending ?? 0);
+  const label = blocked.length
+    ? "Account move blocked"
+    : `Moving account${left > 0 ? ` · ${left} left` : ""}`;
+  const details = [
+    ...blocked.map((member) => `${member.name || "Agent"}: ${member.reason}`),
+    ...(transfer.waiting && !blocked.length ? [String(transfer.waiting)] : []),
+    "Open the model settings to retry or cancel.",
+  ].join("\n");
+  return (
+    <Tooltip label={details} multiline w={320} withinPortal>
+      <span
+        className="account-transfer-chip"
+        data-blocked={blocked.length ? "" : undefined}
+        role="status"
+        aria-label={`${label}. ${details}`}
+      >
+        <ArrowRightLeft size={12} />
+        {label}
+      </span>
+    </Tooltip>
+  );
+}
+
 export function AccountTransferConfirmation({
   opened,
   onClose,
@@ -873,22 +916,8 @@ export default function Accounts({
       {!managerOnly &&
         renderPicker &&
         renderPicker(selectAccount, !!pending || (pinned && !owner))}
-      {!managerOnly && renderPicker && teamTransfer?.status === "pending" && (
-        <AccountTransferStatus
-          transfer={teamTransfer}
-          targetLabel={transferTarget?.email || transferTarget?.label}
-          pending={!!pending}
-          onAction={(kind) => {
-            const requestId = teamTransfer.id;
-            if (typeof requestId !== "string") return;
-            void action(`${kind}-transfer`, () =>
-              post("/api/agents/account-transfer", {
-                action: kind,
-                request_id: requestId,
-              }),
-            );
-          }}
-        />
+      {!managerOnly && renderPicker && (
+        <AccountTransferChip transfer={teamTransfer ?? undefined} />
       )}
       {!managerOnly && !renderPicker && (
         <Menu
