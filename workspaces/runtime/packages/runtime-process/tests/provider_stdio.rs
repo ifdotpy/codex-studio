@@ -11,6 +11,7 @@ async fn child(script: &str) -> ProviderAttachment {
         deadline: Instant::now() + Duration::from_secs(30),
         max_frame_bytes: 1024,
         max_output_bytes: 4096,
+        stderr_log: None,
     }
     .open(
         ProviderHandle::for_account("stdio-test"),
@@ -27,6 +28,47 @@ async fn child(script: &str) -> ProviderAttachment {
     )
     .await
     .expect("child starts")
+}
+
+#[tokio::test]
+async fn provider_stderr_is_written_to_the_state_directory_app_server_log() {
+    use studio_runtime_process::operational_log::OperationalLog;
+
+    let root = tempfile::tempdir().expect("isolated state directory");
+    let log = OperationalLog::open(root.path().join("app-server.log"), 1024, 4, 16)
+        .expect("operational log");
+    let mut attachment = StdioProviderTaskFactory {
+        deadline: Instant::now() + Duration::from_secs(30),
+        max_frame_bytes: 1024,
+        max_output_bytes: 4096,
+        stderr_log: Some(log.clone()),
+    }
+    .open(
+        ProviderHandle::for_account("stdio-log-test"),
+        OpenOptions {
+            clock: SessionClock::default(),
+            expected_generation: Some(Generation(1)),
+            launch: ProviderLaunchSpec::new(
+                vec![
+                    "/bin/sh".into(),
+                    "-c".into(),
+                    r#"printf 'provider diagnostic\n' >&2; printf '\377\n' >&2; printf '{"jsonrpc":"2.0","method":"ready"}\n'"#.into(),
+                ],
+                BTreeMap::new(),
+                root.path().to_path_buf(),
+            ),
+        },
+        Shutdown::default(),
+    )
+    .await
+    .expect("child starts");
+    attachment.journal.recv().await.expect("provider ready");
+    attachment.completion().await;
+    log.flush().expect("flush provider diagnostics");
+    assert_eq!(
+        std::fs::read(root.path().join("app-server.log")).expect("app-server log"),
+        b"provider diagnostic\n\xff\n"
+    );
 }
 const WAIT: &str = "printf '{\"jsonrpc\":\"2.0\",\"method\":\"ready\"}\\n'; read line";
 
@@ -179,6 +221,7 @@ async fn cancellation_stops_the_entire_owned_process_group() {
         deadline: Instant::now() + Duration::from_secs(30),
         max_frame_bytes: 1024,
         max_output_bytes: 4096,
+        stderr_log: None,
     };
     let mut attachment = factory
         .open(

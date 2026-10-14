@@ -7,7 +7,9 @@ use std::future::Future;
 use std::path::Path;
 use std::sync::Mutex;
 use std::time::Duration;
-use studio_runtime_process::{OperationId, provider_seam::Shutdown};
+use studio_runtime_process::{
+    OperationId, operational_log::OperationalLog, provider_seam::Shutdown,
+};
 use studio_runtime_providers::{Method, RequestId, RequestOutcome, ResponseBody};
 use tokio::time::Instant;
 
@@ -73,6 +75,7 @@ pub async fn provider_exchange(
     isolated: bool,
     requests: Vec<ProviderRequest>,
     timeout: Duration,
+    stderr_log: Option<OperationalLog>,
 ) -> Result<Vec<Result<Value, CatalogReadError>>, CatalogReadError> {
     let responses = crate::provider_exchange::run(
         executable,
@@ -80,6 +83,7 @@ pub async fn provider_exchange(
         isolated,
         crate::provider_exchange::ExchangeSpec {
             cleanup_report: None,
+            stderr_log,
             timeout,
             shutdown: Shutdown::default(),
             initialize_operation: OperationId("catalog-reads-initialize".into()),
@@ -116,6 +120,7 @@ pub async fn cancel_terminal(
         isolated,
         crate::provider_exchange::ExchangeSpec {
             cleanup_report: None,
+            stderr_log: None,
             timeout,
             shutdown: Shutdown::default(),
             initialize_operation: OperationId("native-command-cancel-initialize".into()),
@@ -899,6 +904,7 @@ mod tests {
             started,
             crate::provider_exchange::ExchangeSpec {
                 cleanup_report: None,
+                stderr_log: None,
                 timeout: Duration::from_secs(5),
                 shutdown: Shutdown::default(),
                 initialize_operation: OperationId("scripted-init".into()),
@@ -946,6 +952,7 @@ mod tests {
             Instant::now(),
             crate::provider_exchange::ExchangeSpec {
                 cleanup_report: None,
+                stderr_log: None,
                 timeout: Duration::from_secs(5),
                 shutdown: Shutdown::default(),
                 initialize_operation: OperationId("scripted-cancel-init".into()),
@@ -988,6 +995,7 @@ mod tests {
             Instant::now(),
             crate::provider_exchange::ExchangeSpec {
                 cleanup_report: None,
+                stderr_log: None,
                 timeout: Duration::from_secs(5),
                 shutdown: Shutdown::default(),
                 initialize_operation: OperationId("scripted-cancel-mismatch-init".into()),
@@ -1026,6 +1034,7 @@ mod tests {
             factory, launch, Instant::now(),
             crate::provider_exchange::ExchangeSpec {
                 cleanup_report: None,
+                stderr_log: None,
                 timeout: Duration::from_secs(5),
                 shutdown: Shutdown::default(),
                 initialize_operation: OperationId("scripted-cancel-item-mismatch-init".into()),

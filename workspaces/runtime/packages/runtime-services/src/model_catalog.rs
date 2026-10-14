@@ -15,6 +15,7 @@ use studio_runtime_process::provider_seam::ProviderTaskFactory;
 use studio_runtime_process::{Generation, ProviderHandle, ProviderLaunchSpec};
 use studio_runtime_process::{
     OperationId,
+    operational_log::OperationalLog,
     provider_seam::{InitializationStatus, Shutdown},
 };
 use studio_runtime_providers::{Method, RequestId, RequestOutcome, ResponseBody};
@@ -60,6 +61,7 @@ struct CacheEntry {
 
 struct CatalogInner {
     executable: Option<PathBuf>,
+    stderr_log: Option<OperationalLog>,
     #[cfg(test)]
     refresh_factory: Mutex<Option<Arc<dyn ProviderTaskFactory>>>,
     cache: Mutex<HashMap<(String, String, String), CacheEntry>>,
@@ -123,8 +125,19 @@ impl ModelCatalogService {
     /// Construct the cache with a shared resource-change callback for completed reads.
     #[must_use]
     pub fn with_change_callback(executable: Option<String>, on_change: ChangeCallback) -> Self {
+        Self::with_change_callback_and_log(executable, on_change, None)
+    }
+
+    /// Construct the cache with the state-directory provider stderr writer.
+    #[must_use]
+    pub fn with_change_callback_and_log(
+        executable: Option<String>,
+        on_change: ChangeCallback,
+        stderr_log: Option<OperationalLog>,
+    ) -> Self {
         Self(Arc::new(CatalogInner {
             executable: executable.map(PathBuf::from),
+            stderr_log,
             #[cfg(test)]
             refresh_factory: Mutex::new(None),
             cache: Mutex::new(HashMap::new()),
@@ -217,6 +230,7 @@ impl ModelCatalogService {
             }
         }
         let cleanup_error = self.0.cleanup_error.clone();
+        let stderr_log = self.0.stderr_log.clone();
         #[cfg(test)]
         let refresh_factory = self
             .0
@@ -252,6 +266,7 @@ impl ModelCatalogService {
                 account != "default",
                 stop,
                 cleanup_error,
+                stderr_log,
             )
             .await;
             if let Some(inner) = service.upgrade() {
@@ -341,6 +356,7 @@ async fn read_provider_catalog(
     isolated: bool,
     stop: Shutdown,
     cleanup_error: Arc<Mutex<Option<String>>>,
+    stderr_log: Option<OperationalLog>,
 ) -> Result<Value, ()> {
     provider_exchange::run_admitted(
         admission,
@@ -349,6 +365,7 @@ async fn read_provider_catalog(
         isolated,
         provider_exchange::ExchangeSpec {
             cleanup_report: Some(cleanup_error),
+            stderr_log,
             timeout: CATALOG_TIMEOUT,
             shutdown: stop,
             initialize_operation: OperationId("catalog-initialize".into()),
@@ -391,6 +408,7 @@ async fn read_session_with_shutdown(
         started,
         provider_exchange::ExchangeSpec {
             cleanup_report: Some(cleanup_error),
+            stderr_log: None,
             timeout: CATALOG_TIMEOUT,
             shutdown,
             initialize_operation: OperationId("catalog-initialize".into()),
@@ -1150,6 +1168,7 @@ pub(crate) mod tests {
             deadline: Instant::now() + CATALOG_TIMEOUT,
             max_frame_bytes: MAX_CATALOG_PAGE_BYTES,
             max_output_bytes: MAX_CATALOG_RESPONSE_BYTES,
+            stderr_log: None,
         }
         .open(
             ProviderHandle::for_account("catalog-priority"),
