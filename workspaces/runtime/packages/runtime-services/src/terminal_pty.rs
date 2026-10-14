@@ -22,7 +22,8 @@ use crate::terminal_driver::{
 
 const READ_CHUNK: usize = 16 * 1024;
 
-pub type NotificationCallback = Arc<dyn Fn(TerminalNotification) + Send + Sync>;
+pub type NotificationCallback =
+    Arc<dyn Fn(TerminalNotification) -> Result<(), SessionError> + Send + Sync>;
 pub type IdentityCallback =
     Arc<dyn Fn(&str, Option<&PtyIdentity>) -> Result<(), SessionError> + Send + Sync>;
 
@@ -30,6 +31,7 @@ struct LiveTerminal {
     session: PtySession,
     reader: Option<JoinHandle<()>>,
     reader_done: Option<mpsc::Receiver<()>>,
+    pending_notification: Arc<Mutex<Option<TerminalNotification>>>,
 }
 
 /// A blocking local PTY adapter implementing the service's AppServer-shaped port.
@@ -146,6 +148,8 @@ impl PtyTerminalSession {
         let reader_id = id.clone();
         let (reader_done_tx, reader_done_rx) = mpsc::channel();
         let sessions_weak = Arc::downgrade(&self.sessions);
+        let pending_notification = Arc::new(Mutex::new(None));
+        let reader_pending = Arc::clone(&pending_notification);
         let reader = thread::Builder::new()
             .name(format!("terminal-pty-{id}"))
             .spawn(move || {
@@ -156,6 +160,7 @@ impl PtyTerminalSession {
                     callback,
                     sequence,
                     sessions_weak,
+                    reader_pending,
                     reader_done_tx,
                 );
             })
@@ -166,6 +171,7 @@ impl PtyTerminalSession {
                 session,
                 reader: Some(reader),
                 reader_done: Some(reader_done_rx),
+                pending_notification,
             },
         );
         Ok(json!({"ok":true}))
@@ -194,6 +200,43 @@ impl PtyTerminalSession {
             .map_err(|_| SessionError::Disconnected)?
             .remove(id);
         if let Some(mut live) = live {
+            let pending = live
+                .pending_notification
+                .lock()
+                .map_err(|_| SessionError::Disconnected)?
+                .take();
+            if let Some(notification) = pending {
+                let callback = self.callback()?;
+                if callback(notification.clone()).is_err() {
+                    *live
+                        .pending_notification
+                        .lock()
+                        .map_err(|_| SessionError::Disconnected)? = Some(notification);
+                    self.sessions
+                        .lock()
+                        .map_err(|_| SessionError::Disconnected)?
+                        .insert(id.to_owned(), live);
+                    return Err(SessionError::Disconnected);
+                }
+                let error = TerminalNotification {
+                    terminal_id: id.to_owned(),
+                    sequence: notification.sequence.saturating_add(1),
+                    event: TerminalEvent::CleanupFailed(
+                        "Terminal output delivery stopped after persistence retries failed".into(),
+                    ),
+                };
+                if callback(error.clone()).is_err() {
+                    *live
+                        .pending_notification
+                        .lock()
+                        .map_err(|_| SessionError::Disconnected)? = Some(error);
+                    self.sessions
+                        .lock()
+                        .map_err(|_| SessionError::Disconnected)?
+                        .insert(id.to_owned(), live);
+                    return Err(SessionError::Disconnected);
+                }
+            }
             #[cfg(test)]
             let injected_failure = self
                 .fail_next_close
@@ -356,65 +399,93 @@ fn read_session(
     callback: NotificationCallback,
     sequence: Arc<AtomicU64>,
     sessions: Weak<Mutex<HashMap<String, LiveTerminal>>>,
+    pending_notification: Arc<Mutex<Option<TerminalNotification>>>,
     done: mpsc::Sender<()>,
 ) {
     let mut buffer = [0; READ_CHUNK];
     loop {
         match host.read(&mut session, &mut buffer) {
             Ok(0) => break,
-            Ok(count) => callback(TerminalNotification {
-                terminal_id: terminal_id.clone(),
-                sequence: sequence.fetch_add(1, Ordering::Relaxed) + 1,
-                event: TerminalEvent::Output(buffer[..count].to_vec()),
-            }),
+            Ok(count) => {
+                let notification = TerminalNotification {
+                    terminal_id: terminal_id.clone(),
+                    sequence: sequence.fetch_add(1, Ordering::Relaxed) + 1,
+                    event: TerminalEvent::Output(buffer[..count].to_vec()),
+                };
+                if !deliver_or_retain(notification, &callback, &pending_notification) {
+                    let _send_result = done.send(());
+                    return;
+                }
+            }
             Err(_) => break,
         }
     }
     if let Err(error) = host.close(session.clone()) {
-        callback(TerminalNotification {
+        let notification = TerminalNotification {
             terminal_id,
             sequence: sequence.fetch_add(1, Ordering::Relaxed) + 1,
             event: TerminalEvent::CleanupFailed(format!("Terminal teardown failed: {error}")),
-        });
+        };
+        let _delivery_ok = deliver_or_retain(notification, &callback, &pending_notification);
         let _send_result = done.send(());
         return;
     }
     let code = match host.wait(&mut session) {
         Ok(Some(code)) => i64::from(code),
         Ok(None) => {
-            callback(TerminalNotification {
+            let notification = TerminalNotification {
                 terminal_id,
                 sequence: sequence.fetch_add(1, Ordering::Relaxed) + 1,
                 event: TerminalEvent::CleanupFailed(
                     "Terminal teardown did not reap the child".into(),
                 ),
-            });
+            };
+            let _delivery_ok = deliver_or_retain(notification, &callback, &pending_notification);
             let _send_result = done.send(());
             return;
         }
         Err(error) => {
-            callback(TerminalNotification {
+            let notification = TerminalNotification {
                 terminal_id,
                 sequence: sequence.fetch_add(1, Ordering::Relaxed) + 1,
                 event: TerminalEvent::CleanupFailed(format!(
                     "Could not reap terminal child: {error}"
                 )),
-            });
+            };
+            let _delivery_ok = deliver_or_retain(notification, &callback, &pending_notification);
             let _send_result = done.send(());
             return;
         }
     };
+    let notification = TerminalNotification {
+        terminal_id: terminal_id.clone(),
+        sequence: sequence.fetch_add(1, Ordering::Relaxed) + 1,
+        event: TerminalEvent::Exit(Some(code)),
+    };
+    if !deliver_or_retain(notification, &callback, &pending_notification) {
+        let _send_result = done.send(());
+        return;
+    }
     if let Some(sessions) = sessions.upgrade()
         && let Ok(mut sessions) = sessions.lock()
     {
         sessions.remove(&terminal_id);
     }
-    callback(TerminalNotification {
-        terminal_id,
-        sequence: sequence.fetch_add(1, Ordering::Relaxed) + 1,
-        event: TerminalEvent::Exit(Some(code)),
-    });
     let _send_result = done.send(());
+}
+
+fn deliver_or_retain(
+    notification: TerminalNotification,
+    callback: &NotificationCallback,
+    pending_notification: &Mutex<Option<TerminalNotification>>,
+) -> bool {
+    if callback(notification.clone()).is_ok() {
+        return true;
+    }
+    if let Ok(mut pending) = pending_notification.lock() {
+        *pending = Some(notification);
+    }
+    false
 }
 
 pub fn cleanup_persisted_identity(identity: &PtyIdentity) -> Result<bool, SessionError> {
@@ -442,7 +513,7 @@ mod tests {
     use std::ffi::{OsStr, OsString};
     use std::os::unix::ffi::OsStringExt;
     use std::process::Command;
-    use std::sync::mpsc;
+    use std::sync::{Arc, mpsc};
     use std::time::Duration;
 
     use base64::Engine as _;
@@ -482,6 +553,7 @@ mod tests {
         let (sender, receiver) = mpsc::channel::<TerminalNotification>();
         adapter.set_notification_callback(std::sync::Arc::new(move |event| {
             let _send_result = sender.send(event);
+            Ok(())
         }));
         adapter
             .send_request(
@@ -519,6 +591,7 @@ mod tests {
         let (sender, receiver) = mpsc::channel::<TerminalNotification>();
         adapter.set_notification_callback(std::sync::Arc::new(move |event| {
             let _send_result = sender.send(event);
+            Ok(())
         }));
         adapter
             .send_request(
@@ -603,6 +676,7 @@ mod tests {
         let (sender, receiver) = mpsc::channel::<TerminalNotification>();
         adapter.set_notification_callback(std::sync::Arc::new(move |event| {
             let _send_result = sender.send(event);
+            Ok(())
         }));
         adapter
             .send_request(
@@ -650,12 +724,91 @@ mod tests {
     }
 
     #[test]
+    fn failed_output_notification_is_retained_and_retried_on_close() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let cwd = terminal_cwd();
+        let adapter = PtyTerminalSession::new();
+        let failed_calls = Arc::new(AtomicUsize::new(0));
+        let callback_calls = Arc::clone(&failed_calls);
+        adapter.set_notification_callback(Arc::new(move |_| {
+            callback_calls.fetch_add(1, Ordering::SeqCst);
+            Err(crate::terminal_driver::SessionError::Disconnected)
+        }));
+        adapter
+            .send_request(
+                "spawn-failing-notification",
+                "process/spawn",
+                json!({
+                    "processHandle":"failing-notification",
+                    "cwd":cwd.path(),
+                    "command":["/bin/sh","-c","printf first; sleep 0.1; printf second; sleep 5"],
+                    "env":{"TERM":"xterm-256color"},
+                    "size":{"cols":100,"rows":28}
+                }),
+            )
+            .expect("spawn notification writer");
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        loop {
+            let sessions = adapter.sessions.lock().expect("session map");
+            let live = sessions.get("failing-notification").expect("live terminal");
+            if live.reader.as_ref().expect("reader thread").is_finished() {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "reader stops after callback failure"
+            );
+            drop(sessions);
+            std::thread::yield_now();
+        }
+        assert_eq!(failed_calls.load(Ordering::SeqCst), 1);
+        let retained = adapter.sessions.lock().expect("session map")["failing-notification"]
+            .pending_notification
+            .lock()
+            .expect("pending notification")
+            .clone()
+            .expect("failed notification retained");
+        assert!(matches!(
+            &retained.event,
+            TerminalEvent::Output(bytes) if bytes.starts_with(b"first") && !bytes.windows(6).any(|part| part == b"second")
+        ));
+
+        let (sender, receiver) = mpsc::channel::<TerminalNotification>();
+        adapter.set_notification_callback(Arc::new(move |event| {
+            sender
+                .send(event)
+                .map_err(|_| crate::terminal_driver::SessionError::Disconnected)
+        }));
+        adapter
+            .send_request(
+                "close-failing-notification",
+                "process/kill",
+                json!({"processHandle":"failing-notification"}),
+            )
+            .expect("retry retained notification and close");
+
+        let replayed = receiver.recv().expect("retained output replay");
+        assert_eq!(replayed, retained);
+        assert!(matches!(
+            receiver.recv().expect("visible terminal error"),
+            TerminalNotification {
+                sequence,
+                event: TerminalEvent::CleanupFailed(_),
+                ..
+            } if sequence == retained.sequence + 1
+        ));
+    }
+
+    #[test]
     fn resize_changes_the_window_size_reported_by_the_child() {
         let cwd = terminal_cwd();
         let adapter = PtyTerminalSession::new();
         let (sender, receiver) = mpsc::channel::<TerminalNotification>();
         adapter.set_notification_callback(std::sync::Arc::new(move |event| {
             let _send_result = sender.send(event);
+            Ok(())
         }));
         adapter
             .send_request(
@@ -928,7 +1081,7 @@ mod tests {
 
         let cwd = terminal_cwd();
         let adapter = PtyTerminalSession::new();
-        adapter.set_notification_callback(std::sync::Arc::new(|_| {}));
+        adapter.set_notification_callback(std::sync::Arc::new(|_| Ok(())));
         let (identity_sender, identity_receiver) = mpsc::channel();
         adapter.set_identity_callback(std::sync::Arc::new(move |_, identity| {
             let _send_result = identity_sender.send(identity.expect("Linux identity").clone());
@@ -951,7 +1104,7 @@ mod tests {
         // A separate session is the unrelated live process the stale cleanup
         // must never signal.
         let unrelated_adapter = PtyTerminalSession::new();
-        unrelated_adapter.set_notification_callback(std::sync::Arc::new(|_| {}));
+        unrelated_adapter.set_notification_callback(std::sync::Arc::new(|_| Ok(())));
         let (unrelated_sender, unrelated_receiver) = mpsc::channel();
         unrelated_adapter.set_identity_callback(std::sync::Arc::new(move |_, identity| {
             let _send_result = unrelated_sender.send(identity.expect("Linux identity").pid);
@@ -1044,7 +1197,7 @@ mod tests {
             let _send_result = identity_sender.send(identity.is_none());
             Ok(())
         }));
-        adapter.set_notification_callback(std::sync::Arc::new(|_| {}));
+        adapter.set_notification_callback(std::sync::Arc::new(|_| Ok(())));
         adapter
             .send_request(
                 "spawn-without-restart-identity",
@@ -1173,6 +1326,7 @@ mod tests {
         let (identity_sender, identity_receiver) = mpsc::channel();
         adapter.set_notification_callback(std::sync::Arc::new(move |event| {
             let _send_result = sender.send(event);
+            Ok(())
         }));
         adapter.set_identity_callback(std::sync::Arc::new(move |_, identity| {
             let _send_result = identity_sender.send(identity.expect("Linux identity").clone());
@@ -1249,6 +1403,7 @@ mod tests {
         let (sender, receiver) = mpsc::channel::<TerminalNotification>();
         adapter.set_notification_callback(std::sync::Arc::new(move |event| {
             let _send_result = sender.send(event);
+            Ok(())
         }));
         adapter
             .send_request(
@@ -1343,7 +1498,7 @@ mod tests {
     fn close_has_a_bounded_deadline_when_the_terminal_ignores_term() {
         let cwd = terminal_cwd();
         let adapter = PtyTerminalSession::new();
-        adapter.set_notification_callback(std::sync::Arc::new(|_| {}));
+        adapter.set_notification_callback(std::sync::Arc::new(|_| Ok(())));
         adapter
             .send_request(
                 "spawn-term-resistant",
