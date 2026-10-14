@@ -63,6 +63,7 @@ pub mod historical_input_receipts;
 pub mod host_project_runtime;
 pub mod maintenance;
 pub mod message_admission;
+pub mod host_worker_create;
 pub mod model_catalog;
 pub mod monitor_driver;
 pub mod monitor_lifecycle;

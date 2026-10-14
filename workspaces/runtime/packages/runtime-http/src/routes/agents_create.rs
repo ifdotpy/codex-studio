@@ -4,42 +4,165 @@ use super::manifest::{Dependency, OperationStatus, RouteGroup, post};
 use crate::{error::ApiError, generated, router::HttpState};
 use axum::{Json, extract::State, http::StatusCode};
 use serde_json::Value;
-use studio_runtime_services::agents_create::{self, Context, Creation, OperationError};
+use studio_runtime_services::agents_create::{
+    self, Context, CreateError, Creation, OperationError,
+};
+use studio_runtime_services::host_worker_create::{
+    AccountIdentity, CreationCatalog, ExecutionSettings,
+};
+
+struct RouteCreationCatalog<'a> {
+    service: &'a studio_runtime_services::model_catalog::ModelCatalogService,
+}
+
+impl CreationCatalog for RouteCreationCatalog<'_> {
+    fn resolve(
+        &self,
+        account_key: &str,
+        account: &AccountIdentity,
+        model: &str,
+        effort: Option<&str>,
+        fast_mode: bool,
+        daybreak_enabled: bool,
+    ) -> Result<ExecutionSettings, CreateError> {
+        let home = account
+            .home
+            .as_deref()
+            .ok_or(CreateError::CapabilityUnavailable(
+                "provider-session/model-list",
+            ))?;
+        let provider = account
+            .provider
+            .as_deref()
+            .ok_or(CreateError::CapabilityUnavailable(
+                "provider-session/model-list",
+            ))?;
+        let (value, fresh_key, fresh_home, fresh_provider, _, expires_at) =
+            match self.service.read_for_admission(account_key, home, provider) {
+                studio_runtime_services::model_catalog::AdmissionCatalogRead::Fresh {
+                    value,
+                    account_key,
+                    home,
+                    provider,
+                    generation,
+                    expires_at,
+                } => (value, account_key, home, provider, generation, expires_at),
+                _ => {
+                    return Err(CreateError::CapabilityUnavailable(
+                        "provider-session/model-list",
+                    ));
+                }
+            };
+        if fresh_key != account_key
+            || fresh_home != home
+            || fresh_provider != provider
+            || expires_at <= std::time::Instant::now()
+        {
+            return Err(CreateError::CapabilityUnavailable(
+                "provider-session/model-list",
+            ));
+        }
+        let row = value
+            .get("data")
+            .and_then(Value::as_array)
+            .and_then(|rows| {
+                rows.iter().find(|row| {
+                    !row.get("hidden").and_then(Value::as_bool).unwrap_or(false)
+                        && (row.get("model").and_then(Value::as_str) == Some(model)
+                            || row.get("resolvedModel").and_then(Value::as_str) == Some(model))
+                })
+            })
+            .ok_or(CreateError::InvalidCreation("model"))?;
+        let supported = row
+            .get("supportedReasoningEfforts")
+            .and_then(Value::as_array)
+            .map(|rows| {
+                rows.iter()
+                    .filter_map(|row| row.get("reasoningEffort").and_then(Value::as_str))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        if effort.is_some_and(|effort| !supported.contains(&effort)) {
+            return Err(CreateError::InvalidCreation("effort"));
+        }
+        if fast_mode
+            && !row
+                .get("serviceTiers")
+                .and_then(Value::as_array)
+                .is_some_and(|tiers| {
+                    tiers
+                        .iter()
+                        .any(|tier| tier.get("id").and_then(Value::as_str) == Some("priority"))
+                })
+        {
+            return Err(CreateError::InvalidCreation("fast_mode"));
+        }
+        let native_effort = effort.map(str::to_owned).or_else(|| {
+            row.get("defaultReasoningEffort")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+        });
+        let programs = row
+            .get("availableAccessPrograms")
+            .and_then(|programs| programs.get("cyber"))
+            .and_then(Value::as_array);
+        let program = if daybreak_enabled {
+            programs
+                .and_then(|programs| {
+                    ["daybreakBlue", "daybreakRed"]
+                        .into_iter()
+                        .find(|name| programs.iter().any(|entry| entry.as_str() == Some(name)))
+                })
+                .ok_or(CreateError::InvalidCreation("daybreak_enabled"))?
+        } else if programs.is_some_and(|programs| {
+            !programs
+                .iter()
+                .any(|entry| entry.as_str() == Some("standard"))
+        }) {
+            return Err(CreateError::InvalidCreation("daybreak_enabled"));
+        } else {
+            "standard"
+        };
+        Ok(ExecutionSettings {
+            model: model.to_owned(),
+            effort: effort.map(str::to_owned),
+            native_effort: native_effort.unwrap_or_else(|| "medium".to_owned()),
+            fast_mode,
+            daybreak_enabled,
+            cyber_access_program: program.to_owned(),
+        })
+    }
+}
 
 pub(crate) fn routes() -> RouteGroup {
-    const LEAD_DEPENDENCIES: [Dependency; 6] = [
+    const LEAD_DEPENDENCIES: [Dependency; 7] = [
         Dependency::new("account-driver/unavailable"),
-        Dependency::new("agent-management/empty-chat-reuse"),
-        Dependency::new("project-driver/chat-binding"),
+        Dependency::new("cross-server-driver/local-identity"),
+        Dependency::new("cross-server-driver/project-binding"),
         Dependency::new("provider-session/model-list"),
-        Dependency::new("worker-driver/settings-catalog"),
-        Dependency::new("workspace-state/lead-workspace"),
+        Dependency::new("project-driver/folder-selection"),
+        Dependency::new("workspace-state/image-workspace"),
+        Dependency::new("workspace-state/vm-workspace"),
     ];
     const RENAME_DEPENDENCIES: [Dependency; 1] =
         [Dependency::new("provider-session/title-generation")];
-    const AGENT_DEPENDENCIES: [Dependency; 6] = [
+    const AGENT_DEPENDENCIES: [Dependency; 4] = [
         Dependency::new("account-driver/unavailable"),
         Dependency::new("provider-session/model-list"),
-        Dependency::new("worker-driver/settings-catalog"),
-        Dependency::new("worker-driver/work-assignment"),
-        Dependency::new("worker-driver/workspace-preparation"),
-        Dependency::new("workspace-state/lead-workspace"),
+        Dependency::new("workspace-state/image-workspace"),
+        Dependency::new("workspace-state/vm-workspace"),
     ];
-    const CONFIGURE_DEPENDENCIES: [Dependency; 1] =
-        [Dependency::new("agent-management/agent-mode-settings")];
-    const CONVERSATION_DEPENDENCIES: [Dependency; 1] =
-        [Dependency::new("agent-management/conversation-settings")];
+    const CONVERSATION_DEPENDENCIES: [Dependency; 2] = [
+        Dependency::new("account-driver/unavailable"),
+        Dependency::new("provider-session/model-list"),
+    ];
     RouteGroup::new(vec![
         post(
             "/api/agents",
             OperationStatus::partial(&AGENT_DEPENDENCIES),
             create_agent,
         ),
-        post(
-            "/api/configure",
-            OperationStatus::partial(&CONFIGURE_DEPENDENCIES),
-            configure,
-        ),
+        post("/api/configure", OperationStatus::Implemented, configure),
         post(
             "/api/conversation",
             OperationStatus::partial(&CONVERSATION_DEPENDENCIES),
@@ -64,10 +187,14 @@ async fn dispatch<T: serde::de::DeserializeOwned + serde::Serialize>(
 ) -> Result<Json<Value>, ApiError> {
     let result = tokio::task::spawn_blocking(move || {
         let store = state.store.as_deref().ok_or_else(ApiError::internal)?;
+        let catalog = RouteCreationCatalog {
+            service: &state.model_catalog,
+        };
         let context = Context {
             store,
             accounts: state.account_policy.as_deref(),
             driver: state.account_driver.as_deref(),
+            catalog: Some(&catalog),
             validate: &|schema, value| match schema {
                 "PersistedAgentRecord" => state
                     .validators
@@ -157,7 +284,8 @@ async fn configure(
         concurrency: body.concurrency,
         max_agents: body.max_agents,
         token_budget: body.token_budget,
-        mode_receipt: body.expected_mode_revision.is_some() || body.request_id.is_some(),
+        expected_mode_revision: body.expected_mode_revision.flatten(),
+        request_id: body.request_id.flatten(),
     };
     dispatch::<generated::ConfigureResponse>(state, move |context| {
         agents_create::configure(context, request)
@@ -170,19 +298,50 @@ async fn conversation(
 ) -> Result<Json<Value>, ApiError> {
     let request = agents_create::Conversation {
         non_defaults: body.next_turn.is_some() || body.request_id.is_some(),
-        settings: body.cwd.is_some()
-            || body.yolo_mode.is_some()
-            || body.model.is_some()
-            || body.effort.is_some()
-            || body.fast_mode.is_some()
-            || body.daybreak_enabled.is_some()
-            || body.next_turn.flatten().is_some()
-            || body.request_id.flatten().is_some()
-            || body.worker_defaults.is_some()
-            || body.review_defaults.is_some()
-            || body.agent_mode.is_some()
+        model_present: body.model.is_some(),
+        effort_present: body.effort.is_some(),
+        fast_mode_present: body.fast_mode.is_some(),
+        daybreak_present: body.daybreak_enabled.is_some(),
+        cwd: body.cwd,
+        yolo_mode: body.yolo_mode,
+        model: body.model.flatten(),
+        effort: body.effort,
+        fast_mode: body.fast_mode.flatten(),
+        daybreak_enabled: body.daybreak_enabled.flatten(),
+        next_turn: body.next_turn,
+        request_id: body.request_id.clone(),
+        mode_settings: body.agent_mode.is_some()
             || body.subagent_concurrency.is_some()
             || body.expected_mode_revision.is_some(),
+        mode_limit: body.subagent_concurrency.or_else(|| {
+            body.agent_mode.map(|mode| {
+                if serde_json::to_value(mode)
+                    .ok()
+                    .and_then(|value| value.as_str().map(str::to_owned))
+                    .as_deref()
+                    == Some("single")
+                {
+                    0
+                } else {
+                    32
+                }
+            })
+        }),
+        mode_revision: body.expected_mode_revision.flatten(),
+        mode_request_id: body.request_id.flatten(),
+        worker_settings: body.worker_defaults.is_some() || body.review_defaults.is_some(),
+        worker_defaults: body
+            .worker_defaults
+            .as_ref()
+            .map(serde_json::to_value)
+            .transpose()
+            .map_err(|_| ApiError::internal())?,
+        review_defaults: body
+            .review_defaults
+            .as_ref()
+            .map(serde_json::to_value)
+            .transpose()
+            .map_err(|_| ApiError::internal())?,
         id: body.id,
         expected_account: body.expected_account_key,
         excluded: body.excluded_account_keys.map(|mut keys| {
@@ -219,6 +378,7 @@ fn operation_error(error: OperationError) -> ApiError {
     }
     let status = match &error {
         OperationError::Unavailable(_)
+        | OperationError::Create(MutationError::CapabilityUnavailable(_))
         | OperationError::Create(MutationError::TitleGenerationUnavailable) => {
             StatusCode::NOT_IMPLEMENTED
         }
@@ -244,17 +404,14 @@ inventory::submit! {
         routes: Some(routes),
         dependencies: &[
         "account-driver/unavailable",
-        "agent-discovery/launcher-status",
-        "agent-management/agent-mode-settings",
-        "agent-management/conversation-settings",
-        "agent-management/empty-chat-reuse",
-        "project-driver/chat-binding",
+        "cross-server-driver/local-identity",
+        "cross-server-driver/project-binding",
+        "project-driver/folder-selection",
         "provider-session/model-list",
         "provider-session/title-generation",
         "worker-driver/settings-catalog",
-        "worker-driver/work-assignment",
-        "worker-driver/workspace-preparation",
-        "workspace-state/lead-workspace",
+        "workspace-state/image-workspace",
+        "workspace-state/vm-workspace",
         ],
     }
 }

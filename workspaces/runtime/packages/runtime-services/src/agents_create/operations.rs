@@ -3,6 +3,7 @@ use super::*;
 use crate::account_driver::{AccountDriver, AccountDriverError, AccountStatus};
 use crate::account_policy::AccountPolicyState;
 use crate::event_write::{python_json, python_strip, truthy};
+use crate::host_worker_create::{AccountIdentity, ExecutionSettings};
 use sha2::{Digest, Sha256};
 use std::path::PathBuf;
 use studio_runtime_store::RuntimeStore;
@@ -11,6 +12,7 @@ pub struct Context<'a> {
     pub store: &'a RuntimeStore,
     pub accounts: Option<&'a AccountPolicyState>,
     pub driver: Option<&'a AccountDriver>,
+    pub catalog: Option<&'a dyn crate::host_worker_create::CreationCatalog>,
     pub validate: &'a dyn Fn(&str, &Value) -> bool,
 }
 
@@ -56,20 +58,39 @@ pub struct Configuration {
     pub concurrency: Option<i64>,
     pub max_agents: Option<i64>,
     pub token_budget: Option<Option<i64>>,
-    pub mode_receipt: bool,
+    pub expected_mode_revision: Option<i64>,
+    pub request_id: Option<String>,
 }
 
 pub struct Conversation {
     pub id: String,
     pub expected_account: Option<String>,
     pub excluded: Option<Vec<String>>,
-    pub settings: bool,
+    pub cwd: Option<String>,
+    pub yolo_mode: Option<bool>,
+    pub model: Option<String>,
+    pub model_present: bool,
+    pub effort: Option<Option<String>>,
+    pub effort_present: bool,
+    pub fast_mode: Option<bool>,
+    pub fast_mode_present: bool,
+    pub daybreak_enabled: Option<bool>,
+    pub daybreak_present: bool,
+    pub next_turn: Option<Option<bool>>,
+    pub request_id: Option<Option<String>>,
+    pub mode_settings: bool,
+    pub mode_limit: Option<i64>,
+    pub mode_revision: Option<i64>,
+    pub mode_request_id: Option<String>,
+    pub worker_settings: bool,
+    pub worker_defaults: Option<Value>,
+    pub review_defaults: Option<Value>,
     pub non_defaults: bool,
 }
 
-const DEFAULT_LEAD_MODEL: &str = "gpt-6-astra";
-const DEFAULT_CONCURRENCY: i64 = 32;
-const DEFAULT_MAX_AGENTS: i64 = 64;
+pub(crate) const DEFAULT_LEAD_MODEL: &str = "gpt-6-astra";
+pub(crate) const DEFAULT_CONCURRENCY: i64 = 32;
+pub(crate) const DEFAULT_MAX_AGENTS: i64 = 64;
 
 pub fn lead(context: &Context<'_>, request: Creation) -> Result<Value, OperationError> {
     create(context, request, true)
@@ -82,6 +103,7 @@ fn create(
     mut request: Creation,
     draft: bool,
 ) -> Result<Value, OperationError> {
+    let server_id = local_server_id(context)?;
     let id = request.id.clone().map_or_else(new_id, Ok)?;
     let workspace = request
         .workspace
@@ -120,7 +142,11 @@ fn create(
     if existing.is_some() {
         return context.store.transaction_with_error(|tx| {
             let current = replay(tx)?.ok_or(CreateError::Conflict)?;
-            Ok(sync_projection(tx, &current)?)
+            Ok(sync_projection_with_server_id(
+                tx,
+                &current,
+                server_id.as_deref(),
+            )?)
         });
     }
     let read = context.store.read()?;
@@ -151,25 +177,19 @@ fn create(
     }
     drop(read);
     if request.parent.is_some() {
-        return Err(OperationError::Unavailable(
-            "worker-driver/workspace-preparation",
-        ));
-    }
-    if request.catalog {
-        return Err(OperationError::Unavailable("provider-session/model-list"));
-    }
-    if request.worker_catalog {
-        return Err(OperationError::Unavailable(
-            "worker-driver/settings-catalog",
-        ));
-    }
-    if request.project_binding {
-        return Err(OperationError::Unavailable("project-driver/chat-binding"));
+        if request.worker_catalog {
+            return Err(OperationError::Invalid(
+                "Only a lead can change worker defaults",
+            ));
+        }
+        return create_child(context, &request, &id, &intent, &validate);
     }
     if workspace != "worktree" {
-        return Err(OperationError::Unavailable(
-            "workspace-state/lead-workspace",
-        ));
+        return Err(OperationError::Unavailable(match workspace {
+            "image" => "workspace-state/image-workspace",
+            "layr" => "workspace-state/vm-workspace",
+            _ => return Err(OperationError::Invalid("Unknown workspace mode")),
+        }));
     }
     if !draft && request.cwd.as_deref().is_none_or(str::is_empty) {
         return Err(OperationError::Invalid(
@@ -193,7 +213,100 @@ fn create(
         },
         Ok,
     )?;
+    if request
+        .intent
+        .get("project_folder")
+        .is_some_and(|value| !value.is_null())
+    {
+        return Err(OperationError::Unavailable(
+            "project-driver/folder-selection",
+        ));
+    }
+    let binding = if request.project_binding {
+        Some(resolve_project_binding(
+            context,
+            &cwd,
+            request.intent.get("project_id").and_then(Value::as_str),
+            request
+                .intent
+                .get("project_server_id")
+                .and_then(Value::as_str),
+        )?)
+    } else {
+        None
+    };
     let account = account_key(context, request.account.as_deref(), &cwd)?;
+    let identity = account_identity(context, &account)?;
+    let provider = identity.provider.as_deref().unwrap_or("codex");
+    let settings = if request.catalog || request.worker_catalog {
+        let model = request
+            .intent
+            .get("model")
+            .and_then(Value::as_str)
+            .filter(|model| !model.trim().is_empty())
+            .unwrap_or(if provider == "claude" {
+                "default"
+            } else {
+                DEFAULT_LEAD_MODEL
+            });
+        let effort = request
+            .intent
+            .get("effort")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|effort| !effort.is_empty());
+        let effort = effort.or_else(|| {
+            (request
+                .intent
+                .get("model")
+                .and_then(Value::as_str)
+                .is_some())
+            .then(|| previous.as_ref()?.get("effort")?.as_str())
+            .flatten()
+        });
+        let fast_mode = request
+            .intent
+            .get("fast_mode")
+            .and_then(Value::as_bool)
+            .or_else(|| {
+                request.intent.get("model").and_then(Value::as_str)?;
+                previous.as_ref()?.get("fastMode")?.as_bool()
+            })
+            .unwrap_or(false);
+        let daybreak_enabled = request
+            .intent
+            .get("daybreak_enabled")
+            .and_then(Value::as_bool)
+            .or_else(|| {
+                request.intent.get("model").and_then(Value::as_str)?;
+                previous.as_ref()?.get("daybreakEnabled")?.as_bool()
+            })
+            .unwrap_or(false);
+        context
+            .catalog
+            .ok_or(OperationError::Unavailable("provider-session/model-list"))?
+            .resolve(
+                &account,
+                &identity,
+                model,
+                effort,
+                fast_mode,
+                daybreak_enabled,
+            )?
+    } else {
+        ExecutionSettings {
+            model: if provider == "claude" {
+                "default".to_owned()
+            } else {
+                DEFAULT_LEAD_MODEL.to_owned()
+            },
+            effort: Some("medium".to_owned()),
+            native_effort: "medium".to_owned(),
+            fast_mode: false,
+            daybreak_enabled: false,
+            cyber_access_program: "standard".to_owned(),
+        }
+    };
     let yolo = request.yolo.unwrap_or_else(|| {
         previous
             .as_ref()
@@ -203,6 +316,16 @@ fn create(
     });
     let concurrency = request.concurrency.unwrap_or(DEFAULT_CONCURRENCY);
     let requested_max_agents = request.max_agents.unwrap_or(DEFAULT_MAX_AGENTS);
+    if !(0..=512).contains(&concurrency) || !(1..=1024).contains(&requested_max_agents) {
+        return Err(OperationError::Invalid(
+            "Concurrency must be 0 to 512 and team size must be 1 to 1024",
+        ));
+    }
+    if request.token_budget.is_some_and(|budget| budget <= 0) {
+        return Err(OperationError::Invalid(
+            "Token budget must be a positive integer",
+        ));
+    }
     let role = request.role.as_deref().unwrap_or("orchestrator");
     let max_agents = if request.max_agents.is_some() || role != "orchestrator" {
         requested_max_agents
@@ -211,6 +334,25 @@ fn create(
     };
     let prompt = python_strip(&request.prompt);
     let created = crate::event_write::unix_time().map_err(|_| OperationError::Internal)?;
+    let (worker_defaults, review_defaults) = if role == "orchestrator" {
+        (
+            Some(resolve_worker_defaults(
+                context,
+                request.intent.get("worker_defaults"),
+                &account,
+                &identity,
+                &settings.model,
+            )?),
+            Some(resolve_review_defaults(
+                context,
+                request.intent.get("review_defaults"),
+                &account,
+                &identity,
+            )?),
+        )
+    } else {
+        (None, None)
+    };
     let mut record = build_agent_record(
         &id,
         if draft {
@@ -221,7 +363,7 @@ fn create(
         prompt,
         &cwd,
         &account,
-        provider(context, &account),
+        provider,
         yolo,
         role,
         role == "orchestrator",
@@ -237,7 +379,18 @@ fn create(
     if !draft && role == "orchestrator" {
         record["maxAgentsExplicit"] = json!(request.max_agents.is_some());
     }
+    if role == "orchestrator" {
+        record["workerDefaults"] = worker_defaults.unwrap_or_else(|| {
+            json!({"model":"gpt-6-luna","effort":"high","fastMode":false,"daybreakEnabled":false,"delegationDepth":1})
+        });
+        record["reviewDefaults"] = review_defaults.unwrap_or(json!({"model":null,"effort":null}));
+    }
     mode_fields(&mut record);
+    record["model"] = json!(settings.model);
+    record["effort"] = json!(settings.effort);
+    record["fastMode"] = json!(settings.fast_mode);
+    record["daybreakEnabled"] = json!(settings.daybreak_enabled);
+    record["cyberAccessProgram"] = json!(settings.cyber_access_program);
     record["profileId"] = json!(request.profile);
     if let Some(profile) = profile {
         record["profileInstructions"] = profile["instructions"].clone();
@@ -245,12 +398,32 @@ fn create(
     if !draft {
         record["creationIntent"] = intent.clone();
     }
+    if let Some(binding) = &binding {
+        record["projectId"] = binding["projectId"].clone();
+        record["projectServerId"] = binding["projectServerId"].clone();
+    }
+    let reuse_execution_fields = [
+        "effort",
+        "fast_mode",
+        "daybreak_enabled",
+        "worker_defaults",
+        "review_defaults",
+    ]
+    .iter()
+    .any(|field| request.intent.get(*field).is_some());
     mutate(context, |tx| {
         if let Some(existing) = replay(tx)? {
-            return Ok(sync_projection(tx, &existing)?);
+            return Ok(sync_projection_with_server_id(
+                tx,
+                &existing,
+                server_id.as_deref(),
+            )?);
         }
         if let Some(prior) = previous_lead(tx, request.previous.as_deref(), &validate)?
             && request.reuse_empty.unwrap_or(true)
+            && draft
+            && !reuse_execution_fields
+            && !request.worker_catalog
             && !truthy(prior.get("layrReady"))
             && prior
                 .get("workspaceMode")
@@ -261,32 +434,381 @@ fn create(
                 .get("provider")
                 .and_then(Value::as_str)
                 .unwrap_or("codex")
-                == provider(context, &account)
+                == provider
             && crate::sync_entity_context::agent_view_context(tx, &prior, None)?.empty_lead
         {
-            return Err(OperationError::Unavailable(
-                "agent-management/empty-chat-reuse",
-            ));
+            let mut reused = prior;
+            let previous_account = reused
+                .get("accountKey")
+                .and_then(Value::as_str)
+                .unwrap_or("default")
+                .to_owned();
+            if reused.get("provider").and_then(Value::as_str) != Some(provider) {
+                return Err(OperationError::Create(CreateError::IdentityChanged));
+            }
+            reused["cwd"] = json!(cwd);
+            reused["hostProjectPath"] = json!(cwd);
+            reused["accountKey"] = json!(account);
+            reused["executionSettingsAccountKey"] = json!(account);
+            reused["yoloMode"] = json!(yolo);
+            if request
+                .intent
+                .get("model")
+                .and_then(Value::as_str)
+                .is_some()
+            {
+                reused["model"] = json!(settings.model);
+                reused["effort"] = json!(settings.effort);
+                reused["fastMode"] = json!(settings.fast_mode);
+                reused["daybreakEnabled"] = json!(settings.daybreak_enabled);
+                reused["cyberAccessProgram"] = json!(settings.cyber_access_program);
+            }
+            if let Some(binding) = &binding {
+                reused["projectId"] = binding["projectId"].clone();
+                reused["projectServerId"] = binding["projectServerId"].clone();
+            } else if let Some(fields) = reused.as_object_mut() {
+                fields.remove("projectId");
+                fields.remove("projectServerId");
+            }
+            if previous_account != account {
+                reused["daybreakEnabled"] = json!(false);
+                reused["cyberAccessProgram"] = json!("standard");
+                reused
+                    .as_object_mut()
+                    .ok_or(OperationError::Internal)?
+                    .remove("pendingSettings");
+                reused
+                    .as_object_mut()
+                    .ok_or(OperationError::Internal)?
+                    .remove("pendingSettingsAccountKey");
+            }
+            ensure_project(tx, &reused)?;
+            save_agent(tx, &reused, &validate)?;
+            tx.execute(
+                "INSERT INTO runtime_lead_requests(id,agent,signature) VALUES(?1,?2,?3)",
+                rusqlite::params![id, reused["id"].as_str(), signature],
+            )
+            .map_err(StoreError::from)?;
+            return Ok(sync_projection_with_server_id(
+                tx,
+                &reused,
+                server_id.as_deref(),
+            )?);
         }
-        refresh_account(context, &account)?;
-        Ok(super::create_agent(
-            tx, &id, prompt, record, created, validate,
+        if let Some(binding) = &binding {
+            let current = resolve_project_binding_from(
+                tx,
+                binding["cwd"].as_str().ok_or(OperationError::Internal)?,
+                binding["projectId"].as_str(),
+                binding["projectServerId"].as_str(),
+                binding["localServerId"]
+                    .as_str()
+                    .ok_or(OperationError::Internal)?,
+            )?;
+            if current != *binding {
+                return Err(CreateError::IdentityChanged.into());
+            }
+        }
+        Ok(super::create_agent_with_server_id(
+            tx,
+            &id,
+            prompt,
+            record,
+            created,
+            validate,
+            server_id.as_deref(),
+        )?)
+    })
+}
+
+fn create_child(
+    context: &Context<'_>,
+    request: &Creation,
+    id: &str,
+    intent: &Value,
+    validate: &impl Fn(&str, &Value) -> bool,
+) -> Result<Value, OperationError> {
+    let parent_id = request.parent.as_deref().ok_or(OperationError::Internal)?;
+    let (parent, root, project_binding) = {
+        let db = context.store.read()?;
+        let parent =
+            load_agent_value(&db, parent_id, validate)?.ok_or(MutationError::UnknownAgent)?;
+        if truthy(parent.get("deletedAt")) {
+            return Err(MutationError::Deleted.into());
+        }
+        let root_id = parent
+            .get("rootId")
+            .and_then(Value::as_str)
+            .ok_or(OperationError::Internal)?;
+        let root = load_agent_value(&db, root_id, validate)?.ok_or(MutationError::UnknownAgent)?;
+        let cwd = parent
+            .get("cwd")
+            .and_then(Value::as_str)
+            .ok_or(OperationError::Internal)?;
+        let project =
+            studio_runtime_store::ProjectsRepository::get(&db, cwd)?.map(|(_, project)| project);
+        (parent, root, project)
+    };
+    if !truthy(root.get("isLead"))
+        || root.get("id").and_then(Value::as_str) != root.get("rootId").and_then(Value::as_str)
+    {
+        return Err(MutationError::LeadRequired.into());
+    }
+    if !truthy(parent.get("autoWake")) || !truthy(root.get("autoWake")) {
+        return Err(OperationError::Invalid("This team is stopped"));
+    }
+    if root
+        .get("concurrency")
+        .and_then(Value::as_i64)
+        .unwrap_or(32)
+        == 0
+    {
+        return Err(OperationError::Invalid(
+            "Single agent mode disables new delegation",
+        ));
+    }
+    if request
+        .role
+        .as_deref()
+        .is_some_and(|role| role != "implementer")
+    {
+        return Err(OperationError::Invalid(
+            "Host child creation supports implementer workers",
+        ));
+    }
+    let workspace = request.workspace.as_deref().unwrap_or("worktree");
+    if workspace == "image" {
+        return Err(OperationError::Unavailable(
+            "workspace-state/image-workspace",
+        ));
+    }
+    if workspace == "layr" {
+        return Err(OperationError::Unavailable("workspace-state/vm-workspace"));
+    }
+    if workspace != "worktree" {
+        return Err(OperationError::Invalid("Unknown workspace mode"));
+    }
+    let cwd = parent
+        .get("cwd")
+        .and_then(Value::as_str)
+        .ok_or(OperationError::Internal)?;
+    let defaults = root
+        .get("workerDefaults")
+        .cloned()
+        .unwrap_or_else(|| json!({}));
+    let account = request
+        .account
+        .as_deref()
+        .or_else(|| defaults.get("accountKey").and_then(Value::as_str))
+        .unwrap_or_else(|| {
+            parent
+                .get("accountKey")
+                .and_then(Value::as_str)
+                .unwrap_or("default")
+        });
+    let identity = account_identity(context, account)?;
+    if defaults
+        .get("accountKey")
+        .and_then(Value::as_str)
+        .is_some_and(|selected| selected != account)
+    {
+        return Err(MutationError::IdentityChanged.into());
+    }
+    let provider = identity.provider.as_deref().unwrap_or("codex");
+    let model = intent
+        .get("model")
+        .and_then(Value::as_str)
+        .or_else(|| defaults.get("model").and_then(Value::as_str))
+        .or_else(|| root.get("model").and_then(Value::as_str))
+        .unwrap_or(if provider == "claude" {
+            "default"
+        } else {
+            DEFAULT_LEAD_MODEL
+        });
+    let effort = intent
+        .get("effort")
+        .and_then(Value::as_str)
+        .or_else(|| defaults.get("effort").and_then(Value::as_str));
+    let fast_mode = intent
+        .get("fast_mode")
+        .and_then(Value::as_bool)
+        .or_else(|| defaults.get("fastMode").and_then(Value::as_bool))
+        .unwrap_or(false);
+    let daybreak = intent
+        .get("daybreak_enabled")
+        .and_then(Value::as_bool)
+        .or_else(|| defaults.get("daybreakEnabled").and_then(Value::as_bool))
+        .unwrap_or(false);
+    let catalog = context
+        .catalog
+        .ok_or(OperationError::Unavailable("provider-session/model-list"))?;
+    let (base_ref, base_commit) =
+        crate::host_worker_create::freeze_base(PathBuf::from(cwd).as_path())?;
+    let body = json!({
+        "account_key":account,"name":request.name.as_deref().unwrap_or(model),
+        "model":model,"effort":effort,"fast_mode":fast_mode,
+        "daybreak_enabled":daybreak,"prompt":request.prompt,
+        "workspace_explicit":request.workspace.is_some()
+    });
+    let root_agent = root
+        .get("id")
+        .and_then(Value::as_str)
+        .ok_or(OperationError::Internal)?;
+    let epoch = parent.get("epoch").and_then(Value::as_i64).unwrap_or(0);
+    let parent_cwd = parent
+        .get("cwd")
+        .and_then(Value::as_str)
+        .ok_or(OperationError::Internal)?;
+    let parent_account_key = parent
+        .get("accountKey")
+        .and_then(Value::as_str)
+        .unwrap_or("default");
+    let draft = crate::host_worker_create::prepare_work_item(
+        &body,
+        PathBuf::from(cwd).as_path(),
+        studio_runtime_store::AgentId::from(id),
+        studio_runtime_store::AgentId::from(root_agent),
+        studio_runtime_store::AgentId::from(parent_id),
+        &base_ref,
+        &base_commit,
+        epoch,
+        parent_cwd,
+        parent_account_key,
+        parent.get("projectId"),
+        parent.get("projectServerId"),
+        project_binding.as_ref(),
+        &identity,
+        catalog,
+    )?;
+    let checked = crate::host_worker_create::persisted_record(&draft)?;
+    let mut record = checked.value();
+    record["creationIntent"] = intent.clone();
+    record["provider"] = json!(provider);
+    record["yoloMode"] = root.get("yoloMode").cloned().unwrap_or(json!(true));
+    record["maxAgents"] = root
+        .get("maxAgents")
+        .cloned()
+        .unwrap_or(json!(DEFAULT_MAX_AGENTS));
+    record["tokenBudget"] = root.get("tokenBudget").cloned().unwrap_or(Value::Null);
+    let created = record
+        .get("created")
+        .and_then(Value::as_f64)
+        .ok_or(OperationError::Internal)?;
+    let prompt = request.prompt.trim();
+    let server_id = local_server_id(context)?;
+    mutate(context, |tx| {
+        crate::host_worker_create::recheck_worker(tx, &draft, epoch, &identity)?;
+        Ok(super::create_agent_with_server_id(
+            tx,
+            id,
+            prompt,
+            record,
+            created,
+            validate,
+            server_id.as_deref(),
         )?)
     })
 }
 
 pub fn configure(context: &Context<'_>, request: Configuration) -> Result<Value, OperationError> {
+    let validate = |schema: &str, value: &Value| (context.validate)(schema, value);
+    if request
+        .max_agents
+        .is_some_and(|max_agents| !(1..=1024).contains(&max_agents))
+        || request
+            .token_budget
+            .is_some_and(|budget| budget.is_some_and(|budget| budget <= 0))
+    {
+        return Err(OperationError::Invalid(
+            "Team size must be 1 to 1024 and token budget must be positive or null",
+        ));
+    }
     if request.concurrency.is_some() {
         if request.max_agents.is_some() || request.token_budget.is_some() {
             return Err(OperationError::Invalid(
                 "Configure only team storage and token limits",
             ));
         }
-        return Err(OperationError::Unavailable(
-            "agent-management/agent-mode-settings",
-        ));
+        let limit = request.concurrency.ok_or(OperationError::Internal)?;
+        let revision = request
+            .expected_mode_revision
+            .filter(|revision| *revision >= 0)
+            .ok_or(OperationError::Invalid(
+                "A nonnegative expected mode revision is required",
+            ))?;
+        let request_id = request
+            .request_id
+            .as_deref()
+            .filter(|id| (1..=200).contains(&id.chars().count()))
+            .ok_or(OperationError::Invalid(
+                "A subagent concurrency request id is required",
+            ))?;
+        if !(0..=512).contains(&limit) {
+            return Err(OperationError::Invalid(
+                "Subagent concurrency must be an integer from 0 to 512",
+            ));
+        }
+        let signature = crate::event_write::request_signature(&json!({
+            "operation":"subagent_concurrency","agent":request.id,
+            "concurrency":limit,"expectedRevision":revision
+        }));
+        return mutate(context, |tx| {
+            let mut root =
+                load_agent_value(tx, &request.id, &validate)?.ok_or(MutationError::UnknownAgent)?;
+            if root.get("isLead").and_then(Value::as_bool) != Some(true)
+                || root.get("rootId").and_then(Value::as_str) != Some(request.id.as_str())
+            {
+                return Err(MutationError::LeadRequired.into());
+            }
+            if let Some(receipt) = EventWriteRepository::receipt(tx, request_id)? {
+                if receipt.signature != signature {
+                    return Err(MutationError::Conflict.into());
+                }
+                return serde_json::from_str(&receipt.result)
+                    .map_err(|_| MutationError::InvalidStoredObject {
+                        table: "runtime_operation_receipts",
+                        id: request_id.to_owned(),
+                    })
+                    .map_err(OperationError::from);
+            }
+            mode_fields(&mut root);
+            let current = root.get("concurrency").and_then(Value::as_i64).unwrap_or(0);
+            let current_revision = root
+                .get("agentModeRevision")
+                .and_then(Value::as_i64)
+                .unwrap_or(0);
+            if current_revision != revision {
+                return Err(MutationError::Stale.into());
+            }
+            let prior_max = root.get("maxAgents").and_then(Value::as_i64).unwrap_or(64);
+            if current != limit {
+                root["concurrency"] = json!(limit);
+                root["agentModeRevision"] = json!(revision + 1);
+                root["agentModeChangedAt"] =
+                    json!(crate::event_write::unix_time().map_err(|_| MutationError::Internal)?);
+                root["agentModeChangedBy"] = json!("user");
+            }
+            if root.get("maxAgentsExplicit").and_then(Value::as_bool) != Some(true) {
+                root["maxAgents"] = json!(prior_max.max(limit + 2));
+            }
+            mode_fields(&mut root);
+            let changed = current != limit || root["maxAgents"].as_i64() != Some(prior_max);
+            if changed {
+                save_agent(tx, &root, &validate)?;
+            }
+            let result = json!({"id":request.id,"concurrency":root["concurrency"],
+                "agentMode":root["agentMode"],"agentModeRevision":root["agentModeRevision"],
+                "maxAgents":root["maxAgents"],"tokenBudget":root.get("tokenBudget").cloned().unwrap_or(Value::Null)});
+            EventWriteRepository::put_receipt(
+                tx,
+                request_id,
+                &signature,
+                &serde_json::to_string(&result).map_err(StoreError::from)?,
+            )?;
+            Ok(result)
+        });
     }
-    if request.mode_receipt {
+    if request.expected_mode_revision.is_some() || request.request_id.is_some() {
         return Err(OperationError::Invalid(
             "Configure only team storage and token limits",
         ));
@@ -311,21 +833,506 @@ pub fn configure(context: &Context<'_>, request: Configuration) -> Result<Value,
     })
 }
 pub fn conversation(context: &Context<'_>, request: Conversation) -> Result<Value, OperationError> {
-    if request.settings {
-        return Err(OperationError::Unavailable(
-            "agent-management/conversation-settings",
+    let validate = |schema: &str, value: &Value| (context.validate)(schema, value);
+    if (request.model_present && request.model.is_none())
+        || (request.fast_mode_present && request.fast_mode.is_none())
+    {
+        return Err(OperationError::Invalid(
+            "Model must be available and fast_mode must be a boolean",
         ));
     }
+    if request.worker_settings {
+        let initial = {
+            let db = context.store.read()?;
+            load_agent_value(&db, &request.id, &validate)?.ok_or(MutationError::UnknownAgent)?
+        };
+        if initial.get("isLead").and_then(Value::as_bool) != Some(true) {
+            return Err(MutationError::LeadRequired.into());
+        }
+        let account_key = initial
+            .get("accountKey")
+            .and_then(Value::as_str)
+            .unwrap_or("default");
+        if request
+            .expected_account
+            .as_deref()
+            .is_some_and(|expected| expected != account_key)
+        {
+            return Err(MutationError::Stale.into());
+        }
+        let identity = account_identity(context, account_key)?;
+        let root_model = initial
+            .get("model")
+            .and_then(Value::as_str)
+            .unwrap_or(DEFAULT_LEAD_MODEL);
+        let worker_defaults = match request.worker_defaults.as_ref() {
+            Some(value) => resolve_worker_defaults(
+                context,
+                Some(value),
+                account_key,
+                &identity,
+                root_model,
+            )?,
+            None => initial
+                .get("workerDefaults")
+                .cloned()
+                .unwrap_or_else(|| json!({"model":"gpt-6-luna","effort":"high","fastMode":false,"daybreakEnabled":false,"delegationDepth":1})),
+        };
+        let review_defaults = match request.review_defaults.as_ref() {
+            Some(value) => resolve_review_defaults(context, Some(value), account_key, &identity)?,
+            None => initial
+                .get("reviewDefaults")
+                .cloned()
+                .unwrap_or(json!({"model":null,"effort":null})),
+        };
+        return mutate(context, |tx| {
+            let mut target =
+                load_agent_value(tx, &request.id, &validate)?.ok_or(MutationError::UnknownAgent)?;
+            if target.get("accountKey").and_then(Value::as_str) != Some(account_key) {
+                return Err(MutationError::IdentityChanged.into());
+            }
+            target["workerDefaults"] = worker_defaults;
+            target["reviewDefaults"] = review_defaults;
+            Ok(save_agent(tx, &target, &validate)?)
+        });
+    }
+    if request.mode_settings {
+        let expected = request.mode_revision.ok_or(OperationError::Invalid(
+            "A nonnegative expected mode revision is required",
+        ))?;
+        if let Some(expected_account) = request.expected_account.as_deref() {
+            let connection = context.store.read()?;
+            let record = load_agent_value(&connection, &request.id, &validate)?
+                .ok_or(MutationError::UnknownAgent)?;
+            if record
+                .get("accountKey")
+                .and_then(Value::as_str)
+                .unwrap_or("default")
+                != expected_account
+            {
+                return Err(MutationError::Stale.into());
+            }
+        }
+        configure(
+            context,
+            Configuration {
+                id: request.id.clone(),
+                concurrency: Some(request.mode_limit.ok_or(OperationError::Invalid(
+                    "A subagent concurrency setting is required",
+                ))?),
+                max_agents: None,
+                token_budget: None,
+                expected_mode_revision: Some(expected),
+                request_id: request.mode_request_id.clone(),
+            },
+        )?;
+        let connection = context.store.read()?;
+        let record = load_agent_value(&connection, &request.id, &validate)?
+            .ok_or(MutationError::UnknownAgent)?;
+        return Ok(record);
+    }
+    if request.cwd.is_none()
+        && request.yolo_mode.is_none()
+        && request.model.is_none()
+        && request.effort.is_none()
+        && request.fast_mode.is_none()
+        && request.daybreak_enabled.is_none()
+        && request.next_turn.flatten().is_none()
+        && !request.worker_settings
+    {
+        return mutate(context, |tx| {
+            Ok(update_exclusions(
+                tx,
+                &request.id,
+                request.expected_account.as_deref(),
+                request.excluded.as_deref(),
+                request.non_defaults,
+                |schema, value| (context.validate)(schema, value),
+            )?)
+        });
+    }
+    if request.excluded.is_some() && request.non_defaults {
+        return Err(OperationError::Invalid(
+            "Save chat account exclusions separately from agent mode settings",
+        ));
+    }
+    let initial = {
+        let db = context.store.read()?;
+        load_agent_value(&db, &request.id, &validate)?.ok_or(MutationError::UnknownAgent)?
+    };
+    let old_account = initial
+        .get("accountKey")
+        .and_then(Value::as_str)
+        .unwrap_or("default")
+        .to_owned();
+    if request
+        .expected_account
+        .as_deref()
+        .is_some_and(|expected| expected != old_account)
+    {
+        return Err(MutationError::Stale.into());
+    }
+    let cwd = request
+        .cwd
+        .as_deref()
+        .map(project_directory)
+        .transpose()?
+        .or_else(|| {
+            initial
+                .get("cwd")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+        })
+        .ok_or(OperationError::Internal)?;
+    let account = if request.cwd.is_some() {
+        account_key(context, None, &cwd)?
+    } else {
+        old_account.clone()
+    };
+    let identity = account_identity(context, &account)?;
+    let provider = identity.provider.as_deref().unwrap_or("codex");
+    let provider_changed = initial.get("provider").and_then(Value::as_str) != Some(provider);
+    let execution_requested = request.model.is_some()
+        || request.model_present
+        || request.effort.is_some()
+        || request.effort_present
+        || request.fast_mode.is_some()
+        || request.fast_mode_present
+        || request.daybreak_enabled.is_some();
+    let execution_requested = execution_requested || request.daybreak_present;
+    let base_pending = initial
+        .get("pendingSettings")
+        .filter(|_| {
+            initial
+                .get("pendingSettingsAccountKey")
+                .and_then(Value::as_str)
+                .unwrap_or(&account)
+                == account
+        })
+        .cloned()
+        .unwrap_or_else(|| json!({}));
+    let model = request
+        .model
+        .as_deref()
+        .or_else(|| {
+            (!provider_changed)
+                .then(|| base_pending.get("model").and_then(Value::as_str))
+                .flatten()
+        })
+        .or_else(|| {
+            (!provider_changed)
+                .then(|| initial.get("model").and_then(Value::as_str))
+                .flatten()
+        })
+        .unwrap_or(if provider == "claude" {
+            "default"
+        } else {
+            DEFAULT_LEAD_MODEL
+        });
+    let effort = request
+        .effort
+        .as_ref()
+        .and_then(Option::as_deref)
+        .or_else(|| {
+            (!provider_changed)
+                .then(|| base_pending.get("effort").and_then(Value::as_str))
+                .flatten()
+        })
+        .or_else(|| {
+            (!provider_changed)
+                .then(|| initial.get("effort").and_then(Value::as_str))
+                .flatten()
+        });
+    let fast_mode = request
+        .fast_mode
+        .or_else(|| {
+            (!provider_changed)
+                .then(|| base_pending.get("fastMode").and_then(Value::as_bool))
+                .flatten()
+        })
+        .or_else(|| {
+            (!provider_changed)
+                .then(|| initial.get("fastMode").and_then(Value::as_bool))
+                .flatten()
+        })
+        .unwrap_or(false);
+    let daybreak = request
+        .daybreak_enabled
+        .or_else(|| {
+            (!provider_changed)
+                .then(|| base_pending.get("daybreakEnabled").and_then(Value::as_bool))
+                .flatten()
+        })
+        .or_else(|| {
+            (!provider_changed)
+                .then(|| initial.get("daybreakEnabled").and_then(Value::as_bool))
+                .flatten()
+        })
+        .unwrap_or(false);
+    let settings = if execution_requested {
+        Some(
+            context
+                .catalog
+                .ok_or(OperationError::Unavailable("provider-session/model-list"))?
+                .resolve(&account, &identity, model, effort, fast_mode, daybreak)?,
+        )
+    } else {
+        None
+    };
+    let next_turn = request.next_turn.flatten() == Some(true);
+    let request_id = request.request_id.flatten();
+    if next_turn {
+        if request.cwd.is_some()
+            || request.yolo_mode.is_some()
+            || request.excluded.is_some()
+            || request.worker_settings
+            || request.mode_settings
+        {
+            return Err(OperationError::Invalid(
+                "Only execution settings can apply to the next turn",
+            ));
+        }
+        let request_id = request_id
+            .as_deref()
+            .filter(|id| (1..=200).contains(&id.chars().count()))
+            .ok_or(OperationError::Invalid("A settings request id is required"))?;
+        let mut receipt_body = json!({
+            "operation": "next_turn_settings",
+            "agent": request.id,
+            "id": request.id,
+            "next_turn": true,
+            "request_id": request_id,
+        });
+        for (field, value) in [
+            ("model", request.model.as_ref().map(|value| json!(value))),
+            ("effort", request.effort.as_ref().map(|value| json!(value))),
+            (
+                "fast_mode",
+                request.fast_mode.as_ref().map(|value| json!(value)),
+            ),
+            (
+                "daybreak_enabled",
+                request.daybreak_enabled.as_ref().map(|value| json!(value)),
+            ),
+            (
+                "expected_account_key",
+                request.expected_account.as_ref().map(|value| json!(value)),
+            ),
+        ] {
+            if let Some(value) = value {
+                receipt_body[field] = value;
+            }
+        }
+        let signature = crate::event_write::request_signature(&receipt_body);
+        return mutate(context, |tx| {
+            let mut target =
+                load_agent_value(tx, &request.id, &validate)?.ok_or(MutationError::UnknownAgent)?;
+            if target
+                .get("accountKey")
+                .and_then(Value::as_str)
+                .unwrap_or("default")
+                != old_account
+            {
+                return Err(MutationError::IdentityChanged.into());
+            }
+            if let Some(receipt) = EventWriteRepository::receipt(tx, request_id)? {
+                if receipt.signature != signature {
+                    return Err(MutationError::Conflict.into());
+                }
+                return load_agent_value(tx, &request.id, &validate)?
+                    .ok_or(MutationError::UnknownAgent.into());
+            }
+            let resolved = settings.as_ref().ok_or(OperationError::Internal)?;
+            target["pendingSettings"] = json!({"model":resolved.model,"effort":resolved.effort,
+                "nativeEffort":resolved.native_effort,"fastMode":resolved.fast_mode,
+                "daybreakEnabled":resolved.daybreak_enabled,"cyberAccessProgram":resolved.cyber_access_program});
+            target["pendingSettingsAccountKey"] = json!(account);
+            save_agent(tx, &target, &validate)?;
+            EventWriteRepository::put_receipt(tx, request_id, &signature, "{\"applied\":true}")?;
+            Ok(target)
+        });
+    }
     mutate(context, |tx| {
-        Ok(update_exclusions(
-            tx,
-            &request.id,
-            request.expected_account.as_deref(),
-            request.excluded.as_deref(),
-            request.non_defaults,
-            |schema, value| (context.validate)(schema, value),
-        )?)
+        let mut target =
+            load_agent_value(tx, &request.id, &validate)?.ok_or(MutationError::UnknownAgent)?;
+        if target
+            .get("deletedAt")
+            .is_some_and(|value| truthy(Some(value)))
+        {
+            return Err(MutationError::Deleted.into());
+        }
+        if target
+            .get("accountKey")
+            .and_then(Value::as_str)
+            .unwrap_or("default")
+            != old_account
+        {
+            return Err(MutationError::IdentityChanged.into());
+        }
+        if request.expected_account.as_deref().is_some_and(|expected| {
+            target
+                .get("accountKey")
+                .and_then(Value::as_str)
+                .unwrap_or("default")
+                != expected
+        }) {
+            return Err(MutationError::Stale.into());
+        }
+        if (execution_requested || request.cwd.is_some() || request.yolo_mode.is_some())
+            && (truthy(target.get("inFlight"))
+                || matches!(
+                    target.get("status").and_then(Value::as_str),
+                    Some("running" | "starting" | "approval")
+                ))
+        {
+            return Err(MutationError::InFlight.into());
+        }
+        if let Some(excluded) = request.excluded.as_ref() {
+            if target.get("isLead").and_then(Value::as_bool) != Some(true) {
+                return Err(MutationError::LeadRequired.into());
+            }
+            if excluded.iter().any(|value| value == &account) {
+                return Err(MutationError::CurrentAccountExcluded.into());
+            }
+            target["excludedAccountKeys"] = json!(excluded);
+        }
+        if let Some(yolo) = request.yolo_mode {
+            if target.get("isLead").and_then(Value::as_bool) != Some(true) {
+                return Err(MutationError::LeadRequired.into());
+            }
+            target["yoloMode"] = json!(yolo);
+        }
+        if request.cwd.is_some() {
+            if target
+                .get("threadId")
+                .is_some_and(|thread| !thread.is_null())
+            {
+                return Err(OperationError::Invalid(
+                    "Choose the project before the first message, or create a new chat",
+                ));
+            }
+            target["cwd"] = json!(cwd);
+            target["hostProjectPath"] = json!(cwd);
+            target["accountKey"] = json!(account);
+            target["provider"] = json!(provider);
+            ensure_project(tx, &target)?;
+            if account != old_account {
+                target["daybreakEnabled"] = json!(false);
+                target["cyberAccessProgram"] = json!("standard");
+                target
+                    .as_object_mut()
+                    .ok_or(OperationError::Internal)?
+                    .remove("pendingSettings");
+                target
+                    .as_object_mut()
+                    .ok_or(OperationError::Internal)?
+                    .remove("pendingSettingsAccountKey");
+            }
+        }
+        if let Some(settings) = settings.as_ref() {
+            target["model"] = json!(settings.model);
+            target["effort"] = json!(settings.effort);
+            target["nativeEffort"] = json!(settings.native_effort);
+            target["fastMode"] = json!(settings.fast_mode);
+            target["daybreakEnabled"] = json!(settings.daybreak_enabled);
+            target["cyberAccessProgram"] = json!(settings.cyber_access_program);
+            target["executionSettingsAccountKey"] = json!(account);
+            target
+                .as_object_mut()
+                .ok_or(OperationError::Internal)?
+                .remove("pendingSettings");
+            target
+                .as_object_mut()
+                .ok_or(OperationError::Internal)?
+                .remove("pendingSettingsAccountKey");
+        }
+        let projection = save_agent(tx, &target, &validate)?;
+        if let Some(yolo) = request.yolo_mode {
+            update_team_yolo(tx, &request.id, yolo, &validate)?;
+        }
+        Ok(projection)
     })
+}
+
+fn update_team_yolo(
+    tx: &Transaction<'_>,
+    root_id: &str,
+    yolo: bool,
+    validate: &impl Fn(&str, &Value) -> bool,
+) -> Result<(), OperationError> {
+    let mut statement = tx
+        .prepare("SELECT id,record FROM runtime_agents")
+        .map_err(StoreError::from)?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
+        .map_err(StoreError::from)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(StoreError::from)?;
+    drop(statement);
+    let mut team = Vec::new();
+    for (id, raw) in rows {
+        let record = decode_record(
+            "runtime_agents",
+            "PersistedAgentRecord",
+            &id,
+            &raw,
+            validate,
+        )?;
+        if record.get("rootId").and_then(Value::as_str) == Some(root_id) {
+            team.push((id, record));
+        }
+    }
+    let team_ids = team
+        .iter()
+        .map(|(id, _)| id.as_str())
+        .collect::<std::collections::HashSet<_>>();
+    for (_, record) in &team {
+        if truthy(record.get("workspaceOperation"))
+            || truthy(record.get("inFlight"))
+            || matches!(
+                record.get("status").and_then(Value::as_str),
+                Some("running" | "starting" | "approval")
+            )
+        {
+            return Err(MutationError::InFlight.into());
+        }
+    }
+    for table in ["runtime_monitors", "runtime_tasks"] {
+        let query = if table == "runtime_monitors" {
+            "SELECT record FROM runtime_monitors WHERE json_extract(record,'$.status') IN ('starting','running','approval')"
+        } else {
+            "SELECT record FROM runtime_tasks WHERE json_extract(record,'$.status') IN ('running','starting','pending','unknown')"
+        };
+        let mut statement = tx.prepare(query).map_err(StoreError::from)?;
+        let records = statement
+            .query_map([], |row| row.get::<_, String>(0))
+            .map_err(StoreError::from)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(StoreError::from)?;
+        if records.iter().any(|raw| {
+            serde_json::from_str::<Value>(raw)
+                .ok()
+                .and_then(|record| {
+                    record
+                        .get("agent")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned)
+                })
+                .is_some_and(|agent| team_ids.contains(agent.as_str()))
+        }) {
+            return Err(MutationError::InFlight.into());
+        }
+    }
+    for (id, mut record) in team {
+        if id == root_id {
+            continue;
+        }
+        record["yoloMode"] = json!(yolo);
+        save_agent(tx, &record, validate)?;
+    }
+    Ok(())
 }
 pub fn rename_operation(
     context: &Context<'_>,
@@ -443,55 +1450,254 @@ fn account_key(
     Ok(selected.map_or(default, |(_, account)| account))
 }
 
-fn provider(context: &Context<'_>, account: &str) -> &'static str {
-    context
-        .accounts
-        .as_ref()
-        .and_then(|policy| {
-            policy
-                .accounts()
-                .accounts
-                .into_iter()
-                .find(|row| row.get("id").and_then(Value::as_str) == Some(account))
-        })
-        .and_then(|row| {
-            row.get("provider")
-                .and_then(Value::as_str)
-                .map(str::to_owned)
-        })
-        .filter(|provider| provider == "claude")
-        .map_or("codex", |_| "claude")
-}
-
-fn refresh_account(context: &Context<'_>, account: &str) -> Result<(), OperationError> {
+fn account_identity(
+    context: &Context<'_>,
+    account_key: &str,
+) -> Result<AccountIdentity, OperationError> {
     let Some(driver) = &context.driver else {
         return Err(OperationError::Unavailable("account-driver/unavailable"));
     };
-    match driver.inspect(account) {
-        Ok(AccountStatus::Unavailable) => {
-            let account = context.accounts.as_ref().and_then(|policy| {
-                policy
-                    .accounts()
-                    .accounts
-                    .into_iter()
-                    .find(|row| row.get("id").and_then(Value::as_str) == Some(account))
-            });
-            let message = if account
-                .as_ref()
-                .and_then(|row| row.get("deleted"))
-                .and_then(Value::as_bool)
-                == Some(true)
-            {
-                "This account was deleted. Select another account for new chats"
-            } else {
-                "Reconnect this account before creating a chat"
-            };
-            Err(OperationError::Invalid(message))
-        }
-        Ok(_) => Ok(()),
-        Err(AccountDriverError::UnknownAccount) => Err(OperationError::Invalid("Unknown account")),
-        Err(_) => Err(OperationError::Internal),
+    if driver.get(account_key).map_err(|error| match error {
+        AccountDriverError::UnknownAccount => OperationError::Invalid("Unknown account"),
+        _ => OperationError::Internal,
+    })? == AccountStatus::Unavailable
+    {
+        return Err(OperationError::Unavailable("account-driver/unavailable"));
     }
+    let snapshot = driver.snapshot().map_err(|_| OperationError::Internal)?;
+    let row = snapshot
+        .accounts
+        .into_iter()
+        .find(|row| row.get("id").and_then(Value::as_str) == Some(account_key))
+        .ok_or(OperationError::Invalid("Unknown account"))?;
+    if row.get("deleted").and_then(Value::as_bool) == Some(true) {
+        return Err(OperationError::Invalid(
+            "This account was deleted. Select another account for new chats",
+        ));
+    }
+    if row.get("disconnected").and_then(Value::as_bool) == Some(true) {
+        return Err(OperationError::Invalid(
+            "Reconnect this account before creating a chat",
+        ));
+    }
+    let string_field = |key: &str| row.get(key).and_then(Value::as_str).map(str::to_owned);
+    Ok(AccountIdentity {
+        provider: Some(string_field("provider").unwrap_or_else(|| "codex".to_owned())),
+        home: string_field("home"),
+        account_id: string_field("accountId"),
+        email: string_field("email"),
+    })
+}
+
+fn resolve_project_binding(
+    context: &Context<'_>,
+    cwd: &str,
+    project_id: Option<&str>,
+    home_server: Option<&str>,
+) -> Result<Value, OperationError> {
+    let local = local_server_id(context)?.ok_or(OperationError::Unavailable(
+        "cross-server-driver/local-identity",
+    ))?;
+    let connection = context.store.read()?;
+    resolve_project_binding_from(&connection, cwd, project_id, home_server, &local)
+}
+
+fn resolve_worker_defaults(
+    context: &Context<'_>,
+    value: Option<&Value>,
+    account_key: &str,
+    account: &AccountIdentity,
+    root_model: &str,
+) -> Result<Value, OperationError> {
+    let Some(value) = value else {
+        return Ok(
+            json!({"model":"gpt-6-luna","effort":"high","fastMode":false,"daybreakEnabled":false,"delegationDepth":1}),
+        );
+    };
+    let object = value
+        .as_object()
+        .ok_or(OperationError::Invalid("worker_defaults must be an object"))?;
+    if object.keys().any(|key| {
+        ![
+            "model",
+            "effort",
+            "fast_mode",
+            "daybreak_enabled",
+            "account_key",
+            "delegation_depth",
+        ]
+        .contains(&key.as_str())
+    }) {
+        return Err(OperationError::Invalid(
+            "worker_defaults has unknown fields",
+        ));
+    }
+    if !["model", "effort", "fast_mode"]
+        .iter()
+        .all(|field| object.contains_key(*field))
+    {
+        return Err(OperationError::Invalid(
+            "worker_defaults requires model, effort, and fast_mode",
+        ));
+    }
+    let worker_account_key = object
+        .get("account_key")
+        .and_then(Value::as_str)
+        .unwrap_or(account_key);
+    let worker_account = if worker_account_key == account_key {
+        account.clone()
+    } else {
+        account_identity(context, worker_account_key)?
+    };
+    let model = object
+        .get("model")
+        .and_then(Value::as_str)
+        .filter(|model| !model.trim().is_empty())
+        .unwrap_or(root_model);
+    let effort = match object.get("effort") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(value)) if !value.trim().is_empty() => Some(value.as_str()),
+        _ => return Err(OperationError::Invalid("worker_defaults effort is invalid")),
+    };
+    let fast_mode =
+        object
+            .get("fast_mode")
+            .and_then(Value::as_bool)
+            .ok_or(OperationError::Invalid(
+                "worker_defaults fast_mode must be a boolean",
+            ))?;
+    let daybreak = object
+        .get("daybreak_enabled")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    if object
+        .get("daybreak_enabled")
+        .is_some_and(|value| !value.is_boolean())
+    {
+        return Err(OperationError::Invalid(
+            "worker_defaults daybreak_enabled must be a boolean",
+        ));
+    }
+    let depth = object
+        .get("delegation_depth")
+        .and_then(Value::as_i64)
+        .unwrap_or(1);
+    if !(1..=3).contains(&depth) {
+        return Err(OperationError::Invalid("delegation_depth must be 1 to 3"));
+    }
+    let settings = context
+        .catalog
+        .ok_or(OperationError::Unavailable("provider-session/model-list"))?
+        .resolve(
+            worker_account_key,
+            &worker_account,
+            model,
+            effort,
+            fast_mode,
+            daybreak,
+        )?;
+    let mut defaults = json!({"model":object.get("model").cloned().unwrap_or(Value::Null),
+        "effort":settings.effort,"fastMode":settings.fast_mode,"daybreakEnabled":settings.daybreak_enabled,
+        "cyberAccessProgram":settings.cyber_access_program,"delegationDepth":depth});
+    if object.contains_key("account_key") {
+        defaults["accountKey"] = json!(worker_account_key);
+    }
+    Ok(defaults)
+}
+
+fn resolve_review_defaults(
+    context: &Context<'_>,
+    value: Option<&Value>,
+    account_key: &str,
+    account: &AccountIdentity,
+) -> Result<Value, OperationError> {
+    let Some(value) = value else {
+        return Ok(json!({"model":null,"effort":null}));
+    };
+    let object = value
+        .as_object()
+        .ok_or(OperationError::Invalid("review_defaults must be an object"))?;
+    if object
+        .keys()
+        .any(|key| !["model", "effort"].contains(&key.as_str()))
+    {
+        return Err(OperationError::Invalid(
+            "review_defaults has unknown fields",
+        ));
+    }
+    let Some(model) = object.get("model").and_then(Value::as_str) else {
+        if object.get("effort").is_some_and(|effort| !effort.is_null()) {
+            return Err(OperationError::Invalid(
+                "Select a review model before setting its effort",
+            ));
+        }
+        return Ok(json!({"model":null,"effort":null}));
+    };
+    if !model.starts_with("gpt-") {
+        return Err(OperationError::Invalid("Native review needs a Codex model"));
+    }
+    let effort = match object.get("effort") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(value)) if !value.trim().is_empty() => Some(value.as_str()),
+        _ => return Err(OperationError::Invalid("review_defaults effort is invalid")),
+    };
+    let settings = context
+        .catalog
+        .ok_or(OperationError::Unavailable("provider-session/model-list"))?
+        .resolve(account_key, account, model, effort, false, false)?;
+    Ok(json!({"model":settings.model,"effort":settings.effort}))
+}
+
+fn resolve_project_binding_from(
+    connection: &Connection,
+    cwd: &str,
+    project_id: Option<&str>,
+    home_server: Option<&str>,
+    local: &str,
+) -> Result<Value, OperationError> {
+    let project_id = project_id
+        .filter(|value| !value.is_empty())
+        .ok_or(OperationError::Invalid("A project ID is required"))?;
+    let home_server = home_server
+        .filter(|value| !value.is_empty())
+        .unwrap_or(local);
+    if home_server != local {
+        return Err(OperationError::Unavailable(
+            "cross-server-driver/project-binding",
+        ));
+    }
+    let projects = studio_runtime_store::ProjectsRepository::list(connection)?;
+    for (_, project) in projects {
+        let direct = project.get("id").and_then(Value::as_str) == Some(project_id)
+            && project.get("homeServerId").and_then(Value::as_str) == Some(home_server)
+            && project
+                .get("locations")
+                .and_then(Value::as_array)
+                .is_some_and(|rows| {
+                    rows.iter().any(|row| {
+                        row.get("serverId").and_then(Value::as_str) == Some(local)
+                            && row.get("path").and_then(Value::as_str) == Some(cwd)
+                    })
+                });
+        let alias = project.get("path").and_then(Value::as_str) == Some(cwd)
+            && project
+                .get("projectAliases")
+                .and_then(Value::as_array)
+                .is_some_and(|rows| {
+                    rows.iter().any(|row| {
+                        row.get("serverId").and_then(Value::as_str) == Some(home_server)
+                            && row.get("projectId").and_then(Value::as_str) == Some(project_id)
+                    })
+                });
+        if direct || alias {
+            return Ok(
+                json!({"cwd":cwd,"projectId":project_id,"projectServerId":home_server,"localServerId":local}),
+            );
+        }
+    }
+    Err(OperationError::Invalid(
+        "The selected folder is not a location of this project",
+    ))
 }
 
 fn project_directory_default() -> Result<String, OperationError> {
@@ -502,32 +1708,22 @@ fn project_directory_default() -> Result<String, OperationError> {
     project_directory(&path.to_string_lossy())
 }
 pub(crate) fn project_directory(value: &str) -> Result<String, OperationError> {
-    let expand_home = |value: &str| {
-        if value == "~" || value.starts_with("~/") {
-            std::env::var_os("HOME")
-                .map(PathBuf::from)
-                .map(|home| {
-                    if value == "~" {
-                        home
-                    } else {
-                        home.join(&value[2..])
-                    }
-                })
-                .unwrap_or_else(|| PathBuf::from(value))
-        } else {
-            PathBuf::from(value)
-        }
+    let path = if value == "~" || value.starts_with("~/") {
+        std::env::var_os("HOME").map_or_else(
+            || PathBuf::from(value),
+            |home| {
+                let home = PathBuf::from(home);
+                if value == "~" {
+                    home
+                } else {
+                    home.join(&value[2..])
+                }
+            },
+        )
+    } else {
+        PathBuf::from(value)
     };
-    let path = expand_home(value);
-    let path = path
-        .canonicalize()
-        .map_err(|_| OperationError::Invalid("Select an existing project directory"))?;
-    if !path.is_dir() {
-        return Err(OperationError::Invalid(
-            "Select an existing project directory",
-        ));
-    }
-    Ok(path.to_string_lossy().into_owned())
+    super::canonical_project_directory(&path).map_err(OperationError::Invalid)
 }
 
 fn lead_signature(body: &Value, workspace_mode: &str, cwd: Option<&str>) -> String {
@@ -547,7 +1743,7 @@ fn lead_signature(body: &Value, workspace_mode: &str, cwd: Option<&str>) -> Stri
 }
 
 #[allow(clippy::too_many_arguments)]
-fn build_agent_record(
+pub(crate) fn build_agent_record(
     id: &str,
     name: &str,
     prompt: &str,
@@ -627,6 +1823,15 @@ fn mutate(
     })
 }
 
+fn local_server_id(context: &Context<'_>) -> Result<Option<String>, OperationError> {
+    let state_dir = context
+        .store
+        .root()
+        .to_str()
+        .ok_or(OperationError::Internal)?;
+    Ok(crate::sync_entity_context::local_server_id(state_dir)?)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -690,6 +1895,23 @@ mod tests {
             }
         }
         let store = RuntimeStore::open(Some(&root)).expect("runtime store");
+        let registry_path = root.join("accounts/registry.json");
+        std::fs::create_dir_all(registry_path.parent().expect("registry parent"))
+            .expect("create registry directory");
+        std::fs::write(
+            &registry_path,
+            json!({
+                "version":1,
+                "defaultAccountKey":"default",
+                "accounts":{"default":{"id":"default","home":root,"label":"Codex","source":"Codex CLI","status":"signedOut"}},
+                "logins":{},
+                "deleteReceipts":{}
+            })
+            .to_string(),
+        )
+        .expect("write fixture account registry");
+        let driver = crate::account_driver::AccountDriver::open(&registry_path)
+            .expect("open fixture account driver");
         for scenario in ["agent", "lead", "previous"] {
             let intent = if scenario == "agent" {
                 json!({"cwd":root,"name":"Lead","prompt":"Task"})
@@ -736,7 +1958,8 @@ mod tests {
             let context = Context {
                 store: &store,
                 accounts: None,
-                driver: None,
+                driver: Some(&driver),
+                catalog: None,
                 validate: &validate,
             };
             let request = Creation {
