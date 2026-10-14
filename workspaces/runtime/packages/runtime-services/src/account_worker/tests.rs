@@ -1033,8 +1033,13 @@ async fn unsupported_callback(method: &str) {
         .await;
     let wire = peer.next_write().await;
     assert_eq!(wire.value["id"], "callback");
-    assert_eq!(wire.value["error"]["code"], -32601);
-    assert_eq!(wire.value["error"]["data"]["kind"], "unsupported_callback");
+    if method == "item/tool/call" {
+        assert_eq!(wire.value["result"]["success"], false);
+        assert_eq!(wire.value["result"]["contentItems"][0]["type"], "inputText");
+    } else {
+        assert_eq!(wire.value["error"]["code"], -32601);
+        assert_eq!(wire.value["error"]["data"]["kind"], "unsupported_callback");
+    }
     state
         .bridge
         .run(move |store| {
@@ -1074,6 +1079,9 @@ async fn scenario_unsupported_question_is_answered_after_commit() {
 }
 async fn scenario_unsupported_dynamic_tool_is_answered_after_commit() {
     unsupported_callback("item/tool/call").await;
+}
+async fn scenario_unknown_provider_method_is_answered_after_commit() {
+    unsupported_callback("unknown/providerMethod").await;
 }
 
 async fn scenario_foreign_account_stop_cannot_revoke_agent() {
@@ -1242,6 +1250,11 @@ async fn unsupported_question_is_answered_after_commit() {
 #[tokio::test(start_paused = true)]
 async fn unsupported_dynamic_tool_is_answered_after_commit() {
     scenario_unsupported_dynamic_tool_is_answered_after_commit().await
+}
+
+#[tokio::test(start_paused = true)]
+async fn unknown_provider_method_is_answered_after_commit() {
+    scenario_unknown_provider_method_is_answered_after_commit().await
 }
 
 #[tokio::test(start_paused = true)]
