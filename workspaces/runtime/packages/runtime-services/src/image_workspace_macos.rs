@@ -30,7 +30,18 @@ impl WorkspaceBackend for MacAsifBackend {
 
     fn current_event_id(&self, _root: &Path) -> Result<Option<Value>, ImageWorkspaceError> {
         // Mirrors codex_workspace_macos.current_event_id; delta sync falls back to a full rsync.
+        // SAFETY: CoreServices exposes this zero-argument function as a process-wide event counter.
         Ok(Some(json!(unsafe { FSEventsGetCurrentEventId() })))
+    }
+
+    fn base_needs_refresh(&self, root: &Path, state: &Value) -> Result<bool, ImageWorkspaceError> {
+        let Some(prior) = state.get("token").and_then(Value::as_u64) else {
+            return Ok(true);
+        };
+        Ok(self
+            .current_event_id(root)?
+            .and_then(|value| value.as_u64())
+            .is_some_and(|current| current != prior))
     }
 
     fn open_base_staging(
@@ -145,26 +156,57 @@ impl WorkspaceBackend for MacAsifBackend {
         &self,
         root: &Path,
         target: &Path,
-        _token: Option<&Value>,
+        token: Option<&Value>,
         excludes: &[String],
     ) -> Result<WorkspaceDelta, ImageWorkspaceError> {
-        let mut args = vec!["-a", "--delete"];
-        let exclude_args: Vec<String> = excludes
-            .iter()
-            .map(|v| format!("--exclude=/{}/***", v.trim_matches('/')))
-            .collect();
-        args.extend(exclude_args.iter().map(String::as_str));
-        let source = format!("{}/", root.display());
-        let dest = format!("{}/", target.display());
-        args.push(&source);
-        args.push(&dest);
-        run("/usr/bin/rsync", &args, Duration::from_secs(1800))?;
+        // Reconcile the full tree because this backend does not retain an
+        // FSEvents stream between Rust server processes. The itemized output
+        // preserves changed-path reporting; the root scan requests a base refresh.
+        let mut args = vec![
+            "-a".to_owned(),
+            "--delete".to_owned(),
+            "--itemize-changes".to_owned(),
+            "--out-format=%i\t%n".to_owned(),
+        ];
+        args.extend(excludes.iter().map(|value| {
+            let value = value.trim_matches('/');
+            if value.ends_with("/.git/index") || value == ".git/index" {
+                format!("--exclude=/{value}")
+            } else {
+                format!("--exclude=/{value}/***")
+            }
+        }));
+        args.push(format!("{}/", root.display()));
+        args.push(format!("{}/", target.display()));
+        let args = args.iter().map(String::as_str).collect::<Vec<_>>();
+        let output = run("/usr/bin/rsync", &args, Duration::from_secs(1800))?;
+        let mut changed_paths = output
+            .stdout
+            .split(|byte| *byte == b'\n')
+            .filter_map(|line| line.split_once(|byte| *byte == b'\t'))
+            .map(|(_, path)| String::from_utf8_lossy(path).into_owned())
+            .filter(|path| !path.is_empty())
+            .collect::<Vec<_>>();
+        changed_paths.sort();
+        changed_paths.dedup();
+        if output.stdout.len() >= 1024 * 1024 {
+            changed_paths = vec![".".into()];
+        }
+        let current = self.current_event_id(root)?;
+        let history_lost = token
+            .and_then(Value::as_u64)
+            .zip(current.as_ref().and_then(Value::as_u64))
+            .is_some_and(|(prior, now)| prior != now);
         Ok(WorkspaceDelta {
-            token: None,
-            changed_paths: vec![".".into()],
-            history_lost: false,
-            scan_paths: vec![".".into()],
-            refresh_base: false,
+            token: current,
+            changed_paths,
+            history_lost,
+            scan_paths: if history_lost {
+                vec![".".into()]
+            } else {
+                Vec::new()
+            },
+            refresh_base: history_lost,
         })
     }
 
@@ -172,22 +214,98 @@ impl WorkspaceBackend for MacAsifBackend {
         if !mount.is_mount() {
             return Ok(json!({"method":"already-unmounted","terminatedPids":0}));
         }
-        match detach(mount, false) {
-            Ok(()) => Ok(json!({"method":"eject","terminatedPids":0})),
-            Err(error) if force => {
-                let mount_arg = path_arg(mount)?;
-                run(
-                    "/usr/sbin/diskutil",
-                    &["unmount", "force", mount_arg],
-                    Duration::from_secs(10),
-                )?;
-                detach(mount, true)?;
-                Ok(
-                    json!({"method":"force-unmount-after-eject-failure","terminatedPids":0,"priorError":error.to_string()}),
-                )
-            }
-            Err(error) => Err(error),
+        let mount_arg = path_arg(mount)?;
+        let info = run(
+            "/usr/sbin/diskutil",
+            &["info", mount_arg],
+            Duration::from_secs(10),
+        )?;
+        let device = String::from_utf8_lossy(&info.stdout)
+            .lines()
+            .find_map(|line| line.trim().strip_prefix("Device Node:").map(str::trim))
+            .filter(|value| value.starts_with("/dev/disk"))
+            .ok_or_else(|| {
+                ImageWorkspaceError::Backend("Could not resolve ASIF device for mount".into())
+            })?;
+        let first_eject = run(
+            "/usr/sbin/diskutil",
+            &["eject", device],
+            Duration::from_secs(20),
+        );
+        if first_eject.is_ok() && !mount.is_mount() {
+            return Ok(json!({"method":"eject","terminatedPids":0}));
         }
+        if !force {
+            return Err(first_eject.err().unwrap_or_else(|| {
+                ImageWorkspaceError::Backend("ASIF mount remained attached after eject".into())
+            }));
+        }
+
+        let lsof = run_allow_failure(
+            "/usr/sbin/lsof",
+            &["-t", "+f", "--", mount_arg],
+            Duration::from_secs(2),
+        );
+        let (holders, lsof_timed_out) = match lsof {
+            Ok(output) => (
+                String::from_utf8_lossy(&output.stdout)
+                    .split_whitespace()
+                    .filter_map(|value| value.parse::<u32>().ok())
+                    .collect::<BTreeSet<_>>(),
+                false,
+            ),
+            Err(ImageWorkspaceError::Backend(message)) if message.contains("timed out") => {
+                (BTreeSet::new(), true)
+            }
+            Err(error) => return Err(error),
+        };
+        let mut signaled = 0usize;
+        for pid in &holders {
+            if process_exists(*pid) && signal_process(*pid, "-TERM") {
+                signaled += 1;
+            }
+        }
+        let deadline = std::time::Instant::now() + Duration::from_secs(1);
+        while std::time::Instant::now() < deadline && holders.iter().any(|pid| process_exists(*pid))
+        {
+            thread::sleep(Duration::from_millis(100));
+        }
+        for pid in &holders {
+            if process_exists(*pid) {
+                let _kill_result = signal_process(*pid, "-KILL");
+            }
+        }
+        thread::sleep(Duration::from_millis(100));
+        if run(
+            "/usr/sbin/diskutil",
+            &["eject", device],
+            Duration::from_secs(4),
+        )
+        .is_ok()
+            && !mount.is_mount()
+        {
+            return Ok(
+                json!({"method":"eject-after-terminating-holders","holdersFound":holders.len(),"signaledPids":signaled,"lsofTimedOut":lsof_timed_out}),
+            );
+        }
+        run(
+            "/usr/sbin/diskutil",
+            &["unmount", "force", mount_arg],
+            Duration::from_secs(4),
+        )?;
+        run(
+            "/usr/sbin/diskutil",
+            &["eject", device],
+            Duration::from_secs(4),
+        )?;
+        if mount.is_mount() {
+            return Err(ImageWorkspaceError::Backend(
+                "ASIF mount remained attached after forced unmount and eject".into(),
+            ));
+        }
+        Ok(
+            json!({"method":"force-unmount-after-terminating-holders","holdersFound":holders.len(),"signaledPids":signaled,"lsofTimedOut":lsof_timed_out}),
+        )
     }
 
     fn remove_layer(&self, agent_dir: &Path) -> Result<(), ImageWorkspaceError> {
@@ -236,6 +354,24 @@ impl WorkspaceBackend for MacAsifBackend {
     }
 }
 
+fn process_exists(pid: u32) -> bool {
+    run(
+        "/bin/kill",
+        &["-0", &pid.to_string()],
+        Duration::from_secs(2),
+    )
+    .is_ok()
+}
+
+fn signal_process(pid: u32, signal: &str) -> bool {
+    run(
+        "/bin/kill",
+        &[signal, &pid.to_string()],
+        Duration::from_secs(2),
+    )
+    .is_ok()
+}
+
 fn path_arg(path: &Path) -> Result<&str, ImageWorkspaceError> {
     path.to_str().ok_or(ImageWorkspaceError::InvalidState)
 }
@@ -268,6 +404,27 @@ fn detach(mount: &Path, force: bool) -> Result<(), ImageWorkspaceError> {
 }
 
 fn run(program: &str, args: &[&str], timeout: Duration) -> Result<Output, ImageWorkspaceError> {
+    let output = run_allow_failure(program, args, timeout)?;
+    if !output.status.success() {
+        return Err(ImageWorkspaceError::Backend(
+            String::from_utf8_lossy(&output.stderr)
+                .chars()
+                .rev()
+                .take(3000)
+                .collect::<String>()
+                .chars()
+                .rev()
+                .collect(),
+        ));
+    }
+    Ok(output)
+}
+
+fn run_allow_failure(
+    program: &str,
+    args: &[&str],
+    timeout: Duration,
+) -> Result<Output, ImageWorkspaceError> {
     let mut stdout_file = tempfile::tempfile()?;
     let mut stderr_file = tempfile::tempfile()?;
     let mut child = Command::new(program)
@@ -305,18 +462,6 @@ fn run(program: &str, args: &[&str], timeout: Duration) -> Result<Output, ImageW
         stdout,
         stderr,
     };
-    if !output.status.success() {
-        return Err(ImageWorkspaceError::Backend(
-            String::from_utf8_lossy(&output.stderr)
-                .chars()
-                .rev()
-                .take(3000)
-                .collect::<String>()
-                .chars()
-                .rev()
-                .collect(),
-        ));
-    }
     Ok(output)
 }
 

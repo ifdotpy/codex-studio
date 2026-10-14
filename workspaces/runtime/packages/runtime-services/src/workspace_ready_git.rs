@@ -85,9 +85,7 @@ fn prepare_attempt(
         || actor.workspace_mode.as_deref() == Some("image")
     {
         #[cfg(not(target_os = "macos"))]
-        return Ok(WorkspaceDecision::Refuse(
-            crate::workspace_ready::WorkspaceRefusal::ImageWorkspaceUnsupported,
-        ));
+        return Ok(image_workspace_refusal_decision());
         #[cfg(target_os = "macos")]
         {
             if actor.deleted_at.is_some() || !actor.auto_wake {
@@ -135,6 +133,11 @@ fn prepare_attempt(
         return Ok(context.decide());
     };
     provision(store, &context, plan, &git)
+}
+
+#[cfg(not(target_os = "macos"))]
+pub(crate) fn image_workspace_refusal_decision() -> WorkspaceDecision {
+    WorkspaceDecision::Refuse(crate::workspace_ready::WorkspaceRefusal::ImageWorkspaceUnsupported)
 }
 
 fn provision(
