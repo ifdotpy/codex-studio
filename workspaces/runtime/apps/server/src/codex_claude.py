@@ -261,6 +261,12 @@ def transport(root, profile=None):
                 or expected != 'claude:' + identity or (profile or {}).get('status') != 'error'):
             raise ValueError('Cannot verify the pinned Claude account')
         # The bridge checks this exact identity/provider/subscription before input.
+    elif (profile or {}).get('_historyRead') is True and (profile or {}).get('status') == 'changed':
+        # An account transfer reads the local history of a profile whose login changed. The
+        # bridge gets the registered identity, so it refuses every turn under the new login.
+        identity = (profile or {}).get('email')
+        if not isinstance(identity, str) or not identity or expected != 'claude:' + identity:
+            raise ValueError('Cannot verify the pinned Claude account')
     else:
         metadata = auth_metadata(profile)
         if metadata.get('status') != 'ready':
