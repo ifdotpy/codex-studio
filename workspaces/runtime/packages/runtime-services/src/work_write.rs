@@ -23,6 +23,11 @@ const ACCEPTED_ARCHIVE_PAGE_SIZE: usize = 16;
 const ACCEPTED_ARCHIVE_BASE_DELAY_SECONDS: u64 = 2;
 const ACCEPTED_ARCHIVE_MAX_DELAY_SECONDS: u64 = 60;
 const ACCEPTED_ARCHIVE_MAX_BACKOFF_EXPONENT: u64 = 6;
+// Reviewer archive retry policy; delays and persisted deadlines use seconds.
+const REVIEW_ARCHIVE_BASE_DELAY_SECONDS: f64 = 1.0;
+const REVIEW_ARCHIVE_MAX_DELAY_SECONDS: f64 = 60.0;
+// Capped exponent bounds the seconds-based doubling before the 60-second cap.
+const REVIEW_ARCHIVE_MAX_BACKOFF_EXPONENT: u32 = 6;
 
 /// Check whether a submitted commit is on local main without contacting a remote.
 /// Repositories with an origin are kept for the separately scheduled remote check.
@@ -99,6 +104,7 @@ pub fn repository_has_origin(repository: &str) -> bool {
 /// target before any retry; a known retryable response may be retried with the
 /// same intent identity and target.
 pub fn accepted_archive_tick(store: &RuntimeStore, now: f64) -> Result<usize, WorkWriteError> {
+    reviewer_archive_tick(store, now)?;
     let due = {
         let connection = store.read()?;
         accepted_archive_due_records(&connection, now)?
@@ -310,6 +316,210 @@ pub fn accepted_archive_tick(store: &RuntimeStore, now: f64) -> Result<usize, Wo
         handled += 1;
     }
     Ok(handled)
+}
+
+/// Schedule and retry archiving completed reviewers after their child result
+/// has been delivered. The event ID stays in the agent record as the durable
+/// identity for every retry; scheduling commits before the archive operation.
+fn reviewer_archive_tick(store: &RuntimeStore, now: f64) -> Result<(), WorkWriteError> {
+    store.transaction_with_error(|tx| -> Result<(), WorkWriteError> {
+        let mut statement = tx
+            .prepare(
+                "SELECT id,agent,text FROM runtime_events \
+                 WHERE id LIKE 'child:%' AND kind='child_result' AND status='delivered' \
+                 ORDER BY id",
+            )
+            .map_err(studio_runtime_store::StoreError::from)?;
+        let events = statement
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            })
+            .map_err(studio_runtime_store::StoreError::from)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(studio_runtime_store::StoreError::from)?;
+        drop(statement);
+        for (event_id, parent_id, text) in events {
+            let Ok(payload) = serde_json::from_str::<Value>(&text) else {
+                continue;
+            };
+            let Some(child_id) = payload.get("agent_id").and_then(Value::as_str) else {
+                continue;
+            };
+            let Some(mut child) = AgentRepository::get(tx, &AgentId::from(child_id))? else {
+                continue;
+            };
+            let mut record = child.value();
+            if record.get("role").and_then(Value::as_str) != Some("reviewer")
+                || record.get("parentId").and_then(Value::as_str) != Some(parent_id.as_str())
+                || record.get("status").and_then(Value::as_str) != Some("completed")
+                || event_write::truthy(record.get("agentArchive"))
+                || event_write::truthy(record.get("reviewArchiveError"))
+                || record
+                    .get("reviewArchiveScheduled")
+                    .and_then(Value::as_str)
+                    .is_some_and(|value| !value.is_empty())
+            {
+                continue;
+            }
+            record["reviewArchiveScheduled"] = json!(event_id);
+            child = AgentRecord::from_value(record).map_err(|_| {
+                studio_runtime_store::StoreError::InvalidStoredObject {
+                    table: "runtime_agents",
+                    id: child_id.to_owned(),
+                }
+            })?;
+            AgentRepository::put(tx, &child)?;
+        }
+        Ok(())
+    })?;
+
+    let due = {
+        let connection = store.read()?;
+        let mut statement = connection
+            .prepare(
+                "SELECT id,record FROM runtime_agents \
+                 WHERE json_extract(record,'$.reviewArchiveScheduled') IS NOT NULL \
+                   AND coalesce(json_extract(record,'$.reviewArchiveNextAt'),0)<=?1 \
+                 ORDER BY id",
+            )
+            .map_err(studio_runtime_store::StoreError::from)?;
+        statement
+            .query_map([now], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .map_err(studio_runtime_store::StoreError::from)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(studio_runtime_store::StoreError::from)?
+    };
+
+    for (child_id, encoded) in due {
+        let record: Value =
+            serde_json::from_str(&encoded).map_err(studio_runtime_store::StoreError::from)?;
+        let Some(event_id) = record.get("reviewArchiveScheduled").and_then(Value::as_str) else {
+            continue;
+        };
+        let Some(parent_id) = record.get("parentId").and_then(Value::as_str) else {
+            continue;
+        };
+        let Some(root_id) = record.get("rootId").and_then(Value::as_str) else {
+            continue;
+        };
+        if record.get("role").and_then(Value::as_str) != Some("reviewer")
+            || record.get("status").and_then(Value::as_str) != Some("completed")
+            || event_write::truthy(record.get("agentArchive"))
+        {
+            continue;
+        }
+        let event_matches = {
+            let connection = store.read()?;
+            let event: Option<(String, String)> = connection
+                .query_row(
+                    "SELECT agent,text FROM runtime_events \
+                     WHERE id=?1 AND kind='child_result' AND status='delivered'",
+                    [event_id],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .optional()
+                .map_err(studio_runtime_store::StoreError::from)?;
+            event.is_some_and(|(event_parent, text)| {
+                event_parent == parent_id
+                    && serde_json::from_str::<Value>(&text)
+                        .ok()
+                        .and_then(|payload| {
+                            payload
+                                .get("agent_id")
+                                .and_then(Value::as_str)
+                                .map(str::to_owned)
+                        })
+                        .as_deref()
+                        == Some(child_id.as_str())
+            })
+        };
+        if !event_matches {
+            continue;
+        }
+
+        let actor_epoch = {
+            let connection = store.read()?;
+            AgentRepository::get(&connection, &AgentId::from(root_id))?
+                .map(|agent| agent.epoch)
+                .unwrap_or_default()
+        };
+        let outcome = crate::agent_management_store::execute(
+            store,
+            &crate::agent_management::Action::Archive {
+                actor: root_id.to_owned(),
+                epoch: actor_epoch,
+                target: child_id.clone(),
+                reason: "Reviewer result delivered to parent".to_owned(),
+                unassign_work: false,
+            },
+            now,
+        );
+        let (error, retryable) = match outcome {
+            Ok(value) if value["status"] == "archived" => continue,
+            Ok(value) => {
+                let blockers = value.get("blockers").and_then(Value::as_array);
+                let retryable = blockers.is_some_and(|items| !items.is_empty());
+                let error = if retryable {
+                    Some(value["blockers"].to_string())
+                } else {
+                    Some(
+                        value
+                            .get("status")
+                            .and_then(Value::as_str)
+                            .unwrap_or("Archive was not completed")
+                            .to_owned(),
+                    )
+                };
+                (error, retryable)
+            }
+            Err(error) => (Some(error.to_string()), false),
+        };
+        let Some(error) = error else { continue };
+        store.transaction_with_error(|tx| -> Result<(), WorkWriteError> {
+            let Some(mut child) = AgentRepository::get(tx, &AgentId::from(child_id.as_str()))?
+            else {
+                return Ok(());
+            };
+            let mut record = child.value();
+            if record.get("reviewArchiveScheduled").and_then(Value::as_str) != Some(event_id) {
+                return Ok(());
+            }
+            record["reviewArchiveError"] = json!(error.chars().take(180).collect::<String>());
+            if retryable {
+                let attempts = record
+                    .get("reviewArchiveAttempts")
+                    .and_then(Value::as_u64)
+                    .unwrap_or_default()
+                    .saturating_add(1);
+                let exponent = attempts
+                    .saturating_sub(1)
+                    .min(u64::from(REVIEW_ARCHIVE_MAX_BACKOFF_EXPONENT));
+                let delay = (REVIEW_ARCHIVE_BASE_DELAY_SECONDS * 2_f64.powi(exponent as i32))
+                    .min(REVIEW_ARCHIVE_MAX_DELAY_SECONDS);
+                record["reviewArchiveAttempts"] = json!(attempts);
+                record["reviewArchiveNextAt"] = json!(now + delay);
+            } else {
+                record
+                    .as_object_mut()
+                    .map(|value| value.remove("reviewArchiveScheduled"));
+            }
+            child = AgentRecord::from_value(record).map_err(|_| {
+                studio_runtime_store::StoreError::InvalidStoredObject {
+                    table: "runtime_agents",
+                    id: child_id.clone(),
+                }
+            })?;
+            AgentRepository::put(tx, &child)?;
+            Ok(())
+        })?;
+    }
+    Ok(())
 }
 
 /// Match Python's one-second maintenance cadence without coupling retry
@@ -2754,7 +2964,9 @@ mod actor_tests {
     };
     use rusqlite::Connection;
     use serde_json::{Value, json};
-    use studio_runtime_store::{AgentRecord, AgentRepository, RuntimeStore, WorkItemsRepository};
+    use studio_runtime_store::{
+        AgentId, AgentRecord, AgentRepository, RuntimeStore, WorkItemsRepository,
+    };
 
     fn database() -> Connection {
         let connection = Connection::open_in_memory().expect("memory SQLite opens");
@@ -2936,6 +3148,122 @@ mod actor_tests {
         let work: Value = serde_json::from_str(&encoded_work).expect("work JSON");
         assert_eq!(work["archive"]["status"], "kept");
         assert_eq!(work["archiveIntent"]["status"], "terminal");
+    }
+
+    fn reviewer_archive_store(role: &str) -> (RuntimeStore, tempfile::TempDir) {
+        let root = tempfile::tempdir().expect("state directory");
+        let store = RuntimeStore::open(Some(root.path())).expect("runtime store");
+        store
+            .transaction(|tx| {
+                for agent in [
+                    json!({"id":"lead","rootId":"lead","parentId":null,
+                        "epoch":1,"status":"running","autoWake":true,"isLead":true}),
+                    json!({"id":"child","rootId":"lead","parentId":"lead",
+                        "epoch":2,"status":"completed","autoWake":false,"inFlight":false,
+                        "role":role}),
+                ] {
+                    AgentRepository::put(tx, &AgentRecord::from_value(agent)?)?;
+                }
+                tx.execute(
+                    "INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch,turn_id,error) \
+                     VALUES (?1,?2,'child_result',?3,'delivered',1,1,'lead-turn',NULL)",
+                    rusqlite::params![
+                        "child:result-1",
+                        "lead",
+                        json!({"agent_id":"child","result":"review complete"}).to_string()
+                    ],
+                )?;
+                Ok(())
+            })
+            .expect("reviewer fixture commits");
+        (store, root)
+    }
+
+    fn reviewer_record(store: &RuntimeStore) -> Value {
+        let connection = store.read().expect("runtime store reads");
+        AgentRepository::get(&connection, &AgentId::from("child"))
+            .expect("reviewer record loads")
+            .expect("reviewer exists")
+            .value()
+    }
+
+    #[test]
+    fn reviewer_archive_delivered_child_result_schedules_and_archives() {
+        let (store, _root) = reviewer_archive_store("reviewer");
+
+        accepted_archive_tick(&store, 10.0).expect("maintenance tick succeeds");
+
+        let reviewer = reviewer_record(&store);
+        assert_eq!(reviewer["reviewArchiveScheduled"], "child:result-1");
+        assert_eq!(
+            reviewer["agentArchive"]["reason"],
+            "Reviewer result delivered to parent"
+        );
+        assert_eq!(reviewer["agentArchive"]["by"], "lead");
+    }
+
+    #[test]
+    fn reviewer_archive_failure_records_error_and_retries_with_event_identity() {
+        let (store, _root) = reviewer_archive_store("reviewer");
+        store
+            .transaction(|tx| {
+                tx.execute(
+                    "INSERT INTO runtime_work(id,record) VALUES (?1,?2)",
+                    rusqlite::params![
+                        "open-work",
+                        json!({"id":"open-work","rootId":"lead","owner":"child",
+                            "status":"ready","version":1,"releases":[]})
+                        .to_string()
+                    ],
+                )?;
+                Ok(())
+            })
+            .expect("archive blocker inserts");
+
+        accepted_archive_tick(&store, 10.0).expect("first tick succeeds");
+        let first = reviewer_record(&store);
+        assert_eq!(first["reviewArchiveScheduled"], "child:result-1");
+        assert_eq!(first["reviewArchiveAttempts"], 1);
+        assert_eq!(first["reviewArchiveNextAt"], 11.0);
+        assert!(
+            first["reviewArchiveError"]
+                .as_str()
+                .is_some_and(|error| !error.is_empty())
+        );
+        assert!(first.get("agentArchive").is_none());
+
+        accepted_archive_tick(&store, 11.0).expect("second tick succeeds");
+        let second = reviewer_record(&store);
+        assert_eq!(second["reviewArchiveScheduled"], "child:result-1");
+        assert_eq!(second["reviewArchiveAttempts"], 2);
+        assert_eq!(second["reviewArchiveNextAt"], 13.0);
+
+        store
+            .transaction(|tx| {
+                tx.execute("DELETE FROM runtime_work WHERE id='open-work'", [])?;
+                Ok(())
+            })
+            .expect("archive blocker clears");
+        accepted_archive_tick(&store, 12.999).expect("early retry tick succeeds");
+        assert!(reviewer_record(&store).get("agentArchive").is_none());
+        accepted_archive_tick(&store, 13.0).expect("due retry tick succeeds");
+        let archived = reviewer_record(&store);
+        assert_eq!(archived["reviewArchiveScheduled"], "child:result-1");
+        assert_eq!(
+            archived["agentArchive"]["reason"],
+            "Reviewer result delivered to parent"
+        );
+    }
+
+    #[test]
+    fn reviewer_archive_non_reviewer_child_result_is_not_archived() {
+        let (store, _root) = reviewer_archive_store("worker");
+
+        accepted_archive_tick(&store, 10.0).expect("maintenance tick succeeds");
+
+        let worker = reviewer_record(&store);
+        assert!(worker.get("reviewArchiveScheduled").is_none());
+        assert!(worker.get("agentArchive").is_none());
     }
 
     #[test]
