@@ -589,16 +589,8 @@ async fn restart_history_case(outcome: &str) {
         "unavailable" => {
             let cursor = peer.frame(json!({"id":history["id"],"error":{"code":-32000,"message":"history unavailable"}})).await;
             peer.acknowledged(cursor).await;
-            tokio::time::timeout(std::time::Duration::from_secs(5), async {
-                loop {
-                    if state.record().await["restartRecovery"]["stage"] == "held" {
-                        break;
-                    }
-                    tokio::task::yield_now().await;
-                }
-            })
-            .await
-            .expect("unknown remains held");
+            worker_barrier(&worker).await;
+            assert_eq!(state.record().await["restartRecovery"]["stage"], "held");
             assert_eq!(state.event_status("input").await, "uncertain");
             assert!(
                 peer.writes.try_recv().is_err(),
