@@ -358,7 +358,11 @@ class RequestMixin:
                           "timing": {"reservationBeganAt": reservation_started,
                                      "reservationLockedAt": reservation_locked}}
                 from codex_connection_recovery import supervisor_identity
-                native_identity = supervisor_identity(getattr(self, "servers", {}).get(account_key))
+                # The caller's own native child: a Linux VM chat has its own server, not the account's.
+                server_for = getattr(self, "server_for", None)
+                native_identity = supervisor_identity(
+                    server_for(account_key, connection_id) if callable(server_for)
+                    else getattr(self, "servers", {}).get(account_key))
                 if native_identity is not None:
                     record["supervisor"] = native_identity
                 received = message.get("_studioReceivedAt")
