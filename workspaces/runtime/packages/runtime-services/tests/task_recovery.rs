@@ -1,15 +1,23 @@
 #[path = "support/prepared_python.rs"]
 mod python_test_support;
 use serde_json::{Value, json};
+use std::{path::Path, process::Output, time::Duration};
 use studio_runtime_services::task_recovery::{TaskRecoveryDecision, TaskRecoverySnapshot};
+
+fn run_oracle(script: &str) -> Output {
+    let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src");
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/recovery")
+        .join(script);
+    let mut command = std::process::Command::new(python_test_support::prepared_python(&source));
+    command.arg(&path);
+    python_test_support::output_with_timeout(&mut command, &path, Duration::from_secs(60))
+        .unwrap_or_else(|error| panic!("Python oracle failed: {error}"))
+}
+
 #[test]
 fn exact_task_receipts_match_python_and_unknown_local_outcomes_override_native() {
-    let result = std::process::Command::new(python_test_support::prepared_python(
-        &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src"),
-    ))
-    .arg(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/recovery/task_oracle.py"))
-    .output()
-    .expect("valid recovery fixture");
+    let result = run_oracle("task_oracle.py");
     assert!(
         result.status.success(),
         "{}",
@@ -137,12 +145,7 @@ fn task_consumer_resolves_local_receipt_without_native_read() {
             Ok(true)
         }
     }
-    let output = std::process::Command::new(python_test_support::prepared_python(
-        &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src"),
-    ))
-    .arg(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/recovery/task_oracle.py"))
-    .output()
-    .expect("valid recovery fixture");
+    let output = run_oracle("task_oracle.py");
     assert!(output.status.success());
     let cases: Vec<Value> = serde_json::from_slice(&output.stdout).expect("valid recovery fixture");
     for name in ["exact", "running-unknown-True"] {
@@ -254,12 +257,7 @@ fn native_task_consumer_preserves_duplicate_ambiguity() {
             Ok(true)
         }
     }
-    let output = std::process::Command::new(python_test_support::prepared_python(
-        &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src"),
-    ))
-    .arg(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/recovery/task_oracle.py"))
-    .output()
-    .expect("oracle");
+    let output = run_oracle("task_oracle.py");
     assert!(output.status.success());
     let cases: Vec<Value> = serde_json::from_slice(&output.stdout).expect("cases");
     let case = &cases[0];
@@ -298,15 +296,7 @@ fn native_task_consumer_preserves_duplicate_ambiguity() {
 
 #[test]
 fn native_task_proofs_match_real_python_reader() {
-    let output = std::process::Command::new(python_test_support::prepared_python(
-        &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src"),
-    ))
-    .arg(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("tests/recovery/native_task_oracle.py"),
-    )
-    .output()
-    .expect("oracle");
+    let output = run_oracle("native_task_oracle.py");
     assert!(
         output.status.success(),
         "{}",
@@ -334,4 +324,16 @@ fn native_task_proofs_match_real_python_reader() {
         };
         assert_eq!(actual, case["expected"], "{}", case["task"]);
     }
+}
+
+#[test]
+fn python_oracle_timeout_reports_the_script_path() {
+    let path = Path::new("slow-oracle.py");
+    let mut command = std::process::Command::new("python3");
+    command.args(["-c", "import time; time.sleep(5)"]);
+    let error =
+        python_test_support::output_with_timeout(&mut command, path, Duration::from_millis(100))
+            .expect_err("slow oracle must time out");
+    assert!(error.contains("slow-oracle.py"), "{error}");
+    assert!(error.contains("timeout"), "{error}");
 }
