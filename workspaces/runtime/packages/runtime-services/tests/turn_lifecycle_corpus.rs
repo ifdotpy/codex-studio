@@ -104,7 +104,7 @@ fn apply(store: &RuntimeStore, case: &Value) -> Result<Value, String> {
             if submitted {
                 return lifecycle_transaction(store, |tx| SchedulerRepository::mark_submitted_identity(tx,"agent",0,"attempt",case["ticket"].as_str().unwrap_or("ticket"),"default",1,"thread").map(|v|json!(v))).map_err(|e|e.to_string());
             }
-            let resources=PreparationResources::bundled(String::new(),studio_runtime_services::model_catalog::ModelCatalogService::new(None),prepared_python::prepared_python(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src"))).map_err(|e|e.to_string())?;
+            let resources=PreparationResources::bundled(String::new(),studio_runtime_services::model_catalog::ModelCatalogService::new(None)).map_err(|e|e.to_string())?;
             let prepared=prepare_turn(store,&resources,&intent,1).map_err(|e|e.to_string())?;
             if case["transition"] == "submission" {
                 assert_eq!(prepared.native_request(),case["nativeRequest"],"{}: native method and params",case["id"]);

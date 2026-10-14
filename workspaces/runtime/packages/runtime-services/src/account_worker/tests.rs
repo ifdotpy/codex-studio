@@ -17,9 +17,6 @@ fn test_resources() -> Result<preparation::PreparationResources, WorkerError> {
                 .to_string_lossy()
                 .into_owned(),
         )),
-        crate::agents_create::prepared_python(
-            &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src"),
-        ),
     )
 }
 const CREATE_AGENTS: &str = r#"

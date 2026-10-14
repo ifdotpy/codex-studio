@@ -350,6 +350,11 @@ async fn setup(
     let requested_prefix = request_string(&body, "prefix")?.to_owned();
     let profile = request_string(&body, "profile")?.to_owned();
     let region = request_string(&body, "region")?.to_owned();
+    let host_command = state
+        .vault_host_command
+        .as_ref()
+        .ok_or_else(ApiError::internal)?;
+    let python_tool = host_command.python_tool().map_err(vault_error)?;
     let settings = settings_dir(&state.state_dir);
     let vm_state_dir = state.vm_state_dir.clone();
     let (source, prefix) = studio_runtime_services::vault::prepare_new_vault(
@@ -361,11 +366,7 @@ async fn setup(
         &region,
     )
     .map_err(vault_error)?;
-    let host_command = state
-        .vault_host_command
-        .as_ref()
-        .ok_or_else(ApiError::internal)?;
-    let writer = host_command.writer(&source);
+    let writer = host_command.writer(&source, &python_tool);
     let initial = serde_json::json!({"requestId":request_id,"state":"running","prefix":prefix});
     let (job, started) =
         reserve_job(&job_client, VaultJobKind::Setup, &request_id, initial).await?;
@@ -929,10 +930,9 @@ mod tests {
         let executable = directory.join("layr-desk");
         std::fs::write(&executable, format!("#!/bin/sh\n{script_body}\n")).unwrap();
         std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755)).unwrap();
-        studio_runtime_services::vault::VaultHostCommand::new(
-            std::path::PathBuf::from("/tmp/python"),
-            std::path::PathBuf::from("/tmp/server"),
-        )
+        studio_runtime_services::vault::VaultHostCommand::new(std::path::PathBuf::from(
+            "/tmp/server",
+        ))
         .with_desk_program(executable)
     }
 

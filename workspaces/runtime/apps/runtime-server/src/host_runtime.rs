@@ -44,7 +44,7 @@ impl InstallRoot {
     }
     fn server_source(&self) -> PathBuf {
         let packaged = self.0.join("scripts");
-        if packaged.join("codex_python.py").is_file() {
+        if packaged.join("claude_bridge").join("bridge.mjs").is_file() {
             packaged
         } else {
             self.0.join(SERVER_SOURCE_RELATIVE)
@@ -65,17 +65,15 @@ impl InstallRoot {
 }
 
 /// Resolve the package root from the installed executable or this source build.
-/// Python derives the equivalent root from codex_layout.py's installed scripts directory.
 pub(crate) fn resolve_install_root() -> Result<InstallRoot, WorkerError> {
     let located = || {
         WorkerError::PreparationRefused(
-            "runtime-server/install-root: expected codex_python.py and the codex_layout Claude bridge directory (scripts/claude_bridge when installed, workspaces/providers/apps/claude-bridge in a source checkout) beside the executable or under the source checkout".into(),
+            "runtime-server/install-root: expected the Claude bridge directory (scripts/claude_bridge when installed, workspaces/providers/apps/claude-bridge in a source checkout) beside the executable or under the source checkout".into(),
         )
     };
     let is_root = |path: &Path| {
         let root = InstallRoot(path.to_path_buf());
-        (root.server_source().join("codex_python.py").is_file())
-            && root.claude_bridge_dir().join("bridge.mjs").is_file()
+        root.claude_bridge_dir().join("bridge.mjs").is_file()
     };
 
     if let Ok(executable) = std::env::current_exe() {
@@ -177,24 +175,16 @@ impl HostRuntime {
             state_dir: store.root().to_owned(),
         };
         let install_root = resolve_install_root()?;
-        let python = resolve_python(
-            std::env::var_os("CODEX_AGENTS_PYTHON").map(PathBuf::from),
-            &install_root,
-        )
-        .await?;
         let catalog = state.model_catalog_handle();
         let resource_root = install_root.workspace_root().to_owned();
         let server_source = install_root.server_source();
-        *state = state
-            .clone()
-            .with_vault_host_command(python.clone(), server_source.clone());
+        *state = state.clone().with_vault_host_command(server_source.clone());
         let mut resources = studio_runtime_process::blocking_pool::spawn_blocking(
             "runtime-server/host_runtime",
             move || {
                 PreparationResources::bundled_at(
                     String::new(),
                     catalog,
-                    python,
                     resource_root,
                     server_source,
                 )
@@ -556,55 +546,6 @@ impl ProviderTaskFactory for LeasedProviderTaskFactory {
     }
 }
 
-async fn resolve_python(
-    configured: Option<PathBuf>,
-    install_root: &InstallRoot,
-) -> Result<PathBuf, WorkerError> {
-    let invalid = || {
-        WorkerError::PreparationRefused(
-            "host-runtime/python-interpreter: set CODEX_AGENTS_PYTHON to an absolute interpreter or install Python 3.11+ with the server API dependencies".into(),
-        )
-    };
-    if let Some(path) = configured {
-        return if path.is_absolute() && path.is_file() {
-            Ok(path)
-        } else {
-            Err(invalid())
-        };
-    }
-    let bootstrap = install_root.server_source().join("codex_python.py");
-    if !bootstrap.is_file() {
-        return Err(WorkerError::PreparationRefused(format!(
-            "host-runtime/python-bootstrap: installed source file is missing at {}",
-            bootstrap.display()
-        )));
-    }
-    let mut command = tokio::process::Command::new("python3");
-    command.arg("-B").arg(&bootstrap).kill_on_drop(true);
-    let output = tokio::time::timeout(std::time::Duration::from_secs(10), command.output())
-        .await
-        .map_err(|_| invalid())?
-        .map_err(|_| invalid())?;
-    if !output.status.success() {
-        let detail = String::from_utf8_lossy(&output.stderr);
-        return Err(WorkerError::PreparationRefused(format!(
-            "host-runtime/python-bootstrap: {} exited unsuccessfully: {}",
-            bootstrap.display(),
-            detail.trim().chars().take(800).collect::<String>()
-        )));
-    }
-    let path = PathBuf::from(
-        std::str::from_utf8(&output.stdout)
-            .map_err(|_| invalid())?
-            .trim(),
-    );
-    if path.is_absolute() {
-        Ok(path)
-    } else {
-        Err(invalid())
-    }
-}
-
 pub(crate) fn codex_launch(
     native_path: Option<&str>,
     mut environment: BTreeMap<String, String>,
@@ -630,64 +571,197 @@ pub(crate) fn codex_launch(
 #[cfg(test)]
 #[allow(clippy::items_after_test_module, clippy::unwrap_used)]
 mod install_root_tests {
-    use super::InstallRoot;
+    use super::{AccountDriver, CLAUDE_BRIDGE_RELATIVE, HttpState, InstallRoot};
     use std::{
         fs,
-        path::{Path, PathBuf},
-        process::Command,
+        path::PathBuf,
     };
-
-    fn python_layout(source: &Path) -> (PathBuf, PathBuf) {
-        let output = Command::new("python3")
-            .args([
-                "-B",
-                "-c",
-                "from codex_layout import SERVER_SOURCE_ROOT, CLAUDE_BRIDGE_ROOT; print(f'{SERVER_SOURCE_ROOT}\\n{CLAUDE_BRIDGE_ROOT}')",
-            ])
-            .env("PYTHONPATH", source)
-            .output()
-            .expect("python3 should be available for layout parity");
-        assert!(
-            output.status.success(),
-            "{}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        let stdout = String::from_utf8(output.stdout).unwrap();
-        let mut lines = stdout.lines();
-        (
-            PathBuf::from(lines.next().expect("Python server source root")),
-            PathBuf::from(lines.next().expect("Python Claude bridge root")),
-        )
-    }
+    use studio_runtime_store::RuntimeStore;
 
     #[test]
-    fn bridge_and_server_source_match_python_layout_in_both_install_modes() {
+    fn bridge_and_server_source_match_install_layout_in_both_modes() {
         let source_checkout = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../../../..")
             .canonicalize()
             .unwrap();
         let python_source = source_checkout.join("workspaces/runtime/apps/server/src");
         let source_layout = InstallRoot(source_checkout.clone());
-        let (python_server_source, python_bridge) = python_layout(&python_source);
-        assert_eq!(source_layout.server_source(), python_server_source);
-        assert_eq!(source_layout.claude_bridge_dir(), python_bridge);
+        assert_eq!(source_layout.server_source(), python_source);
+        assert_eq!(
+            source_layout.claude_bridge_dir(),
+            source_checkout.join(CLAUDE_BRIDGE_RELATIVE)
+        );
 
         let temporary = tempfile::tempdir().unwrap();
         let packaged_root = temporary.path().join("workspace");
         let packaged_scripts = packaged_root.join("scripts");
         let packaged_bridge = packaged_scripts.join("claude_bridge");
         fs::create_dir_all(&packaged_bridge).unwrap();
-        fs::copy(
-            python_source.join("codex_layout.py"),
-            packaged_scripts.join("codex_layout.py"),
-        )
-        .unwrap();
-        fs::write(packaged_scripts.join("codex_python.py"), "").unwrap();
         fs::write(packaged_bridge.join("bridge.mjs"), "").unwrap();
         let packaged_layout = InstallRoot(packaged_root);
-        let (python_server_source, python_bridge) = python_layout(&packaged_scripts);
-        assert_eq!(packaged_layout.server_source(), python_server_source);
-        assert_eq!(packaged_layout.claude_bridge_dir(), python_bridge);
+        assert_eq!(packaged_layout.server_source(), packaged_scripts);
+        assert_eq!(
+            packaged_layout.claude_bridge_dir(),
+            packaged_scripts.join("claude_bridge")
+        );
+    }
+
+    #[tokio::test]
+    async fn rust_server_serves_session_and_accounts_without_python() {
+        const CHILD_MARKER: &str = "CODEX_RUNTIME_NO_PYTHON_TEST_CHILD";
+        if std::env::var_os(CHILD_MARKER).is_none() {
+            let empty_path = tempfile::tempdir().expect("empty PATH fixture creates");
+            let mut command =
+                tokio::process::Command::new(std::env::current_exe().expect("test executable"));
+            command
+                .args([
+                    "--exact",
+                    "host_runtime::install_root_tests::rust_server_serves_session_and_accounts_without_python",
+                    "--nocapture",
+                ])
+                .env(CHILD_MARKER, "1")
+                .env("PATH", empty_path.path())
+                .env_remove("CODEX_AGENTS_PYTHON")
+                .env("CODEX_SERVER_TEST_TMP_ROOT", "/dev/shm/pyb2")
+                .kill_on_drop(true);
+            let output = tokio::time::timeout(std::time::Duration::from_secs(45), command.output())
+                .await
+                .expect("no-Python startup child finishes")
+                .expect("no-Python startup child starts");
+            assert!(
+                output.status.success(),
+                "no-Python startup failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert!(
+                String::from_utf8_lossy(&output.stdout)
+                    .contains("rust_server_serves_session_and_accounts_without_python ... ok"),
+                "no-Python child did not run the composed-server test: {}",
+                String::from_utf8_lossy(&output.stdout)
+            );
+            return;
+        }
+
+        assert!(std::env::var_os("CODEX_AGENTS_PYTHON").is_none());
+        assert!(
+            std::process::Command::new("python3")
+                .arg("--version")
+                .output()
+                .is_err()
+        );
+
+        use std::{net::SocketAddr, sync::Arc};
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let root = tempfile::tempdir().expect("isolated runtime state creates");
+        let store = Arc::new(RuntimeStore::open(Some(root.path())).expect("runtime store opens"));
+        let registry_path = root.path().join("accounts/registry.json");
+        fs::create_dir_all(registry_path.parent().expect("registry parent"))
+            .expect("account registry directory creates");
+        fs::write(
+            &registry_path,
+            r#"{"version":1,"defaultAccountKey":"default","accounts":{},"logins":{},"deleteReceipts":{}}"#,
+        )
+        .expect("empty account registry writes");
+        let registry_bytes = fs::read(&registry_path).expect("account registry reads");
+        let accounts =
+            Arc::new(AccountDriver::open(registry_path).expect("empty account registry opens"));
+        let account_policy = Arc::new(
+            studio_runtime_services::account_policy::AccountPolicyState::from_startup(
+                Some(&registry_bytes),
+                std::iter::empty::<(String, serde_json::Value)>(),
+            )
+            .expect("empty account policy loads"),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("test HTTP listener binds");
+        let address = listener.local_addr().expect("test listener address");
+        let mut state = HttpState::new(
+            "no-python-test-token".into(),
+            "no-python-test-workspace".into(),
+            None,
+            root.path().to_string_lossy().into_owned(),
+            address.port(),
+            None,
+            Some(store.clone()),
+            Some(account_policy),
+        )
+        .with_account_driver(accounts.clone());
+        let runtime = super::HostRuntime::start(
+            &mut state,
+            store,
+            accounts,
+            None,
+            super::AccountRegistryConfig::default(),
+        )
+        .await
+        .expect("composed host runtime starts without Python");
+
+        let app = studio_runtime_http::router(state).expect("HTTP routes compose");
+        let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
+        let server = tokio::spawn(async move {
+            axum::serve(
+                listener,
+                app.into_make_service_with_connect_info::<SocketAddr>(),
+            )
+            .with_graceful_shutdown(async move {
+                let _ = stopped.await;
+            })
+            .await
+        });
+
+        async fn get(address: SocketAddr, path: &str) -> (u16, serde_json::Value) {
+            let mut stream = tokio::net::TcpStream::connect(address)
+                .await
+                .expect("composed HTTP server accepts a connection");
+            stream
+                .write_all(
+                    format!(
+                        "GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nOrigin: http://127.0.0.1:{}\r\nConnection: close\r\n\r\n",
+                        address.port(), address.port()
+                    )
+                    .as_bytes(),
+                )
+                .await
+                .expect("HTTP request writes");
+            let mut response = Vec::new();
+            stream
+                .read_to_end(&mut response)
+                .await
+                .expect("HTTP response reads");
+            let response = String::from_utf8(response).expect("HTTP response is UTF-8");
+            let (headers, body) = response
+                .split_once("\r\n\r\n")
+                .expect("HTTP response separates headers and body");
+            let status = headers
+                .lines()
+                .next()
+                .and_then(|line| line.split_whitespace().nth(1))
+                .and_then(|status| status.parse().ok())
+                .expect("HTTP response has a status");
+            (
+                status,
+                serde_json::from_str(body).expect("HTTP response body is JSON"),
+            )
+        }
+
+        let (session_status, session) = get(address, "/api/session").await;
+        assert_eq!(session_status, 200);
+        assert_eq!(session["token"], "no-python-test-token");
+        let (accounts_status, accounts) = get(address, "/api/accounts").await;
+        assert_eq!(accounts_status, 200);
+        assert!(accounts["accounts"].as_array().is_some());
+
+        let _ = stop.send(());
+        server
+            .await
+            .expect("HTTP server task completes")
+            .expect("HTTP server exits cleanly");
+        runtime
+            .shutdown()
+            .await
+            .expect("composed host runtime shuts down");
     }
 }
 
@@ -966,7 +1040,6 @@ mod voice_composition_tests {
             model_catalog: ModelCatalogService::new(None),
             account_home: String::new(),
             server_source_root: directory.to_path_buf(),
-            python_executable: "/usr/bin/python3".into(),
             claude_account_pin: serde_json::Value::Null,
             account_driver: None,
             account_session: None,

@@ -427,7 +427,6 @@ impl AccountLauncher for Scripted {
                 resources: PreparationResources::bundled(
                     String::new(),
                     ModelCatalogService::new(None),
-                    PathBuf::from("/isolated/python"),
                 )
                 .unwrap(),
                 publication_sink: Arc::new(

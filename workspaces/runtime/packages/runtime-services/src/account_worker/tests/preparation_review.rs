@@ -236,12 +236,8 @@ async fn missing_native_effort_uses_shared_catalog_published_after_construction(
             .to_string_lossy()
             .into_owned(),
     ));
-    let resources = preparation::PreparationResources::bundled(
-        String::new(),
-        service.clone(),
-        test_resources().unwrap().python_executable,
-    )
-    .unwrap();
+    let resources =
+        preparation::PreparationResources::bundled(String::new(), service.clone()).unwrap();
     crate::model_catalog::tests::publish_fixture(
         &service,
         "default",
@@ -385,12 +381,8 @@ async fn cold_and_expired_catalogs_hold_the_attempt_without_failing_it() {
             crate::model_catalog::tests::publish_fixture(&catalog, "default", "", page.clone());
             crate::model_catalog::tests::expire_fixture(&catalog);
         }
-        let resources = preparation::PreparationResources::bundled(
-            String::new(),
-            catalog.clone(),
-            test_resources().unwrap().python_executable,
-        )
-        .unwrap();
+        let resources =
+            preparation::PreparationResources::bundled(String::new(), catalog.clone()).unwrap();
         let mut peer = Peer::new();
         let mut worker = peer
             .open_worker_with_resources(state.bridge.clone(), resources.clone())

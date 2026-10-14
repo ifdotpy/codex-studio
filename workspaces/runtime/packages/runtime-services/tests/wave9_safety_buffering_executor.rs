@@ -34,9 +34,6 @@ fn test_resources() -> Arc<PreparationResources> {
         PreparationResources::bundled(
             String::new(),
             studio_runtime_services::model_catalog::ModelCatalogService::new(None),
-            prepared_python_support::prepared_python(
-                &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src"),
-            ),
         )
         .expect("bundled preparation resources"),
     )
