@@ -696,9 +696,13 @@ fn create_child(
         .ok_or(OperationError::Internal)?;
     let prompt = request.prompt.trim();
     let server_id = local_server_id(context)?;
+    let task_id = intent
+        .get("task_id")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
     mutate(context, |tx| {
         crate::host_worker_create::recheck_worker(tx, &draft, epoch, &identity)?;
-        Ok(super::create_agent_with_server_id(
+        let result = super::create_agent_with_server_id(
             tx,
             id,
             prompt,
@@ -706,7 +710,18 @@ fn create_child(
             created,
             validate,
             server_id.as_deref(),
-        )?)
+        )?;
+        if let Some(task_id) = &task_id {
+            let actor = studio_runtime_store::AgentRepository::get(
+                tx,
+                &studio_runtime_store::AgentId::from(parent_id),
+            )?
+            .ok_or(OperationError::Internal)?;
+            let now = crate::event_write::unix_time().map_err(|_| OperationError::Internal)?;
+            crate::work_assignment_runtime::assign_in_transaction(tx, task_id, &id, &actor, now)
+                .map_err(|_| OperationError::Invalid("Work item assignment was rejected"))?;
+        }
+        Ok(result)
     })
 }
 
