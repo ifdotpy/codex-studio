@@ -115,6 +115,7 @@ pub fn reserve(
     now: f64,
 ) -> Result<(), TransferError> {
     store.transaction_with_error(|tx| {
+        check_durable_blockers(tx, &ticket.agent)?;
         let snapshot = load(tx, &ticket.operation)?;
         let mut decision = snapshot.submit(ticket, method, params)?;
         decision.operation["members"][&ticket.agent]["submittedAt"] = json!(now);
@@ -238,14 +239,128 @@ pub fn begin_read(
     now: f64,
 ) -> Result<(), TransferError> {
     store.transaction_with_error(|tx| {
-        for table in ["runtime_tasks", "runtime_monitors", "runtime_requests"] {
-            let sql = format!("SELECT EXISTS(SELECT 1 FROM {table} WHERE json_extract(record,'$.agent')=?1 AND json_extract(record,'$.status') IN ('running','starting','approval','pending','unknown'))");
-            let busy: bool = tx.query_row(&sql, [agent], |r| r.get(0)).map_err(studio_runtime_store::StoreError::from)?;
-            if busy { return Err(TransferError::Refused("Waiting for background work or a tool response")); }
-        }
-        let uncertain: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM runtime_events WHERE agent=?1 AND status IN ('reserved','dispatching','uncertain'))",[agent],|r| r.get(0)).map_err(studio_runtime_store::StoreError::from)?;
-        if uncertain { return Err(TransferError::Refused("Waiting for confirmed message delivery")); }
+        check_durable_blockers(tx, agent)?;
         persist(tx, load(tx, operation)?.begin_read(agent)?, now)?;
         Ok(())
     })
+}
+
+fn check_durable_blockers(tx: &Transaction<'_>, agent: &str) -> Result<(), TransferError> {
+    for table in ["runtime_tasks", "runtime_monitors", "runtime_requests"] {
+        let sql = format!(
+            "SELECT EXISTS(SELECT 1 FROM {table} WHERE json_extract(record,'$.agent')=?1 AND json_extract(record,'$.status') IN ('running','starting','approval','pending','unknown'))"
+        );
+        let busy: bool = tx
+            .query_row(&sql, [agent], |r| r.get(0))
+            .map_err(studio_runtime_store::StoreError::from)?;
+        if busy {
+            return Err(TransferError::Refused(
+                "Waiting for background work or a tool response",
+            ));
+        }
+    }
+    let uncertain: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM runtime_events WHERE agent=?1 AND status IN ('reserved','dispatching','uncertain'))",[agent],|r| r.get(0)).map_err(studio_runtime_store::StoreError::from)?;
+    if uncertain {
+        return Err(TransferError::Refused(
+            "Waiting for confirmed message delivery",
+        ));
+    }
+    Ok(())
+}
+
+/// Captured after the durable reading intent. History and destination settings
+/// are prepared outside the writer transaction from these checked records.
+pub struct TransferPreparation {
+    operation: Value,
+    agent: Value,
+}
+impl TransferPreparation {
+    pub fn operation(&self) -> &Value {
+        &self.operation
+    }
+    pub fn agent(&self) -> &Value {
+        &self.agent
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum TransferMethod {
+    Start,
+    Fork,
+}
+impl TransferMethod {
+    fn wire(self) -> &'static str {
+        match self {
+            Self::Start => "thread/start",
+            Self::Fork => "thread/fork",
+        }
+    }
+}
+pub struct PreparedTransfer {
+    pub ticket: Ticket,
+    pub method: TransferMethod,
+    pub params: Value,
+}
+
+/// P07 supplies history/settings preparation; P01 supplies the retained transport.
+/// `available` must refuse before any write if either dependency is absent.
+/// Preparation must be bounded and safe to repeat for the same operation/member;
+/// it must not send a native mutation. The transport must use the supplied ticket.
+pub trait TransferExecutor: TransferTransport {
+    fn available(&self) -> Result<(), TransferError>;
+    fn prepare(&self, input: &TransferPreparation) -> Result<PreparedTransfer, TransferError>;
+}
+
+/// Execute one existing member through its durable receipt. Adoption remains a
+/// separate transaction owned by the history/settings/resume-cancellation adapter.
+/// Call `recover` once at startup, before running members or admitting turns.
+pub fn execute_member(
+    store: &RuntimeStore,
+    executor: &dyn TransferExecutor,
+    operation: &str,
+    agent: &str,
+    now: f64,
+) -> Result<DispatchOutcome, TransferError> {
+    executor.available()?;
+    let input = store.transaction_with_error(|tx| {
+        check_durable_blockers(tx, agent)?;
+        let snapshot = load(tx, operation)?;
+        let decision = snapshot.begin_read(agent)?;
+        let input = TransferPreparation {
+            operation: decision.operation.clone(),
+            agent: snapshot.agent(agent)?.clone(),
+        };
+        persist(tx, decision, now)?;
+        Ok::<_, TransferError>(input)
+    })?;
+    let prepared = executor.prepare(&input).and_then(|prepared| {
+        if prepared.ticket.operation != operation || prepared.ticket.agent != agent {
+            return Err(TransferError::Refused(
+                "The prepared transfer belongs to another member",
+            ));
+        }
+        Ok(prepared)
+    });
+    let result = prepared.and_then(|prepared| {
+        send_once(
+            store,
+            executor,
+            &prepared.ticket,
+            prepared.method.wire(),
+            prepared.params,
+            now,
+        )
+    });
+    if result.is_err() {
+        store.transaction_with_error(|tx| {
+            let snapshot = load(tx, operation)?;
+            persist(
+                tx,
+                snapshot.preparation_failed(agent, &input.operation["members"][agent]["source"])?,
+                now,
+            )?;
+            Ok::<_, TransferError>(())
+        })?;
+    }
+    result
 }

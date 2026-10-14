@@ -44,9 +44,13 @@ async fn models(
         .clone()
         .ok_or_else(ApiError::internal)?;
     let catalog = state.model_catalog.clone();
-    let snapshot = tokio::task::spawn_blocking(move || account_policy.accounts())
-        .await
-        .map_err(|_| ApiError::internal())?;
+    let driver = state.account_driver.clone();
+    let snapshot = tokio::task::spawn_blocking(move || match driver {
+        Some(driver) => driver.snapshot().map_err(|_| ApiError::internal()),
+        None => Ok(account_policy.accounts()),
+    })
+    .await
+    .map_err(|_| ApiError::internal())??;
     catalog.retain_accounts(&snapshot.accounts);
     let result = if workers {
         worker_catalog(&catalog, &snapshot, &account_key, retry).await

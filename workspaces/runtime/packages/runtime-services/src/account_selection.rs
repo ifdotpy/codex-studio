@@ -140,6 +140,22 @@ pub fn select(
         .map(crate::agents_create::project_directory)
         .transpose()
         .map_err(|_| TransferError::Refused("Select an existing project directory"))?;
+    let checked_directory = match &directory {
+        Some(directory) => directory.clone(),
+        None => {
+            let raw = AccountTransferRepository::agent(&store.read()?, id)?
+                .ok_or(TransferError::Refused("Unknown managed agent"))?;
+            SelectionSnapshot::read(&raw)?.agent["cwd"]
+                .as_str()
+                .ok_or(TransferError::Refused(
+                    "Select an existing project directory",
+                ))?
+                .to_owned()
+        }
+    };
+    // Filesystem work precedes the writer lock; the transaction rechecks that it
+    // still acts on this exact directory before using the result.
+    let directory_exists = std::path::Path::new(&checked_directory).is_dir();
     store.transaction_with_error(|tx| {
         // This port reads the in-memory registry only; no auth refresh or provider I/O.
         let accounts = accounts()?;
@@ -160,7 +176,12 @@ pub fn select(
         let context = crate::sync_entity_context::agent_view_context(tx, &snapshot.agent, None)?;
         let value = snapshot.decide(target, account, directory, context.empty_lead)?;
         if value != snapshot.agent {
-            if !std::path::Path::new(directory).is_dir() {
+            if directory != checked_directory {
+                return Err(TransferError::Refused(
+                    "Project directory changed during account selection",
+                ));
+            }
+            if !directory_exists {
                 return Err(TransferError::Refused(
                     "Select an existing project directory",
                 ));

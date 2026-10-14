@@ -29,6 +29,8 @@ pub struct HttpState {
         Option<Arc<dyn studio_runtime_services::message_admission::MessageAdmission>>,
     pub(crate) callback_runtime:
         Option<Arc<studio_runtime_services::callback_runtime::CallbackRuntime>>,
+    pub account_session:
+        Option<Arc<dyn studio_runtime_services::account_session_runtime::AccountSessionPort>>,
     pub claude_login: Option<Arc<studio_runtime_services::claude_login::service::LoginService>>,
     pub(crate) multi_server_boundary:
         Option<Arc<studio_runtime_services::multi_server_pairing::MultiServerBoundary>>,
@@ -88,6 +90,7 @@ impl HttpState {
         Self {
             message_admission: None,
             callback_runtime: None,
+            account_session: None,
             account_driver: None,
             claude_login: None,
             voice_provider: None,
