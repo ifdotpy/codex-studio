@@ -16,6 +16,8 @@ mod federation;
 mod imports;
 pub(crate) mod incoming_multi_server;
 mod insights;
+mod linux_vm_settings;
+mod mac_sync;
 pub(crate) mod manifest;
 mod messages;
 mod models;
