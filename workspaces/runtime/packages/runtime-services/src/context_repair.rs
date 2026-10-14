@@ -1103,10 +1103,36 @@ fn repair_idle_with_broker_inner(
     } else {
         None
     };
+    let tool_receipt_snapshot = if initial["provider"] != "claude"
+        && initial["threadId"]
+            .as_str()
+            .is_some_and(|thread| !thread.is_empty())
+        && !(initial["environment"] == "linux"
+            && studio_runtime_store::truthy(initial.get("imageWorkspaceReady")))
+    {
+        crate::provider_callbacks::prepare_unresolved_context_tool_receipts(
+            &initial_db,
+            store.state_dir(),
+            id,
+            &initial_account,
+            initial["threadId"]
+                .as_str()
+                .ok_or(RepairError::Invalid("agent.threadId"))?,
+            initial["accountHistory"]
+                .as_array()
+                .map(Vec::as_slice)
+                .unwrap_or_default(),
+        )
+        .map_err(|_| RepairError::ReceiptHold)?
+    } else {
+        crate::provider_callbacks::ContextToolReceiptSnapshot::empty()
+    };
+    drop(initial_db);
     let (agent, events, tool_receipts, historical_inputs, scope, operation_id) = store.transaction_with(|tx| {
         let mut agent = ContextRepairRepository::agent(tx, id)?.ok_or(RepairError::MissingAgent)?;
         if agent["epoch"] != initial["epoch"] || agent["threadId"] != initial["threadId"]
             || string_default(&agent, "accountKey", "default")? != initial_account
+            || agent.get("accountHistory") != initial.get("accountHistory")
         {
             return Err(RepairError::ReceiptHold);
         }
@@ -1126,16 +1152,12 @@ fn repair_idle_with_broker_inner(
         }
         require_schema(tx, &["runtime_event_meta", "runtime_completed_turns"])?;
         ensure_local_idle(tx, &agent)?;
-        let account = string_default(&agent, "accountKey", "default")?;
-        let thread = agent["threadId"].as_str().ok_or(RepairError::Invalid("agent.threadId"))?;
-        let tool_receipts = crate::provider_callbacks::unresolved_context_tool_receipts(
+        let tool_receipts = crate::provider_callbacks::revalidate_unresolved_context_tool_receipts(
             tx,
-            store.state_dir(),
             id,
-            account,
-            thread,
-            agent["accountHistory"].as_array().map(Vec::as_slice).unwrap_or_default(),
-        ).map_err(|_| RepairError::ReceiptHold)?;
+            &tool_receipt_snapshot,
+        )
+        .map_err(|_| RepairError::ReceiptHold)?;
         let historical_inputs = uncertain_input_receipts(tx, id, agent["epoch"].as_i64().ok_or(RepairError::Invalid("agent.epoch"))?)?;
         let events = verified_repair_events(tx, &agent)?;
         if events.is_empty() && historical_inputs.is_empty() && tool_receipts.is_empty() {
