@@ -4,7 +4,9 @@ mod python_test_support;
 
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+use std::process::{Child, ChildStdin, ChildStdout, Command, ExitStatus, Stdio};
+use std::sync::mpsc::{self, Receiver};
+use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 use studio_runtime_services::coordination::{self, PostManagedMessage};
@@ -14,8 +16,11 @@ use studio_runtime_store::RuntimeStore;
 struct Oracle {
     child: Child,
     input: ChildStdin,
-    output: BufReader<ChildStdout>,
+    output: Receiver<Result<String, String>>,
+    reader: Option<std::thread::JoinHandle<()>>,
     root: tempfile::TempDir,
+    next_root: usize,
+    case_name: String,
 }
 impl Oracle {
     fn new() -> Self {
@@ -32,36 +37,162 @@ impl Oracle {
         .stderr(Stdio::inherit())
         .spawn()
         .expect("Python oracle");
+        let stdout = child.stdout.take().expect("stdout");
+        let (sender, output) = mpsc::channel();
+        let reader = Some(std::thread::spawn(move || {
+            read_oracle_lines(stdout, sender)
+        }));
+        let case_name = std::thread::current()
+            .name()
+            .unwrap_or("Python message-ingress test")
+            .to_owned();
         Self {
             input: child.stdin.take().expect("stdin"),
-            output: BufReader::new(child.stdout.take().expect("stdout")),
+            output,
+            reader,
             child,
             root,
+            next_root: 0,
+            case_name,
         }
     }
     fn call(&mut self, command: Value) -> Value {
-        writeln!(self.input, "{command}").expect("command");
-        self.input.flush().expect("flush");
-        let mut line = String::new();
-        self.output.read_line(&mut line).expect("reply");
-        let result: Value = serde_json::from_str(&line).expect("JSON oracle reply");
-        assert!(result.get("oracleError").is_none(), "{result}");
+        if let Some(name) = command.pointer("/case/name").and_then(Value::as_str) {
+            self.case_name = name.to_owned();
+        }
+        writeln!(self.input, "{command}")
+            .and_then(|()| self.input.flush())
+            .unwrap_or_else(|error| {
+                panic!("{}: send Python oracle command: {error}", self.case_name)
+            });
+        let line = match self
+            .output
+            .recv_timeout(python_test_support::PYTHON_ORACLE_TIMEOUT)
+        {
+            Ok(Ok(line)) => line,
+            Ok(Err(error)) => panic!("{}: read Python oracle reply: {error}", self.case_name),
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                self.terminate("reply timed out")
+                    .unwrap_or_else(|error| panic!("{}: {error}", self.case_name));
+                panic!(
+                    "{}: Python oracle exceeded {} second reply timeout",
+                    self.case_name,
+                    python_test_support::PYTHON_ORACLE_TIMEOUT.as_secs()
+                );
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                panic!("{}: Python oracle closed its reply stream", self.case_name)
+            }
+        };
+        let result: Value = serde_json::from_str(&line).unwrap_or_else(|error| {
+            panic!(
+                "{}: invalid Python oracle JSON reply: {error}",
+                self.case_name
+            )
+        });
+        assert!(
+            result.get("oracleError").is_none(),
+            "{}: {result}",
+            self.case_name
+        );
         result
     }
     fn seed(&mut self, name: &str, case: &Value) -> (PathBuf, Value) {
-        let root = self.root.path().join(name);
+        let root = self
+            .root
+            .path()
+            .join(format!("{:04}-{name}", self.next_root));
+        self.next_root += 1;
         let expected = self.call(json!({"rust":root,"case":case}));
         (root, expected)
+    }
+
+    fn terminate(&mut self, reason: &str) -> Result<(), String> {
+        match self.child.try_wait() {
+            Ok(Some(_)) => return Ok(()),
+            Ok(None) => {}
+            Err(error) => return Err(format!("check Python oracle before termination: {error}")),
+        }
+        if let Err(error) = self.child.kill()
+            && error.kind() != std::io::ErrorKind::InvalidInput
+        {
+            return Err(format!("terminate Python oracle after {reason}: {error}"));
+        }
+        self.child
+            .wait()
+            .map(|_| ())
+            .map_err(|error| format!("reap Python oracle after {reason}: {error}"))
     }
 }
 impl Drop for Oracle {
     fn drop(&mut self) {
-        if writeln!(self.input, "{{\"close\":true}}").is_err() {
-            self.child.kill().expect("stop failed oracle");
+        let mut close_error = None;
+        if let Err(error) = writeln!(self.input, "{{\"close\":true}}") {
+            close_error = Some(format!("send close: {error}"));
         }
-        let status = self.child.wait().expect("reap oracle");
-        if !std::thread::panicking() {
-            assert!(status.success());
+        let status =
+            wait_child_with_timeout(&mut self.child, python_test_support::PYTHON_ORACLE_TIMEOUT);
+        let mut failure = close_error;
+        match status {
+            Ok(status) if status.success() => {}
+            Ok(status) => {
+                failure.get_or_insert_with(|| format!("Python oracle exited with {status}"));
+            }
+            Err(()) => {
+                if let Err(error) = self.terminate("shutdown timed out") {
+                    failure.get_or_insert(error);
+                }
+                failure.get_or_insert_with(|| {
+                    format!(
+                        "Python oracle exceeded {} second shutdown timeout",
+                        python_test_support::PYTHON_ORACLE_TIMEOUT.as_secs()
+                    )
+                });
+            }
+        }
+        if let Some(reader) = self.reader.take()
+            && reader.join().is_err()
+        {
+            failure.get_or_insert_with(|| "Python oracle output reader panicked".into());
+        }
+        if !std::thread::panicking()
+            && let Some(failure) = failure
+        {
+            panic!("{}: {failure}", self.case_name);
+        }
+    }
+}
+
+fn read_oracle_lines(stdout: ChildStdout, sender: mpsc::Sender<Result<String, String>>) {
+    let mut reader = BufReader::new(stdout);
+    loop {
+        let mut line = String::new();
+        match reader.read_line(&mut line) {
+            Ok(0) => return,
+            Ok(_) => {
+                if sender.send(Ok(line)).is_err() {
+                    return;
+                }
+            }
+            Err(error) => {
+                if sender.send(Err(error.to_string())).is_err() {
+                    return;
+                }
+                return;
+            }
+        }
+    }
+}
+
+fn wait_child_with_timeout(child: &mut Child, timeout: Duration) -> Result<ExitStatus, ()> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return Ok(status),
+            Ok(None) if Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            Ok(None) | Err(_) => return Err(()),
         }
     }
 }
@@ -119,11 +250,9 @@ fn post(
     )
 }
 
-#[test]
-fn python_send_and_receipt_corpus() {
+fn python_send_and_receipt_corpus(oracle: &mut Oracle) {
     let cases: Vec<Value> =
         serde_json::from_str(include_str!("wave7_p03_message_ingress/cases.json")).expect("cases");
-    let mut oracle = Oracle::new();
     for case in cases {
         let name = case["name"].as_str().expect("case name");
         let (root, expected) = oracle.seed(name, &case);
@@ -284,6 +413,7 @@ fn crash_child(root: &Path, table: &str, operation: &str, point: &str, occurrenc
         .env("P03_CRASH_OPERATION", operation)
         .env("P03_CRASH_POINT", point)
         .env("P03_CRASH_OCCURRENCE", occurrence.to_string())
+        .stdin(Stdio::null())
         .stdout(Stdio::null())
         .status()
         .expect("crash child");
@@ -344,10 +474,8 @@ fn ingress_crash_child() {
     std::process::exit(73);
 }
 
-#[test]
-fn each_write_occurrence_and_commit_wake_crash_recovers_exactly_once() {
+fn each_write_occurrence_and_commit_wake_crash_recovers_exactly_once(oracle: &mut Oracle) {
     use std::sync::atomic::Ordering;
-    let mut oracle = Oracle::new();
     let capacity = json!({"capacity":{"id":"retry","status":"scheduled","dueAt":100,"updatedAt":1},"steps":[]});
     let mut reached = 0;
     for &(table, operation) in WRITE_BOUNDARIES {
@@ -431,8 +559,7 @@ fn each_write_occurrence_and_commit_wake_crash_recovers_exactly_once() {
     );
 }
 
-#[test]
-fn injected_policy_denials_and_changed_workspace_snapshot_write_nothing() {
+fn injected_policy_denials_and_changed_workspace_snapshot_write_nothing(oracle: &mut Oracle) {
     use studio_runtime_services::coordination::CoordinationError;
     use studio_runtime_services::message_admission::MessageAdmission;
     use studio_runtime_store::{AgentRecord, Transaction};
@@ -465,7 +592,6 @@ fn injected_policy_denials_and_changed_workspace_snapshot_write_nothing() {
             Ok(())
         }
     }
-    let mut oracle = Oracle::new();
     let (root, _) = oracle.seed("gates", &json!({"steps":[]}));
     let store = RuntimeStore::open(Some(&root)).expect("store");
     for policy in [
@@ -523,10 +649,8 @@ fn injected_policy_denials_and_changed_workspace_snapshot_write_nothing() {
     assert_eq!(snapshot(&store), before);
 }
 
-#[test]
-fn voice_delivery_prepares_workspace_admission() {
+fn voice_delivery_prepares_workspace_admission(oracle: &mut Oracle) {
     use studio_runtime_services::voice;
-    let mut oracle = Oracle::new();
     for operation in ["unrelated", "checkpoint", "capture"] {
         let (root, _) = oracle.seed(operation, &json!({"steps":[]}));
         let store = RuntimeStore::open(Some(&root)).expect("store");
@@ -574,9 +698,7 @@ fn voice_delivery_prepares_workspace_admission() {
     }
 }
 
-#[test]
-fn corrupt_replay_and_workspace_operation_errors_name_the_row() {
-    let mut oracle = Oracle::new();
+fn corrupt_replay_and_workspace_operation_errors_name_the_row(oracle: &mut Oracle) {
     let (root, _) = oracle.seed("malformed", &json!({"steps":[]}));
     let store = RuntimeStore::open(Some(&root)).expect("store");
     send(&store, &json!({})).expect("accepted");
@@ -616,10 +738,8 @@ fn corrupt_replay_and_workspace_operation_errors_name_the_row() {
     assert_eq!(snapshot(&store), before);
 }
 
-#[test]
-fn late_operation_paths_use_the_prepared_canonical_relation() {
+fn late_operation_paths_use_the_prepared_canonical_relation(oracle: &mut Oracle) {
     use studio_runtime_store::AgentRepository;
-    let mut oracle = Oracle::new();
     for scenario in ["known_unrelated", "known_alias", "unknown_alias"] {
         let (root, _) = oracle.seed(scenario, &json!({"steps":[]}));
         let store = RuntimeStore::open(Some(&root)).expect("store");
@@ -675,4 +795,15 @@ fn late_operation_paths_use_the_prepared_canonical_relation() {
             }
         }
     }
+}
+
+#[test]
+fn message_ingress_python_oracle_corpus() {
+    let mut oracle = Oracle::new();
+    corrupt_replay_and_workspace_operation_errors_name_the_row(&mut oracle);
+    injected_policy_denials_and_changed_workspace_snapshot_write_nothing(&mut oracle);
+    late_operation_paths_use_the_prepared_canonical_relation(&mut oracle);
+    python_send_and_receipt_corpus(&mut oracle);
+    voice_delivery_prepares_workspace_admission(&mut oracle);
+    each_write_occurrence_and_commit_wake_crash_recovers_exactly_once(&mut oracle);
 }

@@ -4,7 +4,7 @@ mod prepared_python;
 use serde_json::{Value, json};
 use std::{
     path::PathBuf,
-    process::Command,
+    process::{Command, Stdio},
     sync::{Arc, Mutex, OnceLock},
 };
 use studio_runtime_providers::{Frame, Method, RequestFrame, RequestId};
@@ -17,14 +17,21 @@ pub fn template() -> &'static Value {
         let source = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src");
         let script =
             source.join("../../../packages/runtime-services/tests/wave7_p04_callback/oracle.py");
-        let output = Command::new(prepared_python::prepared_python(&source))
-            .arg(script)
-            .arg(root)
-            .output()
-            .unwrap();
+        let case_name = std::thread::current()
+            .name()
+            .unwrap_or("callback fixture")
+            .to_owned();
+        let mut command = Command::new(prepared_python::prepared_python(&source));
+        command.arg(&script).arg(root).stdin(Stdio::null());
+        let output = prepared_python::output_with_timeout(
+            &mut command,
+            &script,
+            prepared_python::PYTHON_ORACLE_TIMEOUT,
+        )
+        .unwrap_or_else(|error| panic!("{case_name}: callback Python oracle: {error}"));
         assert!(
             output.status.success(),
-            "{}",
+            "{case_name}: callback Python oracle exited unsuccessfully: {}",
             String::from_utf8_lossy(&output.stderr)
         );
         serde_json::from_slice(&output.stdout).unwrap()
