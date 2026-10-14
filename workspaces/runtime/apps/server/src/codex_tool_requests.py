@@ -192,6 +192,7 @@ class RequestRuntime(RecordStore, Protocol):
     offline_accounts: set[str]
 
     def db(self) -> "AbstractContextManager[sqlite3.Connection]": ...
+    def write_db(self) -> "AbstractContextManager[sqlite3.Connection]": ...
     def connection_current(self, account_key: str, connection_id: str | None) -> bool: ...
     def checked_actor(self, db: "sqlite3.Connection", agent_id: str,
                       actor: str | None = None) -> "AgentRecord": ...
@@ -364,7 +365,7 @@ class RequestMixin:
             {"tool": identity_tool, "arguments": identity_args}, sort_keys=True,
             separators=(",", ":"), ensure_ascii=False, allow_nan=False,
         ).encode()).hexdigest()
-        with self.lock, self.db() as db:
+        with self.write_db() as db:
             reservation_locked = time.monotonic_ns()
             if self.closed or not self.connection_current(account_key, connection_id):
                 raise ValueError("The caller connection changed before request reservation")
@@ -434,7 +435,7 @@ class RequestMixin:
             return record
 
     def begin_tool_request(self: "RequestRuntime", key: str) -> bool:
-        with self.lock, self.db() as db:
+        with self.write_db() as db:
             record = self.tool_request(key, db)
             if not record:
                 return False
@@ -457,7 +458,7 @@ class RequestMixin:
                             proof: str | None = None) -> "ToolRequestRecord":
         """Save a completion; prepared_record is internal list snapshot evidence."""
         if db is None:
-            with self.lock, self.db() as own:
+            with self.write_db() as own:
                 return self.finish_tool_request(key, result, outcome, own,
                                                 prepared_record=prepared_record, proof=proof)
         if outcome not in (None, "applied", "not_applied", "unknown"):

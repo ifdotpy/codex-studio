@@ -732,13 +732,16 @@ def main():
         server = make_server(canvas, args.port, unix_socket=os.name != "nt")
         if shutdown.requested():
             return
+        runtime = Runtime(canvas.root)
+        canvas.runtime = runtime
+        # Upgrade views that require the Runtime before either listener accepts
+        # requests. Entity GETs read committed projections and never repair them.
+        server._context.sync().prepare_entities()
         if server.unix_server:
             unix_thread = threading.Thread(target=server.unix_server.serve_forever,
                                            kwargs={"poll_interval": 0.5,
                                                    "shutdown_requested": shutdown.requested}, daemon=True)
             unix_thread.start()
-        runtime = Runtime(canvas.root)
-        canvas.runtime = runtime
         if shutdown.requested():
             return
         from codex_live_updates import start as start_updates

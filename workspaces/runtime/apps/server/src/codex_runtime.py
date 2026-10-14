@@ -62,6 +62,12 @@ from codex_provider_limits import CALLBACK_QUEUE_LIMIT as PROVIDER_CALLBACK_QUEU
 
 from native_notifications.dispatch import consume_native_notification, advance_native_status, notice, account_notices
 
+# Bounds for the shared writer admission path; SQLite uses milliseconds.
+_WRITE_ADMISSION_TIMEOUT_SECONDS = 60
+_WRITE_ADMISSION_BUSY_TIMEOUT_MS = 50
+_WRITE_ADMISSION_INITIAL_BACKOFF_SECONDS = .05
+_WRITE_ADMISSION_MAX_BACKOFF_SECONDS = .5
+
 if TYPE_CHECKING:
     from collections.abc import Iterable
     from codex_records import (
@@ -2077,7 +2083,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         # old implementation; registering only when opening a connection
         # leaves that connection without the functions used by budget writes
         # and runtime_events triggers.
-        from codex_sync_entities import register_functions, ensure_tables, install_bypass_triggers
+        from codex_sync_entities import register_functions, ensure_tables, install_bypass_triggers, ENTITY_EVENT_INSERT_TRIGGER
         register_functions(db)
         schema_state = None
         if getattr(local, "scheduler", False):
@@ -2094,7 +2100,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             has_items = bool(db.execute(
                 "SELECT 1 FROM sqlite_master WHERE type='table' AND name='runtime_items'").fetchone())
             if (has_events and not db.execute(
-                    "SELECT 1 FROM sqlite_master WHERE type='trigger' AND name='sync_entity_event_INSERT'").fetchone()):
+                    "SELECT 1 FROM sqlite_master WHERE type='trigger' AND name=?", (ENTITY_EVENT_INSERT_TRIGGER,)).fetchone()):
                 install_bypass_triggers(db)
             if getattr(local, "scheduler", False):
                 db._studio_runtime_schema = (
@@ -2668,16 +2674,17 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             idle.set()
 
     @contextmanager
-    def notification_db(self, supervisor_cursor=None):
-        """Wait for the main writer before running lifecycle effects.
+    def write_db(self):
+        """Claim the SQLite writer before Runtime.lock, then commit under both.
 
-        `supervisor_cursor` is the (handle, sequence) of the journal event that
-        this transaction applies. Its cursor then commits with the effects, so a
-        replayed event is never applied twice and needs no second commit.
+        Only admission may retry. A body or commit error retains its original
+        uncertainty and is never rerun by this context manager. Existing lock
+        owners fail on writer contention instead of retaining the lock in a
+        retry loop that prevents the writer owner from completing.
         """
         outer_owner = self.lock._is_owned()
-        deadline = time.monotonic() + 60
-        delay = .05
+        deadline = time.monotonic() + _WRITE_ADMISSION_TIMEOUT_SECONDS
+        delay = _WRITE_ADMISSION_INITIAL_BACKOFF_SECONDS
         while True:
             entered = False
             retry = False
@@ -2688,14 +2695,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     # Claim the SQLite writer before Runtime.lock. If another
                     # transaction owns the writer, this wait must not block
                     # unrelated runtime state access.
-                    with self.db(busy_timeout=50) as db:
-                        # Either statement takes the writer lock first.
-                        if supervisor_cursor is None:
-                            db.execute("UPDATE runtime_supervisor_cursor SET sequence=sequence WHERE handle='' ")
-                        else:
-                            db.execute("INSERT INTO runtime_supervisor_cursor VALUES (?,?) ON CONFLICT(handle) "
-                                       "DO UPDATE SET sequence=max(sequence,excluded.sequence)",
-                                       supervisor_cursor)
+                    with self.db(busy_timeout=_WRITE_ADMISSION_BUSY_TIMEOUT_MS) as db:
+                        db.execute("BEGIN IMMEDIATE")
                         lock_acquired = self.lock.acquire(blocking=False)
                         if not lock_acquired:
                             # No callback work has run, so this transaction is
@@ -2718,23 +2719,33 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 retry = True
             if retry:
                 if self.closed or time.monotonic() >= deadline:
-                    raise TimeoutError("Timed out waiting to enter the notification transaction")
+                    raise TimeoutError("Timed out waiting to enter the write transaction")
                 if wait_for_lock_turnover:
                     # The writer has been released. It is now safe to wait for
                     # the current state-lock owner, then retry the writer-first
                     # claim without an arbitrary backoff floor.
                     remaining = max(0, deadline - time.monotonic())
                     if not self.lock.acquire(timeout=remaining):
-                        raise TimeoutError("Timed out waiting for Runtime.lock before notification transaction")
+                        raise TimeoutError("Timed out waiting for Runtime.lock before write transaction")
                     self.lock.release()
                 else:
                     # SQLite writer contention has its own bounded backoff.
                     time.sleep(min(delay, max(0, deadline - time.monotonic())))
-                    delay = min(.5, delay * 2)
+                    delay = min(_WRITE_ADMISSION_MAX_BACKOFF_SECONDS, delay * 2)
                 continue
-            if supervisor_cursor is not None:
-                _SUPERVISOR_EVENT.committed = supervisor_cursor
             return
+
+    @contextmanager
+    def notification_db(self, supervisor_cursor=None):
+        """Commit a journal cursor with its lifecycle effects exactly once."""
+        with self.write_db() as db:
+            if supervisor_cursor is not None:
+                db.execute("INSERT INTO runtime_supervisor_cursor VALUES (?,?) ON CONFLICT(handle) "
+                           "DO UPDATE SET sequence=max(sequence,excluded.sequence)",
+                           supervisor_cursor)
+            yield db
+        if supervisor_cursor is not None:
+            _SUPERVISOR_EVENT.committed = supervisor_cursor
 
     def close_notification_database(self):
         """Close the dispatcher-owned reused connection on its owner thread."""
@@ -6717,6 +6728,9 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         return self.dispatch_candidates(agent_id)
 
     def runtime_maintenance_tick(self):
+        sync_store = getattr(self, "sync_store", None)
+        if sync_store is not None:
+            sync_store.maintain_entities()
         from codex_task_recovery import queue_task_recovery
         queue_task_recovery(self)
         from codex_claude_auth_wait import tick as claude_auth_wait_tick

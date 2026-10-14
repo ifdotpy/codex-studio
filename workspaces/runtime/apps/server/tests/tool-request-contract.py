@@ -28,6 +28,9 @@ from current_cleanup_receipts import migrate_receipts
 
 
 class Ledger(RequestMixin):
+    from codex_runtime import Runtime
+    write_db = Runtime.write_db
+
     def __init__(self, path):
         self.path = path
         self.lock = threading.RLock()
@@ -48,8 +51,8 @@ class Ledger(RequestMixin):
         )
 
     @contextmanager
-    def db(self):
-        db = sqlite3.connect(self.path)
+    def db(self, *, busy_timeout=None):
+        db = sqlite3.connect(self.path, timeout=(busy_timeout / 1000 if busy_timeout is not None else 5))
         db.row_factory = sqlite3.Row
         try:
             with db:
@@ -89,6 +92,133 @@ class RequestContract(unittest.TestCase):
 
     def reserve(self, **kwargs):
         return self.runtime.reserve_tool_request(self.message(**kwargs))
+
+    def test_receipt_writes_wait_for_sqlite_without_holding_runtime_lock(self):
+        # Use the production admission helper against one explicitly held
+        # writer. Events establish ordering; timeouts only guard a deadlock.
+        from server_test_waits import HANG_GUARD_SECONDS
+
+        for phase in ("reserve", "begin", "finish"):
+            with self.subTest(phase=phase):
+                message = self.message(call="blocked-" + phase)
+                key = self.runtime.tool_request_key(message)
+                if phase != "reserve":
+                    self.runtime.reserve_tool_request(message)
+                if phase == "finish":
+                    self.runtime.begin_tool_request(key)
+                operations = {
+                    "reserve": lambda: self.runtime.reserve_tool_request(message),
+                    "begin": lambda: self.runtime.begin_tool_request(key),
+                    "finish": lambda: self.runtime.finish_tool_request(key, self.result()),
+                }
+                busy = threading.Event()
+                finished = threading.Event()
+                errors = []
+                original_db = self.runtime.db
+
+                class ObservedConnection:
+                    def __init__(self, db):
+                        self.db = db
+
+                    def __getattr__(self, name):
+                        return getattr(self.db, name)
+
+                    def execute(self, sql, parameters=()):
+                        try:
+                            return self.db.execute(sql, parameters)
+                        except sqlite3.OperationalError:
+                            if sql == "BEGIN IMMEDIATE":
+                                busy.set()
+                            raise
+
+                @contextmanager
+                def observed_db(**kwargs):
+                    with original_db(**kwargs) as db:
+                        yield ObservedConnection(db)
+
+                def write():
+                    try:
+                        operations[phase]()
+                    except BaseException as error:
+                        errors.append(error)
+                    finally:
+                        finished.set()
+
+                blocker = sqlite3.connect(self.runtime.path)
+                blocker.execute("BEGIN IMMEDIATE")
+                worker = threading.Thread(target=write, daemon=True)
+                with patch.object(self.runtime, "db", observed_db):
+                    worker.start()
+                    try:
+                        self.assertTrue(busy.wait(HANG_GUARD_SECONDS))
+                        acquired = self.runtime.lock.acquire(blocking=False)
+                        self.assertTrue(acquired, "receipt admission held Runtime.lock while SQLite was busy")
+                        if acquired:
+                            self.runtime.lock.release()
+                    finally:
+                        blocker.rollback()
+                        blocker.close()
+                        worker.join(HANG_GUARD_SECONDS)
+                self.assertTrue(finished.is_set())
+                self.assertFalse(worker.is_alive())
+                self.assertEqual(errors, [])
+                record = self.runtime.tool_request(key)
+                self.assertEqual(record["stage"], {"reserve": "queued", "begin": "running", "finish": "completed"}[phase])
+
+    def test_caller_is_rechecked_after_writer_admission(self):
+        self.runtime.connection_ids["default"] = "original"
+        original_write_db = self.runtime.write_db
+
+        @contextmanager
+        def changed_connection():
+            with original_write_db() as db:
+                self.runtime.connection_ids["default"] = "replacement"
+                yield db
+
+        with patch.object(self.runtime, "write_db", changed_connection):
+            with self.assertRaisesRegex(ValueError, "connection changed"):
+                self.runtime.reserve_tool_request(self.message(), connection_id="original")
+        with self.runtime.db() as db:
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM runtime_tool_requests").fetchone()[0], 0)
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM runtime_tool_request_aliases").fetchone()[0], 0)
+
+    def test_existing_runtime_lock_owner_does_not_retry_a_blocked_writer(self):
+        import codex_runtime
+        blocker = sqlite3.connect(self.runtime.path)
+        try:
+            blocker.execute("BEGIN IMMEDIATE")
+            with self.runtime.lock, patch.object(codex_runtime.time, "sleep", side_effect=AssertionError("nested admission retried")):
+                with self.assertRaisesRegex(sqlite3.OperationalError, "database is locked"):
+                    self.reserve(call="outer-lock")
+                self.assertTrue(self.runtime.lock._is_owned())
+        finally:
+            blocker.rollback()
+            blocker.close()
+        self.assertIsNone(self.runtime.tool_request("thread:outer-lock"))
+
+    def test_receipt_body_busy_failure_is_not_replayed(self):
+        writes = []
+
+        def fail_write(db, kind, record):
+            writes.append(record["id"])
+            raise sqlite3.OperationalError("database is locked")
+
+        with patch.object(self.runtime, "put", fail_write):
+            with self.assertRaisesRegex(sqlite3.OperationalError, "database is locked"):
+                self.reserve(call="uncertain-body")
+        self.assertEqual(writes, ["thread:uncertain-body"])
+        self.assertIsNone(self.runtime.tool_request("thread:uncertain-body"))
+
+    def test_explicit_receipt_transaction_is_not_committed_or_reopened(self):
+        record = self.reserve(call="explicit-db")
+        original_db = self.runtime.db
+        with self.runtime.lock, original_db() as db:
+            db.execute("BEGIN IMMEDIATE")
+            with patch.object(self.runtime, "write_db", side_effect=AssertionError("explicit DB reopened")):
+                self.runtime.finish_tool_request(record["id"], self.result(), db=db)
+            self.assertTrue(db.in_transaction)
+            db.rollback()
+        self.assertEqual(self.runtime.tool_request(record["id"])["stage"], "queued")
 
     def test_semantic_retry_and_explicit_identity_aliases(self):
         args = {'request_id': 'batch-17', 'agents': [{'name': 'audit', 'task': 'Inspect'}]}
@@ -553,10 +683,11 @@ class RequestContract(unittest.TestCase):
         raise_after_commit = True
 
         @contextmanager
-        def fail_once_after_commit():
+        def fail_once_after_commit(**kwargs):
             nonlocal raise_after_commit
-            with original_db() as db:
+            with original_db(**kwargs) as db:
                 yield db
+            self.assertTrue(self.runtime.lock._is_owned(), "receipt commit released Runtime.lock early")
             if raise_after_commit:
                 raise_after_commit = False
                 raise RuntimeError('injected after reservation commit')

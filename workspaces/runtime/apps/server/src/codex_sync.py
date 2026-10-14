@@ -8,7 +8,6 @@ import uuid
 import zlib
 from contextlib import contextmanager
 from typing import Any, Callable, ContextManager, Iterator
-from codex_records import JsonObject
 from codex_shared_values import SYNC_BATCH_LIMIT, SYNC_ENTITY_PAGE_LIMIT, TRANSCRIPT_MAX_TOMBSTONES
 from codex_sync_protocol import SYNC_ENTITY_SCOPE
 from codex_startup_memory import mark as startup_memory_mark
@@ -48,6 +47,7 @@ class SyncStore:
             ''')
             if not db.execute('SELECT id FROM sync_identity').fetchone():
                 db.execute('INSERT INTO sync_identity VALUES (?)', (uuid.uuid4().hex,))
+        self.prepare_entities()
 
     @contextmanager
     def connection(self, site: str = "SyncStore") -> Iterator[sqlite3.Connection]:
@@ -172,14 +172,14 @@ class SyncStore:
                     'cursor': cursor, 'maxSeq': cursor}
         raise ValueError('Invalid sync stream scope')
 
-    def _ensure_versions(self) -> None:
+    def _ensure_versions(self, *, force: bool = False) -> None:
         # Existing make_server closures retain their SyncStore across a live
         # patch, so all new state must be initialized on first use.
-        if getattr(self, '_versions_ready', False):
+        if getattr(self, '_versions_ready', False) and not force:
             return
         lock = self.__dict__.setdefault('_version_lock', threading.RLock())
         with lock:
-            if getattr(self, '_versions_ready', False):
+            if getattr(self, '_versions_ready', False) and not force:
                 return
             with self.connection("SyncStore.ensure_versions") as db:
                 db.execute('''CREATE TABLE IF NOT EXISTS sync_versions (
@@ -214,6 +214,9 @@ class SyncStore:
                                     ON CONFLICT(agent) DO UPDATE SET revision=revision+1;'''
                             db.execute(f"CREATE TRIGGER IF NOT EXISTS {trigger} AFTER {operation} ON {table} BEGIN {body} END")
                 path = db.execute('PRAGMA database_list').fetchone()[2]
+            reader = getattr(self, '_version_reader', None)
+            if reader is not None:
+                reader.close()
             self._version_reader = sqlite3.connect('file:' + path + '?mode=ro', uri=True,
                                                     check_same_thread=False, timeout=10)
             self._versions_ready = True
@@ -277,48 +280,65 @@ class SyncStore:
         metadata_hash = digest(metadata) if not deleted else digest({})
         revision_hash = digest(revision) if revision is not None else None
 
+        def projection_changes(current):
+            # type: (dict[str, Any]) -> list[tuple[str, str, bool]]
+            desired: dict[str, tuple[str, bool]] = {}
+            if deleted:
+                for key, row in current.items():
+                    if key.startswith('item:') or key == TRANSCRIPT_ORDER_ID:
+                        desired[key] = (row[2], True)
+                desired[TRANSCRIPT_META_ID] = (metadata_hash, True)
+            else:
+                live_keys = {'item:' + key for key in items_by_id}
+                desired.update(('item:' + key, (value_hash, False))
+                               for key, value_hash in item_hashes.items())
+                for key, row in current.items():
+                    if key.startswith('item:') and key not in live_keys and not row[3]:
+                        desired[key] = (row[2], True)
+                assert order_hash is not None
+                desired[TRANSCRIPT_ORDER_ID] = (order_hash, False)
+                desired[TRANSCRIPT_META_ID] = (metadata_hash, False)
+            if revision_hash is not None:
+                desired[TRANSCRIPT_REVISION_ID] = (revision_hash, False)
+            changes = []
+            for key, (value_hash, is_deleted) in desired.items():
+                old = current.get(key)
+                if not old or old[2] != value_hash or bool(old[3]) != is_deleted:
+                    changes.append((key, value_hash, is_deleted))
+            return changes
+
         with self.connection("SyncStore.transcript_pull") as db:
-            db.execute('BEGIN IMMEDIATE')
+            # Replaying an already projected page is a committed WAL read,
+            # including lagging cursors and full snapshots. Claim the writer
+            # only for actual hash changes or retained-tombstone maintenance.
+            db.execute('BEGIN')
             rows = db.execute('SELECT id,seq,hash,deleted FROM sync_entities WHERE collection=?',
                               (collection,)).fetchall()
             current = {row[0]: row for row in rows}
+            changes = projection_changes(current)
+            tombstones = sum(key.startswith('item:') and bool(row[3])
+                             for key, row in current.items())
+            if changes or tombstones > TRANSCRIPT_MAX_TOMBSTONES:
+                # A WAL read snapshot cannot safely upgrade after another
+                # writer commits. Discard it, reserve the writer, and compare
+                # again before allocating any shared sequence numbers.
+                db.rollback()
+                db.execute('BEGIN IMMEDIATE')
+                rows = db.execute('SELECT id,seq,hash,deleted FROM sync_entities WHERE collection=?',
+                                  (collection,)).fetchall()
+                current = {row[0]: row for row in rows}
+                changes = projection_changes(current)
             prior_meta = current.get(TRANSCRIPT_META_ID)
             base_missing = prior_meta is None
             was_deleted = bool(prior_meta[3]) if prior_meta else False
-            sequence = next_sequence(db)
-
-            def put(key, value_hash, is_deleted=False):
-                # type: (str, str, bool) -> bool
-                nonlocal sequence
-                old = current.get(key)
-                if old and old[2] == value_hash and bool(old[3]) == is_deleted:
-                    return False
+            sequence = next_sequence(db) if changes else 0
+            for key, value_hash, is_deleted in changes:
                 db.execute('''INSERT INTO sync_entities(collection,id,seq,hash,payload,deleted)
                               VALUES (?,?,?,?,NULL,?) ON CONFLICT(collection,id) DO UPDATE SET
                               seq=excluded.seq,hash=excluded.hash,payload=NULL,deleted=excluded.deleted''',
                            (collection, key, sequence, value_hash, int(is_deleted)))
                 current[key] = (key, sequence, value_hash, int(is_deleted))
                 sequence += 1
-                return True
-
-            if deleted:
-                for key, row in tuple(current.items()):
-                    if key.startswith('item:') or key == TRANSCRIPT_ORDER_ID:
-                        put(key, row[2], True)
-                put(TRANSCRIPT_META_ID, metadata_hash, True)
-                if revision_hash is not None:
-                    put(TRANSCRIPT_REVISION_ID, revision_hash, False)
-            else:
-                live_keys = {'item:' + key for key in items_by_id}
-                for entity_id, value_hash in item_hashes.items():
-                    put('item:' + entity_id, value_hash, False)
-                for key, row in tuple(current.items()):
-                    if key.startswith('item:') and key not in live_keys and not row[3]:
-                        put(key, row[2], True)
-                put(TRANSCRIPT_ORDER_ID, order_hash, False)  # type: ignore[arg-type]  # typed-narrowing: order hash is present on the non-deleted path
-                put(TRANSCRIPT_META_ID, metadata_hash, False)
-                if revision_hash is not None:
-                    put(TRANSCRIPT_REVISION_ID, revision_hash, False)
 
             # Tombstones are retained for a bounded replay window. The floor
             # marks cursors that must receive a complete replacement.
@@ -400,98 +420,41 @@ class SyncStore:
         db.execute('INSERT OR REPLACE INTO sync_documents(seq,scope,id,payload,deleted) VALUES (?,?,?,?,?)',
                    (sequence, scope, key, encoded, int(deleted)))
 
-    def entity_maintenance_needed(self, db: sqlite3.Connection) -> bool:
-        """Check the existing window rules within the pull's read snapshot."""
-        from codex_entity_contracts import monitor_records
-        from codex_sync_entities import encoded, project
-        tables = {row[0] for row in db.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name IN "
-            "('runtime_agents','runtime_events','runtime_tasks','runtime_monitors')")}
-        markers = dict(db.execute("SELECT key,value FROM sync_entity_meta WHERE key IN "
-            "('seeded','agent_organization_fields','task_window_migrated','event_window_seq')"))
-        if ('seeded' not in markers
-                or (self.runtime is not None and self.canvas is not None and 'runtime_agents' in tables and
-                    int(markers.get('agent_organization_fields', '0')) < 3)
-                or ({'runtime_tasks', 'runtime_agents'} <= tables and 'task_window_migrated' not in markers)):
-            return True
-        if 'runtime_events' in tables:
-            sequence = db.execute("SELECT COALESCE(MAX(seq),0) FROM sync_entities WHERE collection='event'").fetchone()[0]
-            if 'event_window_seq' not in markers or int(markers['event_window_seq']) != sequence:
-                return True
-        # Runtime.put projects every monitor write in the same SQLite
-        # transaction. A full comparison is therefore needed after process
-        # start (to catch state left by older versions), but not on every pull.
-        # The flag is set only after the startup snapshot has been checked and,
-        # when needed, repaired and committed.
-        if ('runtime_monitors' in tables
-                and not getattr(self, '_entity_monitor_window_checked', False)):
-            recent = monitor_records(db)
-            stored = dict(db.execute("SELECT id,hash FROM sync_entities WHERE collection='monitor' "
-                                     "AND deleted=0 LIMIT ?", (len(recent) + 1,)))
-            valid_recent: list[tuple[str, JsonObject]] = []
-            unprojectable: set[str] = set()
-            for record in recent:
-                key = record.get('id')
-                if not isinstance(key, str) or not key:
-                    from codex_sync_entities import _report_bad_entity
-                    _report_bad_entity('monitor', str(key or ''), ValueError('stored record has no valid id'))
-                    continue
-                projected = project('monitor', record)
-                if projected is None:
-                    unprojectable.add(key)
-                    continue
-                valid_recent.append((key, record))
-            comparable_stored = {key: value for key, value in stored.items() if key not in unprojectable}
-            if set(comparable_stored) != {key for key, _record in valid_recent}:
-                return True
-            for key, record in valid_recent:
-                projected = project('monitor', record)
-                if projected is None:
-                    continue
-                _, digest, _ = encoded('monitor', key, projected)
-                if comparable_stored[key] != digest:
-                    return True
-        return False
+    def prepare_entities(self) -> None:
+        """Repair stored projections during startup, before HTTP readers run."""
+        from codex_sync_entities import seed, sync_task_window, sync_event_window, sync_monitor_window
+        # A freshly created Canvas has no Runtime tables yet. Attach-time
+        # preparation installs their revision triggers before requests begin.
+        self._ensure_versions(force=self.runtime is not getattr(self, '_prepared_runtime', None))
+        with self.connection("SyncStore.prepare_entities") as db:
+            db.execute('BEGIN IMMEDIATE')
+            seed(db, runtime_owner=self.runtime, canvas_owner=self.canvas)
+            # Finish legacy task-window migration here. GETs must never take
+            # responsibility for retiring another batch of stored DTOs.
+            while sync_task_window(db):
+                pass
+            sync_event_window(db)
+            sync_monitor_window(db)
+        self._prepared_runtime = self.runtime
+
+    def maintain_entities(self) -> None:
+        """Schedule bounded tombstone cleanup from runtime maintenance, never a GET."""
+        from codex_sync_entities import ENTITY_TOMBSTONE_COUNT_KEY, entity_tombstone_prune_due
+        with self.connection("SyncStore.maintain_entities") as db:
+            db.execute('PRAGMA query_only=ON')
+            count = db.execute("SELECT value FROM sync_entity_meta WHERE key=?",
+                               (ENTITY_TOMBSTONE_COUNT_KEY,)).fetchone()
+        if count is None or entity_tombstone_prune_due(int(count[0])):
+            self._schedule_entity_pruning()
 
     def entity_pull(self, after: int, limit: int, fresh: bool, initial_high: int,
                     reset_support: bool, priority_id: str | None) -> dict[str, Any]:
-        """Use SQLite snapshots and its writer lock without a shared scope stripe."""
-        from codex_sync_entities import (entity_tombstone_floor, max_seq,
-                                         seed, sync_task_window,
-                                         sync_event_window, sync_monitor_window,
-                                         entity_tombstone_prune_due,
-                                         ENTITY_TOMBSTONE_COUNT_KEY)
+        """Read one committed SQLite snapshot without acquiring the writer."""
+        from codex_sync_entities import entity_tombstone_floor, max_seq
         with self.connection("SyncStore.pull") as db:
+            db.execute('PRAGMA query_only=ON')
             db.execute('BEGIN')
             startup_memory_mark("first-renderer-sync-pull")
-            monitor_window_checked = getattr(self, '_entity_monitor_window_checked', False)
-            if self.entity_maintenance_needed(db):
-                # Do not upgrade a read snapshot after another writer commits.
-                # The existing maintenance functions read again under the writer.
-                db.rollback()
-                db.execute('BEGIN IMMEDIATE')
-                seed(db, runtime_owner=self.runtime, canvas_owner=self.canvas)
-                startup_memory_mark("entity-seed")
-                # Retire old task DTOs gradually so existing checkpoints
-                # consume the resulting tombstones through ordinary deltas.
-                sync_task_window(db)
-                # Event triggers project each event change in its own write.
-                # After one full check per process, retire displaced events
-                # without projecting the whole window again under the lock.
-                event_window_checked = getattr(self, '_entity_event_window_checked', False)
-                sync_event_window(db, full=not event_window_checked)
-                if not monitor_window_checked:
-                    sync_monitor_window(db)
-                db.commit()
-                self._entity_monitor_window_checked = True
-                self._entity_event_window_checked = True
-                db.execute('BEGIN')
-            elif not monitor_window_checked:
-                self._entity_monitor_window_checked = True
-            count = db.execute("SELECT value FROM sync_entity_meta WHERE key=?",
-                               (ENTITY_TOMBSTONE_COUNT_KEY,)).fetchone()
-            if count is None or entity_tombstone_prune_due(int(count[0])):
-                self._schedule_entity_pruning()
             high = max_seq(db)
             floor = entity_tombstone_floor(db)
             initial_high = (min(high, max(0, int(initial_high)))
