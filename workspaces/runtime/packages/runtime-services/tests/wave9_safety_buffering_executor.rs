@@ -72,6 +72,7 @@ struct Session<'a> {
     scope: ConnectionScope,
     calls: Mutex<Vec<Value>>,
     unknown_at: Option<usize>,
+    unknown_receipt_at: Option<usize>,
     requires_at: Option<usize>,
     not_sent_at: Option<usize>,
     not_sent_used: Mutex<bool>,
@@ -116,6 +117,16 @@ impl AccountSessionPort for Session<'_> {
         drop(calls);
         if self.unknown_at == Some(call_index) {
             return Err(AccountSessionError::Unknown);
+        }
+        if self.unknown_receipt_at == Some(call_index) {
+            return Ok(SessionReceipt {
+                scope: self.scope.clone(),
+                operation: request.operation,
+                ticket: None,
+                certainty: RequestCertainty::Unknown,
+                result: None,
+                not_sent_reason: None,
+            });
         }
         if self.requires_at == Some(call_index) {
             return Err(AccountSessionError::Requires(
@@ -385,6 +396,7 @@ fn action_runs_python_corpus_stage_path_and_commits_each_intent_before_dispatch(
         },
         calls: Mutex::default(),
         unknown_at: None,
+        unknown_receipt_at: None,
         requires_at: None,
         not_sent_at: None,
         not_sent_used: Mutex::new(false),
@@ -741,6 +753,7 @@ fn rejected_safety_start_settles_the_empty_event_attempt() {
         },
         calls: Mutex::default(),
         unknown_at: None,
+        unknown_receipt_at: None,
         requires_at: None,
         not_sent_at: None,
         not_sent_used: Mutex::new(false),
@@ -804,6 +817,7 @@ fn unknown_at_every_stage_is_durable_and_never_resent_after_restart_or_action_re
             },
             calls: Mutex::default(),
             unknown_at: Some(failed_stage),
+            unknown_receipt_at: None,
             requires_at: None,
             not_sent_at: None,
             not_sent_used: Mutex::new(false),
@@ -837,6 +851,7 @@ fn unknown_at_every_stage_is_durable_and_never_resent_after_restart_or_action_re
             },
             calls: Mutex::default(),
             unknown_at: None,
+            unknown_receipt_at: None,
             requires_at: None,
             not_sent_at: None,
             not_sent_used: Mutex::new(false),
@@ -866,6 +881,204 @@ fn unknown_at_every_stage_is_durable_and_never_resent_after_restart_or_action_re
 }
 
 #[test]
+fn crash_after_unknown_receipt_before_terminal_stage_never_dispatches_after_restart() {
+    let (template, _) = python_corpus();
+    let root = tempfile::tempdir().expect("state copy");
+    for file in ["canvas.sqlite3", "analytics.sqlite3"] {
+        std::fs::copy(template.join(file), root.path().join(file)).expect("Python-written DB");
+    }
+    let store = RuntimeStore::open(Some(root.path())).expect("open state");
+    let interrupted = Session {
+        store: &store,
+        scope: ConnectionScope {
+            account: "acct".into(),
+            connection: "connection".into(),
+            generation: 1,
+        },
+        calls: Mutex::default(),
+        unknown_at: None,
+        unknown_receipt_at: None,
+        requires_at: Some(0),
+        not_sent_at: None,
+        not_sent_used: Mutex::new(false),
+        reject_start: false,
+    };
+    assert!(
+        safety_buffering::execute_action(
+            &store,
+            &interrupted,
+            &test_resources(),
+            None,
+            "agent",
+            RequestActor {
+                agent: "agent".into(),
+                epoch: 7,
+            },
+            "turn",
+            "retry",
+        )
+        .is_err()
+    );
+    assert_eq!(interrupted.calls.lock().expect("calls").len(), 1);
+    store
+        .transaction(|tx| {
+            let raw: String = tx.query_row(
+                "SELECT record FROM runtime_safety_retries WHERE id='agent:turn'",
+                [],
+                |row| row.get(0),
+            )?;
+            let mut operation: Value = serde_json::from_str(&raw).expect("retry JSON");
+            assert_eq!(operation["stage"], "turns");
+            assert_eq!(operation["dispatch"], "intent");
+            operation["receipts"]["turns"] = json!([{
+                "operation":"agent:turn:turns",
+                "certainty":"unknown"
+            }]);
+            tx.execute(
+                "UPDATE runtime_safety_retries SET record=?1 WHERE id='agent:turn'",
+                [operation.to_string()],
+            )?;
+            Ok(())
+        })
+        .expect("commit simulated crash-window receipt");
+    drop(interrupted);
+    drop(store);
+
+    let reopened = RuntimeStore::open(Some(root.path())).expect("restart store");
+    let restarted = Session {
+        store: &reopened,
+        scope: ConnectionScope {
+            account: "acct".into(),
+            connection: "connection".into(),
+            generation: 1,
+        },
+        calls: Mutex::default(),
+        unknown_at: None,
+        unknown_receipt_at: None,
+        requires_at: None,
+        not_sent_at: None,
+        not_sent_used: Mutex::new(false),
+        reject_start: false,
+    };
+    let result = safety_buffering::execute_action(
+        &reopened,
+        &restarted,
+        &test_resources(),
+        None,
+        "agent",
+        RequestActor {
+            agent: "agent".into(),
+            epoch: 7,
+        },
+        "turn",
+        "retry",
+    )
+    .expect("unknown recovery is held");
+    assert_eq!(result["stage"], "unknown");
+    assert_eq!(restarted.calls.lock().expect("calls").len(), 0);
+    let raw: String = reopened
+        .read()
+        .expect("read recovered state")
+        .query_row(
+            "SELECT record FROM runtime_safety_retries WHERE id='agent:turn'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("recovered retry");
+    let operation: Value = serde_json::from_str(&raw).expect("retry JSON");
+    assert_eq!(operation["stage"], "unknown");
+    assert_eq!(operation["dispatch"], "unknown");
+}
+
+#[test]
+fn unknown_receipt_commits_terminal_stage_atomically_and_is_never_resent() {
+    let (template, _) = python_corpus();
+    let root = tempfile::tempdir().expect("state copy");
+    for file in ["canvas.sqlite3", "analytics.sqlite3"] {
+        std::fs::copy(template.join(file), root.path().join(file)).expect("Python-written DB");
+    }
+    let store = RuntimeStore::open(Some(root.path())).expect("open state");
+    let session = Session {
+        store: &store,
+        scope: ConnectionScope {
+            account: "acct".into(),
+            connection: "connection".into(),
+            generation: 1,
+        },
+        calls: Mutex::default(),
+        unknown_at: None,
+        unknown_receipt_at: Some(0),
+        requires_at: None,
+        not_sent_at: None,
+        not_sent_used: Mutex::new(false),
+        reject_start: false,
+    };
+    let result = safety_buffering::execute_action(
+        &store,
+        &session,
+        &test_resources(),
+        None,
+        "agent",
+        RequestActor {
+            agent: "agent".into(),
+            epoch: 7,
+        },
+        "turn",
+        "retry",
+    )
+    .expect("Unknown provider receipt is retained");
+    assert_eq!(result["stage"], "unknown");
+    let raw: String = store
+        .read()
+        .expect("read state")
+        .query_row(
+            "SELECT record FROM runtime_safety_retries WHERE id='agent:turn'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("terminal unknown operation");
+    let operation: Value = serde_json::from_str(&raw).expect("operation JSON");
+    assert_eq!(operation["stage"], "unknown");
+    assert_eq!(operation["dispatch"], "unknown");
+    assert_eq!(operation["receipts"]["turns"][0]["certainty"], "unknown");
+    drop(session);
+    drop(store);
+
+    let reopened = RuntimeStore::open(Some(root.path())).expect("restart store");
+    let restarted = Session {
+        store: &reopened,
+        scope: ConnectionScope {
+            account: "acct".into(),
+            connection: "connection".into(),
+            generation: 1,
+        },
+        calls: Mutex::default(),
+        unknown_at: None,
+        unknown_receipt_at: None,
+        requires_at: None,
+        not_sent_at: None,
+        not_sent_used: Mutex::new(false),
+        reject_start: false,
+    };
+    let replay = safety_buffering::execute_action(
+        &reopened,
+        &restarted,
+        &test_resources(),
+        None,
+        "agent",
+        RequestActor {
+            agent: "agent".into(),
+            epoch: 7,
+        },
+        "turn",
+        "retry",
+    )
+    .expect("terminal Unknown result replays");
+    assert_eq!(replay["stage"], "unknown");
+    assert_eq!(restarted.calls.lock().expect("calls").len(), 0);
+}
+
+#[test]
 fn not_sent_retries_same_operation_id_and_records_each_receipt() {
     let (template, _) = python_corpus();
     for not_sent_at in 0..7 {
@@ -883,6 +1096,7 @@ fn not_sent_retries_same_operation_id_and_records_each_receipt() {
             },
             calls: Mutex::default(),
             unknown_at: None,
+            unknown_receipt_at: None,
             requires_at: None,
             not_sent_at: Some(not_sent_at),
             not_sent_used: Mutex::new(false),
@@ -951,6 +1165,7 @@ fn restart_resumes_recorded_intent_with_the_same_operation_id() {
             },
             calls: Mutex::default(),
             unknown_at: None,
+            unknown_receipt_at: None,
             requires_at: Some(interrupted_stage),
             not_sent_at: None,
             not_sent_used: Mutex::new(false),
@@ -990,6 +1205,7 @@ fn restart_resumes_recorded_intent_with_the_same_operation_id() {
             },
             calls: Mutex::default(),
             unknown_at: None,
+            unknown_receipt_at: None,
             requires_at: None,
             not_sent_at: None,
             not_sent_used: Mutex::new(false),
@@ -1036,6 +1252,7 @@ fn restart_applies_persisted_written_receipt_without_redispatch() {
             },
             calls: Mutex::default(),
             unknown_at: None,
+            unknown_receipt_at: None,
             requires_at: Some(interrupted_stage),
             not_sent_at: None,
             not_sent_used: Mutex::new(false),
@@ -1115,6 +1332,7 @@ fn restart_applies_persisted_written_receipt_without_redispatch() {
             },
             calls: Mutex::default(),
             unknown_at: None,
+            unknown_receipt_at: None,
             requires_at: None,
             not_sent_at: None,
             not_sent_used: Mutex::new(false),

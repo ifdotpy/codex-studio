@@ -76,7 +76,7 @@ pub fn execute_action(
         }
         let existing = read_retry(tx, &identity)?;
         if let Some(mut operation) = existing {
-            let stage = Stage::parse(operation.get("stage").ok_or(Error::InvalidStoredState)?)?;
+            let mut stage = Stage::parse(operation.get("stage").ok_or(Error::InvalidStoredState)?)?;
             if operation.get("accountKey").and_then(Value::as_str) != Some(&account)
                 || operation.get("epoch").and_then(Value::as_i64) != Some(actor.epoch)
                 || operation.get("agent").and_then(Value::as_str) != Some(agent_id)
@@ -84,6 +84,14 @@ pub fn execute_action(
                 || operation.get("id").and_then(Value::as_str) != Some(&identity)
             {
                 return Err(Error::StaleRetry);
+            }
+            if operation_has_unknown_receipt(&operation, stage)? {
+                operation["stage"] = json!(Stage::Unknown.as_str());
+                operation["dispatch"] = json!("unknown");
+                operation["error"] = json!("Provider request outcome is unknown");
+                operation["updated"] = json!(now);
+                save_operation(tx, &mut agent, &operation)?;
+                stage = Stage::Unknown;
             }
             if choice == "cancel" && super::ACTIVE_STAGES.contains(&stage) {
                 if operation.get("rpcMethod").and_then(Value::as_str) == Some("turn/start") {
@@ -878,7 +886,7 @@ fn persist_stage_receipt(
             .as_array_mut()
             .ok_or(Error::InvalidStoredState)?
             .push(receipt_value.clone());
-        let still_active = current.get("stage").and_then(Value::as_str) == Some(stage.as_str());
+        let mut still_active = current.get("stage").and_then(Value::as_str) == Some(stage.as_str());
         if still_active {
             if let Some(ticket) = receipt.ticket.as_ref() {
                 current["requestId"] =
@@ -899,7 +907,14 @@ fn persist_stage_receipt(
                     .ok_or(Error::InvalidStoredState)?
                     .insert(stage.as_str().into(), value.clone());
             }
-            current["dispatch"] = json!("received");
+            if receipt.certainty == RequestCertainty::Unknown {
+                current["stage"] = json!(Stage::Unknown.as_str());
+                current["dispatch"] = json!("unknown");
+                current["error"] = json!("Provider request outcome is unknown");
+                still_active = false;
+            } else {
+                current["dispatch"] = json!("received");
+            }
             current["updated"] = json!(unix_seconds());
             let mut agent = read_agent(tx, required_str(&current, "agent")?)?;
             if stage == Stage::Start {
@@ -928,6 +943,27 @@ fn persist_stage_receipt(
     })?;
     *operation = current;
     Ok(still_active)
+}
+
+fn operation_has_unknown_receipt(operation: &Value, stage: Stage) -> Result<bool, Error> {
+    let Some(receipts) = operation
+        .get("receipts")
+        .and_then(Value::as_object)
+        .and_then(|receipts| receipts.get(stage.as_str()))
+        .and_then(Value::as_array)
+    else {
+        return Ok(false);
+    };
+    let expected = format!("{}:{}", required_str(operation, "id")?, stage.as_str());
+    for receipt in receipts {
+        if receipt.get("certainty").and_then(Value::as_str) == Some("unknown") {
+            if receipt.get("operation").and_then(Value::as_str) != Some(expected.as_str()) {
+                return Err(Error::InvalidStoredState);
+            }
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 fn recorded_written_response(
@@ -982,8 +1018,15 @@ fn persist_unknown_receipt(
             .as_array_mut()
             .ok_or(Error::InvalidStoredState)?
             .push(json!({"operation":operation_id,"certainty":certainty}));
-        let still_active = current.get("stage").and_then(Value::as_str) == Some(stage.as_str());
-        if still_active {
+        let stage_active = current.get("stage").and_then(Value::as_str) == Some(stage.as_str());
+        let mut still_active = stage_active;
+        if stage_active {
+            if certainty == "unknown" {
+                current["stage"] = json!(Stage::Unknown.as_str());
+                current["dispatch"] = json!("unknown");
+                current["error"] = json!("Provider request outcome is unknown");
+                still_active = false;
+            }
             current["updated"] = json!(unix_seconds());
             let mut agent = read_agent(tx, required_str(&current, "agent")?)?;
             save_operation(tx, &mut agent, &current)?;
