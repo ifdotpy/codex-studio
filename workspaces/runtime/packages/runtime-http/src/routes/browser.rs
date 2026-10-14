@@ -20,8 +20,11 @@ use studio_runtime_services::{
 use tokio::time::Instant;
 
 use super::extractors::ApiJson;
-use super::manifest::{OperationStatus, RouteGroup, post};
+use super::manifest::{Dependency, OperationStatus, RouteGroup, dependency_unavailable, post};
 use crate::{error::ApiError, router::HttpState};
+
+const FORWARD_DEPENDENCIES: [Dependency; 1] =
+    [Dependency::new("multi-server-runtime/orchestration")];
 
 struct SignedBrowserExchange {
     driver: Arc<OrchestrationDriver>,
@@ -70,7 +73,7 @@ pub(crate) fn new_forwarder(driver: Arc<OrchestrationDriver>) -> Arc<BrowserForw
 pub(crate) fn routes() -> RouteGroup {
     RouteGroup::new(vec![post(
         "/api/browser/forward",
-        OperationStatus::Implemented,
+        OperationStatus::partial(&FORWARD_DEPENDENCIES),
         forward,
     )])
 }
@@ -107,7 +110,14 @@ async fn forward(
                 ApiError::new(StatusCode::BAD_REQUEST, "The sign-in forward is invalid")
             })?,
     };
-    let forwarder = state.browser_forwarder.ok_or_else(ApiError::internal)?;
+    let forwarder = state.browser_forwarder.ok_or_else(|| {
+        dependency_unavailable(
+            "POST",
+            "/api/browser/forward",
+            &FORWARD_DEPENDENCIES,
+        )
+        .unwrap_or_else(|_| ApiError::internal())
+    })?;
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_err(|_| ApiError::internal())?
@@ -161,7 +171,7 @@ fn map_browser_error(error: BrowserError) -> ApiError {
 }
 
 inventory::submit! {
-    crate::routes::manifest::RouteModuleRegistration { name: "browser", routes: Some(routes), dependencies: &[] }
+    crate::routes::manifest::RouteModuleRegistration { name: "browser", routes: Some(routes), dependencies: &["multi-server-runtime/orchestration"] }
 }
 
 #[cfg(test)]
