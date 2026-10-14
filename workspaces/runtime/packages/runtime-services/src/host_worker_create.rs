@@ -24,10 +24,42 @@ const COMMIT_HEX_LENGTHS: [usize; 2] = [40, 64];
 
 /// Freeze the parent repository's current commit before the caller opens a writer.
 pub fn freeze_base(path: &Path) -> Result<(String, String), CreateError> {
+    resolve_worker_base(path, None).map(|(reference, commit, _, _)| (reference, commit))
+}
+
+/// Resolve a requested Git ref and the available main-branch lag metadata before
+/// entering the writer, matching Python's worker-base selection contract.
+pub fn resolve_worker_base(
+    path: &Path,
+    requested: Option<&str>,
+) -> Result<(String, String, Option<String>, Option<i64>), CreateError> {
+    let selected = requested.unwrap_or("HEAD").trim();
+    if selected.is_empty() || selected.chars().count() > 1024 {
+        return Err(CreateError::InvalidCreation("base ref is invalid"));
+    }
+    let commit = git_value(path, &["rev-parse", "--verify", "--end-of-options", &format!("{selected}^{{commit}}")])?;
+    let main_candidates = ["main@{upstream}", "@{upstream}", "origin/main", "main"];
+    let mut main = None;
+    for candidate in main_candidates {
+        if let Ok(value) = git_value(path, &["rev-parse", "--verify", "--quiet", "--end-of-options", &format!("{candidate}^{{commit}}")]) {
+            main = Some((candidate.to_owned(), value));
+            break;
+        }
+    }
+    let behind = main.as_ref().and_then(|(_, target)| {
+        if target == &commit { return Some(0); }
+        let count = git_value(path, &["rev-list", "--count", &format!("{commit}..{target}")]).ok()?;
+        count.parse::<i64>().ok()
+    });
+    validate_base(Some(selected), Some(&commit))?;
+    Ok((selected.to_owned(), commit, main.map(|(reference, _)| reference), behind))
+}
+
+fn git_value(path: &Path, args: &[&str]) -> Result<String, CreateError> {
     let output = crate::bounded_child::run_without_git_environment(crate::bounded_child::Request {
         program: OsStr::new("git"),
         cwd: path.as_os_str(),
-        args: &["rev-parse", "--verify", "--end-of-options", "HEAD^{commit}"],
+        args,
         environment: &[("GIT_TERMINAL_PROMPT", "0"), ("GIT_CONFIG_NOSYSTEM", "1")],
         input: None,
         stdout_limit: 256,
@@ -35,12 +67,12 @@ pub fn freeze_base(path: &Path) -> Result<(String, String), CreateError> {
         timeout: Duration::from_secs(10),
     })
     .map_err(|_| CreateError::InvalidCreation("base commit could not be resolved"))?;
-    let commit = String::from_utf8(output.stdout.bytes)
+    let value = String::from_utf8(output.stdout.bytes)
         .map_err(|_| CreateError::InvalidCreation("base commit is invalid"))?
         .trim()
         .to_owned();
-    validate_base(Some("HEAD"), Some(&commit))?;
-    Ok(("HEAD".to_owned(), commit))
+    if value.is_empty() { return Err(CreateError::InvalidCreation("base commit is invalid")); }
+    Ok(value)
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -179,11 +211,17 @@ pub fn prepare_work_item(
     project_binding: Option<&Value>,
     account: &AccountIdentity,
     catalog: &dyn CreationCatalog,
+    role: &str,
+    worktree: bool,
+    fast_mode: bool,
+    daybreak_enabled: bool,
 ) -> Result<AgentRecord, CreateError> {
     if parent_epoch < 0 {
         return Err(CreateError::InvalidCreation("parent epoch"));
     }
-    validate_base(Some(base_ref), Some(base_commit))?;
+    if worktree {
+        validate_base(Some(base_ref), Some(base_commit))?;
+    }
     let path = canonical_directory(path)?;
     if path != parent_cwd {
         return Err(CreateError::IdentityChanged);
@@ -194,13 +232,16 @@ pub fn prepare_work_item(
         return Err(CreateError::InvalidCreation("name"));
     }
     let model = required_string_value(body, "model")?;
+    if !matches!(role, "implementer" | "reviewer") {
+        return Err(CreateError::InvalidCreation("role"));
+    }
     let settings = catalog.resolve(
         account_key,
         account,
         model,
         optional_string(body, "effort")?,
-        false,
-        false,
+        fast_mode,
+        daybreak_enabled,
     )?;
     let created = crate::event_write::unix_time().map_err(|_| CreateError::Internal)?;
     let mut draft = build_agent_record(
@@ -214,7 +255,7 @@ pub fn prepare_work_item(
         account_key,
         account.provider.as_deref().unwrap_or(""),
         true,
-        "implementer",
+        role,
         false,
         "queued",
         "worktree",
@@ -228,7 +269,7 @@ pub fn prepare_work_item(
     draft["rootId"] = json!(root_id.0);
     draft["parentId"] = json!(parent_id.0);
     draft["isLead"] = json!(false);
-    draft["role"] = json!("implementer");
+    draft["role"] = json!(role);
     draft["status"] = json!("queued");
     draft["prompt"] = body
         .get("prompt")
@@ -249,9 +290,12 @@ pub fn prepare_work_item(
         object.remove("concurrency");
         object.remove("maxAgentsExplicit");
     }
-    draft["worktree"] = json!(true);
-    draft["workerBaseRef"] = json!(base_ref);
-    draft["workerBaseCommit"] = json!(base_commit);
+    draft["worktree"] = json!(worktree);
+    if !worktree {
+        draft["workspaceMode"] = json!("shared");
+    }
+    draft["workerBaseRef"] = if worktree { json!(base_ref) } else { Value::Null };
+    draft["workerBaseCommit"] = if worktree { json!(base_commit) } else { Value::Null };
     draft["model"] = json!(settings.model);
     draft["effort"] = json!(settings.effort);
     draft["nativeEffort"] = json!(settings.native_effort);
@@ -700,6 +744,10 @@ mod tests {
             Some(&project),
             &account,
             &Catalog,
+            "implementer",
+            true,
+            false,
+            false,
         )
         .expect("typed worker draft");
         WorkerDraftFixture {
