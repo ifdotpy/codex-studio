@@ -202,6 +202,28 @@ fn retire_generations(
             if generation.is_none_or(|generation| generation >= current) {
                 continue;
             }
+            if kind == "cursor" {
+                // A saved retained result can only be replayed after reconnect
+                // while its submitted intent still exists. Keep that
+                // generation's checkpoint for exactly that lifetime; otherwise
+                // checkpoint rows would grow without bound across reconnects.
+                let retained_prefix = format!("account-worker:retained:{account}:");
+                let generation_number = generation
+                    .and_then(|generation| i64::try_from(generation).ok())
+                    .ok_or_else(|| invalid(&id))?;
+                let has_retained_submission: bool = tx.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM runtime_operation_receipts WHERE id>=?1 AND id<?2 AND substr(id,-10)=':submitted' AND json_extract(result,'$.call.scope.generation')=?3)",
+                    params![
+                        retained_prefix,
+                        format!("{retained_prefix}~"),
+                        generation_number
+                    ],
+                    |row| row.get(0),
+                )?;
+                if has_retained_submission {
+                    continue;
+                }
+            }
             if kind == "account"
                 && matches!(
                     value

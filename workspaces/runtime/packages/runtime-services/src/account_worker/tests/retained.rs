@@ -73,6 +73,103 @@ async fn retained_reply_replays_without_resending_and_rejects_changed_payload() 
     worker.shutdown().await.unwrap();
 }
 
+#[tokio::test(start_paused = true)]
+async fn retained_written_receipt_replays_after_reconnect_without_sending() {
+    let state = State::new().await;
+    let mut first_peer = Peer::identity("default", 1, None);
+    let mut first_worker = first_peer.worker(state.bridge.clone()).await;
+    let first_port = first_worker.retained_session();
+    let original = request(&state, &first_port, "branch:fixture:fork");
+    let sender = first_port.clone();
+    let pending = original.clone();
+    let task = tokio::spawn(async move { sender.request(pending).await });
+    let wire = first_peer.write("thread/read").await;
+    first_peer
+        .reply(&wire, json!({"thread":{"id":"fake-thread-0"}}))
+        .await;
+    let original_receipt = task.await.unwrap().unwrap();
+    assert_eq!(
+        original_receipt.result,
+        RequestResult::Reply(json!({"thread":{"id":"fake-thread-0"}}))
+    );
+    first_worker.shutdown().await.unwrap();
+
+    let mut second_peer = Peer::identity("default", 2, None);
+    let mut second_worker = second_peer.worker(state.bridge.clone()).await;
+    let second_port = second_worker.retained_session();
+    let mut replay = request(&state, &second_port, "branch:fixture:fork");
+    assert_eq!(replay.scope.generation, 2);
+    replay.method = Method::ThreadRead;
+    replay.params = original.params.clone();
+    let receipt = second_port.request(replay.clone()).await.unwrap();
+    assert_eq!(
+        receipt.result,
+        RequestResult::Reply(json!({"thread":{"id":"fake-thread-0"}}))
+    );
+    assert_eq!(
+        receipt.scope.generation, 1,
+        "replay returns the saved scope"
+    );
+    assert_eq!(receipt.scope, original_receipt.scope);
+    assert_eq!(receipt.ticket, original_receipt.ticket);
+    assert!(
+        second_peer.writes.try_recv().is_err(),
+        "saved receipt is never sent again"
+    );
+
+    let mut changed_method = replay.clone();
+    changed_method.method = Method::ThreadTurnsList;
+    changed_method.params = json!({
+        "threadId":"fake-thread-0","limit":10,"sortDirection":"desc","itemsView":"full"
+    });
+    assert_eq!(
+        second_port.request(changed_method).await.unwrap_err(),
+        PortError::Identity
+    );
+
+    let mut changed_params = replay.clone();
+    changed_params.params["threadId"] = json!("other-thread");
+    assert_eq!(
+        second_port.request(changed_params).await.unwrap_err(),
+        PortError::Identity
+    );
+
+    assert!(
+        second_peer.writes.try_recv().is_err(),
+        "mismatches never reach provider"
+    );
+    second_worker.shutdown().await.unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn retained_unknown_receipt_stays_unknown_after_reconnect_without_sending() {
+    let state = State::new().await;
+    let mut first_peer = Peer::identity("default", 1, None);
+    let mut first_worker = first_peer.worker(state.bridge.clone()).await;
+    let first_port = first_worker.retained_session();
+    let original = request(&state, &first_port, "branch:unknown:fork");
+    let sender = first_port.clone();
+    let pending = original.clone();
+    let task = tokio::spawn(async move { sender.request(pending).await });
+    let _wire = first_peer.write("thread/read").await;
+    first_worker.shutdown().await.unwrap();
+    let _ = task.await;
+
+    let mut second_peer = Peer::identity("default", 2, None);
+    let mut second_worker = second_peer.worker(state.bridge.clone()).await;
+    let second_port = second_worker.retained_session();
+    let replay = request(&state, &second_port, "branch:unknown:fork");
+    assert_eq!(
+        second_port.request(replay).await.unwrap().result,
+        RequestResult::Unknown,
+    );
+    assert!(
+        second_peer.writes.try_recv().is_err(),
+        "Unknown is held after reconnect"
+    );
+    second_worker.shutdown().await.unwrap();
+}
+
 #[tokio::test]
 async fn retained_request_rejects_a_stale_expected_connection_before_dispatch() {
     let state = State::new().await;

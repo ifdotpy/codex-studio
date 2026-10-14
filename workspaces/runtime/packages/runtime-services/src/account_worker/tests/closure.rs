@@ -231,16 +231,21 @@ pub(super) async fn scenario_old_generation_pending_text_is_materialized_and_rec
             .await;
         peer.acknowledged(marker).await;
         replacement.shutdown().await.unwrap();
-        let (text, receipts) = state.bridge.run(|store| {
+        let (text, receipts, checkpoints) = state.bridge.run(|store| {
             let db=store.read()?;
             let text=db.query_row("SELECT json_extract(record,'$.text') FROM runtime_items WHERE id LIKE '%:generation'",[],|r|r.get::<_,String>(0))?;
             let receipts=db.query_row("SELECT COUNT(*) FROM runtime_operation_receipts WHERE id LIKE 'account-worker:%'",[],|r|r.get::<_,i64>(0))?;
-            Ok((text,receipts))
+            let checkpoints=db.query_row("SELECT COUNT(*) FROM runtime_operation_receipts WHERE id LIKE 'account-worker:cursor:default:%:ack'",[],|r|r.get::<_,i64>(0))?;
+            Ok((text,receipts,checkpoints))
         }).await.unwrap();
         assert_eq!(text, "old generation text");
         assert!(
             receipts <= 4,
             "generation churn retained {receipts} worker receipts"
+        );
+        assert!(
+            checkpoints <= 1,
+            "generation churn retained {checkpoints} cursor checkpoints"
         );
     }
 }
