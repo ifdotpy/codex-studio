@@ -191,11 +191,13 @@ jobs:
       - name: Install the cached Chromium browser
         run: pnpm --filter codex-agents-web exec playwright install chromium
       - name: Run browser smoke subset
-        run: just test-browser-smoke
+        run: TMPDIR="$RUNNER_TEMP" just test-browser-smoke
       - name: Upload browser smoke diagnostics
         if: failure() || cancelled()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: facade-browser-smoke-diagnostics
-          path: ${{ runner.temp }}/codex-studio-cache/codex-studio/checks/run-*/
+          path: |
+            ${{ runner.temp }}/codex-studio-cache/codex-studio/checks/run-*/
+            ${{ runner.temp }}/codex-playwright-*/playwright-output/
           if-no-files-found: ignore
