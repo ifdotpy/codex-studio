@@ -643,6 +643,53 @@ impl<R: ProviderAuthReader> AccountDriver<R> {
         Ok(status)
     }
 
+    /// Commit the read-only native Claude proof against the exact profile snapshot
+    /// used to issue `account/read`. This mirrors Python's confirm_native_auth.
+    pub fn confirm_native_claude_auth(
+        &self,
+        account: &str,
+        observed: &Value,
+        proof: &Value,
+    ) -> Result<Value, AccountDriverError> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| AccountDriverError::Poisoned)?;
+        let current = registry_account(&state.value, account)?;
+        if crate::claude_auth_wait::account_pin(current)
+            != crate::claude_auth_wait::account_pin(observed)
+        {
+            return Err(AccountDriverError::InvalidRegistry);
+        }
+        let retryable = (current.get("status").and_then(Value::as_str) == Some("error")
+            && current.get("_authErrorKind").and_then(Value::as_str) == Some("keychain"))
+            || (current.get("status").and_then(Value::as_str) == Some("ready")
+                && observed.get("canAttemptNativeProof") == Some(&Value::Bool(true)));
+        let pinned = current.get("provider").and_then(Value::as_str) == Some("claude")
+            && !["deleted", "disconnected", "duplicateOf"]
+                .iter()
+                .any(|field| crate::event_write::truthy(current.get(*field)));
+        if !retryable || !pinned {
+            return Err(AccountDriverError::InvalidRegistry);
+        }
+        let confirmed = crate::claude_auth_runtime::confirm_account_read(observed, proof)
+            .map_err(|_| AccountDriverError::InvalidRegistry)?;
+        let mut updated = state.value.clone();
+        let row = registry_account_mut(&mut updated, account)?
+            .as_object_mut()
+            .ok_or(AccountDriverError::InvalidRegistry)?;
+        row.insert("status".into(), Value::String("ready".into()));
+        row.insert("plan".into(), confirmed["plan"].clone());
+        row.remove("error");
+        row.remove("_authErrorKind");
+        self.persist(&mut state, updated)?;
+        let mut public = registry_account(&state.value, account)?.clone();
+        if let Some(object) = public.as_object_mut() {
+            object.retain(|key, _| !key.starts_with('_'));
+        }
+        Ok(public)
+    }
+
     /// Inspect auth state without persisting metadata when the caller may refuse the write.
     pub fn inspect(&self, account: &str) -> Result<AccountStatus, AccountDriverError> {
         let state = self
@@ -1877,6 +1924,53 @@ exit 0
         assert_eq!(
             snapshot.default_account_key,
             Value::String("default".into())
+        );
+    }
+
+    #[test]
+    fn retained_account_read_confirms_only_the_same_keychain_profile() {
+        let fixture = TestDir::new();
+        let home = fixture.path.join("claude-home");
+        fs::create_dir_all(&home).expect("create disposable Claude home");
+        let mut value: Value = serde_json::from_slice(&registry(&home)).expect("fixture registry");
+        value["accounts"]["default"].as_object_mut().expect("account object").extend(serde_json::json!({
+            "provider":"claude", "source":"Claude Code", "status":"error",
+            "email":"fixture@example.invalid", "accountId":"claude:fixture@example.invalid",
+            "_credentialIdentity":"claude:fixture@example.invalid", "_authErrorKind":"keychain"
+        }).as_object().expect("fixture fields").clone());
+        let path = fixture.path.join("state/accounts/registry.json");
+        fs::create_dir_all(path.parent().expect("registry parent"))
+            .expect("create registry directory");
+        fs::write(
+            &path,
+            serde_json::to_vec(&value).expect("serialize registry"),
+        )
+        .expect("write registry");
+        let reader = FakeReader(AuthMetadata::error(Some("keychain")));
+        let driver = AccountDriver::open_with_reader(&path, reader).expect("open fixture");
+        let observed = value["accounts"]["default"].clone();
+        let proof = serde_json::json!({"account":{"type":"claude","email":"fixture@example.invalid","planType":"max"},
+            "requiresOpenaiAuth":false});
+
+        let confirmed = driver
+            .confirm_native_claude_auth("default", &observed, &proof)
+            .expect("confirm retained proof");
+        assert_eq!(confirmed["status"], "ready");
+        assert_eq!(confirmed["plan"], "max");
+        let persisted: Value = serde_json::from_slice(&fs::read(path).expect("read registry"))
+            .expect("parse updated registry");
+        assert_eq!(persisted["accounts"]["default"]["status"], "ready");
+        assert!(
+            persisted["accounts"]["default"]
+                .get("_authErrorKind")
+                .is_none()
+        );
+
+        let changed = serde_json::json!({"account":{"type":"claude","email":"other@example.invalid","planType":"max"}});
+        assert!(
+            driver
+                .confirm_native_claude_auth("default", &observed, &changed)
+                .is_err()
         );
     }
 
