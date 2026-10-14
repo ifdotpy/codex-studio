@@ -22,6 +22,7 @@ rusqlite = { workspace = true }
 tokio = { workspace = true }
 
 [dev-dependencies]
+notify = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }
 tower = { workspace = true }

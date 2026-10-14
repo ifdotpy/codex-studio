@@ -49,7 +49,10 @@ pub const COMMAND_CAPACITY: usize = 16;
 const STREAM_CADENCE: std::time::Duration = std::time::Duration::from_millis(750);
 const PREPARATION_RETRY: std::time::Duration = std::time::Duration::from_secs(1);
 const PUBLICATION_RETRY_DELAY: std::time::Duration = std::time::Duration::from_secs(1);
-const SHUTDOWN_GRACE: std::time::Duration = std::time::Duration::from_secs(1);
+// A worker can be finishing a serialized provider operation when shutdown is
+// requested. Keep shutdown bounded while allowing ordinary host contention to
+// clear before reporting an unconfirmed stop.
+const SHUTDOWN_GRACE: std::time::Duration = std::time::Duration::from_secs(30);
 
 #[derive(Debug, thiserror::Error)]
 pub enum WorkerError {
