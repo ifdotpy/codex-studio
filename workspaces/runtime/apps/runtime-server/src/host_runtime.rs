@@ -2,7 +2,11 @@
 //! independently installed service; backend shutdown never takes its children.
 use crate::account_registry::{AccountLaunch, AccountLauncher, AccountRegistry, LaunchFuture};
 use serde_json::json;
-use std::{collections::BTreeMap, path::PathBuf, sync::Arc};
+use std::{
+    collections::BTreeMap,
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 use studio_runtime_http::HttpState;
 use studio_runtime_process::{
     BackendId, BackendIdentity, Generation, OperationId, ProviderHandle, ProviderLaunchSpec,
@@ -21,6 +25,70 @@ use studio_runtime_store::RuntimeStore;
 use tokio::task::JoinHandle;
 
 const REQUEST_TIMEOUT_MS: u64 = 60_000;
+const SERVER_SOURCE_RELATIVE: &str = "workspaces/runtime/apps/server/src";
+const CLAUDE_BRIDGE_RELATIVE: &str = "workspaces/providers/apps/claude-bridge";
+
+/// Installed root shared by host-side runtime components.
+#[derive(Clone, Debug)]
+pub(crate) struct InstallRoot(PathBuf);
+
+impl InstallRoot {
+    fn server_source(&self) -> PathBuf {
+        let packaged = self.0.join("scripts");
+        if packaged.join("codex_python.py").is_file() {
+            packaged
+        } else {
+            self.0.join(SERVER_SOURCE_RELATIVE)
+        }
+    }
+
+    pub(crate) fn claude_bridge_dir(&self) -> PathBuf {
+        let server_source = self.server_source();
+        if server_source
+            .file_name()
+            .is_some_and(|name| name == "scripts")
+        {
+            server_source.join("claude_bridge")
+        } else {
+            self.0.join(CLAUDE_BRIDGE_RELATIVE)
+        }
+    }
+}
+
+/// Resolve the package root from the installed executable or this source build.
+/// Python derives the equivalent root from codex_layout.py's installed scripts directory.
+pub(crate) fn resolve_install_root() -> Result<InstallRoot, WorkerError> {
+    let located = || {
+        WorkerError::PreparationRefused(
+            "runtime-server/install-root: expected codex_python.py and the codex_layout Claude bridge directory (scripts/claude_bridge when installed, workspaces/providers/apps/claude-bridge in a source checkout) beside the executable or under the source checkout".into(),
+        )
+    };
+    let is_root = |path: &Path| {
+        let root = InstallRoot(path.to_path_buf());
+        (root.server_source().join("codex_python.py").is_file())
+            && root.claude_bridge_dir().join("bridge.mjs").is_file()
+    };
+
+    if let Ok(executable) = std::env::current_exe() {
+        for ancestor in executable.ancestors() {
+            let candidate = if ancestor.file_name().is_some_and(|name| name == "bin") {
+                ancestor.parent().unwrap_or(ancestor)
+            } else {
+                ancestor
+            };
+            if is_root(candidate) {
+                return Ok(InstallRoot(candidate.to_path_buf()));
+            }
+        }
+    }
+
+    let source_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../..");
+    let source_root = source_root.canonicalize().map_err(|_| located())?;
+    if is_root(&source_root) {
+        return Ok(InstallRoot(source_root));
+    }
+    Err(located())
+}
 
 pub(crate) struct HostRuntime {
     shutdown: Shutdown,
@@ -40,8 +108,12 @@ impl HostRuntime {
             backend_id: BackendId(data_encoding::HEXLOWER.encode(&nonce)),
             state_dir: store.root().to_owned(),
         };
-        let python =
-            resolve_python(std::env::var_os("CODEX_AGENTS_PYTHON").map(PathBuf::from)).await?;
+        let install_root = resolve_install_root()?;
+        let python = resolve_python(
+            std::env::var_os("CODEX_AGENTS_PYTHON").map(PathBuf::from),
+            &install_root,
+        )
+        .await?;
         let catalog = state.model_catalog_handle();
         let resources = tokio::task::spawn_blocking(move || {
             PreparationResources::bundled(String::new(), catalog, python)
@@ -190,26 +262,42 @@ impl AccountLauncher for HostLauncher {
     }
 }
 
-async fn resolve_python(configured: Option<PathBuf>) -> Result<PathBuf, WorkerError> {
-    let invalid = || WorkerError::PreparationRefused("preparation/resolved-python-required".into());
+async fn resolve_python(
+    configured: Option<PathBuf>,
+    install_root: &InstallRoot,
+) -> Result<PathBuf, WorkerError> {
+    let invalid = || {
+        WorkerError::PreparationRefused(
+            "host-runtime/python-interpreter: set CODEX_AGENTS_PYTHON to an absolute interpreter or install Python 3.11+ with the server API dependencies".into(),
+        )
+    };
     if let Some(path) = configured {
-        return if path.is_absolute() {
+        return if path.is_absolute() && path.is_file() {
             Ok(path)
         } else {
             Err(invalid())
         };
     }
+    let bootstrap = install_root.server_source().join("codex_python.py");
+    if !bootstrap.is_file() {
+        return Err(WorkerError::PreparationRefused(format!(
+            "host-runtime/python-bootstrap: installed source file is missing at {}",
+            bootstrap.display()
+        )));
+    }
     let mut command = tokio::process::Command::new("python3");
-    command
-        .arg("-B")
-        .arg(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../server/src/codex_python.py"))
-        .kill_on_drop(true);
+    command.arg("-B").arg(&bootstrap).kill_on_drop(true);
     let output = tokio::time::timeout(std::time::Duration::from_secs(10), command.output())
         .await
         .map_err(|_| invalid())?
         .map_err(|_| invalid())?;
     if !output.status.success() {
-        return Err(invalid());
+        let detail = String::from_utf8_lossy(&output.stderr);
+        return Err(WorkerError::PreparationRefused(format!(
+            "host-runtime/python-bootstrap: {} exited unsuccessfully: {}",
+            bootstrap.display(),
+            detail.trim().chars().take(800).collect::<String>()
+        )));
     }
     let path = PathBuf::from(
         std::str::from_utf8(&output.stdout)
@@ -243,6 +331,70 @@ pub(crate) fn codex_launch(
         environment.remove("CODEX_API_KEY");
     }
     ProviderLaunchSpec::new(command, environment, root).with_inherited_cwd()
+}
+
+#[cfg(test)]
+#[allow(clippy::items_after_test_module, clippy::unwrap_used)]
+mod install_root_tests {
+    use super::InstallRoot;
+    use std::{
+        fs,
+        path::{Path, PathBuf},
+        process::Command,
+    };
+
+    fn python_layout(source: &Path) -> (PathBuf, PathBuf) {
+        let output = Command::new("python3")
+            .args([
+                "-B",
+                "-c",
+                "from codex_layout import SERVER_SOURCE_ROOT, CLAUDE_BRIDGE_ROOT; print(f'{SERVER_SOURCE_ROOT}\\n{CLAUDE_BRIDGE_ROOT}')",
+            ])
+            .env("PYTHONPATH", source)
+            .output()
+            .expect("python3 should be available for layout parity");
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let stdout = String::from_utf8(output.stdout).unwrap();
+        let mut lines = stdout.lines();
+        (
+            PathBuf::from(lines.next().expect("Python server source root")),
+            PathBuf::from(lines.next().expect("Python Claude bridge root")),
+        )
+    }
+
+    #[test]
+    fn bridge_and_server_source_match_python_layout_in_both_install_modes() {
+        let source_checkout = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../..")
+            .canonicalize()
+            .unwrap();
+        let python_source = source_checkout.join("workspaces/runtime/apps/server/src");
+        let source_layout = InstallRoot(source_checkout.clone());
+        let (python_server_source, python_bridge) = python_layout(&python_source);
+        assert_eq!(source_layout.server_source(), python_server_source);
+        assert_eq!(source_layout.claude_bridge_dir(), python_bridge);
+
+        let temporary = tempfile::tempdir().unwrap();
+        let packaged_root = temporary.path().join("workspace");
+        let packaged_scripts = packaged_root.join("scripts");
+        let packaged_bridge = packaged_scripts.join("claude_bridge");
+        fs::create_dir_all(&packaged_bridge).unwrap();
+        fs::copy(
+            python_source.join("codex_layout.py"),
+            packaged_scripts.join("codex_layout.py"),
+        )
+        .unwrap();
+        fs::write(packaged_scripts.join("codex_python.py"), "").unwrap();
+        fs::write(packaged_bridge.join("bridge.mjs"), "").unwrap();
+        let packaged_layout = InstallRoot(packaged_root);
+        let (python_server_source, python_bridge) = python_layout(&packaged_scripts);
+        assert_eq!(packaged_layout.server_source(), python_server_source);
+        assert_eq!(packaged_layout.claude_bridge_dir(), python_bridge);
+    }
 }
 
 fn next_direct_generation(store: &RuntimeStore, account: &str) -> Result<Generation, WorkerError> {

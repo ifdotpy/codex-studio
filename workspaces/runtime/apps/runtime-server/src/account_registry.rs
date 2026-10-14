@@ -1,5 +1,7 @@
 //! Runtime ownership of the existing account workers; all input and recovery
 //! decisions remain in the worker. Wakes are hints over committed SQLite rows.
+//! Registered runtime difference: `image-workspace-dependency-hold` persists
+//! an image-workspace refusal on the agent and leaves its input event pending.
 use futures_util::{StreamExt, stream::FuturesUnordered};
 use std::{collections::BTreeMap, future::Future, pin::Pin, sync::Arc, time::Duration};
 use studio_runtime_process::provider_seam::{OpenOptions, ProviderTaskFactory, Shutdown};
@@ -10,13 +12,16 @@ use studio_runtime_services::{
     },
     provider_session_task::SessionTaskConfig,
 };
-use studio_runtime_store::{RuntimeStore, SchedulerRepository};
+use studio_runtime_store::{
+    AgentId, AgentRepository, AgentStatus, RuntimeStore, SchedulerRepository,
+};
 use tokio::sync::{Notify, mpsc};
 
 const MAX_ACCOUNTS: usize = 128;
 const WAKE_PAGE: usize = 32;
 const RETRY_DELAY: Duration = Duration::from_secs(1);
 const MAX_RETRY_DELAY: Duration = Duration::from_secs(30);
+const IMAGE_EXECUTION_DEPENDENCY: &str = "workspace-state/image-execution";
 
 fn next_retry_delay(current: Duration) -> Duration {
     current.saturating_mul(2).min(MAX_RETRY_DELAY)
@@ -113,11 +118,9 @@ impl AccountRegistry {
             }
             self.after_account.clone_from(&account);
             let image_agents = image_workspace_agents(&self.store, &pending_agents)?;
+            hold_image_workspace_agents(&self.store, &image_agents)?;
             for agent_id in &image_agents {
                 self.after_agent.insert(account.clone(), agent_id.clone());
-                eprintln!(
-                    "account registry refused agent {agent_id}: workspace-state/image-execution"
-                );
             }
             let agents = pending_agents
                 .into_iter()
@@ -277,6 +280,59 @@ fn image_workspace_agents(
         }
     }
     Ok(image_agents)
+}
+
+/// Keep the durable event pending while exposing the unavailable workspace executor on its agent.
+fn hold_image_workspace_agents(
+    store: &RuntimeStore,
+    agents: &std::collections::BTreeSet<String>,
+) -> Result<(), WorkerError> {
+    store.transaction_with(|tx| {
+        for id in agents {
+            let Some(mut agent) = AgentRepository::get(tx, &AgentId::from(id.as_str()))? else {
+                continue;
+            };
+            if agent
+                .extra
+                .get("workspaceMode")
+                .and_then(|mode| mode.as_str())
+                != Some("image")
+            {
+                continue;
+            }
+            if agent.status == AgentStatus::Paused
+                && agent.extra.get("error").and_then(|value| value.as_str())
+                    == Some(IMAGE_EXECUTION_DEPENDENCY)
+                && agent
+                    .extra
+                    .get("nativeFailureHold")
+                    .and_then(|value| value.as_bool())
+                    == Some(true)
+            {
+                continue;
+            }
+            agent.status = AgentStatus::Paused;
+            agent
+                .extra
+                .insert("autoWake".into(), serde_json::json!(false));
+            agent
+                .extra
+                .insert("inFlight".into(), serde_json::json!(false));
+            agent
+                .extra
+                .insert("nativeFailureHold".into(), serde_json::json!(true));
+            agent.extra.insert(
+                "error".into(),
+                serde_json::json!(IMAGE_EXECUTION_DEPENDENCY),
+            );
+            agent.extra.insert(
+                "startOutcomeHold".into(),
+                serde_json::json!({"stage":"held","reason":IMAGE_EXECUTION_DEPENDENCY}),
+            );
+            AgentRepository::put(tx, &agent)?;
+        }
+        Ok::<_, WorkerError>(())
+    })
 }
 
 fn has_image_workspace_recovery(store: &RuntimeStore, account: &str) -> Result<bool, WorkerError> {
