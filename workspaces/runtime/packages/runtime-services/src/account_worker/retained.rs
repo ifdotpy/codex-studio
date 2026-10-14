@@ -144,6 +144,9 @@ fn validate(request: &SessionRequest) -> Result<(), PortError> {
                 | Method::ThreadLoadedList
                 | Method::ModelList
                 | Method::ClaudeDiagnostics
+                | Method::OperationStatus
+                | Method::ThreadRead
+                | Method::ThreadTurnsList
         )
         && (request.method != Method::ThreadList || request.params.get("threadId").is_none());
     let actor_method = matches!(
@@ -175,6 +178,21 @@ fn validate(request: &SessionRequest) -> Result<(), PortError> {
                 .params
                 .get("includeTurns")
                 .is_some_and(|value| value != &json!(false)))
+        || (request.method == Method::ThreadTurnsList
+            && (request
+                .params
+                .get("limit")
+                .and_then(Value::as_u64)
+                .unwrap_or(0)
+                > 20
+                || request.params.get("sortDirection").and_then(Value::as_str) != Some("desc")
+                || request.params.get("itemsView").and_then(Value::as_str) != Some("full")))
+        || (request.method == Method::OperationStatus
+            && !request
+                .params
+                .get("operationId")
+                .and_then(Value::as_str)
+                .is_some_and(|id| id.starts_with("monitor:") && id.len() > "monitor:".len()))
     {
         return Err(PortError::Invalid);
     }
