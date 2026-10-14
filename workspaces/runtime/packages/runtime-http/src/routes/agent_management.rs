@@ -28,11 +28,7 @@ const LIFECYCLE: &[Dependency] = &[
     Dependency::new("work-driver/deletion-release"),
     Dependency::new("workspace-state/agent-lifecycle"),
 ];
-const NATIVE: &[Dependency] = &[
-    Dependency::new("native-action/preparation-and-settings"),
-    Dependency::new("context-repair/repair-idle-broker"),
-    Dependency::new("native-safety/retry-driver"),
-];
+const NATIVE: &[Dependency] = &[Dependency::new("cross-server/native-review")];
 
 pub(crate) fn routes() -> RouteGroup {
     RouteGroup::new(vec![
@@ -79,7 +75,6 @@ async fn delete(
 }
 async fn native_action(
     State(state): State<HttpState>,
-    safety: Option<Extension<Arc<dyn NativeSafetyActionPort>>>,
     preparation: Option<
         Extension<Arc<studio_runtime_services::account_worker::preparation::PreparationResources>>,
     >,
@@ -88,12 +83,6 @@ async fn native_action(
 ) -> Result<Json<Value>, ApiError> {
     let value = serde_json::to_value(body).map_err(|_| ApiError::internal())?;
     let Some(action) = value.get("action").and_then(Value::as_str) else {
-        let safety = safety.map(|Extension(port)| port).ok_or_else(|| {
-            ApiError::new(
-                StatusCode::NOT_IMPLEMENTED,
-                "Not implemented: requires native-safety/retry-driver",
-            )
-        })?;
         let port = state.account_session.clone().ok_or_else(|| {
             ApiError::new(
                 StatusCode::NOT_IMPLEMENTED,
@@ -101,6 +90,7 @@ async fn native_action(
             )
         })?;
         let store = state.store.clone().ok_or_else(ApiError::internal)?;
+        let account_driver = state.account_driver.clone();
         let resources = preparation
             .clone()
             .map(|Extension(resources)| resources)
@@ -114,12 +104,12 @@ async fn native_action(
         let data = value.get("action").cloned().unwrap_or(Value::Null);
         let safety_action = data["safety"]
             .as_str()
-            .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "Choose retry or cancel"))?
+            .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "Choose wait, retry or cancel"))?
             .to_owned();
-        if !matches!(safety_action.as_str(), "retry" | "cancel") {
+        if !matches!(safety_action.as_str(), "wait" | "retry" | "cancel") {
             return Err(ApiError::new(
                 StatusCode::BAD_REQUEST,
-                "Choose retry or cancel",
+                "Choose wait, retry or cancel",
             ));
         }
         let turn_id = data["turnId"]
@@ -131,6 +121,12 @@ async fn native_action(
             let record = AgentRepository::get(&connection, &AgentId::from(agent.as_str()))
                 .map_err(|_| ApiError::internal())?
                 .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "Agent not found"))?;
+            let account = record
+                .extra
+                .get("accountKey")
+                .and_then(Value::as_str)
+                .unwrap_or("default")
+                .to_owned();
             let epoch = record.value()["epoch"]
                 .as_i64()
                 .ok_or_else(ApiError::internal)?;
@@ -139,9 +135,34 @@ async fn native_action(
                 epoch,
             };
             drop(connection);
-            safety
-                .execute_action(store, port, resources, agent, actor, turn_id, safety_action)
-                .map_err(native_error)
+            let account_driver = account_driver.ok_or_else(|| {
+                ApiError::new(
+                    StatusCode::NOT_IMPLEMENTED,
+                    "Not implemented: requires account-driver/provider-home",
+                )
+            })?;
+            let accounts = account_driver
+                .snapshot()
+                .map_err(|_| ApiError::internal())?;
+            let provider_home = accounts
+                .accounts
+                .iter()
+                .find(|row| row["id"] == account)
+                .and_then(|row| row["home"].as_str())
+                .ok_or_else(|| ApiError::internal())?;
+            let mut resources = resources.as_ref().clone();
+            resources.account_home = provider_home.to_owned();
+            let resources = Arc::new(resources);
+            studio_runtime_services::safety_buffering::execute_action(
+                &store,
+                port.as_ref(),
+                &resources,
+                &agent,
+                actor,
+                &turn_id,
+                &safety_action,
+            )
+            .map_err(safety_error)
         })
         .await
         .map_err(|_| ApiError::internal())??;
@@ -243,24 +264,7 @@ async fn native_action(
     Ok(Json(result))
 }
 
-/// Adapter owned by the native-safety slice; keeps its executor out of this
-/// route package until its implementation and receipt contract are integrated.
-pub(crate) trait NativeSafetyActionPort: Send + Sync {
-    fn execute_action(
-        &self,
-        store: Arc<RuntimeStore>,
-        account_session: Arc<
-            dyn studio_runtime_services::account_session_runtime::AccountSessionPort,
-        >,
-        resources: Arc<studio_runtime_services::account_worker::preparation::PreparationResources>,
-        agent_id: String,
-        actor: studio_runtime_services::account_worker::retained::RequestActor,
-        turn_id: String,
-        choice: String,
-    ) -> native_actions::Result<Value>;
-}
-
-pub(crate) trait NativeContextRepairPort: Send + Sync {
+pub trait NativeContextRepairPort: Send + Sync {
     fn repair_idle(
         &self,
         store: Arc<RuntimeStore>,
@@ -279,10 +283,10 @@ struct NativeActionPreparationRun {
     preparation: Arc<studio_runtime_services::account_worker::preparation::PreparationResources>,
 }
 impl NativeActionPreparationRun {
-    fn repair_before_reserve(
+    fn provider_home(
         &self,
         request: &native_actions::Request,
-    ) -> native_actions::Result<()> {
+    ) -> native_actions::Result<std::path::PathBuf> {
         let account = {
             let connection = self.store.read()?;
             let agent = AgentRepository::get(&connection, &AgentId::from(request.agent.as_str()))?
@@ -301,13 +305,20 @@ impl NativeActionPreparationRun {
         let accounts = account_driver
             .snapshot()
             .map_err(|_| NativeError::Unavailable("account-driver/provider-home"))?;
-        let provider_home = accounts
+        accounts
             .accounts
             .iter()
             .find(|row| row["id"] == account)
             .and_then(|row| row["home"].as_str())
             .map(std::path::PathBuf::from)
-            .ok_or(NativeError::Unavailable("account-driver/provider-home"))?;
+            .ok_or(NativeError::Unavailable("account-driver/provider-home"))
+    }
+
+    fn repair_before_reserve(
+        &self,
+        request: &native_actions::Request,
+    ) -> native_actions::Result<()> {
+        let provider_home = self.provider_home(request)?;
         self.repair.repair_idle(
             self.store.clone(),
             request.agent.clone(),
@@ -337,9 +348,11 @@ impl native_actions::Preparation for NativeActionPreparationRun {
         ticket: &studio_runtime_services::workspace_operations::ProviderTicket,
         scope: &studio_runtime_services::account_session_runtime::ConnectionScope,
     ) -> native_actions::Result<()> {
+        let mut resources = self.preparation.as_ref().clone();
+        resources.account_home = self.provider_home(request)?.to_string_lossy().into_owned();
         let prepared = studio_runtime_services::account_worker::preparation::prepare_native_action(
             &self.store,
-            &self.preparation,
+            &resources,
             &request.agent,
             &ticket.operation,
             ticket.generation,
@@ -377,11 +390,55 @@ impl Admission for NativeAdmission<'_> {
         let root = AgentRepository::get(tx, &actor.root_id)
             .map_err(|_| NativeError::Unavailable("budget-policy/native-action"))?
             .ok_or(NativeError::Changed)?;
+        let account = value
+            .get("accountKey")
+            .and_then(Value::as_str)
+            .unwrap_or("default");
+        if root
+            .extra
+            .get("excludedAccountKeys")
+            .and_then(Value::as_array)
+            .is_some_and(|keys| keys.iter().any(|key| key.as_str() == Some(account)))
+        {
+            return Err(NativeError::Invalid("account-excluded"));
+        }
+        let thread_id = value.get("threadId").and_then(Value::as_str);
+        let native_thread_blocked = value
+            .get("nativeThreadBlock")
+            .and_then(Value::as_object)
+            .is_some_and(|block| {
+                block
+                    .get("threadId")
+                    .and_then(Value::as_str)
+                    .is_some_and(|id| Some(id) == thread_id)
+            })
+            || (thread_id.is_some()
+                && value
+                    .pointer("/error/codexErrorInfo")
+                    .and_then(Value::as_str)
+                    == Some("misalignmentPolicyViolation"))
+            || (thread_id.is_some()
+                && value.get("nativeTurnError").is_some_and(|previous| {
+                    previous.get("turnId") == value.get("turnId")
+                        && previous
+                            .pointer("/error/codexErrorInfo")
+                            .and_then(Value::as_str)
+                            == Some("misalignmentPolicyViolation")
+                }));
+        if native_thread_blocked {
+            return Err(NativeError::Invalid("native-thread/precaution-stop"));
+        }
         if action == native_actions::Action::Review {
-            if value.get("provider").and_then(Value::as_str) != Some("codex")
-                || value.get("daybreakEnabled") == Some(&serde_json::json!(true))
-            {
+            if value.get("provider").and_then(Value::as_str) != Some("codex") {
                 return Err(NativeError::Invalid("review/provider"));
+            }
+            if value.get("executionMode").and_then(Value::as_str) == Some("vm")
+                || value.get("remoteOrigin") == Some(&Value::Bool(true))
+            {
+                return Err(NativeError::Unavailable("cross-server/native-review"));
+            }
+            if value.get("daybreakEnabled") == Some(&serde_json::json!(true)) {
+                return Err(NativeError::Invalid("review/daybreak"));
             }
             let root_value = root.value();
             let mode_version = root_value
@@ -529,6 +586,21 @@ fn native_error(error: NativeError) -> ApiError {
         | NativeError::Store(_)
         | NativeError::Json(_)
         | NativeError::Sql(_) => ApiError::internal(),
+    }
+}
+
+fn safety_error(
+    error: studio_runtime_services::safety_buffering::SafetyBufferingError,
+) -> ApiError {
+    use studio_runtime_services::safety_buffering::SafetyBufferingError as SafetyError;
+    match error {
+        SafetyError::Requires(name) => ApiError::new(
+            StatusCode::NOT_IMPLEMENTED,
+            format!("Not implemented: requires {name}"),
+        ),
+        SafetyError::ProviderUnknown => ApiError::new(StatusCode::CONFLICT, error.to_string()),
+        SafetyError::Persistence | SafetyError::InvalidStoredState => ApiError::internal(),
+        _ => ApiError::new(StatusCode::BAD_REQUEST, error.to_string()),
     }
 }
 

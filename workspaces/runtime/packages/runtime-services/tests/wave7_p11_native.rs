@@ -775,7 +775,7 @@ impl Acceptance for Release {
     }
 }
 #[test]
-fn definitely_unsent_action_releases_owner_in_same_commit() {
+fn definitely_unsent_action_releases_owner_and_keeps_receipt_retryable() {
     let case = &corpus()["actions"][0];
     let mut db = db(case);
     reserve_case(&mut db, case);
@@ -794,11 +794,11 @@ fn definitely_unsent_action_releases_owner_in_same_commit() {
             &Release
         )
         .expect("release"),
-        Outcome::Failed { error: None }
+        Outcome::Pending { error: None }
     );
     tx.commit().expect("commit");
     assert_eq!(actor(&db)["inFlight"], false);
-    assert_eq!(row(&db)[3]["status"], "failed");
+    assert_eq!(row(&db)[3]["status"], "pending");
 }
 
 #[test]

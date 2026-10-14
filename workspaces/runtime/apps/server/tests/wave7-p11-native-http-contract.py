@@ -60,9 +60,6 @@ class NativeHTTPContract(TimedHTTPContractTest, unittest.TestCase):
 
     def test_missing_consumers_refuse_without_writes(self):
         cases = [
-            ("/api/action", {"id": self.ids["empty"], "action": action, "request_id": "native-" + action}, "account-worker/native-action")
-            for action in ("review", "compact")
-        ] + [
             ("/api/branch", {"agent": self.ids["empty"], "message_id": "missing", "id": "branch-request"}, "provider-session/thread-fork"),
             ("/api/checkpoint/restore", {"agent": self.ids["empty"], "checkpoint": "missing", "expectedTree": "tree"}, "provider-session/thread-fork"),
         ]
@@ -76,6 +73,12 @@ class NativeHTTPContract(TimedHTTPContractTest, unittest.TestCase):
                 else:
                     self.assertEqual(response.status, 400, response.body)
                 self.assertEqual(no_write_snapshot(self.backend.state), before)
+
+    def test_native_action_requires_client_receipt_id_without_writes(self):
+        before = no_write_snapshot(self.backend.state)
+        response = self.post("/api/action", {"id": self.ids["empty"], "action": "review"})
+        self.assertEqual(response.status, 400, response.body)
+        self.assertEqual(no_write_snapshot(self.backend.state), before)
 
     def test_command_lookup_is_scoped_and_writes_nothing(self):
         # P18 owns the route's stable-request-identity gate. This frozen base

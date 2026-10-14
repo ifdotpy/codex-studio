@@ -459,7 +459,9 @@ pub fn settle(
         effects.apply(tx, &expected, &receipt.delivery)?;
     }
     if matches!(receipt.delivery, Delivery::NotSent) {
-        let mut agent = snapshot.agent;
+        // Acceptance may release the in-flight owner in this same transaction.
+        // Reload after applying it so the retry marker does not overwrite that update.
+        let mut agent = agent(tx, &snapshot.receipt.agent_id)?;
         agent["startAttempt"]["submitted"] = json!(false);
         agent["startAttempt"]
             .as_object_mut()
