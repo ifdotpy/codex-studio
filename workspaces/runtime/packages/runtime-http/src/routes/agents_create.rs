@@ -3,7 +3,7 @@ use super::extractors::ApiJson;
 use super::manifest::{Dependency, OperationStatus, RouteGroup, post};
 use crate::{error::ApiError, generated, router::HttpState};
 use axum::{Json, extract::State, http::StatusCode};
-use serde_json::Value;
+use serde_json::{Value, json};
 use studio_runtime_services::agents_create::{
     self, Context, CreateError, Creation, OperationError,
 };
@@ -358,11 +358,123 @@ async fn rename(
     State(state): State<HttpState>,
     ApiJson(body): ApiJson<generated::RenameRequest>,
 ) -> Result<Json<Value>, ApiError> {
+    let name = body.name.flatten();
+    if name.is_none() {
+        let Some(port) = state.title_request.clone() else {
+            return Err(ApiError::new(
+                StatusCode::NOT_IMPLEMENTED,
+                "Not implemented: requires provider-session/title-generation",
+            ));
+        };
+        let request_id = body
+            .request_id
+            .flatten()
+            .filter(|id| !id.is_empty())
+            .ok_or_else(|| ApiError::validation(vec![Value::String("body".to_owned())]))?;
+        let store = state.store.clone().ok_or_else(ApiError::internal)?;
+        let agent_id = body.id.clone();
+        let agent = tokio::task::spawn_blocking({
+            let store = store.clone();
+            let agent_id = agent_id.clone();
+            move || {
+                let connection = store.read().map_err(|_| ApiError::internal())?;
+                studio_runtime_store::AgentRepository::get(
+                    &connection,
+                    &studio_runtime_store::AgentId::from(agent_id),
+                )
+                .map_err(|_| ApiError::internal())?
+                .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "Unknown managed agent"))
+            }
+        })
+        .await
+        .map_err(|_| ApiError::internal())??;
+        let account_key = agent
+            .extra
+            .get("accountKey")
+            .and_then(Value::as_str)
+            .unwrap_or("default")
+            .to_owned();
+        let driver = state.account_driver.as_ref().ok_or_else(|| {
+            ApiError::new(
+                StatusCode::NOT_IMPLEMENTED,
+                "Not implemented: requires account-driver/unavailable",
+            )
+        })?;
+        let account = driver
+            .snapshot()
+            .map_err(|_| ApiError::internal())?
+            .accounts
+            .into_iter()
+            .find(|row| row.get("id").and_then(Value::as_str) == Some(&account_key))
+            .ok_or_else(|| {
+                ApiError::new(
+                    StatusCode::NOT_IMPLEMENTED,
+                    "Not implemented: requires account-driver/unavailable",
+                )
+            })?;
+        let home = account.get("home").and_then(Value::as_str).ok_or_else(|| {
+            ApiError::new(
+                StatusCode::NOT_IMPLEMENTED,
+                "Not implemented: requires provider-session/model-list",
+            )
+        })?;
+        let provider = account
+            .get("provider")
+            .and_then(Value::as_str)
+            .unwrap_or("codex");
+        let catalog = match state
+            .model_catalog
+            .read(&account_key, home, provider, false)
+            .await
+        {
+            studio_runtime_services::model_catalog::CatalogRead::Ready(value) => value,
+            _ => {
+                return Err(ApiError::new(
+                    StatusCode::NOT_IMPLEMENTED,
+                    "Not implemented: requires provider-session/model-list",
+                ));
+            }
+        };
+        let deadline = std::time::SystemTime::now() + std::time::Duration::from_secs(30);
+        let generated = studio_runtime_services::title_generation::generate(
+            &store,
+            port.as_ref(),
+            &body.id,
+            &catalog,
+            &request_id,
+            deadline,
+        )
+        .await
+        .map_err(|_| {
+            ApiError::new(
+                StatusCode::CONFLICT,
+                "Title generation could not be completed",
+            )
+        })?;
+        let result = match generated {
+            studio_runtime_services::title_generation::TitleResult::Applied { title } => {
+                json!({"id":body.id,"name":title,"request_id":request_id,"status":"applied"})
+            }
+            studio_runtime_services::title_generation::TitleResult::Skipped => {
+                json!({"id":body.id,"status":"skipped"})
+            }
+            studio_runtime_services::title_generation::TitleResult::Discarded => {
+                json!({"id":body.id,"status":"discarded"})
+            }
+            studio_runtime_services::title_generation::TitleResult::RetryableNotSent => {
+                json!({"id":body.id,"request_id":request_id,"status":"not_sent"})
+            }
+            studio_runtime_services::title_generation::TitleResult::HeldUnknown => {
+                json!({"id":body.id,"request_id":request_id,"status":"unknown"})
+            }
+        };
+        return Ok(Json(result));
+    }
     dispatch::<generated::RenameResponse>(state, move |context| {
         agents_create::rename_operation(
             context,
             &body.id,
-            body.name.flatten().as_deref(),
+            name.as_deref(),
             body.request_id.flatten().as_deref(),
         )
     })

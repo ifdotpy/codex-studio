@@ -38,6 +38,8 @@ pub struct HttpState {
         Option<std::sync::Arc<studio_runtime_services::account_driver::AccountDriver>>,
     pub provider_versions:
         Option<Arc<studio_runtime_services::provider_versions::ProviderVersionMonitor>>,
+    pub(crate) title_request:
+        Option<Arc<dyn studio_runtime_services::title_generation::TitleRequestPort>>,
     pub(crate) voice_provider:
         Option<Arc<dyn studio_runtime_services::voice::provider::VoiceProviderPort>>,
     pub(crate) credentials: Arc<studio_runtime_services::federation_credentials::Credentials>,
@@ -95,6 +97,7 @@ impl HttpState {
             account_session: None,
             account_driver: None,
             provider_versions: None,
+            title_request: None,
             claude_login: None,
             voice_provider: None,
             credentials: Arc::default(),
@@ -159,6 +162,14 @@ impl HttpState {
         monitor: Arc<studio_runtime_services::provider_versions::ProviderVersionMonitor>,
     ) -> Self {
         self.provider_versions = Some(monitor);
+        self
+    }
+
+    pub fn with_title_request_port(
+        mut self,
+        port: Arc<dyn studio_runtime_services::title_generation::TitleRequestPort>,
+    ) -> Self {
+        self.title_request = Some(port);
         self
     }
 
