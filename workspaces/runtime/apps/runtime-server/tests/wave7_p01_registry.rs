@@ -1113,7 +1113,7 @@ fn launch_admission_refreshes_restored_and_changed_credentials() {
 }
 
 #[test]
-fn claude_launch_refusal_precedes_auth_refresh_and_registry_write() {
+fn claude_profile_is_not_refreshed_through_codex_account_home_admission() {
     use std::sync::atomic::AtomicUsize;
     struct CountingReader(Arc<AtomicUsize>);
     impl studio_runtime_services::account_driver::ProviderAuthReader for CountingReader {
@@ -1159,6 +1159,62 @@ fn claude_launch_refusal_precedes_auth_refresh_and_registry_write() {
     assert_eq!(reads.load(Ordering::SeqCst), 0);
     assert_eq!(driver.revision().unwrap(), revision);
     assert_eq!(std::fs::read(registry).unwrap(), before);
+}
+
+#[cfg(unix)]
+#[test]
+fn claude_launch_uses_resolved_node_bridge_and_profile_cli_without_invoking_it() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let root = tempfile::tempdir().unwrap();
+    let bridge_dir = root.path().join("bridge");
+    let bin_dir = root.path().join("bin");
+    let sdk = bridge_dir.join("node_modules/@anthropic-ai/claude-agent-sdk");
+    std::fs::create_dir_all(&sdk).unwrap();
+    std::fs::create_dir_all(&bin_dir).unwrap();
+    std::fs::write(bridge_dir.join("bridge.mjs"), "// scripted fixture\n").unwrap();
+    std::fs::write(sdk.join("package.json"), "{}\n").unwrap();
+    let node = bin_dir.join("node");
+    let claude = bin_dir.join("claude-fixture");
+    for executable in [&node, &claude] {
+        std::fs::write(executable, "#!/bin/sh\nexit 99\n").unwrap();
+        std::fs::set_permissions(executable, std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    let profile = json!({
+        "provider":"claude", "status":"ready", "email":"fixture@example.test",
+        "accountId":"claude:fixture@example.test",
+        "_credentialIdentity":"claude:fixture@example.test",
+        "claudeOptions":{"customModels":[], "launchArgs":"--chrome"}
+    });
+    let launch = host_runtime::claude_launch(
+        profile,
+        &bridge_dir,
+        root.path().to_owned(),
+        BTreeMap::from([
+            (
+                "STUDIO_NODE_BIN".into(),
+                node.to_string_lossy().into_owned(),
+            ),
+            (
+                "STUDIO_CLAUDE_BIN".into(),
+                claude.to_string_lossy().into_owned(),
+            ),
+            ("PATH".into(), bin_dir.to_string_lossy().into_owned()),
+            ("ANTHROPIC_API_KEY".into(), "fixture-only".into()),
+        ]),
+    )
+    .unwrap();
+    assert_eq!(launch.command[0], node.to_string_lossy());
+    assert_eq!(
+        launch.command[1],
+        bridge_dir.join("bridge.mjs").to_string_lossy()
+    );
+    assert_eq!(launch.command[2], root.path().to_string_lossy());
+    assert_eq!(
+        launch.environment["STUDIO_CLAUDE_BIN"],
+        claude.to_string_lossy()
+    );
+    assert!(!launch.environment.contains_key("ANTHROPIC_API_KEY"));
 }
 
 #[path = "../../../packages/runtime-process/tests/support/supervisor_ready.rs"]
@@ -1532,6 +1588,377 @@ async fn host_start_reattaches_python_launch_and_delivers_http_input() {
         "exactly one turn/start reached provider"
     );
     tokio::task::spawn_blocking(move || drop(supervisor))
+        .await
+        .unwrap();
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn rust_direct_claude_launch_runs_the_scripted_bridge_turn() {
+    use std::os::unix::fs::PermissionsExt;
+    use tower::ServiceExt;
+    if std::env::var_os("STUDIO_W8_CLAUDE_CHILD").is_none() {
+        let temp = tempfile::tempdir().unwrap();
+        let sdk = temp.path().join("scripted-sdk.mjs");
+        let loader = temp.path().join("sdk-loader.mjs");
+        let loader_log = temp.path().join("loader.log");
+        let node_log = temp.path().join("node.stderr");
+        let fake_cli = temp.path().join("claude-fixture");
+        let home = temp.path().join("home");
+        let config = temp.path().join("claude-config");
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::create_dir_all(&config).unwrap();
+        std::fs::write(
+            &fake_cli,
+            "#!/bin/sh\n[ \"$1 $2 $3\" = \"auth status --json\" ] || exit 2\nprintf '{\"loggedIn\":true,\"authMethod\":\"claude.ai\",\"email\":\"test@example.test\",\"subscriptionType\":\"Claude Max\"}\\n'\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&fake_cli, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let exporter = "import pathlib,runpy,sys; sys.path.insert(0,str(pathlib.Path(sys.argv[1]).parent)); ns=runpy.run_path(sys.argv[1]); sdk=ns['SDK'].replace(\"text==='split-stream'\",\"text.startsWith('split-stream')\").replace(\"text==='wait'\",\"text.startsWith('wait')\"); open(sys.argv[2],'w').write(sdk)";
+        let source = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../server/src");
+        let python = prepared_python::prepared_python(&source);
+        let bridge_node_modules = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../providers/apps/claude-bridge/node_modules")
+            .canonicalize()
+            .unwrap();
+        std::os::unix::fs::symlink(bridge_node_modules, temp.path().join("node_modules")).unwrap();
+        let output = std::process::Command::new(&python)
+            .args(["-c", exporter, "../server/tests/claude-bridge-contract.py"])
+            .arg(&sdk)
+            .current_dir(env!("CARGO_MANIFEST_DIR"))
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        std::fs::write(
+            &loader,
+            "import fs from 'node:fs'; import {registerHooks} from 'node:module'; import {pathToFileURL} from 'node:url'; fs.appendFileSync(process.env.STUDIO_TEST_CLAUDE_LOG,'loader-loaded\\n'); registerHooks({resolve(specifier,context,nextResolve){if(specifier==='@anthropic-ai/claude-agent-sdk'){fs.appendFileSync(process.env.STUDIO_TEST_CLAUDE_LOG,'sdk-resolved\\n');return {url:pathToFileURL(process.env.STUDIO_TEST_CLAUDE_SDK).href,shortCircuit:true};}return nextResolve(specifier,context);}});\n",
+        )
+        .unwrap();
+        let node = std::process::Command::new("which")
+            .arg("node")
+            .output()
+            .unwrap();
+        assert!(node.status.success());
+        let node = String::from_utf8(node.stdout).unwrap().trim().to_owned();
+        let node_wrapper = temp.path().join("node-wrapper");
+        std::fs::write(
+            &node_wrapper,
+            format!("#!/bin/sh\nexec {node} \"$@\" 2>>\"$STUDIO_TEST_CLAUDE_NODE_LOG\"\n"),
+        )
+        .unwrap();
+        std::fs::set_permissions(&node_wrapper, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let child = tokio::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "rust_direct_claude_launch_runs_the_scripted_bridge_turn",
+                "--nocapture",
+            ])
+            .env("STUDIO_W8_CLAUDE_CHILD", "1")
+            .env("STUDIO_W8_CLAUDE_TEST_ROOT", temp.path())
+            .env("STUDIO_TEST_CLAUDE_SDK", &sdk)
+            .env("STUDIO_TEST_CLAUDE_LOG", &loader_log)
+            .env("STUDIO_TEST_CLAUDE_NODE_LOG", &node_log)
+            .env("STUDIO_CLAUDE_BIN", &fake_cli)
+            .env("STUDIO_NODE_BIN", &node_wrapper)
+            .env("NODE_OPTIONS", format!("--import={}", loader.display()))
+            .env("CLAUDE_CONFIG_DIR", &config)
+            .env("HOME", &home)
+            .env_remove("CODEX_AGENTS_SUPERVISOR_MODE")
+            .kill_on_drop(true)
+            .output()
+            .await
+            .unwrap();
+        assert!(
+            child.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&child.stdout),
+            String::from_utf8_lossy(&child.stderr)
+        );
+        return;
+    }
+
+    let fixture = tokio::task::spawn_blocking(Fixture::new).await.unwrap();
+    let agent_id = fixture.agents[0]["id"].as_str().unwrap().to_owned();
+    fixture
+        .store
+        .transaction_with(|tx| {
+            tx.execute(
+                "UPDATE runtime_agents SET record=json_set(record,'$.provider','claude','$.model','default','$.threadId',NULL,'$.accountKey','default','$.executionSettingsAccountKey','default','$.nativeEffort',NULL,'$.autoWake',json('true'),'$.isLead',json('false'),'$.status','queued') WHERE id=?1",
+                [&agent_id],
+            )?;
+            Ok::<_, StoreError>(())
+        })
+        .unwrap();
+    let root = PathBuf::from(std::env::var("STUDIO_W8_CLAUDE_TEST_ROOT").unwrap());
+    let account_home = root.join("account-home");
+    std::fs::create_dir_all(&account_home).unwrap();
+    let registry = root.join("accounts/registry.json");
+    std::fs::create_dir_all(registry.parent().unwrap()).unwrap();
+    let identity = "claude:test@example.test";
+    std::fs::write(
+        &registry,
+        json!({"version":1,"defaultAccountKey":"default","accounts":{"default":{"id":"default","provider":"claude","home":account_home,"label":"Scripted Claude","source":"Claude Code","status":"ready","accountId":identity,"email":"test@example.test","plan":"Claude Max","_credentialIdentity":identity,"claudeOptions":{"configDir":std::env::var("CLAUDE_CONFIG_DIR").unwrap(),"customModels":[]}}},"logins":{},"deleteReceipts":{}}).to_string(),
+    )
+    .unwrap();
+    let accounts =
+        Arc::new(studio_runtime_services::account_driver::AccountDriver::open(registry).unwrap());
+    let mut state = studio_runtime_http::HttpState::new(
+        "fixture-token".into(),
+        "fixture".into(),
+        None,
+        fixture._root.path().to_string_lossy().into(),
+        49171,
+        None,
+        Some(fixture.store.clone()),
+        None,
+    )
+    .with_account_driver(accounts.clone());
+    let runtime =
+        host_runtime::HostRuntime::start(&mut state, fixture.store.clone(), accounts.clone(), None)
+            .await
+            .unwrap();
+    let app = studio_runtime_http::router(state.clone()).unwrap();
+    let mut changes = state.sync_changes_handle().subscribe();
+    assert_eq!(
+        app.clone()
+            .oneshot(direct_message_post(
+                &agent_id,
+                "086cc3e3-68a8-429f-9ec1-895aad72f181",
+                "split-stream"
+            ))
+            .await
+            .unwrap()
+            .status(),
+        200
+    );
+    let completed = tokio::time::timeout(std::time::Duration::from_secs(15), async {
+        loop {
+            let raw = fixture
+                .store
+                .read()
+                .unwrap()
+                .query_row(
+                    "SELECT record FROM runtime_agents WHERE id=?1",
+                    [&agent_id],
+                    |row| row.get::<_, String>(0),
+                )
+                .unwrap();
+            let record: Value = serde_json::from_str(&raw).unwrap();
+            if record["status"] == "completed" && record["inFlight"] != true {
+                break record;
+            }
+            changes.changed().await.unwrap();
+        }
+    })
+    .await
+    .unwrap_or_else(|_| {
+        let log = std::fs::read_to_string(std::env::var("STUDIO_TEST_CLAUDE_LOG").unwrap())
+            .unwrap_or_default();
+        let node_log = std::fs::read_to_string(std::env::var("STUDIO_TEST_CLAUDE_NODE_LOG").unwrap()).unwrap_or_default();
+        panic!(
+            "Claude Rust turn did not complete: {}; direct-generation={}; sdk-log={log:?}; node-stderr={node_log:?}",
+            direct_agent_debug(&fixture.store, &agent_id),
+            direct_generation(&fixture.store)
+        );
+    });
+    assert_eq!(completed["status"], "completed");
+    let transcript = app
+        .clone()
+        .oneshot(
+            axum::http::Request::builder()
+                .method("GET")
+                .uri(format!("/api/transcript?id={agent_id}"))
+                .header("host", "127.0.0.1:49171")
+                .header("x-canvas-token", "fixture-token")
+                .header(
+                    studio_runtime_http::API_SCHEMA_HASH_HEADER,
+                    studio_runtime_http::schema::api_schema_hash(),
+                )
+                .extension(axum::extract::ConnectInfo(
+                    "127.0.0.1:12345".parse::<std::net::SocketAddr>().unwrap(),
+                ))
+                .body(axum::body::Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(transcript.status(), 200);
+    let transcript: Value = serde_json::from_slice(
+        &axum::body::to_bytes(transcript.into_body(), 1_000_000)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(transcript["agent"]["status"], "completed");
+    let bridge_root = std::env::var("STUDIO_W8_CLAUDE_TEST_ROOT").unwrap();
+    let python_source = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../server/src");
+    let python = prepared_python::prepared_python(&python_source);
+    let user_text = transcript["items"][0]["text"].as_str().unwrap();
+    let oracle_script = "import json,pathlib,runpy,sys; path=pathlib.Path(sys.argv[1]); sys.path.insert(0,str(path.parent)); ns=runpy.run_path(str(path)); bridge_type=ns['Bridge']; globals=bridge_type.setUp.__globals__; globals['SDK']=globals['SDK'].replace(\"text==='split-stream'\",\"text.startsWith('split-stream')\"); bridge=bridge_type('test_stream_deltas_and_block_snapshots_form_one_final_answer'); bridge.setUp();\ntry:\n bridge.turn(sys.argv[2],sys.argv[3]); turn=bridge.completed(); history=bridge.call('thread/read',{'threadId':bridge.thread,'includeTurns':True}); print(json.dumps({'turn':turn,'thread':history['thread']},sort_keys=True))\nfinally: bridge.doCleanups()";
+    let oracle = std::process::Command::new(python)
+        .args([
+            "-c",
+            oracle_script,
+            "../server/tests/claude-bridge-contract.py",
+            user_text,
+            "086cc3e3-68a8-429f-9ec1-895aad72f181",
+        ])
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .env("STUDIO_W8_CLAUDE_TEST_ROOT", bridge_root)
+        .output()
+        .unwrap();
+    assert!(
+        oracle.status.success(),
+        "Python bridge oracle failed: {}",
+        String::from_utf8_lossy(&oracle.stderr)
+    );
+    let oracle: Value = serde_json::from_slice(&oracle.stdout).unwrap();
+    let python_turn = &oracle["thread"]["turns"][0];
+    let python_items = python_turn["items"].as_array().unwrap();
+    let rust_items = transcript["items"].as_array().unwrap();
+    let normalize_ids = |items: &[Value], scope_id: &str| {
+        items
+            .iter()
+            .map(|item| {
+                let item_id = item["id"].as_str().unwrap();
+                let id = item_id
+                    .strip_prefix(&format!("{scope_id}:"))
+                    .unwrap_or(item_id);
+                json!({
+                    "id": id,
+                    "kind": item
+                        .get("type")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned)
+                        .or_else(|| match item.get("role").and_then(Value::as_str) {
+                            Some("user") => Some("userMessage".to_owned()),
+                            Some("assistant") => Some("agentMessage".to_owned()),
+                            _ => item.get("kind").and_then(Value::as_str).map(str::to_owned),
+                        })
+                        .map(Value::String)
+                        .unwrap_or(Value::Null),
+                    "phase": item.get("phase").cloned().unwrap_or(Value::Null),
+                    "text": item
+                        .get("text")
+                        .cloned()
+                        .or_else(|| {
+                            item["content"][0]["text"]
+                                .as_str()
+                                .map(|text| Value::String(text.to_owned()))
+                        })
+                        .unwrap_or(Value::Null),
+                })
+            })
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        normalize_ids(rust_items, &agent_id),
+        normalize_ids(python_items, oracle["thread"]["id"].as_str().unwrap())
+    );
+    assert_eq!(
+        python_turn["clientUserMessageId"],
+        "086cc3e3-68a8-429f-9ec1-895aad72f181"
+    );
+    assert_eq!(python_turn["status"], completed["status"]);
+    let python_final_state = json!({
+        "status": python_turn["status"],
+        "inFlight": oracle["thread"]["status"]["type"] != "idle"
+    });
+    let rust_final_state = json!({
+        "status": transcript["agent"]["status"],
+        "inFlight": transcript["agent"]["inFlight"]
+    });
+    assert_eq!(rust_final_state, python_final_state);
+    let answer = rust_items
+        .iter()
+        .find(|item| item["phase"] == "final_answer")
+        .unwrap();
+    assert_eq!(
+        answer["id"].as_str().unwrap().rsplit(':').next(),
+        Some("stream-blocks")
+    );
+    let queries = PathBuf::from(completed["cwd"].as_str().unwrap()).join(".queries");
+    assert_eq!(
+        app.clone()
+            .oneshot(direct_message_post(
+                &agent_id,
+                "a19e61c8-6156-4874-b8d8-9111b0a49fc4",
+                "wait",
+            ))
+            .await
+            .unwrap()
+            .status(),
+        200
+    );
+    tokio::time::timeout(std::time::Duration::from_secs(15), async {
+        loop {
+            if std::fs::read_to_string(&queries)
+                .unwrap_or_default()
+                .lines()
+                .count()
+                == 2
+            {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("scripted Claude SDK entered the in-flight turn");
+    runtime_shutdown::close(runtime, &state).await.unwrap();
+    let mut restarted_state = state.clone();
+    let restarted = host_runtime::HostRuntime::start(
+        &mut restarted_state,
+        fixture.store.clone(),
+        accounts,
+        None,
+    )
+    .await
+    .unwrap();
+    let mut restart_changes = restarted_state.sync_changes_handle().subscribe();
+    let held = tokio::time::timeout(std::time::Duration::from_secs(15), async {
+        loop {
+            let raw = fixture
+                .store
+                .read()
+                .unwrap()
+                .query_row(
+                    "SELECT record FROM runtime_agents WHERE id=?1",
+                    [&agent_id],
+                    |row| row.get::<_, String>(0),
+                )
+                .unwrap();
+            let record: Value = serde_json::from_str(&raw).unwrap();
+            if record["status"] == "interrupted"
+                && record["autoWake"] == false
+                && record["restartRecovery"]["stage"] == "pending"
+            {
+                break record;
+            }
+            restart_changes.changed().await.unwrap();
+        }
+    })
+    .await;
+    let held = held.unwrap_or_else(|_| {
+        panic!(
+            "in-flight Claude turn should remain held: {}",
+            direct_agent_debug(&fixture.store, &agent_id)
+        )
+    });
+    assert_eq!(held["status"], "interrupted");
+    assert_eq!(held["autoWake"], false);
+    assert_eq!(held["restartRecovery"]["stage"], "pending");
+    tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+    assert_eq!(
+        std::fs::read_to_string(&queries).unwrap().lines().count(),
+        2,
+        "restart must not resend the turn"
+    );
+    runtime_shutdown::close(restarted, &restarted_state)
         .await
         .unwrap();
 }
@@ -2249,8 +2676,14 @@ fn direct_agent_debug(store: &RuntimeStore, agent_id: &str) -> String {
         .collect::<Result<Vec<_>, _>>()
         .unwrap();
     format!(
-        "status={},outcome={},recovery={},events={events:?}",
+        "status={},account={},provider={},autoWake={},error={},attempt={},inFlight={},outcome={},recovery={},events={events:?}",
         agent["status"],
+        agent["accountKey"],
+        agent["provider"],
+        agent["autoWake"],
+        agent["error"],
+        agent["startAttempt"],
+        agent["inFlight"],
         agent["restartRecovery"]["startAttempt"]["executionOutcome"],
         agent["restartRecovery"]["stage"]
     )
@@ -2316,5 +2749,10 @@ async fn wait_for_direct_completion<T: Clone + Send + Sync + 'static>(
         }
     })
     .await
-    .expect("direct provider turn completion hang guard")
+    .unwrap_or_else(|_| {
+        panic!(
+            "direct provider turn completion hang guard: {}",
+            direct_agent_debug(store, agent_id)
+        )
+    })
 }
