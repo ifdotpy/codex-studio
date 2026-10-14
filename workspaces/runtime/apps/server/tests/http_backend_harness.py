@@ -72,6 +72,11 @@ BACKGROUND_OWNED_FIELDS: dict[str, frozenset[str]] = {
         # Async workspace preparation and activity/event bookkeeping only.
         # Request-writable settings, status, identity, and paths remain visible.
         "lastEvent", "activity", "prepareAttempt",
+        # Reviewer result archive scheduling/retry fields are advanced by the
+        # accepted-archive maintenance owner (Rust work_write.rs; Python
+        # codex_agent_management.py:772-833), outside HTTP requests.
+        "reviewArchiveScheduled", "reviewArchiveError", "reviewArchiveAttempts",
+        "reviewArchiveNextAt",
         # The Rust workspace-ready owner reserves and prepares a worktree
         # asynchronously after scheduler admission (workspace_ready_git.rs and
         # account_worker/preparation/pipeline.rs); these are not HTTP writes.
