@@ -34,26 +34,30 @@ async fn accounts(
         .clone()
         .ok_or_else(ApiError::internal)?;
     let account_driver = state.account_driver.clone();
-    let snapshot = tokio::task::spawn_blocking(move || {
-        let connection = store.read().map_err(|_| ())?;
-        let waiting = studio_runtime_store::account_state::authentication_recovery_account_keys(
-            &connection,
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map_err(|_| ())?
-                .as_secs_f64(),
-        )
-        .map_err(|_| ())?;
-        let mut snapshot = match account_driver {
-            Some(driver) => driver.listing_snapshot().map_err(|_| ())?,
-            None => account_policy.accounts(),
-        };
-        studio_runtime_services::account_policy::apply_authentication_recovery(
-            &mut snapshot,
-            &waiting,
-        );
-        Ok::<_, ()>(snapshot)
-    })
+    let snapshot = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-http/routes/catalog",
+        move || {
+            let connection = store.read().map_err(|_| ())?;
+            let waiting =
+                studio_runtime_store::account_state::authentication_recovery_account_keys(
+                    &connection,
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map_err(|_| ())?
+                        .as_secs_f64(),
+                )
+                .map_err(|_| ())?;
+            let mut snapshot = match account_driver {
+                Some(driver) => driver.listing_snapshot().map_err(|_| ())?,
+                None => account_policy.accounts(),
+            };
+            studio_runtime_services::account_policy::apply_authentication_recovery(
+                &mut snapshot,
+                &waiting,
+            );
+            Ok::<_, ()>(snapshot)
+        },
+    )
     .await
     .ok()
     .and_then(Result::ok);
@@ -76,13 +80,16 @@ async fn limits(
         == Some("1");
     if let Some(port) = state.account_session.clone() {
         let account = account_key.to_owned();
-        let response = tokio::task::spawn_blocking(move || {
-            studio_runtime_services::account_session_runtime::limits(
-                port.as_ref(),
-                &account,
-                cached,
-            )
-        })
+        let response = studio_runtime_process::blocking_pool::spawn_blocking(
+            "runtime-http/routes/catalog",
+            move || {
+                studio_runtime_services::account_session_runtime::limits(
+                    port.as_ref(),
+                    &account,
+                    cached,
+                )
+            },
+        )
         .await
         .map_err(|_| ApiError::internal())?
         .map_err(super::account_login::session_error)?;

@@ -42,14 +42,17 @@ pub(crate) async fn capture(
     ApiJson(body): ApiJson<crate::generated::CheckpointCaptureRequest>,
 ) -> Result<Json<Value>, ApiError> {
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
-    let result = tokio::task::spawn_blocking(move || {
-        let snapshot = checkpoints::capture_context(&store, &body.agent)
-            .map_err(|error| map_error(error, "/api/checkpoint"))?;
-        let label = body.label.unwrap_or_else(|| "Checkpoint".to_owned());
-        let record = checkpoints::capture(&store, snapshot, &label)
-            .map_err(|error| map_error(error, "/api/checkpoint"))?;
-        super::generated_json::<crate::generated::CheckpointCaptureResponse>(record)
-    })
+    let result = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-http/routes/checkpoints",
+        move || {
+            let snapshot = checkpoints::capture_context(&store, &body.agent)
+                .map_err(|error| map_error(error, "/api/checkpoint"))?;
+            let label = body.label.unwrap_or_else(|| "Checkpoint".to_owned());
+            let record = checkpoints::capture(&store, snapshot, &label)
+                .map_err(|error| map_error(error, "/api/checkpoint"))?;
+            super::generated_json::<crate::generated::CheckpointCaptureResponse>(record)
+        },
+    )
     .await
     .map_err(|_| ApiError::internal())??;
     Ok(Json(result))
@@ -60,13 +63,16 @@ pub(crate) async fn preview(
     ApiJson(body): ApiJson<crate::generated::CheckpointPreviewRequest>,
 ) -> Result<Json<Value>, ApiError> {
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
-    let result = tokio::task::spawn_blocking(move || {
-        let context = checkpoints::preview_context(&store, &body.agent, &body.checkpoint)
-            .map_err(|error| map_error(error, "/api/checkpoint/preview"))?;
-        let value = checkpoints::preview(&store, context)
-            .map_err(|error| map_error(error, "/api/checkpoint/preview"))?;
-        super::generated_json::<crate::generated::CheckpointPreviewResponse>(value)
-    })
+    let result = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-http/routes/checkpoints",
+        move || {
+            let context = checkpoints::preview_context(&store, &body.agent, &body.checkpoint)
+                .map_err(|error| map_error(error, "/api/checkpoint/preview"))?;
+            let value = checkpoints::preview(&store, context)
+                .map_err(|error| map_error(error, "/api/checkpoint/preview"))?;
+            super::generated_json::<crate::generated::CheckpointPreviewResponse>(value)
+        },
+    )
     .await
     .map_err(|_| ApiError::internal())??;
     Ok(Json(result))

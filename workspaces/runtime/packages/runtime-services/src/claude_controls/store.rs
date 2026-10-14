@@ -37,9 +37,12 @@ fn current(tx: &Transaction<'_>, expected: &ControlSnapshot) -> Result<ControlSn
     Ok(snapshot)
 }
 async fn blocking<T: Send + 'static>(f: impl FnOnce() -> Result<T> + Send + 'static) -> Result<T> {
-    tokio::task::spawn_blocking(f)
-        .await
-        .map_err(|_| ControlError::Unavailable)?
+    studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-services/claude_controls/store",
+        f,
+    )
+    .await
+    .map_err(|_| ControlError::Unavailable)?
 }
 fn now() -> f64 {
     std::time::SystemTime::now()

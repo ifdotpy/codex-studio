@@ -471,18 +471,19 @@ impl AdapterTask {
                 .map_err(|_| AdapterError::TaskFailed)
         })
         .await?;
-        let job = tokio::task::spawn_blocking(move || {
-            use std::io::Read;
-            let _permit = permit;
-            let mut bytes = Vec::new();
-            std::fs::File::open(format!("/proc/{pid}/environ"))?
-                .take(4 * 1024 * 1024 + 1)
-                .read_to_end(&mut bytes)?;
-            if bytes.len() > 4 * 1024 * 1024 {
-                return Err(io::Error::other("environment exceeds limit"));
-            }
-            parse_process_environment(&bytes)
-        });
+        let job =
+            crate::blocking_pool::spawn_blocking("runtime-process/provider_task", move || {
+                use std::io::Read;
+                let _permit = permit;
+                let mut bytes = Vec::new();
+                std::fs::File::open(format!("/proc/{pid}/environ"))?
+                    .take(4 * 1024 * 1024 + 1)
+                    .read_to_end(&mut bytes)?;
+                if bytes.len() > 4 * 1024 * 1024 {
+                    return Err(io::Error::other("environment exceeds limit"));
+                }
+                parse_process_environment(&bytes)
+            });
         // Reap the bounded filesystem job; never detach a started blocking job.
         let original = reap_environment_job(job, &mut self.stop)
             .await?

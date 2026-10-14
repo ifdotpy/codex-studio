@@ -123,15 +123,19 @@ pub async fn execute(
     deadline: tokio::time::Instant,
 ) -> Result<Value> {
     let claiming = store.clone();
-    let request = tokio::task::spawn_blocking(move || {
-        claiming.transaction_with(|tx| claim(tx, &ticket, params))
-    })
+    let request = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-services/thread_fork_runtime",
+        move || claiming.transaction_with(|tx| claim(tx, &ticket, params)),
+    )
     .await
     .map_err(|_| NativeError::Unknown)??;
     let receipt = send(session, &request, deadline).await?;
-    tokio::task::spawn_blocking(move || store.transaction_with(|tx| settle(tx, &receipt)))
-        .await
-        .map_err(|_| NativeError::Unknown)?
+    studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-services/thread_fork_runtime",
+        move || store.transaction_with(|tx| settle(tx, &receipt)),
+    )
+    .await
+    .map_err(|_| NativeError::Unknown)?
 }
 
 /// Dispatch a fork whose durable intent is owned by another workflow (for

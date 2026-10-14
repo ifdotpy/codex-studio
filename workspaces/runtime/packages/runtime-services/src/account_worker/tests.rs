@@ -567,29 +567,32 @@ struct State {
 }
 impl State {
     async fn new() -> Self {
-        let (store, agent, epoch, root) = tokio::task::spawn_blocking(|| {
-            let root = test_root().join(format!(
-                "worker-{}",
-                uuid::Uuid::new_v5(
-                    &uuid::Uuid::NAMESPACE_OID,
-                    format!(
-                        "{}-{:?}-{:?}",
-                        std::process::id(),
-                        SystemTime::now(),
-                        std::thread::current().id()
+        let (store, agent, epoch, root) = studio_runtime_process::blocking_pool::spawn_blocking(
+            "runtime-services/account_worker/tests",
+            || {
+                let root = test_root().join(format!(
+                    "worker-{}",
+                    uuid::Uuid::new_v5(
+                        &uuid::Uuid::NAMESPACE_OID,
+                        format!(
+                            "{}-{:?}-{:?}",
+                            std::process::id(),
+                            SystemTime::now(),
+                            std::thread::current().id()
+                        )
+                        .as_bytes()
                     )
-                    .as_bytes()
+                ));
+                let (source, agents) = template();
+                copy_template(&source, &root);
+                (
+                    Arc::new(RuntimeStore::open(Some(&root)).unwrap()),
+                    agents[0]["id"].as_str().unwrap().to_owned(),
+                    agents[0]["epoch"].as_i64().unwrap(),
+                    root,
                 )
-            ));
-            let (source, agents) = template();
-            copy_template(&source, &root);
-            (
-                Arc::new(RuntimeStore::open(Some(&root)).unwrap()),
-                agents[0]["id"].as_str().unwrap().to_owned(),
-                agents[0]["epoch"].as_i64().unwrap(),
-                root,
-            )
-        })
+            },
+        )
         .await
         .unwrap();
         let mut bridge = StoreBridge::new(store).await.unwrap();
@@ -1773,13 +1776,16 @@ async fn shutdown_releases_account_while_store_writer_is_blocked() {
     let (entered, observed) = oneshot::channel();
     let (release, blocked) = std::sync::mpsc::channel();
     let store = state.bridge.store.clone();
-    let lock = tokio::task::spawn_blocking(move || {
-        store.transaction_with(|_| {
-            entered.send(()).unwrap();
-            blocked.recv().unwrap();
-            Ok::<_, WorkerError>(())
-        })
-    });
+    let lock = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-services/account_worker/tests",
+        move || {
+            store.transaction_with(|_| {
+                entered.send(()).unwrap();
+                blocked.recv().unwrap();
+                Ok::<_, WorkerError>(())
+            })
+        },
+    );
     observed.await.unwrap();
     let before = state
         .bridge

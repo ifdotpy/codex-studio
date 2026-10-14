@@ -631,10 +631,13 @@ pub async fn end_active_for_agent(
 ) -> Result<Vec<Value>, VoiceProviderError> {
     let store_for_read = store.clone();
     let agent_for_read = agent_id.clone();
-    let sessions = tokio::task::spawn_blocking(move || {
-        let connection = store_for_read.read()?;
-        capture_delete_sessions(&connection, &agent_for_read)
-    })
+    let sessions = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-services/voice/provider",
+        move || {
+            let connection = store_for_read.read()?;
+            capture_delete_sessions(&connection, &agent_for_read)
+        },
+    )
     .await
     .map_err(|_| VoiceProviderError::Operation)??;
     let mut ended = Vec::with_capacity(sessions.len());
@@ -927,9 +930,10 @@ pub async fn end(
     let store_for_write = store.clone();
     let write_agent = agent_id.clone();
     let write_session = session_id.clone();
-    let (value, context) = tokio::task::spawn_blocking(move || {
-        prepare_end(&store_for_write, &write_agent, &write_session, now)
-    })
+    let (value, context) = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-services/voice/provider",
+        move || prepare_end(&store_for_write, &write_agent, &write_session, now),
+    )
     .await
     .map_err(|_| VoiceProviderError::Operation)??;
     let Some(context) = context else {
@@ -947,9 +951,10 @@ pub async fn end(
         let store_for_update = store.clone();
         let id = session_id.clone();
         let certainty = receipt.certainty;
-        tokio::task::spawn_blocking(move || {
-            update_stop_failure(&store_for_update, &id, certainty, now)
-        })
+        studio_runtime_process::blocking_pool::spawn_blocking(
+            "runtime-services/voice/provider",
+            move || update_stop_failure(&store_for_update, &id, certainty, now),
+        )
         .await
         .map_err(|_| VoiceProviderError::Operation)??;
         return Err(certainty_error(receipt.certainty));
@@ -1154,15 +1159,18 @@ pub async fn speech(
     let reserve_session = session_id.clone();
     let reserve_record = record_id.clone();
     let reserve_id = receipt_id.clone();
-    let reservation = tokio::task::spawn_blocking(move || {
-        reserve_speech(
-            &store_for_reserve,
-            &reserve_agent,
-            &reserve_session,
-            &reserve_record,
-            &reserve_id,
-        )
-    })
+    let reservation = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-services/voice/provider",
+        move || {
+            reserve_speech(
+                &store_for_reserve,
+                &reserve_agent,
+                &reserve_session,
+                &reserve_record,
+                &reserve_id,
+            )
+        },
+    )
     .await
     .map_err(|_| VoiceProviderError::Operation)??;
     let Some((context, text)) = reservation else {
@@ -1189,9 +1197,10 @@ pub async fn speech(
     let id = receipt_id.clone();
     let state_name = state.0.to_owned();
     let state_error = state.1;
-    tokio::task::spawn_blocking(move || {
-        update_speech(&store_for_update, &id, &state_name, state_error)
-    })
+    studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-services/voice/provider",
+        move || update_speech(&store_for_update, &id, &state_name, state_error),
+    )
     .await
     .map_err(|_| VoiceProviderError::Operation)??;
     if outcome.certainty != VoiceWriteCertainty::Written {
@@ -1225,15 +1234,18 @@ pub async fn approve(
     let reserve_session = session_id.clone();
     let reserve_speech = speech_id.clone();
     let reserve_transcript = transcript_id.clone();
-    let reservation = tokio::task::spawn_blocking(move || {
-        reserve_approval(
-            &store_for_reserve,
-            &reserve_agent,
-            &reserve_session,
-            &reserve_speech,
-            &reserve_transcript,
-        )
-    })
+    let reservation = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-services/voice/provider",
+        move || {
+            reserve_approval(
+                &store_for_reserve,
+                &reserve_agent,
+                &reserve_session,
+                &reserve_speech,
+                &reserve_transcript,
+            )
+        },
+    )
     .await
     .map_err(|_| VoiceProviderError::Operation)??;
     let (request_id, context, rpc_id) = match reservation {
@@ -1270,16 +1282,19 @@ pub async fn approve(
         .then(|| serde_json::to_string(&result))
         .transpose()
         .map_err(|_| VoiceProviderError::Operation)?;
-    tokio::task::spawn_blocking(move || {
-        store.transaction_with_error(|transaction| -> Result<_, VoiceProviderError> {
-            transaction.execute(
-                "UPDATE voice_approvals SET status=?1,result=?2 WHERE id=?3",
-                rusqlite::params![state_value, result_json, id],
-            )?;
-            Ok(())
-        })?;
-        Ok::<_, VoiceProviderError>(())
-    })
+    studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-services/voice/provider",
+        move || {
+            store.transaction_with_error(|transaction| -> Result<_, VoiceProviderError> {
+                transaction.execute(
+                    "UPDATE voice_approvals SET status=?1,result=?2 WHERE id=?3",
+                    rusqlite::params![state_value, result_json, id],
+                )?;
+                Ok(())
+            })?;
+            Ok::<_, VoiceProviderError>(())
+        },
+    )
     .await
     .map_err(|_| VoiceProviderError::Operation)??;
     if certainty != VoiceWriteCertainty::Written {
@@ -1913,14 +1928,17 @@ pub async fn start(
     let store_for_read = store.clone();
     let agent_for_read = agent_id.clone();
     let session_for_read = session_id.clone();
-    let existing = tokio::task::spawn_blocking(move || {
-        read_start_rows(
-            &store_for_read,
-            &agent_for_read,
-            &session_for_read,
-            start_request,
-        )
-    })
+    let existing = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-services/voice/provider",
+        move || {
+            read_start_rows(
+                &store_for_read,
+                &agent_for_read,
+                &session_for_read,
+                start_request,
+            )
+        },
+    )
     .await
     .map_err(|_| VoiceProviderError::Operation)??;
     if let StartDecision::Replay(session) = existing {
@@ -1946,24 +1964,28 @@ pub async fn start(
     let write_session = session_id.clone();
     let write_offer = offer.clone();
     let write_context = context.clone();
-    let histories = tokio::task::spawn_blocking({
-        let store = store.clone();
-        move || crate::budget_runtime::read_histories(&store, &root_id)
-    })
-    .await
-    .map_err(|_| VoiceProviderError::Operation)?
-    .map_err(|_| VoiceProviderError::Operation)?;
-    let saved = tokio::task::spawn_blocking(move || {
-        create_session(
-            &store_for_write,
-            &write_agent,
-            &write_session,
-            &write_offer,
-            &write_context,
-            &histories,
-            now,
-        )
-    })
+    let histories =
+        studio_runtime_process::blocking_pool::spawn_blocking("runtime-services/voice/provider", {
+            let store = store.clone();
+            move || crate::budget_runtime::read_histories(&store, &root_id)
+        })
+        .await
+        .map_err(|_| VoiceProviderError::Operation)?
+        .map_err(|_| VoiceProviderError::Operation)?;
+    let saved = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-services/voice/provider",
+        move || {
+            create_session(
+                &store_for_write,
+                &write_agent,
+                &write_session,
+                &write_offer,
+                &write_context,
+                &histories,
+                now,
+            )
+        },
+    )
     .await
     .map_err(|_| VoiceProviderError::Operation)??;
     if let StartDecision::Replay(session) = saved {
@@ -1976,9 +1998,10 @@ pub async fn start(
         let store_for_error = store.clone();
         let id = session_id.clone();
         let certainty = receipt.certainty;
-        tokio::task::spawn_blocking(move || {
-            set_start_failure(&store_for_error, &id, certainty, now)
-        })
+        studio_runtime_process::blocking_pool::spawn_blocking(
+            "runtime-services/voice/provider",
+            move || set_start_failure(&store_for_error, &id, certainty, now),
+        )
         .await
         .map_err(|_| VoiceProviderError::Operation)??;
         return Err(certainty_error(receipt.certainty));

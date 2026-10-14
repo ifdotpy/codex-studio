@@ -48,9 +48,10 @@ async fn upload_asset(
         .or_else(|| take_string(&mut body, "data"))
         .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "Invalid file data"))?;
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
-    let asset = tokio::task::spawn_blocking(move || {
-        payload_store::upload(&store, &agent, &name, id.as_deref(), &encoded)
-    })
+    let asset = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-http/routes/workspace_files",
+        move || payload_store::upload(&store, &agent, &name, id.as_deref(), &encoded),
+    )
     .await
     .map_err(|_| ApiError::internal())?
     .map_err(map_payload_store_error)?;
@@ -67,14 +68,17 @@ pub(crate) async fn file_info(
     let asset_id = string_query(&query, "asset")
         .filter(|asset| !asset.is_empty())
         .map(str::to_owned);
-    let result = tokio::task::spawn_blocking(move || {
-        read_info(
-            &store,
-            agent_id.as_deref(),
-            path.as_deref(),
-            asset_id.as_deref(),
-        )
-    })
+    let result = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-http/routes/workspace_files",
+        move || {
+            read_info(
+                &store,
+                agent_id.as_deref(),
+                path.as_deref(),
+                asset_id.as_deref(),
+            )
+        },
+    )
     .await
     .map_err(|_| ApiError::internal())??;
     super::generated_json::<crate::generated::FileInfo>(json!({
@@ -96,14 +100,17 @@ pub(crate) async fn file_content(
     let asset_id = string_query(&query, "asset")
         .filter(|asset| !asset.is_empty())
         .map(str::to_owned);
-    let result = tokio::task::spawn_blocking(move || {
-        read_content(
-            &store,
-            agent_id.as_deref(),
-            path.as_deref(),
-            asset_id.as_deref(),
-        )
-    })
+    let result = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-http/routes/workspace_files",
+        move || {
+            read_content(
+                &store,
+                agent_id.as_deref(),
+                path.as_deref(),
+                asset_id.as_deref(),
+            )
+        },
+    )
     .await
     .map_err(|_| ApiError::internal())??;
     super::generated_json::<crate::generated::FileContent>(json!({

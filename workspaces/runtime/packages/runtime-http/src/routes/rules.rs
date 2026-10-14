@@ -33,11 +33,14 @@ pub(crate) fn routes() -> RouteGroup {
 
 pub(crate) async fn list(State(state): State<HttpState>) -> Result<Json<Value>, ApiError> {
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
-    let records = tokio::task::spawn_blocking(move || {
-        let connection = store.read().map_err(|_| ApiError::internal())?;
-        let (rules, agents) = RulesRepository::list(&connection).map_err(store_api_error)?;
-        rules::visible_rules(rules, agents).map_err(rules_error)
-    })
+    let records = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-http/routes/rules",
+        move || {
+            let connection = store.read().map_err(|_| ApiError::internal())?;
+            let (rules, agents) = RulesRepository::list(&connection).map_err(store_api_error)?;
+            rules::visible_rules(rules, agents).map_err(rules_error)
+        },
+    )
     .await
     .map_err(|_| ApiError::internal())??;
 

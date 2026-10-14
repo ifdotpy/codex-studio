@@ -76,9 +76,10 @@ async fn costs(
         .map_err(|_| ApiError::internal())?
         .as_secs_f64();
     let state_dir = std::path::PathBuf::from(state.state_dir);
-    let result = tokio::task::spawn_blocking(move || {
-        usage::account_cost_snapshot(&state_dir, &account_key, &account, now)
-    })
+    let result = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-http/routes/usage",
+        move || usage::account_cost_snapshot(&state_dir, &account_key, &account, now),
+    )
     .await
     .map_err(|_| ApiError::internal())?
     .map_err(cost_error)?;
@@ -110,20 +111,25 @@ async fn capacity_retry(
     let retry_id = body.retry_id;
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
     let now = current_time()?;
-    let result = tokio::task::spawn_blocking(move || {
-        store.transaction_with(|transaction| -> Result<Value, UsageRepositoryError> {
-            let value = cancel_capacity_retry(transaction, &agent_id, &retry_id, now)?;
-            let response = serde_json::from_value::<crate::generated::RetryResponse>(value)
-                .map_err(|_| UsageRepositoryError::InvalidStoredObject {
-                    table: "runtime_capacity_retries",
-                    id: retry_id.clone(),
-                })?;
-            serde_json::to_value(response).map_err(|_| UsageRepositoryError::InvalidStoredObject {
-                table: "runtime_capacity_retries",
-                id: retry_id.clone(),
+    let result = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-http/routes/usage",
+        move || {
+            store.transaction_with(|transaction| -> Result<Value, UsageRepositoryError> {
+                let value = cancel_capacity_retry(transaction, &agent_id, &retry_id, now)?;
+                let response = serde_json::from_value::<crate::generated::RetryResponse>(value)
+                    .map_err(|_| UsageRepositoryError::InvalidStoredObject {
+                        table: "runtime_capacity_retries",
+                        id: retry_id.clone(),
+                    })?;
+                serde_json::to_value(response).map_err(|_| {
+                    UsageRepositoryError::InvalidStoredObject {
+                        table: "runtime_capacity_retries",
+                        id: retry_id.clone(),
+                    }
+                })
             })
-        })
-    })
+        },
+    )
     .await
     .map_err(|_| ApiError::internal())?
     .map_err(|error| usage_error(error, "/api/capacity-retry"))?;
@@ -145,28 +151,31 @@ async fn usage_resume(
     let resume_id = body.resume_id;
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
     let now = current_time()?;
-    let result = tokio::task::spawn_blocking(move || {
-        store.transaction_with(
-            |transaction| -> Result<Option<Value>, UsageRepositoryError> {
-                let value = disable_usage_resume(transaction, &agent_id, &resume_id, now)?;
-                if value.is_null() {
-                    return Ok(None);
-                }
-                let response =
-                    serde_json::from_value::<crate::generated::UsageResumeResponse>(value)
-                        .map_err(|_| UsageRepositoryError::InvalidStoredObject {
+    let result = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-http/routes/usage",
+        move || {
+            store.transaction_with(
+                |transaction| -> Result<Option<Value>, UsageRepositoryError> {
+                    let value = disable_usage_resume(transaction, &agent_id, &resume_id, now)?;
+                    if value.is_null() {
+                        return Ok(None);
+                    }
+                    let response =
+                        serde_json::from_value::<crate::generated::UsageResumeResponse>(value)
+                            .map_err(|_| UsageRepositoryError::InvalidStoredObject {
+                                table: "runtime_usage_resumes",
+                                id: resume_id.clone(),
+                            })?;
+                    serde_json::to_value(response).map(Some).map_err(|_| {
+                        UsageRepositoryError::InvalidStoredObject {
                             table: "runtime_usage_resumes",
                             id: resume_id.clone(),
-                        })?;
-                serde_json::to_value(response).map(Some).map_err(|_| {
-                    UsageRepositoryError::InvalidStoredObject {
-                        table: "runtime_usage_resumes",
-                        id: resume_id.clone(),
-                    }
-                })
-            },
-        )
-    })
+                        }
+                    })
+                },
+            )
+        },
+    )
     .await
     .map_err(|_| ApiError::internal())?
     .map_err(|error| usage_error(error, "/api/usage-resume"))?;

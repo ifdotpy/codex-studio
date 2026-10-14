@@ -77,15 +77,18 @@ async fn configure(
     ApiJson(body): ApiJson<generated::MacSyncConfigRequest>,
 ) -> Result<Json<Value>, ApiError> {
     let root = std::path::PathBuf::from(state.state_dir);
-    let status = tokio::task::spawn_blocking(move || {
-        mac_sync::configure(
-            &root,
-            &body.project_id,
-            body.enabled.flatten(),
-            body.allow_deletes.unwrap_or(false),
-        )
-        .map_err(mac_error)
-    })
+    let status = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-http/routes/mac_sync",
+        move || {
+            mac_sync::configure(
+                &root,
+                &body.project_id,
+                body.enabled.flatten(),
+                body.allow_deletes.unwrap_or(false),
+            )
+            .map_err(mac_error)
+        },
+    )
     .await
     .map_err(|_| ApiError::internal())??;
     state.sync_changes.notify_one();
@@ -103,9 +106,12 @@ async fn resolve(
     let resolve_project_id = project_id.clone();
     let path = body.path;
     let choice = body.choice.as_str().to_owned();
-    let result = tokio::task::spawn_blocking(move || {
-        mac_sync::resolve(&root, &resolve_project_id, &path, &choice, &guest).map_err(mac_error)
-    })
+    let result = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-http/routes/mac_sync",
+        move || {
+            mac_sync::resolve(&root, &resolve_project_id, &path, &choice, &guest).map_err(mac_error)
+        },
+    )
     .await
     .map_err(|_| ApiError::internal())??;
     if result.response["choice"] == "agent" {
@@ -129,41 +135,44 @@ async fn lead_for_project(
     store: std::sync::Arc<studio_runtime_store::RuntimeStore>,
     project_id: String,
 ) -> Result<Option<String>, ApiError> {
-    tokio::task::spawn_blocking(move || {
-        let connection = store.read().map_err(|_| ApiError::internal())?;
-        let mut statement = connection
-            .prepare("SELECT id FROM runtime_agents")
-            .map_err(|_| ApiError::internal())?;
-        let ids = statement
-            .query_map([], |row| row.get::<_, String>(0))
-            .map_err(|_| ApiError::internal())?;
-        let mut leads = Vec::new();
-        for id in ids {
-            let id = id.map_err(|_| ApiError::internal())?;
-            let Some(agent) = AgentRepository::get(&connection, &AgentId::from(id.as_str()))
-                .map_err(|_| ApiError::internal())?
-            else {
-                continue;
-            };
-            if agent.extra.get("isLead").and_then(Value::as_bool) == Some(true)
-                && agent.extra.get("layrProjectId").and_then(Value::as_str) == Some(&project_id)
-                && agent.extra.get("layrLine").and_then(Value::as_str) == Some("main")
-                && agent.extra.get("deletedAt").is_none_or(Value::is_null)
-            {
-                leads.push((
-                    agent.status.as_str() != "failed",
-                    agent
-                        .extra
-                        .get("created")
-                        .and_then(Value::as_f64)
-                        .unwrap_or(0.0),
-                    agent.id.0,
-                ));
+    studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-http/routes/mac_sync",
+        move || {
+            let connection = store.read().map_err(|_| ApiError::internal())?;
+            let mut statement = connection
+                .prepare("SELECT id FROM runtime_agents")
+                .map_err(|_| ApiError::internal())?;
+            let ids = statement
+                .query_map([], |row| row.get::<_, String>(0))
+                .map_err(|_| ApiError::internal())?;
+            let mut leads = Vec::new();
+            for id in ids {
+                let id = id.map_err(|_| ApiError::internal())?;
+                let Some(agent) = AgentRepository::get(&connection, &AgentId::from(id.as_str()))
+                    .map_err(|_| ApiError::internal())?
+                else {
+                    continue;
+                };
+                if agent.extra.get("isLead").and_then(Value::as_bool) == Some(true)
+                    && agent.extra.get("layrProjectId").and_then(Value::as_str) == Some(&project_id)
+                    && agent.extra.get("layrLine").and_then(Value::as_str) == Some("main")
+                    && agent.extra.get("deletedAt").is_none_or(Value::is_null)
+                {
+                    leads.push((
+                        agent.status.as_str() != "failed",
+                        agent
+                            .extra
+                            .get("created")
+                            .and_then(Value::as_f64)
+                            .unwrap_or(0.0),
+                        agent.id.0,
+                    ));
+                }
             }
-        }
-        leads.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.total_cmp(&b.1)));
-        Ok(leads.pop().map(|lead| lead.2))
-    })
+            leads.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.total_cmp(&b.1)));
+            Ok(leads.pop().map(|lead| lead.2))
+        },
+    )
     .await
     .map_err(|_| ApiError::internal())?
 }
@@ -180,52 +189,58 @@ async fn send_handoff(
     let text = text.to_owned();
     let wake = state.event_wake;
     let custom_admission = state.message_admission;
-    tokio::task::spawn_blocking(move || {
-        let connection = store.read().map_err(|_| ApiError::internal())?;
-        AgentRepository::get(&connection, &AgentId::from(lead.as_str()))
-            .map_err(|_| ApiError::internal())?
-            .ok_or_else(ApiError::internal)?;
-        let ingress_admission = if custom_admission.is_none() {
-            Some(
-                studio_runtime_services::message_admission::MessageIngressAdmission::load(
-                    &store,
+    studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-http/routes/mac_sync",
+        move || {
+            let connection = store.read().map_err(|_| ApiError::internal())?;
+            AgentRepository::get(&connection, &AgentId::from(lead.as_str()))
+                .map_err(|_| ApiError::internal())?
+                .ok_or_else(ApiError::internal)?;
+            let ingress_admission = if custom_admission.is_none() {
+                Some(
+                    studio_runtime_services::message_admission::MessageIngressAdmission::load(
+                        &store,
+                        &connection,
+                        &lead,
+                    )
+                    .map_err(|_| ApiError::internal())?,
+                )
+            } else {
+                None
+            };
+            let default_admission =
+                studio_runtime_services::message_admission::PreparedAdmission::load(
                     &connection,
                     &lead,
                 )
-                .map_err(|_| ApiError::internal())?,
-            )
-        } else {
-            None
-        };
-        let default_admission =
-            studio_runtime_services::message_admission::PreparedAdmission::load(&connection, &lead)
                 .map_err(|_| ApiError::internal())?;
-        let admission: &dyn studio_runtime_services::message_admission::MessageAdmission =
-            custom_admission
-                .as_deref()
-                .or_else(|| {
-                    ingress_admission.as_ref().map(|value| {
+            let admission: &dyn studio_runtime_services::message_admission::MessageAdmission =
+                custom_admission
+                    .as_deref()
+                    .or_else(|| {
+                        ingress_admission.as_ref().map(|value| {
                         value as &dyn studio_runtime_services::message_admission::MessageAdmission
                     })
+                    })
+                    .unwrap_or(&default_admission);
+            let posted = store
+                .transaction_with_error(|transaction| {
+                    CoordinationHandoffPort.send_after_turn(
+                        transaction,
+                        &lead,
+                        &request_id,
+                        &text,
+                        now_seconds(),
+                        admission,
+                    )
                 })
-                .unwrap_or(&default_admission);
-        let posted = store
-            .transaction_with_error(|transaction| {
-                CoordinationHandoffPort.send_after_turn(
-                    transaction,
-                    &lead,
-                    &request_id,
-                    &text,
-                    now_seconds(),
-                    admission,
-                )
-            })
-            .map_err(|_| ApiError::internal())?;
-        if posted.event_inserted {
-            wake.notify_one();
-        }
-        Ok::<(), ApiError>(())
-    })
+                .map_err(|_| ApiError::internal())?;
+            if posted.event_inserted {
+                wake.notify_one();
+            }
+            Ok::<(), ApiError>(())
+        },
+    )
     .await
     .map_err(|_| ApiError::internal())?
 }

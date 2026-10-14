@@ -105,12 +105,15 @@ async fn snapshot(State(state): State<HttpState>) -> Result<Json<Value>, ApiErro
     let credentials = state.credentials;
     let origin = state.public_origin;
     let store = state.store.ok_or_else(ApiError::internal)?;
-    let result = tokio::task::spawn_blocking(move || {
-        let identity = credentials
-            .identity(&store, origin.as_deref())
-            .map_err(map_credential_error)?;
-        multi_server::snapshot(&store, &identity).map_err(map_service_error)
-    })
+    let result = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-http/routes/multi_server",
+        move || {
+            let identity = credentials
+                .identity(&store, origin.as_deref())
+                .map_err(map_credential_error)?;
+            multi_server::snapshot(&store, &identity).map_err(map_service_error)
+        },
+    )
     .await
     .map_err(|_| ApiError::internal())?;
     let result = result?;
@@ -121,10 +124,13 @@ async fn snapshot(State(state): State<HttpState>) -> Result<Json<Value>, ApiErro
 
 async fn audit(State(state): State<HttpState>) -> Result<Json<Value>, ApiError> {
     let store = state.store.ok_or_else(ApiError::internal)?;
-    let result = tokio::task::spawn_blocking(move || multi_server::audit(&store))
-        .await
-        .map_err(|_| ApiError::internal())?
-        .map_err(map_service_error)?;
+    let result = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-http/routes/multi_server",
+        move || multi_server::audit(&store),
+    )
+    .await
+    .map_err(|_| ApiError::internal())?
+    .map_err(map_service_error)?;
     Ok(Json(super::generated_json::<
         crate::generated::AccessAuditResponse,
     >(result)?))
@@ -153,39 +159,43 @@ async fn manage(
         let store = state.store.ok_or_else(ApiError::internal)?;
         let credentials = state.credentials;
         let origin = state.public_origin;
-        let result = tokio::task::spawn_blocking(move || {
-            let action = body["action"].as_str().unwrap_or_default();
-            if action == "alias"
-                && !credentials
-                    .is_local_target(&store, body["serverId"].as_str().unwrap_or_default())
-                    .map_err(map_credential_error)?
-            {
-                return Err(unavailable_for(
-                    "POST",
-                    "/api/multi-server",
-                    MANAGEMENT_DEPENDENCIES,
-                ));
-            }
-            if action == "name" {
-                credentials
-                    .rename(
-                        &store,
-                        body["serverId"].as_str().unwrap_or_default(),
-                        body["label"].as_str().unwrap_or_default(),
-                        body["requestId"].as_str().unwrap_or_default(),
-                        "local",
-                    )
+        let result = studio_runtime_process::blocking_pool::spawn_blocking(
+            "runtime-http/routes/multi_server",
+            move || {
+                let action = body["action"].as_str().unwrap_or_default();
+                if action == "alias"
+                    && !credentials
+                        .is_local_target(&store, body["serverId"].as_str().unwrap_or_default())
+                        .map_err(map_credential_error)?
+                {
+                    return Err(unavailable_for(
+                        "POST",
+                        "/api/multi-server",
+                        MANAGEMENT_DEPENDENCIES,
+                    ));
+                }
+                if action == "name" {
+                    credentials
+                        .rename(
+                            &store,
+                            body["serverId"].as_str().unwrap_or_default(),
+                            body["label"].as_str().unwrap_or_default(),
+                            body["requestId"].as_str().unwrap_or_default(),
+                            "local",
+                        )
+                        .map_err(map_credential_error)?;
+                }
+                let identity = credentials
+                    .identity(&store, origin.as_deref())
                     .map_err(map_credential_error)?;
-            }
-            let identity = credentials
-                .identity(&store, origin.as_deref())
-                .map_err(map_credential_error)?;
-            if matches!(action, "name" | "discover") {
-                multi_server::snapshot(&store, &identity).map_err(map_service_error)
-            } else {
-                multi_server::manage(&store, &identity, &body, "local").map_err(map_service_error)
-            }
-        })
+                if matches!(action, "name" | "discover") {
+                    multi_server::snapshot(&store, &identity).map_err(map_service_error)
+                } else {
+                    multi_server::manage(&store, &identity, &body, "local")
+                        .map_err(map_service_error)
+                }
+            },
+        )
         .await
         .map_err(|_| ApiError::internal())??;
         return Ok(Json(super::generated_json::<

@@ -176,27 +176,30 @@ async fn dispatch<T: serde::de::DeserializeOwned + serde::Serialize>(
     state: HttpState,
     operation: impl FnOnce(&Context<'_>) -> Result<Value, OperationError> + Send + 'static,
 ) -> Result<Json<Value>, ApiError> {
-    let result = tokio::task::spawn_blocking(move || {
-        let store = state.store.as_deref().ok_or_else(ApiError::internal)?;
-        let catalog = RouteCreationCatalog {
-            service: &state.model_catalog,
-        };
-        let context = Context {
-            store,
-            accounts: state.account_policy.as_deref(),
-            driver: state.account_driver.as_deref(),
-            catalog: Some(&catalog),
-            validate: &|schema, value| match schema {
-                "PersistedAgentRecord" => state
-                    .validators
-                    .validate_table_record("runtime_agents", value),
-                _ => state.validators.validate_stored(schema, value),
-            },
-        };
-        let result = operation(&context).map_err(operation_error)?;
-        state.event_wake.notify_one();
-        super::generated_json::<T>(result).map(Json)
-    })
+    let result = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-http/routes/agents_create",
+        move || {
+            let store = state.store.as_deref().ok_or_else(ApiError::internal)?;
+            let catalog = RouteCreationCatalog {
+                service: &state.model_catalog,
+            };
+            let context = Context {
+                store,
+                accounts: state.account_policy.as_deref(),
+                driver: state.account_driver.as_deref(),
+                catalog: Some(&catalog),
+                validate: &|schema, value| match schema {
+                    "PersistedAgentRecord" => state
+                        .validators
+                        .validate_table_record("runtime_agents", value),
+                    _ => state.validators.validate_stored(schema, value),
+                },
+            };
+            let result = operation(&context).map_err(operation_error)?;
+            state.event_wake.notify_one();
+            super::generated_json::<T>(result).map(Json)
+        },
+    )
     .await
     .map_err(|_| ApiError::internal())??;
     Ok(result)
@@ -394,19 +397,22 @@ async fn rename(
             .ok_or_else(|| ApiError::validation(vec![Value::String("body".to_owned())]))?;
         let store = state.store.clone().ok_or_else(ApiError::internal)?;
         let agent_id = body.id.clone();
-        let agent = tokio::task::spawn_blocking({
-            let store = store.clone();
-            let agent_id = agent_id.clone();
-            move || {
-                let connection = store.read().map_err(|_| ApiError::internal())?;
-                studio_runtime_store::AgentRepository::get(
-                    &connection,
-                    &studio_runtime_store::AgentId::from(agent_id),
-                )
-                .map_err(|_| ApiError::internal())?
-                .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "Unknown managed agent"))
-            }
-        })
+        let agent = studio_runtime_process::blocking_pool::spawn_blocking(
+            "runtime-http/routes/agents_create",
+            {
+                let store = store.clone();
+                let agent_id = agent_id.clone();
+                move || {
+                    let connection = store.read().map_err(|_| ApiError::internal())?;
+                    studio_runtime_store::AgentRepository::get(
+                        &connection,
+                        &studio_runtime_store::AgentId::from(agent_id),
+                    )
+                    .map_err(|_| ApiError::internal())?
+                    .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "Unknown managed agent"))
+                }
+            },
+        )
         .await
         .map_err(|_| ApiError::internal())??;
         let account_key = agent

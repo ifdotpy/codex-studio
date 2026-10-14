@@ -120,20 +120,23 @@ async fn commit(
 ) -> Result<Value, ApiError> {
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
     let wake = state.event_wake.clone();
-    let result = tokio::task::spawn_blocking(move || {
-        let result = store
-            .transaction_with_error(|tx| {
-                work_write::write(tx, &agent, request_id.as_deref(), &signature, command)
-            })
-            .map_err(write_error)?;
-        if result.event_inserted {
-            wake.notify_one();
-        }
-        if let Some(artifact) = &result.artifact {
-            work_write::write_result_artifact(artifact).map_err(|_| ApiError::internal())?;
-        }
-        Ok::<_, ApiError>(result)
-    })
+    let result = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-http/routes/work_write",
+        move || {
+            let result = store
+                .transaction_with_error(|tx| {
+                    work_write::write(tx, &agent, request_id.as_deref(), &signature, command)
+                })
+                .map_err(write_error)?;
+            if result.event_inserted {
+                wake.notify_one();
+            }
+            if let Some(artifact) = &result.artifact {
+                work_write::write_result_artifact(artifact).map_err(|_| ApiError::internal())?;
+            }
+            Ok::<_, ApiError>(result)
+        },
+    )
     .await
     .map_err(|_| ApiError::internal())??;
     Ok(result.record)

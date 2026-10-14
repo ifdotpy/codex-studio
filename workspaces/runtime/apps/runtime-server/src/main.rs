@@ -135,8 +135,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let runtime_for_check = Arc::clone(&native_runtime);
     let discovery = native_discovery_inputs(native_path.as_deref());
     if let Some(platform) = native_platform() {
-        match tokio::task::spawn_blocking(move || runtime_for_check.check(discovery, platform))
-            .await
+        match studio_runtime_process::blocking_pool::spawn_blocking(
+            "runtime-server/main",
+            move || runtime_for_check.check(discovery, platform),
+        )
+        .await
         {
             Ok(Ok(_)) => {}
             Ok(Err(error)) => eprintln!("native runtime compatibility check failed: {error}"),
@@ -380,7 +383,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             .duration_since(std::time::UNIX_EPOCH)
                             .map(|value| value.as_secs() as i64)
                             .unwrap_or_default();
-                        drop(tokio::task::spawn_blocking(move || driver.pump_due(now)).await);
+                        drop(studio_runtime_process::blocking_pool::spawn_blocking("runtime-server/main", move || driver.pump_due(now)).await);
                     }
                 }
             }
@@ -401,7 +404,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 _ = tick.tick() => {
                     let store = Arc::clone(&federation_store);
                     let cancelled = Arc::clone(&federation_stop);
-                    if let Err(error) = tokio::task::spawn_blocking(move || {
+                    if let Err(error) = studio_runtime_process::blocking_pool::spawn_blocking("runtime-server/main", move || {
                         let Ok(snapshot) = studio_runtime_services::federation::snapshot(&store) else { return };
                         let now = std::time::SystemTime::now()
                             .duration_since(std::time::UNIX_EPOCH)
@@ -493,7 +496,11 @@ impl studio_runtime_http::NativeContextRepairPort for NativeContextRepairAdapter
 async fn shutdown_io_runtime(
     runtime: Arc<io_runtime::IoRuntime>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let result = tokio::task::spawn_blocking(move || runtime.shutdown()).await?;
+    let result =
+        studio_runtime_process::blocking_pool::spawn_blocking("runtime-server/main", move || {
+            runtime.shutdown()
+        })
+        .await?;
     result?;
     Ok(())
 }

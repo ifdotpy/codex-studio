@@ -864,9 +864,12 @@ fn public(job: &Job) -> Value {
 async fn blocking<T: Send + 'static>(
     f: impl FnOnce() -> Result<T, LoginError> + Send + 'static,
 ) -> Result<T, LoginError> {
-    tokio::task::spawn_blocking(f)
-        .await
-        .map_err(|_| LoginError::Unavailable)?
+    studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-services/claude_login/service",
+        f,
+    )
+    .await
+    .map_err(|_| LoginError::Unavailable)?
 }
 fn append_tail(output: &mut Vec<u8>, bytes: &[u8]) {
     output.extend_from_slice(bytes);

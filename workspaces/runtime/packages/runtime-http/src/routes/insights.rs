@@ -52,14 +52,17 @@ async fn analytics_read(
     let timing = options.timing.as_deref() == Some("1") && !export;
     let started = Instant::now();
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
-    let result = tokio::task::spawn_blocking(move || {
-        let value = analytics::read(&store, &options)?;
-        if export {
-            Ok(ReadBody::Export(serde_json::to_vec(&value)?))
-        } else {
-            Ok(ReadBody::Json(value))
-        }
-    })
+    let result = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-http/routes/insights",
+        move || {
+            let value = analytics::read(&store, &options)?;
+            if export {
+                Ok(ReadBody::Export(serde_json::to_vec(&value)?))
+            } else {
+                Ok(ReadBody::Json(value))
+            }
+        },
+    )
     .await
     .map_err(|_| ApiError::internal())?
     .map_err(map_analytics_error)?;
@@ -124,9 +127,10 @@ async fn session_cost(
                 .collect::<BTreeMap<_, _>>()
         })
         .unwrap_or_default();
-    let value = tokio::task::spawn_blocking(move || {
-        costs::session_cost_with_accounts(&store, &agent, &account_providers)
-    })
+    let value = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-http/routes/insights",
+        move || costs::session_cost_with_accounts(&store, &agent, &account_providers),
+    )
     .await
     .map_err(|_| ApiError::internal())?
     .map_err(map_costs_error)?;

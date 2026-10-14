@@ -38,9 +38,12 @@ pub(crate) fn routes() -> RouteGroup {
 
 pub(crate) async fn protocol(State(state): State<HttpState>) -> Result<Json<Value>, ApiError> {
     let socket_path = PathBuf::from(state.state_dir).join("canvas.sock");
-    let unix_socket = tokio::task::spawn_blocking(move || socket_path.exists())
-        .await
-        .map_err(|_| ApiError::internal())?;
+    let unix_socket = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-http/routes/sync_documents",
+        move || socket_path.exists(),
+    )
+    .await
+    .map_err(|_| ApiError::internal())?;
     let mut capabilities = vec![
         "pull",
         "stream",
@@ -104,7 +107,7 @@ pub(crate) async fn pull(
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
     let validators = state.validators.clone();
     let state_dir = state.state_dir.clone();
-    let result = tokio::task::spawn_blocking(move || -> Result<Value, ApiError> {
+    let result = studio_runtime_process::blocking_pool::spawn_blocking("runtime-http/routes/sync_documents", move || -> Result<Value, ApiError> {
         let generation = store.generation().map_err(|_| ApiError::internal())?;
         if let Some(agent) = scope.strip_prefix("transcript:") {
             let mut response = transcript::pull_scope(&store, &scope, agent, after)
@@ -271,19 +274,22 @@ pub(crate) async fn push_drafts(
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
     let wake = state.event_wake.clone();
     let validators = validators.clone();
-    let result = tokio::task::spawn_blocking(move || {
-        let result = sync_documents::push_drafts(&store, &writes, |payload| {
-            validators.validate_stored("DraftPayload", payload)
-        })
-        .map_err(|error| match error {
-            sync_documents::DraftPushError::InvalidStored { id } => invalid_stored_draft(&id),
-            sync_documents::DraftPushError::Store(_) => ApiError::internal(),
-        })?;
-        if result.changed {
-            wake.notify_one();
-        }
-        Ok::<_, ApiError>(result.conflicts)
-    })
+    let result = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-http/routes/sync_documents",
+        move || {
+            let result = sync_documents::push_drafts(&store, &writes, |payload| {
+                validators.validate_stored("DraftPayload", payload)
+            })
+            .map_err(|error| match error {
+                sync_documents::DraftPushError::InvalidStored { id } => invalid_stored_draft(&id),
+                sync_documents::DraftPushError::Store(_) => ApiError::internal(),
+            })?;
+            if result.changed {
+                wake.notify_one();
+            }
+            Ok::<_, ApiError>(result.conflicts)
+        },
+    )
     .await
     .map_err(|_| ApiError::internal())??;
     Ok(Json(super::generated_json::<
@@ -306,11 +312,14 @@ pub(crate) async fn push_preferences(
         .map_err(|_| ApiError::validation(vec![Value::String("body".to_owned())]))?;
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
     let validators = state.validators.clone();
-    let merged = tokio::task::spawn_blocking(move || {
-        sync_policy::push_preferences(&store, scope, &fields, move |field| {
-            validators.validate_preference_field(field)
-        })
-    })
+    let merged = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-http/routes/sync_documents",
+        move || {
+            sync_policy::push_preferences(&store, scope, &fields, move |field| {
+                validators.validate_preference_field(field)
+            })
+        },
+    )
     .await
     .map_err(|_| ApiError::internal())?
     .map_err(|error| match error {

@@ -55,19 +55,22 @@ async fn answer(
     let monitor_available = monitor.is_some();
     let monitor_id = id.clone();
     let monitor_data = data.clone();
-    if let Some(answer) = tokio::task::spawn_blocking(move || {
-        studio_runtime_services::monitor_runtime::answer_approval(
-            &store,
-            &monitor_id,
-            &monitor_data,
-            callback_clock().map_err(|_| {
-                studio_runtime_services::monitor_policy::MonitorError::Refused(
-                    "The system clock is unavailable",
-                )
-            })?,
-            monitor_available,
-        )
-    })
+    if let Some(answer) = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-http/routes/questions_write",
+        move || {
+            studio_runtime_services::monitor_runtime::answer_approval(
+                &store,
+                &monitor_id,
+                &monitor_data,
+                callback_clock().map_err(|_| {
+                    studio_runtime_services::monitor_policy::MonitorError::Refused(
+                        "The system clock is unavailable",
+                    )
+                })?,
+                monitor_available,
+            )
+        },
+    )
     .await
     .map_err(|_| ApiError::internal())?
     .map_err(monitor_approval_error)?
@@ -89,10 +92,13 @@ async fn answer(
         .callback_runtime
         .clone()
         .ok_or_else(|| ApiError::dependency(CALLBACK_REPLY_DEPENDENCY[0].name()))?;
-    let value = tokio::task::spawn_blocking(move || runtime.answer(&id, &data, callback_clock()?))
-        .await
-        .map_err(|_| ApiError::internal())?
-        .map_err(callback_error)?;
+    let value = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-http/routes/questions_write",
+        move || runtime.answer(&id, &data, callback_clock()?),
+    )
+    .await
+    .map_err(|_| ApiError::internal())?
+    .map_err(callback_error)?;
     state.event_wake.notify_one();
     Ok(Json(
         super::generated_json::<crate::generated::AnswerResult>(value)?,
@@ -165,11 +171,13 @@ async fn delete_question(
         .callback_runtime
         .clone()
         .ok_or_else(|| ApiError::dependency(CALLBACK_REPLY_DEPENDENCY[0].name()))?;
-    let value =
-        tokio::task::spawn_blocking(move || runtime.delete_question(&id, callback_clock()?))
-            .await
-            .map_err(|_| ApiError::internal())?
-            .map_err(callback_error)?;
+    let value = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-http/routes/questions_write",
+        move || runtime.delete_question(&id, callback_clock()?),
+    )
+    .await
+    .map_err(|_| ApiError::internal())?
+    .map_err(callback_error)?;
     state.event_wake.notify_one();
     Ok(Json(generated_receipt(value)?))
 }

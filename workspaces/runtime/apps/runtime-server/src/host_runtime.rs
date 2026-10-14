@@ -178,15 +178,18 @@ impl HostRuntime {
         *state = state
             .clone()
             .with_vault_host_command(python.clone(), server_source.clone());
-        let mut resources = tokio::task::spawn_blocking(move || {
-            PreparationResources::bundled_at(
-                String::new(),
-                catalog,
-                python,
-                resource_root,
-                server_source,
-            )
-        })
+        let mut resources = studio_runtime_process::blocking_pool::spawn_blocking(
+            "runtime-server/host_runtime",
+            move || {
+                PreparationResources::bundled_at(
+                    String::new(),
+                    catalog,
+                    python,
+                    resource_root,
+                    server_source,
+                )
+            },
+        )
         .await
         .map_err(|_| WorkerError::TaskFailed)??;
         resources.account_driver = Some(accounts.clone());
@@ -367,20 +370,23 @@ impl AccountLauncher for HostLauncher {
             let accounts = self.accounts.clone();
             let key = account.clone();
             let (provider, home, isolated, claude_profile) =
-                tokio::task::spawn_blocking(move || selected_account(&accounts, &key))
-                    .await
-                    .map_err(|_| WorkerError::TaskFailed)??;
+                studio_runtime_process::blocking_pool::spawn_blocking(
+                    "runtime-server/host_runtime",
+                    move || selected_account(&accounts, &key),
+                )
+                .await
+                .map_err(|_| WorkerError::TaskFailed)??;
             let mut resources = (*self.resources).clone();
             resources.account_home.clone_from(&home);
             let accounts = self.accounts.clone();
             let key = account.clone();
-            resources.claude_account_pin =
-                tokio::task::spawn_blocking(move || accounts.auth_pin(&key))
-                    .await
-                    .map_err(|_| WorkerError::TaskFailed)?
-                    .map_err(|_| {
-                        WorkerError::PreparationRefused("account-driver/unavailable".into())
-                    })?;
+            resources.claude_account_pin = studio_runtime_process::blocking_pool::spawn_blocking(
+                "runtime-server/host_runtime",
+                move || accounts.auth_pin(&key),
+            )
+            .await
+            .map_err(|_| WorkerError::TaskFailed)?
+            .map_err(|_| WorkerError::PreparationRefused("account-driver/unavailable".into()))?;
             let (launch, executable, claude_executable, lease) = if let Some(profile) =
                 claude_profile
             {

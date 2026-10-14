@@ -44,9 +44,10 @@ pub(crate) async fn envelope(
     };
     let cursor = if should_sample(&request) {
         let cursor_store = store.clone();
-        let cursor = tokio::task::spawn_blocking(move || {
-            cursor_store.read_transaction(sample_entity_cursor)
-        })
+        let cursor = studio_runtime_process::blocking_pool::spawn_blocking(
+            "runtime-http/mutation_sync",
+            move || cursor_store.read_transaction(sample_entity_cursor),
+        )
         .await;
         match cursor {
             Ok(Ok(cursor)) => cursor_after_read(Ok(cursor)),
@@ -91,9 +92,10 @@ async fn envelope_response(
     }
 
     let delta_store = store;
-    let delta = tokio::task::spawn_blocking(move || {
-        delta_store.read_transaction(|snapshot| read_entity_delta(snapshot, after))
-    })
+    let delta = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-http/mutation_sync",
+        move || delta_store.read_transaction(|snapshot| read_entity_delta(snapshot, after)),
+    )
     .await;
     let delta = match delta {
         Ok(Ok(delta)) => delta,

@@ -37,9 +37,12 @@ pub async fn acquire_probe_slot() -> Result<OwnedSemaphorePermit> {
 async fn blocking_store<T: Send + 'static>(
     operation: impl FnOnce() -> Result<T> + Send + 'static,
 ) -> Result<T> {
-    tokio::task::spawn_blocking(operation)
-        .await
-        .map_err(|_| ContinuationError::Unavailable("claude-auth/store-worker"))?
+    studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-services/claude_auth_runtime",
+        operation,
+    )
+    .await
+    .map_err(|_| ContinuationError::Unavailable("claude-auth/store-worker"))?
 }
 
 pub fn preparation_settings(agent: &Value) -> Value {
@@ -203,10 +206,13 @@ where
     let account_key = intent.account_key.clone();
     let driver_copy = driver.clone();
     let key_copy = account_key.clone();
-    let before = tokio::task::spawn_blocking(move || driver_copy.internal_record(&key_copy))
-        .await
-        .map_err(|_| ContinuationError::Unavailable("claude-auth/account-probe"))?
-        .map_err(|_| ContinuationError::Unavailable("claude-auth/account-probe"))?;
+    let before = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-services/claude_auth_runtime",
+        move || driver_copy.internal_record(&key_copy),
+    )
+    .await
+    .map_err(|_| ContinuationError::Unavailable("claude-auth/account-probe"))?
+    .map_err(|_| ContinuationError::Unavailable("claude-auth/account-probe"))?;
     if !same_selected_account(&selected_pin, &before) {
         let store = store.clone();
         let intent = intent.clone();
@@ -235,15 +241,21 @@ where
 
     let driver_copy = driver.clone();
     let key_copy = account_key.clone();
-    let status = tokio::task::spawn_blocking(move || driver_copy.get(&key_copy))
-        .await
-        .map_err(|_| ContinuationError::Unavailable("claude-auth/account-probe"))?
-        .map_err(|_| ContinuationError::Unavailable("claude-auth/account-probe"))?;
+    let status = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-services/claude_auth_runtime",
+        move || driver_copy.get(&key_copy),
+    )
+    .await
+    .map_err(|_| ContinuationError::Unavailable("claude-auth/account-probe"))?
+    .map_err(|_| ContinuationError::Unavailable("claude-auth/account-probe"))?;
     let driver_copy = driver.clone();
-    let after = tokio::task::spawn_blocking(move || driver_copy.internal_record(&account_key))
-        .await
-        .map_err(|_| ContinuationError::Unavailable("claude-auth/account-probe"))?
-        .map_err(|_| ContinuationError::Unavailable("claude-auth/account-probe"))?;
+    let after = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-services/claude_auth_runtime",
+        move || driver_copy.internal_record(&account_key),
+    )
+    .await
+    .map_err(|_| ContinuationError::Unavailable("claude-auth/account-probe"))?
+    .map_err(|_| ContinuationError::Unavailable("claude-auth/account-probe"))?;
     if claude_auth_wait::account_pin(&before) != claude_auth_wait::account_pin(&after) {
         let store = store.clone();
         let intent = intent.clone();
@@ -312,9 +324,10 @@ where
             let driver_copy = driver.clone();
             let key_copy = intent.account_key.clone();
             let observed = after.clone();
-            let confirmed = tokio::task::spawn_blocking(move || {
-                driver_copy.confirm_native_claude_auth(&key_copy, &observed, &proof)
-            })
+            let confirmed = studio_runtime_process::blocking_pool::spawn_blocking(
+                "runtime-services/claude_auth_runtime",
+                move || driver_copy.confirm_native_claude_auth(&key_copy, &observed, &proof),
+            )
             .await;
             if confirmed.is_ok_and(|result| result.is_ok()) {
                 return Ok(true);

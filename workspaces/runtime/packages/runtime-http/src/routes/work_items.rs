@@ -119,17 +119,20 @@ where
 {
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
     let validators = state.validators.clone();
-    tokio::task::spawn_blocking(move || {
-        let connection = store.read().map_err(|_| ApiError::internal())?;
-        let agent = AgentRepository::get(&connection, &AgentId::from(id.as_str()))
-            .map_err(|_| invalid_stored("runtime_agents", &id))?;
-        let agent =
-            agent.ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "Invalid request"))?;
-        if !super::queue_read::is_live(&agent) {
-            return Err(ApiError::new(StatusCode::BAD_REQUEST, "Invalid request"));
-        }
-        read(&connection, &agent, &validators)
-    })
+    studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-http/routes/work_items",
+        move || {
+            let connection = store.read().map_err(|_| ApiError::internal())?;
+            let agent = AgentRepository::get(&connection, &AgentId::from(id.as_str()))
+                .map_err(|_| invalid_stored("runtime_agents", &id))?;
+            let agent =
+                agent.ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "Invalid request"))?;
+            if !super::queue_read::is_live(&agent) {
+                return Err(ApiError::new(StatusCode::BAD_REQUEST, "Invalid request"));
+            }
+            read(&connection, &agent, &validators)
+        },
+    )
     .await
     .map_err(|_| ApiError::internal())?
 }
@@ -207,15 +210,18 @@ pub(crate) async fn save_plan(
     };
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
     let wake = state.event_wake.clone();
-    let result = tokio::task::spawn_blocking(move || -> Result<Value, ApiError> {
-        let result = store
-            .transaction_with_error(|connection| event_write::save_plan(connection, input))
-            .map_err(write_error)?;
-        if result.event_inserted {
-            wake.notify_one();
-        }
-        Ok(result.record)
-    })
+    let result = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-http/routes/work_items",
+        move || -> Result<Value, ApiError> {
+            let result = store
+                .transaction_with_error(|connection| event_write::save_plan(connection, input))
+                .map_err(write_error)?;
+            if result.event_inserted {
+                wake.notify_one();
+            }
+            Ok(result.record)
+        },
+    )
     .await
     .map_err(|_| ApiError::internal())??;
     Ok(Json(result))
@@ -244,15 +250,18 @@ pub(crate) async fn annotation(
     };
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
     let wake = state.event_wake.clone();
-    let result = tokio::task::spawn_blocking(move || -> Result<Value, ApiError> {
-        let result = store
-            .transaction_with_error(|connection| event_write::annotate(connection, input))
-            .map_err(write_error)?;
-        if result.event_inserted {
-            wake.notify_one();
-        }
-        Ok(result.record)
-    })
+    let result = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-http/routes/work_items",
+        move || -> Result<Value, ApiError> {
+            let result = store
+                .transaction_with_error(|connection| event_write::annotate(connection, input))
+                .map_err(write_error)?;
+            if result.event_inserted {
+                wake.notify_one();
+            }
+            Ok(result.record)
+        },
+    )
     .await
     .map_err(|_| ApiError::internal())??;
     Ok(Json(result))
@@ -262,11 +271,14 @@ pub(crate) async fn organization(
     ApiJson(body): ApiJson<Value>,
 ) -> Result<Json<Value>, ApiError> {
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
-    let result = tokio::task::spawn_blocking(move || {
-        store.transaction_with_error(|tx| {
-            studio_runtime_services::organization_effects::apply(tx, &body)
-        })
-    })
+    let result = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-http/routes/work_items",
+        move || {
+            store.transaction_with_error(|tx| {
+                studio_runtime_services::organization_effects::apply(tx, &body)
+            })
+        },
+    )
     .await
     .map_err(|_| ApiError::internal())?
     .map_err(write_error)?;

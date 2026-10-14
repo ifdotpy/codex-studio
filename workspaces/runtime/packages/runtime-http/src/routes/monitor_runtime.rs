@@ -98,18 +98,22 @@ async fn input(
     let input: Input = serde_json::from_value(body)
         .map_err(|_| ApiError::new(StatusCode::BAD_REQUEST, "Invalid monitor input"))?;
     if let Some(Extension(runtime)) = runtime {
-        return tokio::task::spawn_blocking(move || {
-            runtime.input_http(&id, &input, event_write::unix_time()?)
-        })
+        return studio_runtime_process::blocking_pool::spawn_blocking(
+            "runtime-http/routes/monitor_runtime",
+            move || runtime.input_http(&id, &input, event_write::unix_time()?),
+        )
         .await
         .map_err(|_| ApiError::internal())?
         .map(Json)
         .map_err(error);
     }
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
-    tokio::task::spawn_blocking(move || {
-        monitor_runtime::input_without_session(&store, &id, &input, event_write::unix_time()?)
-    })
+    studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-http/routes/monitor_runtime",
+        move || {
+            monitor_runtime::input_without_session(&store, &id, &input, event_write::unix_time()?)
+        },
+    )
     .await
     .map_err(|_| ApiError::internal())?
     .map(Json)

@@ -920,15 +920,18 @@ async fn repeated_retained_history_reads_observe_fresh_provider_state() {
 
     let first_scope = scope.clone();
     let first_params = params.clone();
-    let first = tokio::task::spawn_blocking(move || {
-        let mut history = first_history;
-        history.request(
-            &first_scope,
-            HistoryMethod::Thread,
-            first_params,
-            first_deadline,
-        )
-    });
+    let first = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-services/account_worker/tests/retained",
+        move || {
+            let mut history = first_history;
+            history.request(
+                &first_scope,
+                HistoryMethod::Thread,
+                first_params,
+                first_deadline,
+            )
+        },
+    );
     let first_wire = peer.write("thread/read").await;
     let first_cursor = peer
         .frame(json!({
@@ -952,15 +955,18 @@ async fn repeated_retained_history_reads_observe_fresh_provider_state() {
         },
         tokio::runtime::Handle::current(),
     );
-    let second = tokio::task::spawn_blocking(move || {
-        let mut history = second_history;
-        history.request(
-            &second_scope,
-            HistoryMethod::Thread,
-            second_params,
-            second_deadline,
-        )
-    });
+    let second = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-services/account_worker/tests/retained",
+        move || {
+            let mut history = second_history;
+            history.request(
+                &second_scope,
+                HistoryMethod::Thread,
+                second_params,
+                second_deadline,
+            )
+        },
+    );
     let mut second = second;
     let second_wire = tokio::select! {
         wire = peer.write("thread/read") => wire,
@@ -1097,29 +1103,32 @@ async fn recovery_reconcile_wait_does_not_hold_store_bridge_permit() {
         actor,
         tokio::runtime::Handle::current(),
     );
-    let reconcile = tokio::task::spawn_blocking(move || {
-        let observation = move |current: &ConnectionScope| {
-            (current == &observation_scope).then(|| observation_for_reader.clone())
-        };
-        let source: &crate::recovery_runtime::ObservationSource<'_> = &observation;
-        let mut completion = Completion;
-        let mut task_completion = TaskCompletion;
-        let mut history = history_port;
-        let mut reader = RetainedRecoveryReader::new(
-            scope.clone(),
-            "fake-thread-0".into(),
-            &mut history,
-            source,
-        )
-        .unwrap();
-        let mut runtime = RecoveryRuntime {
-            store: &store,
-            observation: source,
-            completion: &mut completion,
-            task_completion: &mut task_completion,
-        };
-        runtime.reconcile(&RecoveryJob::Turn(snapshot), scope, &mut reader)
-    });
+    let reconcile = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-services/account_worker/tests/retained",
+        move || {
+            let observation = move |current: &ConnectionScope| {
+                (current == &observation_scope).then(|| observation_for_reader.clone())
+            };
+            let source: &crate::recovery_runtime::ObservationSource<'_> = &observation;
+            let mut completion = Completion;
+            let mut task_completion = TaskCompletion;
+            let mut history = history_port;
+            let mut reader = RetainedRecoveryReader::new(
+                scope.clone(),
+                "fake-thread-0".into(),
+                &mut history,
+                source,
+            )
+            .unwrap();
+            let mut runtime = RecoveryRuntime {
+                store: &store,
+                observation: source,
+                completion: &mut completion,
+                task_completion: &mut task_completion,
+            };
+            runtime.reconcile(&RecoveryJob::Turn(snapshot), scope, &mut reader)
+        },
+    );
     let request = peer.next_write().await;
     assert_eq!(request.value["method"], "thread/read");
     assert!(
