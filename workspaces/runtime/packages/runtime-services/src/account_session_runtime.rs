@@ -85,6 +85,16 @@ pub trait AccountSessionPort: Send + Sync {
             "provider-session/native-request",
         ))
     }
+    fn callback_barrier(
+        &self,
+        _account: &str,
+        _expected_scope: &ConnectionScope,
+        _deadline: std::time::Instant,
+    ) -> Result<(), AccountSessionError> {
+        Err(AccountSessionError::Requires(
+            "provider-session/callback-barrier",
+        ))
+    }
     fn login(&self, _request: LoginRequest) -> Result<Value, AccountSessionError> {
         Err(AccountSessionError::Requires(
             "provider-session/codex-login",
@@ -222,6 +232,7 @@ pub struct SessionReceipt {
 }
 pub type SessionFuture =
     Pin<Box<dyn Future<Output = Result<SessionReceipt, AccountSessionError>> + Send>>;
+pub type BarrierFuture = Pin<Box<dyn Future<Output = Result<(), AccountSessionError>> + Send>>;
 
 /// The integrator adapts its retained session's request(scope, operation, method,
 /// params, absolute deadline) here. Scope lookup must not dispatch a mutation.
@@ -230,6 +241,18 @@ pub trait RetainedAccountSession: Send + Sync {
         None
     }
     fn request(&self, request: ProviderRequest) -> SessionFuture;
+    fn callback_barrier(
+        &self,
+        _account: String,
+        _expected_scope: ConnectionScope,
+        _deadline: std::time::Instant,
+    ) -> BarrierFuture {
+        Box::pin(async {
+            Err(AccountSessionError::Requires(
+                "provider-session/callback-barrier",
+            ))
+        })
+    }
 }
 
 /// Called on the HTTP edge's blocking pool. Only the retained-session wait uses
@@ -439,6 +462,27 @@ impl AccountSessionPort for AccountSessionRuntime {
             }
             Ok(Err(error)) => Err(error),
             _ => Err(AccountSessionError::Unknown),
+        }
+    }
+    fn callback_barrier(
+        &self,
+        account: &str,
+        expected_scope: &ConnectionScope,
+        deadline: std::time::Instant,
+    ) -> Result<(), AccountSessionError> {
+        let session = self.session.as_ref().ok_or(AccountSessionError::Requires(
+            "provider-session/callback-barrier",
+        ))?;
+        let wait = self.runtime.block_on(async {
+            tokio::time::timeout_at(
+                tokio::time::Instant::from_std(deadline),
+                session.callback_barrier(account.to_owned(), expected_scope.clone(), deadline),
+            )
+            .await
+        });
+        match wait {
+            Ok(result) => result,
+            Err(_) => Err(AccountSessionError::Unknown),
         }
     }
     fn read_limits(&self, account: &str) -> Result<Value, AccountSessionError> {
