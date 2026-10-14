@@ -1,6 +1,7 @@
 #[path = "../../runtime-services/tests/support/prepared_python.rs"]
 mod prepared_python_support;
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -31,6 +32,11 @@ fn rust_fresh_state_matches_python_and_python_opens_it_without_schema_migration(
     assert_eq!(sync_meta(&rust_state), expected["sync_meta"]);
     let rust_markers = marker_snapshot(&rust_state);
     assert_valid_markers(&rust_markers);
+    assert_eq!(
+        normalize_markers(&rust_markers),
+        normalize_markers(&expected["markers"]),
+        "Python and Rust startup marker rows differ beyond the named random/time values"
+    );
     assert_eq!(
         check_state_readonly(&rust_state)
             .expect("state check accepts Rust state")
@@ -63,20 +69,56 @@ fn partial_database_set_is_refused_without_changing_existing_files() {
     let state = temporary_state("partial");
     let canvas = state.join("canvas.sqlite3");
     fs::write(&canvas, b"partial database sentinel").expect("sentinel writes");
-    let before = fs::read(&canvas).expect("sentinel reads");
+    let before = filesystem_snapshot(&state);
 
     let error = match RuntimeStore::open(Some(&state)) {
         Ok(_) => panic!("partial state must be refused"),
         Err(error) => error,
     };
     assert!(
-        matches!(error, StoreError::SchemaMismatch(message) if message.contains("partial state directory"))
+        matches!(error, StoreError::SchemaMismatch(message) if message.contains("partial state database") && message.contains("canvas.sqlite3"))
     );
-    assert_eq!(
-        fs::read(&canvas).expect("sentinel remains readable"),
-        before
-    );
+    assert_eq!(filesystem_snapshot(&state), before);
+    assert!(!state.join("runtime.lock").exists());
     assert!(!state.join("analytics.sqlite3").exists());
+    cleanup(state);
+}
+
+#[test]
+fn foreign_files_are_refused_without_creating_any_state_files() {
+    let state = temporary_state("foreign");
+    let foreign = state.join("notes.txt");
+    fs::write(&foreign, b"keep this file byte-for-byte").expect("foreign sentinel writes");
+    let before = filesystem_snapshot(&state);
+
+    let error = match RuntimeStore::open(Some(&state)) {
+        Ok(_) => panic!("foreign state-directory entries must be refused"),
+        Err(error) => error,
+    };
+    assert!(matches!(error, StoreError::SchemaMismatch(message)
+        if message.contains("unrecognized entry") && message.contains("notes.txt")));
+    assert_eq!(filesystem_snapshot(&state), before);
+    assert!(!state.join("runtime.lock").exists());
+    cleanup(state);
+}
+
+#[test]
+fn python_startup_artifacts_are_accepted_for_a_fresh_state() {
+    let state = temporary_state("python-lock");
+    let lock = state.join("runtime.lock");
+    fs::write(&lock, b"python startup lock").expect("Python lock sentinel writes");
+    create_private_directory(&state.join("accounts"));
+    create_private_directory(&state.join("multi-server"));
+
+    let store =
+        RuntimeStore::open(Some(&state)).expect("Python startup artifacts are allowed entries");
+    drop(store);
+    assert_eq!(
+        fs::read(lock).expect("lock remains readable"),
+        b"python startup lock"
+    );
+    assert!(state.join("canvas.sqlite3").is_file());
+    assert!(state.join("analytics.sqlite3").is_file());
     cleanup(state);
 }
 
@@ -294,6 +336,16 @@ fn assert_valid_markers(markers: &Value) {
     );
 }
 
+/// Normalize only Python's random UUID/tokens and startup timestamps.
+fn normalize_markers(markers: &Value) -> Value {
+    let mut normalized = markers.clone();
+    normalized["turn_item_links"]["epoch"] = json!("<random-epoch>");
+    normalized["turn_item_links"]["updated"] = json!("<startup-time>");
+    normalized["analytics_cost"] = json!("<random-cost-token>");
+    normalized["analytics_tracking_since"] = json!("<startup-time>");
+    normalized
+}
+
 fn catalog_diff(actual: &Value, expected: &Value) -> String {
     let mut lines = Vec::new();
     for database in ["canvas.sqlite3", "analytics.sqlite3", "supervisor.sqlite3"] {
@@ -359,6 +411,39 @@ fn temporary_state(name: &str) -> PathBuf {
 
 fn cleanup(path: PathBuf) {
     fs::remove_dir_all(path).expect("temporary state directory removes");
+}
+
+fn filesystem_snapshot(root: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
+    fn visit(root: &Path, directory: &Path, snapshot: &mut BTreeMap<PathBuf, Vec<u8>>) {
+        for entry in fs::read_dir(directory).expect("directory entries read") {
+            let path = entry.expect("directory entry reads").path();
+            let relative = path
+                .strip_prefix(root)
+                .expect("entry remains under root")
+                .to_path_buf();
+            let metadata = fs::symlink_metadata(&path).expect("entry metadata reads");
+            if metadata.file_type().is_dir() {
+                snapshot.insert(relative, Vec::new());
+                visit(root, &path, snapshot);
+            } else {
+                snapshot.insert(relative, fs::read(path).expect("file bytes read"));
+            }
+        }
+    }
+
+    let mut snapshot = BTreeMap::new();
+    visit(root, root, &mut snapshot);
+    snapshot
+}
+
+fn create_private_directory(path: &Path) {
+    fs::create_dir(path).expect("Python startup directory creates");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o700))
+            .expect("Python startup directory is owner-only");
+    }
 }
 
 const PYTHON_CREATE: &str = r#"
