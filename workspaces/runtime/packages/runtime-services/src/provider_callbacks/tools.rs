@@ -5,7 +5,7 @@ use serde_json::{Value, json};
 use studio_runtime_providers::{RequestId, ResponseBody};
 use studio_runtime_store::{RuntimeStore, system_reads as records};
 
-mod services;
+pub(crate) mod services;
 impl From<tool_requests::ToolRequestError> for CallbackError {
     fn from(error: tool_requests::ToolRequestError) -> Self {
         match error {

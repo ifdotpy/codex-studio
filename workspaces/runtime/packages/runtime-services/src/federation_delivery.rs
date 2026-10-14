@@ -4,7 +4,7 @@ use crate::federation_messaging::{
     self as core, FederationMessageError as Error, PROTOCOL, Result,
 };
 use crate::remote_transport::{self as transport, RemoteIdentity};
-use rusqlite::{OptionalExtension, params};
+use rusqlite::{OptionalExtension, Transaction, params};
 use serde_json::{Value, json};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
@@ -272,46 +272,147 @@ pub fn send_message(
     key: &str,
     now: f64,
 ) -> Result<Value> {
+    let identity = transport::load_federation_identity(store)?;
+    store.transaction_with(|tx| {
+        effects::check_identity(tx, &identity)?;
+        send_message_in_transaction(tx, sender, room_id, text, key, now)
+    })
+}
+
+/// Queue a federation room message in the caller's owning transaction. This is
+/// used by provider callbacks, whose operation receipt and federation outbox
+/// must commit atomically. It reads only the public namespace from the stored
+/// identity row; signing material is loaded later by the delivery pass.
+pub fn send_message_in_transaction(
+    tx: &Transaction<'_>,
+    sender: &str,
+    room_id: &str,
+    text: &str,
+    key: &str,
+    now: f64,
+) -> Result<Value> {
     let text = crate::event_write::python_strip(text);
     if text.is_empty() || text.chars().count() > core::MAX_MESSAGE || key.len() > 4096 {
         return Err(Error::Invalid("message"));
     }
-    let identity = transport::load_federation_identity(store)?;
+    let state_id: String = tx
+        .query_row(
+            "SELECT json_extract(record,'$.stateId') FROM runtime_federation_identity WHERE id='local'",
+            [],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(StoreError::from)?
+        .ok_or(Error::Unavailable("federation-credentials/private-key"))?;
     let namespace =
-        uuid::Uuid::parse_str(identity.id()).map_err(|_| Error::Invalid("identity.stateId"))?;
+        uuid::Uuid::parse_str(&state_id).map_err(|_| Error::Invalid("identity.stateId"))?;
     let message_id = uuid::Uuid::new_v5(&namespace, key.as_bytes()).to_string();
-    store.transaction_with(|tx| {
-        effects::check_identity(tx,&identity)?;
-        let mut room=Repo::record(tx,Table::Room,room_id,"")?.ok_or(Error::Forbidden("room unavailable"))?;
-        let peer=room["peerId"].as_str().ok_or(Error::Invalid("room.peerId"))?.to_owned();
-        snapshot(tx,&peer,room_id,"",now)?.authorize(false)?;
-        if room["status"]!="approved" || room["localApproved"]!=true || room["remoteApproved"]!=true || !room["localMembers"].as_array().is_some_and(|a|a.iter().any(|v|v==sender)) {return Err(Error::Forbidden("sender is not an approved room member"));}
-        let sender_agent=crate::event_write::checked_agent(tx,sender)?;
-        let existing:Option<(String,String,String,String)>=tx.query_row("SELECT room,sender,text,deliveries FROM runtime_chat_messages WHERE id=?1",[&message_id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).optional().map_err(StoreError::from)?;
-        if let Some((prior_room,prior_sender,prior_text,raw))=existing {
-            if (prior_room.as_str(),prior_sender.as_str(),prior_text.as_str())!=(room_id,sender,text) {return Err(Error::Conflict("message identity has different content"));}
-            let deliveries:Value=serde_json::from_str(&raw).map_err(StoreError::from)?;
-            let object=deliveries.as_object().ok_or(Error::Invalid("chat.deliveries"))?;
-            let status=if !object.is_empty() && object.values().all(|v|v=="delivered") {"delivered"} else {"queued"};
-            return Ok(json!({"id":message_id,"room":room_id,"deliveries":deliveries,"status":status}));
+    let mut room =
+        Repo::record(tx, Table::Room, room_id, "")?.ok_or(Error::Forbidden("room unavailable"))?;
+    let peer = room["peerId"]
+        .as_str()
+        .ok_or(Error::Invalid("room.peerId"))?
+        .to_owned();
+    snapshot(tx, &peer, room_id, "", now)?.authorize(false)?;
+    if room["status"] != "approved"
+        || room["localApproved"] != true
+        || room["remoteApproved"] != true
+        || !room["localMembers"]
+            .as_array()
+            .is_some_and(|members| members.iter().any(|v| v == sender))
+    {
+        return Err(Error::Forbidden("sender is not an approved room member"));
+    }
+    let sender_agent = crate::event_write::checked_agent(tx, sender)?;
+    let existing: Option<(String, String, String, String)> = tx
+        .query_row(
+            "SELECT room,sender,text,deliveries FROM runtime_chat_messages WHERE id=?1",
+            [&message_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .optional()
+        .map_err(StoreError::from)?;
+    if let Some((prior_room, prior_sender, prior_text, raw)) = existing {
+        if (
+            prior_room.as_str(),
+            prior_sender.as_str(),
+            prior_text.as_str(),
+        ) != (room_id, sender, text)
+        {
+            return Err(Error::Conflict("message identity has different content"));
         }
-        let person=room.get("localParticipants").and_then(Value::as_array).and_then(|a|a.iter().find(|p|p["id"]==sender));
-        let name=person.and_then(|p|p.get("name")).cloned().filter(|v|!v.is_null()).or_else(||if sender_agent.extra.get("isLead")==Some(&json!(true)) {sender_agent.extra.get("name").cloned().or_else(||Some(json!("Lead")))} else {None}).unwrap_or(Value::Null);
-        let sequence=room.get("sequence").and_then(Value::as_u64).unwrap_or(0).checked_add(1).ok_or(Error::Invalid("room.sequence"))?;
-        let payload=json!({"sender":sender,"senderName":name,"text":text,"created":now,"sequence":sequence});
-        let item=json!({"id":message_id,"kind":"chat-message","room":room_id,"payload":payload,"created":now,"status":"queued","attempts":0,"nextAt":0,"error":null});
-        let item=core::decide_queue(Repo::record(tx,Table::Outbox,&message_id,&peer)?.as_ref(),item,Repo::queue_size(tx,&peer)?)?;
-        let deliveries=json!({format!("remote:{peer}"):"queued"});
-        tx.execute("INSERT INTO runtime_chat_messages(id,room,sender,text,created,deliveries) VALUES(?1,?2,?3,?4,?5,?6)",params![message_id,room_id,sender,text,now,transport::canonical_json(&deliveries)?]).map_err(StoreError::from)?;
-        let event=json!({"room":room_id,"message_id":message_id,"sender":sender,"sender_name":name,"text":text,"untrusted_remote":false,"authority":"room-data-only"});
-        for member in room["localMembers"].as_array().ok_or(Error::Invalid("room.localMembers"))? {
-            let member=member.as_str().ok_or(Error::Invalid("room.localMembers"))?;
-            if member==sender {continue;}
-            let agent=AgentRepository::get(tx,&AgentId::from(member))?.ok_or(Error::Invalid("room.localMembers"))?;
-            if !crate::event_write::truthy(agent.extra.get("deletedAt")) {crate::event_write::enqueue_event(tx,&agent,format!("federation-local:{room_id}:{message_id}:{member}"),"agent_message",transport::canonical_json(&event)?,now)?;}
+        let deliveries: Value = serde_json::from_str(&raw).map_err(StoreError::from)?;
+        let object = deliveries
+            .as_object()
+            .ok_or(Error::Invalid("chat.deliveries"))?;
+        let status = if !object.is_empty() && object.values().all(|v| v == "delivered") {
+            "delivered"
+        } else {
+            "queued"
+        };
+        return Ok(json!({"id":message_id,"room":room_id,"deliveries":deliveries,"status":status}));
+    }
+    let person = room
+        .get("localParticipants")
+        .and_then(Value::as_array)
+        .and_then(|people| people.iter().find(|person| person["id"] == sender));
+    let name = person
+        .and_then(|person| person.get("name"))
+        .cloned()
+        .filter(|value| !value.is_null())
+        .or_else(|| {
+            if sender_agent.extra.get("isLead") == Some(&json!(true)) {
+                sender_agent
+                    .extra
+                    .get("name")
+                    .cloned()
+                    .or_else(|| Some(json!("Lead")))
+            } else {
+                None
+            }
+        })
+        .unwrap_or(Value::Null);
+    let sequence = room
+        .get("sequence")
+        .and_then(Value::as_u64)
+        .unwrap_or(0)
+        .checked_add(1)
+        .ok_or(Error::Invalid("room.sequence"))?;
+    let payload =
+        json!({"sender":sender,"senderName":name,"text":text,"created":now,"sequence":sequence});
+    let item = json!({"id":message_id,"kind":"chat-message","room":room_id,"payload":payload,"created":now,"status":"queued","attempts":0,"nextAt":0,"error":null});
+    let item = core::decide_queue(
+        Repo::record(tx, Table::Outbox, &message_id, &peer)?.as_ref(),
+        item,
+        Repo::queue_size(tx, &peer)?,
+    )?;
+    let deliveries = json!({format!("remote:{peer}"):"queued"});
+    tx.execute("INSERT INTO runtime_chat_messages(id,room,sender,text,created,deliveries) VALUES(?1,?2,?3,?4,?5,?6)", params![message_id, room_id, sender, text, now, transport::canonical_json(&deliveries)?]).map_err(StoreError::from)?;
+    let event = json!({"room":room_id,"message_id":message_id,"sender":sender,"sender_name":name,"text":text,"untrusted_remote":false,"authority":"room-data-only"});
+    for member in room["localMembers"]
+        .as_array()
+        .ok_or(Error::Invalid("room.localMembers"))?
+    {
+        let member = member.as_str().ok_or(Error::Invalid("room.localMembers"))?;
+        if member == sender {
+            continue;
         }
-        Repo::put(tx,Table::Outbox,&message_id,&peer,&item)?;
-        room["sequence"]=json!(sequence);room["updated"]=json!(now);effects::save_room(tx,&peer,&room)?;
-        Ok(json!({"id":message_id,"room":room_id,"deliveries":deliveries,"status":"queued"}))
-    })
+        let agent = AgentRepository::get(tx, &AgentId::from(member))?
+            .ok_or(Error::Invalid("room.localMembers"))?;
+        if !crate::event_write::truthy(agent.extra.get("deletedAt")) {
+            crate::event_write::enqueue_event(
+                tx,
+                &agent,
+                format!("federation-local:{room_id}:{message_id}:{member}"),
+                "agent_message",
+                transport::canonical_json(&event)?,
+                now,
+            )?;
+        }
+    }
+    Repo::put(tx, Table::Outbox, &message_id, &peer, &item)?;
+    room["sequence"] = json!(sequence);
+    room["updated"] = json!(now);
+    effects::save_room(tx, &peer, &room)?;
+    Ok(json!({"id":message_id,"room":room_id,"deliveries":deliveries,"status":"queued"}))
 }

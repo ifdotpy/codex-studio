@@ -1,6 +1,6 @@
 //! Closed local service table. Every entry checks actor authority in the same
 //! transaction as its effects. No HTTP adapters and no user-authored substitutes.
-mod messages;
+pub(crate) mod messages;
 mod reads;
 #[cfg(test)]
 #[path = "services/sends_tests.rs"]

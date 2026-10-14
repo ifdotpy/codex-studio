@@ -109,6 +109,99 @@ impl MultiServerBoundary {
         let (owner, probe) = self.observe(request, address, logins)?;
         self.handle_at(store, request, &owner, probe.as_ref(), now)
     }
+
+    /// Authenticate an already paired server operation and consume its nonce
+    /// before the orchestration receiver claims the stable request identity.
+    pub fn authorize_operation_incoming(
+        &self,
+        store: &RuntimeStore,
+        request: &SignedRequest,
+        address: &str,
+        logins: &[String],
+        now: f64,
+    ) -> Result<String, AccessError> {
+        if !request.is_orchestration() || text(request.body(), "requestId") != request.request_id()
+        {
+            return Err(refused(
+                400,
+                "invalid_request",
+                "Invalid cross-server request",
+            ));
+        }
+        let saved_client = store.read_transaction(|tx| {
+            Ok(tx
+                .query_row(
+                    "SELECT record FROM runtime_access_clients WHERE id=?1",
+                    [request.client_id()],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()?)
+        })?;
+        let observed_snapshot = AccessSnapshot::from_records(
+            request.client_id(),
+            saved_client.as_deref(),
+            "",
+            None,
+            false,
+        )?;
+        // Match Python's signed-request order: verify credentials and signature
+        // before invoking the host's Tailscale status/whois commands.
+        auth::verify_before_observe(&observed_snapshot, request, &self.local_server, now)?;
+        let (owner, _) = self.observe(request, address, logins)?;
+        let identity = (self.identity)(store)?;
+        store.transaction_with(|tx| {
+            let client = read_record(tx, "runtime_access_clients", request.client_id())?;
+            let snapshot = AccessSnapshot::from_records(
+                request.client_id(),
+                client.as_deref(),
+                "",
+                None,
+                false,
+            )?;
+            let decision = auth::authorize_at(
+                &snapshot,
+                request,
+                text(&identity, "serverId"),
+                &owner,
+                None,
+                now,
+            )?;
+            if decision.principal.kind() != "server"
+                || decision.principal.pairing()
+                || decision.principal.auto_pairing()
+            {
+                return Err(refused(
+                    403,
+                    "server_required",
+                    "A paired server is required",
+                ));
+            }
+            match RemoteTransportRepository::consume_access_nonce_outcome(
+                tx,
+                request.client_id(),
+                request.nonce(),
+                now as i64,
+                false,
+            )? {
+                AccessNonceOutcome::Accepted => Ok(decision.principal.client_id().to_owned()),
+                AccessNonceOutcome::Replay => Err(refused(
+                    401,
+                    "nonce_replay",
+                    "The request nonce was already used",
+                )),
+                AccessNonceOutcome::ClientLimit => Err(refused(
+                    429,
+                    "nonce_limit",
+                    "The client request limit is reached",
+                )),
+                AccessNonceOutcome::PairingLimit => Err(refused(
+                    429,
+                    "pairing_limit",
+                    "The server pairing attempt limit is reached",
+                )),
+            }
+        })
+    }
     fn observe(
         &self,
         request: &SignedRequest,

@@ -31,6 +31,9 @@ pub struct HttpState {
         Option<Arc<dyn studio_runtime_services::message_admission::MessageAdmission>>,
     pub(crate) callback_runtime:
         Option<Arc<studio_runtime_services::callback_runtime::CallbackRuntime>>,
+    pub(crate) browser_forwarder: Option<Arc<studio_runtime_services::browser::BrowserForwarder>>,
+    pub(crate) orchestration_driver:
+        Option<Arc<studio_runtime_services::multi_server_orchestration::OrchestrationDriver>>,
     pub account_session:
         Option<Arc<dyn studio_runtime_services::account_session_runtime::AccountSessionPort>>,
     pub claude_login: Option<Arc<studio_runtime_services::claude_login::service::LoginService>>,
@@ -88,6 +91,19 @@ impl HttpState {
         account_policy: Option<Arc<studio_runtime_services::account_policy::AccountPolicyState>>,
     ) -> Self {
         let sync_changes = Arc::new(ChangeNotificationHub::new());
+        let orchestration_driver = store.as_ref().map(|store| {
+            Arc::new(studio_runtime_services::multi_server_orchestration::OrchestrationDriver::new(
+                Arc::clone(store),
+                Arc::new(studio_runtime_services::multi_server_orchestration::HttpsPairedTransport::new(Arc::clone(store))),
+                Arc::new(studio_runtime_services::multi_server_orchestration::RuntimeOrchestrationEffects::with_browser_callback(
+                    Arc::clone(store),
+                    Arc::new(studio_runtime_services::browser::BrowserCallbackReceiver::new(Arc::clone(store))),
+                )),
+            ))
+        });
+        let browser_forwarder = orchestration_driver
+            .as_ref()
+            .map(|driver| crate::routes::browser::new_forwarder(Arc::clone(driver)));
         let model_changes = Arc::clone(&sync_changes);
         let app_server_log = OperationalLog::app_server(Path::new(&state_dir)).ok();
         let model_catalog =
@@ -106,6 +122,8 @@ impl HttpState {
         Self {
             message_admission: None,
             callback_runtime: None,
+            browser_forwarder,
+            orchestration_driver,
             account_session: None,
             account_driver: None,
             provider_versions: None,
@@ -246,6 +264,12 @@ impl HttpState {
     /// Shared post-commit signal for durable event writers and the scheduler.
     pub fn event_wake_handle(&self) -> Arc<Notify> {
         Arc::clone(&self.event_wake)
+    }
+
+    pub fn orchestration_driver_handle(
+        &self,
+    ) -> Option<Arc<studio_runtime_services::multi_server_orchestration::OrchestrationDriver>> {
+        self.orchestration_driver.clone()
     }
 
     pub fn model_catalog_handle(

@@ -89,7 +89,7 @@
           "owner": "R2"
         }
       ],
-      "dependency": "account-worker/voice-session",
+      "dependency": "provider-session/voice",
       "operation_count": 4,
       "operations": [
         "POST /api/voice/approve",
@@ -128,22 +128,6 @@
         "POST /api/federation/v1/message",
         "POST /api/federation/v1/pull",
         "POST /api/federation/v1/status"
-      ]
-    },
-    {
-      "closures": [
-        {
-          "closes": "R1",
-          "kind": "external_or_scope",
-          "owner": "R1"
-        }
-      ],
-      "dependency": "multi-server-runtime/orchestration",
-      "operation_count": 3,
-      "operations": [
-        "POST /api/browser/forward",
-        "POST /api/multi-server",
-        "POST /api/servers/orchestration"
       ]
     },
     {
@@ -385,6 +369,21 @@
       "dependency": "monitor-driver/agent-stop",
       "operation_count": 2,
       "operations": ["POST /api/conversation/delete", "POST /api/stop"]
+    },
+    {
+      "closures": [
+        {
+          "closes": "R1",
+          "kind": "external_or_scope",
+          "owner": "R1"
+        }
+      ],
+      "dependency": "multi-server-runtime/orchestration",
+      "operation_count": 2,
+      "operations": [
+        "POST /api/multi-server",
+        "POST /api/servers/orchestration"
+      ]
     },
     {
       "closures": [
@@ -1508,10 +1507,10 @@
     }
   ],
   "counts": {
-    "implemented": 78,
+    "implemented": 79,
     "named_dependencies": 106,
     "not_registered": 12,
-    "partial": 70,
+    "partial": 69,
     "total": 160
   },
   "lifecycle_dependencies": {
@@ -1993,9 +1992,9 @@
       "status": "partial"
     },
     {
-      "dependencies": ["multi-server-runtime/orchestration"],
+      "dependencies": [],
       "operation": "POST /api/browser/forward",
-      "status": "partial"
+      "status": "implemented"
     },
     {
       "dependencies": [
@@ -2417,7 +2416,7 @@
       "status": "implemented"
     },
     {
-      "dependencies": ["account-worker/voice-session"],
+      "dependencies": ["provider-session/voice"],
       "operation": "POST /api/voice/approve",
       "status": "partial"
     },
@@ -2427,7 +2426,7 @@
       "status": "implemented"
     },
     {
-      "dependencies": ["account-worker/voice-session"],
+      "dependencies": ["provider-session/voice"],
       "operation": "POST /api/voice/end",
       "status": "partial"
     },
@@ -2442,12 +2441,12 @@
       "status": "implemented"
     },
     {
-      "dependencies": ["account-worker/voice-session"],
+      "dependencies": ["provider-session/voice"],
       "operation": "POST /api/voice/speech",
       "status": "partial"
     },
     {
-      "dependencies": ["account-worker/voice-session"],
+      "dependencies": ["provider-session/voice"],
       "operation": "POST /api/voice/start",
       "status": "partial"
     },

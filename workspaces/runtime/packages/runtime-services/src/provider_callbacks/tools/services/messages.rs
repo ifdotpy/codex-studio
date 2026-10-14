@@ -109,9 +109,43 @@ pub(super) fn send(
     id: &str,
     now: f64,
 ) -> Result<Value, CallbackError> {
-    let actor = snapshot.actor();
-    let who = &snapshot.context().agent;
-    let message = text(args, "text")?.trim();
+    send_as_actor(
+        tx,
+        snapshot.actor(),
+        &snapshot.context().agent,
+        args,
+        id,
+        now,
+    )
+}
+
+pub(crate) fn send_remote_worker(
+    tx: &Transaction<'_>,
+    sender: &str,
+    args: &Value,
+    id: &str,
+    now: f64,
+) -> Result<Value, CallbackError> {
+    let actor = records::get(tx, "runtime_agents", sender)?
+        .ok_or(CallbackError::Invalid("The remote worker is unavailable"))?;
+    if actor["id"] != sender
+        || actor.get("autoWake") != Some(&Value::Bool(true))
+        || studio_runtime_store::truthy(actor.get("deletedAt"))
+    {
+        return Err(CallbackError::Invalid("The worker was stopped"));
+    }
+    send_as_actor(tx, &actor, sender, args, id, now)
+}
+
+fn send_as_actor(
+    tx: &Transaction<'_>,
+    actor: &Value,
+    who: &str,
+    args: &Value,
+    id: &str,
+    now: f64,
+) -> Result<Value, CallbackError> {
+    let message = crate::event_write::python_strip(text(args, "text")?);
     if !(1..=12000).contains(&message.chars().count()) {
         return Err(CallbackError::Invalid(
             "Message must have 1 to 12000 characters",
@@ -124,9 +158,20 @@ pub(super) fn send(
     ) {
         return Err(CallbackError::Invalid("Unknown message importance"));
     }
-    if args.get("progress_key").is_some() || args.get("progress_version").is_some() {
-        return Err(CallbackError::Dependency(
-            "coordination/versioned-progress-delivery",
+    let progress_key = args.get("progress_key").filter(|value| !value.is_null());
+    let progress_version = args
+        .get("progress_version")
+        .filter(|value| !value.is_null());
+    let versioned_progress = progress_key.is_some() || progress_version.is_some();
+    if versioned_progress
+        && (importance != "progress"
+            || !progress_key
+                .and_then(Value::as_str)
+                .is_some_and(|key| (1..=200).contains(&key.chars().count()))
+            || !progress_version.and_then(Value::as_u64).is_some())
+    {
+        return Err(CallbackError::Invalid(
+            "Versioned progress requires a progress_key and nonnegative integer progress_version",
         ));
     }
     let target = match text(args, "target")? {
@@ -143,7 +188,31 @@ pub(super) fn send(
         ));
     }
     if target.starts_with("remote:") || target.starts_with("federated:") {
-        return Err(CallbackError::Dependency("federation/agent-message"));
+        let room = if let Some(peer) = target.strip_prefix("remote:") {
+            let mut statement = tx.prepare(
+                "SELECT id FROM runtime_federation_rooms WHERE json_extract(record,'$.peerId')=?1 AND json_extract(record,'$.status')='approved' AND json_extract(record,'$.localApproved')=1 AND json_extract(record,'$.remoteApproved')=1 AND EXISTS(SELECT 1 FROM json_each(record,'$.localMembers') WHERE value=?2) ORDER BY id LIMIT 2",
+            )?;
+            let rooms = statement
+                .query_map(params![peer, who], |row| row.get::<_, String>(0))?
+                .collect::<Result<Vec<_>, _>>()?;
+            if rooms.len() != 1 {
+                return Err(CallbackError::Invalid(
+                    "Select an explicit remote room; this peer has zero or multiple approved rooms",
+                ));
+            }
+            rooms[0].clone()
+        } else {
+            target.to_owned()
+        };
+        return crate::federation_delivery::send_message_in_transaction(
+            tx, who, &room, message, id, now,
+        )
+        .map_err(map_federation_error);
+    }
+    if versioned_progress {
+        return Err(CallbackError::Dependency(
+            "coordination/versioned-progress-delivery",
+        ));
     }
     if target == who {
         return Err(CallbackError::Invalid("Select another agent"));
@@ -169,7 +238,7 @@ pub(super) fn send(
     let mut room = if target == "broadcast" {
         json!({"id":format!("broadcast:{}",text(actor,"rootId")?),"kind":"broadcast","rootId":actor["rootId"]})
     } else {
-        let mut ids = vec![who.as_str(), target];
+        let mut ids = vec![who, target];
         ids.sort();
         json!({"id":format!("private:{}:{}",ids[0],ids[1]),"kind":"private","members":ids})
     };
@@ -239,6 +308,24 @@ pub(super) fn send(
     let result = json!({"id":id,"room":room_id,"deliveries":deliveries});
     event_write::save_receipt(tx, Some(id), &event_write::request_signature(args), &result)?;
     Ok(result)
+}
+
+fn map_federation_error(
+    error: crate::federation_messaging::FederationMessageError,
+) -> CallbackError {
+    use crate::federation_messaging::FederationMessageError as FederationError;
+    match error {
+        FederationError::Store(error) => CallbackError::Store(error),
+        FederationError::Unavailable(dependency) => CallbackError::Dependency(dependency),
+        FederationError::Invalid(_)
+        | FederationError::Forbidden(_)
+        | FederationError::Conflict(_) => {
+            CallbackError::Invalid("The remote room message was refused")
+        }
+        FederationError::Transport(_) | FederationError::Event(_) => {
+            CallbackError::Dependency("federation-driver/rooms")
+        }
+    }
 }
 pub(super) fn peers(
     tx: &Transaction<'_>,

@@ -316,6 +316,42 @@ fn enqueue(
         turn_id: None,
         error: None,
     };
+    if let Some((server, link, is_anchor)) = remote_owner(agent)? {
+        // A remote anchor is a read-only proxy for a parent on the paired
+        // server. Match Python's stable `event` envelope; remote workers use a
+        // separate input protocol and are not converted into local events.
+        if !is_anchor {
+            return Err(EventWriteError::RemoteEventsUnavailable);
+        }
+        let request_id = uuid::Uuid::new_v5(
+            &uuid::Uuid::NAMESPACE_URL,
+            format!("studio-cross-server:event:{id}").as_bytes(),
+        )
+        .to_string();
+        let parent_epoch: i64 = transaction
+            .query_row(
+                "SELECT json_extract(record,'$.parentEpoch') FROM runtime_server_links WHERE id=?1",
+                [&link],
+                |row| row.get(0),
+            )
+            .map_err(studio_runtime_store::StoreError::from)?;
+        let payload = json!({
+            "link": link,
+            "parentEpoch": parent_epoch,
+            "kind": event.kind,
+            "text": event.text,
+        });
+        crate::multi_server_orchestration::enqueue_in_transaction(
+            transaction,
+            &server,
+            "event",
+            &payload,
+            &request_id,
+            created as i64,
+        )
+        .map_err(|_| EventWriteError::Conflict("Remote event could not be queued"))?;
+        return Ok(true);
+    }
     let inserted = EventWriteRepository::insert_event(transaction, &event)?;
     if inserted && !recovery_pending {
         if auto_wake {
@@ -324,6 +360,37 @@ fn enqueue(
         EventWriteRepository::mark_event_enqueued(transaction, &id, monotonic_ns())?;
     }
     Ok(inserted)
+}
+
+fn remote_owner(agent: &AgentRecord) -> Result<Option<(String, String, bool)>, EventWriteError> {
+    let remote_worker = agent
+        .extra
+        .get("remoteWorker")
+        .filter(|value| truthy(Some(value)));
+    let remote_anchor = agent
+        .extra
+        .get("remoteAnchor")
+        .filter(|value| truthy(Some(value)));
+    let (value, is_anchor) = if let Some(value) = remote_anchor {
+        (value, true)
+    } else if let Some(value) = remote_worker {
+        (value, false)
+    } else {
+        return Ok(None);
+    };
+    let server_field = if is_anchor { "home" } else { "server" };
+    let server = value
+        .get(server_field)
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let link = value
+        .get("link")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    if server.is_empty() || link.is_empty() {
+        return Err(EventWriteError::Conflict("Remote event owner is invalid"));
+    }
+    Ok(Some((server.to_owned(), link.to_owned(), is_anchor)))
 }
 
 pub fn checked_agent(

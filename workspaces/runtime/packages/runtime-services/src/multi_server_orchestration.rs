@@ -1,5 +1,6 @@
 //! Durable owner-paired envelopes. A transaction claims each exact request
-//! before transport or execution. An uncertain claim is never executed again.
+//! before transport or execution. Stable-identity peer deliveries may replay
+//! after an unknown reply; provider commands remain one-shot.
 use std::sync::Arc;
 
 use rusqlite::{OptionalExtension, Transaction, params};
@@ -7,7 +8,11 @@ use serde_json::{Value, json};
 use studio_runtime_store::RuntimeStore;
 
 use crate::multi_server_auth::{AccessError, digest, refused, schema, stored, text};
-use crate::remote_transport::{MAX_REQUEST_BYTES, MAX_RESPONSE_BYTES, canonical_json};
+use crate::remote_transport::{
+    MAX_REQUEST_BYTES, MAX_RESPONSE_BYTES, MultiServerRequest, SignedHttpClient, canonical_json,
+    load_multi_server_identity, multi_server_signed_headers, new_nonce,
+    verify_multi_server_response,
+};
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum ExchangeOutcome {
@@ -16,7 +21,7 @@ pub enum ExchangeOutcome {
     Unknown,
 }
 impl ExchangeOutcome {
-    fn to_value(&self, key: &str) -> Value {
+    pub fn to_value(&self, key: &str) -> Value {
         match self {
             Self::Applied(v) => json!({"requestId":key,"outcome":"applied","value":v}),
             Self::NotApplied(e) => json!({"requestId":key,"outcome":"not_applied","error":e}),
@@ -82,11 +87,583 @@ pub trait PairedTransport: Send + Sync {
         timeout: std::time::Duration,
     ) -> Result<Value, AccessError>;
 }
+
+/// Production HTTPS adapter for the existing paired-server credential rows.
+/// It performs exactly one signed exchange; retry scheduling remains owned by
+/// the durable outbox driver.
+pub struct HttpsPairedTransport {
+    store: Arc<RuntimeStore>,
+}
+
+impl HttpsPairedTransport {
+    pub fn new(store: Arc<RuntimeStore>) -> Self {
+        Self { store }
+    }
+}
+
+impl PairedTransport for HttpsPairedTransport {
+    fn exchange(
+        &self,
+        server: &str,
+        envelope: &Value,
+        timeout: std::time::Duration,
+    ) -> Result<Value, AccessError> {
+        let connection = self.store.read()?;
+        let raw: Option<String> = connection
+            .query_row(
+                "SELECT record FROM runtime_access_clients WHERE id=?1",
+                [server],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let value = raw
+            .map(|raw| {
+                stored(
+                    "PersistedAccessClient",
+                    "runtime_access_clients",
+                    server,
+                    &raw,
+                )
+            })
+            .transpose()?
+            .ok_or_else(|| refused(403, "client_revoked", "The server is not paired"))?;
+        if text(&value, "id") != server
+            || text(&value, "status") != "paired"
+            || text(&value, "kind") != "server"
+        {
+            return Err(refused(403, "client_revoked", "The server is not paired"));
+        }
+        let origin = text(&value, "origin").to_owned();
+        let public_key = text(&value, "publicKey").to_owned();
+        let identity = load_multi_server_identity(self.store.root()).map_err(|_| {
+            refused(
+                503,
+                "identity_unavailable",
+                "The local server identity is unavailable",
+            )
+        })?;
+        let request_id = text(envelope, "requestId");
+        let url = format!("{}/api/servers/orchestration", origin.trim_end_matches('/'));
+        let body = canonical_json(envelope)
+            .map_err(|_| refused(400, "invalid_request", "Invalid cross-server request"))?
+            .into_bytes();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|_| refused(503, "clock_unavailable", "The system clock is unavailable"))?
+            .as_secs() as i64;
+        let nonce = new_nonce()
+            .map_err(|_| refused(503, "nonce_unavailable", "A request nonce is unavailable"))?;
+        let headers = multi_server_signed_headers(
+            &identity,
+            &MultiServerRequest {
+                server_id: server,
+                method: "POST",
+                url: &url,
+                request_id,
+                timestamp: now,
+                nonce: &nonce,
+                body: &body,
+            },
+            now,
+        )
+        .map_err(|_| {
+            refused(
+                503,
+                "signing_unavailable",
+                "The paired request could not be signed",
+            )
+        })?;
+        let headers = headers
+            .iter()
+            .map(|(name, value)| (name.as_str(), value.as_str()))
+            .collect::<Vec<_>>();
+        let response =
+            SignedHttpClient::exchange("POST", &url, &headers, &body, timeout, MAX_RESPONSE_BYTES)
+                .map_err(|_| {
+                    refused(
+                        503,
+                        "exchange_unknown",
+                        "The paired delivery outcome is unknown",
+                    )
+                })?;
+        if response.status != 200 {
+            return Err(refused(
+                503,
+                "exchange_unknown",
+                "The paired delivery outcome is unknown",
+            ));
+        }
+        verify_multi_server_response(&response.body, server, &public_key).map_err(|_| {
+            refused(
+                503,
+                "invalid_receipt",
+                "The paired server returned an invalid receipt",
+            )
+        })
+    }
+}
 /// Missing effects are refused before claiming a receipt. Implementations must
 /// derive actor permissions from the authenticated principal, not the payload.
 pub trait OrchestrationEffects: Send + Sync {
     fn supports(&self, action: &str) -> bool;
     fn execute(&self, principal: &str, envelope: &Value) -> Result<ExchangeOutcome, AccessError>;
+}
+
+pub trait BrowserCallbackEffect: Send + Sync {
+    fn receive(&self, envelope: &Value) -> Result<Value, AccessError>;
+}
+
+/// Idempotent receiver effects shared by the signed HTTP route and tests.
+/// Additional actions are enabled only when their production adapters are
+/// installed; unsupported actions remain a no-write refusal.
+pub struct RuntimeOrchestrationEffects {
+    store: Arc<RuntimeStore>,
+    browser_callback: Arc<dyn BrowserCallbackEffect>,
+}
+
+impl RuntimeOrchestrationEffects {
+    pub fn new(store: Arc<RuntimeStore>) -> Self {
+        let browser_callback = Arc::new(crate::browser::BrowserCallbackReceiver::new(Arc::clone(
+            &store,
+        )));
+        Self {
+            store,
+            browser_callback,
+        }
+    }
+
+    pub fn with_browser_callback(
+        store: Arc<RuntimeStore>,
+        browser_callback: Arc<dyn BrowserCallbackEffect>,
+    ) -> Self {
+        Self {
+            store,
+            browser_callback,
+        }
+    }
+
+    fn worker_call(
+        &self,
+        principal: &str,
+        envelope: &Value,
+    ) -> Result<ExchangeOutcome, AccessError> {
+        let action = text(envelope, "action");
+        let key = text(envelope, "requestId");
+        let payload = &envelope["payload"];
+        let link_id = text(payload, "link");
+        let worker_id = text(payload, "worker");
+        let epoch = payload
+            .get("epoch")
+            .and_then(Value::as_i64)
+            .ok_or_else(|| refused(400, "invalid_request", "Invalid cross-server request"))?;
+        let parent_epoch = payload
+            .get("parentEpoch")
+            .and_then(Value::as_i64)
+            .ok_or_else(|| refused(400, "invalid_request", "Invalid cross-server request"))?;
+        let args = &payload["args"];
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|_| refused(503, "clock_unavailable", "The system clock is unavailable"))?
+            .as_secs_f64();
+        let move_admission = if action == "move_send" {
+            let target_id = args
+                .get("agent_id")
+                .and_then(Value::as_str)
+                .filter(|id| !id.is_empty())
+                .ok_or_else(|| refused(400, "invalid_request", "Invalid move-send request"))?;
+            let connection = self.store.read()?;
+            Some(
+                crate::message_admission::MessageIngressAdmission::load(
+                    &self.store,
+                    &connection,
+                    target_id,
+                )
+                .map_err(|_| refused(503, "send_admission", "The message could not be admitted"))?,
+            )
+        } else {
+            None
+        };
+        self.store.transaction_with(|tx| {
+            let link_raw: Option<String> = tx
+                .query_row(
+                    "SELECT record FROM runtime_server_links WHERE id=?1",
+                    [link_id],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            let link: Value = serde_json::from_str(link_raw.as_deref().ok_or_else(|| {
+                refused(
+                    404,
+                    "link_unavailable",
+                    "The remote-parent link is unavailable",
+                )
+            })?)
+            .map_err(|_| refused(503, "invalid_record", "The remote-parent link is invalid"))?;
+            if link["side"] != "home"
+                || link["server"] != principal
+                || link["parentEpoch"].as_i64() != Some(parent_epoch)
+                || !link["workers"].as_array().is_some_and(|workers| {
+                    workers
+                        .iter()
+                        .any(|worker| worker.as_str() == Some(worker_id))
+                })
+            {
+                return Err(refused(
+                    403,
+                    "link_owner",
+                    "The remote-parent link is invalid",
+                ));
+            }
+            let parent_id = link.get("parent").and_then(Value::as_str).ok_or_else(|| {
+                refused(503, "invalid_record", "The remote-parent link is invalid")
+            })?;
+            let parent = studio_runtime_store::AgentRepository::get(
+                tx,
+                &studio_runtime_store::AgentId::from(parent_id),
+            )?
+            .ok_or_else(|| refused(404, "parent_unavailable", "The parent agent is unavailable"))?;
+            if parent.epoch as i64 != parent_epoch
+                || parent.extra.get("autoWake") != Some(&Value::Bool(true))
+                || studio_runtime_store::truthy(parent.extra.get("deletedAt"))
+            {
+                return Err(refused(409, "parent_stopped", "The home team was stopped"));
+            }
+            let worker = studio_runtime_store::AgentRepository::get(
+                tx,
+                &studio_runtime_store::AgentId::from(worker_id),
+            )?
+            .ok_or_else(|| {
+                refused(
+                    404,
+                    "worker_unavailable",
+                    "The remote worker is unavailable",
+                )
+            })?;
+            let expected_remote = json!({"server":principal,"link":link_id});
+            if worker.epoch != epoch
+                || worker.extra.get("remoteWorker") != Some(&expected_remote)
+                || !studio_runtime_store::truthy(worker.extra.get("movedTo"))
+                || worker.extra.get("autoWake") != Some(&Value::Bool(true))
+                || studio_runtime_store::truthy(worker.extra.get("deletedAt"))
+            {
+                return Err(refused(409, "worker_stopped", "The worker was stopped"));
+            }
+            match action {
+                "message" => {
+                    crate::provider_callbacks::tools::services::messages::send_remote_worker(
+                        tx, worker_id, args, key, now,
+                    )
+                    .map(ExchangeOutcome::Applied)
+                    .map_err(callback_error)
+                }
+                "move_send" => {
+                    let target_id = args
+                        .get("agent_id")
+                        .and_then(Value::as_str)
+                        .filter(|id| !id.is_empty())
+                        .ok_or_else(|| {
+                            refused(400, "invalid_request", "Invalid move-send request")
+                        })?;
+                    let message = args
+                        .get("text")
+                        .and_then(Value::as_str)
+                        .map(crate::event_write::python_strip)
+                        .filter(|text| !text.is_empty() && text.chars().count() <= 32000)
+                        .ok_or_else(|| {
+                            refused(400, "invalid_request", "Invalid move-send request")
+                        })?;
+                    let delivery = args
+                        .get("delivery")
+                        .and_then(Value::as_str)
+                        .unwrap_or("queue");
+                    if !matches!(delivery, "queue" | "steer" | "after_tool" | "after_turn") {
+                        return Err(refused(
+                            400,
+                            "invalid_request",
+                            "Invalid move-send delivery mode",
+                        ));
+                    }
+                    let target =
+                        crate::event_write::checked_agent(tx, target_id).map_err(|_| {
+                            refused(404, "target_unavailable", "The target agent is unavailable")
+                        })?;
+                    if target.root_id != worker.root_id
+                        || target.id == worker.id
+                        || !is_descendant_of(tx, target_id, worker_id)?
+                        || target.extra.get("autoWake") != Some(&Value::Bool(true))
+                    {
+                        return Err(refused(
+                            403,
+                            "target_forbidden",
+                            "The worker cannot message this agent",
+                        ));
+                    }
+                    crate::coordination::send_followup(
+                        tx,
+                        target_id,
+                        worker_id,
+                        epoch,
+                        key,
+                        message,
+                        delivery,
+                        now,
+                        move_admission.as_ref().ok_or_else(|| {
+                            refused(503, "send_admission", "The message could not be admitted")
+                        })?,
+                    )
+                    .map(ExchangeOutcome::Applied)
+                    .map_err(|_| refused(403, "send_refused", "The message was refused"))
+                }
+                _ => Err(refused(
+                    501,
+                    "orchestration_effect",
+                    "The cross-server action is unavailable",
+                )),
+            }
+        })
+    }
+}
+
+fn callback_error(error: crate::provider_callbacks::CallbackError) -> AccessError {
+    use crate::provider_callbacks::CallbackError as Callback;
+    match error {
+        Callback::Store(error) => AccessError::Store(error),
+        Callback::Invalid(message) => refused(400, "message_refused", message),
+        Callback::Dependency(message) => refused(501, "orchestration_dependency", message),
+        Callback::Conflict => refused(
+            409,
+            "request_conflict",
+            "This request conflicts with a saved message",
+        ),
+        Callback::Stale => refused(409, "worker_stopped", "The worker was stopped"),
+        Callback::Unknown => refused(503, "message_unknown", "The message outcome is unknown"),
+        Callback::Stored(_) => refused(503, "invalid_record", "A stored message record is invalid"),
+    }
+}
+
+fn is_descendant_of(
+    tx: &rusqlite::Transaction<'_>,
+    target_id: &str,
+    ancestor_id: &str,
+) -> Result<bool, AccessError> {
+    let mut current = studio_runtime_store::AgentRepository::get(
+        tx,
+        &studio_runtime_store::AgentId::from(target_id),
+    )?;
+    let mut seen = std::collections::HashSet::new();
+    while let Some(agent) = current {
+        let parent = agent
+            .extra
+            .get("parentId")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        if parent == ancestor_id {
+            return Ok(true);
+        }
+        if parent.is_empty() || !seen.insert(parent.to_owned()) {
+            return Ok(false);
+        }
+        current = studio_runtime_store::AgentRepository::get(
+            tx,
+            &studio_runtime_store::AgentId::from(parent),
+        )?;
+    }
+    Ok(false)
+}
+
+impl OrchestrationEffects for RuntimeOrchestrationEffects {
+    fn supports(&self, action: &str) -> bool {
+        matches!(
+            action,
+            "event" | "message" | "move_send" | "browser_callback"
+        )
+    }
+
+    fn execute(&self, principal: &str, envelope: &Value) -> Result<ExchangeOutcome, AccessError> {
+        let action = text(envelope, "action");
+        if action == "browser_callback" {
+            return self
+                .browser_callback
+                .receive(envelope)
+                .map(ExchangeOutcome::Applied);
+        }
+        if matches!(action, "message" | "move_send") {
+            return self.worker_call(principal, envelope);
+        }
+        if action != "event" {
+            return Err(refused(
+                501,
+                "orchestration_effect",
+                "The cross-server action is unavailable",
+            ));
+        }
+        let key = text(envelope, "requestId");
+        let payload = &envelope["payload"];
+        let link_id = text(payload, "link");
+        let kind = text(payload, "kind");
+        let event_text = text(payload, "text");
+        let parent_epoch = payload
+            .get("parentEpoch")
+            .and_then(Value::as_i64)
+            .ok_or_else(|| refused(400, "invalid_request", "Invalid cross-server event"))?;
+        if key.is_empty()
+            || link_id.is_empty()
+            || event_text.len() > 12000
+            || !matches!(
+                kind,
+                "child_result" | "child_stopped" | "agent_message" | "work_review"
+            )
+        {
+            return Err(refused(
+                400,
+                "invalid_request",
+                "Invalid cross-server event",
+            ));
+        }
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|_| refused(503, "clock_unavailable", "The system clock is unavailable"))?
+            .as_secs_f64();
+        let result = self.store.transaction_with(|tx| {
+            let raw: Option<String> = tx
+                .query_row(
+                    "SELECT record FROM runtime_server_links WHERE id=?1",
+                    [link_id],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            let raw = raw.ok_or_else(|| {
+                refused(
+                    404,
+                    "link_unavailable",
+                    "The remote-parent link is unavailable",
+                )
+            })?;
+            let link: Value = serde_json::from_str(&raw)
+                .map_err(|_| refused(503, "invalid_record", "The remote-parent link is invalid"))?;
+            if link.get("side").and_then(Value::as_str) != Some("home")
+                || link.get("server").and_then(Value::as_str) != Some(principal)
+            {
+                return Err(refused(
+                    403,
+                    "link_owner",
+                    "The remote-parent link belongs to another server",
+                ));
+            }
+            if link.get("parentEpoch").and_then(Value::as_i64) != Some(parent_epoch) {
+                return Ok(ExchangeOutcome::Applied(
+                    json!({"stored":false,"reason":"The parent epoch was superseded"}),
+                ));
+            }
+            let parent = link.get("parent").and_then(Value::as_str).ok_or_else(|| {
+                refused(503, "invalid_record", "The remote-parent link is invalid")
+            })?;
+            // Match Python `_receive`'s event owner lookup: resolve the parent
+            // id from runtime_server_links, then load that durable agent row
+            // before enqueueing recovery work (codex_multi_server_orchestration.py:1090-1098).
+            let typed = studio_runtime_store::AgentRepository::get(
+                tx,
+                &studio_runtime_store::AgentId::from(parent),
+            )?
+            .ok_or_else(|| refused(404, "parent_unavailable", "The parent agent is unavailable"))?;
+            if typed.epoch != parent_epoch
+                || typed.extra.get("autoWake") != Some(&Value::Bool(true))
+                || studio_runtime_store::truthy(typed.extra.get("deletedAt"))
+            {
+                return Ok(ExchangeOutcome::Applied(
+                    json!({"stored":false,"reason":"The parent was stopped"}),
+                ));
+            }
+            if kind == "child_result" {
+                let details: Value = serde_json::from_str(event_text)
+                    .map_err(|_| refused(400, "invalid_request", "Invalid child result event"))?;
+                let child_id = details
+                    .get("agent_id")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| refused(400, "invalid_request", "Invalid child result event"))?;
+                if !link["workers"].as_array().is_some_and(|workers| {
+                    workers
+                        .iter()
+                        .any(|worker| worker.as_str() == Some(child_id))
+                }) {
+                    return Err(refused(
+                        403,
+                        "child_unlinked",
+                        "The result is outside this remote-parent link",
+                    ));
+                }
+                let mut proxy = studio_runtime_store::AgentRepository::get(
+                    tx,
+                    &studio_runtime_store::AgentId::from(child_id),
+                )?
+                .ok_or_else(|| {
+                    refused(
+                        404,
+                        "worker_unavailable",
+                        "The result worker is unavailable",
+                    )
+                })?;
+                proxy.extra.insert(
+                    "lastAnswer".to_owned(),
+                    details
+                        .get("result")
+                        .or_else(|| details.get("reason"))
+                        .cloned()
+                        .unwrap_or_else(|| json!("")),
+                );
+                proxy
+                    .extra
+                    .insert("lastCompletedTurn".to_owned(), json!(key));
+                studio_runtime_store::AgentRepository::put(tx, &proxy)?;
+            }
+            let existing: Option<(String, String, String, f64, i64)> = tx
+                .query_row(
+                    "SELECT agent,kind,text,created,epoch FROM runtime_events WHERE id=?1",
+                    [key],
+                    |row| {
+                        Ok((
+                            row.get(0)?,
+                            row.get(1)?,
+                            row.get(2)?,
+                            row.get(3)?,
+                            row.get(4)?,
+                        ))
+                    },
+                )
+                .optional()?;
+            if let Some((agent, old_kind, old_text, _, epoch)) = existing {
+                if agent != parent
+                    || old_kind != kind
+                    || old_text != event_text
+                    || epoch != typed.epoch as i64
+                {
+                    return Err(refused(
+                        409,
+                        "request_conflict",
+                        "This event identity has different content",
+                    ));
+                }
+            } else {
+                crate::event_write::enqueue_recovery_event(
+                    tx,
+                    &typed,
+                    key.to_owned(),
+                    kind,
+                    event_text.to_owned(),
+                    now,
+                )
+                .map_err(|_| {
+                    refused(
+                        503,
+                        "event_unavailable",
+                        "The remote event could not be stored",
+                    )
+                })?;
+            }
+            Ok(ExchangeOutcome::Applied(json!({"eventId":key})))
+        })?;
+        Ok(result)
+    }
 }
 
 pub struct Envelope {
@@ -145,7 +722,7 @@ pub struct DeliverySnapshot {
     signature: String,
     server: Option<String>,
     result: Option<ExchangeOutcome>,
-    attempts: u64,
+    next_at: f64,
 }
 impl DeliverySnapshot {
     pub fn from_record(
@@ -196,7 +773,7 @@ impl DeliverySnapshot {
                 .and_then(Value::as_str)
                 .map(str::to_owned),
             result,
-            attempts: value.get("attempts").and_then(Value::as_u64).unwrap_or(0),
+            next_at: value.get("next_at").and_then(Value::as_f64).unwrap_or(0.0),
         })
     }
 }
@@ -204,11 +781,23 @@ pub enum DeliveryDecision {
     Execute,
     Return(ExchangeOutcome),
 }
+fn peer_replay_safe(action: &str) -> bool {
+    matches!(action, "event" | "message" | "move_send")
+}
+
+fn peer_retry_delay(attempts: i64) -> i64 {
+    (5_u64
+        .saturating_mul(1_u64 << attempts.clamp(0, 6) as u32)
+        .min(300)) as i64
+}
+
 pub fn decide_delivery(
     snapshot: Option<&DeliverySnapshot>,
     signature: &str,
     server: Option<&str>,
     outgoing: bool,
+    action: &str,
+    now: i64,
 ) -> Result<DeliveryDecision, AccessError> {
     let Some(snapshot) = snapshot else {
         return Ok(DeliveryDecision::Execute);
@@ -227,8 +816,16 @@ pub fn decide_delivery(
             })?,
         ));
     }
-    if (!outgoing && snapshot.state == "waiting")
-        || (outgoing && snapshot.state == "queued" && snapshot.attempts == 0)
+    if !outgoing
+        && (snapshot.state == "waiting"
+            || (peer_replay_safe(action) && snapshot.state == "running"))
+    {
+        return Ok(DeliveryDecision::Execute);
+    }
+    if outgoing
+        && peer_replay_safe(action)
+        && matches!(snapshot.state.as_str(), "queued" | "running")
+        && snapshot.next_at <= now as f64
     {
         return Ok(DeliveryDecision::Execute);
     }
@@ -240,6 +837,52 @@ pub struct OrchestrationDriver {
     transport: Arc<dyn PairedTransport>,
     effects: Arc<dyn OrchestrationEffects>,
 }
+const MAX_OUTBOX_BATCH: usize = 32;
+
+/// Persist a peer-delivery intent in the caller's owning transaction. The
+/// caller sends it only after that transaction commits.
+pub fn enqueue_in_transaction(
+    transaction: &Transaction<'_>,
+    server: &str,
+    action: &str,
+    payload: &Value,
+    request_id: &str,
+    now: i64,
+) -> Result<(), AccessError> {
+    let envelope =
+        Envelope::from_value(&json!({"requestId":request_id,"action":action,"payload":payload}))?;
+    require_paired(transaction, server)?;
+    let prior = transaction
+        .query_row(
+            "SELECT server,body,fingerprint FROM runtime_server_outbox WHERE id=?1",
+            [request_id],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                ))
+            },
+        )
+        .optional()?;
+    if let Some((saved_server, saved_body, saved_fingerprint)) = prior {
+        let fingerprint = saved_fingerprint.unwrap_or_else(|| digest(saved_body.as_bytes()));
+        if saved_server != server || fingerprint != envelope.fingerprint {
+            return Err(refused(
+                409,
+                "request_conflict",
+                "This request id has different content",
+            ));
+        }
+        return Ok(());
+    }
+    transaction.execute(
+        "INSERT INTO runtime_server_outbox(id,server,body,state,created_at,next_at,fingerprint,attempts) VALUES(?1,?2,?3,'queued',?4,0,?5,0)",
+        params![request_id, server, envelope.body, now, envelope.fingerprint],
+    )?;
+    Ok(())
+}
+
 impl OrchestrationDriver {
     pub fn new(
         store: Arc<RuntimeStore>,
@@ -260,6 +903,25 @@ impl OrchestrationDriver {
         request_id: &str,
         now: i64,
     ) -> Result<ExchangeOutcome, AccessError> {
+        self.exchange_with_timeout(
+            server,
+            action,
+            payload,
+            request_id,
+            now,
+            std::time::Duration::from_secs(20),
+        )
+    }
+
+    pub fn exchange_with_timeout(
+        &self,
+        server: &str,
+        action: &str,
+        payload: &Value,
+        request_id: &str,
+        now: i64,
+        timeout: std::time::Duration,
+    ) -> Result<ExchangeOutcome, AccessError> {
         let envelope = Envelope::from_value(
             &json!({"requestId":request_id,"action":action,"payload":payload}),
         )?;
@@ -267,9 +929,9 @@ impl OrchestrationDriver {
             require_paired(tx,server)?;
             if retired(tx,&envelope.key,"out",&envelope.fingerprint,Some(server))? {return Ok(DeliveryDecision::Return(ExchangeOutcome::Unknown));}
             let saved=outbox(tx,&envelope.key,now)?;
-            let decision=decide_delivery(saved.as_ref(),&envelope.fingerprint,Some(server),true)?;
+            let decision=decide_delivery(saved.as_ref(),&envelope.fingerprint,Some(server),true,&envelope.action,now)?;
             if matches!(decision,DeliveryDecision::Execute) {
-                tx.execute("INSERT INTO runtime_server_outbox(id,server,body,state,created_at,fingerprint,attempts) VALUES(?1,?2,?3,'running',?4,?5,1) ON CONFLICT(id) DO UPDATE SET state='running',attempts=attempts+1",params![envelope.key,server,envelope.body,now,envelope.fingerprint])?;
+                tx.execute("INSERT INTO runtime_server_outbox(id,server,body,state,created_at,fingerprint,attempts,next_at) VALUES(?1,?2,?3,'running',?4,?5,0,0) ON CONFLICT(id) DO UPDATE SET state='running'",params![envelope.key,server,envelope.body,now,envelope.fingerprint])?;
             }
             Ok::<_,AccessError>(decision)
         })?;
@@ -277,11 +939,7 @@ impl OrchestrationDriver {
             return Ok(result);
         }
         // The claim is committed before crossing the transport boundary.
-        let result = match self.transport.exchange(
-            server,
-            &envelope.value(),
-            std::time::Duration::from_secs(20),
-        ) {
+        let result = match self.transport.exchange(server, &envelope.value(), timeout) {
             Ok(value) => ExchangeOutcome::from_value(&value, &envelope.key, now)
                 .unwrap_or(ExchangeOutcome::Unknown),
             Err(_) => ExchangeOutcome::Unknown,
@@ -289,6 +947,7 @@ impl OrchestrationDriver {
         self.finish(
             "outbox",
             &envelope.key,
+            &envelope.action,
             &envelope.fingerprint,
             Some(server),
             &result,
@@ -315,10 +974,10 @@ impl OrchestrationDriver {
             require_paired(tx,principal)?;
             if retired(tx,&envelope.key,"in",&signature,None)? {return Ok(DeliveryDecision::Return(ExchangeOutcome::Unknown));}
             let saved=inbox(tx,&envelope.key,now)?;
-            let decision=decide_delivery(saved.as_ref(),&signature,None,false)?;
+            let decision=decide_delivery(saved.as_ref(),&signature,None,false,&envelope.action,now)?;
             if matches!(decision,DeliveryDecision::Execute) {
                 if saved.is_some() {
-                    tx.execute("UPDATE runtime_server_inbox SET state='running' WHERE id=?1 AND state='waiting'", [&envelope.key])?;
+                    tx.execute("UPDATE runtime_server_inbox SET state='running' WHERE id=?1 AND state IN ('waiting','running')", [&envelope.key])?;
                 } else {
                     tx.execute("INSERT INTO runtime_server_inbox(id,signature,state,result,created_at,principal,actor) VALUES(?1,?2,'running',NULL,?3,?4,?5)",params![envelope.key,signature,now,principal,envelope.payload.get("actor").and_then(Value::as_str)])?;
                 }
@@ -328,26 +987,114 @@ impl OrchestrationDriver {
         if let DeliveryDecision::Return(result) = decision {
             return Ok(result);
         }
-        let result = self
-            .effects
-            .execute(principal, &envelope.value())
-            .unwrap_or(ExchangeOutcome::Unknown);
+        let result = match self.effects.execute(principal, &envelope.value()) {
+            Ok(result) => result,
+            Err(error) if envelope.action == "browser_callback" && error.status() < 500 => {
+                ExchangeOutcome::NotApplied(error.to_string())
+            }
+            Err(_) => ExchangeOutcome::Unknown,
+        };
         if result.to_value(&envelope.key).to_string().len() > MAX_RESPONSE_BYTES {
+            self.finish(
+                "inbox",
+                &envelope.key,
+                &envelope.action,
+                &signature,
+                None,
+                &ExchangeOutcome::Unknown,
+                now,
+            )?;
             return Ok(ExchangeOutcome::Unknown);
         }
-        self.finish("inbox", &envelope.key, &signature, None, &result, now)?;
+        self.finish(
+            "inbox",
+            &envelope.key,
+            &envelope.action,
+            &signature,
+            None,
+            &result,
+            now,
+        )?;
         Ok(result)
     }
+
+    /// Deliver a bounded snapshot of due intents. Each exchange claims and
+    /// records its result in short transactions around the transport call.
+    pub fn pump_due(&self, now: i64) -> Result<usize, AccessError> {
+        let pending = self.store.read_transaction(|tx| {
+            let mut statement = tx.prepare(
+                "SELECT server,body,state FROM runtime_server_outbox WHERE state IN ('queued','running') AND next_at<=?1 ORDER BY rowid LIMIT ?2",
+            )?;
+            let rows = statement.query_map(params![now, MAX_OUTBOX_BATCH as i64], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            })?;
+            rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+        })?;
+        let mut count = 0;
+        for (server, body, state) in pending {
+            let value = serde_json::from_str::<Value>(&body).map_err(|_| {
+                refused(
+                    503,
+                    "invalid_record",
+                    "Stored cross-server envelope is invalid",
+                )
+            })?;
+            let envelope = Envelope::from_value(&value)?;
+            // A crash after claiming leaves a row running. Stable-identity
+            // peer operations can safely replay; provider commands remain
+            // one-shot and deliberately stay unknown after that crash point.
+            if state == "running" && !peer_replay_safe(&envelope.action) {
+                continue;
+            }
+            let _ = self.exchange(
+                &server,
+                &envelope.action,
+                &envelope.payload,
+                &envelope.key,
+                now,
+            )?;
+            count += 1;
+        }
+        Ok(count)
+    }
+    #[allow(clippy::too_many_arguments)]
     fn finish(
         &self,
         table: &str,
         key: &str,
+        action: &str,
         signature: &str,
         server: Option<&str>,
         result: &ExchangeOutcome,
         now: i64,
     ) -> Result<(), AccessError> {
         if *result == ExchangeOutcome::Unknown {
+            if peer_replay_safe(action) && table == "outbox" {
+                let attempts = self.store.read_transaction(|tx| {
+                    tx.query_row(
+                        "SELECT attempts FROM runtime_server_outbox WHERE id=?1",
+                        [key],
+                        |row| row.get::<_, i64>(0),
+                    )
+                    .optional()
+                    .map(|value| value.unwrap_or_default().max(0) as u64)
+                    .map_err(Into::into)
+                })?;
+                let retry_delay = peer_retry_delay(attempts as i64);
+                self.store.transaction_with(|tx| {
+                    tx.execute("UPDATE runtime_server_outbox SET state='queued',attempts=attempts+1,next_at=?1,error='unknown' WHERE id=?2 AND state='running'",params![now.saturating_add(retry_delay),key])?;
+                    Ok::<_,AccessError>(())
+                })?;
+            } else if peer_replay_safe(action) && table == "inbox" {
+                self.store.transaction_with(|tx| {
+                    tx.execute("UPDATE runtime_server_inbox SET state='waiting' WHERE id=?1 AND state='running'", [key])?;
+                    Ok::<_,AccessError>(())
+                })?;
+            }
             return Ok(());
         }
         self.store.transaction_with(|tx| {
@@ -384,7 +1131,7 @@ fn outbox(
     key: &str,
     now: i64,
 ) -> Result<Option<DeliverySnapshot>, AccessError> {
-    let raw:Option<String>=tx.query_row("SELECT json_object('id',id,'server',server,'body',body,'state',state,'result',result,'fingerprint',fingerprint,'attempts',attempts,'created_at',created_at,'completed_at',completed_at) FROM runtime_server_outbox WHERE id=?1",[key],|r|r.get(0)).optional()?;
+    let raw:Option<String>=tx.query_row("SELECT json_object('id',id,'server',server,'body',body,'state',state,'result',result,'fingerprint',fingerprint,'attempts',attempts,'next_at',next_at,'created_at',created_at,'completed_at',completed_at) FROM runtime_server_outbox WHERE id=?1",[key],|r|r.get(0)).optional()?;
     raw.map(|s| DeliverySnapshot::from_record("runtime_server_outbox", key, &s, now))
         .transpose()
 }
@@ -393,7 +1140,7 @@ fn inbox(
     key: &str,
     now: i64,
 ) -> Result<Option<DeliverySnapshot>, AccessError> {
-    let raw:Option<String>=tx.query_row("SELECT json_object('id',id,'signature',signature,'state',state,'result',result,'created_at',created_at,'completed_at',completed_at) FROM runtime_server_inbox WHERE id=?1",[key],|r|r.get(0)).optional()?;
+    let raw:Option<String>=tx.query_row("SELECT json_object('id',id,'signature',signature,'state',state,'result',result,'next_at',0,'created_at',created_at,'completed_at',completed_at) FROM runtime_server_inbox WHERE id=?1",[key],|r|r.get(0)).optional()?;
     raw.map(|s| DeliverySnapshot::from_record("runtime_server_inbox", key, &s, now))
         .transpose()
 }
@@ -422,4 +1169,96 @@ fn retired(
         return Ok(true);
     }
     Ok(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        DeliveryDecision, DeliverySnapshot, ExchangeOutcome, decide_delivery, peer_retry_delay,
+    };
+
+    fn saved(state: &str, next_at: f64) -> DeliverySnapshot {
+        DeliverySnapshot {
+            state: state.to_owned(),
+            signature: "same-content".to_owned(),
+            server: Some("peer".to_owned()),
+            result: None,
+            next_at,
+        }
+    }
+
+    #[test]
+    fn idempotent_peer_delivery_replays_after_unknown_only_when_due() {
+        let queued = saved("queued", 105.0);
+        assert!(matches!(
+            decide_delivery(
+                Some(&queued),
+                "same-content",
+                Some("peer"),
+                true,
+                "event",
+                104
+            ),
+            Ok(DeliveryDecision::Return(ExchangeOutcome::Unknown))
+        ));
+        assert!(matches!(
+            decide_delivery(
+                Some(&queued),
+                "same-content",
+                Some("peer"),
+                true,
+                "event",
+                105
+            ),
+            Ok(DeliveryDecision::Execute)
+        ));
+        let running = saved("running", 100.0);
+        assert!(matches!(
+            decide_delivery(
+                Some(&running),
+                "same-content",
+                Some("peer"),
+                true,
+                "move_send",
+                100
+            ),
+            Ok(DeliveryDecision::Execute)
+        ));
+    }
+
+    #[test]
+    fn one_shot_action_and_changed_identity_content_are_never_replayed() {
+        let running = saved("running", 0.0);
+        assert!(matches!(
+            decide_delivery(
+                Some(&running),
+                "same-content",
+                Some("peer"),
+                true,
+                "exec",
+                200
+            ),
+            Ok(DeliveryDecision::Return(ExchangeOutcome::Unknown))
+        ));
+        assert!(
+            decide_delivery(
+                Some(&running),
+                "changed-content",
+                Some("peer"),
+                true,
+                "event",
+                200,
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn peer_retry_schedule_matches_python_and_caps_at_five_minutes() {
+        assert_eq!(
+            [0, 1, 2, 3, 4, 5, 6, 7].map(peer_retry_delay),
+            [5, 10, 20, 40, 80, 160, 300, 300]
+        );
+        assert_eq!(peer_retry_delay(-1), 5);
+    }
 }

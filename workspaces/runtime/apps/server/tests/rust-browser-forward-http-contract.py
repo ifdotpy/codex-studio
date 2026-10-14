@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
-"""Keep browser forward behavior on Python and prove the Rust named refusal is read-only."""
+"""Verify the browser forward route remains local-window-only and read-only at open."""
 
 from __future__ import annotations
 
-import os
 import socket
 import sys
 import unittest
@@ -44,13 +43,8 @@ class BrowserForwardHTTPContract(TimedHTTPContractTest, unittest.TestCase):
                 "X-Studio-API-Schema": self.backend.schema_hash,
             },
         )
-        backend_command = os.environ.get("STUDIO_HTTP_BACKEND_COMMAND", "")
-        if backend_command:
-            self.assertEqual(response.status, 501, response.body[:500])
-            self.assertIn(b"multi-server-runtime/orchestration", response.body)
-        else:
-            self.assertEqual(response.status, 200, response.body[:500])
-            self.assertEqual(response.json(), {"status": "forwarding"})
+        self.assertEqual(response.status, 200, response.body[:500])
+        self.assertEqual(response.json(), {"status": "forwarding"})
         self.assertEqual(no_write_snapshot(self.backend.state), before)
 
 

@@ -211,6 +211,71 @@ fn federation_corpus() {
     rollback_matrix(&corpus);
     outbound_rollback(&corpus);
     lost_push_response(&corpus);
+    callback_remote_message_uses_the_existing_federation_outbox(&corpus);
+}
+
+fn callback_remote_message_uses_the_existing_federation_outbox(corpus: &Corpus) {
+    use crate::multi_server_orchestration::{
+        ExchangeOutcome, OrchestrationEffects, RuntimeOrchestrationEffects,
+    };
+    use std::sync::Arc;
+
+    let (_, store) = corpus.store("callback-remote-message", false);
+    let store = Arc::new(store);
+    let args = json!({
+        "target": format!("remote:{}", corpus.peer()),
+        "text": "callback to an approved peer room",
+        "importance": "progress",
+        "progress_key": "remote-callback",
+        "progress_version": 0
+    });
+    let link = json!({"id":"callback-link","side":"home","server":"peer-server","parent":"lead","parentEpoch":0,"workers":["lead"]});
+    store
+        .transaction_with(|tx| {
+            let mut actor = studio_runtime_store::AgentRepository::get(
+                tx,
+                &studio_runtime_store::AgentId::from("lead"),
+            )?
+            .expect("callback actor fixture");
+            actor.extra.insert("autoWake".into(), json!(true));
+            actor.extra.insert("movedTo".into(), json!("server-two"));
+            actor.extra.insert(
+                "remoteWorker".into(),
+                json!({"server":"peer-server","link":"callback-link"}),
+            );
+            studio_runtime_store::AgentRepository::put(tx, &actor)?;
+            tx.execute(
+                "INSERT INTO runtime_server_links(id,record) VALUES('callback-link',?1)",
+                [link.to_string()],
+            )?;
+            Ok::<_, studio_runtime_store::StoreError>(())
+        })
+        .expect("moved callback actor and paired link fixture");
+    let effects = RuntimeOrchestrationEffects::new(Arc::clone(&store));
+    let envelope = json!({
+        "requestId":"stable-callback-remote-message",
+        "action":"message",
+        "payload":{"link":"callback-link","worker":"lead","epoch":0,"parentEpoch":0,"args":args}
+    });
+    let queued = effects
+        .execute("peer-server", &envelope)
+        .expect("moved worker callback uses the federation service");
+    let ExchangeOutcome::Applied(queued) = queued else {
+        panic!("remote callback should be queued")
+    };
+    assert_eq!(queued["status"], "queued");
+    assert_eq!(rows(&store, "runtime_federation_outbox").len(), 1);
+
+    let replay = effects
+        .execute("peer-server", &envelope)
+        .expect("stable remote callback replays its receipt");
+    assert_eq!(replay, ExchangeOutcome::Applied(queued.clone()));
+    assert_eq!(rows(&store, "runtime_federation_outbox").len(), 1);
+
+    let mut changed = envelope.clone();
+    changed["payload"]["args"]["text"] = json!("changed");
+    assert!(effects.execute("peer-server", &changed).is_err());
+    assert_eq!(rows(&store, "runtime_federation_outbox").len(), 1);
 }
 
 fn replay_and_nonce(corpus: &Corpus) {
@@ -529,15 +594,18 @@ fn lost_push_response(corpus: &Corpus) {
     let (sender_path, sender) = corpus.store("sender", false);
     let (_, receiver) = corpus.store("receiver", true);
     let key = "stable-message-key";
-    let result = delivery::send_message(
-        &sender,
-        "lead",
-        corpus.room(),
-        "message to peer",
-        key,
-        corpus.now(),
-    )
-    .expect("fixture operation");
+    let result = sender
+        .transaction_with(|tx| {
+            delivery::send_message_in_transaction(
+                tx,
+                "lead",
+                corpus.room(),
+                "message to peer",
+                key,
+                corpus.now(),
+            )
+        })
+        .expect("fixture operation");
     assert_eq!(
         result,
         delivery::send_message(
