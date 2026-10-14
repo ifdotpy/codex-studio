@@ -213,8 +213,8 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        MAX_PREVIEW_BYTES, WorkspaceContext, WorkspaceFilesError, file_content, file_info,
-        mime_type,
+        MAX_PREVIEW_BYTES, WORKSPACE_PREVIEW_LIMIT_LABEL, WorkspaceContext, WorkspaceFilesError,
+        file_content, file_info, mime_type,
     };
 
     #[test]

@@ -1861,7 +1861,7 @@ mod tests {
                     "/api/servers/orchestration",
                     RawRequest {
                         body: Some(safe_body),
-                        raw_body: Some(safe_raw_body.as_bytes().into()),
+                        raw_body: Some(safe_raw_body.into_bytes().into()),
                         ..RawRequest::default()
                     },
                 )

@@ -19,10 +19,10 @@ use ureq::tls::{RootCerts, TlsConfig, TlsProvider};
 
 use crate::event_write::python_json_compact;
 use crate::multi_server_protocol_generated::MULTI_SERVER_SIGNING_DOMAIN;
+pub use crate::multi_server_transport_limits::{MAX_REQUEST_BYTES, MAX_RESPONSE_BYTES};
 use studio_runtime_store::{RemoteTransportRepository, RuntimeStore, StoreError, sha256_hex};
 
 pub const CLOCK_SKEW_SECONDS: i64 = 300;
-include!("multi_server_transport_limits.rs");
 pub const MAX_IDENTITY_BYTES: usize = 16 * 1024;
 
 const FEDERATION_DOMAIN: &str = "studio-federation-v1";

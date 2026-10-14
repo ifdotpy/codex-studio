@@ -55,6 +55,7 @@ pub mod multi_server_discovery;
 pub mod multi_server_orchestration;
 pub mod multi_server_pairing;
 pub mod multi_server_protocol_generated;
+pub mod multi_server_transport_limits;
 pub mod panels;
 pub mod payload_blobs;
 pub mod payload_store;
