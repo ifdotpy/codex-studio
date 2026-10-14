@@ -258,6 +258,36 @@ pub(super) fn dispatch_with_ports<P: crate::managed_host_tools::Ports>(
     Ok(decision)
 }
 
+pub(super) fn dispatch_with_production_ports(
+    store: &RuntimeStore,
+    context: &CallbackContext,
+    input: &Input,
+    now: f64,
+) -> Result<CallbackDecision, CallbackError> {
+    let ports = production_ports(store, context, input)?;
+    dispatch_with_ports(store, context, input, now, &ports)
+}
+
+pub(super) fn production_ports(
+    store: &RuntimeStore,
+    context: &CallbackContext,
+    input: &Input,
+) -> Result<services::ProductionPorts, CallbackError> {
+    let reader = store.read()?;
+    let admission = crate::message_admission::PreparedAdmission::load(&reader, &context.agent)
+        .map_err(CallbackError::from)?;
+    let room_directory = if input.params["tool"] == "orchestration_search" {
+        Some(crate::sync_entity_context::RoomDirectory::prepare(&reader)?)
+    } else {
+        None
+    };
+    Ok(services::ProductionPorts::new(
+        context.clone(),
+        room_directory,
+        admission,
+    ))
+}
+
 fn execute_once(
     tx: &Transaction<'_>,
     snapshot: &CallbackSnapshot,

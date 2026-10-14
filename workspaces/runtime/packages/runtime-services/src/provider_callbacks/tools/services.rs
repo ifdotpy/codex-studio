@@ -2,10 +2,488 @@
 //! transaction as its effects. No HTTP adapters and no user-authored substitutes.
 mod messages;
 mod reads;
+#[cfg(test)]
+#[path = "services/sends_tests.rs"]
+mod sends_tests;
 mod work;
 use super::*;
 use crate::{event_write, work_policy};
 use studio_runtime_store::WorkItemsRepository;
+
+/// Default local bundle for callback callers. Message ingress reuses the
+/// callback package's checked transactional implementation; capabilities whose
+/// owning runtime adapter has not landed retain their named refusal.
+pub(crate) struct ProductionPorts {
+    context: CallbackContext,
+    room_directory: Option<crate::sync_entity_context::RoomDirectory>,
+    admission: crate::message_admission::PreparedAdmission,
+}
+
+impl ProductionPorts {
+    pub(crate) fn new(
+        context: CallbackContext,
+        room_directory: Option<crate::sync_entity_context::RoomDirectory>,
+        admission: crate::message_admission::PreparedAdmission,
+    ) -> Self {
+        Self {
+            context,
+            room_directory,
+            admission,
+        }
+    }
+}
+
+impl crate::managed_host_tools::SendPort for ProductionPorts {
+    fn send(
+        &self,
+        tx: &Transaction<'_>,
+        _actor: &crate::managed_host_tools::Actor,
+        args: &Value,
+        request_id: &str,
+        now: f64,
+    ) -> Result<crate::managed_host_tools::OperationResult, crate::managed_host_tools::Error> {
+        let snapshot = super::super::storage::snapshot(tx, &self.context)
+            .map_err(|_| crate::managed_host_tools::Error::Stale)?;
+        let target = args["agent_id"]
+            .as_str()
+            .ok_or(crate::managed_host_tools::Error::Invalid(
+                "Supply agent_id for orchestration_send",
+            ))?;
+        if is_descendant(tx, snapshot.context().agent.as_str(), target)? {
+            let text = args["text"]
+                .as_str()
+                .ok_or(crate::managed_host_tools::Error::Invalid(
+                    "Message must have text",
+                ))?;
+            let result = crate::coordination::send_followup(
+                tx,
+                crate::coordination::AgentFollowup {
+                    sender_id: snapshot.context().agent.as_str(),
+                    sender_epoch: self.context.epoch as i64,
+                    recipient_id: target,
+                    id: request_id,
+                    text,
+                    delivery: args["delivery"].as_str().unwrap_or("queue"),
+                    now,
+                },
+                &self.admission,
+            )
+            .map_err(|error| match error {
+                crate::coordination::CoordinationError::Store(error) => {
+                    crate::managed_host_tools::Error::Store(error)
+                }
+                crate::coordination::CoordinationError::RequiresDependency(name) => {
+                    crate::managed_host_tools::Error::Unavailable(name)
+                }
+                _ => crate::managed_host_tools::Error::Invalid("Agent input was refused"),
+            })?;
+            return Ok(crate::managed_host_tools::OperationResult {
+                value: result.receipt,
+                signals: if result.event_inserted {
+                    vec![crate::managed_host_tools::WakeSignal::new(
+                        "account-worker/queued-event",
+                    )]
+                } else {
+                    Vec::new()
+                },
+            });
+        }
+        // Runtime.dynamic routes non-descendants through chat_message, which
+        // supplies its default importance and never accepts progress metadata.
+        let chat_args = json!({"target":target,"text":args["text"]});
+        let value = messages::send(tx, &snapshot, &chat_args, request_id, now).map_err(
+            |error| match error {
+                CallbackError::Store(error) => crate::managed_host_tools::Error::Store(error),
+                _ => crate::managed_host_tools::Error::Invalid(
+                    "Message ingress refused this request",
+                ),
+            },
+        )?;
+        Ok(crate::managed_host_tools::OperationResult {
+            value,
+            signals: Vec::new(),
+        })
+    }
+}
+
+fn is_descendant(
+    tx: &Transaction<'_>,
+    sender_id: &str,
+    target_id: &str,
+) -> Result<bool, crate::managed_host_tools::Error> {
+    let records = records::all(tx, "runtime_agents")?;
+    let mut by_id = std::collections::BTreeMap::new();
+    for record in records {
+        let id = record
+            .get("id")
+            .and_then(Value::as_str)
+            .ok_or(crate::managed_host_tools::Error::Stale)?;
+        by_id.insert(id.to_owned(), record);
+    }
+    let Some(mut cursor) = by_id.get(target_id) else {
+        return Ok(false);
+    };
+    let mut visited = std::collections::BTreeSet::new();
+    while let Some(parent) = cursor.get("parentId").and_then(Value::as_str) {
+        if parent == sender_id {
+            return Ok(true);
+        }
+        if !visited.insert(parent.to_owned()) {
+            return Err(crate::managed_host_tools::Error::Stale);
+        }
+        let Some(next) = by_id.get(parent) else {
+            return Ok(false);
+        };
+        cursor = next;
+    }
+    Ok(false)
+}
+
+impl crate::managed_host_tools::ChildCreationPort for ProductionPorts {
+    type Prepared = ();
+    fn prepare_work_item(
+        &self,
+        _: &Transaction<'_>,
+        _: &crate::managed_host_tools::Actor,
+        _: &str,
+        _: &Value,
+        _: f64,
+    ) -> Result<(), crate::managed_host_tools::Error> {
+        Err(crate::managed_host_tools::Error::Unavailable(
+            "agent-create/worker-driver",
+        ))
+    }
+    fn recheck_worker(
+        &self,
+        _: &Transaction<'_>,
+        _: &crate::managed_host_tools::Actor,
+        _: &(),
+    ) -> Result<(), crate::managed_host_tools::Error> {
+        Err(crate::managed_host_tools::Error::Unavailable(
+            "agent-create/worker-driver",
+        ))
+    }
+    fn persisted_record(
+        &self,
+        _: &Transaction<'_>,
+        _: &(),
+    ) -> Result<Value, crate::managed_host_tools::Error> {
+        Err(crate::managed_host_tools::Error::Unavailable(
+            "agent-create/worker-driver",
+        ))
+    }
+    fn wake_signal(&self, _: &()) -> crate::managed_host_tools::WakeSignal {
+        crate::managed_host_tools::WakeSignal::new("worker-driver")
+    }
+}
+
+impl crate::managed_host_tools::InterruptPort for ProductionPorts {
+    fn interrupt_in_transaction(
+        &self,
+        tx: &Transaction<'_>,
+        _: &crate::managed_host_tools::Actor,
+        target_id: &str,
+        _: &str,
+        _: &str,
+        now: f64,
+    ) -> Result<crate::managed_host_tools::OperationResult, crate::managed_host_tools::Error> {
+        let value = crate::agent_lifecycle_runtime::execute_in_transaction(
+            tx,
+            &crate::agent_management::Action::Stop {
+                target: target_id.to_owned(),
+                descendants: false,
+            },
+            now,
+            &crate::agent_lifecycle_runtime::UnavailableLifecyclePorts,
+        )
+        .map_err(|error| match error {
+            crate::agent_management::ManagementError::Unavailable(name) => {
+                crate::managed_host_tools::Error::Unavailable(name)
+            }
+            crate::agent_management::ManagementError::Store(error) => {
+                crate::managed_host_tools::Error::Store(error)
+            }
+            _ => crate::managed_host_tools::Error::Invalid("Lifecycle action was refused"),
+        })?;
+        Ok(crate::managed_host_tools::OperationResult {
+            value,
+            signals: vec![crate::managed_host_tools::WakeSignal::new(
+                "account-worker/agent-interrupt",
+            )],
+        })
+    }
+}
+
+impl crate::managed_host_tools::StatusPort for ProductionPorts {
+    fn status(
+        &self,
+        _: &Transaction<'_>,
+        _: &crate::managed_host_tools::Actor,
+        _: &Value,
+    ) -> Result<crate::managed_host_tools::OperationResult, crate::managed_host_tools::Error> {
+        Err(crate::managed_host_tools::Error::Unavailable(
+            "model-directory/status-and-dispatch-capacity",
+        ))
+    }
+}
+impl crate::managed_host_tools::SearchPort for ProductionPorts {
+    fn search(
+        &self,
+        tx: &Transaction<'_>,
+        actor: &crate::managed_host_tools::Actor,
+        args: &Value,
+    ) -> Result<crate::managed_host_tools::OperationResult, crate::managed_host_tools::Error> {
+        let directory =
+            self.room_directory
+                .as_ref()
+                .ok_or(crate::managed_host_tools::Error::Unavailable(
+                    "transcript/search-directory",
+                ))?;
+        let query = args["query"]
+            .as_str()
+            .ok_or(crate::managed_host_tools::Error::Invalid(
+                "Invalid search query",
+            ))?;
+        let limit = args["limit"].as_i64().unwrap_or(50);
+        let value = crate::transcript::search_work_in_transaction(
+            tx,
+            directory,
+            query,
+            Some(&actor.record().id.0),
+            limit,
+        )
+        .map_err(|error| match error {
+            crate::transcript::TranscriptError::InvalidSearch => {
+                crate::managed_host_tools::Error::Invalid("Invalid search query")
+            }
+            crate::transcript::TranscriptError::Store => {
+                crate::managed_host_tools::Error::Unavailable("transcript/search-store")
+            }
+            _ => crate::managed_host_tools::Error::Unavailable("transcript/search-read"),
+        })?;
+        Ok(crate::managed_host_tools::OperationResult {
+            value,
+            signals: Vec::new(),
+        })
+    }
+}
+impl crate::managed_host_tools::ContextPort for ProductionPorts {
+    fn context(
+        &self,
+        tx: &Transaction<'_>,
+        actor: &crate::managed_host_tools::Actor,
+        args: &Value,
+    ) -> Result<crate::managed_host_tools::OperationResult, crate::managed_host_tools::Error> {
+        if args["topic"] != "monitor" {
+            return Err(crate::managed_host_tools::Error::Unavailable(
+                "model-context/requested-topic",
+            ));
+        }
+        let id = args["id"]
+            .as_str()
+            .ok_or(crate::managed_host_tools::Error::Invalid(
+                "Missing monitor id",
+            ))?;
+        let (snapshot, monitor_actor) = crate::monitor_runtime::snapshot(tx, id).map_err(|_| {
+            crate::managed_host_tools::Error::Unavailable("monitor-runtime/context-read")
+        })?;
+        if monitor_actor.root_id != actor.record().root_id {
+            return Err(crate::managed_host_tools::Error::Invalid(
+                "Unknown monitor in this team",
+            ));
+        }
+        let content = snapshot.record().clone();
+        let version =
+            studio_runtime_store::sha256_hex(content.to_string().as_bytes())[..24].to_owned();
+        Ok(crate::managed_host_tools::OperationResult {
+            value: json!({"topic":"monitor","version":version,"content":content}),
+            signals: Vec::new(),
+        })
+    }
+}
+impl crate::managed_host_tools::ComplaintPort for ProductionPorts {
+    fn complaint(
+        &self,
+        tx: &Transaction<'_>,
+        actor: &crate::managed_host_tools::Actor,
+        args: &Value,
+        request_id: &str,
+        now: f64,
+    ) -> Result<crate::managed_host_tools::OperationResult, crate::managed_host_tools::Error> {
+        let actor = serde_json::to_value(actor.record())
+            .map_err(|_| crate::managed_host_tools::Error::Invalid("Invalid complaint actor"))?;
+        let value =
+            crate::notification_dispatch::agent_complaint_action(tx, &actor, args, request_id, now)
+                .map_err(|error| match error {
+                    crate::notification_dispatch::NotificationDispatchError::Store(error) => {
+                        crate::managed_host_tools::Error::Store(error)
+                    }
+                    crate::notification_dispatch::NotificationDispatchError::ConflictingInput => {
+                        crate::managed_host_tools::Error::Invalid(if args["action"] == "submit" {
+                            "This complaint id has different content"
+                        } else {
+                            "This response id has different content"
+                        })
+                    }
+                    crate::notification_dispatch::NotificationDispatchError::Dependency(name) => {
+                        crate::managed_host_tools::Error::Unavailable(name)
+                    }
+                    _ => crate::managed_host_tools::Error::Invalid("Complaint action was refused"),
+                })?;
+        let should_wake = (args["action"] == "submit" && value["recipient"] == "lead")
+            || (args["action"] == "respond" && value["author"] != actor["id"]);
+        Ok(crate::managed_host_tools::OperationResult {
+            value,
+            signals: if should_wake {
+                vec![crate::managed_host_tools::WakeSignal::new(
+                    "event-driver/complaint-notification",
+                )]
+            } else {
+                Vec::new()
+            },
+        })
+    }
+}
+impl crate::managed_host_tools::WatchMonitorPort for ProductionPorts {
+    fn watch(
+        &self,
+        _: &Transaction<'_>,
+        _: &crate::managed_host_tools::Actor,
+        _: &Value,
+        _: &str,
+        _: f64,
+    ) -> Result<crate::managed_host_tools::OperationResult, crate::managed_host_tools::Error> {
+        Err(crate::managed_host_tools::Error::Unavailable(
+            "rules/runtime-driver",
+        ))
+    }
+    fn monitor(
+        &self,
+        tx: &Transaction<'_>,
+        actor: &crate::managed_host_tools::Actor,
+        args: &Value,
+        _: &str,
+        now: f64,
+    ) -> Result<crate::managed_host_tools::OperationResult, crate::managed_host_tools::Error> {
+        if args["action"].as_str() != Some("cancel") {
+            return Err(crate::managed_host_tools::Error::Unavailable(
+                "workspace-state/monitor-admission",
+            ));
+        }
+        let id = args["monitor_id"]
+            .as_str()
+            .ok_or(crate::managed_host_tools::Error::Invalid(
+                "Missing monitor_id",
+            ))?;
+        let (value, operation) =
+            crate::monitor_driver::reserve_cancel(tx, id, Some(&actor.record().id.0), now)
+                .map_err(|error| match error {
+                    crate::monitor_policy::MonitorError::Store(error) => {
+                        crate::managed_host_tools::Error::Store(error)
+                    }
+                    crate::monitor_policy::MonitorError::Unavailable(name) => {
+                        crate::managed_host_tools::Error::Unavailable(name)
+                    }
+                    _ => crate::managed_host_tools::Error::Invalid(
+                        "Monitor cancellation was refused",
+                    ),
+                })?;
+        let signals = operation
+            .into_iter()
+            .map(|_| crate::managed_host_tools::WakeSignal::new("monitor-driver"))
+            .collect();
+        Ok(crate::managed_host_tools::OperationResult { value, signals })
+    }
+}
+impl crate::managed_host_tools::ReviewPort for ProductionPorts {
+    fn review(
+        &self,
+        tx: &Transaction<'_>,
+        actor: &crate::managed_host_tools::Actor,
+        args: &Value,
+        request_id: &str,
+        _: f64,
+    ) -> Result<crate::managed_host_tools::OperationResult, crate::managed_host_tools::Error> {
+        let root =
+            studio_runtime_store::ContextRepairRepository::agent(tx, &actor.record().root_id.0)?
+                .ok_or(crate::managed_host_tools::Error::Stale)?;
+        let directory = actor
+            .record()
+            .extra
+            .get("cwd")
+            .and_then(Value::as_str)
+            .ok_or(crate::managed_host_tools::Error::Unavailable(
+                "agent-create/worker-driver",
+            ))?;
+        let key = args
+            .get("request_id")
+            .and_then(Value::as_str)
+            .unwrap_or(request_id)
+            .to_owned();
+        let plan = crate::native_review::ReviewPlan::from_records(
+            serde_json::to_value(actor.record())
+                .map_err(|_| crate::managed_host_tools::Error::Invalid("Invalid reviewer"))?,
+            root,
+            args.clone(),
+            key,
+            directory.to_owned(),
+        )
+        .map_err(|_| crate::managed_host_tools::Error::Invalid("Invalid native review request"))?;
+        let value = crate::native_review::reserve(tx, &plan, &UnavailableReviewCreator).map_err(
+            |error| match error {
+                crate::native_actions::NativeError::Unavailable(name) => {
+                    crate::managed_host_tools::Error::Unavailable(name)
+                }
+                crate::native_actions::NativeError::Store(error) => {
+                    crate::managed_host_tools::Error::Store(error)
+                }
+                _ => crate::managed_host_tools::Error::Unavailable("agent-create/worker-driver"),
+            },
+        )?;
+        Ok(crate::managed_host_tools::OperationResult {
+            value,
+            signals: Vec::new(),
+        })
+    }
+}
+
+struct UnavailableReviewCreator;
+impl crate::native_review::ReviewCreator for UnavailableReviewCreator {
+    fn child(
+        &self,
+        _: &Transaction<'_>,
+        _: &Value,
+        _: &Value,
+    ) -> crate::native_actions::Result<Value> {
+        Err(crate::native_actions::NativeError::Unavailable(
+            "agent-create/worker-driver",
+        ))
+    }
+    fn receipt(
+        &self,
+        _: &Transaction<'_>,
+        _: &str,
+        _: &Value,
+    ) -> crate::native_actions::Result<()> {
+        Err(crate::native_actions::NativeError::Unavailable(
+            "agent-create/worker-driver",
+        ))
+    }
+}
+impl crate::managed_host_tools::PostCommitPort for ProductionPorts {
+    fn release(
+        &self,
+        signals: &[crate::managed_host_tools::WakeSignal],
+    ) -> Result<(), crate::managed_host_tools::Error> {
+        drop(
+            signals
+                .iter()
+                .map(crate::managed_host_tools::WakeSignal::owner)
+                .collect::<Vec<_>>(),
+        );
+        Ok(())
+    }
+}
 
 impl From<event_write::EventWriteError> for CallbackError {
     fn from(error: event_write::EventWriteError) -> Self {
@@ -207,6 +685,11 @@ fn managed_error(error: crate::managed_host_tools::Error) -> CallbackError {
         E::Unavailable(name) => CallbackError::Dependency(name),
         E::Store(error) => CallbackError::Store(error),
         E::Sqlite(error) => CallbackError::Store(error.into()),
+        E::Work(crate::work_write::WorkWriteError::Event(error)) => error.into(),
+        E::Work(crate::work_write::WorkWriteError::Store(error)) => CallbackError::Store(error),
+        E::Work(crate::work_write::WorkWriteError::NotImplemented(name)) => {
+            CallbackError::Dependency(name)
+        }
     }
 }
 fn text<'a>(v: &'a Value, key: &str) -> Result<&'a str, CallbackError> {

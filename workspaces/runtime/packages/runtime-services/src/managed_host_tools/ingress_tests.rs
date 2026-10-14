@@ -6,7 +6,6 @@ mod prepared_python;
 use crate::managed_host_tools::{
     Actor, ChildCreationPort, ComplaintPort, ContextPort, Error, InterruptPort, OperationResult,
     PostCommitPort, ReviewPort, SearchPort, SendPort, StatusPort, WakeSignal, WatchMonitorPort,
-    WorkAssignmentPort,
 };
 use crate::provider_callbacks::{
     CallbackContext, CallbackDecision, CallbackError, dispatch_with_managed_tools,
@@ -154,23 +153,6 @@ impl ChildCreationPort for PortBundle {
 
     fn wake_signal(&self, _: &Self::Prepared) -> WakeSignal {
         WakeSignal::new("child-start")
-    }
-}
-
-impl WorkAssignmentPort for PortBundle {
-    fn assign_in_transaction(
-        &self,
-        tx: &Transaction<'_>,
-        task_id: &str,
-        child_id: &str,
-        _: &studio_runtime_store::AgentRecord,
-        _: f64,
-    ) -> Result<(), Error> {
-        tx.execute(
-            "INSERT OR IGNORE INTO p05_test_intents(kind,id,payload) VALUES('assignment',?1,?2)",
-            params![task_id, child_id],
-        )?;
-        Ok(())
     }
 }
 

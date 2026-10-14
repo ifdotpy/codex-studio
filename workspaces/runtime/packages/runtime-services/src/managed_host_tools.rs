@@ -147,6 +147,8 @@ pub(crate) enum Error {
     Store(#[from] studio_runtime_store::StoreError),
     #[error(transparent)]
     Sqlite(#[from] rusqlite::Error),
+    #[error(transparent)]
+    Work(#[from] crate::work_write::WorkWriteError),
 }
 
 /// Child construction stays behind P02's host creation seam. Every method is
@@ -180,19 +182,6 @@ pub(crate) trait ChildCreationPort {
     /// Return only a wake signal. The initial worker event remains a durable
     /// row and startup reconciliation starts the child if this signal is lost.
     fn wake_signal(&self, prepared: &Self::Prepared) -> WakeSignal;
-}
-
-/// P16 assignment is part of the same transaction as the child row and spawn
-/// receipt. Its adapter calls `work_assignment_runtime::assign_in_transaction`.
-pub(crate) trait WorkAssignmentPort {
-    fn assign_in_transaction(
-        &self,
-        tx: &Transaction<'_>,
-        task_id: &str,
-        child_id: &str,
-        actor: &studio_runtime_store::AgentRecord,
-        now: f64,
-    ) -> Result<(), Error>;
 }
 
 /// Transactional send adapters write the durable message/worker intent only;
@@ -328,7 +317,6 @@ pub(crate) struct Staged {
 
 pub(crate) trait Ports:
     ChildCreationPort
-    + WorkAssignmentPort
     + SendPort
     + InterruptPort
     + StatusPort
@@ -343,7 +331,6 @@ pub(crate) trait Ports:
 
 impl<T> Ports for T where
     T: ChildCreationPort
-        + WorkAssignmentPort
         + SendPort
         + InterruptPort
         + StatusPort
@@ -394,19 +381,6 @@ impl ChildCreationPort for UnavailablePorts {
 
     fn wake_signal(&self, _: &Self::Prepared) -> WakeSignal {
         WakeSignal::new("worker-driver")
-    }
-}
-
-impl WorkAssignmentPort for UnavailablePorts {
-    fn assign_in_transaction(
-        &self,
-        _: &Transaction<'_>,
-        _: &str,
-        _: &str,
-        _: &studio_runtime_store::AgentRecord,
-        _: f64,
-    ) -> Result<(), Error> {
-        Err(Error::Unavailable("worker-driver/work-assignment"))
     }
 }
 
@@ -705,7 +679,13 @@ fn spawn(
             if !assigned.insert(task_id) {
                 return Err(Error::Invalid("Assign each task to one worker in a batch"));
             }
-            ports.assign_in_transaction(tx, task_id, child_id, actor.record(), now)?;
+            crate::work_assignment_runtime::assign_in_transaction(
+                tx,
+                task_id,
+                child_id,
+                actor.record(),
+                now,
+            )?;
         }
         signals.push(ports.wake_signal(&prepared));
         children.push(project_child(&persisted, spec_task_id));
