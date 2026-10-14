@@ -456,6 +456,12 @@ impl ModelCatalogService {
                 })
             });
     }
+
+    /// Return the registered provider/home identity for transfer validation.
+    #[must_use]
+    pub fn account_profile(&self, account: &str) -> Option<(String, String)> {
+        self.0.accounts.lock().ok()?.get(account).cloned()
+    }
     /// Attach the account registry's retained provider session. The catalog
     /// never launches a second provider for Claude model reads.
     pub fn set_account_session(

@@ -245,6 +245,83 @@ pub fn begin_read(
     })
 }
 
+/// Persist a stable provider operation and its observed connection scope after
+/// history/settings preparation and before calling the retained session.
+pub fn provider_intent(
+    store: &RuntimeStore,
+    operation: &str,
+    agent: &str,
+    provider_operation: &str,
+    scope: Value,
+    method: &str,
+    params: Value,
+    now: f64,
+) -> Result<(), TransferError> {
+    store.transaction_with_error(|tx| {
+        let snapshot = load(tx, operation)?;
+        persist(
+            tx,
+            snapshot.provider_intent(agent, provider_operation, scope, method, params)?,
+            now,
+        )?;
+        Ok(())
+    })
+}
+
+/// Persist the provider's exact ticket and certainty before adopting any returned
+/// thread. Unknown stays held; only a proven NotSent receipt can be retried.
+pub fn provider_receipt(
+    store: &RuntimeStore,
+    operation: &str,
+    agent: &str,
+    provider_operation: &str,
+    receipt: Value,
+    result: Option<Value>,
+    certainty: &str,
+    now: f64,
+) -> Result<(), TransferError> {
+    store.transaction_with_error(|tx| {
+        let snapshot = load(tx, operation)?;
+        persist(
+            tx,
+            snapshot.provider_receipt(agent, provider_operation, receipt, result, certainty)?,
+            now,
+        )?;
+        Ok(())
+    })
+}
+
+pub fn prepared_member(
+    store: &RuntimeStore,
+    operation: &str,
+    agent: &str,
+    target_settings: Value,
+    portable_history: Option<Value>,
+    now: f64,
+) -> Result<(), TransferError> {
+    store.transaction_with_error(|tx| {
+        let snapshot = load(tx, operation)?;
+        persist(
+            tx,
+            snapshot.prepared_member(agent, target_settings, portable_history)?,
+            now,
+        )?;
+        Ok(())
+    })
+}
+
+pub fn adopt_receipt(
+    store: &RuntimeStore,
+    operation: &str,
+    agent: &str,
+    now: f64,
+) -> Result<Value, TransferError> {
+    store.transaction_with_error(|tx| {
+        let snapshot = load(tx, operation)?;
+        persist(tx, snapshot.adopt_receipt(agent)?, now)
+    })
+}
+
 fn check_durable_blockers(tx: &Transaction<'_>, agent: &str) -> Result<(), TransferError> {
     for table in ["runtime_tasks", "runtime_monitors", "runtime_requests"] {
         let sql = format!(
