@@ -208,6 +208,17 @@ fn approval_release_and_recovery_refuse_symlinked_store_paths() {
     );
     fs::remove_file(builds.join(".retired-escape")).expect("remove retired test symlink");
 
+    let retired = builds.join(".retired-nested");
+    let retired_bundle = retired.join("bundle");
+    fs::create_dir_all(&retired_bundle).expect("retired bundle fixture");
+    symlink(outside.join("keep"), retired_bundle.join("outside-link"))
+        .expect("nested retired symlink");
+    assert_eq!(runtime.recover_retired().expect("remove retired bundle"), 1);
+    assert_eq!(
+        fs::read(outside.join("keep")).expect("outside sentinel survives nested cleanup"),
+        b"outside data"
+    );
+
     let bundle = builds.join(&hash);
     fs::create_dir(&bundle).expect("fake bundle directory");
     symlink(outside.join("keep"), bundle.join("codex")).expect("link executable outside");

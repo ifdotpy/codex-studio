@@ -4,6 +4,8 @@
 //! `codex_native_binary.py` lines 177-264 and 480-548. The compatibility probe
 //! and clock are injected. One runtime instance per canonical state root is
 //! enforced by an exclusive OS lock; its session leases are process-local.
+//! Paths under the state root are trusted to the owning user; path checks
+//! protect against symlinks and stale data, not a hostile same-user process.
 //! The first cutover uses direct provider launch, so sessions do not survive
 //! backend restart. Python's supervisor launch-proof/reattachment stays
 //! unported and named as a residual. Account-agent release scheduling from
@@ -608,9 +610,13 @@ impl NativeRuntime {
         self.inner
             .fail_points
             .before(DurableStep::RetiredBundleRename)?;
-        let retired_root = retired_parent.keep();
+        let retired_root = retired_parent.path().to_owned();
         let retired = retired_root.join("bundle");
-        fs::rename(&directory, &retired)?;
+        if let Err(error) = fs::rename(&directory, &retired) {
+            drop(retired_parent);
+            return Err(error.into());
+        }
+        let _retired_guard = retired_parent.keep();
         self.inner
             .fail_points
             .after(DurableStep::RetiredBundleRename)?;
@@ -626,7 +632,8 @@ impl NativeRuntime {
         self.inner
             .fail_points
             .before(DurableStep::RetiredBundleRemoval)?;
-        remove_tree_without_symlinks(&retired_root)?;
+        verify_retired_directory(&builds, &retired_root)?;
+        fs::remove_dir_all(&retired_root)?;
         self.inner
             .fail_points
             .after(DurableStep::RetiredBundleRemoval)?;
@@ -660,7 +667,8 @@ impl NativeRuntime {
                 self.inner
                     .fail_points
                     .before(DurableStep::RetiredBundleRemoval)?;
-                remove_tree_without_symlinks(&retired)?;
+                verify_retired_directory(&builds, &retired)?;
+                fs::remove_dir_all(&retired)?;
                 self.inner
                     .fail_points
                     .after(DurableStep::RetiredBundleRemoval)?;
@@ -1011,18 +1019,14 @@ fn sync_directory(path: &Path) -> Result<(), NativeRuntimeError> {
     Ok(())
 }
 
-fn remove_tree_without_symlinks(path: &Path) -> Result<(), NativeRuntimeError> {
-    let metadata = fs::symlink_metadata(path)?;
-    if metadata.file_type().is_symlink() {
+fn verify_retired_directory(builds: &Path, path: &Path) -> Result<(), NativeRuntimeError> {
+    if path.parent() != Some(builds) {
         return Err(NativeRuntimeError::UnsafeStorePath);
     }
-    if metadata.is_dir() {
-        for entry in fs::read_dir(path)? {
-            remove_tree_without_symlinks(&entry?.path())?;
-        }
-        fs::remove_dir(path)?;
-    } else {
-        fs::remove_file(path)?;
+    reject_symlink_components(path)?;
+    let metadata = fs::symlink_metadata(path)?;
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return Err(NativeRuntimeError::UnsafeStorePath);
     }
     Ok(())
 }
