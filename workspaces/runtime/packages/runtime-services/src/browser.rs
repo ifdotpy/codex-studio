@@ -1,4 +1,8 @@
 //! Browser sign-in forwarding and pure thread configuration.
+//!
+//! Registered differences from Python: raw fragment targets are refused, Hyper owns
+//! the request-head limit (431 at the bound), and informational relay statuses are
+//! refused as `unsupported-informational-status` because Hyper rewrites them on output.
 
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64;
@@ -72,6 +76,8 @@ pub enum BrowserError {
     Exchange,
     #[error("the paired exchange failed")]
     EncodedBodyLimit,
+    #[error("informational relay statuses are unsupported")]
+    UnsupportedInformationalStatus,
     #[error("the browser forward worker stopped unexpectedly")]
     WorkerPanicked,
 }
@@ -124,6 +130,11 @@ struct ActiveForward {
     port: u16,
     stop: watch::Sender<bool>,
     closed: watch::Receiver<bool>,
+    listeners_closed: watch::Receiver<bool>,
+    #[cfg(test)]
+    accepted_connections: watch::Receiver<usize>,
+    #[cfg(test)]
+    completed_connections: watch::Receiver<usize>,
     task: JoinHandle<()>,
 }
 
@@ -203,10 +214,30 @@ impl BrowserForwarder {
         }
         let (stop, stop_rx) = watch::channel(false);
         let (closed_tx, closed) = watch::channel(false);
+        let (listeners_closed_tx, listeners_closed) = watch::channel(false);
+        #[cfg(test)]
+        let (accepted_tx, accepted_connections) = watch::channel(0);
+        #[cfg(test)]
+        let (completed_tx, completed_connections) = watch::channel(0);
+        #[cfg(test)]
+        let connection_observations = ConnectionObservations {
+            accepted: accepted_tx,
+            completed: completed_tx,
+        };
         let exchange = Arc::clone(&self.exchange);
         let task_input = input.clone();
         let task = tokio::spawn(async move {
-            run_forward(async_listeners, task_input, exchange, stop_rx, deadline).await;
+            run_forward(
+                async_listeners,
+                task_input,
+                exchange,
+                stop_rx,
+                deadline,
+                listeners_closed_tx,
+                #[cfg(test)]
+                connection_observations,
+            )
+            .await;
             closed_tx.send_replace(true);
         });
         forwards.insert(
@@ -216,6 +247,11 @@ impl BrowserForwarder {
                 port,
                 stop,
                 closed,
+                listeners_closed,
+                #[cfg(test)]
+                accepted_connections,
+                #[cfg(test)]
+                completed_connections,
                 task,
             },
         );
@@ -246,6 +282,27 @@ impl BrowserForwarder {
             .map_err(|_| BrowserError::Exchange)?
             .get(bridge_id)
             .map(|forward| forward.closed.clone());
+        let Some(mut closed) = closed.take() else {
+            return Ok(false);
+        };
+        loop {
+            if *closed.borrow() {
+                return Ok(true);
+            }
+            if closed.changed().await.is_err() {
+                return Ok(*closed.borrow());
+            }
+        }
+    }
+
+    /// Waits until the loopback sockets stop accepting new connections.
+    pub async fn wait_listeners_closed(&self, bridge_id: &str) -> Result<bool, BrowserError> {
+        let mut closed = self
+            .forwards
+            .lock()
+            .map_err(|_| BrowserError::Exchange)?
+            .get(bridge_id)
+            .map(|forward| forward.listeners_closed.clone());
         let Some(mut closed) = closed.take() else {
             return Ok(false);
         };
@@ -328,30 +385,60 @@ fn bind_loopback(
 }
 
 async fn run_forward(
-    listeners: Vec<TokioTcpListener>,
+    mut listeners: Vec<TokioTcpListener>,
     input: ForwardInput,
     exchange: Arc<dyn PairedExchange>,
     mut stop: watch::Receiver<bool>,
     deadline: Instant,
+    listeners_closed: watch::Sender<bool>,
+    #[cfg(test)] observations: ConnectionObservations,
 ) {
     let relays = Arc::new(AtomicUsize::new(0));
     let permits = Arc::new(Semaphore::new(MAX_CONNECTIONS));
     let mut tasks = JoinSet::new();
     let mut accepting = true;
+    #[cfg(test)]
+    let mut accepted_count = 0;
+    #[cfg(test)]
+    let mut completed_count = 0;
     loop {
+        if !accepting && tasks.is_empty() {
+            break;
+        }
         tokio::select! {
             _ = tokio::time::sleep_until(deadline) => break,
             changed = stop.changed() => if changed.is_err() || *stop.borrow() { break; },
             result = tasks.join_next(), if !tasks.is_empty() => {
                 match result {
-                    Some(Ok((true, _))) => break,
-                    Some(Ok((false, true))) => accepting = false,
-                    _ => {}
+                    Some(Ok((close_listener, relay_limit))) => {
+                        #[cfg(test)]
+                        {
+                        completed_count += 1;
+                        observations.completed.send_replace(completed_count);
+                        }
+                        if close_listener || relay_limit {
+                            accepting = false;
+                            listeners.clear();
+                            listeners_closed.send_replace(true);
+                        }
+                    }
+                    Some(Err(_)) => {
+                        #[cfg(test)]
+                        {
+                        completed_count += 1;
+                        observations.completed.send_replace(completed_count);
+                        }
+                    }
+                    None => {}
                 }
-                if !accepting && tasks.is_empty() { break; }
             }
             accepted = accept_any(&listeners), if accepting => {
                 let Ok((stream, _)) = accepted else { break; };
+                #[cfg(test)]
+                {
+                accepted_count += 1;
+                observations.accepted.send_replace(accepted_count);
+                }
                 let Some(permit) = acquire_connection_slot(&permits) else { drop(stream); continue; };
                 let connection_deadline = std::cmp::min(deadline, Instant::now() + Duration::from_secs(CONNECTION_SECONDS));
                 let input = input.clone();
@@ -377,8 +464,18 @@ async fn run_forward(
             }
         }
     }
+    listeners.clear();
+    listeners_closed.send_replace(true);
+    // Explicit close and the forward deadline cancel work. Automatic completion,
+    // exchange failure, and the relay limit have already drained admitted tasks.
     tasks.abort_all();
     while tasks.join_next().await.is_some() {}
+}
+
+#[cfg(test)]
+struct ConnectionObservations {
+    accepted: watch::Sender<usize>,
+    completed: watch::Sender<usize>,
 }
 
 fn acquire_connection_slot(permits: &Arc<Semaphore>) -> Option<tokio::sync::OwnedSemaphorePermit> {
@@ -657,18 +754,18 @@ async fn handle_request(
         .map(|v| v.as_secs() as i64)
         .unwrap_or_default();
     signals.exchange_pending.store(true, Ordering::Release);
-    let outcome = tokio::select! {
-        biased;
-        _ = tokio::time::sleep_until(exchange_deadline) => None,
-        result = exchange.exchange(
+    let outcome = before_deadline(
+        exchange_deadline,
+        exchange.exchange(
             &input.server,
             REMOTE_ACTION,
             &payload,
             &request_id,
             now,
             exchange_deadline,
-        ) => Some(result),
-    };
+        ),
+    )
+    .await;
     signals.exchange_pending.store(false, Ordering::Release);
     if Instant::now() >= exchange_deadline {
         signals.close_requested.store(true, Ordering::Release);
@@ -703,6 +800,14 @@ async fn handle_request(
         signals.close_requested.store(true, Ordering::Release);
     }
     (response(status, body, &content_type), should_close)
+}
+
+async fn before_deadline<T>(deadline: Instant, future: impl Future<Output = T>) -> Option<T> {
+    tokio::select! {
+        biased;
+        _ = tokio::time::sleep_until(deadline) => None,
+        result = future => Some(result),
+    }
 }
 
 fn failure_response() -> Response<Full<Bytes>> {
@@ -754,6 +859,11 @@ fn cleaned_result(result: &Value) -> Result<(u16, String, Vec<u8>, bool), Browse
         .and_then(Value::as_u64)
         .filter(|s| (100..=599).contains(s))
         .ok_or(BrowserError::Exchange)? as u16;
+    // Hyper rewrites non-101 informational responses to 500. Python can emit
+    // them as final responses; refuse by name rather than silently changing wire status.
+    if (100..200).contains(&status) {
+        return Err(BrowserError::UnsupportedInformationalStatus);
+    }
     if (300..400).contains(&status) {
         return Ok((
             200,
@@ -1116,6 +1226,7 @@ pub fn prepare_browser_config(snapshot: BrowserConfigSnapshot) -> BrowserConfigD
 mod tests {
     use super::*;
     use std::io::{Read, Write};
+    use std::net::TcpStream;
     use std::sync::atomic::AtomicBool;
     use tokio::sync::{Notify, Semaphore};
 
@@ -1206,7 +1317,16 @@ mod tests {
         request(port, b"GET /oauth/callback?code=secret HTTP/1.1\r\nUser-Agent: test-agent\r\nAccept: text/html\r\nCookie: private\r\nAuthorization: private\r\n\r\n")
     }
 
-    fn half_closed_request(port: u16) -> String {
+    async fn wait_for_count(mut count: watch::Receiver<usize>, expected: usize) {
+        while *count.borrow() < expected {
+            count.changed().await.expect("connection count update");
+        }
+    }
+
+    fn half_closed_request(
+        port: u16,
+        shutdown_observed: tokio::sync::oneshot::Sender<()>,
+    ) -> String {
         let mut stream =
             std::net::TcpStream::connect((Ipv4Addr::LOCALHOST, port)).expect("loopback");
         stream
@@ -1215,6 +1335,9 @@ mod tests {
         stream
             .shutdown(std::net::Shutdown::Write)
             .expect("half-close request side");
+        shutdown_observed
+            .send(())
+            .expect("report client half-close");
         let mut response = String::new();
         stream
             .read_to_string(&mut response)
@@ -1260,6 +1383,74 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn listener_enforces_eight_slots_and_recovers_after_observed_completion() {
+        let forwarder = Arc::new(BrowserForwarder::new(Arc::new(FakeExchange::default())));
+        let receipt = forwarder
+            .open(input(), 1000.0, Some(0))
+            .await
+            .expect("open");
+        let (accepted, completed) = {
+            let forwards = forwarder.forwards.lock().expect("forwards");
+            let forward = forwards.get(&input().bridge_id).expect("forward");
+            (
+                forward.accepted_connections.clone(),
+                forward.completed_connections.clone(),
+            )
+        };
+        let mut held = Vec::new();
+        for _ in 0..MAX_CONNECTIONS {
+            let mut stream = TcpStream::connect((Ipv4Addr::LOCALHOST, receipt.port))
+                .expect("held loopback connection");
+            stream
+                .write_all(b"GET /oauth/callback HTTP/1.1\r\n")
+                .expect("incomplete request head");
+            held.push(stream);
+        }
+        wait_for_count(accepted, MAX_CONNECTIONS).await;
+
+        let refused = tokio::task::spawn_blocking({
+            let port = receipt.port;
+            move || {
+                let mut stream = TcpStream::connect((Ipv4Addr::LOCALHOST, port)).expect("ninth");
+                stream
+                    .write_all(b"GET /oauth/callback HTTP/1.1\r\n\r\n")
+                    .expect("ninth request");
+                let mut response = String::new();
+                match stream.read_to_string(&mut response) {
+                    Ok(_) => {}
+                    Err(error) if error.kind() == std::io::ErrorKind::ConnectionReset => {}
+                    Err(error) => panic!("ninth connection refusal: {error}"),
+                }
+                response
+            }
+        })
+        .await
+        .expect("ninth client");
+        assert!(
+            refused.is_empty(),
+            "ninth connection is refused before serving"
+        );
+
+        held[0]
+            .shutdown(std::net::Shutdown::Write)
+            .expect("finish first partial request");
+        let mut incomplete_response = String::new();
+        match held[0].read_to_string(&mut incomplete_response) {
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::ConnectionReset => {}
+            Err(error) => panic!("observe first task exit: {error}"),
+        }
+        wait_for_count(completed, 1).await;
+
+        assert!(
+            normal_request(receipt.port).starts_with("HTTP/1.1 200 OK\r\n"),
+            "a finished connection releases its admission slot"
+        );
+        drop(held);
+        assert!(forwarder.close(&input().bridge_id).await.expect("close"));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn complete_request_half_close_still_gets_held_exchange_response() {
         struct HeldExchange {
             entered: Arc<Notify>,
@@ -1298,8 +1489,12 @@ mod tests {
             .open(input(), 1000.0, Some(0))
             .await
             .expect("open");
-        let request = tokio::task::spawn_blocking(move || half_closed_request(receipt.port));
+        let (shutdown_observed, shutdown_rx) = tokio::sync::oneshot::channel();
+        let request = tokio::task::spawn_blocking(move || {
+            half_closed_request(receipt.port, shutdown_observed)
+        });
         entered.notified().await;
+        shutdown_rx.await.expect("client write half-close");
         release.add_permits(1);
         assert!(
             request
@@ -1438,13 +1633,22 @@ mod tests {
                 .expect("sixth refused client")
                 .starts_with("HTTP/1.1 410 Gone\r\n")
         );
-
         fifth_gate.add_permits(1);
         assert!(
-            fifth
+            forwarder
+                .wait_listeners_closed(&input().bridge_id)
                 .await
-                .expect("fifth admitted client")
-                .starts_with("HTTP/1.1 200 OK\r\n")
+                .expect("relay limit closes listener before draining")
+        );
+        assert!(
+            std::net::TcpStream::connect((Ipv4Addr::LOCALHOST, receipt.port)).is_err(),
+            "the closed listener must refuse new connections while relays drain"
+        );
+
+        let fifth_response = fifth.await.expect("fifth admitted client");
+        assert!(
+            fifth_response.starts_with("HTTP/1.1 200 OK\r\n"),
+            "fifth admitted response was {fifth_response:?}"
         );
         earlier_gate.add_permits(MAX_RELAYS - 1);
         for request in requests {
@@ -1461,6 +1665,104 @@ mod tests {
                 .await
                 .expect("close joins")
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn automatic_done_and_error_close_listener_but_drain_admitted_relays() {
+        struct CloseExchange {
+            calls: AtomicUsize,
+            entered: Arc<Notify>,
+            first_gate: Arc<Semaphore>,
+            fail_second: bool,
+        }
+        impl PairedExchange for CloseExchange {
+            fn exchange<'a>(
+                &'a self,
+                _: &'a str,
+                _: &'a str,
+                _: &'a Value,
+                _: &'a str,
+                _: i64,
+                _: Instant,
+            ) -> Pin<Box<dyn Future<Output = Result<ExchangeOutcome, BrowserError>> + Send + 'a>>
+            {
+                Box::pin(async move {
+                    let call = self.calls.fetch_add(1, Ordering::AcqRel) + 1;
+                    self.entered.notify_one();
+                    if call == 1 {
+                        self.first_gate
+                            .acquire()
+                            .await
+                            .expect("first gate")
+                            .forget();
+                        return Ok(ExchangeOutcome::Applied(json!({
+                            "status":200,"body":"b2s=","done":false
+                        })));
+                    }
+                    if self.fail_second {
+                        return Err(BrowserError::Exchange);
+                    }
+                    Ok(ExchangeOutcome::Applied(json!({
+                        "status":200,"body":"b2s=","done":true
+                    })))
+                })
+            }
+        }
+
+        for fail_second in [false, true] {
+            let entered = Arc::new(Notify::new());
+            let first_gate = Arc::new(Semaphore::new(0));
+            let exchange = Arc::new(CloseExchange {
+                calls: AtomicUsize::new(0),
+                entered: entered.clone(),
+                first_gate: first_gate.clone(),
+                fail_second,
+            });
+            let forwarder = Arc::new(BrowserForwarder::new(exchange.clone()));
+            let receipt = forwarder
+                .open(input(), 1000.0, Some(0))
+                .await
+                .expect("open");
+            let first = tokio::task::spawn_blocking({
+                let port = receipt.port;
+                move || normal_request(port)
+            });
+            while exchange.calls.load(Ordering::Acquire) == 0 {
+                entered.notified().await;
+            }
+            let second = tokio::task::spawn_blocking({
+                let port = receipt.port;
+                move || normal_request(port)
+            });
+            while exchange.calls.load(Ordering::Acquire) < 2 {
+                entered.notified().await;
+            }
+            let second_response = second.await.expect("automatic close response");
+            assert_eq!(
+                second_response.starts_with("HTTP/1.1 502 Bad Gateway\r\n"),
+                fail_second
+            );
+            assert!(
+                forwarder
+                    .wait_listeners_closed(&input().bridge_id)
+                    .await
+                    .expect("done/error closes listener")
+            );
+            assert!(std::net::TcpStream::connect((Ipv4Addr::LOCALHOST, receipt.port)).is_err());
+            first_gate.add_permits(1);
+            assert!(
+                first
+                    .await
+                    .expect("admitted relay drains")
+                    .starts_with("HTTP/1.1 200 OK\r\n")
+            );
+            assert!(
+                forwarder
+                    .close(&input().bridge_id)
+                    .await
+                    .expect("join drained forward")
+            );
+        }
     }
 
     #[tokio::test(start_paused = true)]
@@ -1526,76 +1828,18 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn exchange_ready_after_deadline_is_refused_and_closes_forward() {
-        struct ReadyAfterDeadline {
-            entered: Arc<Notify>,
-            release: Arc<Semaphore>,
-            dropped: Arc<AtomicBool>,
-        }
-        impl PairedExchange for ReadyAfterDeadline {
-            fn exchange<'a>(
-                &'a self,
-                _: &'a str,
-                _: &'a str,
-                _: &'a Value,
-                _: &'a str,
-                _: i64,
-                _: Instant,
-            ) -> Pin<Box<dyn Future<Output = Result<ExchangeOutcome, BrowserError>> + Send + 'a>>
-            {
-                Box::pin(async move {
-                    struct DropSignal(Arc<AtomicBool>);
-                    impl Drop for DropSignal {
-                        fn drop(&mut self) {
-                            self.0.store(true, Ordering::Release);
-                        }
-                    }
-                    let _drop_signal = DropSignal(self.dropped.clone());
-                    self.entered.notify_one();
-                    self.release.acquire().await.expect("release").forget();
-                    Ok(ExchangeOutcome::Applied(json!({
-                        "status": 200,
-                        "body": BASE64.encode(b"late"),
-                        "done": false
-                    })))
-                })
-            }
-        }
-
-        let entered = Arc::new(Notify::new());
-        let release = Arc::new(Semaphore::new(0));
-        let dropped = Arc::new(AtomicBool::new(false));
-        let forwarder = BrowserForwarder::new(Arc::new(ReadyAfterDeadline {
-            entered: entered.clone(),
-            release: release.clone(),
-            dropped: dropped.clone(),
-        }));
-        let receipt = forwarder
-            .open(input(), 1000.0, Some(0))
-            .await
-            .expect("open");
-        let request = tokio::task::spawn_blocking(move || normal_request(receipt.port));
-        entered.notified().await;
-        tokio::time::advance(
-            Duration::from_secs(CONNECTION_SECONDS) - RESPONSE_RESERVE + Duration::from_millis(1),
-        )
-        .await;
-        release.add_permits(1);
-
-        let response = request.await.expect("late result response");
-        assert!(response.starts_with("HTTP/1.1 502 Bad Gateway\r\n"));
-        assert!(dropped.load(Ordering::Acquire));
+    async fn expired_ready_exchange_result_is_refused() {
+        let deadline = Instant::now() - Duration::from_millis(1);
+        let ready_exchange_result =
+            async { Ok::<_, BrowserError>(ExchangeOutcome::Applied(json!({"status":200}))) };
         assert!(
-            forwarder
-                .wait_closed(&input().bridge_id)
+            before_deadline(deadline, ready_exchange_result)
                 .await
-                .expect("late result closes")
+                .is_none()
         );
-        assert!(
-            forwarder
-                .close(&input().bridge_id)
-                .await
-                .expect("join closed forward")
+        assert_eq!(
+            before_deadline(Instant::now() + Duration::from_secs(1), async { 200 }).await,
+            Some(200)
         );
     }
 

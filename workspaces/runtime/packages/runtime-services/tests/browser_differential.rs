@@ -107,6 +107,10 @@ fn local_raw_request(port: u16, raw: &[u8]) -> String {
         stream
             .read_until(b'\n', &mut line)
             .expect("read response head");
+        assert!(
+            !line.is_empty(),
+            "server closed before completing the response head"
+        );
         let done = line == b"\r\n";
         response.extend_from_slice(&line);
         if done {
@@ -135,7 +139,7 @@ fn local_raw_request(port: u16, raw: &[u8]) -> String {
     String::from_utf8_lossy(&response).into_owned()
 }
 
-fn local_incomplete_request(port: u16, raw: &[u8]) {
+fn local_incomplete_request(port: u16, raw: &[u8]) -> String {
     let mut stream = TcpStream::connect((Ipv4Addr::LOCALHOST, port)).expect("loopback listener");
     stream
         .write_all(raw)
@@ -143,6 +147,11 @@ fn local_incomplete_request(port: u16, raw: &[u8]) {
     stream
         .shutdown(std::net::Shutdown::Write)
         .expect("finish partial callback request");
+    let mut response = String::new();
+    stream
+        .read_to_string(&mut response)
+        .expect("observe incomplete-request response through EOF");
+    response
 }
 
 fn local_chunked_request(port: u16, chunks: &[&[u8]]) -> String {
@@ -210,6 +219,7 @@ fn rust_response(case: &Value) -> (Value, Vec<Value>) {
     let exchange = Arc::new(Exchange::default());
     let result = match name {
         "redirect-response" => json!({"status":302,"location":"https://private.invalid/"}),
+        "informational-response" => json!({"status":103,"body":"ZWFybHk="}),
         "redirect-done" => json!({"status":302,"done":true}),
         "fragmented-complete-head" => {
             json!({"status":200,"contentType":"text/plain; charset=iso-8859-1","body":"YWNjZXB0ZWQ=","done":true})
@@ -260,12 +270,11 @@ fn rust_response(case: &Value) -> (Value, Vec<Value>) {
         .block_on(forwarder.open(input(), 1000.0, Some(0)))
         .expect("open test loopback forward");
     let responses = if name == "incomplete-then-valid" {
-        local_incomplete_request(
-            receipt.port,
-            b"GET /oauth/callback HTTP/1.1\r\nUser-Agent: incomplete",
-        );
         vec![
-            String::new(),
+            local_incomplete_request(
+                receipt.port,
+                b"GET /oauth/callback HTTP/1.1\r\nUser-Agent: incomplete",
+            ),
             local_request(receipt.port, "GET", "/oauth/callback?code=example-code", ""),
         ]
     } else if name == "two-valid-relays" {
@@ -348,10 +357,12 @@ fn rust_response(case: &Value) -> (Value, Vec<Value>) {
     let calls = exchange.calls.lock().expect("valid browser differential fixture").iter().map(|(server, action, payload, request_id, now)| {
         json!({"server":server,"action":action,"payload":payload,"requestId":request_id,"now":now})
     }).collect::<Vec<_>>();
-    let closed = if case["python"]["closed"] == true && name != "fragment-target" {
+    let closed = if (case["python"]["closed"] == true || name == "informational-response")
+        && name != "fragment-target"
+    {
         runtime
-            .block_on(forwarder.wait_closed(&input().bridge_id))
-            .expect("forward task closure notification")
+            .block_on(forwarder.wait_listeners_closed(&input().bridge_id))
+            .expect("callback-boundary listener closure notification")
     } else {
         let refused = local_request(receipt.port, "GET", "/wrong", "");
         assert_eq!(response_value(&refused)["status"], 404);
@@ -390,6 +401,7 @@ fn python_browser_corpus_matches_rust_and_config_decisions() {
                         | "header-bound"
                         | "head-bound"
                         | "redirect-response"
+                        | "informational-response"
                         | "body-bound"
                         | "encoded-body-bound"
                         | "unknown"
@@ -419,7 +431,7 @@ fn python_browser_corpus_matches_rust_and_config_decisions() {
             )
         })
         .collect::<Vec<_>>();
-    assert_eq!(forward_cases.len(), if full { 22 } else { 21 });
+    assert_eq!(forward_cases.len(), if full { 23 } else { 22 });
     assert_eq!(config_cases.len(), if full { 10 } else { 4 });
     for case in forward_cases {
         let (actual, rust_calls) = rust_response(case);
@@ -430,6 +442,9 @@ fn python_browser_corpus_matches_rust_and_config_decisions() {
             assert_eq!(actual["responses"][0]["status"], 404);
             assert_eq!(actual["closed"], false);
             assert!(rust_calls.is_empty(), "fragment target is never relayed");
+        } else if case["name"] == "informational-response" {
+            assert_eq!(actual["responses"][0]["status"], 502);
+            assert_eq!(actual["closed"], true);
         } else {
             assert_eq!(
                 actual["responses"], case["python"]["responses"],
@@ -439,6 +454,11 @@ fn python_browser_corpus_matches_rust_and_config_decisions() {
         }
         if case["name"] == "fragment-target" {
             assert_eq!(actual["closed"], false);
+        } else if case["name"] == "informational-response" {
+            assert_eq!(
+                actual["closed"], true,
+                "named informational-status refusal closes"
+            );
         } else {
             assert!(
                 actual["closed"] == case["python"]["closed"],

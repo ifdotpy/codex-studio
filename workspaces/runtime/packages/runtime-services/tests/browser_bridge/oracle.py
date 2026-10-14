@@ -297,6 +297,7 @@ def main():
         {"name": "header-bound", "request": b"GET /oauth/callback HTTP/1.1\r\nUser-Agent: " + b"x" * 1025 + b"\r\nAccept: text/html\r\n\r\n"},
         {"name": "head-bound", "request": b"GET /oauth/callback HTTP/1.1\r\nX-Test: " + b"x" * (16 * 1024) + b"\r\n\r\n"},
         {"name": "redirect-response", "reply": {"status": 302, "location": "https://private.invalid/"}},
+        {"name": "informational-response", "reply": {"status": 103, "body": base64.b64encode(b"early").decode()}},
         {"name": "body-bound", "reply": {"status": 200, "body": base64.b64encode(b"x" * (256 * 1024 + 1)).decode("ascii")}},
         {"name": "encoded-body-bound", "reply": {"status": 200, "body": "A" * (349_528 + 1)}},
         {"name": "unknown", "unknown": True},
