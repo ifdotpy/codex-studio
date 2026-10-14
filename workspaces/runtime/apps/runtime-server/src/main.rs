@@ -102,6 +102,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let native_path = env::var("CODEX_BIN").ok();
     let public_origin = env::var("CODEX_CANVAS_PUBLIC_ORIGIN").ok();
+    let cache_root = env::var_os("XDG_CACHE_HOME")
+        .or_else(|| env::var_os("CODEX_AGENTS_CACHE_DIR"))
+        .or_else(|| {
+            env::var_os("HOME").map(|home| PathBuf::from(home).join(".cache").into_os_string())
+        })
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(&state_dir).join("cache"));
+    let provider_versions =
+        studio_runtime_services::provider_versions::ProviderVersionMonitor::start(
+            studio_runtime_services::provider_versions::runtime_provider_version_store(
+                store.clone(),
+            ),
+            None,
+            cache_root.join("provider-upstream-releases-v1.json"),
+            Arc::new(studio_runtime_services::provider_versions::SystemVersionProbe),
+            Arc::new(studio_runtime_services::provider_versions::NpmReleaseFetcher),
+            Arc::new(studio_runtime_services::provider_versions::SystemClock),
+        )?;
     let mut state = HttpState::new(
         token,
         workspace_id,
@@ -112,7 +130,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Some(store.clone()),
         Some(account_policy.clone()),
     )
-    .with_account_driver(account_driver.clone());
+    .with_account_driver(account_driver.clone())
+    .with_provider_versions(provider_versions);
     account_driver.recover_codex_logins()?;
     let home = env::var_os("HOME")
         .map(PathBuf::from)

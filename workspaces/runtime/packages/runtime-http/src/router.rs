@@ -36,6 +36,8 @@ pub struct HttpState {
         Option<Arc<studio_runtime_services::multi_server_pairing::MultiServerBoundary>>,
     pub account_driver:
         Option<std::sync::Arc<studio_runtime_services::account_driver::AccountDriver>>,
+    pub provider_versions:
+        Option<Arc<studio_runtime_services::provider_versions::ProviderVersionMonitor>>,
     pub(crate) voice_provider:
         Option<Arc<dyn studio_runtime_services::voice::provider::VoiceProviderPort>>,
     pub(crate) credentials: Arc<studio_runtime_services::federation_credentials::Credentials>,
@@ -92,6 +94,7 @@ impl HttpState {
             callback_runtime: None,
             account_session: None,
             account_driver: None,
+            provider_versions: None,
             claude_login: None,
             voice_provider: None,
             credentials: Arc::default(),
@@ -150,6 +153,15 @@ impl HttpState {
         self
     }
 
+    /// Attach the single retained provider-version monitor used by desktop reads.
+    pub fn with_provider_versions(
+        mut self,
+        monitor: Arc<studio_runtime_services::provider_versions::ProviderVersionMonitor>,
+    ) -> Self {
+        self.provider_versions = Some(monitor);
+        self
+    }
+
     /// Attach the account worker's generic provider-session voice adapter.
     pub fn with_voice_provider(
         mut self,
@@ -170,6 +182,9 @@ impl HttpState {
 
     pub async fn shutdown_services(&self) -> std::io::Result<()> {
         let model = self.model_catalog.shutdown().await;
+        if let Some(monitor) = &self.provider_versions {
+            monitor.shutdown();
+        }
         if let Some(login) = &self.claude_login {
             login.shutdown().await.map_err(std::io::Error::other)?;
         }
