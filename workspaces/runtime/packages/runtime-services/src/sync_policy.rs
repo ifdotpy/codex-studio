@@ -189,6 +189,38 @@ pub fn maintain_entity_projections_with_server_id(
     Ok(())
 }
 
+/// Seed the initial workspace entity when a sync pull is the first projection
+/// operation. Python's `codex_sync_entities.seed` creates this row on first
+/// seed; ordinary projection maintenance only refreshes an existing row.
+pub fn seed_workspace_projection(
+    transaction: &Transaction<'_>,
+    state_dir: &str,
+    validate_projection: impl Fn(&str, &str, &Value, bool) -> bool,
+) -> StoreResult<()> {
+    let exists = transaction.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sync_entities WHERE collection='workspace' AND id='current' AND deleted=0)",
+        [],
+        |row| row.get::<_, bool>(0),
+    )?;
+    if exists {
+        return Ok(());
+    }
+    put_projection(
+        transaction,
+        "workspace",
+        "current",
+        json!({
+            "stateDir": state_dir,
+            "connected": false,
+            "projectOrganizationVersion": 1,
+            "peerTeamsVersion": 1,
+            "tasksHistoryLimit": 100,
+        }),
+        false,
+        &validate_projection,
+    )
+}
+
 fn put_projection(
     transaction: &Transaction<'_>,
     collection: &str,

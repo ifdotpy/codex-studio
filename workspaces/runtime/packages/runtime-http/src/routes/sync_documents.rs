@@ -341,6 +341,19 @@ fn pull_entities(
             "entity projection inputs changed after filesystem preparation",
         ));
     }
+    sync_policy::seed_workspace_projection(
+        transaction,
+        state_dir,
+        |collection, id, value, deleted| {
+            validate_entity_envelope(
+                &json!({"collection":collection,"id":id,"value":value}),
+                collection,
+                id,
+                deleted,
+                validators,
+            )
+        },
+    )?;
     sync_policy::maintain_entity_projections_with_server_id(
         transaction,
         state_dir,
