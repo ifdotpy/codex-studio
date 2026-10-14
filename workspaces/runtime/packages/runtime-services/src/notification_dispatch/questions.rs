@@ -237,6 +237,7 @@ pub(crate) fn agent_complaint_action(
             }
             complaint["version"] = json!(complaint["version"].as_i64().unwrap_or(0) + 1);
             save_complaint_projection(tx, &complaint)?;
+            reconcile_complaint_notifications(tx, actor_id)?;
             let author = complaint["author"].as_str().unwrap_or_default();
             if author != "user" && author != actor_id {
                 let reporter = AgentRepository::get(tx, &AgentId::from(author))?
@@ -274,6 +275,62 @@ fn needs_agent_response(complaint: &Value) -> bool {
         .into_iter()
         .flatten()
         .any(|response| response["author"] == responsible)
+}
+
+fn reconcile_complaint_notifications(
+    tx: &Transaction<'_>,
+    lead_id: &str,
+) -> Result<(), NotificationDispatchError> {
+    let pending = {
+        let mut statement = tx.prepare(
+            "SELECT id,text FROM runtime_events WHERE agent=?1 AND kind='complaint' AND status='pending'",
+        ).map_err(studio_runtime_store::StoreError::from)?;
+        statement
+            .query_map([lead_id], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .map_err(studio_runtime_store::StoreError::from)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(studio_runtime_store::StoreError::from)?
+    };
+    for (event_id, text) in pending {
+        let Ok(payload) = serde_json::from_str::<Value>(&text) else {
+            continue;
+        };
+        let Some(entries) = payload.get("complaints").and_then(Value::as_array) else {
+            continue;
+        };
+        if entries.is_empty() {
+            continue;
+        }
+        let mut all_answered = true;
+        for entry in entries {
+            let Some(id) = entry.get("complaint_id").and_then(Value::as_str) else {
+                all_answered = false;
+                break;
+            };
+            let Some(raw) = studio_runtime_store::QuestionsWriteRepository::complaint(tx, id)?
+            else {
+                all_answered = false;
+                break;
+            };
+            let Ok(complaint) = serde_json::from_str::<Value>(&raw) else {
+                all_answered = false;
+                break;
+            };
+            if complaint["leadId"] != lead_id || needs_agent_response(&complaint) {
+                all_answered = false;
+                break;
+            }
+        }
+        if all_answered {
+            tx.execute(
+                "UPDATE runtime_events SET status='stored_only',error=?1 WHERE id=?2 AND status='pending'",
+                rusqlite::params!["Every referenced complaint already has a response", event_id],
+            ).map_err(studio_runtime_store::StoreError::from)?;
+        }
+    }
+    Ok(())
 }
 
 fn save_complaint_projection(
