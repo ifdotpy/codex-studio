@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use studio_runtime_http::{HttpState, router};
 use studio_runtime_services::voice::runtime::{
-    Method, VoiceConnectionScope, VoiceFuture, VoiceRequestPort, VoiceRequestReceipt,
+    Method, VoiceConnectionScope, VoiceFuture, VoiceReply, VoiceRequestPort, VoiceRequestReceipt,
     VoiceWriteCertainty,
 };
 use studio_runtime_store::RuntimeStore;
@@ -19,7 +19,10 @@ use tower::ServiceExt;
 mod common;
 
 #[derive(Default)]
-struct RecordingPort(Mutex<Vec<(String, Method, Value)>>);
+struct RecordingPort {
+    calls: Mutex<Vec<(String, Method, Value)>>,
+    replies: Mutex<Vec<(String, VoiceReply)>>,
+}
 
 impl VoiceRequestPort for RecordingPort {
     fn prepare<'a>(
@@ -54,10 +57,30 @@ impl VoiceRequestPort for RecordingPort {
                 "voice-http-agent" | "voice-start-agent"
             ));
             assert!(deadline > Instant::now());
-            self.0
+            self.calls
                 .lock()
                 .expect("record requests")
                 .push((operation_id, method, params));
+            VoiceRequestReceipt {
+                certainty: VoiceWriteCertainty::Written,
+            }
+        })
+    }
+
+    fn reply<'a>(
+        &'a self,
+        scope: VoiceConnectionScope,
+        operation_id: String,
+        reply: VoiceReply,
+        deadline: Instant,
+    ) -> VoiceFuture<'a, VoiceRequestReceipt> {
+        Box::pin(async move {
+            assert_eq!(scope.agent_id, "voice-http-agent");
+            assert!(deadline > Instant::now());
+            self.replies
+                .lock()
+                .expect("record replies")
+                .push((operation_id, reply));
             VoiceRequestReceipt {
                 certainty: VoiceWriteCertainty::Written,
             }
@@ -105,7 +128,9 @@ fn fixture() -> (tempfile::TempDir, Arc<RuntimeStore>, Arc<RecordingPort>) {
         let request = json!({
             "id":"request-1", "agent":"voice-http-agent", "epoch":7,
             "status":"pending", "method":"item/commandExecution/requestApproval",
-            "params":{"command":"echo safe"}
+            "params":{"command":"echo safe","threadId":"voice-http-thread"},
+            "rpcId":"provider-rpc-http", "accountKey":"voice-http-account",
+            "connectionId":"voice-http-connection"
         });
         let fingerprint = sha2::Sha256::digest(studio_runtime_store::python_json(&request).as_bytes())
             .iter()
@@ -195,6 +220,32 @@ async fn installed_provider_lifts_start_speech_approve_and_end_over_http() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{spoken}");
+    assert_eq!(
+        spoken["error"],
+        Value::Null,
+        "first response hides internal digest"
+    );
+    let calls_after_first_speech = port.calls.lock().expect("provider calls").len();
+    let (status, spoken_replay) = post(
+        &app,
+        "/api/voice/speech",
+        json!({
+            "agent":"voice-http-agent", "session_id":"speech-http", "record_id":"speech-record"
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{spoken_replay}");
+    assert_eq!(
+        spoken_replay["error"],
+        Value::Null,
+        "replay hides internal digest"
+    );
+    assert_eq!(spoken_replay["id"], spoken["id"]);
+    assert_eq!(spoken_replay["state"], spoken["state"]);
+    assert_eq!(
+        port.calls.lock().expect("provider calls").len(),
+        calls_after_first_speech
+    );
 
     let (status, approved) = post(
         &app,
@@ -217,11 +268,76 @@ async fn installed_provider_lifts_start_speech_approve_and_end_over_http() {
     .await;
     assert_eq!(status, StatusCode::OK, "{ended}");
 
-    let calls = port.0.lock().expect("provider calls");
-    assert_eq!(calls.len(), 4);
+    let calls = port.calls.lock().expect("provider calls");
+    assert_eq!(calls.len(), 3);
     assert_eq!(calls[0].1, Method::ThreadRealtimeStart);
     assert_eq!(calls[1].1, Method::ThreadRealtimeAppendSpeech);
-    assert_eq!(calls[2].1, Method::ItemCommandExecutionRequestApproval);
-    assert_eq!(calls[3].1, Method::ThreadRealtimeStop);
+    assert_eq!(calls[2].1, Method::ThreadRealtimeStop);
     assert!(calls.iter().all(|(identity, _, _)| !identity.is_empty()));
+    drop(calls);
+    let replies = port.replies.lock().expect("provider replies");
+    assert_eq!(replies.len(), 1);
+    assert_eq!(replies[0].0, "voice:approve:request-1");
+    assert_eq!(
+        replies[0].1.rpc_id,
+        studio_runtime_services::voice::runtime::VoiceRpcId::String("provider-rpc-http".into())
+    );
+    assert_eq!(replies[0].1.result, json!({"decision":"accept"}));
+}
+
+#[tokio::test]
+async fn providerless_routes_refuse_all_four_actions_without_writes() {
+    let (_root, store, _port) = fixture();
+    let state = HttpState::new(
+        "token".into(),
+        "workspace".into(),
+        None,
+        "fixture".into(),
+        4620,
+        None,
+        Some(store.clone()),
+        None,
+    );
+    let app = router(state).expect("router");
+    let before = voice_row_counts(&store);
+    for (path, body) in [
+        (
+            "/api/voice/start",
+            json!({"agent":"voice-start-agent","session_id":"no-port-start","sdp":"v=0\r\n"}),
+        ),
+        (
+            "/api/voice/speech",
+            json!({"agent":"voice-http-agent","session_id":"speech-http","record_id":"speech-record"}),
+        ),
+        (
+            "/api/voice/approve",
+            json!({"agent":"voice-http-agent","session_id":"approve-http","speech_id":"approval-speech","transcript_id":"approval-transcript"}),
+        ),
+        (
+            "/api/voice/end",
+            json!({"agent":"voice-http-agent","session_id":"end-http"}),
+        ),
+    ] {
+        let (status, value) = post(&app, path, body).await;
+        assert_eq!(status, StatusCode::NOT_IMPLEMENTED, "{path}: {value}");
+        assert!(
+            value.to_string().contains("provider-session/voice"),
+            "{path}: {value}"
+        );
+    }
+    assert_eq!(voice_row_counts(&store), before);
+}
+
+fn voice_row_counts(store: &RuntimeStore) -> Vec<i64> {
+    let connection = store.read().expect("read voice row counts");
+    ["voice_sessions", "voice_speech_requests", "voice_approvals"]
+        .iter()
+        .map(|table| {
+            connection
+                .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                    row.get(0)
+                })
+                .expect("count rows")
+        })
+        .collect()
 }

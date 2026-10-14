@@ -348,6 +348,10 @@ fn now_seconds() -> Result<f64, ApiError> {
 fn provider_error(error: voice::provider::VoiceProviderError) -> ApiError {
     use voice::provider::VoiceProviderError as E;
     match error {
+        E::RequiresDependency(dependency) => ApiError::new(
+            StatusCode::NOT_IMPLEMENTED,
+            format!("Not implemented: requires {dependency}"),
+        ),
         E::ContextUnavailable | E::AdapterUnavailable => ApiError::new(
             StatusCode::SERVICE_UNAVAILABLE,
             "voice provider context is unavailable",

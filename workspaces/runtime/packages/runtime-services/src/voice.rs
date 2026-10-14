@@ -458,8 +458,7 @@ pub fn approval_speech(
         .ok_or(VoiceError::InvalidRequest(
             "The approval request is no longer pending",
         ))?;
-    let fingerprint =
-        studio_runtime_store::sha256_hex(event_write::python_json(request).as_bytes());
+    let fingerprint = approval_fingerprint(request);
     let params = studio_runtime_store::python_json(request.get("params").unwrap_or(&Value::Null));
     let text = format!("Запрос разрешения. {params}. Для подтверждения скажите «разрешаю».");
     if text.chars().count() > 4096 {
@@ -481,6 +480,10 @@ pub fn approval_speech(
             internal: true,
         },
     )
+}
+
+pub(super) fn approval_fingerprint(request: &Value) -> String {
+    studio_runtime_store::sha256_hex(event_write::python_json(request).as_bytes())
 }
 
 fn checked_agent(

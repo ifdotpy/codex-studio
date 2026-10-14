@@ -31,6 +31,18 @@ pub struct VoiceRequestReceipt {
     pub certainty: VoiceWriteCertainty,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum VoiceRpcId {
+    Number(i64),
+    String(String),
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct VoiceReply {
+    pub rpc_id: VoiceRpcId,
+    pub result: Value,
+}
+
 /// Port to one retained provider connection. `prepare` resolves and validates
 /// the current account connection; `request` must preserve the supplied
 /// identity and absolute deadline, and report uncertainty without resending.
@@ -49,6 +61,14 @@ pub trait VoiceRequestPort: Send + Sync {
         operation_id: String,
         method: Method,
         params: Value,
+        deadline: Instant,
+    ) -> VoiceFuture<'a, VoiceRequestReceipt>;
+
+    fn reply<'a>(
+        &'a self,
+        scope: VoiceConnectionScope,
+        operation_id: String,
+        reply: VoiceReply,
         deadline: Instant,
     ) -> VoiceFuture<'a, VoiceRequestReceipt>;
 }

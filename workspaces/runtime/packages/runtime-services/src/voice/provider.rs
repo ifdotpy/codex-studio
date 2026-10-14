@@ -5,6 +5,8 @@
 //!   a retry or restart.
 //! - `VoiceApprovalContextRechecked`: approval request identity, epoch,
 //!   playback, and transcript are revalidated immediately before dispatch.
+//! - New Rust speech receipts bind the transcript digest to the Python-compatible
+//!   `<session>:<record>` identity and refuse changed text under that identity.
 
 use std::collections::HashMap;
 use std::{
@@ -23,8 +25,8 @@ use super::policy::{
     self, SessionSignal, StartDecision, StartRequest, VoiceSession, VoiceSessionRow,
 };
 use super::runtime::{
-    VoiceConnectionScope as VoiceProviderContext, VoiceRequestPort as VoiceProviderPort,
-    VoiceRequestReceipt, VoiceWriteCertainty,
+    VoiceConnectionScope as VoiceProviderContext, VoiceReply,
+    VoiceRequestPort as VoiceProviderPort, VoiceRequestReceipt, VoiceRpcId, VoiceWriteCertainty,
 };
 
 const MAX_TRACKED_VOICE_SESSIONS: usize = 1024;
@@ -318,6 +320,8 @@ pub enum VoiceProviderError {
     Rejected,
     #[error("voice provider adapter is unavailable")]
     AdapterUnavailable,
+    #[error("Not implemented: requires {0}")]
+    RequiresDependency(&'static str),
     #[error("voice operation failed")]
     Operation,
 }
@@ -422,19 +426,22 @@ pub fn read_speech_receipt(
     )
 }
 
-fn speech_receipt_id(session_id: &str, record_id: &str) -> String {
-    let mut identity = Vec::with_capacity(session_id.len() + record_id.len() + 16);
-    identity.extend_from_slice(&(session_id.len() as u64).to_be_bytes());
-    identity.extend_from_slice(session_id.as_bytes());
-    identity.extend_from_slice(&(record_id.len() as u64).to_be_bytes());
-    identity.extend_from_slice(record_id.as_bytes());
-    format!(
-        "voice-speech:{}",
-        studio_runtime_store::sha256_hex(&identity)
-    )
+fn public_speech_receipt(mut receipt: Value) -> Value {
+    if let Some(error) = receipt["error"].as_str()
+        && error.starts_with("voice-content-sha256:")
+    {
+        receipt["error"] = error.split_once('|').map_or(Value::Null, |(_, detail)| {
+            if detail.is_empty() {
+                Value::Null
+            } else {
+                Value::String(detail.to_owned())
+            }
+        });
+    }
+    receipt
 }
 
-fn legacy_speech_receipt_id(session_id: &str, record_id: &str) -> String {
+fn speech_receipt_id(session_id: &str, record_id: &str) -> String {
     format!("{session_id}:{record_id}")
 }
 
@@ -444,16 +451,21 @@ fn lookup_speech_receipt(
     record_id: &str,
     request_id: &str,
 ) -> Result<Option<Value>, VoiceProviderError> {
-    for id in [
-        request_id.to_owned(),
-        legacy_speech_receipt_id(session_id, record_id),
-    ] {
-        if let Some(receipt) = VoiceRepository::speech_receipt(connection, &id)? {
-            if receipt["session"] == session_id && receipt["record_id"] == record_id {
-                return Ok(Some(receipt));
-            }
-            return Err(policy::VoiceError::SessionIdentityConflict.into());
+    lookup_speech_receipt_raw(connection, session_id, record_id, request_id)
+        .map(|receipt| receipt.map(public_speech_receipt))
+}
+
+fn lookup_speech_receipt_raw(
+    connection: &Connection,
+    session_id: &str,
+    record_id: &str,
+    request_id: &str,
+) -> Result<Option<Value>, VoiceProviderError> {
+    if let Some(receipt) = VoiceRepository::speech_receipt(connection, request_id)? {
+        if receipt["session"] == session_id && receipt["record_id"] == record_id {
+            return Ok(Some(receipt));
         }
+        return Err(policy::VoiceError::SessionIdentityConflict.into());
     }
     Ok(None)
 }
@@ -605,7 +617,7 @@ enum ApprovalDispatch {
     Send {
         request_id: String,
         context: VoiceProviderContext,
-        params: Value,
+        rpc_id: VoiceRpcId,
     },
 }
 
@@ -634,26 +646,26 @@ pub async fn approve(
     })
     .await
     .map_err(|_| VoiceProviderError::Operation)??;
-    let (request_id, context, params) = match reservation {
+    let (request_id, context, rpc_id) = match reservation {
         ApprovalDispatch::Replay(value) => return Ok(value),
         ApprovalDispatch::Send {
             request_id,
             context,
-            params,
-        } => (request_id, context, params),
+            rpc_id,
+        } => (request_id, context, rpc_id),
     };
 
-    let receipt = request(
-        provider.as_ref(),
-        VoiceRpcCall {
-            operation_id: format!("voice:approve:{request_id}"),
+    let receipt = provider
+        .reply(
             context,
-            method: Method::ItemCommandExecutionRequestApproval,
-            params,
-            deadline: request_deadline(),
-        },
-    )
-    .await;
+            format!("voice:approve:{request_id}"),
+            VoiceReply {
+                rpc_id,
+                result: json!({"decision": "accept"}),
+            },
+            request_deadline(),
+        )
+        .await;
     let certainty = receipt.certainty;
     let id = request_id.clone();
     let state = match certainty {
@@ -739,17 +751,14 @@ fn reserve_approval(
             .filter(|id| !id.is_empty())
             .ok_or(VoiceProviderError::Operation)?
             .to_owned();
-        if let Some((owner, old_speech, old_transcript, status, result)) = transaction.query_row(
-            "SELECT agent,speech,transcript,status,result FROM voice_approvals WHERE id=?1",
-            [&request_id],
-            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?, row.get::<_, String>(3)?, row.get::<_, Option<String>>(4)?)),
-        ).optional()? {
+        let previous = approval_receipt(transaction, &request_id)?;
+        if let Some((owner, old_speech, old_transcript, status, result)) = previous.as_ref() {
             if owner != agent_id || old_speech != speech_id || old_transcript != transcript_id {
                 return Err(VoiceProviderError::ContextChanged);
             }
             if status == "accepted" {
-                let value = result.ok_or(VoiceProviderError::Operation)?;
-                return Ok(ApprovalDispatch::Replay(serde_json::from_str(&value).map_err(|_| VoiceProviderError::Operation)?));
+                let value = result.as_ref().ok_or(VoiceProviderError::Operation)?;
+                return Ok(ApprovalDispatch::Replay(serde_json::from_str(value).map_err(|_| VoiceProviderError::Operation)?));
             }
             if status != "not_sent" {
                 return Err(VoiceProviderError::Unknown);
@@ -762,13 +771,16 @@ fn reserve_approval(
         ).optional()?.ok_or(VoiceProviderError::ContextUnavailable)?;
         let current: Value = serde_json::from_str(&current)
             .map_err(|_| VoiceProviderError::Operation)?;
-        let fingerprint = Sha256::digest(studio_runtime_store::python_json(&current).as_bytes())
-            .iter()
-            .map(|byte| format!("{byte:02x}"))
-            .collect::<String>();
+        let method = current.get("method").and_then(Value::as_str);
+        if method == Some("monitor/approve") {
+            return Err(VoiceProviderError::RequiresDependency("monitor-approval/voice"));
+        }
+        let rpc_id = current.get("rpcId").and_then(parse_rpc_id)
+            .ok_or(VoiceProviderError::ContextUnavailable)?;
+        let fingerprint = super::approval_fingerprint(&current);
         if current.get("agent").and_then(Value::as_str) != Some(agent_id)
             || current.get("status").and_then(Value::as_str) != Some("pending")
-            || !current.get("method").and_then(Value::as_str).is_some_and(|method| super::APPROVAL_METHODS.contains(&method))
+            || !method.is_some_and(|method| super::APPROVAL_METHODS.contains(&method) && method != "monitor/approve")
             || metadata.get("fingerprint").and_then(Value::as_str) != Some(fingerprint.as_str())
             || current.get("epoch").and_then(Value::as_i64) != Some(actor.epoch)
             || actor.extra.get("autoWake").and_then(Value::as_bool) != Some(true)
@@ -803,21 +815,18 @@ fn reserve_approval(
             thread_id: thread_id.to_owned(),
             connection_id: session.connection_id().ok_or(VoiceProviderError::ContextUnavailable)?.to_owned(),
         };
-        if let Some((owner, old_speech, old_transcript, status, result)) = transaction.query_row(
-            "SELECT agent,speech,transcript,status,result FROM voice_approvals WHERE id=?1",
-            [&request_id],
-            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?, row.get::<_, String>(3)?, row.get::<_, Option<String>>(4)?)),
-        ).optional()? {
-            if owner != agent_id || old_speech != speech_id || old_transcript != transcript_id {
-                return Err(VoiceProviderError::ContextChanged);
-            }
-            if status == "accepted" {
-                let value = result.ok_or(VoiceProviderError::Operation)?;
-                return Ok(ApprovalDispatch::Replay(serde_json::from_str(&value).map_err(|_| VoiceProviderError::Operation)?));
-            }
-            if status != "not_sent" {
-                return Err(VoiceProviderError::Unknown);
-            }
+        let request_account = current.get("accountKey").and_then(Value::as_str);
+        let request_connection = current.get("connectionId").and_then(Value::as_str);
+        let request_thread = current.get("params").and_then(|params| params.get("threadId")).and_then(Value::as_str);
+        // Python's connectionId is a generation-scoped identity. Bind the stored
+        // RPC to the exact retained connection, thread and account before reply.
+        if request_account != Some(context.account_key.as_str())
+            || request_connection != Some(context.connection_id.as_str())
+            || request_thread != Some(context.thread_id.as_str())
+        {
+            return Err(VoiceProviderError::ContextChanged);
+        }
+        if previous.is_some() {
             transaction.execute("UPDATE voice_approvals SET status='uncertain' WHERE id=?1", [&request_id])?;
         } else {
             transaction.execute(
@@ -828,9 +837,40 @@ fn reserve_approval(
         Ok(ApprovalDispatch::Send {
             request_id,
             context,
-            params: json!({"requestId": metadata["request_id"], "decision": "accept"}),
+            rpc_id,
         })
     })
+}
+
+type ApprovalReceiptRow = (String, String, String, String, Option<String>);
+
+fn approval_receipt(
+    connection: &Connection,
+    request_id: &str,
+) -> Result<Option<ApprovalReceiptRow>, VoiceProviderError> {
+    Ok(connection
+        .query_row(
+            "SELECT agent,speech,transcript,status,result FROM voice_approvals WHERE id=?1",
+            [request_id],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            },
+        )
+        .optional()?)
+}
+
+fn parse_rpc_id(value: &Value) -> Option<VoiceRpcId> {
+    match value {
+        Value::String(value) if !value.is_empty() => Some(VoiceRpcId::String(value.clone())),
+        Value::Number(value) => value.as_i64().map(VoiceRpcId::Number),
+        _ => None,
+    }
 }
 
 fn reserve_speech(
@@ -846,9 +886,21 @@ fn reserve_speech(
         let session = load_row(transaction, session_id, agent_id)?
             .ok_or(policy::VoiceError::UnknownSession)?;
         let session = VoiceSession::from_row(session)?;
-        if let Some(old) = lookup_speech_receipt(transaction, session_id, record_id, request_id)? {
+        let record = VoiceRepository::record(transaction, record_id)?
+            .ok_or(policy::VoiceError::UnknownSession)?;
+        super::validate_record(&record)?;
+        if record.agent != agent_id || record.kind != "orchestrator" {
+            return Err(policy::VoiceError::UnknownSession.into());
+        }
+        if let Some(old) = lookup_speech_receipt_raw(transaction, session_id, record_id, request_id)? {
             if old["session"] != session_id || old["record_id"] != record_id {
                 return Err(VoiceProviderError::Policy(policy::VoiceError::SessionIdentityConflict));
+            }
+            if let Some(marker) = old["error"].as_str().and_then(|error| error.strip_prefix("voice-content-sha256:")) {
+                let stored = marker.split('|').next().unwrap_or_default();
+                if stored != studio_runtime_store::sha256_hex(record.text.as_bytes()) {
+                    return Err(policy::VoiceError::SessionIdentityConflict.into());
+                }
             }
             return Ok(None);
         }
@@ -868,15 +920,10 @@ fn reserve_speech(
             thread_id: thread_id.to_owned(),
             connection_id: session.connection_id().ok_or(VoiceProviderError::ContextUnavailable)?.to_owned(),
         };
-        let record = VoiceRepository::record(transaction, record_id)?
-            .ok_or(policy::VoiceError::UnknownSession)?;
-        super::validate_record(&record)?;
-        if record.agent != agent_id || record.kind != "orchestrator" {
-            return Err(policy::VoiceError::UnknownSession.into());
-        }
+        let marker = format!("voice-content-sha256:{}|", studio_runtime_store::sha256_hex(record.text.as_bytes()));
         transaction.execute(
-            "INSERT INTO voice_speech_requests(id,session,record_id,state,error) VALUES(?1,?2,?3,'pending',NULL)",
-            rusqlite::params![request_id,session_id,record_id],
+            "INSERT INTO voice_speech_requests(id,session,record_id,state,error) VALUES(?1,?2,?3,'pending',?4)",
+            rusqlite::params![request_id,session_id,record_id,marker],
         )?;
         Ok(Some((context, record.text)))
     })
@@ -927,9 +974,28 @@ fn update_speech(
     error: Option<&str>,
 ) -> Result<(), VoiceProviderError> {
     store.transaction_with_error(|transaction| -> Result<_, VoiceProviderError> {
+        let current: Option<String> = transaction
+            .query_row(
+                "SELECT error FROM voice_speech_requests WHERE id=?1",
+                [request_id],
+                |row| row.get(0),
+            )
+            .optional()?
+            .flatten();
+        let marker = current
+            .and_then(|value| value.split('|').next().map(str::to_owned))
+            .unwrap_or_default();
+        let detail = error.unwrap_or_default();
+        let stored_error = if marker.is_empty() {
+            error.map(str::to_owned)
+        } else if detail.is_empty() {
+            Some(format!("{marker}|"))
+        } else {
+            Some(format!("{marker}|{detail}"))
+        };
         transaction.execute(
             "UPDATE voice_speech_requests SET state=?1,error=?2 WHERE id=?3",
-            rusqlite::params![state, error, request_id],
+            rusqlite::params![state, stored_error, request_id],
         )?;
         Ok(())
     })?;
@@ -1573,6 +1639,36 @@ mod tests {
                 }
             })
         }
+
+        fn reply<'a>(
+            &'a self,
+            _scope: VoiceProviderContext,
+            operation_id: String,
+            _reply: VoiceReply,
+            _deadline: Instant,
+        ) -> VoiceFuture<'a, VoiceRequestReceipt> {
+            Box::pin(async move {
+                self.calls
+                    .lock()
+                    .expect("scripted calls lock")
+                    .push(VoiceRpcCall {
+                        context: VoiceProviderContext {
+                            agent_id: String::new(),
+                            epoch: 0,
+                            account_key: String::new(),
+                            thread_id: String::new(),
+                            connection_id: String::new(),
+                        },
+                        operation_id,
+                        method: Method::ItemCommandExecutionRequestApproval,
+                        params: Value::Null,
+                        deadline: Instant::now(),
+                    });
+                VoiceRequestReceipt {
+                    certainty: VoiceWriteCertainty::Written,
+                }
+            })
+        }
     }
 
     #[tokio::test]
@@ -1624,9 +1720,9 @@ mod tests {
 
     #[test]
     fn speech_receipt_identity_is_tuple_unambiguous_and_replay_checks_record() {
-        assert_ne!(
-            speech_receipt_id("sessionone", "record"),
-            speech_receipt_id("session", "onerecord")
+        assert_eq!(
+            speech_receipt_id("session:one", "record"),
+            "session:one:record"
         );
         let connection = Connection::open_in_memory().expect("receipt database");
         connection
