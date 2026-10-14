@@ -1,7 +1,7 @@
 //! Temporary stdio children behind the async provider seam. A task owns the
 //! process group through bounded cleanup even if its caller drops. A reap timeout
 //! reports the child identity; it does not prove termination or cap surviving children.
-use crate::{provider_seam::*, *};
+use crate::{child_priority::ChildPriority, provider_seam::*, *};
 use process_wrap::tokio::{CommandWrap, ProcessGroup};
 use std::{io, process::Stdio};
 use studio_runtime_providers::{DecodedJournalPayload, decode_journal_entry};
@@ -43,6 +43,20 @@ impl ProviderTaskFactory for StdioProviderTaskFactory {
         options: OpenOptions,
         shutdown: Shutdown,
     ) -> OpenFuture<'_> {
+        self.open_with_priority(handle, options, shutdown, ChildPriority::Normal)
+    }
+}
+
+impl StdioProviderTaskFactory {
+    /// Open a provider child with the caller's explicit scheduling policy.
+    /// Shared helper callers use the trait implementation's inherited priority.
+    pub fn open_with_priority(
+        &self,
+        handle: ProviderHandle,
+        options: OpenOptions,
+        shutdown: Shutdown,
+        priority: ChildPriority,
+    ) -> OpenFuture<'_> {
         Box::pin(async move {
             if Instant::now() >= self.deadline {
                 return Err(AdapterError::Timeout);
@@ -70,10 +84,10 @@ impl ProviderTaskFactory for StdioProviderTaskFactory {
             if let Some(cwd) = &options.launch.cwd {
                 command.current_dir(cwd);
             }
-            let mut child = CommandWrap::from(command)
-                .wrap(ProcessGroup::leader())
-                .spawn()
-                .map_err(process_error)?;
+            let mut wrapped = CommandWrap::from(command);
+            wrapped.wrap(ProcessGroup::leader());
+            priority.apply_before_spawn(&mut wrapped);
+            let mut child = wrapped.spawn().map_err(process_error)?;
             let (commands, inbox) = mpsc::channel(LANE_CAPACITY);
             let (entries, journal) = mpsc::channel(LANE_CAPACITY);
             let (state, status) = watch::channel(AttachmentStatus {
