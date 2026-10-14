@@ -624,6 +624,9 @@ async fn shutdown_between_worker_start_and_wake_handoff_leaves_committed_input_r
 #[path = "../src/host_runtime.rs"]
 #[allow(dead_code)]
 mod host_runtime;
+#[path = "../src/provider_ports.rs"]
+#[allow(dead_code)]
+mod provider_ports;
 #[path = "../src/runtime_shutdown.rs"]
 mod runtime_shutdown;
 
