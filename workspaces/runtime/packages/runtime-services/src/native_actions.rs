@@ -1,8 +1,8 @@
 //! Native maintenance intents. Admission, hand-off and settlement each commit
 //! separately; a committed hand-off is never automatically resent after restart.
 use crate::account_session_runtime::{
-    AccountSessionError, AccountSessionPort, ProviderRequest, ProviderResponse, RequestCertainty,
-    SessionReceipt,
+    AccountSessionError, AccountSessionPort, NotSentReason, ProviderRequest, ProviderResponse,
+    RequestCertainty, SessionReceipt,
 };
 use crate::account_worker::retained::RequestActor;
 use crate::workspace_operations::ProviderTicket;
@@ -510,6 +510,11 @@ fn validate_provider_receipt(expected: &NativeRequest, receipt: &SessionReceipt)
             if receipt.result.is_some() || receipt.not_sent_reason.is_none() {
                 return Err(NativeError::Changed);
             }
+            if receipt.not_sent_reason == Some(NotSentReason::WorkerNotSent)
+                && receipt.ticket.is_none()
+            {
+                return Err(NativeError::Changed);
+            }
             if let Some(provider_ticket) = receipt.ticket.as_ref() {
                 let expected_id = format!(
                     "retained:{}:{}",
@@ -679,7 +684,22 @@ mod native_action_retry_tests {
         workspace_operations::ProviderTicket,
     };
     use serde_json::json;
-    use studio_runtime_providers::{Method, RequestId};
+    use studio_runtime_providers::{Method, RequestId, RequestTicket};
+
+    fn worker_not_sent_receipt(ticket: Option<RequestTicket>) -> SessionReceipt {
+        SessionReceipt {
+            scope: ConnectionScope {
+                account: "default".into(),
+                connection: "connection".into(),
+                generation: 4,
+            },
+            operation: "attempt".into(),
+            ticket,
+            certainty: RequestCertainty::NotSent,
+            result: None,
+            not_sent_reason: Some(NotSentReason::WorkerNotSent),
+        }
+    }
 
     #[test]
     fn preflight_repair_runs_only_for_new_admission() {
@@ -703,26 +723,31 @@ mod native_action_retry_tests {
             method: "thread/compact/start".into(),
             params: json!({"threadId":"thread"}),
         };
-        let receipt = SessionReceipt {
-            scope: ConnectionScope {
-                account: "default".into(),
-                connection: "connection".into(),
-                generation: 4,
-            },
-            operation: "attempt".into(),
-            ticket: Some(studio_runtime_providers::RequestTicket {
-                id: RequestId::String(format!(
-                    "retained:default:{}",
-                    studio_runtime_store::sha256_hex(b"attempt")
-                )),
-                generation: 4,
-                method: Method::from_wire("thread/compact/start").expect("known method"),
-            }),
-            certainty: RequestCertainty::NotSent,
-            result: None,
-            not_sent_reason: Some(NotSentReason::WorkerNotSent),
+        let matching_ticket = RequestTicket {
+            id: RequestId::String(format!(
+                "retained:default:{}",
+                studio_runtime_store::sha256_hex(b"attempt")
+            )),
+            generation: 4,
+            method: Method::from_wire("thread/compact/start").expect("known method"),
         };
-        assert!(validate_provider_receipt(&request, &receipt).is_ok());
+        assert!(
+            validate_provider_receipt(&request, &worker_not_sent_receipt(Some(matching_ticket)))
+                .is_ok()
+        );
+        assert!(matches!(
+            validate_provider_receipt(&request, &worker_not_sent_receipt(None)),
+            Err(super::NativeError::Changed)
+        ));
+        let foreign_ticket = RequestTicket {
+            id: RequestId::String("foreign-ticket".into()),
+            generation: 4,
+            method: Method::from_wire("thread/compact/start").expect("known method"),
+        };
+        assert!(matches!(
+            validate_provider_receipt(&request, &worker_not_sent_receipt(Some(foreign_ticket))),
+            Err(super::NativeError::Changed)
+        ));
     }
 }
 

@@ -1,8 +1,10 @@
 use rusqlite::{Connection, Transaction};
 use serde_json::{Value, json};
 use std::{path::Path, process::Command, sync::OnceLock};
+use studio_runtime_providers::{Method, RequestId, RequestTicket};
 use studio_runtime_services::workspace_operations::ProviderTicket;
 use studio_runtime_services::{
+    account_session_runtime::{ConnectionScope, NotSentReason, RequestCertainty, SessionReceipt},
     context_repair::{HistoryRewrite, RepairError, RepairEventSummary},
     native_actions::*,
     native_review::{self, ReviewPlan},
@@ -315,6 +317,59 @@ fn changed_payload_and_foreign_receipts_leave_intent_held() {
         assert_eq!(row(&db)[3]["status"], "unknown");
     }
 }
+
+#[test]
+fn invalid_worker_not_sent_receipts_keep_intent_unknown_and_unclaimable() {
+    let case = &corpus()["actions"][0];
+    for receipt_ticket in [
+        None,
+        Some(RequestTicket {
+            id: RequestId::String("foreign-ticket".into()),
+            generation: ticket().generation,
+            method: Method::from_wire("thread/compact/start").expect("known method"),
+        }),
+    ] {
+        let mut db = db(case);
+        reserve_case(&mut db, case);
+        let tx = db.transaction().expect("begin claim");
+        claim(&tx, "action-request", &ticket()).expect("claim request before handoff");
+        tx.commit().expect("persist claim before native handoff");
+
+        let receipt = SessionReceipt {
+            scope: ConnectionScope {
+                account: "default".into(),
+                connection: "connection".into(),
+                generation: ticket().generation,
+            },
+            operation: ticket().operation,
+            ticket: receipt_ticket,
+            certainty: RequestCertainty::NotSent,
+            result: None,
+            not_sent_reason: Some(NotSentReason::WorkerNotSent),
+        };
+        let tx = db.transaction().expect("begin receipt settlement");
+        assert!(matches!(
+            settle_provider(&tx, "action-request", ticket(), Ok(receipt), &Accept),
+            Err(NativeError::Changed)
+        ));
+        drop(tx);
+
+        assert_eq!(row(&db)[3]["status"], "unknown");
+        assert_eq!(actor(&db)["startAttempt"]["submitted"], true);
+        let tx = db.transaction().expect("begin retry claim");
+        assert!(matches!(
+            claim(&tx, "action-request", &ticket()),
+            Err(NativeError::Unknown)
+        ));
+        drop(tx);
+        assert_eq!(
+            db.query_row("SELECT count(*) FROM effects", [], |r| r.get::<_, u32>(0))
+                .expect("no provider acceptance effects"),
+            0
+        );
+    }
+}
+
 #[test]
 fn review_worker_identity_and_saved_response_match_python() {
     for case in corpus()["reviews"].as_array().expect("reviews") {
