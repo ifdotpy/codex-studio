@@ -8,7 +8,9 @@ use axum::{Json, extract::State, http::StatusCode};
 use serde_json::{Value, json};
 use std::sync::Arc;
 use studio_runtime_services::claude_controls::{
-    ControlError, ControlRequest, service::Controls, store::StoredControls,
+    ControlError, ControlRequest,
+    service::{ControlBinding, ControlFuture, ControlSession, Controls},
+    store::StoredControls,
 };
 use studio_runtime_store::{
     AgentId, AgentRepository, RuntimeStore, workspace_operations::WorkspaceOperationsRepository,
@@ -52,7 +54,7 @@ async fn session(
     let (agent, operation) = load_agent(store.clone(), id.clone()).await?;
     let snapshot = studio_runtime_services::claude_controls::ControlSnapshot::from_records(
         agent.clone(),
-        operation,
+        operation.clone(),
     )
     .map_err(control_error)?;
     let control_request = if matches!(action, "settings" | "rollback") {
@@ -77,13 +79,29 @@ async fn session(
             .and_then(Value::as_str)
             .unwrap_or("default")
     };
-    let broker = state
-        .account_session
-        .as_ref()
-        .ok_or_else(|| ApiError::dependency("provider-session/claude-controls"))?;
-    let session = broker
-        .claude_control_session(account)
-        .map_err(session_error)?;
+    let no_thread = agent
+        .get("threadId")
+        .and_then(Value::as_str)
+        .is_none_or(str::is_empty);
+    let local_only = (action == "state" && state_thread(&agent).is_none())
+        || (action == "settings" && no_thread);
+    if matches!(action, "rollback" | "stop_task") && no_thread {
+        return Err(control_error(ControlError::Request));
+    }
+    let session: Arc<dyn ControlSession> = if local_only {
+        Arc::new(LocalControlSession {
+            binding: ControlBinding::new(account.to_owned(), "local-no-thread".into(), 1)
+                .map_err(control_error)?,
+        })
+    } else {
+        let broker = state
+            .account_session
+            .as_ref()
+            .ok_or_else(|| ApiError::dependency("provider-session/claude-controls"))?;
+        broker
+            .claude_control_session(account)
+            .map_err(session_error)?
+    };
     let controls = Controls::new(
         Arc::new(StoredControls::new(store, Arc::new(|_| {}))),
         session,
@@ -94,7 +112,9 @@ async fn session(
             None => return Err(ApiError::internal()),
         },
         "state" | "commands" | "stop_task" => {
-            controls.read_or_stop(snapshot.agent(), &body, None).await
+            controls
+                .read_or_stop(snapshot.agent(), &body, operation)
+                .await
         }
         _ => {
             return Err(ApiError::new(
@@ -105,6 +125,37 @@ async fn session(
     };
     state.event_wake.notify_one();
     result.map(Json).map_err(control_error)
+}
+
+fn state_thread(agent: &Value) -> Option<&str> {
+    let transfer = agent
+        .get("lazyAccountTransfer")
+        .filter(|transfer| transfer.as_object().is_some_and(|value| !value.is_empty()));
+    if let Some(transfer) = transfer {
+        transfer
+            .get("sourceThreadId")
+            .and_then(Value::as_str)
+            .filter(|thread| !thread.is_empty())
+    } else {
+        agent
+            .get("threadId")
+            .and_then(Value::as_str)
+            .filter(|thread| !thread.is_empty())
+    }
+}
+
+struct LocalControlSession {
+    binding: ControlBinding,
+}
+
+impl ControlSession for LocalControlSession {
+    fn binding(&self) -> ControlBinding {
+        self.binding.clone()
+    }
+
+    fn call(&self, _method: &str, _params: Value) -> ControlFuture<'_, Value> {
+        Box::pin(async { Err(ControlError::Request) })
+    }
 }
 
 async fn load_agent(
