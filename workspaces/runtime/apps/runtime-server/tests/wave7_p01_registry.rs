@@ -42,6 +42,7 @@ struct Fixture {
     _root: tempfile::TempDir,
     store: Arc<RuntimeStore>,
     agents: Value,
+    changes: watch::Receiver<u64>,
 }
 struct FixtureTemplate {
     _root: tempfile::TempDir,
@@ -171,7 +172,7 @@ impl Fixture {
                 std::fs::set_permissions(path, std::fs::Permissions::from_mode(entry.mode))
                     .unwrap();
             }
-            let store = Arc::new(RuntimeStore::open(Some(root.path())).unwrap());
+            let (store, changes) = store_with_change_signal(root.path());
             let cwd = root.path().to_string_lossy().into_owned();
             store
                 .transaction_with::<_, StoreError>(|tx| {
@@ -186,6 +187,7 @@ impl Fixture {
                 _root: root,
                 store,
                 agents: template.agents.clone(),
+                changes,
             };
         }
         if mode == "recovery" {
@@ -204,11 +206,12 @@ impl Fixture {
                 std::fs::set_permissions(path, std::fs::Permissions::from_mode(entry.mode))
                     .unwrap();
             }
-            let store = Arc::new(RuntimeStore::open(Some(root.path())).unwrap());
+            let (store, changes) = store_with_change_signal(root.path());
             return Self {
                 _root: root,
                 store,
                 agents: template.agents.clone(),
+                changes,
             };
         }
         let root = tempfile::tempdir().unwrap();
@@ -228,11 +231,12 @@ impl Fixture {
             String::from_utf8_lossy(&result.stderr)
         );
         let agents = serde_json::from_slice(&result.stdout).unwrap();
-        let store = Arc::new(RuntimeStore::open(Some(root.path())).unwrap());
+        let (store, changes) = store_with_change_signal(root.path());
         Self {
             _root: root,
             store,
             agents,
+            changes,
         }
     }
     fn enqueue(&self, index: usize, id: &str) {
@@ -268,13 +272,26 @@ impl Fixture {
     }
 }
 
+fn store_with_change_signal(root: &std::path::Path) -> (Arc<RuntimeStore>, watch::Receiver<u64>) {
+    let store = Arc::new(RuntimeStore::open(Some(root)).unwrap());
+    let (sender, changes) = watch::channel(0_u64);
+    store.set_commit_notifier(move || {
+        sender.send_modify(|generation| *generation = generation.wrapping_add(1));
+    });
+    (store, changes)
+}
+
 async fn wait_for_durable_event_status(fixture: &Fixture, id: &str, expected: &str) {
     tokio::time::timeout(TEST_HANG_GUARD, async {
+        let mut changes = fixture.changes.clone();
         loop {
             if fixture.event_status(id) == expected {
                 break;
             }
-            tokio::task::yield_now().await;
+            changes
+                .changed()
+                .await
+                .expect("fixture store change notifier remains open");
         }
     })
     .await
@@ -283,6 +300,7 @@ async fn wait_for_durable_event_status(fixture: &Fixture, id: &str, expected: &s
 
 async fn wait_for_durable_agent_status(fixture: &Fixture, agent_id: &str, expected: &str) {
     tokio::time::timeout(TEST_HANG_GUARD, async {
+        let mut changes = fixture.changes.clone();
         loop {
             let status: String = fixture
                 .store
@@ -297,7 +315,10 @@ async fn wait_for_durable_agent_status(fixture: &Fixture, agent_id: &str, expect
             if status == expected {
                 break;
             }
-            tokio::task::yield_now().await;
+            changes
+                .changed()
+                .await
+                .expect("fixture store change notifier remains open");
         }
     })
     .await
@@ -586,7 +607,8 @@ fn scripted_with_resume_recording(
 ) -> (Arc<Scripted>, mpsc::UnboundedReceiver<(String, Value)>) {
     scripted_with_policy(unknown_writes, record_resumes, false)
 }
-fn scripted_with_unknown_first_launch() -> (Arc<Scripted>, mpsc::UnboundedReceiver<(String, Value)>) {
+fn scripted_with_unknown_first_launch() -> (Arc<Scripted>, mpsc::UnboundedReceiver<(String, Value)>)
+{
     scripted_with_policy(true, false, true)
 }
 fn scripted_with_policy(
