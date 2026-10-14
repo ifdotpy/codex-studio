@@ -65,6 +65,12 @@ pub(crate) struct Registry {
     stored_schemas: Arc<BTreeMap<String, Validator>>,
 }
 
+pub(crate) struct MatchedOperation {
+    pub key: String,
+    pub has_body_schema: bool,
+    pub has_opaque_body: bool,
+}
+
 #[derive(Debug)]
 pub(crate) struct CompileError {
     pub operation_id: String,
@@ -331,33 +337,29 @@ impl Registry {
         self.validate(&format!("{method} {path_template}"), raw)
     }
 
-    pub(crate) fn template_for(&self, method: &str, path: &str) -> Option<String> {
-        crate::schema::matching_template(
+    pub(crate) fn validate_matched(
+        &self,
+        operation: &MatchedOperation,
+        raw: RawRequest,
+    ) -> Result<ValidatedRequest, LocatedError> {
+        self.validate(&operation.key, raw)
+    }
+
+    pub(crate) fn match_route(&self, method: &str, path: &str) -> Option<MatchedOperation> {
+        let template = crate::schema::matching_template(
             self.operations.keys().filter_map(|key| key.split_once(' ')),
             Some(method),
             path,
-        )
-        .map(str::to_owned)
-    }
-
-    pub(crate) fn has_body_schema(&self, method: &str, path: &str) -> Option<bool> {
-        self.template_for(method, path).and_then(|template| {
-            self.operations
-                .get(&format!("{method} {template}"))
-                .map(|operation| operation.body.is_some())
-        })
-    }
-
-    pub(crate) fn has_opaque_body(&self, method: &str, path: &str) -> Option<bool> {
-        self.template_for(method, path).and_then(|template| {
-            self.operations
-                .get(&format!("{method} {template}"))
-                .map(|operation| {
-                    operation
-                        .body
-                        .as_ref()
-                        .is_some_and(|part| part.has_opaque_json)
-                })
+        )?;
+        let key = format!("{method} {template}");
+        let operation = self.operations.get(&key)?;
+        Some(MatchedOperation {
+            key,
+            has_body_schema: operation.body.is_some(),
+            has_opaque_body: operation
+                .body
+                .as_ref()
+                .is_some_and(|part| part.has_opaque_json),
         })
     }
 

@@ -28,6 +28,9 @@ pub(crate) async fn boundary(
     let path = request.uri().path().to_owned();
     let api = path.starts_with("/api/");
     let write = !matches!(method, Method::GET | Method::HEAD | Method::OPTIONS);
+    let matched_operation = api
+        .then(|| state.validators.match_route(method.as_str(), &path))
+        .flatten();
     if crate::routes::incoming_multi_server::needed(request.headers(), &path) {
         return crate::routes::incoming_multi_server::serve(state, request).await;
     }
@@ -135,14 +138,12 @@ pub(crate) async fn boundary(
         return response;
     }
     if write && matches!(method, Method::POST | Method::PUT | Method::PATCH) {
-        let has_json_schema = state
-            .validators
-            .has_body_schema(method.as_str(), &path)
-            .unwrap_or(false);
-        let has_opaque_json_schema = state
-            .validators
-            .has_opaque_body(method.as_str(), &path)
-            .unwrap_or(false);
+        let has_json_schema = matched_operation
+            .as_ref()
+            .is_some_and(|operation| operation.has_body_schema);
+        let has_opaque_json_schema = matched_operation
+            .as_ref()
+            .is_some_and(|operation| operation.has_opaque_body);
         let content_type = headers
             .get(header::CONTENT_TYPE)
             .and_then(|v| v.to_str().ok())
@@ -226,7 +227,7 @@ pub(crate) async fn boundary(
     }
 
     if api {
-        if let Some(template) = state.validators.template_for(method.as_str(), &path) {
+        if let Some(operation) = matched_operation.as_ref() {
             let query = query_values(request.uri().query().unwrap_or_default());
             let (header_values, invalid_headers) = validated_header_values(request.headers());
             let raw = RawRequest {
@@ -238,7 +239,7 @@ pub(crate) async fn boundary(
             };
             match state
                 .validators
-                .validate_route(method.as_str(), &template, raw)
+                .validate_matched(operation, raw)
             {
                 Ok(validated) => {
                     request.extensions_mut().insert(validated);
