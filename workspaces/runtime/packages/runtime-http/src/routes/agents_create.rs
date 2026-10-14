@@ -136,27 +136,21 @@ impl CreationCatalog for RouteCreationCatalog<'_> {
 }
 
 pub(crate) fn routes() -> RouteGroup {
-    const LEAD_DEPENDENCIES: [Dependency; 7] = [
-        Dependency::new("account-driver/unavailable"),
+    const LEAD_DEPENDENCIES: [Dependency; 6] = [
         Dependency::new("cross-server-driver/local-identity"),
         Dependency::new("cross-server-driver/project-binding"),
-        Dependency::new("provider-session/model-list"),
         Dependency::new("project-driver/folder-selection"),
+        Dependency::new("worker-driver/settings-catalog"),
         Dependency::new("workspace-state/image-workspace"),
         Dependency::new("workspace-state/vm-workspace"),
     ];
-    const RENAME_DEPENDENCIES: [Dependency; 1] =
-        [Dependency::new("provider-session/title-generation")];
-    const AGENT_DEPENDENCIES: [Dependency; 4] = [
-        Dependency::new("account-driver/unavailable"),
-        Dependency::new("provider-session/model-list"),
+    const AGENT_DEPENDENCIES: [Dependency; 3] = [
+        Dependency::new("worker-driver/settings-catalog"),
         Dependency::new("workspace-state/image-workspace"),
         Dependency::new("workspace-state/vm-workspace"),
     ];
-    const CONVERSATION_DEPENDENCIES: [Dependency; 2] = [
-        Dependency::new("account-driver/unavailable"),
-        Dependency::new("provider-session/model-list"),
-    ];
+    const CONVERSATION_DEPENDENCIES: [Dependency; 1] =
+        [Dependency::new("worker-driver/settings-catalog")];
     RouteGroup::new(vec![
         post(
             "/api/agents",
@@ -174,11 +168,7 @@ pub(crate) fn routes() -> RouteGroup {
             OperationStatus::partial(&LEAD_DEPENDENCIES),
             create_lead,
         ),
-        post(
-            "/api/rename",
-            OperationStatus::partial(&RENAME_DEPENDENCIES),
-            rename,
-        ),
+        post("/api/rename", OperationStatus::Implemented, rename),
     ])
 }
 
@@ -358,8 +348,8 @@ async fn rename(
     if name.is_none() {
         let Some(port) = state.title_request.clone() else {
             return Err(ApiError::new(
-                StatusCode::NOT_IMPLEMENTED,
-                "Not implemented: requires provider-session/title-generation",
+                StatusCode::SERVICE_UNAVAILABLE,
+                "Title generation is unavailable",
             ));
         };
         let request_id = body
@@ -392,8 +382,8 @@ async fn rename(
             .to_owned();
         let driver = state.account_driver.as_ref().ok_or_else(|| {
             ApiError::new(
-                StatusCode::NOT_IMPLEMENTED,
-                "Not implemented: requires account-driver/unavailable",
+                StatusCode::SERVICE_UNAVAILABLE,
+                "Account metadata is unavailable",
             )
         })?;
         let snapshot = driver.snapshot().map_err(|_| ApiError::internal())?;
@@ -403,15 +393,12 @@ async fn rename(
             .find(|row| row.get("id").and_then(Value::as_str) == Some(&account_key))
             .cloned()
             .ok_or_else(|| {
-                ApiError::new(
-                    StatusCode::NOT_IMPLEMENTED,
-                    "Not implemented: requires account-driver/unavailable",
-                )
+                ApiError::new(StatusCode::BAD_REQUEST, "Unknown account for managed agent")
             })?;
         let _home = account.get("home").and_then(Value::as_str).ok_or_else(|| {
             ApiError::new(
-                StatusCode::NOT_IMPLEMENTED,
-                "Not implemented: requires provider-session/model-list",
+                StatusCode::SERVICE_UNAVAILABLE,
+                "Provider account home is unavailable",
             )
         })?;
         let provider = account
@@ -445,8 +432,8 @@ async fn rename(
                 }
                 studio_runtime_services::model_catalog::ModelListError::Unavailable => {
                     ApiError::new(
-                        StatusCode::NOT_IMPLEMENTED,
-                        "Not implemented: requires provider-session/model-list",
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        "Provider model catalog is unavailable",
                     )
                 }
             })?;
@@ -503,6 +490,19 @@ fn operation_error(error: OperationError) -> ApiError {
     ) {
         return ApiError::validation(vec![Value::String("body".to_owned())]);
     }
+    let implemented_but_unavailable = matches!(
+        &error,
+        OperationError::Create(
+            MutationError::CapabilityUnavailable(
+                "account-driver/unavailable"
+                    | "provider-session/model-list"
+                    | "provider-session/title-generation"
+            ) | MutationError::TitleGenerationUnavailable
+        )
+    );
+    if implemented_but_unavailable {
+        return ApiError::new(StatusCode::SERVICE_UNAVAILABLE, error.to_string());
+    }
     let status = match &error {
         OperationError::Unavailable(_)
         | OperationError::Create(MutationError::CapabilityUnavailable(_))
@@ -530,12 +530,9 @@ inventory::submit! {
         name: "agents_create",
         routes: Some(routes),
         dependencies: &[
-        "account-driver/unavailable",
         "cross-server-driver/local-identity",
         "cross-server-driver/project-binding",
         "project-driver/folder-selection",
-        "provider-session/model-list",
-        "provider-session/title-generation",
         "worker-driver/settings-catalog",
         "workspace-state/image-workspace",
         "workspace-state/vm-workspace",
