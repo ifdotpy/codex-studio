@@ -1114,6 +1114,82 @@ fn output_queue_enforces_byte_limit_and_keeps_room_for_probe_and_exit() {
 }
 
 #[test]
+fn bounded_probes_preserve_room_for_the_largest_exit_receipt() {
+    let root = fixtures::tempdir();
+    let cases = fixtures::corpus(root.path());
+    let case = running(&cases);
+    let store = fixtures::store(root.path(), "probe-terminal-reserve");
+    fixtures::seed(&store, &case);
+    let id = case["before"]["id"].as_str().expect("id");
+    let operation =
+        serde_json::from_value(case["before"]["operation"].clone()).expect("monitor operation");
+    store
+        .transaction_with(|tx| {
+            let mut value = MonitorsRepository::get(tx, id)?
+                .expect("monitor")
+                .value()
+                .clone();
+            value["streamQueue"] = json!([]);
+            Table::<MonitorRecord>::new(tx).put(
+                &MonitorRecord::from_value(value)
+                    .map_err(studio_runtime_store::StoreError::from)?,
+            )
+        })
+        .expect("initialize bounded stream queue");
+    let probe_limit = monitor_event_queue::STREAM_QUEUE_MAX_BYTES
+        - monitor_event_queue::TERMINAL_RECEIPT_RESERVE_BYTES;
+    let full_probes = probe_limit / monitor_event_queue::PROBE_RESULT_MAX_BYTES;
+    let remainder = probe_limit % monitor_event_queue::PROBE_RESULT_MAX_BYTES;
+    let probe_count = full_probes + usize::from(remainder > 0);
+    for generation in 0..probe_count {
+        let result_bytes = if generation < full_probes {
+            monitor_event_queue::PROBE_RESULT_MAX_BYTES
+        } else {
+            remainder
+        };
+        let result = Value::String("x".repeat(result_bytes - 2));
+        monitor_event_queue::enqueue_probe(&store, id, &operation, generation as i64, &result)
+            .expect("probe fills bounded admission budget");
+    }
+    let probe_queue = record(&store, id);
+    let probe_queue = probe_queue["streamQueue"].as_array().expect("probe queue");
+    assert_eq!(probe_queue.len(), probe_count);
+    assert_eq!(
+        probe_queue
+            .iter()
+            .map(|item| item["byteLength"].as_u64().expect("probe bytes"))
+            .sum::<u64>(),
+        probe_limit as u64,
+        "probes exactly fill their admission budget"
+    );
+    assert!(
+        monitor_event_queue::enqueue_probe(&store, id, &operation, probe_count as i64, &json!("x"))
+            .expect_err("additional probe exceeds its budget")
+            .to_string()
+            .contains("queue is full")
+    );
+    let largest_error = "e".repeat(monitor_event_queue::EXIT_RECEIPT_MAX_ERROR_BYTES);
+    monitor_event_queue::enqueue_exit(
+        &store,
+        id,
+        &operation,
+        "result:largest",
+        None,
+        Some(&largest_error),
+        99.0,
+    )
+    .expect("the maximum exit receipt still fits after probes");
+    let saved = record(&store, id);
+    let queued = saved["streamQueue"].as_array().expect("queued stream");
+    assert_eq!(queued.len(), probe_count + 1);
+    assert_eq!(queued.last().expect("exit receipt")["kind"], "exit");
+    assert_eq!(
+        queued.last().expect("exit receipt")["byteLength"],
+        monitor_event_queue::EXIT_RECEIPT_MAX_ERROR_BYTES
+    );
+}
+
+#[test]
 fn cancellation_recovery_runs_after_a_full_delivery_batch() {
     use studio_runtime_services::monitor_driver;
 

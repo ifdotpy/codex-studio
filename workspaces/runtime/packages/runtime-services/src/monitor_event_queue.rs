@@ -16,11 +16,14 @@ use crate::monitor_runtime_wiring::{Delivery, MonitorEvent};
 use crate::notification_dispatch::NotificationDispatchError;
 
 const MAX_EVENTS: usize = 128;
-const MAX_BYTES: usize = 1024 * 1024;
+pub const STREAM_QUEUE_MAX_BYTES: usize = 1024 * 1024;
 // Keep enough room for one bounded liveness result and the definitive exit
 // receipt after the output stream reaches its normal admission limit.
 const RESERVED_EVENTS: usize = 2;
-const RESERVED_BYTES: usize = 64 * 1024;
+pub const TERMINAL_RECEIPT_RESERVE_BYTES: usize = 64 * 1024;
+pub const PROBE_RESULT_MAX_BYTES: usize = 32 * 1024;
+/// Python stores at most this many characters in a command monitor's error/tail.
+pub const EXIT_RECEIPT_MAX_ERROR_BYTES: usize = 12_000;
 
 /// Append `command/exec/outputDelta` while the provider notification receipt is
 /// still in its caller's transaction. A full queue aborts that transaction, so
@@ -74,7 +77,8 @@ pub fn enqueue_output_in_transaction(
         .filter_map(|item| item["byteLength"].as_u64())
         .sum::<u64>();
     if queue.len() >= MAX_EVENTS - RESERVED_EVENTS
-        || queued_bytes.saturating_add(bytes.len() as u64) > (MAX_BYTES - RESERVED_BYTES) as u64
+        || queued_bytes.saturating_add(bytes.len() as u64)
+            > (STREAM_QUEUE_MAX_BYTES - TERMINAL_RECEIPT_RESERVE_BYTES) as u64
     {
         return Err(NotificationDispatchError::StreamCapacity);
     }
@@ -228,13 +232,15 @@ pub fn enqueue_probe(
                 "conflicting monitor probe",
             ));
         }
+        let result_bytes = result.to_string().len();
         if queue.len() >= MAX_EVENTS - 1
+            || result_bytes > PROBE_RESULT_MAX_BYTES
             || queue
                 .iter()
                 .filter_map(|item| item["byteLength"].as_u64())
                 .sum::<u64>()
-                .saturating_add(result.to_string().len() as u64)
-                > MAX_BYTES as u64
+                .saturating_add(result_bytes as u64)
+                > (STREAM_QUEUE_MAX_BYTES - TERMINAL_RECEIPT_RESERVE_BYTES) as u64
         {
             return Err(MonitorError::Refused("Monitor output queue is full"));
         }
@@ -243,7 +249,7 @@ pub fn enqueue_probe(
             "cursor":cursor,
             "generation":generation,
             "result":result,
-            "byteLength":result.to_string().len(),
+            "byteLength":result_bytes,
             "operation":operation,
         }));
         Table::<MonitorRecord>::new(tx)
@@ -264,7 +270,7 @@ pub fn enqueue_exit(
     finished: f64,
 ) -> Result<(), MonitorError> {
     let error = error.map(|value| {
-        let mut end = value.len().min(12_000);
+        let mut end = value.len().min(EXIT_RECEIPT_MAX_ERROR_BYTES);
         while !value.is_char_boundary(end) {
             end -= 1;
         }
@@ -306,7 +312,8 @@ pub fn enqueue_exit(
             .filter_map(|item| item["byteLength"].as_u64())
             .sum::<u64>();
         let error_bytes = error.map_or(0, |value| value.len()) as u64;
-        if queue.len() >= MAX_EVENTS || queued_bytes.saturating_add(error_bytes) > MAX_BYTES as u64
+        if queue.len() >= MAX_EVENTS
+            || queued_bytes.saturating_add(error_bytes) > STREAM_QUEUE_MAX_BYTES as u64
         {
             return Err(MonitorError::Refused("Monitor output queue is full"));
         }

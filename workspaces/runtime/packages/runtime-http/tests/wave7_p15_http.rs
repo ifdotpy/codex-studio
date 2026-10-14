@@ -14,7 +14,7 @@ use serde_json::{Value, json};
 use std::sync::Arc;
 use studio_runtime_http::{HttpState, router};
 use studio_runtime_services::monitor_runtime_wiring::MonitorRuntime;
-use studio_runtime_store::MonitorsRepository;
+use studio_runtime_store::{MonitorsRepository, RequestRecord, Table};
 use tower::ServiceExt;
 
 fn database_snapshot(store: &studio_runtime_store::RuntimeStore) -> Value {
@@ -191,4 +191,89 @@ async fn installed_runtime_drives_input_and_cancel_through_http() {
     .clone();
     assert_eq!(saved["cancelDispatch"]["status"], "written");
     assert_eq!(fixtures::events(&store), json!([]));
+}
+
+#[tokio::test]
+async fn monitor_approval_routes_commit_decision_then_launch_only_accepts() {
+    for decision in ["accept", "decline"] {
+        let root = fixtures::tempdir();
+        let cases = fixtures::corpus(root.path());
+        let mut case = cases
+            .iter()
+            .find(|case| case["name"] == "finish-0-None-False")
+            .expect("running monitor case")
+            .clone();
+        case["before"]["status"] = json!("approval");
+        case["before"]
+            .as_object_mut()
+            .expect("monitor record")
+            .remove("operation");
+        let store = Arc::new(fixtures::store(root.path(), decision));
+        fixtures::seed(&store, &case);
+        let id = case["before"]["id"].as_str().expect("monitor id");
+        let request_id = format!("monitor-approval:{id}");
+        store
+            .transaction(|tx| {
+                let request = RequestRecord::from_value(json!({
+                    "id":request_id,
+                    "method":"monitor/approve",
+                    "agent":"agent",
+                    "params":{"monitorId":id,"command":case["before"]["command"],"cwd":case["before"]["cwd"]},
+                    "status":"pending",
+                    "createdAt":1000.0
+                }))?;
+                Table::<RequestRecord>::new(tx).put(&request)
+            })
+            .expect("seed monitor approval request");
+        let port = Arc::new(support::Port::default());
+        let state = HttpState::new(
+            "fixture-token".into(),
+            "fixture".into(),
+            None,
+            store.root().to_string_lossy().into(),
+            49171,
+            None,
+            Some(store.clone()),
+            None,
+        );
+        let runtime = Arc::new(MonitorRuntime::new(
+            store.clone(),
+            port.clone(),
+            state.event_wake_handle(),
+        ));
+        let app = router(state)
+            .expect("router")
+            .layer(Extension(runtime.clone()));
+        let (status, response) = call(
+            &app,
+            "/api/answer",
+            json!({"id":request_id,"decision":decision}),
+        )
+        .await;
+        assert_eq!(status, 200, "{response}");
+        assert_eq!(response["status"], "answered");
+        let request = Table::<RequestRecord>::new(&store.read().expect("read request"))
+            .get(&request_id)
+            .expect("get approval request")
+            .expect("approval request");
+        assert_eq!(request.value()["status"], "answered");
+        assert_eq!(request.value()["answerDecision"], decision);
+        let monitor = MonitorsRepository::get(&store.read().expect("read monitor"), id)
+            .expect("get monitor")
+            .expect("monitor")
+            .value()
+            .clone();
+        if decision == "accept" {
+            assert_eq!(monitor["status"], "starting");
+            runtime
+                .tick(1001.0)
+                .expect("dispatch committed start intent");
+            assert_eq!(port.starts.lock().expect("starts").len(), 1);
+            assert_eq!(port.starts.lock().expect("starts")[0].0, id);
+        } else {
+            assert_eq!(monitor["status"], "cancelled");
+            runtime.tick(1001.0).expect("no start dispatch for decline");
+            assert!(port.starts.lock().expect("starts").is_empty());
+        }
+    }
 }

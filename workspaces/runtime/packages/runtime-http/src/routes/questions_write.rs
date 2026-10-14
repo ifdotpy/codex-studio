@@ -18,7 +18,7 @@ const CALLBACK_REPLY_DEPENDENCY: [Dependency; 1] = [Dependency::new("callback-ru
 const ANSWER_DEPENDENCIES: [Dependency; 3] = [
     Dependency::new("question-answer/async-question"),
     Dependency::new("question-answer/browser-open"),
-    Dependency::new("question-answer/monitor-approval"),
+    Dependency::new("cross-server/remote-events"),
 ];
 
 pub(crate) fn routes() -> RouteGroup {
@@ -44,14 +44,51 @@ pub(crate) fn routes() -> RouteGroup {
 
 async fn answer(
     State(state): State<HttpState>,
+    monitor: Option<
+        axum::Extension<Arc<studio_runtime_services::monitor_runtime_wiring::MonitorRuntime>>,
+    >,
     ApiJson(body): ApiJson<crate::generated::AnswerBody>,
 ) -> Result<Json<Value>, ApiError> {
+    let id = body.id.clone();
+    let data = serde_json::to_value(&body).map_err(|_| ApiError::internal())?;
+    let store = state.store.clone().ok_or_else(ApiError::internal)?;
+    let monitor_available = monitor.is_some();
+    let monitor_id = id.clone();
+    let monitor_data = data.clone();
+    if let Some(answer) = tokio::task::spawn_blocking(move || {
+        studio_runtime_services::monitor_runtime::answer_approval(
+            &store,
+            &monitor_id,
+            &monitor_data,
+            callback_clock().map_err(|_| {
+                studio_runtime_services::monitor_policy::MonitorError::Refused(
+                    "The system clock is unavailable",
+                )
+            })?,
+            monitor_available,
+        )
+    })
+    .await
+    .map_err(|_| ApiError::internal())?
+    .map_err(monitor_approval_error)?
+    {
+        if answer.accepted {
+            monitor
+                .as_ref()
+                .ok_or_else(|| ApiError::dependency("monitor-driver/start-dispatch"))?
+                .0
+                .dispatch_wake_handle()
+                .notify_one();
+        }
+        state.event_wake.notify_one();
+        return Ok(Json(
+            super::generated_json::<crate::generated::AnswerResult>(answer.response)?,
+        ));
+    }
     let runtime = state
         .callback_runtime
         .clone()
         .ok_or_else(|| ApiError::dependency(CALLBACK_REPLY_DEPENDENCY[0].name()))?;
-    let id = body.id.clone();
-    let data = serde_json::to_value(body).map_err(|_| ApiError::internal())?;
     let value = tokio::task::spawn_blocking(move || runtime.answer(&id, &data, callback_clock()?))
         .await
         .map_err(|_| ApiError::internal())?
@@ -60,6 +97,24 @@ async fn answer(
     Ok(Json(
         super::generated_json::<crate::generated::AnswerResult>(value)?,
     ))
+}
+
+fn monitor_approval_error(
+    error: studio_runtime_services::monitor_policy::MonitorError,
+) -> ApiError {
+    use studio_runtime_services::monitor_policy::MonitorError as E;
+    match error {
+        E::Unavailable(name) => ApiError::dependency(name),
+        E::Event(
+            studio_runtime_services::event_write::EventWriteError::RemoteEventsUnavailable,
+        ) => ApiError::dependency("cross-server/remote-events"),
+        E::Refused(message) => ApiError::new(StatusCode::BAD_REQUEST, message),
+        E::InvalidStored { id, location } => ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Invalid stored object monitors/{id} at {location}"),
+        ),
+        _ => ApiError::internal(),
+    }
 }
 
 fn callback_clock() -> Result<f64, studio_runtime_services::provider_callbacks::CallbackError> {
@@ -239,6 +294,6 @@ inventory::submit! {
     crate::routes::manifest::RouteModuleRegistration {
         name: "questions_write",
         routes: Some(routes),
-        dependencies: &["callback-runtime/reply-port", "question-answer/async-question", "question-answer/browser-open", "question-answer/monitor-approval"],
+        dependencies: &["callback-runtime/reply-port", "question-answer/async-question", "question-answer/browser-open", "cross-server/remote-events"],
     }
 }
