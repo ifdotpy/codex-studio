@@ -172,10 +172,10 @@ pub(crate) fn routes() -> RouteGroup {
     ])
 }
 
-async fn dispatch<T: serde::de::DeserializeOwned + serde::Serialize>(
+async fn dispatch<T: serde::de::DeserializeOwned + serde::Serialize + Send + 'static>(
     state: HttpState,
     operation: impl FnOnce(&Context<'_>) -> Result<Value, OperationError> + Send + 'static,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<Json<T>, ApiError> {
     let result = tokio::task::spawn_blocking(move || {
         let store = state.store.as_deref().ok_or_else(ApiError::internal)?;
         let catalog = RouteCreationCatalog {
@@ -205,7 +205,7 @@ async fn dispatch<T: serde::de::DeserializeOwned + serde::Serialize>(
 async fn create_lead(
     State(state): State<HttpState>,
     ApiJson(body): ApiJson<generated::CreateLeadRequest>,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<Json<generated::AgentResponse>, ApiError> {
     let request = Creation {
         intent: serde_json::to_value(&body).map_err(|_| ApiError::internal())?,
         catalog: body.effort.is_some()
@@ -233,7 +233,7 @@ async fn create_lead(
 async fn create_agent(
     State(state): State<HttpState>,
     ApiJson(body): ApiJson<generated::CreateAgentRequest>,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<Json<generated::AgentResponse>, ApiError> {
     create_agent_with_import(State(state), ApiJson(body), None).await
 }
 
@@ -241,7 +241,7 @@ async fn create_agent_with_import(
     State(state): State<HttpState>,
     ApiJson(body): ApiJson<generated::CreateAgentRequest>,
     imported_from: Option<String>,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<Json<generated::AgentResponse>, ApiError> {
     if state.store.is_none() && state.account_driver.is_none() {
         return Err(operation_error(OperationError::Unavailable(
             "account-driver/unavailable",
@@ -282,7 +282,7 @@ pub(super) async fn create_imported_agent(
     state: HttpState,
     body: Value,
     imported_from: String,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<Json<generated::AgentResponse>, ApiError> {
     let body: generated::CreateAgentRequest =
         serde_json::from_value(body).map_err(|_| ApiError::internal())?;
     create_agent_with_import(State(state), ApiJson(body), Some(imported_from)).await
@@ -291,7 +291,7 @@ pub(super) async fn create_imported_agent(
 pub(super) async fn create_branch_draft(
     state: HttpState,
     body: Value,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<Json<generated::AgentResponse>, ApiError> {
     let body: generated::CreateLeadRequest =
         serde_json::from_value(body).map_err(|_| ApiError::internal())?;
     create_lead(State(state), ApiJson(body)).await
@@ -299,7 +299,7 @@ pub(super) async fn create_branch_draft(
 async fn configure(
     State(state): State<HttpState>,
     ApiJson(body): ApiJson<generated::ConfigureRequest>,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<Json<generated::ConfigureResponse>, ApiError> {
     let request = agents_create::Configuration {
         id: body.id,
         concurrency: body.concurrency,
@@ -316,7 +316,7 @@ async fn configure(
 async fn conversation(
     State(state): State<HttpState>,
     ApiJson(body): ApiJson<generated::ConversationRequest>,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<Json<generated::AgentResponse>, ApiError> {
     let request = agents_create::Conversation {
         non_defaults: body.next_turn.is_some() || body.request_id.is_some(),
         model_present: body.model.is_some(),
@@ -507,7 +507,7 @@ async fn rename(
         };
         return Ok(Json(result));
     }
-    dispatch::<generated::RenameResponse>(state, move |context| {
+    let Json(result) = dispatch::<generated::RenameResponse>(state, move |context| {
         agents_create::rename_operation(
             context,
             &body.id,
@@ -515,7 +515,10 @@ async fn rename(
             body.request_id.flatten().as_deref(),
         )
     })
-    .await
+    .await?;
+    Ok(Json(
+        serde_json::to_value(result).map_err(|_| ApiError::internal())?,
+    ))
 }
 fn operation_error(error: OperationError) -> ApiError {
     use agents_create::MutationError;

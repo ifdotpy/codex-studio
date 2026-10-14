@@ -67,7 +67,7 @@ pub(crate) fn routes() -> RouteGroup {
 async fn finder_view(
     State(state): State<HttpState>,
     params: QueryParams,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<Json<crate::generated::FinderViewApiAgentsFinderViewGetResponse>, ApiError> {
     let agent_id = params
         .nonempty_str("agent")
         .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "Supply an agent ID"))?;
@@ -98,7 +98,7 @@ async fn finder_view(
 async fn skills(
     State(state): State<HttpState>,
     params: QueryParams,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<Json<crate::generated::SkillsResponse>, ApiError> {
     let agent_id = required_agent(&params)?;
     let agent = read_agent(&state, agent_id).await?;
     ensure_live_agent(&agent)?;
@@ -138,7 +138,7 @@ async fn skills(
 async fn capabilities(
     State(state): State<HttpState>,
     params: QueryParams,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<Json<crate::generated::CapabilitiesResponse>, ApiError> {
     let agent_id = required_agent(&params)?;
     let agent = read_agent(&state, agent_id).await?;
     ensure_live_agent(&agent)?;
@@ -313,7 +313,7 @@ async fn native_command(
 async fn sync_notify(
     State(state): State<HttpState>,
     ApiJson(body): ApiJson<Value>,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<Json<crate::generated::ResourceNotifyAck>, ApiError> {
     super::sync_stream::notify_resources(state, body).await
 }
 

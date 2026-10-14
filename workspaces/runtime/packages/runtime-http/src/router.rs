@@ -526,8 +526,11 @@ async fn probe_echo(state: HttpState, request: Request<Body>, body_kind: u8) -> 
     if let Some(body) = body_value {
         value.insert("body".to_owned(), body);
     }
-    value.insert("query".to_owned(), Value::Object(query.into_typed()));
-    value.insert("headers".to_owned(), Value::Object(headers.0));
+    value.insert(
+        "query".to_owned(),
+        Value::Object((*query.into_typed()).clone()),
+    );
+    value.insert("headers".to_owned(), Value::Object((*headers.0).clone()));
     axum::Json(Value::Object(value)).into_response()
 }
 

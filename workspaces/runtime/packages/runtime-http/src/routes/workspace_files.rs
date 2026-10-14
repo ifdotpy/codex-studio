@@ -40,7 +40,7 @@ pub(crate) fn routes() -> RouteGroup {
 async fn upload_asset(
     State(state): State<HttpState>,
     ApiJson(mut body): ApiJson<Value>,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<Json<crate::generated::AssetRecord>, ApiError> {
     let agent = take_string(&mut body, "agent").ok_or_else(ApiError::internal)?;
     let name = take_string(&mut body, "name").ok_or_else(ApiError::internal)?;
     let id = take_string(&mut body, "id");
@@ -60,7 +60,7 @@ async fn upload_asset(
 pub(crate) async fn file_info(
     query: QueryParams,
     State(state): State<HttpState>,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<Json<crate::generated::FileInfo>, ApiError> {
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
     let agent_id = string_query(&query, "agent").map(str::to_owned);
     let path = string_query(&query, "path").map(str::to_owned);
@@ -89,7 +89,7 @@ pub(crate) async fn file_info(
 pub(crate) async fn file_content(
     query: QueryParams,
     State(state): State<HttpState>,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<Json<crate::generated::FileContent>, ApiError> {
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
     let agent_id = string_query(&query, "agent").map(str::to_owned);
     let path = string_query(&query, "path").map(str::to_owned);

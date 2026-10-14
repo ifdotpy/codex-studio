@@ -234,7 +234,9 @@ pub(crate) fn routes() -> RouteGroup {
     ])
 }
 
-async fn list_projects(State(state): State<HttpState>) -> Result<Json<Value>, ApiError> {
+async fn list_projects(
+    State(state): State<HttpState>,
+) -> Result<Json<crate::generated::ProjectReadResponse>, ApiError> {
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
     let value = tokio::task::spawn_blocking(move || {
         let value = projects::list(&store).map_err(projects_error)?;
@@ -272,11 +274,11 @@ async fn write_project(
     let value = tokio::task::spawn_blocking(move || {
         let value = projects::write(&store, &body, &default, &known).map_err(projects_error)?;
         if is_remove {
-            super::generated_json::<crate::generated::ProjectRemovalResponse>(value)
+            super::generated_value::<crate::generated::ProjectRemovalResponse>(value)
         } else if is_sidebar {
-            super::generated_json::<crate::generated::SidebarOrderResponse>(value)
+            super::generated_value::<crate::generated::SidebarOrderResponse>(value)
         } else {
-            super::generated_json::<crate::generated::ProjectMutationRecord>(value)
+            super::generated_value::<crate::generated::ProjectMutationRecord>(value)
         }
     })
     .await
@@ -287,7 +289,7 @@ async fn write_project(
 async fn project_locations(
     State(state): State<HttpState>,
     query: QueryParams,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<Json<crate::generated::ProjectLocationQueryResponse>, ApiError> {
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
     let query = Value::Object((*query.into_typed()).clone());
     let value = tokio::task::spawn_blocking(move || {
@@ -344,11 +346,11 @@ async fn peer_teams(
         let value = projects::peer_team_write(&store, &body, &default_account, &known)
             .map_err(projects_error)?;
         match body["action"].as_str() {
-            Some("radio") => super::generated_json::<crate::generated::PeerRadioResponse>(value),
+            Some("radio") => super::generated_value::<crate::generated::PeerRadioResponse>(value),
             Some("convert") => {
-                super::generated_json::<crate::generated::PeerConversionResponse>(value)
+                super::generated_value::<crate::generated::PeerConversionResponse>(value)
             }
-            _ => super::generated_json::<crate::generated::PeerProjectResponse>(value),
+            _ => super::generated_value::<crate::generated::PeerProjectResponse>(value),
         }
     })
     .await

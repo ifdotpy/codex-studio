@@ -94,7 +94,9 @@ pub(crate) fn routes() -> RouteGroup {
     ])
 }
 
-async fn snapshot(State(state): State<HttpState>) -> Result<Json<Value>, ApiError> {
+async fn snapshot(
+    State(state): State<HttpState>,
+) -> Result<Json<crate::generated::AccessSnapshot>, ApiError> {
     if !cfg!(unix) {
         return Err(unavailable_for(
             "GET",
@@ -119,7 +121,9 @@ async fn snapshot(State(state): State<HttpState>) -> Result<Json<Value>, ApiErro
     >(result)?))
 }
 
-async fn audit(State(state): State<HttpState>) -> Result<Json<Value>, ApiError> {
+async fn audit(
+    State(state): State<HttpState>,
+) -> Result<Json<crate::generated::AccessAuditResponse>, ApiError> {
     let store = state.store.ok_or_else(ApiError::internal)?;
     let result = tokio::task::spawn_blocking(move || multi_server::audit(&store))
         .await
@@ -133,7 +137,7 @@ async fn audit(State(state): State<HttpState>) -> Result<Json<Value>, ApiError> 
 async fn manage(
     State(state): State<HttpState>,
     ApiJson(body): ApiJson<Value>,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<Json<crate::generated::AccessSnapshot>, ApiError> {
     if !cfg!(unix) {
         return Err(unavailable_for(
             "POST",

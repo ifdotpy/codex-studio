@@ -63,11 +63,11 @@ async fn run(
             let value = tool_requests::execute(tx, &actor, action, now)?;
             let canonical = value["id"].as_str().unwrap_or("list").to_owned();
             let response = if cancel {
-                super::generated_json::<
+                super::generated_value::<
                     crate::generated::CancelToolRequestApiToolRequestsCancelPostResponse,
                 >(value)
             } else {
-                super::generated_json::<crate::generated::ToolRequestsApiToolRequestsGetResponse>(
+                super::generated_value::<crate::generated::ToolRequestsApiToolRequestsGetResponse>(
                     value,
                 )
             };

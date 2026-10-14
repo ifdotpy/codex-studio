@@ -328,6 +328,7 @@ impl Registry {
         })
     }
 
+    #[cfg(test)]
     pub(crate) fn validate_route(
         &self,
         method: &str,

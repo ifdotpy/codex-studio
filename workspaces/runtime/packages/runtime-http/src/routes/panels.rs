@@ -48,7 +48,7 @@ pub(crate) fn routes() -> RouteGroup {
 async fn panel(
     State(state): State<HttpState>,
     query: QueryParams,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<Json<crate::generated::ProgressPanel>, ApiError> {
     #[cfg(windows)]
     {
         let _ = (state, query);
@@ -81,7 +81,7 @@ async fn panel(
 async fn save_panel_layout(
     State(state): State<HttpState>,
     ApiJson(body): ApiJson<Value>,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<Json<crate::generated::PanelLayoutResult>, ApiError> {
     #[cfg(windows)]
     {
         let _ = (state, body);
@@ -168,7 +168,9 @@ fn field_validation(section: &str, field: &str) -> ApiError {
     ])
 }
 
-async fn profiles(State(state): State<HttpState>) -> Result<Json<Value>, ApiError> {
+async fn profiles(
+    State(state): State<HttpState>,
+) -> Result<Json<crate::generated::ProfileList>, ApiError> {
     let store = state.store.ok_or_else(ApiError::internal)?;
     let profiles = tokio::task::spawn_blocking(move || -> Result<Value, ApiError> {
         let connection = store.read().map_err(|_| ApiError::internal())?;
@@ -185,7 +187,7 @@ async fn profiles(State(state): State<HttpState>) -> Result<Json<Value>, ApiErro
 async fn update_profiles(
     State(state): State<HttpState>,
     ApiJson(body): ApiJson<crate::generated::ProfileBody>,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<Json<crate::generated::ProfileMutation>, ApiError> {
     let action = body.action.unwrap_or_default();
     let requested_id = body.id.flatten().unwrap_or_default();
     let store = state.store.ok_or_else(ApiError::internal)?;

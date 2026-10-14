@@ -21,7 +21,7 @@ pub(crate) fn routes() -> RouteGroup {
 async fn repair(
     State(state): State<HttpState>,
     ApiJson(body): ApiJson<crate::generated::IdRequest>,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<Json<crate::generated::ContextRepairResponse>, ApiError> {
     let store = state.store.ok_or_else(ApiError::internal)?;
     let driver = state.account_driver.clone();
     let broker = state.account_session.clone();

@@ -40,7 +40,7 @@ pub(crate) fn routes() -> RouteGroup {
 async fn directories(
     State(state): State<HttpState>,
     query: QueryParams,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<Json<crate::generated::DirectoriesResponse>, ApiError> {
     let server = query
         .typed_value("server")
         .and_then(Value::as_str)
@@ -121,7 +121,9 @@ async fn directories(
     .map(Json)
 }
 
-async fn diagnostics(State(state): State<HttpState>) -> Result<Json<Value>, ApiError> {
+async fn diagnostics(
+    State(state): State<HttpState>,
+) -> Result<Json<crate::generated::DiagnosticsResponse>, ApiError> {
     let mut missing_ports = Vec::new();
     if state.diagnostics_provider.is_none() {
         // Empty native-account maps are valid in the schema. The live loaded
@@ -240,7 +242,9 @@ async fn diagnostics(State(state): State<HttpState>) -> Result<Json<Value>, ApiE
     super::generated_json::<crate::generated::DiagnosticsResponse>(value).map(Json)
 }
 
-async fn ui_summary(State(state): State<HttpState>) -> Result<Json<Value>, ApiError> {
+async fn ui_summary(
+    State(state): State<HttpState>,
+) -> Result<Json<crate::generated::UiSummaryResponse>, ApiError> {
     let store = state.store.ok_or_else(ApiError::internal)?;
     let account_driver = state.account_driver;
     let account_policy = state.account_policy;

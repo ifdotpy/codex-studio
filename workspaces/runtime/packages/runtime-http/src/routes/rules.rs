@@ -31,7 +31,9 @@ pub(crate) fn routes() -> RouteGroup {
     ])
 }
 
-pub(crate) async fn list(State(state): State<HttpState>) -> Result<Json<Value>, ApiError> {
+pub(crate) async fn list(
+    State(state): State<HttpState>,
+) -> Result<Json<crate::generated::RuleList>, ApiError> {
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
     let records = tokio::task::spawn_blocking(move || {
         let connection = store.read().map_err(|_| ApiError::internal())?;
@@ -207,9 +209,9 @@ async fn update(
                 }
             };
             if result.get("deleted").is_some() {
-                super::generated_json::<crate::generated::DeletedRuleReceipt>(result)
+                super::generated_value::<crate::generated::DeletedRuleReceipt>(result)
             } else {
-                super::generated_json::<crate::generated::RuleRecordResponse>(result)
+                super::generated_value::<crate::generated::RuleRecordResponse>(result)
             }
         })?;
     Ok(Json(result))

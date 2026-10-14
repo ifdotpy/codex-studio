@@ -48,7 +48,7 @@ async fn answer(
         axum::Extension<Arc<studio_runtime_services::monitor_runtime_wiring::MonitorRuntime>>,
     >,
     ApiJson(body): ApiJson<crate::generated::AnswerBody>,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<Json<crate::generated::AnswerResult>, ApiError> {
     let id = body.id.clone();
     let data = serde_json::to_value(&body).map_err(|_| ApiError::internal())?;
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
@@ -177,7 +177,7 @@ async fn delete_question(
 async fn complaints(
     State(state): State<HttpState>,
     ApiJson(body): ApiJson<crate::generated::ComplaintBody>,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<Json<crate::generated::ComplaintRecordResponse>, ApiError> {
     let request_id = body.id.clone();
     let text = body.text.clone();
     let action = body
@@ -259,7 +259,7 @@ async fn write(
 }
 
 fn generated_receipt(value: Value) -> Result<Value, ApiError> {
-    super::generated_json::<crate::generated::MutationReceipt>(value)
+    super::generated_value::<crate::generated::MutationReceipt>(value)
 }
 
 fn api_error(error: QuestionsWriteError) -> ApiError {

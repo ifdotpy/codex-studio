@@ -50,7 +50,7 @@ async fn stop(
     State(state): State<HttpState>,
     ports: Option<Extension<Arc<dyn LifecyclePorts>>>,
     ApiJson(body): ApiJson<generated::StopRequest>,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<Json<generated::StopResponse>, ApiError> {
     dispatch::<generated::StopResponse>(
         state,
         Action::Stop {
@@ -68,7 +68,7 @@ async fn delete(
     State(state): State<HttpState>,
     ports: Option<Extension<Arc<dyn LifecyclePorts>>>,
     ApiJson(body): ApiJson<generated::IdRequest>,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<Json<generated::DeletedResponse>, ApiError> {
     dispatch::<generated::DeletedResponse>(
         state,
         Action::Delete { target: body.id },
@@ -634,11 +634,11 @@ fn unix_time() -> f64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0.0, |duration| duration.as_secs_f64())
 }
-async fn dispatch<T: serde::de::DeserializeOwned + serde::Serialize>(
+async fn dispatch<T: serde::de::DeserializeOwned + serde::Serialize + Send + 'static>(
     state: HttpState,
     action: Action,
     ports: Option<Arc<dyn LifecyclePorts>>,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<Json<T>, ApiError> {
     tokio::task::spawn_blocking(move || {
         let store = state.store.as_deref().ok_or_else(ApiError::internal)?;
         let now = std::time::SystemTime::now()

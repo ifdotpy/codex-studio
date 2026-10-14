@@ -148,6 +148,7 @@ mod tests {
     use axum::{Json, Router};
     use serde::Deserialize;
     use serde_json::{Value, json};
+    use std::sync::Arc;
     use tower::ServiceExt;
 
     use crate::validation::ValidatedRequest;
@@ -206,7 +207,7 @@ mod tests {
         let app = with_validated(
             Router::new().route("/items", get(query_handler)),
             ValidatedRequest {
-                query: serde_json::Map::from_iter([("value".to_owned(), json!(1))]),
+                query: Arc::new(serde_json::Map::from_iter([("value".to_owned(), json!(1))])),
                 ..ValidatedRequest::default()
             },
         );

@@ -46,8 +46,9 @@ async fn analytics_read(
     State(state): State<HttpState>,
     query: QueryParams,
 ) -> Result<Response, ApiError> {
-    let options: AnalyticsOptions = serde_json::from_value(Value::Object((*query.into_typed()).clone()))
-        .map_err(|_| ApiError::internal())?;
+    let options: AnalyticsOptions =
+        serde_json::from_value(Value::Object((*query.into_typed()).clone()))
+            .map_err(|_| ApiError::internal())?;
     let export = options.export;
     let timing = options.timing.as_deref() == Some("1") && !export;
     let started = Instant::now();
@@ -101,7 +102,7 @@ async fn analytics_read(
 async fn session_cost(
     State(state): State<HttpState>,
     query: QueryParams,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<Json<crate::generated::SessionCostResponse>, ApiError> {
     let agent = query.nonempty_str("agent").unwrap_or_default().to_owned();
     if agent.is_empty() || !valid_agent_id(&agent) {
         return Err(ApiError::new(StatusCode::BAD_REQUEST, "Select a chat"));

@@ -52,7 +52,6 @@ mod workspace_files;
 mod workspace_views;
 
 use manifest::RouteGroup;
-use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 
@@ -95,7 +94,11 @@ pub(super) fn accounts_response(
     }))
 }
 
-fn generated_json<T: DeserializeOwned + Serialize>(
+fn generated_json<T: DeserializeOwned>(value: Value) -> Result<T, crate::error::ApiError> {
+    serde_json::from_value::<T>(value).map_err(|_| crate::error::ApiError::internal())
+}
+
+fn generated_value<T: DeserializeOwned + serde::Serialize>(
     value: Value,
 ) -> Result<Value, crate::error::ApiError> {
     serde_json::from_value::<T>(value)

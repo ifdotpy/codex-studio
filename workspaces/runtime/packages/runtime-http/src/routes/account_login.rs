@@ -7,7 +7,6 @@ use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
 use serde::Deserialize;
-use serde_json::Value;
 use std::sync::Arc;
 use studio_runtime_services::account_driver::{
     AccountDriver, AccountDriverError, AuthProfile, ProviderAuthReader, SystemProviderAuthReader,
@@ -290,7 +289,7 @@ async fn discover(
 async fn codex_login(
     State(state): State<HttpState>,
     ApiJson(body): ApiJson<LoginRequest>,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<Json<crate::generated::AccountLoginResponse>, ApiError> {
     let port = state
         .account_session
         .clone()
@@ -335,7 +334,7 @@ async fn codex_login_cancel(
 async fn claude_profile(
     State(state): State<HttpState>,
     ApiJson(body): ApiJson<ProfileRequest>,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<Json<crate::generated::AccountsResponse>, ApiError> {
     let port = state
         .account_session
         .clone()

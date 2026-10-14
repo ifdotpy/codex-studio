@@ -65,7 +65,7 @@ pub(crate) fn routes() -> RouteGroup {
 async fn messages(
     State(state): State<HttpState>,
     query: QueryParams,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<Json<Vec<crate::generated::MessageRecord>>, ApiError> {
     let room = query
         .typed_value("room")
         .and_then(Value::as_str)
@@ -85,7 +85,7 @@ async fn messages(
 async fn create_chat(
     State(state): State<HttpState>,
     ApiJson(body): ApiJson<ChatCreate>,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<Json<crate::generated::ChatCreated>, ApiError> {
     let store = state.store.ok_or_else(ApiError::internal)?;
     let result = tokio::task::spawn_blocking(move || {
         let value = store
@@ -103,7 +103,7 @@ async fn create_chat(
 async fn connect_chat(
     State(state): State<HttpState>,
     ApiJson(body): ApiJson<Connection>,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<Json<crate::generated::ChatReceipt>, ApiError> {
     let store = state.store.ok_or_else(ApiError::internal)?;
     let result = tokio::task::spawn_blocking(move || {
         let value = store
@@ -121,7 +121,7 @@ async fn connect_chat(
 async fn post_message(
     State(state): State<HttpState>,
     ApiJson(body): ApiJson<crate::generated::ManagedMessageBody>,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<Json<crate::generated::StudioApiWorkModelsMessageReceipt>, ApiError> {
     let store = state.store.ok_or_else(ApiError::internal)?;
     let wake = state.event_wake;
     let assets = body
@@ -185,7 +185,7 @@ async fn post_message(
             posted.receipt.clone(),
         )?;
         posted.notify_committed(|| wake.notify_one());
-        Ok::<Value, ApiError>(value)
+        Ok::<crate::generated::StudioApiWorkModelsMessageReceipt, ApiError>(value)
     })
     .await
     .map_err(|_| ApiError::internal())??;
@@ -195,7 +195,7 @@ async fn post_message(
 async fn agent_chat(
     State(state): State<HttpState>,
     query: QueryParams,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<Json<crate::generated::ChatRead>, ApiError> {
     let room = query
         .typed_value("room")
         .and_then(Value::as_str)
@@ -230,7 +230,7 @@ async fn agent_chat(
 async fn receipts(
     State(state): State<HttpState>,
     query: QueryParams,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<Json<crate::generated::MessageReceipts>, ApiError> {
     let agent = query
         .typed_value("agent")
         .and_then(Value::as_str)
@@ -261,13 +261,13 @@ async fn receipts(
 async fn delete_room(
     State(state): State<HttpState>,
     ApiJson(body): ApiJson<crate::generated::RoomDeleteBody>,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<Json<crate::generated::MutationReceipt>, ApiError> {
     let store = state.store.ok_or_else(ApiError::internal)?;
     let value = tokio::task::spawn_blocking(move || {
         store.transaction_with_error(|tx| {
             let value =
                 studio_runtime_services::coordination_reads::delete_room(tx, &body.id, |v| {
-                    super::generated_json::<crate::generated::RoomEntityDto>(v.clone()).is_ok()
+                    serde_json::from_value::<crate::generated::RoomEntityDto>(v.clone()).is_ok()
                 })?;
             super::generated_json::<crate::generated::MutationReceipt>(value).map_err(|_| {
                 CoordinationError::InvalidStored {

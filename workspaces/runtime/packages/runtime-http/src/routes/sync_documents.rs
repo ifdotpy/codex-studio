@@ -36,7 +36,9 @@ pub(crate) fn routes() -> RouteGroup {
     ])
 }
 
-pub(crate) async fn protocol(State(state): State<HttpState>) -> Result<Json<Value>, ApiError> {
+pub(crate) async fn protocol(
+    State(state): State<HttpState>,
+) -> Result<Json<crate::generated::SyncProtocolResponse>, ApiError> {
     let socket_path = PathBuf::from(state.state_dir).join("canvas.sock");
     let unix_socket = tokio::task::spawn_blocking(move || socket_path.exists())
         .await
@@ -201,9 +203,9 @@ pub(crate) async fn pull(
     .await
     .map_err(|_| ApiError::internal())??;
     let response = if result.get("reset").and_then(Value::as_bool) == Some(true) {
-        super::generated_json::<crate::generated::SyncPullResetResponse>(result)?
+        super::generated_value::<crate::generated::SyncPullResetResponse>(result)?
     } else {
-        super::generated_json::<crate::generated::SyncPullResponse>(result)?
+        super::generated_value::<crate::generated::SyncPullResponse>(result)?
     };
     Ok(Json(response))
 }
@@ -218,7 +220,7 @@ pub(crate) struct PreferencePushRequest {
 pub(crate) async fn push_drafts(
     State(state): State<HttpState>,
     ApiJson(parsed): ApiJson<crate::generated::DraftPushRequest>,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<Json<Vec<crate::generated::SyncDocument>>, ApiError> {
     let validators = state.validators.clone();
     let mut writes = Vec::with_capacity(parsed.rows.len());
     for (index, row) in parsed.rows.into_iter().enumerate() {

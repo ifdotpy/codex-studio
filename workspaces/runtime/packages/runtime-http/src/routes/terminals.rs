@@ -80,7 +80,9 @@ async fn require_reconciled_driver(state: &HttpState) -> Result<(), ApiError> {
     }
 }
 
-async fn listing(State(state): State<HttpState>) -> Result<Json<Value>, ApiError> {
+async fn listing(
+    State(state): State<HttpState>,
+) -> Result<Json<crate::generated::TerminalList>, ApiError> {
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
     let result = tokio::task::spawn_blocking(move || terminal_driver::listing(&store))
         .await
@@ -94,7 +96,7 @@ async fn listing(State(state): State<HttpState>) -> Result<Json<Value>, ApiError
 async fn output(
     query: QueryParams,
     State(state): State<HttpState>,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<Json<crate::generated::TerminalOutput>, ApiError> {
     let id = query
         .typed_value("id")
         .and_then(Value::as_str)
@@ -128,7 +130,7 @@ async fn output(
 async fn create(
     State(state): State<HttpState>,
     ApiJson(body): ApiJson<Value>,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<Json<crate::generated::TerminalRecord>, ApiError> {
     #[cfg(unix)]
     {
         require_reconciled_driver(&state).await?;
@@ -218,11 +220,11 @@ async fn action(
             .map_err(|_| ApiError::internal())?
             .map_err(terminal_body_error)?;
         if is_input {
-            Ok(Json(super::generated_json::<
+            Ok(Json(super::generated_value::<
                 crate::generated::TerminalInputResult,
             >(result)?))
         } else {
-            Ok(Json(super::generated_json::<
+            Ok(Json(super::generated_value::<
                 crate::generated::TerminalRecord,
             >(result)?))
         }

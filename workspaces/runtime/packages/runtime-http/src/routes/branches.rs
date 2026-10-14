@@ -36,7 +36,7 @@ pub(crate) fn routes() -> RouteGroup {
 async fn branch(
     State(state): State<HttpState>,
     ApiJson(body): ApiJson<crate::generated::BranchRequest>,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<Json<crate::generated::BranchResponse>, ApiError> {
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
     let port = state.account_session.clone().ok_or_else(unavailable)?;
     let account = {
@@ -476,10 +476,7 @@ async fn branch(
         }),
     )
     .await?;
-    let child_id = created["id"]
-        .as_str()
-        .ok_or_else(ApiError::internal)?
-        .to_owned();
+    let child_id = created.id;
     let branch_result = copy_branch_history(
         &store,
         BranchCopy {

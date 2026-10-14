@@ -140,7 +140,7 @@ async fn serve_inner(state: HttpState, request: Request<Body>) -> Response {
         })
         .await
         {
-            Ok(Ok(v)) => match super::generated_json::<crate::generated::DiscoveryIdentity>(v) {
+            Ok(Ok(v)) => match super::generated_value::<crate::generated::DiscoveryIdentity>(v) {
                 Ok(v) => Json(v).into_response(),
                 Err(e) => e.into_response(),
             },
@@ -268,9 +268,9 @@ async fn serve_inner(state: HttpState, request: Request<Body>) -> Response {
         Ok(Ok(value)) if is_orchestration => Json(value).into_response(),
         Ok(Ok(value)) => {
             let checked = if method == "GET" {
-                super::generated_json::<crate::generated::ServerIdentityResponse>(value)
+                super::generated_value::<crate::generated::ServerIdentityResponse>(value)
             } else {
-                super::generated_json::<crate::generated::DevicePairResponse>(value)
+                super::generated_value::<crate::generated::DevicePairResponse>(value)
             };
             match checked {
                 Ok(v) => Json(v).into_response(),

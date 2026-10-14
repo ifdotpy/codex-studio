@@ -38,7 +38,7 @@ use crate::schema::{API_SCHEMA_HASH_HEADER, api_schema_hash};
 pub(crate) async fn notify_resources(
     state: HttpState,
     body: Value,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<Json<crate::generated::ResourceNotifyAck>, ApiError> {
     let notifications = state.resource_notifications;
     let request_id = body["requestId"].clone();
     tokio::task::spawn_blocking(move || notifications.publish_once(&body))

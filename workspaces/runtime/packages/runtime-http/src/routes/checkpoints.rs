@@ -40,7 +40,7 @@ pub(crate) fn routes() -> RouteGroup {
 pub(crate) async fn capture(
     State(state): State<HttpState>,
     ApiJson(body): ApiJson<crate::generated::CheckpointCaptureRequest>,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<Json<crate::generated::CheckpointCaptureResponse>, ApiError> {
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
     let result = tokio::task::spawn_blocking(move || {
         let snapshot = checkpoints::capture_context(&store, &body.agent)
@@ -58,7 +58,7 @@ pub(crate) async fn capture(
 pub(crate) async fn preview(
     State(state): State<HttpState>,
     ApiJson(body): ApiJson<crate::generated::CheckpointPreviewRequest>,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<Json<crate::generated::CheckpointPreviewResponse>, ApiError> {
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
     let result = tokio::task::spawn_blocking(move || {
         let context = checkpoints::preview_context(&store, &body.agent, &body.checkpoint)

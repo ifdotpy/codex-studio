@@ -31,7 +31,7 @@ pub(crate) fn routes() -> RouteGroup {
 async fn import_list(
     State(state): State<HttpState>,
     query: QueryParams,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<Json<crate::generated::ImportListResponse>, ApiError> {
     let account = query
         .nonempty_str("account_key")
         .unwrap_or("default")
@@ -59,7 +59,7 @@ async fn import_list(
 async fn import_thread(
     State(state): State<HttpState>,
     ApiJson(body): ApiJson<crate::generated::ImportRequest>,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<Json<crate::generated::AgentResponse>, ApiError> {
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
     let account = body.account_key.clone().unwrap_or_else(|| "default".into());
     let thread_id = body.thread_id.clone();
@@ -195,9 +195,7 @@ async fn import_thread(
     // The source thread id is metadata, never an agent id.
     let Json(created) =
         super::agents_create::create_imported_agent(state, create, thread_id).await?;
-    Ok(Json(super::generated_json::<
-        crate::generated::AgentResponse,
-    >(created)?))
+    Ok(Json(created))
 }
 
 fn provider_request(

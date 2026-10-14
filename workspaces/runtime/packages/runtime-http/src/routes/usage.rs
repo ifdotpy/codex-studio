@@ -54,7 +54,7 @@ pub(crate) fn routes() -> RouteGroup {
 async fn costs(
     State(state): State<HttpState>,
     params: QueryParams,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<Json<crate::generated::AccountCostResponse>, ApiError> {
     let account_key = params
         .typed_value("account_key")
         .and_then(Value::as_str)

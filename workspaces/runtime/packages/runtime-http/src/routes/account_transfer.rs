@@ -38,7 +38,7 @@ pub(crate) fn routes() -> RouteGroup {
 async fn selection(
     State(state): State<HttpState>,
     ApiJson(body): ApiJson<generated::AccountSelectionRequest>,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<Json<generated::AgentResponse>, ApiError> {
     tokio::task::spawn_blocking(move || {
         let store = state.store.as_deref().ok_or_else(ApiError::internal)?;
         let accounts = || {
@@ -78,7 +78,7 @@ struct Request {
 async fn transfer(
     State(state): State<HttpState>,
     ApiJson(body): ApiJson<Request>,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<Json<generated::TransferResponse>, ApiError> {
     tokio::task::spawn_blocking(move || {
         let store = state.store.as_deref().ok_or_else(|| {
             error(TransferError::Requires(
