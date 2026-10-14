@@ -23,8 +23,11 @@ TABLES = ('runtime_native_notices', 'runtime_native_limit_refreshes', 'runtime_p
           'runtime_requests', 'runtime_complaints', 'runtime_context_manifests', 'runtime_context_reminders', 'sync_entities',
           'sync_documents', 'sync_versions', 'runtime_search', 'runtime_search_rows',
           'runtime_search_indexed', 'runtime_search_next_meta')
-# Updated whenever the Runtime.notification boundary inspected by this corpus changes.
-_NOTIFICATION_GUARD_DIGEST = '5803d290ade2087b7a3aa52217a0d1a42cd8ac50c459e38306917c43a3b08b5e'
+# Runtime.notification also includes supervisor-dispatch transaction plumbing.
+# This corpus calls it directly without a pending supervisor event, so that
+# cursor-commit branch is outside the cases below; keep the full-source guard
+# current while the corpus verifies the direct notification path.
+_NOTIFICATION_GUARD_DIGEST = '3d817cbcd29d3c4636518e523ce4c9713dc908fa0e50e4db4124ee97c55cd012'
 assert hashlib.sha256(inspect.getsource(Runtime.notification).encode()).hexdigest() == _NOTIFICATION_GUARD_DIGEST, \
     'Runtime.notification control flow changed: re-derive notification corpus cases and update the guard digest'
 class ManualTimer:
