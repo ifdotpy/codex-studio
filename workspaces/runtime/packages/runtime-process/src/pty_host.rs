@@ -249,6 +249,7 @@ impl PtyShared {
             if let Some(error) = signal_error {
                 return Err(PtyHostError::Signal(error));
             }
+            wait_for_session_processes(self.session, deadline)?;
             self.termination_complete.store(true, Ordering::Release);
             return child.status.ok_or_else(|| {
                 PtyHostError::Io(std::io::Error::other("reaped terminal child has no status"))
@@ -270,9 +271,23 @@ impl PtyShared {
         if let Some(error) = signal_error {
             return Err(PtyHostError::Signal(error));
         }
+        wait_for_session_processes(self.session, deadline)?;
         self.termination_complete.store(true, Ordering::Release);
         Ok(status)
     }
+}
+
+fn wait_for_session_processes(session: u32, deadline: Instant) -> Result<(), PtyHostError> {
+    while !session_groups(session).is_empty() {
+        if Instant::now() >= deadline {
+            return Err(PtyHostError::Io(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "terminal session jobs did not exit before shutdown deadline",
+            )));
+        }
+        std::thread::park_timeout(Duration::from_millis(5));
+    }
+    Ok(())
 }
 
 impl Drop for PtyShared {
