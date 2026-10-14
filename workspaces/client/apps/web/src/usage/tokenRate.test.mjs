@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import { it as test, vi } from "vitest";
-import { TOKEN_RATE_MAX_ENTRIES } from "../generated/api.ts";
+import {
+  TOKEN_RATE_MAX_ENTRIES,
+  TOKEN_RATE_MAX_TOTAL_ENTRIES,
+} from "../generated/api.ts";
 import {
   formatTokenRate,
   getTokenRate,
@@ -142,6 +145,31 @@ test("shared workspace batches reach open teams and footers without sync writes"
   stopFooter();
 });
 
+test("workspace token rates reject aggregate maps beyond the shared bound", () => {
+  const rates = Object.fromEntries(
+    Array.from({ length: TOKEN_RATE_MAX_ENTRIES }, (_, index) => [
+      `agent-${index}`,
+      null,
+    ]),
+  );
+  const teamRates = { ...rates };
+  assert.equal(TOKEN_RATE_MAX_TOTAL_ENTRIES, TOKEN_RATE_MAX_ENTRIES * 2);
+  assert.equal(
+    receiveWorkspaceTokenRates({ rates, teams: { team: teamRates } }),
+    true,
+    "the full duplicated workspace/team view remains accepted",
+  );
+  assert.equal(
+    receiveWorkspaceTokenRates({
+      rates,
+      teams: { team: teamRates, other: { extra: null } },
+    }),
+    false,
+  );
+  assert.equal(getTokenRate("agent-0"), null);
+  clearWorkspaceTokenRates();
+});
+
 test("a newly opened team reads the current inactive worker sample immediately", () => {
   const agent = "remembered-worker";
   const key = workerRateKey("remembered-team", agent);
@@ -202,7 +230,7 @@ test("chat samples accept stream values without a duplicate field-shape walk", (
 
 test("publishing token rates refreshes their LRU position and evicts old samples", () => {
   const samples = Array.from(
-    { length: TOKEN_RATE_MAX_ENTRIES + 2 },
+    { length: TOKEN_RATE_MAX_TOTAL_ENTRIES + 2 },
     (_, index) => ({
       turnId: String(index),
       active: false,

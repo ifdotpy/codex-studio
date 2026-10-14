@@ -1,5 +1,8 @@
 import type { components } from "../generated/api";
-import { TOKEN_RATE_MAX_ENTRIES } from "../generated/api";
+import {
+  TOKEN_RATE_MAX_ENTRIES,
+  TOKEN_RATE_MAX_TOTAL_ENTRIES,
+} from "../generated/api";
 
 // This cache receives volatile SSE events. It never enters the sync database.
 export type TokenRate = components["schemas"]["TokenRateValue"];
@@ -27,7 +30,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function publishRate(id: string, value: TokenRate | null) {
   values.delete(id);
   values.set(id, value);
-  if (values.size > TOKEN_RATE_MAX_ENTRIES)
+  if (values.size > TOKEN_RATE_MAX_TOTAL_ENTRIES)
     values.delete(values.keys().next().value!);
   for (const listener of listeners.get(id) || []) listener(value);
 }
@@ -120,12 +123,16 @@ export function receiveWorkspaceTokenRates(value: WorkspaceRates) {
     !value.teams ||
     typeof value.teams !== "object" ||
     Array.isArray(value.teams) ||
-    Object.keys(value.teams).length > TOKEN_RATE_MAX_ENTRIES ||
-    Object.entries(value.teams).some(
-      ([id, rates]) => id.length > 200 || !validRates(rates),
-    )
+    Object.keys(value.teams).length > TOKEN_RATE_MAX_ENTRIES
   )
     return false;
+  let totalEntries = Object.keys(value.rates).length;
+  if (totalEntries > TOKEN_RATE_MAX_TOTAL_ENTRIES) return false;
+  for (const [id, rates] of Object.entries(value.teams)) {
+    if (id.length > 200 || !validRates(rates)) return false;
+    totalEntries += Object.keys(rates).length;
+    if (totalEntries > TOKEN_RATE_MAX_TOTAL_ENTRIES) return false;
+  }
   for (const id of Object.keys(workspaceRates.rates))
     if (!(id in value.rates)) publishRate(id, null);
   workspaceRates = value;

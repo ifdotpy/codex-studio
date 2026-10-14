@@ -27,6 +27,7 @@ sys.path.insert(0, str(SERVER_SOURCE_ROOT))
 import codex_token_rate
 from codex_token_rate import TokenRates, TurnRate, event_time
 from codex_runtime import Runtime
+from codex_agent_modes import MAX_SUBAGENT_CONCURRENCY
 from codex_streaming import StreamBuffer
 from studio_api.generate_types import (
     OPENAPI_AUTHORITY,
@@ -35,15 +36,25 @@ from studio_api.generate_types import (
     render_token_rate_limits,
     render_token_rate_typescript_constant,
 )
-from studio_api.sync.resources.models import MAX_TOKEN_RATE_ENTRIES, TokenRateSnapshot
+from studio_api.sync.resources.models import (
+    MAX_TOKEN_RATE_ENTRIES,
+    MAX_TOKEN_RATE_TOTAL_ENTRIES,
+    ResourceTokenRatesEvent,
+    TokenRateSnapshot,
+)
 spec = importlib.util.spec_from_file_location('runtime_fixture', SERVER_TESTS_ROOT / 'runtime-contract.py')
 fixture = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(fixture)
 
 
 class RateContract(unittest.TestCase):
-    def test_pydantic_token_rate_contract_owns_all_three_entry_bounds(self):
-        self.assertGreaterEqual(MAX_TOKEN_RATE_ENTRIES, 2048)
+    def test_pydantic_token_rate_contract_owns_all_per_map_bounds(self):
+        self.assertGreaterEqual(MAX_TOKEN_RATE_ENTRIES, MAX_SUBAGENT_CONCURRENCY + 1)
+        self.assertGreaterEqual(
+            MAX_TOKEN_RATE_TOTAL_ENTRIES,
+            2 * (MAX_SUBAGENT_CONCURRENCY + 1),
+        )
+        self.assertEqual(MAX_TOKEN_RATE_TOTAL_ENTRIES, MAX_TOKEN_RATE_ENTRIES * 2)
         schema = TokenRateSnapshot.model_json_schema()
         properties = schema['properties']
         self.assertEqual(properties['rates']['maxProperties'], MAX_TOKEN_RATE_ENTRIES)
@@ -74,6 +85,54 @@ class RateContract(unittest.TestCase):
                 }},
             })
 
+    def test_total_token_rate_values_are_bounded_across_workspace_and_team_views(self):
+        sample = {'turnId': 'turn', 'active': True, 'estimated': False,
+                  'rate': 1.0, 'outputTokens': 1.0}
+        rates = {f'rate-{index}': sample for index in range(MAX_TOKEN_RATE_ENTRIES)}
+        team_rates = {f'rate-{index}': sample for index in range(MAX_TOKEN_RATE_ENTRIES)}
+        exact = {'rates': rates, 'teams': {'team': team_rates}}
+        TokenRateSnapshot.model_validate(exact)
+        ResourceTokenRatesEvent.model_validate({
+            'protocol': 3,
+            'workspaceId': 'workspace',
+            'epoch': 'epoch',
+            'revision': 1,
+            **exact,
+        })
+        over_limit = {
+            'rates': rates,
+            'teams': {'team': team_rates, 'other': {'extra': sample}},
+        }
+        with self.assertRaises(ValueError):
+            TokenRateSnapshot.model_validate(over_limit)
+        with self.assertRaises(ValueError):
+            ResourceTokenRatesEvent.model_validate({
+                'protocol': 3,
+                'workspaceId': 'workspace',
+                'epoch': 'epoch',
+                'revision': 1,
+                **over_limit,
+            })
+
+    def test_rate_producer_emits_at_most_two_bounded_views_per_retained_agent(self):
+        rates = TokenRates(lambda: 0)
+        for index in range(codex_token_rate.MAX_RATE_ENTRIES + 1):
+            agent_id = f'agent-{index}'
+            rates.observe(
+                {'id': agent_id, 'threadId': f'thread-{index}', 'rootId': 'lead'},
+                'turn/started',
+                {'turn': {'id': f'turn-{index}'}},
+                'account',
+                'connection',
+                0,
+            )
+        snapshot = rates.workspace_snapshot()
+        total_values = len(snapshot['rates']) + sum(
+            len(team) for team in snapshot['teams'].values()
+        )
+        self.assertEqual(len(snapshot['rates']), codex_token_rate.MAX_RATE_ENTRIES)
+        self.assertEqual(total_values, MAX_TOKEN_RATE_TOTAL_ENTRIES)
+
     def test_generated_token_rate_caps_match_the_pydantic_openapi_contract(self):
         document = json.loads(OPENAPI_AUTHORITY.read_text(encoding='utf-8'))
         self.assertEqual(_token_rate_max_entries(document), MAX_TOKEN_RATE_ENTRIES)
@@ -83,6 +142,7 @@ class RateContract(unittest.TestCase):
             .read_text(encoding='utf-8')
             .endswith(f'\n{typescript}\n')
         )
+        self.assertEqual(MAX_TOKEN_RATE_TOTAL_ENTRIES, MAX_TOKEN_RATE_ENTRIES * 2)
         self.assertEqual(
             TOKEN_RATE_LIMITS_OUTPUT.read_text(encoding='utf-8'),
             render_token_rate_limits(document),

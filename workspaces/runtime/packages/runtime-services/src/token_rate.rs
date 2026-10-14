@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
-use studio_runtime_schema::TOKEN_RATE_MAX_ENTRIES;
+use studio_runtime_schema::{TOKEN_RATE_MAX_ENTRIES, TOKEN_RATE_MAX_TOTAL_ENTRIES};
 use thiserror::Error;
 use tokio::sync::watch;
 
@@ -70,8 +70,11 @@ impl TokenRateSnapshot {
     pub fn from_value(value: serde_json::Value) -> Result<Self, TokenRateError> {
         let snapshot: Self =
             serde_json::from_value(value).map_err(|_| TokenRateError::InvalidSnapshot)?;
+        let total_rate_entries =
+            snapshot.rates.len() + snapshot.teams.values().map(BTreeMap::len).sum::<usize>();
         if snapshot.rates.len() > TOKEN_RATE_MAX_ENTRIES
             || snapshot.teams.len() > TOKEN_RATE_MAX_ENTRIES
+            || total_rate_entries > TOKEN_RATE_MAX_TOTAL_ENTRIES
             || snapshot
                 .rates
                 .iter()
@@ -161,7 +164,7 @@ fn valid_rate(value: &TokenRateValue) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{TOKEN_RATE_MAX_ENTRIES, TokenRateHub};
+    use super::{TOKEN_RATE_MAX_ENTRIES, TOKEN_RATE_MAX_TOTAL_ENTRIES, TokenRateHub};
     use serde_json::json;
 
     #[tokio::test]
@@ -220,6 +223,38 @@ mod tests {
         assert!(
             TokenRateHub::new()
                 .publish(json!({"rates":{},"teams":{"root":team}}))
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn aggregate_rate_values_are_bounded_across_workspace_and_team_views() {
+        let value = json!({"turnId":"t","active":true,"estimated":false,"rate":0,"outputTokens":0});
+        let rates = (0..TOKEN_RATE_MAX_ENTRIES)
+            .map(|index| (format!("a{index}"), value.clone()))
+            .collect::<serde_json::Map<_, _>>();
+        let team = (0..TOKEN_RATE_MAX_ENTRIES)
+            .map(|index| (format!("a{index}"), value.clone()))
+            .collect::<serde_json::Map<_, _>>();
+        assert_eq!(TOKEN_RATE_MAX_TOTAL_ENTRIES, TOKEN_RATE_MAX_ENTRIES * 2);
+        assert!(
+            TokenRateHub::new()
+                .publish(json!({"rates":rates,"teams":{"root":team}}))
+                .is_ok()
+        );
+
+        let overfull_team = (0..TOKEN_RATE_MAX_ENTRIES)
+            .map(|index| (format!("a{index}"), value.clone()))
+            .collect::<serde_json::Map<_, _>>();
+        let overfull_rates = (0..TOKEN_RATE_MAX_ENTRIES)
+            .map(|index| (format!("a{index}"), value.clone()))
+            .collect::<serde_json::Map<_, _>>();
+        let extra = serde_json::Map::from_iter([("extra".to_owned(), value)]);
+        assert!(
+            TokenRateHub::new()
+                .publish(
+                    json!({"rates":overfull_rates,"teams":{"root":overfull_team,"other":extra}})
+                )
                 .is_err()
         );
     }

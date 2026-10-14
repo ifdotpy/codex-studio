@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import cast
 
 from studio_api.models import JsonValue
+from studio_api.sync.resources.models import MAX_TOKEN_RATE_TOTAL_ENTRIES
 from studio_api.schema import (
     bound_integer_schemas,
     API_SCHEMA_HASH_HEADER,
@@ -81,12 +82,23 @@ def _token_rate_max_entries(document: dict[str, JsonValue]) -> int:
 
 def render_token_rate_limits(document: dict[str, JsonValue]) -> str:
     maximum = _token_rate_max_entries(document)
-    return f"// Generated from the Pydantic TokenRateSnapshot contract.\npub const TOKEN_RATE_MAX_ENTRIES: usize = {maximum};\n"
+    if MAX_TOKEN_RATE_TOTAL_ENTRIES != maximum * 2:
+        raise ValueError("Token-rate aggregate limit must cover two per-agent views")
+    return (
+        "// Generated from the Pydantic TokenRateSnapshot contract.\n"
+        f"pub const TOKEN_RATE_MAX_ENTRIES: usize = {maximum};\n"
+        f"pub const TOKEN_RATE_MAX_TOTAL_ENTRIES: usize = {MAX_TOKEN_RATE_TOTAL_ENTRIES};\n"
+    )
 
 
 def render_token_rate_typescript_constant(document: dict[str, JsonValue]) -> str:
     maximum = _token_rate_max_entries(document)
-    return f"export const TOKEN_RATE_MAX_ENTRIES = {maximum} as const;"
+    if MAX_TOKEN_RATE_TOTAL_ENTRIES != maximum * 2:
+        raise ValueError("Token-rate aggregate limit must cover two per-agent views")
+    return (
+        f"export const TOKEN_RATE_MAX_ENTRIES = {maximum} as const;\n"
+        f"export const TOKEN_RATE_MAX_TOTAL_ENTRIES = {MAX_TOKEN_RATE_TOTAL_ENTRIES} as const;"
+    )
 
 
 def _normalize_recursive_json_value(generated: str) -> str:
