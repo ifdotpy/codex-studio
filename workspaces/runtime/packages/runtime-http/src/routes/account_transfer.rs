@@ -12,11 +12,7 @@ use studio_runtime_services::{
     account_transfer_driver,
 };
 
-const TRANSFER: &[Dependency] = &[
-    Dependency::new("account-transfer/provider-history-executor"),
-    Dependency::new("account-transfer/destination-settings"),
-    Dependency::new("store-bootstrap/account-transfer-schema"),
-];
+const TRANSFER: &[Dependency] = &[Dependency::new("store-bootstrap/account-transfer-schema")];
 const SELECTION: &[Dependency] = &[
     Dependency::new("account-driver/unavailable"),
     Dependency::new("account-transfer/usage-resume-cancellation"),
@@ -131,12 +127,58 @@ async fn transfer(
             if !registered {
                 return Err(error(TransferError::Refused("Unknown account")));
             }
+            if state.account_policy.as_ref().is_some_and(|policy| {
+                policy.accounts().accounts.iter().any(|account| {
+                    account["id"].as_str() == Some(target)
+                        && (account
+                            .get("deleted")
+                            .is_some_and(|value| studio_runtime_store::truthy(Some(value)))
+                            || account
+                                .get("disconnected")
+                                .is_some_and(|value| studio_runtime_store::truthy(Some(value))))
+                })
+            }) {
+                return Err(error(TransferError::Refused(
+                    "Reconnect this account before transferring a team to it",
+                )));
+            }
+            let target_provider = state
+                .model_catalog
+                .account_profile(target)
+                .map(|(_, provider)| provider)
+                .or_else(|| {
+                    state.account_policy.as_ref().and_then(|policy| {
+                        policy
+                            .accounts()
+                            .accounts
+                            .into_iter()
+                            .find(|account| account["id"].as_str() == Some(target))
+                            .and_then(|account| {
+                                account
+                                    .get("provider")
+                                    .and_then(Value::as_str)
+                                    .map(str::to_owned)
+                            })
+                    })
+                })
+                .or_else(|| (target == "default").then(|| "codex".to_owned()))
+                .ok_or_else(|| {
+                    error(TransferError::Requires(
+                        "account-transfer/destination-settings",
+                    ))
+                })?;
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_err(|_| ApiError::internal())?
+                .as_secs_f64();
             account_transfer_driver::request(
                 store,
                 &body.request_id,
                 lead,
                 target,
                 body.scope.as_deref().unwrap_or("team"),
+                &target_provider,
+                now,
             )
         }
         .map_err(error)?;
@@ -158,7 +200,6 @@ fn error(error: TransferError) -> ApiError {
 inventory::submit! {
     crate::routes::manifest::RouteModuleRegistration {
         name: "account_transfer", routes: Some(routes), dependencies: &[
-            "account-transfer/provider-history-executor", "account-transfer/destination-settings",
             "account-driver/unavailable", "account-transfer/usage-resume-cancellation", "store-bootstrap/account-transfer-schema",
         ],
     }
