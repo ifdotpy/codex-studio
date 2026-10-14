@@ -4,12 +4,12 @@ use axum::body::{Body, Bytes};
 use axum::extract::State;
 use axum::http::{Method, Request, StatusCode, header, response::Parts};
 use axum::middleware::Next;
-use axum::response::{IntoResponse, Response};
+use axum::response::Response;
 use futures_util::StreamExt;
-use serde_json::{Value, json};
-use studio_runtime_store::{EntityRow, SyncDocumentsRepository, Transaction};
+use serde_json::{Map, Value, json};
+use std::future::Future;
+use studio_runtime_store::{EntityRow, RuntimeStore, SyncDocumentsRepository, Transaction};
 
-use crate::error::ApiError;
 use crate::router::HttpState;
 use crate::validation::ValidatedRequest;
 
@@ -36,71 +36,58 @@ struct EntityDelta {
 /// Sample the entity cursor before dispatch and attach the subsequent range after dispatch.
 pub(crate) async fn envelope(
     State(state): State<HttpState>,
-    mut request: Request<Body>,
+    request: Request<Body>,
     next: Next,
 ) -> Response {
     let Some(store) = state.store.clone() else {
         return next.run(request).await;
     };
-    if should_sample(&request) {
+    let cursor = if should_sample(&request) {
         let cursor_store = store.clone();
         let cursor = tokio::task::spawn_blocking(move || {
             cursor_store.read_transaction(sample_entity_cursor)
         })
         .await;
         match cursor {
-            Ok(Ok(cursor)) if cursor <= MAX_SAFE_ENTITY_SEQUENCE => {
-                request.extensions_mut().insert(EntityCursor(cursor));
-            }
-            Ok(Ok(_)) => return ApiError::internal().into_response(),
-            Ok(Err(error)) => {
-                eprintln!("mutation sync envelope: cursor read failed: {error}");
-                return ApiError::internal().into_response();
-            }
-            Err(error) => {
-                eprintln!("mutation sync envelope: cursor read task failed: {error}");
-                return ApiError::internal().into_response();
-            }
+            Ok(Ok(cursor)) => cursor_after_read(Ok(cursor)),
+            Ok(Err(error)) => cursor_after_read(Err(error.to_string())),
+            Err(error) => cursor_after_read(Err(error.to_string())),
         }
-    }
+    } else {
+        None
+    };
 
-    let cursor = request.extensions().get::<EntityCursor>().copied();
-    let response = next.run(request).await;
-    if response.status() >= StatusCode::BAD_REQUEST
-        || response
-            .headers()
-            .get(header::CONTENT_TYPE)
-            .and_then(|value| value.to_str().ok())
-            .is_none_or(|value| !value.starts_with("application/json"))
-    {
+    let (response, cursor) =
+        dispatch_with_cursor(request, cursor, |request| next.run(request)).await;
+    envelope_response(response, Some(store), cursor).await
+}
+
+async fn envelope_response(
+    response: Response,
+    store: Option<std::sync::Arc<RuntimeStore>>,
+    cursor: Option<EntityCursor>,
+) -> Response {
+    if response.status() >= StatusCode::BAD_REQUEST || !response_is_unencoded_json(&response) {
         return response;
     }
     let Some(EntityCursor(after)) = cursor else {
         return response;
     };
-
-    if response
-        .headers()
-        .get(header::CONTENT_LENGTH)
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.parse::<usize>().ok())
-        .is_some_and(|length| length > MAX_MUTATION_RESPONSE_BYTES)
-    {
+    let Some(store) = store else {
         return response;
-    }
-    let (parts, body) = response.into_parts();
-    let bytes = match read_bounded_body(body, MAX_MUTATION_RESPONSE_BYTES).await {
-        BoundedBody::Buffered(bytes) => bytes,
-        BoundedBody::PassThrough(body) => return Response::from_parts(parts, body),
+    };
+    let (parts, bytes) = match buffer_response(response, MAX_MUTATION_RESPONSE_BYTES).await {
+        Ok(buffered) => buffered,
+        Err(response) => return *response,
     };
     let Ok(value) = serde_json::from_slice::<Value>(&bytes) else {
-        return Response::from_parts(parts, Body::from(bytes));
+        return original_response(parts, bytes);
     };
     let Some(object) = value.as_object() else {
-        return Response::from_parts(parts, Body::from(bytes));
+        return original_response(parts, bytes);
     };
-    if object.contains_key("_syncEntities") {
-        return Response::from_parts(parts, Body::from(bytes));
+    if has_reserved_envelope_field(object) {
+        return original_response(parts, bytes);
     }
 
     let delta_store = store;
@@ -123,10 +110,10 @@ pub(crate) async fn envelope(
         .any(|row| row.sequence > MAX_SAFE_ENTITY_SEQUENCE)
     {
         eprintln!("mutation sync envelope: entity sequence exceeds safe JSON range");
-        return Response::from_parts(parts, Body::from(bytes));
+        return original_response(parts, bytes);
     }
     if delta.rows.is_empty() {
-        return Response::from_parts(parts, Body::from(bytes));
+        return original_response(parts, bytes);
     }
 
     let complete =
@@ -139,13 +126,13 @@ pub(crate) async fn envelope(
         .collect::<Option<Vec<_>>>()
     else {
         eprintln!("mutation sync envelope: entity payload is missing");
-        return Response::from_parts(parts, Body::from(bytes));
+        return original_response(parts, bytes);
     };
-    let body = match splice_envelope(&bytes, &entities, complete.then_some(after)) {
+    let body = match splice_envelope(object, &entities, complete.then_some(after), &bytes) {
         Some(body) => body,
         None => {
             eprintln!("mutation sync envelope: unable to splice envelope into JSON object");
-            return Response::from_parts(parts, Body::from(bytes));
+            return original_response(parts, bytes);
         }
     };
     let mut response = Response::from_parts(parts, Body::from(body.clone()));
@@ -153,6 +140,69 @@ pub(crate) async fn envelope(
         response.headers_mut().insert(header::CONTENT_LENGTH, value);
     }
     response
+}
+
+async fn buffer_response(
+    response: Response,
+    limit: usize,
+) -> Result<(Parts, Bytes), Box<Response>> {
+    if response
+        .headers()
+        .get(header::CONTENT_LENGTH)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<usize>().ok())
+        .is_some_and(|length| length > limit)
+    {
+        return Err(Box::new(response));
+    }
+    let (parts, body) = response.into_parts();
+    match read_bounded_body(body, limit).await {
+        BoundedBody::Buffered(bytes) => Ok((parts, bytes)),
+        BoundedBody::PassThrough(body) => Err(Box::new(Response::from_parts(parts, body))),
+    }
+}
+
+fn cursor_after_read(result: Result<i64, String>) -> Option<EntityCursor> {
+    match result {
+        Ok(cursor) if cursor <= MAX_SAFE_ENTITY_SEQUENCE => Some(EntityCursor(cursor)),
+        Ok(cursor) => {
+            eprintln!("mutation sync envelope: cursor exceeds safe JSON range: {cursor}");
+            None
+        }
+        Err(error) => {
+            eprintln!("mutation sync envelope: cursor read failed: {error}");
+            None
+        }
+    }
+}
+
+async fn dispatch_with_cursor<F, Fut>(
+    mut request: Request<Body>,
+    cursor: Option<EntityCursor>,
+    dispatch: F,
+) -> (Response, Option<EntityCursor>)
+where
+    F: FnOnce(Request<Body>) -> Fut,
+    Fut: Future<Output = Response>,
+{
+    if let Some(cursor) = cursor {
+        request.extensions_mut().insert(cursor);
+    }
+    let response = dispatch(request).await;
+    (response, cursor)
+}
+
+fn has_reserved_envelope_field(object: &Map<String, Value>) -> bool {
+    object.contains_key("_syncEntities") || object.contains_key("_syncEntitiesAfter")
+}
+
+fn response_is_unencoded_json(response: &Response) -> bool {
+    !response.headers().contains_key(header::CONTENT_ENCODING)
+        && response
+            .headers()
+            .get(header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .is_some_and(|value| value.starts_with("application/json"))
 }
 
 fn should_sample(request: &Request<Body>) -> bool {
@@ -218,10 +268,13 @@ async fn read_bounded_body(body: Body, limit: usize) -> BoundedBody {
     BoundedBody::Buffered(Bytes::from(bytes))
 }
 
-fn splice_envelope(bytes: &[u8], entities: &[Value], after: Option<i64>) -> Option<Vec<u8>> {
-    let value = serde_json::from_slice::<Value>(bytes).ok()?;
-    let object = value.as_object()?;
-    if object.contains_key("_syncEntities") {
+fn splice_envelope(
+    object: &Map<String, Value>,
+    entities: &[Value],
+    after: Option<i64>,
+    bytes: &[u8],
+) -> Option<Vec<u8>> {
+    if has_reserved_envelope_field(object) {
         return None;
     }
     let close = bytes.iter().rposition(|byte| !byte.is_ascii_whitespace())?;
@@ -348,12 +401,72 @@ mod tests {
     #[test]
     fn envelope_splice_preserves_existing_json_bytes() {
         let original = br#"{ "n" : 1e+03, "name":"kept" }"#;
-        let changed = splice_envelope(original, &[], Some(7)).expect("splice envelope");
+        let value = serde_json::from_slice::<Value>(original).expect("response JSON");
+        let object = value.as_object().expect("response object");
+        let changed = splice_envelope(object, &[], Some(7), original).expect("splice envelope");
         let changed = std::str::from_utf8(&changed).expect("UTF-8 JSON");
         assert_eq!(
             changed,
             r#"{ "n" : 1e+03, "name":"kept" ,"_syncEntities":[],"_syncEntitiesAfter":7}"#
         );
+    }
+
+    #[test]
+    fn existing_reserved_envelope_fields_are_left_untouched() {
+        for field in ["_syncEntities", "_syncEntitiesAfter"] {
+            let original = serde_json::to_vec(&json!({(field): 8})).expect("response JSON");
+            let value = serde_json::from_slice::<Value>(&original).expect("parse response once");
+            let object = value.as_object().expect("response object");
+            assert!(has_reserved_envelope_field(object));
+            assert!(splice_envelope(object, &[], Some(7), &original).is_none());
+        }
+    }
+
+    #[tokio::test]
+    async fn content_encoded_json_is_not_eligible_for_envelope_splicing() {
+        let response = Response::builder()
+            .status(StatusCode::OK)
+            .header(header::CONTENT_TYPE, "application/json")
+            .header(header::CONTENT_ENCODING, "gzip")
+            .body(Body::from(br#"{"ok":true}"#.as_slice()))
+            .expect("encoded response builds");
+        assert!(!response_is_unencoded_json(&response));
+        assert_eq!(response.headers()[header::CONTENT_ENCODING], "gzip");
+        let body = axum::body::to_bytes(response.into_body(), 1024)
+            .await
+            .expect("encoded response body remains readable");
+        assert_eq!(body.as_ref(), br#"{"ok":true}"#);
+    }
+
+    #[tokio::test]
+    async fn cursor_read_failure_still_dispatches_handler_unchanged() {
+        let request = Request::builder()
+            .method(Method::POST)
+            .uri("/mutation")
+            .body(Body::empty())
+            .expect("request builds");
+        let cursor = cursor_after_read(Err("simulated cursor read failure".to_owned()));
+        let (response, cursor) = dispatch_with_cursor(request, cursor, |request| async move {
+            assert!(request.extensions().get::<EntityCursor>().is_none());
+            Response::builder()
+                .status(StatusCode::CREATED)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(r#"{ "created" : true }"#))
+                .expect("handler response builds")
+        })
+        .await;
+        let response = envelope_response(response, None, cursor).await;
+        assert_eq!(response.status(), StatusCode::CREATED);
+        let body = axum::body::to_bytes(response.into_body(), 1024)
+            .await
+            .expect("handler response body");
+        assert_eq!(body.as_ref(), br#"{ "created" : true }"#);
+        let body: Value = serde_json::from_slice(&body).expect("handler JSON response");
+        let Some(body) = body.as_object() else {
+            panic!("handler response remains an object");
+        };
+        assert!(!body.contains_key("_syncEntities"));
+        assert!(!body.contains_key("_syncEntitiesAfter"));
     }
 
     #[tokio::test]
@@ -394,5 +507,28 @@ mod tests {
             .await
             .expect("pass-through body");
         assert_eq!(body, original);
+    }
+
+    #[tokio::test]
+    async fn response_body_read_failure_passes_original_response_through() {
+        let original_prefix = Bytes::from_static(b"{\"ok\":");
+        let stream = futures_util::stream::iter([
+            Ok::<Bytes, std::io::Error>(original_prefix.clone()),
+            Err(std::io::Error::other("simulated body read failure")),
+        ]);
+        let response = Response::builder()
+            .status(StatusCode::CREATED)
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from_stream(stream))
+            .expect("streaming response builds");
+        let Err(response) = buffer_response(response, 1024).await else {
+            panic!("body read failure must pass through");
+        };
+        assert_eq!(response.status(), StatusCode::CREATED);
+        assert_eq!(response.headers()[header::CONTENT_TYPE], "application/json");
+        let error = axum::body::to_bytes(response.into_body(), 1024)
+            .await
+            .expect_err("original stream failure is preserved");
+        assert!(error.to_string().contains("simulated body read failure"));
     }
 }
