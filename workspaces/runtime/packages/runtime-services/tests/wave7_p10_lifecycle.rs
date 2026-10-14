@@ -717,7 +717,8 @@ fn production_restart_scan_settles_durable_deleted_agent_state() {
         Arc::new(Notify::new()),
         Arc::new(NoBroker),
     );
-    let settled = state(&store)["tables"]["runtime_agents"]
+    let settled_state = state(&store);
+    let settled = settled_state["tables"]["runtime_agents"]
         .as_array()
         .expect("agent rows")
         .iter()
@@ -766,7 +767,8 @@ fn production_interrupt_requires_in_flight_active_turn() {
     ports
         .execute(&action, case["now"].as_f64().expect("time"))
         .expect("stop");
-    let agent = state(&store)["tables"]["runtime_agents"]
+    let stopped_state = state(&store);
+    let agent = stopped_state["tables"]["runtime_agents"]
         .as_array()
         .expect("agent rows")
         .iter()

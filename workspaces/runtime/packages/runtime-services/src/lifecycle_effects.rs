@@ -91,6 +91,9 @@ impl ProductionLifecyclePorts {
     /// Run the production stop/delete adapter. Effect intents and lifecycle
     /// rows commit together; broker dispatch begins only after that commit.
     pub fn execute(&self, action: &Action, now: f64) -> Result<Value, ManagementError> {
+        // Retry startup settlement here and surface storage failures before
+        // making a new lifecycle decision.
+        self.reconcile_deleted_tombstones()?;
         let reader = self.store.read()?;
         let rooms = crate::sync_entity_context::RoomDirectory::prepare(&reader)?;
         drop(reader);
