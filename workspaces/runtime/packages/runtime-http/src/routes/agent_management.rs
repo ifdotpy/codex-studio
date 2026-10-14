@@ -75,6 +75,7 @@ async fn delete(
 }
 async fn native_action(
     State(state): State<HttpState>,
+    lifecycle: Option<Extension<Arc<dyn LifecyclePorts>>>,
     preparation: Option<
         Extension<Arc<studio_runtime_services::account_worker::preparation::PreparationResources>>,
     >,
@@ -91,6 +92,7 @@ async fn native_action(
         })?;
         let store = state.store.clone().ok_or_else(ApiError::internal)?;
         let account_driver = state.account_driver.clone();
+        let lifecycle = lifecycle.map(|Extension(ports)| ports);
         let resources = preparation
             .clone()
             .map(|Extension(resources)| resources)
@@ -157,6 +159,7 @@ async fn native_action(
                 &store,
                 port.as_ref(),
                 &resources,
+                lifecycle.as_deref(),
                 &agent,
                 actor,
                 &turn_id,
@@ -649,7 +652,7 @@ inventory::submit! {
             "agent-management/snapshot-limit", "cross-server/agent-management",
             "event-driver/child-stop-notification", "monitor-driver/agent-stop",
             "account-worker/deleted-settlement", "usage-policy/agent-stop", "voice-driver/agent-stop", "work-driver/deletion-release",
-            "workspace-state/agent-lifecycle",
+            "workspace-state/agent-lifecycle", "cross-server/native-review",
         ],
     }
 }

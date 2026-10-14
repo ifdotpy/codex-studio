@@ -6,9 +6,12 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+import subprocess
+import sqlite3
 import tempfile
 import unittest
 import uuid
+from contextlib import closing
 from urllib.parse import urlencode
 from unittest.mock import patch
 
@@ -58,6 +61,17 @@ class NativeActionHTTPContract(TimedHTTPContractTest, unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.backend = start_contract_backend(cls)
+        subprocess.run(
+            ["git", "-c", "user.name=Studio HTTP contract", "-c",
+             "user.email=http-contract@example.invalid", "commit", "--allow-empty",
+             "--message", "Initialize HTTP contract workspace"],
+            cwd=cls.backend.cwd,
+            env={"PATH": os.defpath, "HOME": str(cls.backend.home), "GIT_CONFIG_NOSYSTEM": "1"},
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=HTTP_WAIT_GUARD_SECONDS,
+        )
         cls.headers = {
             "Origin": cls.backend.origin or "",
             "X-Canvas-Token": cls.backend.session["token"],
@@ -88,16 +102,6 @@ class NativeActionHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         self.assertEqual(response.status, 200, response.body[:1000])
         return response.json()
 
-    def entity(self, identifier: str) -> dict[str, object]:
-        response = self.backend.request("GET", "/api/sync/pull?" + urlencode({
-            "scope": "state:entities:v1", "after": 0, "limit": 500,
-        }))
-        self.assertEqual(response.status, 200, response.body[:1000])
-        for document in response.json()["documents"]:
-            if document["id"] == f"entity:agent:{identifier}":
-                return json.loads(document["payload"])["value"]
-        self.fail(f"The entity feed omitted agent {identifier}")
-
     def send_instruction_and_wait_for_completion(self, identifier: str) -> None:
         message_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"http-native-instruction:{identifier}"))
         sent = self.backend.request(
@@ -117,7 +121,20 @@ class NativeActionHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             )
             self.assertEqual(response.status, 200, response.body[:1000])
             transcript = response.json()
-            current = self.entity(identifier)
+            errors = [item.get("deliveryError") for item in transcript.get("items", [])
+                      if item.get("deliveryError")]
+            if errors:
+                with closing(sqlite3.connect(self.backend.state / "canvas.sqlite3")) as database:
+                    stored = database.execute(
+                        "SELECT record FROM runtime_agents WHERE id=?", (identifier,),
+                    ).fetchone()
+                agent = json.loads(stored[0]) if stored else {}
+                raise AssertionError(
+                    f"The queued turn failed before native action: {errors!r}; "
+                    f"stored cwd={agent.get('cwd')!r}, workspaceMode={agent.get('workspaceMode')!r}, "
+                    f"worktreeReady={agent.get('worktreeReady')!r}, status={agent.get('status')!r}"
+                )
+            current = transcript.get("agent", {})
             return (any(frame.get("method") == "turn/start" for frame in frames)
                     and "Recovered output." in json.dumps(transcript)
                     and not current.get("inFlight")
@@ -130,9 +147,27 @@ class NativeActionHTTPContract(TimedHTTPContractTest, unittest.TestCase):
     def action_once(self, action: str, identifier: str) -> None:
         lead = self.create_lead(identifier)
         self.send_instruction_and_wait_for_completion(lead["id"])
+        with closing(sqlite3.connect(self.backend.state / "canvas.sqlite3")) as database:
+            row = database.execute(
+                "SELECT record FROM runtime_agents WHERE id=?", (lead["id"],),
+            ).fetchone()
+        self.assertIsNotNone(row)
+        thread_id = json.loads(row[0])["threadId"]
         request_id = f"http-native-{action}-{identifier}"
         body = {"id": lead["id"], "action": action, "request_id": request_id}
         first = self.backend.request("POST", "/api/action", body=body, headers=self.headers)
+        if first.status != 200:
+            with closing(sqlite3.connect(self.backend.state / "canvas.sqlite3")) as database:
+                row = database.execute(
+                    "SELECT record FROM runtime_agents WHERE id=?", (lead["id"],),
+                ).fetchone()
+            stored = json.loads(row[0]) if row else {}
+            self.fail(
+                f"/api/action failed: {first.status} {first.body[:1000]!r}; "
+                f"contextRepair={stored.get('contextRepair')!r}, "
+                f"contextRepairWait={stored.get('contextRepairWait')!r}, "
+                f"startAttempt={stored.get('startAttempt')!r}"
+            )
         self.assertEqual(first.status, 200, first.body[:1000])
         result = first.json()
         self.assertEqual(result["outcome"]["status"], "acknowledged", result)
@@ -141,8 +176,7 @@ class NativeActionHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         frames = self.backend.received_provider_frames()
         calls = [frame for frame in frames if frame.get("method") == method]
         self.assertEqual(len(calls), 1, calls)
-        current = self.entity(lead["id"])
-        self.assertEqual(calls[0]["params"]["threadId"], current["threadId"])
+        self.assertEqual(calls[0]["params"]["threadId"], thread_id)
         self.assertEqual(result["receipt"]["requestId"], request_id)
 
         replay = self.backend.request("POST", "/api/action", body=body, headers=self.headers)
