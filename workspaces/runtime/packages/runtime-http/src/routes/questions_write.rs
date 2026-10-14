@@ -48,13 +48,10 @@ async fn answer(
     State(state): State<HttpState>,
     ApiJson(body): ApiJson<crate::generated::AnswerBody>,
 ) -> Result<Json<Value>, ApiError> {
-    let runtime = state
-        .callback_runtime
-        .clone()
-        .ok_or_else(|| {
-            dependency_unavailable("POST", "/api/answer", &ANSWER_DEPENDENCIES)
-                .unwrap_or_else(|_| ApiError::internal())
-        })?;
+    let runtime = state.callback_runtime.clone().ok_or_else(|| {
+        dependency_unavailable("POST", "/api/answer", &ANSWER_DEPENDENCIES)
+            .unwrap_or_else(|_| ApiError::internal())
+    })?;
     let id = body.id.clone();
     let data = serde_json::to_value(body).map_err(|_| ApiError::internal())?;
     let value = tokio::task::spawn_blocking(move || runtime.answer(&id, &data, callback_clock()?))

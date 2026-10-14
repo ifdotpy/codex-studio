@@ -54,7 +54,9 @@ pub(crate) fn local_server_id(state_dir: &str) -> StoreResult<Option<String>> {
         || path_metadata.file_type().is_symlink()
         || path_metadata.len() > 16_384
     {
-        return Err(invalid_identity("identity.json is not a bounded regular file"));
+        return Err(invalid_identity(
+            "identity.json is not a bounded regular file",
+        ));
     }
     #[cfg(unix)]
     {
@@ -90,9 +92,8 @@ fn valid_server_id(value: &str) -> bool {
         .next()
         .is_some_and(|first| first.is_ascii_alphanumeric())
         && value.len() <= 128
-        && bytes.all(|byte| {
-            byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'.' | b':' | b'-')
-        })
+        && bytes
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'.' | b':' | b'-'))
 }
 
 fn invalid_identity(reason: &str) -> studio_runtime_store::StoreError {
@@ -147,7 +148,10 @@ mod local_server_id_tests {
             fs::set_permissions(&directory, fs::Permissions::from_mode(0o700))
                 .expect("private directory");
         }
-        assert_eq!(local_server_id(root.path().to_str().unwrap()).unwrap(), None);
+        assert_eq!(
+            local_server_id(root.path().to_str().unwrap()).unwrap(),
+            None
+        );
         assert!(directory.is_dir());
         assert!(!directory.join("identity.json").exists());
     }
@@ -195,7 +199,10 @@ mod local_server_id_tests {
     #[test]
     fn unusable_server_id_refuses() {
         let root = tempfile::tempdir().expect("isolated state");
-        private_identity_file(root.path(), json!({"serverId": "bad/id"}).to_string().as_bytes());
+        private_identity_file(
+            root.path(),
+            json!({"serverId": "bad/id"}).to_string().as_bytes(),
+        );
         let error = local_server_id(root.path().to_str().unwrap()).unwrap_err();
         let message = error.to_string();
         assert!(message.contains("identity.json"), "{message}");
