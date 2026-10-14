@@ -3,19 +3,22 @@ use std::sync::{
     Arc,
     atomic::{AtomicUsize, Ordering},
 };
-use studio_runtime_providers::{RequestId, RequestTicket};
+use studio_runtime_providers::{Method, RequestId, RequestTicket};
 use studio_runtime_services::{
     account_driver::AccountDriver,
     account_session_runtime::{
-        AccountSessionPort, AccountSessionRuntime, ConnectionScope, LoginRequest, NotSentReason,
-        ProviderRequest, ProviderResponse, RequestCertainty, RetainedAccountSession, SessionFuture,
-        SessionReceipt,
+        AccountSessionError, AccountSessionPort, AccountSessionRuntime, ConnectionScope,
+        LoginRequest, NotSentReason, ProviderRequest, ProviderResponse, RequestCertainty,
+        RetainedAccountSession, SessionFuture, SessionReceipt,
     },
 };
 
 struct FakeSession {
     certainty: RequestCertainty,
     result: Option<ProviderResponse>,
+    unknown_error: bool,
+    foreign_receipt: bool,
+    no_scope: bool,
     calls: AtomicUsize,
 }
 
@@ -28,6 +31,42 @@ impl FakeSession {
         Self {
             certainty,
             result,
+            unknown_error: false,
+            foreign_receipt: false,
+            no_scope: false,
+            calls: AtomicUsize::new(0),
+        }
+    }
+
+    fn unknown_error() -> Self {
+        Self {
+            certainty: RequestCertainty::Unknown,
+            result: None,
+            unknown_error: true,
+            foreign_receipt: false,
+            no_scope: false,
+            calls: AtomicUsize::new(0),
+        }
+    }
+
+    fn foreign_receipt() -> Self {
+        Self {
+            certainty: RequestCertainty::Written,
+            result: Some(ProviderResponse::Reply(login_response())),
+            unknown_error: false,
+            foreign_receipt: true,
+            no_scope: false,
+            calls: AtomicUsize::new(0),
+        }
+    }
+
+    fn no_live_scope() -> Self {
+        Self {
+            certainty: RequestCertainty::NotSent,
+            result: None,
+            unknown_error: false,
+            foreign_receipt: false,
+            no_scope: true,
             calls: AtomicUsize::new(0),
         }
     }
@@ -35,7 +74,10 @@ impl FakeSession {
 
 impl RetainedAccountSession for FakeSession {
     fn current_scope(&self, account: &str) -> Option<ConnectionScope> {
-        (self.certainty != RequestCertainty::NotSent).then(|| ConnectionScope {
+        if self.no_scope {
+            return None;
+        }
+        Some(ConnectionScope {
             account: account.to_owned(),
             connection: "fixture-session".to_owned(),
             generation: 1,
@@ -46,11 +88,21 @@ impl RetainedAccountSession for FakeSession {
         self.calls.fetch_add(1, Ordering::SeqCst);
         let certainty = self.certainty;
         let result = self.result.clone();
-        let scope = request.expected_scope.unwrap_or_else(|| ConnectionScope {
-            account: request.account,
+        let unknown_error = self.unknown_error;
+        let foreign_receipt = self.foreign_receipt;
+        let scope = request.expected_scope.clone().unwrap_or(ConnectionScope {
+            account: request.account.clone(),
             connection: "fixture-session".to_owned(),
             generation: 1,
         });
+        let scope = if foreign_receipt {
+            ConnectionScope {
+                connection: "foreign-session".to_owned(),
+                ..scope
+            }
+        } else {
+            scope
+        };
         let operation = request.operation;
         let ticket = (certainty != RequestCertainty::NotSent).then(|| RequestTicket {
             generation: scope.generation,
@@ -58,6 +110,9 @@ impl RetainedAccountSession for FakeSession {
             method: request.method,
         });
         Box::pin(async move {
+            if unknown_error {
+                return Err(AccountSessionError::Unknown);
+            }
             Ok(SessionReceipt {
                 scope,
                 operation,
@@ -167,6 +222,40 @@ fn login_not_sent_returns_python_error_receipt() {
 }
 
 #[test]
+fn absent_live_scope_maps_login_and_cancel_to_python_not_sent_receipts() {
+    let fixture = Fixture::new();
+    let session = Arc::new(FakeSession::no_live_scope());
+    let runtime = fixture.service(Arc::clone(&session));
+    let login_id = "9b06d4c4-0b71-49b5-b984-927d6fdcde01";
+    let login = runtime
+        .login(LoginRequest {
+            login_id: login_id.into(),
+            account_key: None,
+            email: None,
+            label: None,
+        })
+        .expect("not-sent login receipt");
+    assert_eq!(login["status"], "error");
+    assert_eq!(login["error"], "Could not start sign-in. Try again.");
+    assert_eq!(session.calls.load(Ordering::SeqCst), 0);
+
+    let cancel_fixture = Fixture::new();
+    let started = cancel_fixture.login(RequestCertainty::Written, Some(login_response()));
+    assert_eq!(started["status"], "pending");
+    let no_live_session = Arc::new(FakeSession::no_live_scope());
+    let cancel_runtime = cancel_fixture.service(Arc::clone(&no_live_session));
+    let cancel = cancel_runtime
+        .cancel_login(login_id)
+        .expect("not-sent cancellation receipt");
+    assert_eq!(cancel["status"], "pending");
+    assert_eq!(
+        cancel["error"],
+        "Cancellation is unconfirmed. Check status or retry cancellation."
+    );
+    assert_eq!(no_live_session.calls.load(Ordering::SeqCst), 0);
+}
+
+#[test]
 fn unknown_login_remains_uncertain_and_is_never_replayed() {
     let fixture = Fixture::new();
     let session = Arc::new(FakeSession::new(RequestCertainty::Unknown, None));
@@ -179,6 +268,85 @@ fn unknown_login_remains_uncertain_and_is_never_replayed() {
         );
     }
     assert_eq!(session.calls.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn unknown_login_error_remains_uncertain_and_is_never_replayed() {
+    let fixture = Fixture::new();
+    let session = Arc::new(FakeSession::unknown_error());
+    for _ in 0..2 {
+        let receipt = fixture.login_with_session(Arc::clone(&session));
+        assert_eq!(receipt["status"], "uncertain");
+        assert_eq!(
+            receipt["error"],
+            "Sign-in response is unconfirmed. Check its status before starting again."
+        );
+    }
+    assert_eq!(session.calls.load(Ordering::SeqCst), 1);
+    let snapshot = fixture.driver.snapshot().expect("persisted registry");
+    assert_eq!(snapshot.logins[0]["status"], "uncertain");
+    let restarted_driver = Arc::new(
+        AccountDriver::open(fixture.accounts_root.join("registry.json"))
+            .expect("restart from durable registry"),
+    );
+    let restarted = AccountSessionRuntime::new(
+        restarted_driver,
+        Some(session.clone()),
+        fixture.runtime.handle().clone(),
+        fixture.accounts_root.clone(),
+        fixture.base_home.clone(),
+        fixture.home.clone(),
+    );
+    let after_restart = restarted
+        .login(LoginRequest {
+            login_id: "9b06d4c4-0b71-49b5-b984-927d6fdcde01".into(),
+            account_key: None,
+            email: None,
+            label: None,
+        })
+        .expect("durable uncertain replay");
+    assert_eq!(after_restart["status"], "uncertain");
+    assert_eq!(session.calls.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn foreign_login_receipt_scope_is_uncertain_and_never_replayed() {
+    let fixture = Fixture::new();
+    let session = Arc::new(FakeSession::foreign_receipt());
+    for _ in 0..2 {
+        let receipt = fixture.login_with_session(Arc::clone(&session));
+        assert_eq!(receipt["status"], "uncertain");
+        assert_eq!(
+            receipt["error"],
+            "Sign-in response is unconfirmed. Check its status before starting again."
+        );
+    }
+    assert_eq!(session.calls.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn generic_provider_requests_reject_foreign_and_unknown_receipts() {
+    for session in [
+        Arc::new(FakeSession::foreign_receipt()),
+        Arc::new(FakeSession::unknown_error()),
+    ] {
+        let fixture = Fixture::new();
+        let service = fixture.service(Arc::clone(&session));
+        let expected_scope = service
+            .current_scope("default")
+            .expect("live provider scope");
+        let result = service.provider_request(ProviderRequest {
+            account: "default".into(),
+            operation: "fixture:generic-request".into(),
+            actor: None,
+            expected_scope: Some(expected_scope),
+            method: Method::AccountLoginStart,
+            params: json!({"type":"chatgptDeviceCode"}),
+            deadline: std::time::Instant::now() + std::time::Duration::from_secs(1),
+        });
+        assert!(matches!(result, Err(AccountSessionError::Unknown)));
+        assert_eq!(session.calls.load(Ordering::SeqCst), 1);
+    }
 }
 
 #[test]

@@ -494,6 +494,20 @@ impl AccountSessionPort for AccountSessionRuntime {
         let deadline = request.deadline;
         let operation = request.operation.clone();
         let account = request.account.clone();
+        let expected_scope = request
+            .expected_scope
+            .clone()
+            .or_else(|| session.current_scope(&account));
+        if expected_scope
+            .as_ref()
+            .is_some_and(|scope| scope.account != account)
+        {
+            return Err(AccountSessionError::Refused(
+                "Provider scope does not belong to the account",
+            ));
+        }
+        let mut request = request;
+        request.expected_scope = expected_scope.clone();
         match self.block_on_retained(async {
             tokio::time::timeout_at(
                 tokio::time::Instant::from_std(deadline),
@@ -502,7 +516,10 @@ impl AccountSessionPort for AccountSessionRuntime {
             .await
         }) {
             Ok(Ok(receipt))
-                if receipt.operation == operation && receipt.scope.account == account =>
+                if receipt.operation == operation
+                    && receipt.scope.account == account
+                    && (receipt.certainty == RequestCertainty::NotSent
+                        || expected_scope.as_ref() == Some(&receipt.scope)) =>
             {
                 Ok(receipt)
             }
