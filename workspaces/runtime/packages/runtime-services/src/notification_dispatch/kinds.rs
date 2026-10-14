@@ -359,7 +359,12 @@ pub(super) fn flush_command(
         .unwrap_or_else(|| command_base(saved.as_ref(), task.as_ref()));
     let mut item = saved.unwrap_or_else(|| json!({"type":"commandExecution","id":key.item}));
     if let Some((text, count, params)) = streams.flush(key, &previous) {
-        NotificationDispatchRepository::put_stream_base(tx, &super::stream_base_id(key), None)?;
+        NotificationDispatchRepository::put_stream_base(
+            tx,
+            &super::stream_base_id(key),
+            Some(&text),
+        )?;
+        streams.set_flushed_base(key, super::sha256_hex(text.as_bytes()));
         let truncated = item["outputTruncated"] == true
             || task.as_ref().is_some_and(|t| t["outputTruncated"] == true)
             || previous.chars().count() as u64
