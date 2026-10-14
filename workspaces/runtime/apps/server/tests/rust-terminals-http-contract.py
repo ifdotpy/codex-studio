@@ -273,7 +273,7 @@ class TerminalsHTTPContract(unittest.TestCase):
         self.assertEqual(closed.json()["status"], "closed")
 
     @unittest.skipUnless(os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"), "Rust backend only")
-    def test_restart_cleanup_failure_keeps_server_up_and_retries_before_writes(self) -> None:
+    def test_restart_cleanup_reconciles_legacy_identity_before_writes(self) -> None:
         failing_id = "restart-cleanup-failing"
         healthy_id = "restart-cleanup-healthy"
         self.seed_running_terminal(failing_id, {"pid": "malformed"})
@@ -288,41 +288,24 @@ class TerminalsHTTPContract(unittest.TestCase):
         self.assertEqual(
             {item["id"]: item["status"] for item in listing.json()["items"]
              if item["id"] in {failing_id, healthy_id}},
-            {failing_id: "running", healthy_id: "running"},
+            {failing_id: "exited", healthy_id: "exited"},
         )
-        diagnostic = "terminal restart reconciliation failed (kind=session)"
-        self.assertEqual(self.backend.stderr.count(diagnostic), 1)
-
         database_path = self.backend.state / "canvas.sqlite3"
-        with sqlite3.connect(database_path) as database:
-            before = terminal_tables(database)
-        writes = [
-            ("/api/terminals/create", {"id": "blocked-create", "agent": self.agent_id}),
-            ("/api/terminals/input", {"id": failing_id, "text": "x", "request_id": "blocked-input"}),
-            ("/api/terminals/resize", {"id": failing_id, "cols": 90, "rows": 25}),
-            ("/api/terminals/rename", {"id": failing_id, "title": "blocked"}),
-            ("/api/terminals/close", {"id": failing_id}),
-        ]
-        for path, body in writes:
-            response = self.backend.request("POST", path, body=body, headers=self.headers())
-            self.assertEqual(response.status, 501, (path, response.body[:1000]))
-            self.assertEqual(
-                response.json(),
-                {"error": "Not implemented: requires terminal-driver/restart-cleanup"},
-                path,
-            )
-            with sqlite3.connect(database_path) as database:
-                self.assertEqual(terminal_tables(database), before, path)
-
         with sqlite3.connect(database_path) as database:
             record = json.loads(database.execute(
                 "SELECT record FROM user_terminals WHERE id=?", (failing_id,),
             ).fetchone()[0])
-            record["_processIdentity"] = self.stale_process_identity()
-            database.execute(
-                "UPDATE user_terminals SET record=? WHERE id=?",
-                (json.dumps(record), failing_id),
-            )
+            self.assertEqual(record["status"], "exited")
+            self.assertNotIn("_processIdentity", record)
+
+        created = self.backend.request(
+            "POST", "/api/terminals/create",
+            body={"id": "after-cleanup-create", "agent": self.agent_id},
+            headers=self.headers(),
+        )
+        self.assertEqual(created.status, 200, created.body[:1000])
+        self.assertEqual(created.json()["status"], "running")
+
         renamed = self.backend.request(
             "POST", "/api/terminals/rename",
             body={"id": failing_id, "title": "reconciled"}, headers=self.headers(),
@@ -336,7 +319,11 @@ class TerminalsHTTPContract(unittest.TestCase):
                 ).fetchone()[0])
                 self.assertEqual(record["status"], "exited")
                 self.assertNotIn("_processIdentity", record)
-        self.assertEqual(self.backend.stderr.count(diagnostic), 1)
+        closed = self.backend.request(
+            "POST", "/api/terminals/close",
+            body={"id": created.json()["id"]}, headers=self.headers(),
+        )
+        self.assertEqual(closed.status, 200, closed.body[:1000])
 
     @unittest.skipUnless(os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"), "Rust backend only")
     def test_restart_create_input_and_close_receipts_replay(self) -> None:
