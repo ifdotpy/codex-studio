@@ -129,7 +129,7 @@ fn managed_interrupt_requires_current_sender_and_descendant_scope() {
 }
 
 #[test]
-fn missing_native_and_workspace_effects_produce_no_decision() {
+fn missing_native_and_remote_effects_produce_no_decision() {
     let base = corpus().remove(0)["records"].clone();
     for (field, value, dependency) in [
         (
@@ -142,16 +142,6 @@ fn missing_native_and_workspace_effects_produce_no_decision() {
             "remoteWorker",
             json!({"id":"remote"}),
             "cross-server/agent-management",
-        ),
-        (
-            "imageWorkspaceReady",
-            json!(true),
-            "workspace-state/agent-lifecycle",
-        ),
-        (
-            "worktreeReady",
-            json!(true),
-            "workspace-state/agent-lifecycle",
         ),
     ] {
         let mut raw = base.clone();

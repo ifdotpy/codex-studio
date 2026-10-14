@@ -386,7 +386,11 @@ impl ManagementSnapshot {
             )
             .is_some_and(|(retry_id, attempt_retry_id)| {
                 retry_id == attempt_retry_id
-                    && agent.record.pointer("/startAttempt/submitted") == Some(&Value::Bool(false))
+                    && agent
+                        .record
+                        .pointer("/startAttempt/submitted")
+                        .and_then(Value::as_bool)
+                        != Some(true)
             });
         if !capacity_retry_is_local
             && (agent.active()
