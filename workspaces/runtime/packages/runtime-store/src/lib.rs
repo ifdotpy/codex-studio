@@ -27,7 +27,8 @@ pub use repositories::analytics_capture;
 pub use repositories::budget;
 pub use repositories::capability_reads::CapabilityReadsRepository;
 pub use repositories::checkpoints::{
-    CaptureKind, CheckpointsRepository, StoredCheckpointObject, WorkspaceSnapshot,
+    CaptureKind, CheckpointsRepository, RestoreReservation, StoredCheckpointObject,
+    WorkspaceSnapshot,
 };
 pub use repositories::claude_controls::ClaudeControlRepository;
 pub use repositories::cost_usage::{CostUsageRepositoryError, CostUsageRow, read_cost_usage};

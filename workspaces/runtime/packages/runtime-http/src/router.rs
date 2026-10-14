@@ -33,6 +33,8 @@ pub struct HttpState {
         Option<Arc<studio_runtime_services::callback_runtime::CallbackRuntime>>,
     pub account_session:
         Option<Arc<dyn studio_runtime_services::account_session_runtime::AccountSessionPort>>,
+    pub preparation_resources:
+        Option<Arc<studio_runtime_services::account_worker::preparation::PreparationResources>>,
     pub claude_login: Option<Arc<studio_runtime_services::claude_login::service::LoginService>>,
     pub(crate) multi_server_boundary:
         Option<Arc<studio_runtime_services::multi_server_pairing::MultiServerBoundary>>,
@@ -107,6 +109,7 @@ impl HttpState {
             message_admission: None,
             callback_runtime: None,
             account_session: None,
+            preparation_resources: None,
             account_driver: None,
             provider_versions: None,
             title_request: None,
@@ -186,6 +189,15 @@ impl HttpState {
         driver: Arc<studio_runtime_services::account_driver::AccountDriver>,
     ) -> Self {
         self.account_driver = Some(driver);
+        self
+    }
+
+    /// Attach the shared account-worker preparation context used for native thread starts.
+    pub fn with_preparation_resources(
+        mut self,
+        resources: Arc<studio_runtime_services::account_worker::preparation::PreparationResources>,
+    ) -> Self {
+        self.preparation_resources = Some(resources);
         self
     }
 

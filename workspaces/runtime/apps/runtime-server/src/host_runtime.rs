@@ -156,6 +156,7 @@ impl HostRuntime {
         .await
         .map_err(|_| WorkerError::TaskFailed)??;
         let resources = resources.with_account_session(state.account_session.clone());
+        let restore_resources = Arc::new(resources.clone());
         let callback_runtime = Arc::new(
             studio_runtime_services::callback_runtime::CallbackRuntime::new(
                 store.clone(),
@@ -170,7 +171,8 @@ impl HostRuntime {
                 saved_thread_id: None,
                 saved_digest: None,
             })
-            .with_callback_runtime(callback_runtime);
+            .with_callback_runtime(callback_runtime)
+            .with_preparation_resources(restore_resources);
         let launcher = Arc::new(HostLauncher {
             factory: SupervisorProviderTaskFactory::new(identity),
             supervisor_mode: std::env::var("CODEX_AGENTS_SUPERVISOR_MODE")
