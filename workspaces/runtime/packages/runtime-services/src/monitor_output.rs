@@ -37,7 +37,7 @@ impl MonitorOutput {
         now: f64,
     ) -> Result<(), MonitorError> {
         if bytes.len() > monitor_policy::CHUNK_BYTES {
-            return Err(MonitorError::Refused("Monitor output chunk exceeds bound"));
+            return Err(MonitorError::InvalidOutputReceipt("chunk exceeds bound"));
         }
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         id.hash(&mut hasher);
@@ -51,10 +51,12 @@ impl MonitorOutput {
             .and_then(serde_json::Value::as_u64)
             .unwrap_or(0);
         if before.operation() != Some(operation) {
-            return Err(MonitorError::Refused("Monitor output identity changed"));
+            return Err(MonitorError::InvalidOutputReceipt(
+                "operation identity changed",
+            ));
         }
         if offset > count {
-            return Err(MonitorError::Refused("Monitor output cursor has a gap"));
+            return Err(MonitorError::InvalidOutputReceipt("cursor has a gap"));
         }
         if before
             .record()
@@ -66,7 +68,7 @@ impl MonitorOutput {
         }
         let path = std::path::Path::new(id);
         if path.components().count() != 1 || path.file_name().and_then(|s| s.to_str()) != Some(id) {
-            return Err(MonitorError::Refused("Invalid monitor log identity"));
+            return Err(MonitorError::InvalidOutputReceipt("invalid log identity"));
         }
         let root = store.root().join("monitor-logs");
         if !root.exists() {
@@ -79,7 +81,7 @@ impl MonitorOutput {
             fs::create_dir(&root)?;
         }
         if !fs::symlink_metadata(&root)?.is_dir() {
-            return Err(MonitorError::Refused("Invalid monitor log directory"));
+            return Err(MonitorError::InvalidOutputReceipt("invalid log directory"));
         }
         let path = root.join(format!("{id}.log"));
         if before
@@ -88,14 +90,14 @@ impl MonitorOutput {
             .and_then(serde_json::Value::as_str)
             != path.to_str()
         {
-            return Err(MonitorError::Refused(
-                "Monitor log path does not match its state directory",
+            return Err(MonitorError::InvalidOutputReceipt(
+                "log path differs from state directory",
             ));
         }
         if let Ok(metadata) = fs::symlink_metadata(&path)
             && !metadata.is_file()
         {
-            return Err(MonitorError::Refused("Invalid monitor log file"));
+            return Err(MonitorError::InvalidOutputReceipt("invalid log file"));
         }
         #[cfg(unix)]
         let mut file = {
@@ -128,12 +130,12 @@ impl MonitorOutput {
             file.set_permissions(fs::Permissions::from_mode(0o600))?;
         }
         if !file.metadata()?.is_file() {
-            return Err(MonitorError::Refused("Invalid monitor log file"));
+            return Err(MonitorError::InvalidOutputReceipt("invalid log file"));
         }
         let length = file.metadata()?.len();
         if length < offset {
-            return Err(MonitorError::Refused(
-                "Monitor log is missing committed output",
+            return Err(MonitorError::InvalidOutputReceipt(
+                "log is missing committed output",
             ));
         }
         let existing = (length - offset).min(bytes.len() as u64) as usize;
@@ -141,14 +143,14 @@ impl MonitorOutput {
         file.seek(SeekFrom::Start(offset))?;
         file.read_exact(&mut previous)?;
         if previous != bytes[..existing] {
-            return Err(MonitorError::Refused(
-                "Monitor output receipt has different bytes",
+            return Err(MonitorError::InvalidOutputReceipt(
+                "receipt bytes differ at committed offset",
             ));
         }
         if offset < count {
             if offset + bytes.len() as u64 > count {
-                return Err(MonitorError::Refused(
-                    "Monitor output receipt overlaps committed cursor",
+                return Err(MonitorError::InvalidOutputReceipt(
+                    "receipt overlaps committed cursor",
                 ));
             }
             return Ok(());

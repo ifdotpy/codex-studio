@@ -24,10 +24,10 @@ impl ResultReceipt {
     fn validate(&self) -> Result<(), MonitorError> {
         let value = serde_json::to_value(self).map_err(studio_runtime_store::StoreError::from)?;
         if !studio_runtime_schema::validate("PersistedMonitorResult", &value)
-            .map_err(|_| MonitorError::Refused("Invalid monitor result schema"))?
+            .map_err(|_| MonitorError::InvalidResultReceipt("schema"))?
             || (self.code.is_none() && self.error.as_deref().is_none_or(str::is_empty))
         {
-            return Err(MonitorError::Refused("Invalid monitor result receipt"));
+            return Err(MonitorError::InvalidResultReceipt("fields"));
         }
         Ok(())
     }
@@ -54,15 +54,15 @@ pub fn persist(root: &Path, receipt: &ResultReceipt) -> Result<ResultReceipt, Mo
         File::open(root)?.sync_all()?;
     }
     if !fs::symlink_metadata(&directory)?.is_dir() {
-        return Err(MonitorError::Refused("Invalid monitor result directory"));
+        return Err(MonitorError::InvalidResultReceipt("directory"));
     }
     let target = path(root, &receipt.key);
     if target.exists() {
-        return read(&target, &receipt.key);
+        return read(&target, Some(&receipt.key));
     }
     let bytes = serde_json::to_vec(receipt).map_err(studio_runtime_store::StoreError::from)?;
     if bytes.len() as u64 > RECEIPT_BYTES {
-        return Err(MonitorError::Refused("Monitor result exceeds bound"));
+        return Err(MonitorError::InvalidResultReceipt("size"));
     }
     let mut temp = tempfile::NamedTempFile::new_in(&directory)?;
     temp.write_all(&bytes)?;
@@ -73,26 +73,26 @@ pub fn persist(root: &Path, receipt: &ResultReceipt) -> Result<ResultReceipt, Mo
         Err(error) => return Err(MonitorError::Io(error.error)),
     }
     File::open(&directory)?.sync_all()?;
-    read(&target, &receipt.key)
+    read(&target, Some(&receipt.key))
 }
 
-fn read(path: &Path, id: &str) -> Result<ResultReceipt, MonitorError> {
+fn read(path: &Path, id: Option<&str>) -> Result<ResultReceipt, MonitorError> {
     let metadata = fs::symlink_metadata(path)?;
     if !metadata.is_file() || metadata.len() > RECEIPT_BYTES {
-        return Err(MonitorError::Refused("Invalid monitor result file"));
+        return Err(MonitorError::InvalidResultReceipt("file"));
     }
     let mut bytes = Vec::new();
     File::open(path)?
         .take(RECEIPT_BYTES + 1)
         .read_to_end(&mut bytes)?;
     if bytes.len() as u64 > RECEIPT_BYTES {
-        return Err(MonitorError::Refused("Monitor result exceeds bound"));
+        return Err(MonitorError::InvalidResultReceipt("size"));
     }
-    let receipt: ResultReceipt = serde_json::from_slice(&bytes)
-        .map_err(|_| MonitorError::Refused("Invalid monitor result receipt"))?;
+    let receipt: ResultReceipt =
+        serde_json::from_slice(&bytes).map_err(|_| MonitorError::InvalidResultReceipt("json"))?;
     receipt.validate()?;
-    if receipt.key != id {
-        return Err(MonitorError::Refused("Monitor result identity mismatch"));
+    if id.is_some_and(|id| receipt.key != id) {
+        return Err(MonitorError::InvalidResultReceipt("identity"));
     }
     Ok(receipt)
 }
@@ -131,10 +131,56 @@ pub fn recover(store: &RuntimeStore, keys: &[String]) -> Vec<(String, Result<(),
     keys.iter()
         .take(64)
         .map(|id| {
-            let result = read(&path(store.root(), id), id)
+            let result = read(&path(store.root(), id), Some(id))
                 .and_then(|receipt| restore(store, &receipt))
                 .and_then(|()| acknowledge(store.root(), id));
             (id.clone(), result)
         })
         .collect()
+}
+
+/// Bounded startup/timer recovery, including receipts for already terminal rows.
+/// A corrupt receipt stops this batch visibly and is retained for diagnosis.
+pub fn recover_pending(store: &RuntimeStore, limit: usize) -> Result<usize, MonitorError> {
+    if limit == 0 {
+        return Ok(0);
+    }
+    let directory = store.root().join("monitor-results");
+    match fs::symlink_metadata(&directory) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+        Err(error) => return Err(error.into()),
+        Ok(metadata) if !metadata.is_dir() => {
+            return Err(MonitorError::InvalidResultReceipt("directory"));
+        }
+        Ok(_) => {}
+    }
+    let mut recovered = 0;
+    let mut entries = fs::read_dir(directory)?;
+    for _ in 0..64 {
+        let Some(entry) = entries.next() else {
+            return Ok(recovered);
+        };
+        let entry = entry?;
+        if entry
+            .path()
+            .extension()
+            .is_none_or(|extension| extension != "json")
+        {
+            continue;
+        }
+        let receipt = read(&entry.path(), None)?;
+        if entry.path() != path(store.root(), &receipt.key) {
+            return Err(MonitorError::InvalidResultReceipt("identity"));
+        }
+        restore(store, &receipt)?;
+        acknowledge(store.root(), &receipt.key)?;
+        recovered += 1;
+        if recovered >= limit.min(64) {
+            return Ok(recovered);
+        }
+    }
+    if entries.next().is_some() {
+        return Err(MonitorError::InvalidResultReceipt("scan bound"));
+    }
+    Ok(recovered)
 }
