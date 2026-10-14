@@ -1,216 +1,12 @@
 //! macOS ASIF implementation of the Python `WorkspaceBackend` protocol.
 #![cfg(target_os = "macos")]
 use super::*;
-use std::ffi::{CStr, c_char, c_void};
 use std::io::{Read, Seek, SeekFrom};
 use std::process::{Child, Command, Output, Stdio};
-use std::sync::{Condvar, Mutex};
 use std::thread;
-
-#[link(name = "CoreServices", kind = "framework")]
-unsafe extern "C" {
-    fn FSEventsGetCurrentEventId() -> u64;
-    fn FSEventStreamCreate(
-        allocator: *const c_void,
-        callback: unsafe extern "C" fn(
-            *mut c_void,
-            *mut c_void,
-            usize,
-            *const *const c_char,
-            *const u32,
-            *const u64,
-        ),
-        context: *const FSEventStreamContext,
-        paths: *mut c_void,
-        since: u64,
-        latency: f64,
-        flags: u32,
-    ) -> *mut c_void;
-    fn FSEventStreamSetDispatchQueue(stream: *mut c_void, queue: *mut c_void);
-    fn FSEventStreamStart(stream: *mut c_void) -> bool;
-    fn FSEventStreamStop(stream: *mut c_void);
-    fn FSEventStreamInvalidate(stream: *mut c_void);
-    fn FSEventStreamRelease(stream: *mut c_void);
-}
-
-#[link(name = "CoreFoundation", kind = "framework")]
-unsafe extern "C" {
-    fn CFStringCreateWithFileSystemRepresentation(
-        allocator: *const c_void,
-        path: *const c_char,
-    ) -> *mut c_void;
-    fn CFArrayCreate(
-        allocator: *const c_void,
-        values: *const *const c_void,
-        count: isize,
-        callbacks: *const c_void,
-    ) -> *mut c_void;
-    fn CFRelease(value: *const c_void);
-}
-
-#[link(name = "System")]
-unsafe extern "C" {
-    fn dispatch_get_global_queue(identifier: isize, flags: usize) -> *mut c_void;
-}
-
-#[repr(C)]
-struct FSEventStreamContext {
-    version: isize,
-    info: *mut c_void,
-    retain: *const c_void,
-    release: *const c_void,
-    copy_description: *const c_void,
-}
-
-#[derive(Clone, Debug)]
-struct FSEvent {
-    path: PathBuf,
-    flags: u32,
-    id: u64,
-}
-
-#[derive(Default)]
-struct EventCollector {
-    events: Mutex<Vec<FSEvent>>,
-    done: Mutex<bool>,
-    ready: Condvar,
-}
-
-unsafe extern "C" fn collect_fsevents(
-    _stream: *mut c_void,
-    info: *mut c_void,
-    count: usize,
-    paths: *const *const c_char,
-    flags: *const u32,
-    ids: *const u64,
-) {
-    if info.is_null() || paths.is_null() || flags.is_null() || ids.is_null() {
-        return;
-    }
-    // SAFETY: `info` points to the stack-owned collector, which lives until the stream is released.
-    let collector = unsafe { &*(info.cast::<EventCollector>()) };
-    let paths = unsafe { std::slice::from_raw_parts(paths, count) };
-    let flags = unsafe { std::slice::from_raw_parts(flags, count) };
-    let ids = unsafe { std::slice::from_raw_parts(ids, count) };
-    if let Ok(mut events) = collector.events.lock() {
-        for index in 0..count {
-            if !paths[index].is_null() {
-                let path = unsafe { CStr::from_ptr(paths[index]) }
-                    .to_string_lossy()
-                    .into_owned();
-                events.push(FSEvent {
-                    path: PathBuf::from(path),
-                    flags: flags[index],
-                    id: ids[index],
-                });
-            }
-        }
-    }
-    if flags.iter().any(|value| value & 0x10 != 0) {
-        if let Ok(mut done) = collector.done.lock() {
-            *done = true;
-            collector.ready.notify_all();
-        }
-    }
-}
-
-#[derive(Debug)]
-enum FSEventError {
-    HistoryLost,
-    Other(String),
-}
-
-fn read_events(root: &Path, since: u64) -> Result<(Vec<FSEvent>, u64), FSEventError> {
-    // SAFETY: CoreServices documents this as a process-wide monotonic event counter.
-    let current = unsafe { FSEventsGetCurrentEventId() };
-    if since >= current {
-        return Ok((Vec::new(), current));
-    }
-    let path = std::ffi::CString::new(root.as_os_str().as_encoded_bytes())
-        .map_err(|error| FSEventError::Other(error.to_string()))?;
-    // SAFETY: CoreFoundation copies the filesystem representation into an owned CFString.
-    let cf_path =
-        unsafe { CFStringCreateWithFileSystemRepresentation(std::ptr::null(), path.as_ptr()) };
-    if cf_path.is_null() {
-        return Err(FSEventError::Other("Could not create FSEvents path".into()));
-    }
-    let values = [cf_path as *const c_void];
-    // SAFETY: `values` remains valid for the duration of CFArrayCreate and the array retains values.
-    let array = unsafe { CFArrayCreate(std::ptr::null(), values.as_ptr(), 1, std::ptr::null()) };
-    if array.is_null() {
-        unsafe { CFRelease(cf_path) };
-        return Err(FSEventError::Other(
-            "Could not create FSEvents path array".into(),
-        ));
-    }
-    let collector = EventCollector::default();
-    let mut context = FSEventStreamContext {
-        version: 0,
-        info: (&collector as *const EventCollector).cast_mut().cast(),
-        retain: std::ptr::null(),
-        release: std::ptr::null(),
-        copy_description: std::ptr::null(),
-    };
-    // SAFETY: The callback and context outlive the stream; path array is valid until stream creation returns.
-    let stream = unsafe {
-        FSEventStreamCreate(
-            std::ptr::null(),
-            collect_fsevents,
-            &context,
-            array,
-            since,
-            0.1,
-            0x10 | 0x2,
-        )
-    };
-    if stream.is_null() {
-        unsafe { CFRelease(array) };
-        unsafe { CFRelease(cf_path) };
-        return Err(FSEventError::Other("FSEventStreamCreate failed".into()));
-    }
-    let queue = unsafe { dispatch_get_global_queue(0, 0) };
-    unsafe { FSEventStreamSetDispatchQueue(stream, queue) };
-    if !unsafe { FSEventStreamStart(stream) } {
-        unsafe { FSEventStreamRelease(stream) };
-        unsafe { CFRelease(array) };
-        unsafe { CFRelease(cf_path) };
-        return Err(FSEventError::Other("FSEventStreamStart failed".into()));
-    }
-    let done = collector
-        .done
-        .lock()
-        .map_err(|_| FSEventError::Other("FSEvents lock poisoned".into()))?;
-    let (done, timeout) = collector
-        .ready
-        .wait_timeout_while(done, Duration::from_secs(120), |done| !*done)
-        .map_err(|_| FSEventError::Other("FSEvents wait poisoned".into()))?;
-    drop(done);
-    unsafe {
-        FSEventStreamStop(stream);
-        FSEventStreamInvalidate(stream);
-        FSEventStreamRelease(stream);
-    }
-    unsafe { CFRelease(array) };
-    unsafe { CFRelease(cf_path) };
-    if timeout.timed_out() {
-        return Err(FSEventError::Other("FSEvents history timed out".into()));
-    }
-    let events = collector
-        .events
-        .lock()
-        .map_err(|_| FSEventError::Other("FSEvents lock poisoned".into()))?
-        .clone();
-    if super::fsevents_history_lost(
-        &events
-            .iter()
-            .map(|event| (event.id, event.flags))
-            .collect::<Vec<_>>(),
-    ) {
-        return Err(FSEventError::HistoryLost);
-    }
-    let newest = events.iter().map(|event| event.id).max().unwrap_or(since);
-    Ok((events, newest))
-}
+#[path = "image_workspace_macos/fsevents_ffi.rs"]
+mod fsevents_ffi;
+use fsevents_ffi::{FSEvent, FSEventError, ROOT_CHANGED_FLAG, read_events};
 
 fn is_excluded(path: &Path, excludes: &[String]) -> bool {
     excludes
@@ -314,8 +110,7 @@ impl WorkspaceBackend for MacAsifBackend {
 
     fn current_event_id(&self, _root: &Path) -> Result<Option<Value>, ImageWorkspaceError> {
         // Mirrors codex_workspace_macos.current_event_id; delta sync falls back to a full rsync.
-        // SAFETY: CoreServices exposes this zero-argument function as a process-wide event counter.
-        Ok(Some(json!(unsafe { FSEventsGetCurrentEventId() })))
+        Ok(Some(json!(fsevents_ffi::current_event_id())))
     }
 
     fn base_needs_refresh(&self, root: &Path, state: &Value) -> Result<bool, ImageWorkspaceError> {
@@ -427,16 +222,17 @@ impl WorkspaceBackend for MacAsifBackend {
         fs::create_dir_all(agent_dir)?;
         let layer = agent_dir.join("workspace.asif");
         if !layer.exists() {
-            match run(
-                "/bin/cp",
-                &["-c", path_arg(image)?, path_arg(&layer)?],
-                Duration::from_secs(300),
-            ) {
-                Ok(_) => {}
-                Err(_) => {
-                    fs::copy(image, &layer)?;
-                }
-            }
+            copy_with_fallback(
+                || {
+                    run(
+                        "/bin/cp",
+                        &["-c", path_arg(image)?, path_arg(&layer)?],
+                        Duration::from_secs(300),
+                    )
+                    .map(|_| ())
+                },
+                || fs::copy(image, &layer).map(|_| ()).map_err(Into::into),
+            )?;
         }
         Ok(layer)
     }
@@ -481,6 +277,19 @@ impl WorkspaceBackend for MacAsifBackend {
             }
             Err(FSEventError::Other(error)) => return Err(ImageWorkspaceError::Backend(error)),
         };
+        if events
+            .iter()
+            .any(|event| event.flags & ROOT_CHANGED_FLAG != 0)
+        {
+            rsync_folder(root, target, excludes)?;
+            return Ok(WorkspaceDelta {
+                token: Some(json!(newest)),
+                changed_paths: vec![".".into()],
+                history_lost: false,
+                scan_paths: vec![".".into()],
+                refresh_base: true,
+            });
+        }
         let mut changed_paths = BTreeSet::new();
         let mut scan_paths = BTreeSet::new();
         for event in events {
@@ -806,11 +615,24 @@ fn run_allow_failure(
 }
 
 fn terminate(child: &mut Child) {
-    match child.kill() {
-        Ok(()) | Err(_) => {}
-    }
-    match child.wait() {
-        Ok(_) | Err(_) => {}
+    terminate_with(|| child.kill().map(|_| ()), || child.wait().map(|_| ()));
+}
+
+fn terminate_with(
+    kill: impl FnOnce() -> std::io::Result<()>,
+    reap: impl FnOnce() -> std::io::Result<()>,
+) {
+    let _kill = kill();
+    let _reap = reap();
+}
+
+fn copy_with_fallback(
+    clone: impl FnOnce() -> Result<(), ImageWorkspaceError>,
+    fallback: impl FnOnce() -> Result<(), ImageWorkspaceError>,
+) -> Result<(), ImageWorkspaceError> {
+    match clone() {
+        Ok(()) => Ok(()),
+        Err(_) => fallback(),
     }
 }
 
@@ -857,4 +679,38 @@ fn copy_tree(
         Ok(())
     }
     copy(source, target, source, excludes, check)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::cell::RefCell;
+
+    #[test]
+    fn timed_out_clone_is_killed_and_reaped_before_copy_fallback() {
+        let steps = RefCell::new(Vec::new());
+        let result = copy_with_fallback(
+            || {
+                steps.borrow_mut().push("timeout");
+                terminate_with(
+                    || {
+                        steps.borrow_mut().push("kill");
+                        Ok(())
+                    },
+                    || {
+                        steps.borrow_mut().push("reap");
+                        Ok(())
+                    },
+                );
+                Err(ImageWorkspaceError::Backend("cp timed out".into()))
+            },
+            || {
+                steps.borrow_mut().push("fallback");
+                Ok(())
+            },
+        );
+
+        assert!(result.is_ok());
+        assert_eq!(*steps.borrow(), ["timeout", "kill", "reap", "fallback"]);
+    }
 }
