@@ -167,6 +167,11 @@ pub fn prepare_work_item(
     base_ref: &str,
     base_commit: &str,
     parent_epoch: i64,
+    parent_cwd: &str,
+    parent_account_key: &str,
+    parent_project_id: Option<&Value>,
+    parent_project_server_id: Option<&Value>,
+    project_binding: Option<&Value>,
     account: &AccountIdentity,
     catalog: &dyn CreationCatalog,
 ) -> Result<AgentRecord, CreateError> {
@@ -175,7 +180,14 @@ pub fn prepare_work_item(
     }
     validate_base(Some(base_ref), Some(base_commit))?;
     let path = canonical_directory(path)?;
+    if path != parent_cwd {
+        return Err(CreateError::IdentityChanged);
+    }
     let account_key = required_string_value(body, "account_key")?;
+    let name = required_string_value(body, "name")?;
+    if name.chars().count() > 80 {
+        return Err(CreateError::InvalidCreation("name"));
+    }
     let model = required_string_value(body, "model")?;
     let settings = catalog.resolve(
         account_key,
@@ -188,8 +200,11 @@ pub fn prepare_work_item(
     let created = crate::event_write::unix_time().map_err(|_| CreateError::Internal)?;
     let mut draft = build_agent_record(
         id.as_ref(),
-        model,
-        body.get("prompt").and_then(Value::as_str).unwrap_or(""),
+        name,
+        body.get("prompt")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .trim(),
         &path,
         account_key,
         account.provider.as_deref().unwrap_or(""),
@@ -201,7 +216,7 @@ pub fn prepare_work_item(
         None,
         DEFAULT_MAX_AGENTS,
         Value::Null,
-        true,
+        false,
         created,
         None,
     );
@@ -213,7 +228,10 @@ pub fn prepare_work_item(
     draft["prompt"] = body
         .get("prompt")
         .filter(|value| value.is_string())
-        .cloned()
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .map(str::to_owned)
+        .map(Value::String)
         .ok_or(CreateError::InvalidCreation("prompt"))?;
     if draft["prompt"]
         .as_str()
@@ -231,10 +249,18 @@ pub fn prepare_work_item(
     draft["workerBaseCommit"] = json!(base_commit);
     draft["model"] = json!(settings.model);
     draft["effort"] = json!(settings.effort);
+    draft["nativeEffort"] = json!(settings.native_effort);
     draft["fastMode"] = json!(settings.fast_mode);
     draft["daybreakEnabled"] = json!(settings.daybreak_enabled);
+    draft["workspaceModeExplicit"] =
+        json!(body.get("workspace_explicit").and_then(Value::as_bool) == Some(true));
     draft["cyberAccessProgram"] = json!(settings.cyber_access_program);
     draft["_p02CreationIdentity"] = identity_value(account);
+    draft["_p02ParentCwd"] = json!(parent_cwd);
+    draft["_p02ParentAccountKey"] = json!(parent_account_key);
+    draft["_p02ParentProjectId"] = parent_project_id.cloned().unwrap_or(Value::Null);
+    draft["_p02ParentProjectServerId"] = parent_project_server_id.cloned().unwrap_or(Value::Null);
+    draft["_p02ProjectBinding"] = project_binding.cloned().unwrap_or(Value::Null);
     checked_agent(draft, &id)
 }
 
@@ -294,17 +320,43 @@ pub fn recheck_worker(
     {
         return Err(CreateError::IdentityChanged);
     }
-    recheck_parent_epoch(transaction, draft, parent_epoch)
+    recheck_parent_epoch(transaction, draft, parent_epoch)?;
+    let parent_id = field(draft, "parentId")
+        .and_then(Value::as_str)
+        .ok_or(CreateError::IdentityChanged)?;
+    let parent =
+        studio_runtime_store::AgentRepository::get(transaction, &AgentId::from(parent_id))?
+            .ok_or(CreateError::IdentityChanged)?;
+    let frozen_cwd = field(draft, "_p02ParentCwd");
+    let frozen_account = field(draft, "_p02ParentAccountKey");
+    if field(&parent, "cwd") != frozen_cwd
+        || field(&parent, "accountKey") != frozen_account
+        || field(&parent, "projectId").and_then(Value::as_str)
+            != field(draft, "_p02ParentProjectId").and_then(Value::as_str)
+        || field(&parent, "projectServerId").and_then(Value::as_str)
+            != field(draft, "_p02ParentProjectServerId").and_then(Value::as_str)
+    {
+        return Err(CreateError::IdentityChanged);
+    }
+    let cwd = frozen_cwd
+        .and_then(Value::as_str)
+        .ok_or(CreateError::IdentityChanged)?;
+    let frozen_project = field(draft, "_p02ProjectBinding")
+        .filter(|value| !value.is_null())
+        .cloned();
+    let current_project = ProjectsRepository::get(transaction, cwd)?.map(|(_, value)| value);
+    if current_project != frozen_project {
+        return Err(CreateError::IdentityChanged);
+    }
+    Ok(())
 }
 
 /// Remove P02's transient account observation before storing the checked record.
 /// Call only after `recheck` or `recheck_worker` succeeds inside the writer transaction.
 pub fn persisted_record(draft: &AgentRecord) -> Result<AgentRecord, CreateError> {
     let mut value = draft.value();
-    value
-        .as_object_mut()
-        .ok_or(CreateError::Internal)?
-        .remove("_p02CreationIdentity");
+    let fields = value.as_object_mut().ok_or(CreateError::Internal)?;
+    fields.retain(|key, _| !key.starts_with("_p02"));
     checked_agent(value, &draft.id)
 }
 
@@ -487,16 +539,8 @@ fn optional_string<'a>(
 }
 
 fn canonical_directory(path: &Path) -> Result<String, CreateError> {
-    let canonical = path
-        .canonicalize()
-        .map_err(|_| CreateError::InvalidCreation("path"))?;
-    if !canonical.is_dir() {
-        return Err(CreateError::InvalidCreation("path"));
-    }
-    canonical
-        .to_str()
-        .map(str::to_owned)
-        .ok_or(CreateError::InvalidCreation("path"))
+    crate::agents_create::canonical_project_directory(path)
+        .map_err(|_| CreateError::InvalidCreation("path"))
 }
 
 fn validate_base(base_ref: Option<&str>, base_commit: Option<&str>) -> Result<(), CreateError> {
@@ -570,6 +614,115 @@ mod tests {
             {"account_key":"one","model":"model-one"},
             {"account_key":"two","model":"model-two","effort":"high"}
         ]})
+    }
+
+    struct WorkerDraftFixture {
+        database: Connection,
+        draft: AgentRecord,
+        account: AccountIdentity,
+        parent_id: AgentId,
+        cwd: String,
+    }
+
+    fn worker_draft_fixture() -> WorkerDraftFixture {
+        let directory = tempdir().expect("temporary worker project");
+        let cwd = directory.path().canonicalize().expect("canonical project");
+        let cwd = cwd.to_str().expect("UTF-8 test path").to_owned();
+        let parent_id = AgentId::from(IDS[0]);
+        let child_id = AgentId::from(IDS[1]);
+        let account = accounts()[0].clone();
+        let database = Connection::open_in_memory().expect("open worker database");
+        database
+            .execute_batch(
+                "CREATE TABLE runtime_agents(id TEXT PRIMARY KEY,record TEXT NOT NULL);
+                 CREATE TABLE runtime_projects(id TEXT PRIMARY KEY,record TEXT NOT NULL);",
+            )
+            .expect("worker tables");
+        let mut parent = build_agent_record(
+            parent_id.as_ref(),
+            "Parent",
+            "",
+            &cwd,
+            "parent-account",
+            "codex",
+            true,
+            "orchestrator",
+            true,
+            "idle",
+            "worktree",
+            Some(DEFAULT_CONCURRENCY),
+            DEFAULT_MAX_AGENTS,
+            Value::Null,
+            true,
+            1.0,
+            None,
+        );
+        parent["autoWake"] = json!(true);
+        parent["maxAgents"] = json!(DEFAULT_MAX_AGENTS);
+        database
+            .execute(
+                "INSERT INTO runtime_agents(id,record) VALUES(?1,?2)",
+                rusqlite::params![parent_id.0, parent.to_string()],
+            )
+            .expect("save parent");
+        let project = json!({
+            "id":cwd,"path":cwd,"accountKey":"parent-account",
+            "projectId":"project-one","projectServerId":"server-one"
+        });
+        database
+            .execute(
+                "INSERT INTO runtime_projects(id,record) VALUES(?1,?2)",
+                rusqlite::params![cwd, project.to_string()],
+            )
+            .expect("save project binding");
+        let body = json!({
+            "account_key":"worker-account","name":"Named worker",
+            "model":"model-one","prompt":"Do the task"
+        });
+        let draft = prepare_work_item(
+            &body,
+            Path::new(&cwd),
+            child_id,
+            parent_id.clone(),
+            parent_id.clone(),
+            "HEAD",
+            &"a".repeat(40),
+            0,
+            &cwd,
+            "parent-account",
+            None,
+            None,
+            Some(&project),
+            &account,
+            &Catalog,
+        )
+        .expect("typed worker draft");
+        WorkerDraftFixture {
+            database,
+            draft,
+            account,
+            parent_id,
+            cwd,
+        }
+    }
+
+    fn assert_worker_recheck_refuses_without_writes(fixture: &mut WorkerDraftFixture) {
+        let tx = fixture.database.transaction().expect("transaction");
+        assert!(matches!(
+            recheck_worker(&tx, &fixture.draft, 0, &fixture.account),
+            Err(CreateError::IdentityChanged)
+        ));
+        drop(tx);
+        let counts: (i64, i64) = fixture
+            .database
+            .query_row(
+                "SELECT (SELECT COUNT(*) FROM runtime_agents),
+                        (SELECT COUNT(*) FROM runtime_projects)",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("count state after refused recheck");
+        assert_eq!(counts, (1, 1));
     }
 
     #[test]
@@ -707,6 +860,71 @@ mod tests {
             )
             .expect("saved project after recheck");
         assert_eq!(before, after);
+    }
+
+    #[test]
+    fn worker_recheck_refuses_parent_cwd_changes() {
+        let mut fixture = worker_draft_fixture();
+        fixture
+            .database
+            .execute(
+                "UPDATE runtime_agents SET record=json_set(record,'$.cwd','/stale') WHERE id=?1",
+                [&fixture.parent_id.0],
+            )
+            .expect("change parent cwd");
+        assert_worker_recheck_refuses_without_writes(&mut fixture);
+    }
+
+    #[test]
+    fn worker_recheck_refuses_parent_account_changes() {
+        let mut fixture = worker_draft_fixture();
+        fixture
+            .database
+            .execute(
+                "UPDATE runtime_agents SET record=json_set(record,'$.accountKey','changed-account') WHERE id=?1",
+                [&fixture.parent_id.0],
+            )
+            .expect("change parent account");
+        assert_worker_recheck_refuses_without_writes(&mut fixture);
+    }
+
+    #[test]
+    fn worker_recheck_refuses_parent_project_binding_changes() {
+        let mut fixture = worker_draft_fixture();
+        fixture
+            .database
+            .execute(
+                "UPDATE runtime_agents SET record=json_set(record,'$.projectId','changed-project') WHERE id=?1",
+                [&fixture.parent_id.0],
+            )
+            .expect("change parent project binding");
+        assert_worker_recheck_refuses_without_writes(&mut fixture);
+    }
+
+    #[test]
+    fn worker_recheck_refuses_parent_project_server_changes() {
+        let mut fixture = worker_draft_fixture();
+        fixture
+            .database
+            .execute(
+                "UPDATE runtime_agents SET record=json_set(record,'$.projectServerId','changed-server') WHERE id=?1",
+                [&fixture.parent_id.0],
+            )
+            .expect("change parent project server");
+        assert_worker_recheck_refuses_without_writes(&mut fixture);
+    }
+
+    #[test]
+    fn worker_recheck_refuses_project_binding_changes() {
+        let mut fixture = worker_draft_fixture();
+        fixture
+            .database
+            .execute(
+                "UPDATE runtime_projects SET record=json_set(record,'$.projectId','changed-project') WHERE id=?1",
+                [&fixture.cwd],
+            )
+            .expect("change project binding");
+        assert_worker_recheck_refuses_without_writes(&mut fixture);
     }
 
     #[test]

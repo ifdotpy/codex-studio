@@ -12,10 +12,13 @@ import os
 import sqlite3
 import subprocess
 import sys
+import time
 import unittest
 import uuid
 from contextlib import closing, contextmanager
 from pathlib import Path
+from urllib.parse import urlencode
+from urllib.request import Request, urlopen
 
 
 isolate_supervisor_environment()
@@ -25,7 +28,12 @@ from runtime_test_environment import make_runtime
 HERE = Path(__file__).resolve().parent
 SERVER_SOURCE = HERE.parent / "src"
 REVIEW_CORPUS = json.loads((HERE / "fixtures/rust-agents-create/review-corpus.json").read_text())
-from http_backend_harness import TimedHTTPContractTest, start_contract_backend, no_write_snapshot
+from http_backend_harness import (
+    HTTP_WAIT_GUARD_SECONDS,
+    TimedHTTPContractTest,
+    start_contract_backend,
+    no_write_snapshot,
+)
 
 _fixture_spec = importlib.util.spec_from_file_location(
     "agents_create_runtime_fixture", HERE / "runtime-contract.py"
@@ -87,8 +95,10 @@ def rename_state(state: Path, agent_id: str, request_id: str):
 def normalized_agent(value):
     result = dict(value)
     result.pop("creationIntent", None)
+    own_id = result.get("id")
     result["id"] = "<agent>"
-    result["rootId"] = "<agent>"
+    if result.get("rootId") == own_id:
+        result["rootId"] = "<agent>"
     result["created"] = 0
     if "serverId" in result:
         result["serverId"] = "<server>"
@@ -125,6 +135,29 @@ def python_draft(backend, request, draft=True):
         runtime.close()
 
 
+def python_worker_draft(backend, request, parent_id):
+    """Capture Python's complete child record, then remove its fixture writes."""
+    backend.stop()
+
+    class QuietRuntime(_fixture.Runtime):
+        def schedule(self):
+            pass
+
+    runtime = QuietRuntime(backend.state, _fixture.FakeServer)
+    child_id = request["id"]
+    try:
+        created = runtime.create(request, parent=parent_id, defer=False)
+        with runtime.db() as database:
+            expected = runtime.agent(created["id"], database)
+            database.execute("DELETE FROM runtime_agents WHERE id=?", (child_id,))
+            database.execute("DELETE FROM sync_entities WHERE collection='agent' AND id=?", (child_id,))
+            database.execute("DELETE FROM runtime_events WHERE agent=?", (child_id,))
+            database.execute("DELETE FROM runtime_event_meta WHERE id=?", (child_id + ":initial",))
+        return expected
+    finally:
+        runtime.close()
+
+
 class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
@@ -142,6 +175,49 @@ class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             "X-Canvas-Token": self.backend.session["token"],
             "X-Studio-API-Schema": self.backend.schema_hash,
         }
+
+    def await_model_catalog(self, account_key):
+        backend = self.backend
+        query = urlencode({
+            "protocol": "3",
+            "apiSchema": backend.schema_hash,
+            "resources": json.dumps([{"kind": "models"}], separators=(",", ":")),
+        })
+        request = Request(
+            f"{backend.origin}/api/sync/stream?{query}",
+            headers=self.headers(),
+        )
+
+        def next_event(response, deadline):
+            event = None
+            raw_socket = response.fp.raw._sock
+            while time.monotonic() < deadline:
+                raw_socket.settimeout(max(0.01, deadline - time.monotonic()))
+                line = response.readline().decode("utf-8").rstrip("\r\n")
+                if line.startswith("event: "):
+                    event = line.removeprefix("event: ")
+                elif not line and event is not None:
+                    return event
+            raise TimeoutError("Model catalog readiness event did not arrive")
+
+        with urlopen(request, timeout=HTTP_WAIT_GUARD_SECONDS) as response:
+            deadline = time.monotonic() + HTTP_WAIT_GUARD_SECONDS
+            while next_event(response, deadline) != "resources":
+                pass
+            catalog_query = urlencode({"account_key": account_key})
+            initial = backend.request(
+                "GET", f"/api/models?{catalog_query}", headers=self.headers()
+            )
+            if initial.status == 200:
+                return
+            self.assertEqual(initial.status, 400, initial.body[:1000])
+            self.assertTrue(initial.json().get("catalogPending"), initial.body[:1000])
+            while next_event(response, deadline) != "resources":
+                pass
+            ready = backend.request(
+                "GET", f"/api/models?{catalog_query}", headers=self.headers()
+            )
+            self.assertEqual(ready.status, 200, ready.body[:1000])
 
     def test_draft_creation_replays_same_content_and_syncs_python_shape(self):
         reference_request = {
@@ -416,33 +492,37 @@ class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             "workspaceMode": "worktree",
         }
         parent = python_draft(self.backend, parent_request)
-        self.backend.start()
-        models = self.backend.request("GET", "/api/models", headers=self.headers())
-        if models.status != 200:
-            models = self.backend.wait_until(
-                lambda: (response if (response := self.backend.request(
-                    "GET", "/api/models", headers=self.headers()
-                )).status == 200 else None),
-                "fresh model catalog for child creation",
-            )
-        self.assertEqual(models.status, 200, models.body[:1000])
         request = {
             "id": str(uuid.uuid4()),
             "parent": parent_request["id"],
             "cwd": str(self.backend.cwd),
-            "name": "P02 child",
-            "prompt": "Use the frozen base.",
+            "name": "  P02 child  ",
+            "prompt": "  Use the frozen base.  ",
             "workspaceMode": "worktree",
         }
+        expected = python_worker_draft(
+            self.backend,
+            {
+                **{key: value for key, value in request.items() if key != "workspaceMode"},
+                "_workerBaseRef": "HEAD",
+                "_workerBaseCommit": base_commit,
+                "_workspaceMode": "worktree",
+                "_workspaceExplicit": True,
+            },
+            parent["record"]["id"],
+        )
+        self.backend.start()
+        account_key = parent["record"].get("accountKey", "default")
+        registry = json.loads((self.backend.state / "accounts/registry.json").read_text())
+        account_row = registry["accounts"][account_key]
+        self.assertIsInstance(account_row.get("home"), str)
+        self.assertIsNone(account_row.get("provider"))
+        self.await_model_catalog(account_key)
         before = no_write_snapshot(self.backend.state)
         first = self.backend.request("POST", "/api/agents", body=request, headers=self.headers())
-        if first.status == 501:
-            self.assertIn("provider-session/model-list", first.json()["error"])
-            self.assertEqual(no_write_snapshot(self.backend.state), before)
-            return
         self.assertEqual(first.status, 200, first.body[:1000])
-        self.assertEqual(first.json()["workerBaseCommit"], base_commit)
-        self.assertTrue(first.json()["worktree"])
+        self.assertNotEqual(no_write_snapshot(self.backend.state), before)
+        self.assertEqual(first.json()["id"], request["id"])
         self.backend.stop()
         self.backend.start()
         replay = self.backend.request("POST", "/api/agents", body=request, headers=self.headers())
@@ -460,7 +540,16 @@ class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             saved = json.loads(database.execute("SELECT record FROM runtime_agents WHERE id=?", (request["id"],)).fetchone()[0])
         self.assertEqual(saved["workerBaseRef"], "HEAD")
         self.assertEqual(saved["workerBaseCommit"], base_commit)
+        self.assertTrue(saved["worktree"])
         self.assertEqual(saved["parentId"], parent["record"]["id"])
+        self.assertEqual(saved["rootId"], parent["record"]["rootId"])
+        expected_fields = REVIEW_CORPUS["childStoredFields"]
+        self.assertEqual(saved["name"], expected_fields["name"])
+        self.assertEqual(saved["prompt"], expected_fields["prompt"])
+        self.assertEqual(
+            agent_delta(normalized_agent(saved), normalized_agent(expected)),
+            {},
+        )
 
     def test_rename_reads_python_written_agent_and_projection(self):
         before = rename_state(self.backend.state, self.agent_id, "title-request-1")

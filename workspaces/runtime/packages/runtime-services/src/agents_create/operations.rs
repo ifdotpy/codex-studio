@@ -103,6 +103,7 @@ fn create(
     mut request: Creation,
     draft: bool,
 ) -> Result<Value, OperationError> {
+    let server_id = local_server_id(context)?;
     let id = request.id.clone().map_or_else(new_id, Ok)?;
     let workspace = request
         .workspace
@@ -141,7 +142,11 @@ fn create(
     if existing.is_some() {
         return context.store.transaction_with_error(|tx| {
             let current = replay(tx)?.ok_or(CreateError::Conflict)?;
-            Ok(sync_projection(tx, &current)?)
+            Ok(sync_projection_with_server_id(
+                tx,
+                &current,
+                server_id.as_deref(),
+            )?)
         });
     }
     let read = context.store.read()?;
@@ -408,7 +413,11 @@ fn create(
     .any(|field| request.intent.get(*field).is_some());
     mutate(context, |tx| {
         if let Some(existing) = replay(tx)? {
-            return Ok(sync_projection(tx, &existing)?);
+            return Ok(sync_projection_with_server_id(
+                tx,
+                &existing,
+                server_id.as_deref(),
+            )?);
         }
         if let Some(prior) = previous_lead(tx, request.previous.as_deref(), &validate)?
             && request.reuse_empty.unwrap_or(true)
@@ -480,7 +489,11 @@ fn create(
                 rusqlite::params![id, reused["id"].as_str(), signature],
             )
             .map_err(StoreError::from)?;
-            return Ok(sync_projection(tx, &reused)?);
+            return Ok(sync_projection_with_server_id(
+                tx,
+                &reused,
+                server_id.as_deref(),
+            )?);
         }
         if let Some(binding) = &binding {
             let current = resolve_project_binding_from(
@@ -496,8 +509,14 @@ fn create(
                 return Err(CreateError::IdentityChanged.into());
             }
         }
-        Ok(super::create_agent(
-            tx, &id, prompt, record, created, validate,
+        Ok(super::create_agent_with_server_id(
+            tx,
+            &id,
+            prompt,
+            record,
+            created,
+            validate,
+            server_id.as_deref(),
         )?)
     })
 }
@@ -510,7 +529,7 @@ fn create_child(
     validate: &impl Fn(&str, &Value) -> bool,
 ) -> Result<Value, OperationError> {
     let parent_id = request.parent.as_deref().ok_or(OperationError::Internal)?;
-    let (parent, root) = {
+    let (parent, root, project_binding) = {
         let db = context.store.read()?;
         let parent =
             load_agent_value(&db, parent_id, validate)?.ok_or(MutationError::UnknownAgent)?;
@@ -522,7 +541,13 @@ fn create_child(
             .and_then(Value::as_str)
             .ok_or(OperationError::Internal)?;
         let root = load_agent_value(&db, root_id, validate)?.ok_or(MutationError::UnknownAgent)?;
-        (parent, root)
+        let cwd = parent
+            .get("cwd")
+            .and_then(Value::as_str)
+            .ok_or(OperationError::Internal)?;
+        let project =
+            studio_runtime_store::ProjectsRepository::get(&db, cwd)?.map(|(_, project)| project);
+        (parent, root, project)
     };
     if !truthy(root.get("isLead"))
         || root.get("id").and_then(Value::as_str) != root.get("rootId").and_then(Value::as_str)
@@ -620,14 +645,24 @@ fn create_child(
     let (base_ref, base_commit) =
         crate::host_worker_create::freeze_base(PathBuf::from(cwd).as_path())?;
     let body = json!({
-        "account_key":account,"model":model,"effort":effort,"fast_mode":fast_mode,
-        "daybreak_enabled":daybreak,"prompt":request.prompt
+        "account_key":account,"name":request.name.as_deref().unwrap_or(model),
+        "model":model,"effort":effort,"fast_mode":fast_mode,
+        "daybreak_enabled":daybreak,"prompt":request.prompt,
+        "workspace_explicit":request.workspace.is_some()
     });
     let root_agent = root
         .get("id")
         .and_then(Value::as_str)
         .ok_or(OperationError::Internal)?;
     let epoch = parent.get("epoch").and_then(Value::as_i64).unwrap_or(0);
+    let parent_cwd = parent
+        .get("cwd")
+        .and_then(Value::as_str)
+        .ok_or(OperationError::Internal)?;
+    let parent_account_key = parent
+        .get("accountKey")
+        .and_then(Value::as_str)
+        .unwrap_or("default");
     let draft = crate::host_worker_create::prepare_work_item(
         &body,
         PathBuf::from(cwd).as_path(),
@@ -637,6 +672,11 @@ fn create_child(
         &base_ref,
         &base_commit,
         epoch,
+        parent_cwd,
+        parent_account_key,
+        parent.get("projectId"),
+        parent.get("projectServerId"),
+        project_binding.as_ref(),
         &identity,
         catalog,
     )?;
@@ -655,9 +695,18 @@ fn create_child(
         .and_then(Value::as_f64)
         .ok_or(OperationError::Internal)?;
     let prompt = request.prompt.trim();
+    let server_id = local_server_id(context)?;
     mutate(context, |tx| {
         crate::host_worker_create::recheck_worker(tx, &draft, epoch, &identity)?;
-        Ok(create_agent(tx, id, prompt, record, created, validate)?)
+        Ok(super::create_agent_with_server_id(
+            tx,
+            id,
+            prompt,
+            record,
+            created,
+            validate,
+            server_id.as_deref(),
+        )?)
     })
 }
 
@@ -1433,7 +1482,7 @@ fn account_identity(
     }
     let string_field = |key: &str| row.get(key).and_then(Value::as_str).map(str::to_owned);
     Ok(AccountIdentity {
-        provider: string_field("provider"),
+        provider: Some(string_field("provider").unwrap_or_else(|| "codex".to_owned())),
         home: string_field("home"),
         account_id: string_field("accountId"),
         email: string_field("email"),
@@ -1666,32 +1715,22 @@ fn project_directory_default() -> Result<String, OperationError> {
     project_directory(&path.to_string_lossy())
 }
 pub(crate) fn project_directory(value: &str) -> Result<String, OperationError> {
-    let expand_home = |value: &str| {
-        if value == "~" || value.starts_with("~/") {
-            std::env::var_os("HOME")
-                .map(PathBuf::from)
-                .map(|home| {
-                    if value == "~" {
-                        home
-                    } else {
-                        home.join(&value[2..])
-                    }
-                })
-                .unwrap_or_else(|| PathBuf::from(value))
-        } else {
-            PathBuf::from(value)
-        }
+    let path = if value == "~" || value.starts_with("~/") {
+        std::env::var_os("HOME").map_or_else(
+            || PathBuf::from(value),
+            |home| {
+                let home = PathBuf::from(home);
+                if value == "~" {
+                    home
+                } else {
+                    home.join(&value[2..])
+                }
+            },
+        )
+    } else {
+        PathBuf::from(value)
     };
-    let path = expand_home(value);
-    let path = path
-        .canonicalize()
-        .map_err(|_| OperationError::Invalid("Select an existing project directory"))?;
-    if !path.is_dir() {
-        return Err(OperationError::Invalid(
-            "Select an existing project directory",
-        ));
-    }
-    Ok(path.to_string_lossy().into_owned())
+    super::canonical_project_directory(&path).map_err(OperationError::Invalid)
 }
 
 fn lead_signature(body: &Value, workspace_mode: &str, cwd: Option<&str>) -> String {
@@ -1791,6 +1830,15 @@ fn mutate(
     })
 }
 
+fn local_server_id(context: &Context<'_>) -> Result<Option<String>, OperationError> {
+    let state_dir = context
+        .store
+        .root()
+        .to_str()
+        .ok_or(OperationError::Internal)?;
+    Ok(crate::sync_entity_context::local_server_id(state_dir)?)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1854,6 +1902,23 @@ mod tests {
             }
         }
         let store = RuntimeStore::open(Some(&root)).expect("runtime store");
+        let registry_path = root.join("accounts/registry.json");
+        std::fs::create_dir_all(registry_path.parent().expect("registry parent"))
+            .expect("create registry directory");
+        std::fs::write(
+            &registry_path,
+            json!({
+                "version":1,
+                "defaultAccountKey":"default",
+                "accounts":{"default":{"id":"default","home":root,"label":"Codex","source":"Codex CLI","status":"signedOut"}},
+                "logins":{},
+                "deleteReceipts":{}
+            })
+            .to_string(),
+        )
+        .expect("write fixture account registry");
+        let driver = crate::account_driver::AccountDriver::open(&registry_path)
+            .expect("open fixture account driver");
         for scenario in ["agent", "lead", "previous"] {
             let intent = if scenario == "agent" {
                 json!({"cwd":root,"name":"Lead","prompt":"Task"})
@@ -1900,7 +1965,7 @@ mod tests {
             let context = Context {
                 store: &store,
                 accounts: None,
-                driver: None,
+                driver: Some(&driver),
                 catalog: None,
                 validate: &validate,
             };

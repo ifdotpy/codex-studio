@@ -14,6 +14,10 @@
     "worker_defaults",
     "review_defaults"
   ],
+  "childStoredFields": {
+    "name": "P02 child",
+    "prompt": "Use the frozen base."
+  },
   "creationCatalogNulls": ["effort", "fast_mode", "daybreak_enabled"],
   "boundaries": [
     ["/api/leads", { "model": "gpt-6-astra" }, "provider-session/model-list"],
