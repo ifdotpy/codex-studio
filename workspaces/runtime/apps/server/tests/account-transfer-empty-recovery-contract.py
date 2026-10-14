@@ -427,6 +427,24 @@ class EmptyTransferredThreadRecovery(unittest.TestCase):
             self.t.store.destination_settings = original_settings
             self.rt.new_thread_params = original_params
 
+    def test_empty_start_proof_reads_a_source_profile_whose_login_changed(self):
+        # 2026-10-14: the proof opened the source profile through the identity check and
+        # blocked the transfer of a chat whose source login changed. It only reads files.
+        self._install_imported_archive_receipt()
+        self._write_empty_source_native_state()
+        expected = f'invalid paginated history lineage for {self.old_thread}: missing source rollout'
+        typed = self.rt.accounts.get
+        changed = "This profile's account changed. Restore its original login or add a separate profile."
+        self.rt.accounts.get = lambda key: ({**typed(key), 'status': 'changed', 'error': changed}
+                                            if key == self.t.other_key else typed(key))
+        self.addCleanup(setattr, self.rt.accounts, 'get', typed)
+        with self.assertRaisesRegex(ValueError, 'account changed'):
+            self.rt.accounts.home(self.t.other_key)
+        with self.rt.lock, self.rt.db() as db:
+            proof = self.t.store.native_empty_transfer_proof(
+                db, self.rt.agent(self.aid, db), self.old_thread, expected, source_account_key=self.t.other_key)
+        self.assertIsNotNone(proof)
+
     def test_imported_empty_start_proof_requires_its_exact_valid_archive(self):
         archive = self._install_imported_archive_receipt()
         self._write_empty_source_native_state()
