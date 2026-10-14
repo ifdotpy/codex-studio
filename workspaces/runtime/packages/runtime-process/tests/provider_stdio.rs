@@ -6,6 +6,8 @@ use studio_runtime_process::{
 };
 use tokio::time::Instant;
 
+const PROVIDER_STDERR_COMPLETION_TIMEOUT: Duration = Duration::from_secs(10);
+
 async fn child(script: &str) -> ProviderAttachment {
     StdioProviderTaskFactory {
         deadline: Instant::now() + Duration::from_secs(30),
@@ -62,9 +64,13 @@ async fn provider_stderr_is_written_to_the_state_directory_app_server_log() {
     )
     .await
     .expect("child starts");
-    attachment.journal.recv().await.expect("provider ready");
-    attachment.completion().await;
-    log.flush().expect("flush provider diagnostics");
+    let completion = tokio::time::timeout(PROVIDER_STDERR_COMPLETION_TIMEOUT, async {
+        attachment.journal.recv().await.expect("provider ready");
+        attachment.completion().await
+    })
+    .await
+    .expect("provider completion hang guard");
+    assert!(completion.cleanup_error.is_none());
     assert_eq!(
         std::fs::read(root.path().join("app-server.log")).expect("app-server log"),
         b"provider diagnostic\n\xff\n"

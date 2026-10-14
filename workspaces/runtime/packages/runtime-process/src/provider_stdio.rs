@@ -108,8 +108,16 @@ impl StdioProviderTaskFactory {
             let frame_limit = self.max_frame_bytes;
             let output_limit = self.max_output_bytes;
             let stderr_log = self.stderr_log.clone();
+            let stderr_log_for_flush = stderr_log.clone();
             let mut stop = shutdown.subscribe();
             let task = tokio::spawn(async move {
+                // Start the stderr owner before selecting on shutdown. Even an
+                // immediately cancelled exchange must retain and drain this pipe.
+                let stderr_drain = child.stderr().take().map(|mut stderr| {
+                    let log = stderr_log.clone();
+                    tokio::spawn(async move { drain_stderr(&mut stderr, log.as_ref()).await })
+                });
+                let stderr_available = stderr_drain.is_some();
                 let exchange = async {
                     let stdin = child
                         .stdin()
@@ -119,10 +127,9 @@ impl StdioProviderTaskFactory {
                         .stdout()
                         .take()
                         .ok_or(AdapterError::InvalidConfiguration)?;
-                    let mut stderr = child
-                        .stderr()
-                        .take()
-                        .ok_or(AdapterError::InvalidConfiguration)?;
+                    if !stderr_available {
+                        return Err(AdapterError::InvalidConfiguration);
+                    }
                     tokio::try_join!(
                         write_commands(stdin, inbox),
                         read_entries(
@@ -132,11 +139,7 @@ impl StdioProviderTaskFactory {
                             generation,
                             frame_limit,
                             output_limit
-                        ),
-                        async {
-                            drain_stderr(&mut stderr, stderr_log.as_ref()).await?;
-                            Ok(())
-                        },
+                        )
                     )?;
                     Ok(())
                 };
@@ -159,10 +162,31 @@ impl StdioProviderTaskFactory {
                     })
                     .and(reaped.map(|_| ()))
                     .map_err(process_error);
+                let stderr_result = match stderr_drain {
+                    Some(mut stderr_drain) => {
+                        match tokio::time::timeout(REAP_GRACE, &mut stderr_drain).await {
+                            Ok(Ok(result)) => result,
+                            Ok(Err(_)) => Err(AdapterError::TaskFailed),
+                            Err(_) => {
+                                stderr_drain.abort();
+                                Err(AdapterError::Timeout)
+                            }
+                        }
+                    }
+                    None => Ok(()),
+                };
+                // The log writer is a separate thread; completion includes its flush.
+                let stderr_flush = match stderr_log_for_flush {
+                    Some(log) => tokio::task::spawn_blocking(move || log.flush())
+                        .await
+                        .map_err(|_| AdapterError::TaskFailed)
+                        .and_then(|result| result.map_err(process_error)),
+                    None => Ok(()),
+                };
                 let cleanup_error = cleanup.as_ref().err().map(ToString::to_string);
                 drop(state);
                 TaskExit {
-                    result: cleanup.and(result),
+                    result: cleanup.and(result).and(stderr_result).and(stderr_flush),
                     cleanup_error,
                     recovery_needed: None,
                 }
