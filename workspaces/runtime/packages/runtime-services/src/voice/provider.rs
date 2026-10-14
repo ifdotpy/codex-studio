@@ -86,6 +86,7 @@ pub struct VoiceDeleteIntent {
     pub agent_id: String,
     pub epoch: i64,
     pub sessions: Vec<VoiceDeleteSession>,
+    pub held_uncertain: Vec<VoiceDeleteSession>,
 }
 
 const DELETE_VOICE_RECEIPT_SIGNATURE: &str = "voice-agent-delete-v1";
@@ -154,6 +155,96 @@ pub fn capture_delete_sessions(
     .map_err(VoiceProviderError::from)
 }
 
+fn capture_delete_voice_sessions(
+    connection: &Connection,
+    agent_id: &str,
+) -> Result<(Vec<VoiceDeleteSession>, Vec<VoiceDeleteSession>), VoiceProviderError> {
+    let sessions = capture_delete_sessions(connection, agent_id)?;
+    let mut dispatchable = Vec::with_capacity(sessions.len());
+    let mut held_uncertain = Vec::new();
+    for session in sessions {
+        match prior_voice_stop_result(connection, &session)? {
+            Some(PriorVoiceStopResult::Submitted | PriorVoiceStopResult::Unknown) => {
+                held_uncertain.push(session);
+            }
+            Some(PriorVoiceStopResult::Written) => {}
+            _ => dispatchable.push(session),
+        }
+    }
+    Ok((dispatchable, held_uncertain))
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PriorVoiceStopResult {
+    Submitted,
+    Unknown,
+    NotSent,
+    Written,
+    Other,
+}
+
+fn prior_voice_stop_result(
+    connection: &Connection,
+    session: &VoiceDeleteSession,
+) -> Result<Option<PriorVoiceStopResult>, VoiceProviderError> {
+    let operation = format!("voice:stop:{}", session.session_id);
+    let prefix = format!(
+        "account-worker:retained:{}:{}",
+        session.account_key,
+        studio_runtime_store::sha256_hex(operation.as_bytes())
+    );
+    let settled_result: Option<Option<String>> = connection
+        .query_row(
+            "SELECT settled.result FROM runtime_operation_receipts submitted \
+         LEFT JOIN runtime_operation_receipts settled ON settled.id=?2 \
+         WHERE submitted.id=?1 \
+         AND json_extract(submitted.result,'$.call.operation')=?3 \
+         AND json_extract(submitted.result,'$.call.method')='thread/realtime/stop' \
+         AND json_extract(submitted.result,'$.call.actor.agent')=?4 \
+         AND json_extract(submitted.result,'$.call.actor.epoch')<=?5 \
+         AND json_extract(submitted.result,'$.call.scope.account')=?6 \
+         AND json_extract(submitted.result,'$.call.scope.connection')=?7 \
+         AND json_extract(submitted.result,'$.call.scope.generation')=?8 \
+         AND json_extract(submitted.result,'$.call.params.threadId')=?9 \
+         LIMIT 1",
+            rusqlite::params![
+                format!("{prefix}:submitted"),
+                format!("{prefix}:result"),
+                operation,
+                session.agent_id,
+                session.epoch,
+                session.account_key,
+                session.connection_id,
+                i64::try_from(session.generation)
+                    .map_err(|_| VoiceProviderError::ContextChanged)?,
+                session.thread_id,
+            ],
+            |row| row.get::<_, Option<String>>(0),
+        )
+        .optional()?;
+    let Some(settled_result) = settled_result else {
+        return Ok(None);
+    };
+    let Some(settled_result) = settled_result else {
+        return Ok(Some(PriorVoiceStopResult::Submitted));
+    };
+    let receipt: Value =
+        serde_json::from_str(&settled_result).map_err(|_| VoiceProviderError::ContextChanged)?;
+    let result = serde_json::from_value::<crate::account_worker::retained::RequestResult>(
+        receipt
+            .get("result")
+            .cloned()
+            .ok_or(VoiceProviderError::ContextChanged)?,
+    )
+    .map_err(|_| VoiceProviderError::ContextChanged)?;
+    Ok(Some(match result {
+        crate::account_worker::retained::RequestResult::Reply(_) => PriorVoiceStopResult::Written,
+        crate::account_worker::retained::RequestResult::NotSent => PriorVoiceStopResult::NotSent,
+        crate::account_worker::retained::RequestResult::Unknown => PriorVoiceStopResult::Unknown,
+        crate::account_worker::retained::RequestResult::Rejected(_) => PriorVoiceStopResult::Other,
+    }))
+}
+
 /// Stage post-commit provider stops in the same transaction that deletes an
 /// agent and its voice rows. The lifecycle transaction must call this before
 /// deleting voice sessions, commit the returned intent with the tombstone, then
@@ -190,19 +281,28 @@ pub fn stage_delete_sessions(
                 .ok_or(VoiceProviderError::ContextChanged)?,
         )
         .map_err(|_| VoiceProviderError::ContextChanged)?;
+        let held_uncertain: Vec<VoiceDeleteSession> = serde_json::from_value(
+            result
+                .get("voiceEndHeldUncertain")
+                .cloned()
+                .unwrap_or_else(|| json!([])),
+        )
+        .map_err(|_| VoiceProviderError::ContextChanged)?;
         return Ok(VoiceDeleteIntent {
             id: receipt_id,
             agent_id: agent_id.to_owned(),
             epoch: agent.epoch,
             sessions,
+            held_uncertain,
         });
     }
 
-    let sessions = capture_delete_sessions(transaction, agent_id)?;
+    let (sessions, held_uncertain) = capture_delete_voice_sessions(transaction, agent_id)?;
     let result = json!({
         "agent": agent_id,
         "epoch": agent.epoch,
         "voiceEndSessions": sessions,
+        "voiceEndHeldUncertain": held_uncertain,
     });
     transaction.execute(
         "INSERT INTO runtime_operation_receipts(id,signature,result) VALUES(?1,?2,?3)",
@@ -217,6 +317,7 @@ pub fn stage_delete_sessions(
         agent_id: agent_id.to_owned(),
         epoch: agent.epoch,
         sessions,
+        held_uncertain,
     })
 }
 
@@ -226,6 +327,7 @@ pub fn stage_delete_sessions(
 pub fn pending_delete_intents(
     store: &RuntimeStore,
 ) -> Result<Vec<VoiceDeleteIntent>, VoiceProviderError> {
+    reconcile_proven_unsent_held_sessions(store)?;
     let connection = store.read()?;
     let mut statement = connection.prepare(
         "SELECT id,signature,result FROM runtime_operation_receipts \
@@ -265,6 +367,19 @@ pub fn pending_delete_intents(
                 .ok_or(VoiceProviderError::ContextChanged)?,
         )
         .map_err(|_| VoiceProviderError::ContextChanged)?;
+        let held_uncertain: Vec<VoiceDeleteSession> = serde_json::from_value(
+            result
+                .get("voiceEndHeldUncertain")
+                .cloned()
+                .unwrap_or_else(|| json!([])),
+        )
+        .map_err(|_| VoiceProviderError::ContextChanged)?;
+        if held_uncertain
+            .iter()
+            .any(|session| session.agent_id != agent_id || session.epoch != epoch)
+        {
+            return Err(VoiceProviderError::ContextChanged);
+        }
         if sessions
             .iter()
             .any(|session| session.agent_id != agent_id || session.epoch != epoch)
@@ -280,9 +395,86 @@ pub fn pending_delete_intents(
             agent_id: agent_id.to_owned(),
             epoch,
             sessions,
+            held_uncertain,
         });
     }
     Ok(intents)
+}
+
+/// If a held ordinary stop settles as proven NotSent after deletion, safely
+/// transfer that session to the deletion stop queue. Unknown and unsettled
+/// receipts remain held with their original identity; only proven non-delivery
+/// permits a new delete-stop identity.
+fn reconcile_proven_unsent_held_sessions(store: &RuntimeStore) -> Result<(), VoiceProviderError> {
+    store.transaction_with_error(|tx| {
+        let mut statement = tx.prepare(
+            "SELECT id,signature,result FROM runtime_operation_receipts \
+             WHERE id >= 'agent-delete-voice:' AND id < 'agent-delete-voice;' ORDER BY id",
+        )?;
+        let rows = statement.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })?;
+        let receipts = rows.collect::<Result<Vec<_>, _>>()?;
+        drop(statement);
+
+        for (id, signature, raw) in receipts {
+            if signature != DELETE_VOICE_RECEIPT_SIGNATURE {
+                continue;
+            }
+            let mut result: Value =
+                serde_json::from_str(&raw).map_err(|_| VoiceProviderError::ContextChanged)?;
+            let Some(held) = result
+                .get("voiceEndHeldUncertain")
+                .and_then(Value::as_array)
+                .cloned()
+            else {
+                continue;
+            };
+            if held.is_empty() {
+                continue;
+            }
+            let held_len = held.len();
+            let mut remaining = Vec::with_capacity(held.len());
+            let mut sessions: Vec<VoiceDeleteSession> = serde_json::from_value(
+                result
+                    .get("voiceEndSessions")
+                    .cloned()
+                    .ok_or(VoiceProviderError::ContextChanged)?,
+            )
+            .map_err(|_| VoiceProviderError::ContextChanged)?;
+            for value in held {
+                let session: VoiceDeleteSession = serde_json::from_value(value.clone())
+                    .map_err(|_| VoiceProviderError::ContextChanged)?;
+                match prior_voice_stop_result(tx, &session)? {
+                    Some(PriorVoiceStopResult::NotSent | PriorVoiceStopResult::Other) => {
+                        if !sessions
+                            .iter()
+                            .any(|queued| queued.session_id == session.session_id)
+                        {
+                            sessions.push(session);
+                        }
+                    }
+                    Some(PriorVoiceStopResult::Written) => {}
+                    _ => remaining.push(value),
+                }
+            }
+            if remaining.len() != held_len {
+                result["voiceEndSessions"] = serde_json::to_value(sessions)
+                    .map_err(|_| VoiceProviderError::ContextChanged)?;
+                result["voiceEndHeldUncertain"] = Value::Array(remaining);
+                tx.execute(
+                    "UPDATE runtime_operation_receipts SET result=?2 \
+                     WHERE id=?1 AND signature=?3",
+                    rusqlite::params![id, result.to_string(), DELETE_VOICE_RECEIPT_SIGNATURE],
+                )?;
+            }
+        }
+        Ok(())
+    })
 }
 
 fn pending_voice_delete_sessions(

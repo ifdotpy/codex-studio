@@ -552,6 +552,260 @@ async fn eight_not_sent_delete_stops_leave_the_intent_durable_and_pending() {
     }));
 }
 
+#[tokio::test]
+async fn proven_not_sent_delete_stop_retries_same_identity_and_completes_when_written() {
+    let (_root, store) = seeded_store();
+    store
+        .transaction_with_error(|transaction| -> Result<(), voice::provider::VoiceProviderError> {
+            transaction.execute(
+                "INSERT INTO voice_sessions(id,agent,created,native_thread,account_key,connection_id,state) \
+                 VALUES('delete-retry-written-session','agent',1,'thread','account','7','ready')",
+                [],
+            )?;
+            voice::provider::stage_delete_sessions(transaction, "agent")?;
+            transaction.execute("DELETE FROM voice_sessions WHERE agent='agent'", [])?;
+            Ok(())
+        })
+        .expect("stage voice stop before removing its session row");
+    let store = Arc::new(store);
+    let intent_id = "agent-delete-voice:agent:0".to_owned();
+    let first = Arc::new(ReceiptProvider {
+        certainty: VoiceWriteCertainty::NotSent,
+        calls: Mutex::new(Vec::new()),
+    });
+    let pending = voice::provider::pending_delete_intents(&store)
+        .expect("load initial delete intent")
+        .into_iter()
+        .find(|intent| intent.id == intent_id)
+        .expect("delete intent exists");
+    voice::provider::end_deleted_sessions_tracked(
+        Arc::clone(&store),
+        Arc::clone(&first) as Arc<dyn VoiceProviderPort>,
+        pending.id,
+        pending.sessions,
+        10.0,
+    )
+    .await
+    .expect("persist proven NotSent result");
+
+    let retry = voice::provider::pending_delete_intents(&store)
+        .expect("reload safe retry")
+        .into_iter()
+        .find(|intent| intent.id == intent_id)
+        .expect("NotSent leaves the deletion intent pending");
+    assert_eq!(retry.sessions.len(), 1);
+    let second = Arc::new(ReceiptProvider {
+        certainty: VoiceWriteCertainty::Written,
+        calls: Mutex::new(Vec::new()),
+    });
+    voice::provider::end_deleted_sessions_tracked(
+        Arc::clone(&store),
+        Arc::clone(&second) as Arc<dyn VoiceProviderPort>,
+        retry.id,
+        retry.sessions,
+        11.0,
+    )
+    .await
+    .expect("same operation succeeds on safe retry");
+
+    let first_call = first.calls.lock().expect("first call log")[0].clone();
+    let second_call = second.calls.lock().expect("retry call log")[0].clone();
+    assert_eq!(first_call, second_call);
+    assert_eq!(
+        first_call.0,
+        "voice:delete-stop:delete-retry-written-session"
+    );
+    let completed = voice::provider::pending_delete_intents(&store)
+        .expect("reload completed deletion")
+        .into_iter()
+        .find(|intent| intent.id == intent_id)
+        .expect("completed receipt remains durable");
+    assert!(completed.sessions.is_empty());
+    let connection = store.read().expect("read completed receipt");
+    let raw: String = connection
+        .query_row(
+            "SELECT result FROM runtime_operation_receipts WHERE id=?1",
+            [&intent_id],
+            |row| row.get(0),
+        )
+        .expect("delete receipt retained");
+    let result: serde_json::Value = serde_json::from_str(&raw).expect("valid receipt JSON");
+    assert_eq!(
+        result["voiceEndResults"]["delete-retry-written-session"],
+        "written"
+    );
+}
+
+#[tokio::test]
+async fn delete_holds_an_unknown_stop_and_sends_only_for_the_active_session() {
+    let (_root, store) = seeded_store();
+    let unknown_session = "previous-unknown-session";
+    let active_session = "currently-active-session";
+    store
+        .transaction_with_error(|transaction| -> Result<(), voice::provider::VoiceProviderError> {
+            transaction.execute(
+                "INSERT INTO voice_sessions(id,agent,created,native_thread,account_key,connection_id,state) \
+                 VALUES(?1,'agent',1,'thread','account','7','unknown'), \
+                       (?2,'agent',2,'thread','account','8','ready')",
+                rusqlite::params![unknown_session, active_session],
+            )?;
+            let stop_operation = format!("voice:stop:{unknown_session}");
+            let retained_id = format!(
+                "account-worker:retained:account:{}",
+                studio_runtime_store::sha256_hex(stop_operation.as_bytes())
+            );
+            let submitted = json!({
+                "call": {
+                    "operation": stop_operation,
+                    "method": "thread/realtime/stop",
+                    "actor": {"agent": "agent", "epoch": 0},
+                    "scope": {"account": "account", "connection": "7", "generation": 7},
+                    "params": {"threadId": "thread"}
+                }
+            });
+            transaction.execute(
+                "INSERT INTO runtime_operation_receipts(id,signature,result) VALUES(?1,'retained',?2)",
+                rusqlite::params![format!("{retained_id}:submitted"), submitted.to_string()],
+            )?;
+            transaction.execute(
+                "INSERT INTO runtime_operation_receipts(id,signature,result) VALUES(?1,'retained',?2)",
+                rusqlite::params![format!("{retained_id}:result"), json!({"result":"Unknown","cursor":1}).to_string()],
+            )?;
+            let intent = voice::provider::stage_delete_sessions(transaction, "agent")?;
+            transaction.execute("DELETE FROM voice_sessions WHERE agent='agent'", [])?;
+            assert_eq!(
+                intent.sessions.iter().map(|session| session.session_id.as_str()).collect::<Vec<_>>(),
+                [active_session]
+            );
+            assert_eq!(
+                intent.held_uncertain.iter().map(|session| session.session_id.as_str()).collect::<Vec<_>>(),
+                [unknown_session]
+            );
+            Ok(())
+        })
+        .expect("stage only the session without an earlier unknown stop");
+
+    let intent = voice::provider::pending_delete_intents(&store)
+        .expect("load committed delete receipt")
+        .into_iter()
+        .find(|intent| intent.id == "agent-delete-voice:agent:0")
+        .expect("delete receipt remains durable");
+    assert_eq!(intent.sessions.len(), 1);
+    assert_eq!(intent.held_uncertain.len(), 1);
+    let provider = Arc::new(ReceiptProvider {
+        certainty: VoiceWriteCertainty::Written,
+        calls: Mutex::new(Vec::new()),
+    });
+    let receipts = voice::provider::end_deleted_sessions(
+        Arc::clone(&provider) as Arc<dyn VoiceProviderPort>,
+        intent.id,
+        intent.sessions,
+        10.0,
+    )
+    .await
+    .expect("send only the active-session stop");
+    assert_eq!(receipts.len(), 1);
+    let calls = provider.calls.lock().expect("provider call log");
+    assert_eq!(
+        calls.as_slice(),
+        &[(
+            format!("voice:delete-stop:{active_session}"),
+            Method::ThreadRealtimeStop,
+        )]
+    );
+    drop(calls);
+    let persisted = voice::provider::pending_delete_intents(&store)
+        .expect("reload held uncertainty after sending active stop")
+        .into_iter()
+        .find(|intent| intent.id == "agent-delete-voice:agent:0")
+        .expect("delete receipt remains inspectable");
+    assert_eq!(persisted.held_uncertain[0].session_id, unknown_session);
+
+    let stop_operation = format!("voice:stop:{unknown_session}");
+    let retained_id = format!(
+        "account-worker:retained:account:{}:result",
+        studio_runtime_store::sha256_hex(stop_operation.as_bytes())
+    );
+    store
+        .transaction(|transaction| {
+            transaction.execute(
+                "UPDATE runtime_operation_receipts SET result=?2 WHERE id=?1",
+                rusqlite::params![
+                    retained_id,
+                    json!({"result":{"Reply":{"body":{"result":null}}},"cursor":2}).to_string()
+                ],
+            )?;
+            Ok(())
+        })
+        .expect("original stop settles successfully");
+    let reconciled = voice::provider::pending_delete_intents(&store)
+        .expect("reconcile successfully completed held stop")
+        .into_iter()
+        .find(|intent| intent.id == "agent-delete-voice:agent:0")
+        .expect("delete receipt remains durable");
+    assert_eq!(reconciled.sessions.len(), 1);
+    assert!(
+        reconciled
+            .sessions
+            .iter()
+            .all(|session| session.session_id == active_session)
+    );
+    assert!(reconciled.held_uncertain.is_empty());
+}
+
+#[test]
+fn held_stop_rejection_is_requeued_for_deletion() {
+    let (_root, store) = seeded_store();
+    let stop_operation = "voice:stop:rejected-prior-stop";
+    let retained_prefix = format!(
+        "account-worker:retained:account:{}",
+        studio_runtime_store::sha256_hex(stop_operation.as_bytes())
+    );
+    store
+        .transaction_with_error(|transaction| -> Result<(), voice::provider::VoiceProviderError> {
+            transaction.execute(
+                "INSERT INTO voice_sessions(id,agent,created,native_thread,account_key,connection_id,state) \
+                 VALUES('rejected-prior-stop','agent',1,'thread','account','7','unknown')",
+                [],
+            )?;
+            let submitted = json!({
+                "call": {
+                    "operation": stop_operation,
+                    "method": "thread/realtime/stop",
+                    "actor": {"agent": "agent", "epoch": 0},
+                    "scope": {"account": "account", "connection": "7", "generation": 7},
+                    "params": {"threadId": "thread"}
+                }
+            });
+            transaction.execute(
+                "INSERT INTO runtime_operation_receipts(id,signature,result) VALUES(?1,'retained',?2)",
+                rusqlite::params![format!("{retained_prefix}:submitted"), submitted.to_string()],
+            )?;
+            let intent = voice::provider::stage_delete_sessions(transaction, "agent")?;
+            assert!(intent.sessions.is_empty());
+            assert_eq!(intent.held_uncertain.len(), 1);
+            transaction.execute("DELETE FROM voice_sessions WHERE agent='agent'", [])?;
+            transaction.execute(
+                "INSERT INTO runtime_operation_receipts(id,signature,result) VALUES(?1,'retained',?2)",
+                rusqlite::params![
+                    format!("{retained_prefix}:result"),
+                    json!({"result":{"Rejected":{"reason":"closed"}},"cursor":2}).to_string()
+                ],
+            )?;
+            Ok(())
+        })
+        .expect("stage held stop and settle rejection");
+
+    let intent = voice::provider::pending_delete_intents(&store)
+        .expect("reconcile rejected prior stop")
+        .into_iter()
+        .find(|intent| intent.id == "agent-delete-voice:agent:0")
+        .expect("deletion intent remains durable");
+    assert_eq!(intent.sessions.len(), 1);
+    assert_eq!(intent.sessions[0].session_id, "rejected-prior-stop");
+    assert!(intent.held_uncertain.is_empty());
+}
+
 fn table_rows(connection: &rusqlite::Connection, table: &str, order: &str) -> serde_json::Value {
     let mut statement = connection
         .prepare(&format!("SELECT * FROM {table} ORDER BY {order}"))

@@ -755,7 +755,7 @@ fn production_restart_scan_settles_durable_deleted_agent_state() {
     assert_eq!(settled["startAttempt"]["activeAtReservation"], false);
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn composed_delete_stages_voice_sessions_before_rows_are_removed_and_stops_after_commit() {
     use studio_runtime_services::voice_runtime::{
         Method, VoiceConnectionScope, VoiceFuture, VoiceReply, VoiceRequestPort,
@@ -793,7 +793,7 @@ async fn composed_delete_stages_voice_sessions_before_rows_are_removed_and_stops
                 .read()
                 .and_then(|db| {
                     db.query_row(
-                        "SELECT COUNT(*) FROM voice_sessions WHERE id='delete-voice'",
+                        "SELECT COUNT(*) FROM voice_sessions WHERE id='delete-unknown-voice'",
                         [],
                         |row| row.get::<_, i64>(0),
                     )
@@ -804,11 +804,14 @@ async fn composed_delete_stages_voice_sessions_before_rows_are_removed_and_stops
                 .lock()
                 .expect("dispatched lock")
                 .push(deleted);
+            let is_released_held_session = operation_id == "voice:delete-stop:delete-unknown-voice";
             self.calls.lock().expect("calls lock").push(operation_id);
-            self.called.notify_one();
-            Box::pin(async {
+            if is_released_held_session {
+                self.called.notify_one();
+            }
+            Box::pin(async move {
                 VoiceRequestReceipt {
-                    certainty: VoiceWriteCertainty::Written,
+                    certainty: VoiceWriteCertainty::NotSent,
                 }
             })
         }
@@ -850,8 +853,36 @@ async fn composed_delete_stages_voice_sessions_before_rows_are_removed_and_stops
             )?;
             tx.execute(
                 "INSERT INTO voice_sessions(id,agent,created,native_thread,account_key,connection_id,state) \
-                 VALUES('delete-voice','lead',1,'voice-thread','voice-account','7','connecting')",
+                 VALUES('delete-unknown-voice','lead',1,'voice-thread','voice-account','6','unknown')",
                 [],
+            )?;
+            tx.execute(
+                "INSERT INTO voice_sessions(id,agent,created,native_thread,account_key,connection_id,state) \
+                 VALUES('delete-retry-voice','lead',2,'voice-thread','voice-account','6','active')",
+                [],
+            )?;
+            let actor_epoch = tx.query_row(
+                "SELECT json_extract(record,'$.epoch') FROM runtime_agents WHERE id='lead'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )?;
+            let stop_operation = "voice:stop:delete-unknown-voice";
+            let retained_id = format!(
+                "account-worker:retained:voice-account:{}:submitted",
+                studio_runtime_store::sha256_hex(stop_operation.as_bytes())
+            );
+            let submitted = json!({
+                "call": {
+                    "operation": stop_operation,
+                    "method": "thread/realtime/stop",
+                    "actor": {"agent": "lead", "epoch": actor_epoch},
+                    "scope": {"account": "voice-account", "connection": "6", "generation": 6},
+                    "params": {"threadId": "voice-thread"}
+                }
+            });
+            tx.execute(
+                "INSERT INTO runtime_operation_receipts(id,signature,result) VALUES(?1,'retained',?2)",
+                rusqlite::params![retained_id, submitted.to_string()],
             )?;
             Ok(())
         })
@@ -871,6 +902,7 @@ async fn composed_delete_stages_voice_sessions_before_rows_are_removed_and_stops
         Some(voice_port),
     );
 
+    let dispatch_started = tokio::time::Instant::now();
     ports
         .execute(
             &Action::Delete {
@@ -879,22 +911,77 @@ async fn composed_delete_stages_voice_sessions_before_rows_are_removed_and_stops
             case["now"].as_f64().expect("delete timestamp"),
         )
         .expect("delete commits and dispatches voice stop");
+    tokio::task::yield_now().await;
+    for _ in 0..8 {
+        tokio::time::advance(std::time::Duration::from_secs(2)).await;
+        tokio::task::yield_now().await;
+    }
+    assert_eq!(
+        voice
+            .calls
+            .lock()
+            .expect("calls lock")
+            .iter()
+            .filter(|operation| operation.as_str() == "voice:delete-stop:delete-retry-voice")
+            .count(),
+        8,
+        "the active session exhausts its own bounded retry budget"
+    );
+    for _ in 0..7 {
+        tokio::time::advance(std::time::Duration::from_secs(2)).await;
+        tokio::task::yield_now().await;
+    }
+    let stop_operation = "voice:stop:delete-unknown-voice";
+    let retained_id = format!(
+        "account-worker:retained:voice-account:{}:result",
+        studio_runtime_store::sha256_hex(stop_operation.as_bytes())
+    );
+    store
+        .transaction(|tx| {
+            tx.execute(
+                "INSERT INTO runtime_operation_receipts(id,signature,result) VALUES(?1,'retained',?2)",
+                rusqlite::params![retained_id, json!({"result":"NotSent","cursor":2}).to_string()],
+            )?;
+            Ok(())
+        })
+        .expect("ordinary stop settles as proven not sent after deletion");
+    for _ in 0..8 {
+        tokio::time::advance(std::time::Duration::from_secs(2)).await;
+        tokio::task::yield_now().await;
+    }
+    assert!(
+        tokio::time::Instant::now()
+            .duration_since(dispatch_started)
+            .as_secs()
+            >= 35
+    );
     tokio::time::timeout(std::time::Duration::from_secs(2), voice.called.notified())
         .await
         .expect("post-commit voice stop dispatched");
 
+    let calls = voice.calls.lock().expect("calls lock");
+    assert_eq!(calls.len(), 16);
     assert_eq!(
-        voice.calls.lock().expect("calls lock").as_slice(),
-        ["voice:delete-stop:delete-voice"]
+        calls
+            .iter()
+            .filter(|operation| operation.as_str() == "voice:delete-stop:delete-retry-voice")
+            .count(),
+        8
     );
     assert_eq!(
-        voice
-            .dispatched_after_commit
-            .lock()
-            .expect("dispatch boundary lock")
-            .as_slice(),
-        [true]
+        calls
+            .iter()
+            .filter(|operation| operation.as_str() == "voice:delete-stop:delete-unknown-voice")
+            .count(),
+        8
     );
+    drop(calls);
+    let dispatched_after_commit = voice
+        .dispatched_after_commit
+        .lock()
+        .expect("dispatch boundary lock");
+    assert_eq!(dispatched_after_commit.len(), 16);
+    assert!(dispatched_after_commit.iter().all(|dispatched| *dispatched));
     let reader = store.read().expect("read committed delete");
     let saved: String = reader
         .query_row(
@@ -904,7 +991,16 @@ async fn composed_delete_stages_voice_sessions_before_rows_are_removed_and_stops
         )
         .expect("durable voice deletion intent");
     let saved: Value = serde_json::from_str(&saved).expect("intent JSON");
-    assert_eq!(saved["voiceEndSessions"][0]["sessionId"], "delete-voice");
+    let pending_session_ids = saved["voiceEndSessions"]
+        .as_array()
+        .expect("pending deletion sessions")
+        .iter()
+        .filter_map(|session| session["sessionId"].as_str())
+        .collect::<std::collections::HashSet<_>>();
+    assert_eq!(pending_session_ids.len(), 2);
+    assert!(pending_session_ids.contains("delete-retry-voice"));
+    assert!(pending_session_ids.contains("delete-unknown-voice"));
+    assert_eq!(saved["voiceEndHeldUncertain"], json!([]));
     assert_eq!(
         reader
             .query_row(

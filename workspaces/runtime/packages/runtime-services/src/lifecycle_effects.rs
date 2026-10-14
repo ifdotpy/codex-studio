@@ -13,7 +13,7 @@
 //! `codex_runtime.py:7671-7745`; and
 //! `release_failed_work` in `codex_work.py:1313-1355`.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -39,6 +39,8 @@ use crate::{
 
 const INTERRUPT_TIMEOUT: Duration = Duration::from_secs(10);
 const VOICE_DELETE_RETRY_ATTEMPTS: usize = 8;
+// Ordinary voice stops can remain in flight until their 30-second deadline.
+const VOICE_DELETE_HELD_WAIT: Duration = Duration::from_secs(35);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum InterruptWriteResult {
@@ -414,7 +416,7 @@ impl ProductionLifecyclePorts {
         let handle = tokio::runtime::Handle::try_current()
             .map_err(|_| ManagementError::Unavailable("voice-driver/agent-stop"))?;
         for intent in intents {
-            if intent.sessions.is_empty() {
+            if intent.sessions.is_empty() && intent.held_uncertain.is_empty() {
                 continue;
             }
             let already_dispatching = !self
@@ -429,26 +431,54 @@ impl ProductionLifecyclePorts {
             let store = Arc::clone(&self.store);
             let dispatching = Arc::clone(&self.voice_dispatching);
             handle.spawn(async move {
-                // A checkpointed worker NotSent currently replays without a
-                // transport send. Broker task 850207d8 enables safe same-call
-                // retry; keep this receipt pending until that broker lands.
-                for attempt in 0..VOICE_DELETE_RETRY_ATTEMPTS {
+                let held_deadline = Instant::now() + VOICE_DELETE_HELD_WAIT;
+                let mut session_attempts = HashMap::<String, usize>::new();
+                let mut poll_attempt = 0;
+                loop {
                     let pending = match crate::voice::provider::pending_delete_intents(&store) {
                         Ok(intents) => intents
                             .into_iter()
                             .find(|pending| pending.id == intent.id)
-                            .filter(|pending| !pending.sessions.is_empty()),
+                            .filter(|pending| {
+                                !pending.sessions.is_empty() || !pending.held_uncertain.is_empty()
+                            }),
                         Err(error) => {
                             eprintln!("deleted voice sessions remain pending: {error}");
-                            if attempt + 1 < VOICE_DELETE_RETRY_ATTEMPTS {
-                                tokio::time::sleep(voice_delete_retry_delay(attempt)).await;
+                            if Instant::now() >= held_deadline {
+                                break;
                             }
+                            tokio::time::sleep(voice_delete_retry_delay(poll_attempt)).await;
+                            poll_attempt += 1;
                             continue;
                         }
                     };
                     let Some(pending) = pending else {
                         break;
                     };
+                    let dispatchable: Vec<_> = pending
+                        .sessions
+                        .into_iter()
+                        .filter(|session| {
+                            session_attempts
+                                .get(&session.session_id)
+                                .copied()
+                                .unwrap_or_default()
+                                < VOICE_DELETE_RETRY_ATTEMPTS
+                        })
+                        .collect();
+                    if dispatchable.is_empty() {
+                        if pending.held_uncertain.is_empty() || Instant::now() >= held_deadline {
+                            break;
+                        }
+                        tokio::time::sleep(voice_delete_retry_delay(poll_attempt)).await;
+                        poll_attempt += 1;
+                        continue;
+                    }
+                    let backoff_attempt = dispatchable
+                        .iter()
+                        .filter_map(|session| session_attempts.get(&session.session_id).copied())
+                        .max()
+                        .unwrap_or_default();
                     let now = std::time::SystemTime::now()
                         .duration_since(std::time::UNIX_EPOCH)
                         .map(|duration| duration.as_secs_f64())
@@ -457,16 +487,17 @@ impl ProductionLifecyclePorts {
                         Arc::clone(&store),
                         Arc::clone(&provider),
                         pending.id,
-                        pending.sessions,
+                        dispatchable.clone(),
                         now,
                     )
                     .await
                     {
                         eprintln!("deleted voice sessions remain pending: {error}");
                     }
-                    if attempt + 1 < VOICE_DELETE_RETRY_ATTEMPTS {
-                        tokio::time::sleep(voice_delete_retry_delay(attempt)).await;
+                    for session in dispatchable {
+                        *session_attempts.entry(session.session_id).or_default() += 1;
                     }
+                    tokio::time::sleep(voice_delete_retry_delay(backoff_attempt)).await;
                 }
                 dispatching
                     .lock()
@@ -838,6 +869,7 @@ mod tests {
     #[test]
     fn deleted_voice_retry_is_bounded_and_caps_backoff() {
         assert_eq!(VOICE_DELETE_RETRY_ATTEMPTS, 8);
+        assert!(VOICE_DELETE_HELD_WAIT > Duration::from_secs(30));
         assert_eq!(voice_delete_retry_delay(0), Duration::from_millis(100));
         assert_eq!(voice_delete_retry_delay(4), Duration::from_millis(1_600));
         assert_eq!(voice_delete_retry_delay(7), Duration::from_millis(1_600));
