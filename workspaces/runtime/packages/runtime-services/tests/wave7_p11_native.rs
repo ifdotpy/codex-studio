@@ -201,6 +201,41 @@ fn crash_matrix_never_reclaims_committed_handoff() {
         );
     }
 }
+
+#[test]
+fn claimed_native_action_is_correlated_by_the_scheduler_before_handoff() {
+    let case = &corpus()["actions"][0];
+    let mut db = db(case);
+    reserve_case(&mut db, case);
+    let tx = db.transaction().expect("begin claim");
+    claim(&tx, "action-request", &ticket()).expect("claim durable provider request");
+    tx.commit().expect("commit claim before provider handoff");
+
+    let correlated = studio_runtime_store::SchedulerRepository::find_attempt_for_thread(
+        &db,
+        "default",
+        ticket().generation,
+        "thread",
+        None,
+    )
+    .expect("scheduler lookup");
+    assert!(correlated.0, "known native action thread");
+    let Some((identity, source_bound)) = correlated.1 else {
+        panic!("submitted native action must be discoverable by the scheduler");
+    };
+    assert_eq!(identity.agent_id, "lead");
+    assert!(!source_bound);
+
+    let attempt = actor(&db)["startAttempt"].clone();
+    assert_eq!(attempt["connectionGeneration"], ticket().generation);
+    assert_eq!(
+        attempt["requestTicket"],
+        format!(
+            "retained:default:{}",
+            studio_runtime_store::sha256_hex(ticket().operation.as_bytes())
+        )
+    );
+}
 #[test]
 fn changed_payload_and_foreign_receipts_leave_intent_held() {
     let case = &corpus()["actions"][0];

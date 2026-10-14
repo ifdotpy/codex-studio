@@ -364,6 +364,12 @@ pub fn claim(tx: &Transaction<'_>, id: &str, ticket: &ProviderTicket) -> Result<
     snapshot.agent["startAttempt"]["accountKey"] = json!(ticket.account);
     snapshot.agent["startAttempt"]["threadId"] = json!(ticket.thread);
     snapshot.agent["startAttempt"]["connectionId"] = json!(ticket.connection);
+    snapshot.agent["startAttempt"]["connectionGeneration"] = json!(ticket.generation);
+    snapshot.agent["startAttempt"]["requestTicket"] = json!(format!(
+        "retained:{}:{}",
+        ticket.account,
+        studio_runtime_store::sha256_hex(ticket.operation.as_bytes())
+    ));
     snapshot.agent["startAttempt"]["nativeRequest"] = json!(request);
     AgentRepository::put(tx, &AgentRecord::from_value(snapshot.agent)?)?;
     write_outcome(tx, id, &Outcome::Unknown { error: None })?;
