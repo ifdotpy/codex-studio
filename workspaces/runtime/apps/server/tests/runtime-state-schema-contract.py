@@ -39,9 +39,9 @@ class QuietRuntime(Runtime):
 def schema_snapshot(runtime: Runtime) -> dict[str, object]:
     def snapshot_database(db: sqlite3.Connection, schema: str) -> dict[str, object]:
         objects = [
-            {"type": kind, "name": name, "table": table, "sql": sql}
-            for kind, name, table, sql in db.execute(
-                f"SELECT type,name,tbl_name,sql FROM {schema}.sqlite_master "
+            {"create_order": create_order, "type": kind, "name": name, "table": table, "sql": sql}
+            for create_order, kind, name, table, sql in db.execute(
+                f"SELECT rowid,type,name,tbl_name,sql FROM {schema}.sqlite_master "
                 "WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name"
             )
         ]
