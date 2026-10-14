@@ -74,8 +74,8 @@ class AccountSessionHTTPContract(unittest.TestCase):
         self.assertEqual(result.status,200,result.body)
         if os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"):
             catalog = self.backend.request("GET", "/api/models?account_key=" + profile["id"])
-            self.assertEqual(catalog.status,501,catalog.body)
-            self.assertIn("provider-session/model-list",catalog.json()["error"])
+            self.assertEqual(catalog.status,400,catalog.body)
+            self.assertTrue(catalog.json().get("catalogPending"),catalog.json())
         stored = json.loads(self.registry.read_text())
         self.assertEqual(stored["accounts"][profile["id"]]["claudeOptions"]["customModels"],[{"id":"fixture-model","label":"fixture-model"}])
         result = self.post("/api/claude/profiles",{"account_key":profile["id"],"options":{**updated,"configDir":str(self.backend.claude_home / "other")}})

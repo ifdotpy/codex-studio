@@ -109,6 +109,16 @@ pub trait AccountSessionPort: Send + Sync {
             "provider-session/native-request",
         ))
     }
+    /// Return the retained Claude control session for an account. The returned
+    /// handle is bound to the live account connection and rejects stale receipts.
+    fn claude_control_session(
+        &self,
+        _account: &str,
+    ) -> Result<Arc<dyn crate::claude_controls::service::ControlSession>, AccountSessionError> {
+        Err(AccountSessionError::Requires(
+            "provider-session/claude-controls",
+        ))
+    }
     fn transfer_provider_request(
         &self,
         _request: TransferProviderRequest,
@@ -280,6 +290,14 @@ pub trait RetainedAccountSession: Send + Sync {
         })
     }
     fn request(&self, request: ProviderRequest) -> SessionFuture;
+    fn claude_control_session(
+        &self,
+        _account: &str,
+    ) -> Result<Arc<dyn crate::claude_controls::service::ControlSession>, AccountSessionError> {
+        Err(AccountSessionError::Requires(
+            "provider-session/claude-controls",
+        ))
+    }
     fn transfer_request(&self, _request: TransferProviderRequest) -> SessionFuture {
         Box::pin(async {
             Err(AccountSessionError::Requires(
@@ -582,6 +600,18 @@ impl AccountSessionPort for AccountSessionRuntime {
             ));
         }
         Ok(scope)
+    }
+
+    fn claude_control_session(
+        &self,
+        account: &str,
+    ) -> Result<Arc<dyn crate::claude_controls::service::ControlSession>, AccountSessionError> {
+        self.session
+            .as_ref()
+            .ok_or(AccountSessionError::Requires(
+                "provider-session/claude-controls",
+            ))?
+            .claude_control_session(account)
     }
 
     fn provider_request(

@@ -111,6 +111,12 @@ fn absent_consumers_are_named_refusals() {
         ))
     ));
     assert!(matches!(
+        Absent.claude_control_session("fixture-account"),
+        Err(AccountSessionError::Requires(
+            "provider-session/claude-controls"
+        ))
+    ));
+    assert!(matches!(
         limits(&Absent, "fixture", false),
         Err(AccountSessionError::Requires(
             "provider-session/account-rate-limits"
