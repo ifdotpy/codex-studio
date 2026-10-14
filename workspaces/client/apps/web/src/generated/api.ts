@@ -13381,6 +13381,11 @@ export interface components {
        * @default null
        */
       allocatedDiskBytes?: number | null;
+      /**
+       * Error
+       * @default null
+       */
+      error?: null | string;
       settings: components["schemas"]["LinuxVMSettings"];
       /** State */
       state: string;

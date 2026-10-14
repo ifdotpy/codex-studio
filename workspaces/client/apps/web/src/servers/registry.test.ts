@@ -1,5 +1,10 @@
 import { expect, it } from "vitest";
-import { readServers, serveOrigin, SERVER_REGISTRY_KEY } from "./registry";
+import {
+  readServers,
+  serveOrigin,
+  shareServers,
+  SERVER_REGISTRY_KEY,
+} from "./registry";
 it("accepts only a Tailscale Serve HTTPS origin without credentials or paths", () => {
   expect(serveOrigin("https://computer.tailnet.ts.net/")).toBe(
     "https://computer.tailnet.ts.net",
@@ -42,4 +47,22 @@ it("validates saved identities and never loads local rows as paired servers", ()
     [{ ...row, id: "../other" }],
   ])
     expect(() => readServers(storage(invalid))).toThrow("invalid");
+});
+
+it("keeps unchanged server objects when the saved list is read again", () => {
+  const server = (id: string, label = id) => ({
+    id,
+    label,
+    origin: `https://${id}.tailnet.ts.net`,
+    credentialId: `credential-${id}`,
+  });
+  const first = [server("a"), server("b")];
+  expect(shareServers(first, [server("a"), server("b")])).toBe(first);
+  const renamed = shareServers(first, [server("a"), server("b", "B")]);
+  expect(renamed).not.toBe(first);
+  expect(renamed[0]).toBe(first[0]);
+  expect(renamed[1].label).toBe("B");
+  const reordered = shareServers(first, [server("b"), server("a")]);
+  expect(reordered).toEqual([first[1], first[0]]);
+  expect(reordered[0]).toBe(first[1]);
 });

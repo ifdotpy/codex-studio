@@ -46,6 +46,8 @@ class Guest(fixture.NativeGuest):
         self.save_failure = None
         self.error_receipts = {}
         self.exec_argv = []
+        # The output of `layr op log` in the line.
+        self.op_log = ''
         self.merges = 0
         self.state_dir = root / 'vm-state'
         self.during_import = []
@@ -53,6 +55,20 @@ class Guest(fixture.NativeGuest):
         self.readiness = lambda: None
         self.script.write_text(fixture.FAKE_NATIVE.replace("import json,sys", "import json,sys,os")
             .replace("'linux-thread'", "'linux-'+str(os.getpid())"))
+
+    def reboot(self):
+        """A guest reboot: the providers end with the old kernel, and the new boot's
+        supervisor recovers its journal before the guest service accepts requests."""
+        from codex_process_supervisor import Journal, Supervisor
+        old = self.supervisor
+        for child in old.children.values():
+            child.process.kill()
+            child.process.wait(timeout=5)
+            self.close_streams(child)
+        old.journal.close()
+        self.supervisor = Supervisor(old.root)
+        self.supervisor.journal = Journal(self.supervisor.root)
+        self.supervisor.recover_orphaned_children()
 
     def ensure_layr_project(self, project_id, source, owner, request_id, started=None):
         # The host records of import_project, under its project lock, for the sidebar state.
@@ -119,7 +135,8 @@ class Guest(fixture.NativeGuest):
             result = {'synced': True}
         elif method == 'layr.exec':
             self.exec_argv.append(params['argv'])
-            stdout = b'state-from-exec\n' if params['argv'][1] == 'rev-parse' else b''
+            stdout = (b'state-from-exec\n' if params['argv'][1] == 'rev-parse'
+                      else self.op_log.encode() if params['argv'][1:3] == ['op', 'log'] else b'')
             result = {'exitCode': 0, 'stdout': base64.b64encode(stdout).decode(), 'stderr': '', 'reason': None}
         else:
             raise AssertionError(method)
@@ -296,6 +313,81 @@ class VmAgents(unittest.TestCase):
         saves = [options['request_id'] for method, _, options in self.guest.calls if method == 'line.save']
         self.assertEqual(saves, ['layr-turn:' + lead['id'] + ':turn-1', 'layr-turn:' + lead['id'] + ':turn-1:1'])
         self.assertEqual(self.guest.exec_argv, [])
+
+    def test_an_unknown_save_outcome_is_settled_by_the_layr_op_log(self):
+        # 2026-10-13: a guest kernel oops hung the save; the guest killed it and keeps
+        # outcome_unknown for its request ID. The op log has no save for the turn.
+        lead = self.pending_turn()
+        self.guest.save_failure = 'outcome_unknown'
+        self.guest.op_log = ('54083c752217 2026-10-13 10:57:09 +0000 owner [' + lead['id'] +
+                             '] save 97c6946 Studio turn turn-0\n'
+                             '3ad9981f78cf 2026-10-13 10:58:26 +0000 owner [other] save df782b8 Studio turn turn-1\n')
+        with self.assertRaises(LinuxVMError):
+            flush_turns(self.runtime, self.runtime.agent(lead['id']))
+        self.assertEqual(self.runtime.agent(lead['id'])['layrTurnSaves']['turn-1'], {'status': 'pending', 'attempt': 1})
+        self.guest.save_failure = None
+        flush_turns(self.runtime, self.runtime.agent(lead['id']))
+        self.assertEqual(self.runtime.agent(lead['id'])['layrTurnSaves']['turn-1']['status'], 'saved')
+        self.assertEqual(self.guest.saves, 1)
+        self.assertEqual(self.guest.exec_argv, [['layr', 'op', 'log', '-n', '500']])
+
+    def test_an_unknown_save_outcome_that_committed_takes_its_state(self):
+        lead = self.pending_turn()
+        self.guest.save_failure = 'outcome_unknown'
+        self.guest.op_log = ('54083c752217 2026-10-13 10:57:09 +0000 owner [' + lead['id'] +
+                             '] save 97c6946 Studio turn turn-1\n')
+        flush_turns(self.runtime, self.runtime.agent(lead['id']))
+        saved = self.runtime.agent(lead['id'])
+        self.assertEqual(saved['layrTurnSaves']['turn-1'], {'status': 'saved', 'stateId': 'state-from-exec'})
+        self.assertEqual(saved['layrStateId'], 'state-from-exec')
+        self.assertEqual(self.guest.saves, 0)
+        self.assertEqual(self.guest.exec_argv, [['layr', 'op', 'log', '-n', '500'], ['layr', 'rev-parse', '97c6946']])
+
+    def test_vm_restart_ends_providers_shows_a_notice_and_reconnects_without_resending(self):
+        # docs/linux-vm-workspaces.md, "Guest crash watchdog": the watchdog stopped a dead guest.
+        from codex_linux_vm_watchdog import drop_providers, post_notices
+        lead = self.runtime.prepare(self.lead())
+        old = self.runtime.linux_servers[lead['id']]
+        with self.runtime.lock, self.runtime.db() as db:
+            agent = self.runtime.agent(lead['id'], db)
+            agent.update(status='running', inFlight=True, turnId='turn-1')
+            self.runtime.put(db, 'agents', agent)
+            db.execute('INSERT INTO runtime_events VALUES (?,?,?,?,?,?,?,?,?)',
+                       ('event-1', lead['id'], 'user', 'Build it', 'dispatching', time.time(),
+                        agent['epoch'], None, None))
+        record = {'id': 'restart-1', 'at': time.time(), 'reason': 'Kernel panic - not syncing: test'}
+        record['chats'] = drop_providers(self.runtime, record)
+        self.assertEqual(record['chats'], [lead['id']])
+        deadline = time.monotonic() + 10
+        while self.runtime.agent(lead['id'])['status'] != 'interrupted' and time.monotonic() < deadline:
+            time.sleep(0.05)
+        agent = self.runtime.agent(lead['id'])
+        self.assertEqual((agent['status'], agent['inFlight']), ('interrupted', False))
+        self.assertEqual(agent['error'], 'Linux VM provider disconnected. The turn outcome is unknown. '
+                                         'Review the transcript before resuming.')
+        with self.runtime.read_db() as db:
+            self.assertEqual(db.execute("SELECT status FROM runtime_events WHERE id='event-1'").fetchone()[0],
+                             'uncertain')
+        record.update(outcome='restarted', finishedAt=time.time())
+        post_notices(self.runtime, record)
+        post_notices(self.runtime, record)
+        with self.runtime.read_db() as db:
+            notices = [json.loads(row[0]) for row in db.execute(
+                "SELECT record FROM runtime_items WHERE agent=? AND id=?",
+                (lead['id'], lead['id'] + ':linux-vm-restart:restart-1'))]
+        self.assertEqual(len(notices), 1)
+        self.assertEqual(notices[0]['nativeNotice'], 'error')
+        self.assertIn('Studio restarted it', notices[0]['text'])
+        # The new boot: the next message opens a new provider and sends nothing again.
+        self.guest.reboot()
+        calls = len(self.guest.calls)
+        server = self.runtime.connect_agent(self.runtime.agent(lead['id']))
+        self.assertIsNot(server, old)
+        self.assertEqual(len(self.guest.starts), 2)
+        self.assertNotIn('Build it', json.dumps(self.guest.calls[calls:]))
+        with self.runtime.read_db() as db:
+            self.assertEqual(db.execute("SELECT status FROM runtime_events WHERE id='event-1'").fetchone()[0],
+                             'uncertain')
 
     def test_submission_accepts_exact_state_and_refuses_changed_head(self):
         lead = prepare(self.runtime, self.lead())

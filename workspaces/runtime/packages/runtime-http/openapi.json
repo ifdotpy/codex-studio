@@ -28415,6 +28415,18 @@
             "default": null,
             "title": "Allocateddiskbytes"
           },
+          "error": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "default": null,
+            "title": "Error"
+          },
           "settings": {
             "$ref": "#/components/schemas/LinuxVMSettings"
           },

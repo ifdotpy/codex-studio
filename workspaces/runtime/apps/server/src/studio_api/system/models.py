@@ -908,6 +908,8 @@ class LinuxVMSettingsResponse(ResponseModel):
     settings: LinuxVMSettings
     state: str
     allocatedDiskBytes: SafeInt | None = None
+    # The reason of a failed (guest kernel panic) or unresponsive state.
+    error: str | None = None
 
 
 class DirectoriesResponse(ResponseModel):

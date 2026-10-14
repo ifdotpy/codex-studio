@@ -9,7 +9,7 @@ import base64
 import copy
 import concurrent.futures
 from dataclasses import dataclass
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from codex_file_lock import flock, LOCK_EX, LOCK_NB, LOCK_UN
 import json
 import logging
@@ -88,6 +88,11 @@ if TYPE_CHECKING:
         RecordStore,
     )
     from studio_api.sync.resources.models import ResourceRef
+
+# The supervisor journal event that this dispatcher thread applies now, as
+# (handle, sequence). The main notification transaction writes this cursor
+# together with the event's effects; the separate cursor commit is then skipped.
+_SUPERVISOR_EVENT = threading.local()
 
 MAX_STAGED_RESOURCE_CHANGES = 256
 MAX_QUEUED_RESOURCE_CHANGES = 4096
@@ -475,6 +480,8 @@ class AppServer:
         self.transcript_capture = TranscriptCapture(provider)
         self.supervisor_commit = supervisor_commit
         self.supervisor_event_applied = supervisor_event_applied
+        # The journal handle that owns this process's event sequences.
+        self.supervisor_handle = supervisor_handle
         self.supervisor_reattach_future = None
         self.lock = threading.RLock()
         self.write_lock = threading.RLock()
@@ -1325,11 +1332,24 @@ class AppServer:
                             task_count = count
                 callback_started = time.monotonic()
                 callback_ok = False
+                handle = getattr(self, "supervisor_handle", None)
+                # One journal event can record its cursor in the callback's
+                # own transaction. Batches keep the separate cursor commit.
+                _SUPERVISOR_EVENT.pending = (
+                    (handle, sequence)
+                    if (type(sequence) is int and sequence > 0 and isinstance(handle, str) and handle
+                        and callback == self.notification and self.supervisor_commit
+                        and len(callback_messages) == 1)
+                    else None)
+                _SUPERVISOR_EVENT.committed = None
                 try:
-                    for callback_message in callback_messages:
-                        if isinstance(callback_message, dict):
-                            callback_message["_studioDispatchedAt"] = time.time()
-                        callback(callback_message)
+                    try:
+                        for callback_message in callback_messages:
+                            if isinstance(callback_message, dict):
+                                callback_message["_studioDispatchedAt"] = time.time()
+                            callback(callback_message)
+                    finally:
+                        _SUPERVISOR_EVENT.pending = None
                     sequence = (callback_messages[-1].get("_studioSupervisorSequence")
                                 if isinstance(callback_messages[-1], dict) else sequence)
                     if (sequence is not None and callback == self.notification
@@ -1889,6 +1909,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 self.paired_access().start_discovery()
                 from codex_connection_recovery import start as start_connection_recovery
                 start_connection_recovery(self)
+                from codex_linux_vm_watchdog import start as start_vm_watchdog
+                start_vm_watchdog(self)
             self.resume_read_only_image_bases()
             with self.read_db() as db:
                 commands_saved = db.execute("SELECT 1 FROM sqlite_master WHERE name='runtime_server_exec'").fetchone()
@@ -1914,6 +1936,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 errors.append(error)
         from codex_connection_recovery import close as close_connection_recovery
         close_connection_recovery(self)
+        from codex_linux_vm_watchdog import close as close_vm_watchdog
+        close_vm_watchdog(self)
         for server in servers:
             if not server.join_callbacks(timeout=30):
                 original_error.add_note("Initialization callbacks did not drain; keeper and lease retained")
@@ -2532,24 +2556,35 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
     def analytics_capture_worker(self):
         guard = self.__dict__.setdefault("_analytics_capture_pool_lock", threading.Lock())
         changed, idle = self._analytics_capture_changed, self._analytics_capture_idle
-        while True:
-            changed.wait()
+        # This thread owns one analytics connection for all of its captures.
+        local = self.__dict__.setdefault("_analytics_db_local", threading.local())
+        local.owner = True
+        try:
             while True:
-                with guard:
-                    waiting = self._analytics_capture_unscheduled
-                    capture = waiting.pop(0) if waiting else None
-                    if capture is None:
-                        changed.clear()
-                if capture is not None:
-                    self.run_analytics_capture(capture)
-                    continue
-                self.record_analytics_capture_errors()
-                with guard:
-                    if not waiting and not changed.is_set():
-                        idle.set()
-                    if getattr(self, "_analytics_capture_pool_closed", False) and not waiting:
-                        return
-                break
+                changed.wait()
+                while True:
+                    with guard:
+                        waiting = self._analytics_capture_unscheduled
+                        capture = waiting.pop(0) if waiting else None
+                        if capture is None:
+                            changed.clear()
+                    if capture is not None:
+                        self.run_analytics_capture(capture)
+                        continue
+                    self.record_analytics_capture_errors()
+                    with guard:
+                        if not waiting and not changed.is_set():
+                            idle.set()
+                        if getattr(self, "_analytics_capture_pool_closed", False) and not waiting:
+                            return
+                    break
+        finally:
+            connection = getattr(local, "connection", None)
+            local.connection = None
+            local.owner = False
+            local.depth = 0
+            if connection is not None:
+                connection.close()
 
     def run_analytics_capture(self, operation):
         function, args, kwargs, size = operation
@@ -2629,8 +2664,13 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             idle.set()
 
     @contextmanager
-    def notification_db(self):
-        """Wait for the main writer before running lifecycle effects."""
+    def notification_db(self, supervisor_cursor=None):
+        """Wait for the main writer before running lifecycle effects.
+
+        `supervisor_cursor` is the (handle, sequence) of the journal event that
+        this transaction applies. Its cursor then commits with the effects, so a
+        replayed event is never applied twice and needs no second commit.
+        """
         outer_owner = self.lock._is_owned()
         deadline = time.monotonic() + 60
         delay = .05
@@ -2645,7 +2685,13 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     # transaction owns the writer, this wait must not block
                     # unrelated runtime state access.
                     with self.db(busy_timeout=50) as db:
-                        db.execute("UPDATE runtime_supervisor_cursor SET sequence=sequence WHERE handle='' ")
+                        # Either statement takes the writer lock first.
+                        if supervisor_cursor is None:
+                            db.execute("UPDATE runtime_supervisor_cursor SET sequence=sequence WHERE handle='' ")
+                        else:
+                            db.execute("INSERT INTO runtime_supervisor_cursor VALUES (?,?) ON CONFLICT(handle) "
+                                       "DO UPDATE SET sequence=max(sequence,excluded.sequence)",
+                                       supervisor_cursor)
                         lock_acquired = self.lock.acquire(blocking=False)
                         if not lock_acquired:
                             # No callback work has run, so this transaction is
@@ -2682,6 +2728,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     time.sleep(min(delay, max(0, deadline - time.monotonic())))
                     delay = min(.5, delay * 2)
                 continue
+            if supervisor_cursor is not None:
+                _SUPERVISOR_EVENT.committed = supervisor_cursor
             return
 
     def close_notification_database(self):
@@ -2690,6 +2738,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         if local is None:
             return
         connection = getattr(local, "connection", None)
+        reader = getattr(local, "cursor_reader", None)
         try:
             if connection is not None:
                 try:
@@ -2700,6 +2749,9 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             local.connection = None
             local.depth = 0
             local.reuse = False
+            local.cursor_reader = None
+            if reader is not None:
+                reader.close()
 
     @contextmanager
     def read_db(self):
@@ -2733,18 +2785,55 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
 
     @contextmanager
     def analytics_db(self, *, busy_timeout=None):
-        """Open analytics on its own WAL connection and attach runtime state read-only."""
+        """Open analytics on its own WAL connection and attach runtime state read-only.
+
+        The analytics capture worker keeps its connection between captures. A
+        new connection opens analytics, attaches the runtime database, and
+        parses both schemas again for every captured notification.
+        """
         timeout = 15 if busy_timeout is None else max(0, busy_timeout) / 1000
-        db = sqlite_connect(self.analytics_db_path, uri=True, timeout=timeout, site="Runtime.analytics")
-        db.row_factory = sqlite3.Row
+        local = self.__dict__.get("_analytics_db_local")
+        owned = bool(local is not None and getattr(local, "owner", False)
+                     and not getattr(local, "depth", 0))
+        db = getattr(local, "connection", None) if owned else None
+        if db is None:
+            db = sqlite_connect(self.analytics_db_path, uri=True, timeout=timeout, site="Runtime.analytics")
+            db.row_factory = sqlite3.Row
+            try:
+                db.execute("PRAGMA journal_mode=WAL")
+                canvas_uri = self.db_path.absolute().as_uri() + "?mode=ro"
+                db.execute("ATTACH DATABASE ? AS canvas", (canvas_uri,))
+            except BaseException:
+                db.close()
+                raise
+            if owned:
+                local.connection = db
+        else:
+            try:
+                db.execute("PRAGMA busy_timeout=" + str(int(timeout * 1000)))
+                db.execute("PRAGMA query_only=OFF")
+            except BaseException:
+                local.connection = None
+                db.close()
+                raise
+        if owned:
+            local.depth = 1
+        failed = False
         try:
-            db.execute("PRAGMA journal_mode=WAL")
-            canvas_uri = self.db_path.absolute().as_uri() + "?mode=ro"
-            db.execute("ATTACH DATABASE ? AS canvas", (canvas_uri,))
             with sqlite_scope(db, "Runtime.analytics"):
                 yield db
+        except BaseException:
+            failed = True
+            raise
         finally:
-            db.close()
+            if owned:
+                local.depth = 0
+                if failed:
+                    # Never reuse a connection after an error in its scope.
+                    local.connection = None
+                    db.close()
+            else:
+                db.close()
 
     @contextmanager
     def analytics_read_db(self):
@@ -3974,7 +4063,18 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             return
         from codex_agent_modes import mode_fields
         now = time.time()
-        with self.notification_db() as db:
+        transaction = ExitStack()
+        try:
+            db = transaction.enter_context(self.notification_db())
+        except TimeoutError:
+            # Shutdown or connection replacement can win after the initial
+            # identity check but while notification_db waits for Runtime.lock.
+            # That callback is stale; do not turn an expected cancellation into
+            # a failed supervisor reattach.
+            if self.closed or not self.connection_current(account_key, connection_id):
+                return
+            raise
+        with transaction:
             if self.closed or not self.connection_current(account_key, connection_id):
                 return
             agents = db.execute("SELECT record FROM runtime_agents WHERE "
@@ -4149,9 +4249,27 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
 
     def supervisor_event_applied(self, handle, sequence):
         # Journal lookup is a committed WAL read, not a schema write per event.
-        with self.read_db() as db:
-            row = db.execute("SELECT sequence FROM runtime_supervisor_cursor WHERE handle=?", (handle,)).fetchone()
-            return bool(row and sequence <= row[0])
+        # The dispatcher thread keeps one read-only connection: a new
+        # connection parses the whole database schema again for every event.
+        local = self.__dict__.setdefault("_callback_db", threading.local())
+        db = getattr(local, "cursor_reader", None)
+        if db is None:
+            db = sqlite3.connect(self.db_path.absolute().as_uri() + "?mode=ro", uri=True, timeout=15)
+            try:
+                db.execute("PRAGMA query_only=ON")
+            except BaseException:
+                db.close()
+                raise
+            local.cursor_reader = db
+        try:
+            # Autocommit: this one statement reads one committed snapshot.
+            # fetchall() completes the statement, so no read snapshot stays open.
+            rows = db.execute("SELECT sequence FROM runtime_supervisor_cursor WHERE handle=?", (handle,)).fetchall()
+        except BaseException:
+            local.cursor_reader = None
+            db.close()
+            raise
+        return bool(rows and sequence <= rows[0][0])
 
     def commit_supervisor_event(self, handle, message, sequence, account, connection):
         method = message.get("method")
@@ -4176,6 +4294,11 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     self.schedule_analytics_captures([(capture, (), {},
                         self.analytics_capture_size(capture, (), {})) for capture in captures])
                 return
+        committed = getattr(_SUPERVISOR_EVENT, "committed", None)
+        _SUPERVISOR_EVENT.committed = None
+        if committed == (handle, sequence):
+            # The notification transaction already made this cursor durable.
+            return
         with self.db(busy_timeout=50) as db:
             db.execute("INSERT INTO runtime_supervisor_cursor VALUES (?,?) ON CONFLICT(handle) DO UPDATE SET sequence=max(sequence,excluded.sequence)",
                        (handle, sequence))
@@ -7981,7 +8104,11 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         tid = p.get("threadId") or p.get("thread", {}).get("id")
         if not tid:
             return
-        with self.notification_db() as db:
+        pending = getattr(_SUPERVISOR_EVENT, "pending", None)
+        main_transaction = (self.notification_db(supervisor_cursor=pending)
+                            if pending is not None and message.get("_studioSupervisorSequence") == pending[1]
+                            else self.notification_db())
+        with main_transaction as db:
             if not self.connection_current(account_key, connection_id):
                 return
             row = db.execute("SELECT record FROM runtime_agents WHERE json_extract(record,'$.threadId')=? "
@@ -11746,6 +11873,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             server.close()
         from codex_connection_recovery import close as close_connection_recovery
         close_connection_recovery(self)
+        from codex_linux_vm_watchdog import close as close_vm_watchdog
+        close_vm_watchdog(self)
         with self.lock:
             monitor_threads = list(self.monitor_threads)
         for worker in monitor_threads:
