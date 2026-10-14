@@ -174,6 +174,74 @@ fn catalog_admission_error(error: gates::ExecutionDenial) -> WorkerError {
         _ => refusal(error.to_string()),
     }
 }
+
+/// Match Python's `turn_program` plus `turn_params`: disabled Daybreak always
+/// submits `standard`; enabled Daybreak resolves grants for the effective
+/// model selected by preparation, never the stale program stored on the agent.
+fn daybreak_program(
+    resources: &PreparationResources,
+    snapshot: &thread::Snapshot,
+) -> Result<Option<String>, WorkerError> {
+    if snapshot.account.provider == thread::Provider::Claude {
+        if snapshot.settings.daybreak_enabled == thread::Stored::Present(Some(true)) {
+            return Err(refusal("daybreak/provider-unsupported".into()));
+        }
+        return Ok(None);
+    }
+    let enabled = match &snapshot.settings.daybreak_enabled {
+        thread::Stored::Present(Some(enabled)) => *enabled,
+        thread::Stored::Present(None) | thread::Stored::Absent => false,
+    };
+    if !enabled {
+        return Ok(Some("standard".into()));
+    }
+    let catalog = match resources.model_catalog.read_for_admission(
+        &snapshot.account.key,
+        &resources.account_home,
+        "codex",
+    ) {
+        crate::model_catalog::AdmissionCatalogRead::Fresh { value, .. } => value,
+        crate::model_catalog::AdmissionCatalogRead::Pending => return Err(catalog_pending()),
+        crate::model_catalog::AdmissionCatalogRead::Unavailable => {
+            return Err(refusal("daybreak/model-catalog-unavailable".into()));
+        }
+    };
+    resolve_daybreak_program(&catalog, snapshot.settings.model.as_deref(), true).map(Some)
+}
+
+fn resolve_daybreak_program(
+    catalog: &Value,
+    model: Option<&str>,
+    enabled: bool,
+) -> Result<String, WorkerError> {
+    if !enabled {
+        return Ok("standard".into());
+    }
+    let programs = catalog
+        .get("data")
+        .and_then(Value::as_array)
+        .and_then(|rows| {
+            rows.iter().find(|row| {
+                row.get("model").and_then(Value::as_str) == model
+                    && row.get("hidden").and_then(Value::as_bool) != Some(true)
+            })
+        })
+        .and_then(|row| row.get("availableAccessPrograms"))
+        .and_then(|value| value.get("cyber"))
+        .and_then(Value::as_array);
+    let Some(programs) = programs else {
+        return Err(refusal("Daybreak is not available for this model on this account. Choose another model or turn off Daybreak".into()));
+    };
+    if programs.iter().any(|program| !program.is_string()) {
+        return Err(refusal("Daybreak model catalog is invalid".into()));
+    }
+    for candidate in ["daybreakBlue", "daybreakRed"] {
+        if programs.iter().any(|program| program == candidate) {
+            return Ok(candidate.into());
+        }
+    }
+    Err(refusal("Daybreak is not available for this model on this account. Choose another model or turn off Daybreak".into()))
+}
 pub(crate) fn admit(
     store: &RuntimeStore,
     resources: &PreparationResources,
@@ -281,7 +349,7 @@ pub(crate) fn prepare_native_action(
     generation: u64,
 ) -> Result<super::PreparedNativeAction, WorkerError> {
     let snapshot = prepare_native_snapshot(store, resources, agent_id, attempt_id, generation)?;
-    let settings = thread::turn_params(
+    let mut settings = thread::turn_params(
         &snapshot,
         &thread::TurnInput {
             events: Vec::new(),
@@ -289,6 +357,9 @@ pub(crate) fn prepare_native_action(
         },
     )
     .map_err(|error| refusal(format!("thread-preparation/{error:?}")))?;
+    if let Some(program) = daybreak_program(resources, &snapshot)? {
+        settings.insert("cyberAccessProgram".into(), json!(program));
+    }
     let thread_id = snapshot
         .actor
         .thread_id
@@ -317,9 +388,16 @@ pub(crate) fn prepare_native_thread(
         attempt_id,
         &format!("native-thread:{agent_id}:{attempt_id}"),
     ) {
-        thread::Outcome::Start(attempt) => Ok(super::PreparedNativeThread {
-            params: Value::Object(attempt.params),
-        }),
+        thread::Outcome::Start(mut attempt) => {
+            if let Some(program) = daybreak_program(resources, &snapshot)? {
+                attempt
+                    .params
+                    .insert("cyberAccessProgram".into(), json!(program));
+            }
+            Ok(super::PreparedNativeThread {
+                params: Value::Object(attempt.params),
+            })
+        }
         thread::Outcome::Refuse(reason) => Err(refusal(format!("thread-preparation/{reason:?}"))),
         thread::Outcome::Hold(reason) => Err(refusal(format!("thread-preparation/{reason:?}"))),
         _ => Err(refusal("native-thread/start-required".into())),
@@ -442,7 +520,6 @@ pub(crate) fn prepare_safety_retry(
     snapshot.settings.model = Some(request.model.clone());
     snapshot.settings.effort = Some("low".into());
     snapshot.settings.native_effort = Some("low".into());
-    snapshot.settings.daybreak_enabled = thread::Stored::Present(Some(false));
     let mut fork_params = match thread::plan(
         &snapshot,
         &request.attempt_id,
@@ -496,17 +573,7 @@ pub(crate) fn prepare_safety_retry(
             "default"
         }),
     );
-    if snapshot.account.provider != thread::Provider::Claude {
-        let program = record
-            .get("cyberAccessProgram")
-            .and_then(Value::as_str)
-            .unwrap_or("standard");
-        if !matches!(program, "standard" | "daybreakBlue" | "daybreakRed")
-            || (record.get("daybreakEnabled") == Some(&json!(true))
-                && !matches!(program, "daybreakBlue" | "daybreakRed"))
-        {
-            return Err(refusal("safety-retry/daybreak-program-invalid".into()));
-        }
+    if let Some(program) = daybreak_program(resources, &snapshot)? {
         turn_params.insert("cyberAccessProgram".into(), json!(program));
     }
     Ok(super::PreparedSafetyRetry {
@@ -796,6 +863,7 @@ pub(crate) fn commit(
     AgentRepository::put(tx, &decode(frozen, &context.intent.agent_id)?)?;
     Ok(())
 }
+
 pub(crate) fn apply_patch(
     record: &mut Value,
     patch: &thread::AgentPatch,
@@ -921,4 +989,31 @@ pub(crate) fn commit_claude(
         submission,
     )?;
     Ok(true)
+}
+
+#[cfg(test)]
+mod daybreak_tests {
+    use super::*;
+
+    #[test]
+    fn disabled_daybreak_uses_standard_for_fallback_model_without_catalog() {
+        assert_eq!(
+            resolve_daybreak_program(&json!({}), Some("fallback-model"), false)
+                .expect("disabled Daybreak resolves to standard"),
+            "standard"
+        );
+    }
+
+    #[test]
+    fn enabled_daybreak_uses_grant_for_selected_fallback_model() {
+        let catalog = json!({"data":[
+            {"model":"requested-model","hidden":true,"availableAccessPrograms":{"cyber":["daybreakBlue"]}},
+            {"model":"fallback-model","availableAccessPrograms":{"cyber":["daybreakRed"]}}
+        ]});
+        assert_eq!(
+            resolve_daybreak_program(&catalog, Some("fallback-model"), true)
+                .expect("fallback model has a Daybreak grant"),
+            "daybreakRed"
+        );
+    }
 }
