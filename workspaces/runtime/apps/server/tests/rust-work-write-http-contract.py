@@ -16,17 +16,9 @@ from pathlib import Path
 HERE = Path(os.path.abspath(os.path.dirname(__file__)))
 sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE.parents[4] / "workspaces/runtime/packages/runtime-services/tests/turn_lifecycle"))
-from oracle_guard import OracleGuard
+from oracle_guard import install_guard
 
-_oracle_guard = OracleGuard()
-_filesystem_audit_events = {"open", "os.listdir", "os.scandir", "os.stat", "os.lstat", "os.fstatat"}
-sys.addaudithook(
-    lambda event, args: _oracle_guard.audit(event, args)
-    if event in _filesystem_audit_events
-    else None
-)
-os.stat = lambda path, *args, **kwargs: _oracle_guard.metadata(_oracle_guard.stat, path, *args, **kwargs)
-os.lstat = lambda path, *args, **kwargs: _oracle_guard.metadata(_oracle_guard.lstat, path, *args, **kwargs)
+_oracle_guard = install_guard()
 
 from test_isolation import isolate_supervisor_environment
 
