@@ -84,9 +84,27 @@ pub(super) struct Faults {
     fired_notify: tokio::sync::Notify,
     pub(super) shutdown_wait: tokio::sync::Notify,
     pub(super) shutdown_callbacks_draining: tokio::sync::Notify,
+    pub(super) startup_recovery_done: std::sync::atomic::AtomicBool,
+    pub(super) startup_recovery: tokio::sync::Notify,
 }
 type Boundary = (String, usize, Option<String>);
 type NamedBoundary = (String, usize, Option<String>, bool);
+pub(super) struct RejectingPublicationSink {
+    pub(super) attempted: Arc<tokio::sync::Notify>,
+}
+impl crate::notification_runtime_effects::NotificationPostCommitSink for RejectingPublicationSink {
+    fn publish(
+        &self,
+        _: &crate::notification_dispatch::NotificationPostCommit,
+    ) -> Result<(), crate::notification_dispatch::NotificationDispatchError> {
+        self.attempted.notify_one();
+        Err(
+            crate::notification_dispatch::NotificationDispatchError::Dependency(
+                "test/publication-held",
+            ),
+        )
+    }
+}
 impl Faults {
     pub(super) async fn pause(&self, index: usize) {
         let pause = *self.pause_at.lock().unwrap() == Some(index)
@@ -446,7 +464,20 @@ impl Peer {
         bridge: StoreBridge,
         resources: preparation::PreparationResources,
     ) -> AccountHandle {
-        start_account_worker(
+        self.open_worker_with_resources_and_sink(
+            bridge,
+            resources,
+            Arc::new(crate::notification_runtime_effects::UnavailablePostCommitSink),
+        )
+        .await
+    }
+    async fn open_worker_with_resources_and_sink(
+        &self,
+        bridge: StoreBridge,
+        resources: preparation::PreparationResources,
+        sink: Arc<dyn crate::notification_runtime_effects::NotificationPostCommitSink>,
+    ) -> AccountHandle {
+        start_account_worker_with_publication_sink(
             bridge,
             self.account.clone(),
             self.factory.clone(),
@@ -469,6 +500,7 @@ impl Peer {
                 recovered: vec![],
             },
             resources,
+            sink,
         )
         .await
         .unwrap()
@@ -1614,6 +1646,22 @@ async fn wait_for_cursor_or_injection(peer: &mut Peer, cursor: u64) -> bool {
 }
 
 async fn worker_barrier(worker: &AccountHandle) {
+    while !worker
+        .faults
+        .startup_recovery_done
+        .load(std::sync::atomic::Ordering::SeqCst)
+    {
+        let notified = worker.faults.startup_recovery.notified();
+        tokio::pin!(notified);
+        if worker
+            .faults
+            .startup_recovery_done
+            .load(std::sync::atomic::Ordering::SeqCst)
+        {
+            break;
+        }
+        notified.await;
+    }
     let (reply, done) = oneshot::channel();
     worker.send(AccountCommand::Barrier(reply)).await.unwrap();
     tokio::time::timeout(std::time::Duration::from_secs(120), done)
@@ -2429,7 +2477,7 @@ async fn workspace_pending_reuses_reserved_attempt() {
 
 #[tokio::test]
 async fn preparation_commit_rechecks_workspace_settings_and_input() {
-    for mutation in ["workspace", "settings", "input", "retired"] {
+    for mutation in ["workspace", "settings", "input", "retired", "stopped"] {
         let state = State::new().await;
         let agent = state.agent.clone();
         let epoch = state.epoch;
@@ -2450,6 +2498,12 @@ async fn preparation_commit_rechecks_workspace_settings_and_input() {
                     tx.execute("UPDATE runtime_events SET text='changed after preparation' WHERE id='annotation:input'", [])?;
                 } else if mutation == "retired" {
                     tx.execute("UPDATE runtime_complaints SET record=json_set(record,'$.status','resolved') WHERE id='resolved'", [])?;
+                } else if mutation == "stopped" {
+                    let mut row = AgentRepository::get(tx, &AgentId::from(agent.as_str()))?.unwrap();
+                    row.status = studio_runtime_store::AgentStatus::Interrupted;
+                    row.epoch += 1;
+                    row.extra.insert("autoWake".into(), json!(false));
+                    AgentRepository::put(tx, &row)?;
                 } else {
                     let mut row = AgentRepository::get(tx, &AgentId::from(agent.as_str()))?.unwrap();
                     if mutation == "workspace" {
@@ -2486,6 +2540,8 @@ async fn preparation_commit_rechecks_workspace_settings_and_input() {
             state.event_status("input").await,
             if mutation == "retired" {
                 "stored_only"
+            } else if mutation == "stopped" {
+                "reserved"
             } else {
                 "pending"
             },

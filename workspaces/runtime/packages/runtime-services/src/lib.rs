@@ -197,6 +197,32 @@ mod registration_tests {
     #[test]
     fn service_modules_match_the_source_directory_in_alphabetical_order() {
         let directory = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let path_included_children = fs::read_dir(&directory)
+            .expect("services source directory is readable")
+            .filter_map(|entry| {
+                let path = entry.ok()?.path();
+                path.extension()
+                    .is_some_and(|extension| extension == "rs")
+                    .then_some(path)
+            })
+            .flat_map(|path| {
+                let source = fs::read_to_string(path).expect("services source file is readable");
+                source
+                    .lines()
+                    .filter_map(|line| {
+                        let target = line
+                            .trim()
+                            .strip_prefix("#[path = \"")?
+                            .strip_suffix("\"]")?;
+                        let target = Path::new(target);
+                        target
+                            .parent()
+                            .is_none_or(|parent| parent.as_os_str().is_empty())
+                            .then(|| target.file_stem()?.to_str().map(str::to_owned))?
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
         let mut source_modules = fs::read_dir(&directory)
             .expect("services source directory is readable")
             .map(|entry| {
@@ -212,7 +238,8 @@ mod registration_tests {
                     return None;
                 }
                 let stem = path.file_stem()?.to_str()?;
-                (stem != "lib").then(|| stem.to_owned())
+                (stem != "lib" && !path_included_children.iter().any(|child| child == stem))
+                    .then(|| stem.to_owned())
             })
             .collect::<Vec<_>>();
         source_modules.sort_unstable();

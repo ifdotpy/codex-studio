@@ -1807,7 +1807,20 @@ fn startup_reconciles_reserved_callback_once() {
             |row| row.get(0),
         )
         .unwrap();
-    assert_eq!(running_claim, 1, "the durable claim survives the crash");
+    assert_eq!(
+        running_claim, 0,
+        "failed execution transaction rolls the claim back to its durable queued admission"
+    );
+    let queued_admission: i64 = store
+        .read()
+        .unwrap()
+        .query_row(
+            "SELECT count(*) FROM runtime_tool_requests WHERE json_extract(record,'$.callId')='managed-0' AND json_extract(record,'$.tool')='orchestration_send' AND json_extract(record,'$.stage')='queued' AND json_extract(record,'$.outcome')='pending'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(queued_admission, 1, "the exact durable admission survives");
     drop(store);
 
     // Reopen the real store and invoke the callback owner's startup recovery.
@@ -1834,7 +1847,7 @@ fn startup_reconciles_reserved_callback_once() {
         .unwrap();
     assert_eq!(
         (stage.as_str(), outcome.as_str()),
-        ("interrupted", "unknown")
+        ("cancelled", "not_applied")
     );
 }
 

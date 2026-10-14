@@ -9778,7 +9778,7 @@
     "python_writes": "sync_entities"
   },
   {
-    "id": "unhandled-command-exec-outputDelta",
+    "id": "malformed-command-exec-outputDelta",
     "module": "notification_dispatch",
     "steps": [
       {
@@ -9787,12 +9787,11 @@
           "params": {
             "threadId": "thread"
           }
-        },
-        "required_service": "monitors/output"
+        }
       }
     ],
     "tier": "fast",
-    "requires_service": "monitors/output"
+    "expect_refusal": "invalid provider notification or delivery identity"
   },
   {
     "id": "unhandled-provider-generationStarted",
@@ -11141,7 +11140,7 @@
       "unhandled-account-login-completed",
       "unhandled-account-updated",
       "unhandled-account-rateLimits-updated",
-      "unhandled-command-exec-outputDelta",
+      "malformed-command-exec-outputDelta",
       "unhandled-provider-generationStarted",
       "unhandled-thread-closed",
       "unhandled-thread-status-changed",

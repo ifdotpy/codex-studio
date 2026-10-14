@@ -659,11 +659,7 @@ impl AccountRegistry {
     pub async fn close_worker_for_test(&mut self, account: &str) -> Result<(), WorkerError> {
         let worker = self.workers.get_mut(account).ok_or(WorkerError::Closed)?;
         worker.cancel();
-        let sender = worker.radio_interrupt_sender();
-        while !sender.is_closed() {
-            tokio::task::yield_now().await;
-        }
-        Ok(())
+        worker.completion().await
     }
 
     pub(crate) async fn start(&mut self, account: &str) -> Result<(), WorkerError> {
