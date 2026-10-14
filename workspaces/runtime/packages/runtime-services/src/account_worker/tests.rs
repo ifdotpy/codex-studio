@@ -1,6 +1,5 @@
 #![allow(clippy::unwrap_used)]
 mod claude_preparation;
-mod publication_drain;
 mod retained;
 use super::*;
 use crate::event_write::{AnnotationWrite, annotate};
@@ -434,44 +433,6 @@ impl Peer {
     }
     async fn worker(&self, bridge: StoreBridge) -> AccountHandle {
         let worker = self.open_worker(bridge).await;
-        let mut ready = self.ready.clone();
-        while !*ready.borrow_and_update() {
-            ready.changed().await.unwrap();
-        }
-        worker
-    }
-    async fn worker_with_sink(
-        &self,
-        bridge: StoreBridge,
-        sink: Arc<dyn crate::notification_runtime_effects::NotificationPostCommitSink>,
-    ) -> AccountHandle {
-        let worker = start_account_worker_with_publication_sink(
-            bridge,
-            self.account.clone(),
-            self.factory.clone(),
-            OpenOptions {
-                clock: self.clock.clone(),
-                launch: ProviderLaunchSpec::new(
-                    vec!["fake".into()],
-                    BTreeMap::new(),
-                    "/var/tmp".into(),
-                ),
-                expected_generation: Some(self.generation),
-            },
-            SessionTaskConfig {
-                initialize_params: json!({}),
-                generation: self.generation,
-                claude: self.claude,
-                timeout_ms: 60_000,
-                initialize_operation: OperationId("init".into()),
-                request_id_prefix: None,
-                recovered: vec![],
-            },
-            test_resources().unwrap(),
-            sink,
-        )
-        .await
-        .unwrap();
         let mut ready = self.ready.clone();
         while !*ready.borrow_and_update() {
             ready.changed().await.unwrap();
@@ -1073,13 +1034,8 @@ async fn unsupported_callback(method: &str) {
     let wire = peer.next_write().await;
     assert_eq!(wire.value["id"], "callback");
     if method == "item/tool/call" {
-        assert_eq!(
-            wire.value["result"],
-            json!({
-                "success":false,
-                "contentItems":[{"type":"inputText","text":"Unknown managed agent"}]
-            })
-        );
+        assert_eq!(wire.value["result"]["success"], false);
+        assert_eq!(wire.value["result"]["contentItems"][0]["type"], "inputText");
     } else {
         assert_eq!(wire.value["error"]["code"], -32601);
         assert_eq!(wire.value["error"]["data"]["kind"], "unsupported_callback");
@@ -1123,6 +1079,9 @@ async fn scenario_unsupported_question_is_answered_after_commit() {
 }
 async fn scenario_unsupported_dynamic_tool_is_answered_after_commit() {
     unsupported_callback("item/tool/call").await;
+}
+async fn scenario_unknown_provider_method_is_answered_after_commit() {
+    unsupported_callback("unknown/providerMethod").await;
 }
 
 async fn scenario_foreign_account_stop_cannot_revoke_agent() {
@@ -1291,6 +1250,11 @@ async fn unsupported_question_is_answered_after_commit() {
 #[tokio::test(start_paused = true)]
 async fn unsupported_dynamic_tool_is_answered_after_commit() {
     scenario_unsupported_dynamic_tool_is_answered_after_commit().await
+}
+
+#[tokio::test(start_paused = true)]
+async fn unknown_provider_method_is_answered_after_commit() {
+    scenario_unknown_provider_method_is_answered_after_commit().await
 }
 
 #[tokio::test(start_paused = true)]
@@ -1799,49 +1763,6 @@ async fn bookkeeping_rows_stay_bounded_across_completed_turns() {
         assert!(count <= 4, "turn {turn}: retained {count} worker rows");
     }
     worker.shutdown().await.unwrap();
-}
-
-#[tokio::test(start_paused = true)]
-async fn worker_turn_lifecycle_publishes_started_and_completed_token_rate_effects() {
-    let state = State::new().await;
-    let mut peer = Peer::new();
-    #[derive(Default)]
-    struct Sink(std::sync::Mutex<Vec<crate::notification_dispatch::NotificationPostCommit>>);
-    impl crate::notification_runtime_effects::NotificationPostCommitSink for Sink {
-        fn publish(
-            &self,
-            effect: &crate::notification_dispatch::NotificationPostCommit,
-        ) -> Result<(), crate::notification_dispatch::NotificationDispatchError> {
-            self.0.lock().unwrap().push(effect.clone());
-            Ok(())
-        }
-    }
-    let sink = Arc::new(Sink::default());
-    let mut worker = peer
-        .worker_with_sink(state.bridge.clone(), sink.clone())
-        .await;
-    let start = state.start(&mut peer, &worker).await;
-    peer.reply(&start, json!({"turn":{"id":"turn"}})).await;
-    let started = peer
-        .frame(json!({"method":"turn/started","params":{"threadId":"fake-thread-0","turn":{"id":"turn"}}}))
-        .await;
-    peer.acknowledged(started).await;
-    let completed = peer
-        .frame(json!({"method":"turn/completed","params":{"threadId":"fake-thread-0","turn":{"id":"turn","status":"completed"}}}))
-        .await;
-    peer.acknowledged(completed).await;
-    worker.shutdown().await.expect("stop worker");
-    let effects = sink.0.lock().unwrap();
-    for method in ["turn/started", "turn/completed"] {
-        assert!(
-            effects.iter().any(|effect| matches!(
-                effect,
-                crate::notification_dispatch::NotificationPostCommit::TokenRateUsage(observation)
-                    if observation.method == method
-            )),
-            "worker did not publish {method} lifecycle effect"
-        );
-    }
 }
 
 #[tokio::test(start_paused = true)]

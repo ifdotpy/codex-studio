@@ -311,47 +311,183 @@ fn thread_started_for_actor(
 pub(super) fn replay(
     s: &RuntimeStore,
     call: &Call,
-) -> Result<Result<Option<SessionReceipt>, PortError>, WorkerError> {
+) -> Result<Result<Replay, PortError>, WorkerError> {
     s.transaction_with(|tx| {
         if !authorize(tx, call)? {
             return Ok(Err(PortError::Identity));
         }
         let Some(prior) = store::receipt(tx, &call.key(), "submitted")? else {
-            return Ok(Ok(None));
+            return Ok(Ok(Replay::Miss));
         };
-        if prior["call"] != serde_json::to_value(call).map_err(|_| WorkerError::Capacity)? {
+        let prior_call: Call =
+            serde_json::from_value(prior["call"].clone()).map_err(|_| WorkerError::Capacity)?;
+        if !same_replay_identity(&prior_call, call) {
             return Ok(Err(PortError::Identity));
         }
         let request = store::decode(&prior["request"])?;
         let saved = store::receipt(tx, &call.key(), "result")?;
-        let result = match saved {
-            Some(saved)
-                if saved["cursor"].as_u64().unwrap_or(u64::MAX)
-                    <= store::checkpoint(tx, &call.scope.account, call.scope.generation)? =>
+        let result = if let Some(saved) = saved {
+            // The result receipt is committed before its journal event advances
+            // the checkpoint. Only expose it after that event is known committed
+            // in the generation that recorded the result. Looking up the prior
+            // generation is important: reconnecting must not hide a settled
+            // result merely because the new generation has a different cursor.
+            let checkpoint = crate::account_worker::store::checkpoint(
+                tx,
+                &prior_call.scope.account,
+                prior_call.scope.generation,
+            )?;
+            if saved["cursor"]
+                .as_u64()
+                .is_some_and(|cursor| cursor <= checkpoint)
             {
                 serde_json::from_value(saved["result"].clone())
                     .map_err(|_| WorkerError::Capacity)?
+            } else {
+                RequestResult::Unknown
             }
-            _ => RequestResult::Unknown,
+        } else {
+            RequestResult::Unknown
         };
-        Ok(Ok(Some(call.receipt(request.ticket, result))))
+        if result == RequestResult::NotSent {
+            return Ok(Ok(Replay::Retry(request.ticket)));
+        }
+        // A committed operation may be inspected after the provider reconnects.
+        // Return its original ticket and scope; this path only reads receipts and
+        // never queues another provider write.
+        Ok(Ok(Replay::Return(
+            prior_call.receipt(request.ticket, result),
+        )))
     })
+}
+
+pub(super) enum Replay {
+    Miss,
+    Return(SessionReceipt),
+    Retry(studio_runtime_providers::RequestTicket),
+}
+
+fn same_replay_identity(prior: &Call, current: &Call) -> bool {
+    if prior.scope.account != current.scope.account {
+        return false;
+    }
+    let mut prior = prior.clone();
+    prior.scope.connection = current.scope.connection.clone();
+    prior.scope.generation = current.scope.generation;
+    prior == *current
+}
+
+#[cfg(test)]
+mod replay_identity_tests {
+    use super::*;
+
+    fn call() -> Call {
+        Call {
+            scope: ConnectionScope {
+                account: "default".into(),
+                connection: "old-connection".into(),
+                generation: 4,
+            },
+            operation: "operation-1".into(),
+            actor: Some(RequestActor {
+                agent: "agent-1".into(),
+                epoch: 7,
+            }),
+            transfer: None,
+            deleted_actor_session: None,
+            method: "thread/read".into(),
+            params: json!({"threadId":"thread-1","includeTurns":false}),
+        }
+    }
+
+    #[test]
+    fn replay_identity_normalizes_only_connection_generation() {
+        let prior = call();
+        let mut reconnected = prior.clone();
+        reconnected.scope.connection = "new-connection".into();
+        reconnected.scope.generation = 5;
+        assert!(same_replay_identity(&prior, &reconnected));
+
+        let mut changed = prior.clone();
+        changed.scope.account = "other-account".into();
+        assert!(!same_replay_identity(&prior, &changed));
+        let mut changed = prior.clone();
+        changed.operation.push_str(":other");
+        assert!(!same_replay_identity(&prior, &changed));
+        let mut changed = prior.clone();
+        changed.actor = Some(RequestActor {
+            agent: "agent-1".into(),
+            epoch: 8,
+        });
+        assert!(!same_replay_identity(&prior, &changed));
+        let mut changed = prior.clone();
+        changed.transfer = Some(TransferAuthorization {
+            transfer_id: "transfer-1".into(),
+            member: "member-1".into(),
+            source_account: "default".into(),
+            thread_id: "thread-1".into(),
+        });
+        assert!(!same_replay_identity(&prior, &changed));
+        let mut changed = prior.clone();
+        changed.deleted_actor_session = Some("voice-session-1".into());
+        assert!(!same_replay_identity(&prior, &changed));
+        let mut changed = prior.clone();
+        changed.method = "thread/turns/list".into();
+        assert!(!same_replay_identity(&prior, &changed));
+        let mut changed = prior;
+        changed.params["threadId"] = json!("thread-2");
+        assert!(!same_replay_identity(&call(), &changed));
+    }
 }
 pub(super) fn submitted(
     s: &RuntimeStore,
     call: &Call,
     request: &RecoveredRequest,
+    retry_ticket: Option<&studio_runtime_providers::RequestTicket>,
 ) -> Result<Result<(), PortError>, WorkerError> {
     scheduler::lifecycle_transaction_with(s, |tx| {
         if !authorize(tx, call)? {
             return Ok(Err(PortError::Identity));
         }
-        store::save(
-            tx,
-            &call.key(),
-            "submitted",
-            json!({"call":call,"request":store::record(request)}),
-        )?;
+        if let Some(expected_ticket) = retry_ticket {
+            let Some(prior) = store::receipt(tx, &call.key(), "submitted")? else {
+                return Ok(Err(PortError::Identity));
+            };
+            let prior_call: Call =
+                serde_json::from_value(prior["call"].clone()).map_err(|_| WorkerError::Capacity)?;
+            if !same_replay_identity(&prior_call, call) {
+                return Ok(Err(PortError::Identity));
+            }
+            let prior_request = store::decode(&prior["request"])?;
+            let checkpoint =
+                store::checkpoint(tx, &prior_call.scope.account, prior_call.scope.generation)?;
+            let proven_not_sent = store::receipt(tx, &call.key(), "result")?.is_some_and(|saved| {
+                saved["result"] == json!(RequestResult::NotSent)
+                    && saved["cursor"]
+                        .as_u64()
+                        .is_some_and(|cursor| cursor <= checkpoint)
+            });
+            if prior_request.ticket != *expected_ticket
+                || request.ticket != *expected_ticket
+                || !proven_not_sent
+            {
+                return Ok(Err(PortError::Identity));
+            }
+            store::delete_receipt(tx, &call.key(), "result")?;
+            store::replace(
+                tx,
+                &call.key(),
+                "submitted",
+                json!({"call":call,"request":store::record(request)}),
+            )?;
+        } else {
+            store::save(
+                tx,
+                &call.key(),
+                "submitted",
+                json!({"call":call,"request":store::record(request)}),
+            )?;
+        }
         Ok(Ok(()))
     })
 }

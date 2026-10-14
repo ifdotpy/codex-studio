@@ -52,6 +52,17 @@ pub(super) fn save(
     )?;
     Ok(())
 }
+pub(super) fn delete_receipt(
+    tx: &studio_runtime_store::Transaction<'_>,
+    operation: &str,
+    phase: &str,
+) -> Result<(), WorkerError> {
+    tx.execute(
+        "DELETE FROM runtime_operation_receipts WHERE id=?1",
+        [receipt_id(operation, phase)],
+    )?;
+    Ok(())
+}
 pub(super) fn record(request: &RecoveredRequest) -> Value {
     json!({"id":request.ticket.id,"generation":request.ticket.generation,"method":request.ticket.method.as_str(),"operation":request.operation_id.0,"thread":request.thread_id,"lightweight":request.lightweight,"deadline":request.deadline_ms,"unknown":request.unknown,"remoteId":request.remote_id})
 }
@@ -206,6 +217,31 @@ fn retire_generations(
             };
             if generation.is_none_or(|generation| generation >= current) {
                 continue;
+            }
+            if kind == "cursor" {
+                // A saved retained result can only be replayed after reconnect
+                // while its submitted intent still exists. Keep that
+                // generation's checkpoint for exactly that lifetime. Submitted
+                // retained intents are durable, so each such generation pins at
+                // most one checkpoint; checkpoint count therefore never exceeds
+                // the number of retained receipts. Generations without retained
+                // requests retire their checkpoint during reconnect churn.
+                let retained_prefix = format!("account-worker:retained:{account}:");
+                let generation_number = generation
+                    .and_then(|generation| i64::try_from(generation).ok())
+                    .ok_or_else(|| invalid(&id))?;
+                let has_retained_submission: bool = tx.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM runtime_operation_receipts WHERE id>=?1 AND id<?2 AND substr(id,-10)=':submitted' AND json_extract(result,'$.call.scope.generation')=?3)",
+                    params![
+                        retained_prefix,
+                        format!("{retained_prefix}~"),
+                        generation_number
+                    ],
+                    |row| row.get(0),
+                )?;
+                if has_retained_submission {
+                    continue;
+                }
             }
             if kind == "account"
                 && matches!(

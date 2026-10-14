@@ -346,6 +346,7 @@ impl AccountSessionRuntime {
             "Unsupported retained provider method",
         ))?;
         let deadline = Instant::now() + timeout;
+        let expected_scope = session.current_scope(account);
         let receipt = self.block_on_retained(async {
             tokio::time::timeout_at(
                 deadline,
@@ -353,7 +354,7 @@ impl AccountSessionRuntime {
                     account: account.to_owned(),
                     operation: operation.clone(),
                     actor: None,
-                    expected_scope: None,
+                    expected_scope: expected_scope.clone(),
                     deleted_actor_session: None,
                     method,
                     params,
@@ -364,7 +365,10 @@ impl AccountSessionRuntime {
         });
         match receipt {
             Ok(Ok(receipt))
-                if receipt.operation == operation && receipt.scope.account == account =>
+                if receipt.operation == operation
+                    && receipt.scope.account == account
+                    && (receipt.certainty == RequestCertainty::NotSent
+                        || expected_scope.as_ref() == Some(&receipt.scope)) =>
             {
                 Ok(receipt)
             }
@@ -630,7 +634,10 @@ impl AccountSessionPort for AccountSessionRuntime {
                 },
                 response.certainty != RequestCertainty::NotSent,
             ),
-            Err(_) => (None, false),
+            // The durable login reservation already exists. Any adapter error
+            // after this point lacks proof that the provider never received
+            // the request, so keep the attempt uncertain.
+            Err(_) => (None, true),
         };
         self.driver
             .finish_codex_login(

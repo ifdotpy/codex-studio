@@ -73,6 +73,314 @@ async fn retained_reply_replays_without_resending_and_rejects_changed_payload() 
     worker.shutdown().await.unwrap();
 }
 
+#[tokio::test(start_paused = true)]
+async fn retained_checkpointed_not_sent_retries_with_the_same_ticket_once() {
+    let state = State::new().await;
+    let mut peer = Peer::new();
+    let mut worker = peer.worker(state.bridge.clone()).await;
+    let port = worker.retained_session();
+    let call = request(&state, &port, "voice:delete-stop:session-1");
+
+    let sender = port.clone();
+    let first_call = call.clone();
+    let first = tokio::spawn(async move { sender.request(first_call).await });
+    let first_wire = peer.next_write().await;
+    assert!(first_wire.receipt.send(CommandReceipt::NotSent).is_ok());
+    assert_eq!(first.await.unwrap().unwrap().result, RequestResult::NotSent);
+
+    let sender = port.clone();
+    let retry_call = call.clone();
+    let retry = tokio::spawn(async move { sender.request(retry_call).await });
+    let retry_wire = peer.next_write().await;
+    assert_eq!(retry_wire.value["id"], first_wire.value["id"]);
+    assert!(
+        retry_wire
+            .receipt
+            .send(CommandReceipt::Written {
+                remote_id: None,
+                duplicate: false,
+            })
+            .is_ok()
+    );
+    peer.reply(&retry_wire.value, json!({"thread":{"id":"fake-thread-0"}}))
+        .await;
+    assert_eq!(
+        retry.await.unwrap().unwrap().result,
+        RequestResult::Reply(json!({"thread":{"id":"fake-thread-0"}}))
+    );
+    assert!(peer.writes.try_recv().is_err());
+    worker.shutdown().await.unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn retained_retry_lost_response_replays_unknown_without_another_send() {
+    let state = State::new().await;
+    let mut peer = Peer::new();
+    let mut worker = peer.worker(state.bridge.clone()).await;
+    let port = worker.retained_session();
+    let call = request(&state, &port, "retry-lost-response");
+
+    let sender = port.clone();
+    let first_call = call.clone();
+    let first = tokio::spawn(async move { sender.request(first_call).await });
+    let first_wire = peer.next_write().await;
+    assert!(first_wire.receipt.send(CommandReceipt::NotSent).is_ok());
+    assert_eq!(first.await.unwrap().unwrap().result, RequestResult::NotSent);
+
+    let sender = port.clone();
+    let retry_call = call.clone();
+    let retry = tokio::spawn(async move { sender.request(retry_call).await });
+    let retry_wire = peer.next_write().await;
+    assert!(
+        retry_wire
+            .receipt
+            .send(CommandReceipt::Written {
+                remote_id: None,
+                duplicate: false,
+            })
+            .is_ok()
+    );
+    retry.abort();
+    let _ignored = retry.await;
+    assert_eq!(
+        port.request(call).await.unwrap().result,
+        RequestResult::Unknown
+    );
+    assert!(peer.writes.try_recv().is_err());
+    worker.shutdown().await.unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn retained_uncheckpointed_not_sent_is_unknown_and_not_retried() {
+    let state = State::new().await;
+    let mut peer = Peer::new();
+    let mut worker = peer.worker(state.bridge.clone()).await;
+    let port = worker.retained_session();
+    let call = request(&state, &port, "uncheckpointed-not-sent");
+    let sender = port.clone();
+    let first_call = call.clone();
+    let first = tokio::spawn(async move { sender.request(first_call).await });
+    let first_wire = peer.next_write().await;
+    assert!(first_wire.receipt.send(CommandReceipt::NotSent).is_ok());
+    assert_eq!(first.await.unwrap().unwrap().result, RequestResult::NotSent);
+
+    state.bridge.run(|store| {
+        store.transaction(|tx| {
+            tx.execute(
+                "UPDATE runtime_operation_receipts SET result=json_set(result,'$.cursor',1) WHERE id LIKE 'account-worker:retained:default:%:result' AND json_extract(result,'$.result')='NotSent'",
+                [],
+            )?;
+            Ok(())
+        })?;
+        Ok(())
+    }).await.unwrap();
+    assert_eq!(
+        port.request(call).await.unwrap().result,
+        RequestResult::Unknown
+    );
+    assert!(peer.writes.try_recv().is_err());
+    worker.shutdown().await.unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn retained_retry_intent_crash_before_transport_replays_unknown_without_sending() {
+    use crate::account_worker::retained::Call;
+
+    let state = State::new().await;
+    let mut first_peer = Peer::new();
+    let mut first_worker = first_peer.worker(state.bridge.clone()).await;
+    let first_port = first_worker.retained_session();
+    let call = request(&state, &first_port, "crash-before-retry-transport");
+    let sender = first_port.clone();
+    let first_call = call.clone();
+    let first = tokio::spawn(async move { sender.request(first_call).await });
+    let first_wire = first_peer.next_write().await;
+    assert!(first_wire.receipt.send(CommandReceipt::NotSent).is_ok());
+    assert_eq!(first.await.unwrap().unwrap().result, RequestResult::NotSent);
+    first_worker.shutdown().await.unwrap();
+
+    let key = format!(
+        "retained:default:{}",
+        studio_runtime_store::sha256_hex(call.operation.as_bytes())
+    );
+    let (stored_call, retry_request) = state
+        .bridge
+        .run(move |store| {
+            store.transaction_with(|tx| {
+                let prior = crate::account_worker::store::receipt(tx, &key, "submitted")?
+                    .ok_or_else(|| crate::account_worker::WorkerError::Capacity)?;
+                let call: Call = serde_json::from_value(prior["call"].clone())
+                    .map_err(|_| crate::account_worker::WorkerError::Capacity)?;
+                let request = crate::account_worker::store::decode(&prior["request"])?;
+                Ok((call, request))
+            })
+        })
+        .await
+        .unwrap();
+
+    // This is the retry's atomic clear-and-submit commit. Simulate a process
+    // crash immediately after commit and before the transport receives it.
+    crate::account_worker::retained::test_submitted(
+        &state.bridge.store,
+        &stored_call,
+        &retry_request,
+        Some(&retry_request.ticket),
+    )
+    .unwrap()
+    .unwrap();
+
+    let mut second_peer = Peer::identity("default", 2, None);
+    let mut second_worker = second_peer.worker(state.bridge.clone()).await;
+    let second_port = second_worker.retained_session();
+    assert_eq!(
+        second_port
+            .request(request(&state, &second_port, &call.operation))
+            .await
+            .unwrap()
+            .result,
+        RequestResult::Unknown
+    );
+    assert!(second_peer.writes.try_recv().is_err());
+    second_worker.shutdown().await.unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn retained_written_receipt_replays_after_reconnect_without_sending() {
+    let state = State::new().await;
+    let mut first_peer = Peer::identity("default", 1, None);
+    let mut first_worker = first_peer.worker(state.bridge.clone()).await;
+    let first_port = first_worker.retained_session();
+    let original = request(&state, &first_port, "branch:fixture:fork");
+    let sender = first_port.clone();
+    let pending = original.clone();
+    let task = tokio::spawn(async move { sender.request(pending).await });
+    let wire = first_peer.write("thread/read").await;
+    first_peer
+        .reply(&wire, json!({"thread":{"id":"fake-thread-0"}}))
+        .await;
+    let original_receipt = task.await.unwrap().unwrap();
+    assert_eq!(
+        original_receipt.result,
+        RequestResult::Reply(json!({"thread":{"id":"fake-thread-0"}}))
+    );
+    first_worker.shutdown().await.unwrap();
+
+    let mut second_peer = Peer::identity("default", 2, None);
+    let mut second_worker = second_peer.worker(state.bridge.clone()).await;
+    let second_port = second_worker.retained_session();
+    let mut replay = request(&state, &second_port, "branch:fixture:fork");
+    assert_eq!(replay.scope.generation, 2);
+    replay.method = Method::ThreadRead;
+    replay.params = original.params.clone();
+    let receipt = second_port.request(replay.clone()).await.unwrap();
+    assert_eq!(
+        receipt.result,
+        RequestResult::Reply(json!({"thread":{"id":"fake-thread-0"}}))
+    );
+    assert_eq!(
+        receipt.scope.generation, 1,
+        "replay returns the saved scope"
+    );
+    assert_eq!(receipt.scope, original_receipt.scope);
+    assert_eq!(receipt.ticket, original_receipt.ticket);
+    assert!(
+        second_peer.writes.try_recv().is_err(),
+        "saved receipt is never sent again"
+    );
+
+    let mut changed_method = replay.clone();
+    changed_method.method = Method::ThreadTurnsList;
+    changed_method.params = json!({
+        "threadId":"fake-thread-0","limit":10,"sortDirection":"desc","itemsView":"full"
+    });
+    assert_eq!(
+        second_port.request(changed_method).await.unwrap_err(),
+        PortError::Identity
+    );
+
+    let mut changed_params = replay.clone();
+    changed_params.params["threadId"] = json!("other-thread");
+    assert_eq!(
+        second_port.request(changed_params).await.unwrap_err(),
+        PortError::Identity
+    );
+
+    assert!(
+        second_peer.writes.try_recv().is_err(),
+        "mismatches never reach provider"
+    );
+    second_worker.shutdown().await.unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn reconnect_churn_keeps_checkpoints_bounded_by_retained_generations() {
+    let state = State::new().await;
+    for generation in 1..=8 {
+        let mut peer = Peer::identity("default", generation, None);
+        let mut worker = peer.worker(state.bridge.clone()).await;
+        let port = worker.retained_session();
+        let operation = format!("retained-generation-{generation}");
+        let pending = request(&state, &port, &operation);
+        let sender = port.clone();
+        let task = tokio::spawn(async move { sender.request(pending).await });
+        let wire = peer.write("thread/read").await;
+        peer.reply(&wire, json!({"thread":{"id":"fake-thread-0"}}))
+            .await;
+        let receipt = task.await.unwrap().unwrap();
+        assert_eq!(receipt.scope.generation, generation);
+        worker.shutdown().await.unwrap();
+
+        let (retained_generations, checkpoints) = state.bridge.run(|store| {
+            let db = store.read()?;
+            let retained_generations = db.query_row(
+                "SELECT COUNT(DISTINCT json_extract(result,'$.call.scope.generation')) FROM runtime_operation_receipts WHERE id LIKE 'account-worker:retained:default:%:submitted'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )?;
+            let checkpoints = db.query_row(
+                "SELECT COUNT(*) FROM runtime_operation_receipts WHERE id LIKE 'account-worker:cursor:default:%:ack'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )?;
+            Ok((retained_generations, checkpoints))
+        }).await.unwrap();
+        assert_eq!(retained_generations, generation as i64);
+        assert!(
+            checkpoints <= retained_generations,
+            "{checkpoints} cursor checkpoints exceeded {retained_generations} retained generations"
+        );
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn retained_unknown_receipt_stays_unknown_after_reconnect_without_sending() {
+    let state = State::new().await;
+    let mut first_peer = Peer::identity("default", 1, None);
+    let mut first_worker = first_peer.worker(state.bridge.clone()).await;
+    let first_port = first_worker.retained_session();
+    let original = request(&state, &first_port, "branch:unknown:fork");
+    let sender = first_port.clone();
+    let pending = original.clone();
+    let task = tokio::spawn(async move { sender.request(pending).await });
+    let _wire = first_peer.write("thread/read").await;
+    first_worker.shutdown().await.unwrap();
+    let _ = task.await;
+
+    let mut second_peer = Peer::identity("default", 2, None);
+    let mut second_worker = second_peer.worker(state.bridge.clone()).await;
+    let second_port = second_worker.retained_session();
+    let replay = request(&state, &second_port, "branch:unknown:fork");
+    assert_eq!(
+        second_port.request(replay).await.unwrap().result,
+        RequestResult::Unknown,
+    );
+    assert!(
+        second_peer.writes.try_recv().is_err(),
+        "Unknown is held after reconnect"
+    );
+    second_worker.shutdown().await.unwrap();
+}
+
 #[tokio::test]
 async fn retained_request_rejects_a_stale_expected_connection_before_dispatch() {
     let state = State::new().await;
@@ -949,10 +1257,24 @@ async fn retained_deadline_during_intent_never_writes_after_expiry() {
     state.bridge.faults.release.notify_waiters();
     worker_barrier(&worker).await;
     call.deadline = (tokio::time::Instant::now() + std::time::Duration::from_secs(60)).into_std();
-    assert_eq!(
-        port.request(call).await.unwrap().result,
-        RequestResult::NotSent
+    let sender = port.clone();
+    let retry_call = call.clone();
+    let retry = tokio::spawn(async move { sender.request(retry_call).await });
+    let wire = peer.next_write().await;
+    assert!(
+        wire.receipt
+            .send(CommandReceipt::Written {
+                remote_id: None,
+                duplicate: false,
+            })
+            .is_ok()
     );
+    peer.reply(&wire.value, json!({"thread":{"id":"fake-thread-0"}}))
+        .await;
+    assert!(matches!(
+        retry.await.unwrap().unwrap().result,
+        RequestResult::Reply(_)
+    ));
     assert!(peer.writes.try_recv().is_err());
     worker.shutdown().await.unwrap();
 }
