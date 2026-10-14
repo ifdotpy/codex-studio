@@ -174,20 +174,22 @@ pub(super) fn put(tx: &Transaction<'_>, record: &Value) -> Result<(), CallbackEr
     )?;
     Ok(())
 }
-pub(super) fn dispatch(
+pub(super) fn dispatch_with_ports<P: crate::managed_host_tools::Ports>(
     store: &RuntimeStore,
     context: &CallbackContext,
     input: &Input,
     now: f64,
+    ports: &P,
 ) -> Result<CallbackDecision, CallbackError> {
     let call = ToolCall::parse(input, context)?;
+    if let Some(decision) = store.transaction_with(|tx| {
+        storage::saved_decision(tx, &ReplyIdentity::new(context, &input.id), input)
+    })? {
+        return Ok(decision);
+    }
     // Admission commits before any execution. All enabled services are local,
     // transactional writes. External effects need a durable admission adapter.
-    if let Some(decision) = store.transaction_with(|tx| {
-        let identity = ReplyIdentity::new(context, &input.id);
-        if let Some(decision) = storage::saved_decision(tx, &identity, input)? {
-            return Ok(Some(decision));
-        }
+    store.transaction_with(|tx| {
         storage::snapshot(tx, context)?.active()?;
         let mut candidate = json!({
             "id":call.id, "agent":context.agent, "threadId":context.thread,
@@ -203,16 +205,14 @@ pub(super) fn dispatch(
             candidate["request_id"] = json!(alias);
         }
         admission::reserve(tx, candidate, &call.call, &call.prefix, call.alias.clone())?;
-        Ok::<_, CallbackError>(None)
-    })? {
-        return Ok(decision);
-    }
-    store.transaction_with(|tx| {
+        Ok::<_, CallbackError>(())
+    })?;
+    let (decision, signals) = store.transaction_with(|tx| {
         let snapshot = storage::snapshot(tx, context)?;
         snapshot.active()?;
         let identity = ReplyIdentity::new(context, &input.id);
         if let Some(decision) = storage::saved_decision(tx, &identity, input)? {
-            return Ok(decision);
+            return Ok((decision, Vec::new()));
         }
         let uncertain: i64 = tx.query_row(
             "SELECT count(*) FROM runtime_operation_receipts WHERE json_extract(result,'$.toolRequest')=?1 AND json_extract(result,'$.delivery') IN ('submitted','unknown')",
@@ -229,16 +229,16 @@ pub(super) fn dispatch(
         }
         let cached = records::get(tx, "runtime_tool_results", &call.id)?
             .or_else(|| record.get("result").filter(|v| v.is_object()).cloned());
-        let result = if let Some(saved) = cached { saved }
+        let (result, signals) = if let Some(saved) = cached { (saved, Vec::new()) }
         else {
             if record["connectionId"] != context.connection
                 || record.pointer("/supervisor/generation").and_then(Value::as_u64) != Some(context.generation) {
                 return Err(CallbackError::Stale);
             }
             if admission::claim(&mut record, now)? {
-                execute_once(tx, &snapshot, &call, &mut record, now)?
+                execute_once(tx, &snapshot, &call, &mut record, now, ports)?
             } else {
-                tool_result(json!({"requestId":call.id,"outcome":record["outcome"],"stage":record["stage"],"recovery":"Read orchestration_request with this requestId. Do not repeat the mutation with a new id."}), true)
+                (tool_result(json!({"requestId":call.id,"outcome":record["outcome"],"stage":record["stage"],"recovery":"Read orchestration_request with this requestId. Do not repeat the mutation with a new id."}), true), Vec::new())
             }
         };
         let projected = super::project_tool_result(&result, &call.id, &record["outcome"])?;
@@ -248,8 +248,51 @@ pub(super) fn dispatch(
         let mut outbox = storage::read(tx, &key)?.ok_or(CallbackError::Unknown)?;
         outbox["toolRequest"] = json!(call.id);
         storage::update(tx, &key, &outbox)?;
-        Ok(CallbackDecision::Answer(reply))
-    })
+        Ok::<_, CallbackError>((CallbackDecision::Answer(reply), signals))
+    })?;
+    if !signals.is_empty() {
+        ports
+            .release(&signals)
+            .map_err(|_| CallbackError::Unknown)?;
+    }
+    Ok(decision)
+}
+
+pub(super) fn dispatch_with_production_ports(
+    store: &RuntimeStore,
+    context: &CallbackContext,
+    input: &Input,
+    now: f64,
+) -> Result<CallbackDecision, CallbackError> {
+    let ports = production_ports(
+        store,
+        context,
+        input,
+        std::sync::Arc::new(tokio::sync::Notify::new()),
+    )?;
+    dispatch_with_ports(store, context, input, now, &ports)
+}
+
+pub(super) fn production_ports(
+    store: &RuntimeStore,
+    context: &CallbackContext,
+    input: &Input,
+    wake: std::sync::Arc<tokio::sync::Notify>,
+) -> Result<services::ProductionPorts, CallbackError> {
+    let reader = store.read()?;
+    let admission = crate::message_admission::PreparedAdmission::load(&reader, &context.agent)
+        .map_err(CallbackError::from)?;
+    let room_directory = if input.params["tool"] == "orchestration_search" {
+        Some(crate::sync_entity_context::RoomDirectory::prepare(&reader)?)
+    } else {
+        None
+    };
+    Ok(services::ProductionPorts::new(
+        context.clone(),
+        room_directory,
+        admission,
+        wake,
+    ))
 }
 
 fn execute_once(
@@ -258,31 +301,35 @@ fn execute_once(
     call: &ToolCall,
     record: &mut Value,
     now: f64,
-) -> Result<Value, CallbackError> {
+    ports: &impl crate::managed_host_tools::Ports,
+) -> Result<(Value, Vec<crate::managed_host_tools::WakeSignal>), CallbackError> {
     put(tx, record)?;
     // A refusal rolls back its effects before recording a not-applied receipt.
     // Store failures roll back claim, effect, result and reply together.
     tx.execute_batch("SAVEPOINT callback_service")?;
     let effect = services::execute(
-        tx, snapshot, call.kind, &call.name, &call.args, &call.id, now,
+        tx, snapshot, call.kind, &call.name, &call.args, &call.id, now, ports,
     );
-    let mut value = match effect {
-        Ok(value) => {
+    let (mut value, signals) = match effect {
+        Ok(staged) => {
             tx.execute_batch("RELEASE callback_service")?;
-            tool_result(value, true)
+            (tool_result(staged.value, true), staged.signals)
         }
         Err(CallbackError::Invalid(message)) => {
             tx.execute_batch("ROLLBACK TO callback_service; RELEASE callback_service")?;
-            tool_result(json!(message), false)
+            (tool_result(json!(message), false), Vec::new())
         }
         Err(CallbackError::Dependency(name)) => {
             tx.execute_batch("ROLLBACK TO callback_service; RELEASE callback_service")?;
-            tool_result(
-                json!(format!(
-                    "{} is unavailable: requires {name}. Do not retry this tool until that service is available.",
-                    call.name
-                )),
-                false,
+            (
+                tool_result(
+                    json!(format!(
+                        "{} is unavailable: requires {name}. Do not retry this tool until that service is available.",
+                        call.name
+                    )),
+                    false,
+                ),
+                Vec::new(),
             )
         }
         Err(error) => return Err(error),
@@ -306,5 +353,5 @@ fn execute_once(
         "INSERT INTO runtime_tool_results(id,result) VALUES(?1,?2)",
         params![call.id, value.to_string()],
     )?;
-    Ok(value)
+    Ok((value, signals))
 }

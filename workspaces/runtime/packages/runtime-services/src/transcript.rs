@@ -439,22 +439,35 @@ pub fn search_work(
     agent_filter: Option<&str>,
     limit: i64,
 ) -> Result<Value, TranscriptError> {
+    let reader = store.read()?;
+    let directory = crate::sync_entity_context::RoomDirectory::prepare(&reader)?;
+    let connection = reader.unchecked_transaction()?;
+    search_work_in_transaction(&connection, &directory, query, agent_filter, limit)
+}
+
+/// Transaction-aware search for callback dispatch. The room directory is
+/// captured before opening the writer transaction and compared against rows
+/// again here before any search result is returned.
+pub(crate) fn search_work_in_transaction(
+    connection: &Connection,
+    directory: &crate::sync_entity_context::RoomDirectory,
+    query: &str,
+    agent_filter: Option<&str>,
+    limit: i64,
+) -> Result<Value, TranscriptError> {
     let query = query.trim();
     if query.is_empty() || query.chars().count() > 500 {
         return Err(TranscriptError::InvalidSearch);
     }
     let limit = limit.clamp(1, 100) as usize;
-    let mut reader = store.read()?;
-    let directory = crate::sync_entity_context::RoomDirectory::prepare(&reader)?;
-    let connection = reader.transaction()?;
-    if !directory.matches(&connection)? {
+    if !directory.matches(connection)? {
         return Err(TranscriptError::SnapshotChanged);
     }
-    let agents = Table::<AgentRecord>::new(&connection)
+    let agents = Table::<AgentRecord>::new(connection)
         .list()
         .map_err(|_| TranscriptError::Store)?;
     let caller_root = if let Some(agent) = agent_filter {
-        let caller = TranscriptRepository::agent(&connection, agent)?
+        let caller = TranscriptRepository::agent(connection, agent)?
             .ok_or(TranscriptError::SearchResultUnavailable)?;
         if truthy(caller.get("deletedAt")) {
             return Err(TranscriptError::DeletedConversation);
@@ -482,14 +495,14 @@ pub fn search_work(
         .collect::<Vec<_>>()
         .join(" AND ");
     let mut found = Vec::new();
-    for (id, agent, kind) in TranscriptRepository::search_hits(&connection, &match_query)? {
+    for (id, agent, kind) in TranscriptRepository::search_hits(connection, &match_query)? {
         if !allowed.contains(agent.as_str()) || agent_filter.is_some_and(|caller| caller != agent) {
             continue;
         }
-        let Some(item) = TranscriptRepository::item(&connection, &agent, &id)? else {
+        let Some(item) = TranscriptRepository::item(connection, &agent, &id)? else {
             continue;
         };
-        let body = searchable_text(&connection, &item)?;
+        let body = searchable_text(connection, &item)?;
         let excerpt = excerpt(&body, query);
         found.push(json!({"id":id,"agent":agent,"type":"message","kind":kind,"reference":id,"excerpt":excerpt,"text":excerpt}));
     }
@@ -498,14 +511,27 @@ pub fn search_work(
         ("runtime_complaints", "complaint", "title"),
         ("runtime_plans", "plan", "text"),
     ] {
-        for stored in WorkspaceViewsRepository::records(&connection, table)
-            .map_err(|_| TranscriptError::Store)?
+        for stored in
+            WorkspaceViewsRepository::records(connection, table).map_err(|error| match error {
+                StoreError::InvalidStoredObject { table, id } => {
+                    TranscriptError::InvalidStoredObject { table, id }
+                }
+                _ => TranscriptError::Store,
+            })?
         {
             let Some(encoded) = stored.record else {
                 return Err(invalid_stored(table, &stored.id));
             };
             let record: Value =
                 serde_json::from_str(&encoded).map_err(|_| invalid_stored(table, &stored.id))?;
+            let schema = studio_runtime_schema::table_schema(table)
+                .ok_or_else(|| invalid_stored(table, &stored.id))?;
+            if studio_runtime_schema::first_error(schema, &record)
+                .map_err(|_| invalid_stored(table, &stored.id))?
+                .is_some()
+            {
+                return Err(invalid_stored(table, &stored.id));
+            }
             let root = record
                 .get("rootId")
                 .filter(|value| truthy(Some(value)))
@@ -536,8 +562,8 @@ pub fn search_work(
         }
     }
     let mut readable = std::collections::BTreeSet::new();
-    for room in studio_runtime_store::system_reads::all(&connection, "runtime_rooms")? {
-        let Some(view) = room_view(&connection, &directory, &room)? else {
+    for room in studio_runtime_store::system_reads::all(connection, "runtime_rooms")? {
+        let Some(view) = room_view(connection, directory, &room)? else {
             continue;
         };
         if let Some(caller) = agent_filter {

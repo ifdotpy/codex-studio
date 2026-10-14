@@ -315,6 +315,122 @@ fn post_managed_message(
     })
 }
 
+/// Queue model-authored follow-up input for a descendant. This is the durable
+/// event path used by Runtime.send; the caller resolves descendant ancestry
+/// from the same transaction before invoking it.
+pub struct AgentFollowup<'a> {
+    pub sender_id: &'a str,
+    pub sender_epoch: i64,
+    pub recipient_id: &'a str,
+    pub id: &'a str,
+    pub text: &'a str,
+    pub delivery: &'a str,
+    pub now: f64,
+}
+
+pub fn send_followup(
+    transaction: &Transaction<'_>,
+    input: AgentFollowup<'_>,
+    admission: &dyn crate::message_admission::MessageAdmission,
+) -> Result<PostMessageResult, CoordinationError> {
+    let AgentFollowup {
+        sender_id,
+        sender_epoch,
+        recipient_id,
+        id,
+        text,
+        delivery,
+        now,
+    } = input;
+    let text = crate::event_write::python_strip(text);
+    if text.is_empty() || text.chars().count() > 32_000 {
+        return Err(CoordinationError::InvalidRequest(
+            "Message must have text or attachments, at most 32000 characters",
+        ));
+    }
+    if !matches!(delivery, "queue" | "steer" | "after_tool" | "after_turn") {
+        return Err(CoordinationError::InvalidRequest(
+            "Choose queue, steer, after_tool or after_turn",
+        ));
+    }
+    let sender =
+        crate::event_write::checked_agent(transaction, sender_id).map_err(event_write_error)?;
+    if sender.epoch != sender_epoch || !crate::event_write::truthy(sender.extra.get("autoWake")) {
+        return Err(CoordinationError::InvalidRequest("Sender was stopped"));
+    }
+    let mut recipient =
+        crate::event_write::checked_agent(transaction, recipient_id).map_err(event_write_error)?;
+    if recipient.root_id != sender.root_id {
+        return Err(CoordinationError::InvalidRequest(
+            "This record belongs to another team",
+        ));
+    }
+    if safety_retry_active(&recipient) {
+        return Err(CoordinationError::InvalidRequest(
+            "Wait for the model change before sending another message",
+        ));
+    }
+    let root = if recipient.root_id == recipient.id {
+        recipient.clone()
+    } else {
+        crate::event_write::checked_agent(transaction, &recipient.root_id.0)
+            .map_err(event_write_error)?
+    };
+    require_not_excluded(&root, &recipient)?;
+    if recipient.root_id != recipient.id {
+        crate::event_write::assert_delegation(&root).map_err(event_write_error)?;
+    }
+    assert_native_thread_open(&recipient)?;
+    let blockers = admission.workspace(transaction, &recipient)?;
+    admission.budget(transaction, &recipient, &root)?;
+
+    if let Some(event) = QueueEventRepository::get(transaction, &QueueEventId::from(id))? {
+        if event.agent.0 != recipient_id || event.kind != "followup" || event.text != text {
+            return Err(CoordinationError::Conflict(
+                "This message id has different content",
+            ));
+        }
+        return Ok(PostMessageResult {
+            receipt: studio_runtime_store::system_reads::validate(
+                "runtime_events",
+                id,
+                json!({"id":id,"status":event.status,"error":event.error}),
+            )?,
+            event_inserted: false,
+        });
+    }
+    recipient.extra.insert("autoWake".into(), Value::Bool(true));
+    recipient.extra.insert("error".into(), Value::Null);
+    recipient.extra.insert("complaintMisses".into(), json!(0));
+    recipient.extra.remove("nativeFailureHold");
+    capacity_reset(transaction, &mut recipient)?;
+    studio_runtime_store::AgentRepository::put(transaction, &recipient)?;
+    let projection = serde_json::to_value(&recipient).map_err(StoreError::from)?;
+    crate::agents_create::publish_agent(transaction, &projection)?;
+    QueueWriteRepository::put_metadata(
+        transaction,
+        id,
+        &json!({"assets":[],"acceptedAt":now,"delivery":delivery,"senderId":sender_id}),
+    )?;
+    let inserted = crate::event_write::enqueue_event(
+        transaction,
+        &recipient,
+        id.to_owned(),
+        "followup",
+        text.to_owned(),
+        now,
+    )
+    .map_err(event_write_error)?;
+    let mut receipt = json!({"id":id,"status":"queued"});
+    if !blockers.is_empty() {
+        receipt["waitingFor"] = json!(blockers);
+    }
+    Ok(PostMessageResult {
+        receipt,
+        event_inserted: inserted,
+    })
+}
+
 fn valid_message_receipt(value: &Value, id: &str) -> bool {
     value.get("id").and_then(Value::as_str) == Some(id)
         && value.get("status").and_then(Value::as_str).is_some()
