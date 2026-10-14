@@ -13,7 +13,10 @@ pub use model::{
     CallbackContext, CallbackDecision, CallbackError, CallbackSnapshot, Reply, ReplyIdentity,
 };
 pub use projection::project_tool_result;
-pub use recovery::{recover_connection, unresolved_context_tool_receipts};
+pub use recovery::{
+    ContextToolReceiptSnapshot, prepare_unresolved_context_tool_receipts, recover_connection,
+    revalidate_unresolved_context_tool_receipts,
+};
 use serde_json::{Value, json};
 pub use storage::{
     DeliveryOutcome, bind_journal, delivery, prepared_replies, retire_checkpointed,

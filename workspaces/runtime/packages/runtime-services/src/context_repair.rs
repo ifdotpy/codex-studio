@@ -205,6 +205,33 @@ pub(crate) fn source_terminal_attempt(
         attempt_id: attempt_id.to_owned(),
     }))
 }
+
+fn archive_previous_repair(agent: &mut Value) -> Result<(), RepairError> {
+    let previous = agent.get("contextRepair").cloned().unwrap_or(Value::Null);
+    if !previous.is_object() {
+        return Ok(());
+    }
+    if previous["phase"] == "completed" || studio_runtime_store::truthy(previous.get("rpcMethod")) {
+        if agent
+            .get("contextRepairHistory")
+            .is_some_and(|history| !history.is_array())
+        {
+            return Err(RepairError::Invalid("agent.contextRepairHistory"));
+        }
+        let history = agent
+            .as_object_mut()
+            .ok_or(RepairError::Invalid("agent"))?
+            .entry("contextRepairHistory")
+            .or_insert_with(|| json!([]));
+        history
+            .as_array_mut()
+            .ok_or(RepairError::Invalid("agent.contextRepairHistory"))?
+            .push(previous);
+    } else {
+        agent["lastContextRepairCheck"] = previous;
+    }
+    Ok(())
+}
 impl From<crate::context_repair_files::HistoryFileError> for RepairError {
     fn from(error: crate::context_repair_files::HistoryFileError) -> Self {
         Self::HistoryFile(Box::new(error))
@@ -1092,10 +1119,36 @@ fn repair_idle_with_broker_inner(
     } else {
         None
     };
+    let tool_receipt_snapshot = if initial["provider"] != "claude"
+        && initial["threadId"]
+            .as_str()
+            .is_some_and(|thread| !thread.is_empty())
+        && !(initial["environment"] == "linux"
+            && studio_runtime_store::truthy(initial.get("imageWorkspaceReady")))
+    {
+        crate::provider_callbacks::prepare_unresolved_context_tool_receipts(
+            &initial_db,
+            store.state_dir(),
+            id,
+            &initial_account,
+            initial["threadId"]
+                .as_str()
+                .ok_or(RepairError::Invalid("agent.threadId"))?,
+            initial["accountHistory"]
+                .as_array()
+                .map(Vec::as_slice)
+                .unwrap_or_default(),
+        )
+        .map_err(|_| RepairError::ReceiptHold)?
+    } else {
+        crate::provider_callbacks::ContextToolReceiptSnapshot::empty()
+    };
+    drop(initial_db);
     let (agent, events, tool_receipts, historical_inputs, scope, operation_id) = store.transaction_with(|tx| {
         let mut agent = ContextRepairRepository::agent(tx, id)?.ok_or(RepairError::MissingAgent)?;
         if agent["epoch"] != initial["epoch"] || agent["threadId"] != initial["threadId"]
             || string_default(&agent, "accountKey", "default")? != initial_account
+            || agent.get("accountHistory") != initial.get("accountHistory")
         {
             return Err(RepairError::ReceiptHold);
         }
@@ -1115,16 +1168,12 @@ fn repair_idle_with_broker_inner(
         }
         require_schema(tx, &["runtime_event_meta", "runtime_completed_turns"])?;
         ensure_local_idle(tx, &agent)?;
-        let account = string_default(&agent, "accountKey", "default")?;
-        let thread = agent["threadId"].as_str().ok_or(RepairError::Invalid("agent.threadId"))?;
-        let tool_receipts = crate::provider_callbacks::unresolved_context_tool_receipts(
+        let tool_receipts = crate::provider_callbacks::revalidate_unresolved_context_tool_receipts(
             tx,
-            store.state_dir(),
             id,
-            account,
-            thread,
-            agent["accountHistory"].as_array().map(Vec::as_slice).unwrap_or_default(),
-        ).map_err(|_| RepairError::ReceiptHold)?;
+            &tool_receipt_snapshot,
+        )
+        .map_err(|_| RepairError::ReceiptHold)?;
         let historical_inputs = uncertain_input_receipts(tx, id, agent["epoch"].as_i64().ok_or(RepairError::Invalid("agent.epoch"))?)?;
         let events = verified_repair_events(tx, &agent)?;
         if events.is_empty() && historical_inputs.is_empty() && tool_receipts.is_empty() {
@@ -1140,10 +1189,7 @@ fn repair_idle_with_broker_inner(
             .map_err(|_| RepairError::Invalid("clock"))?.as_nanos();
         let operation_id = uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_OID,
             format!("context-repair:{id}:{epoch}:{}:{stamp}", agent["threadId"].as_str().unwrap_or_default()).as_bytes()).to_string();
-        let previous = agent.get("contextRepair").cloned().unwrap_or(Value::Null);
-        if previous.is_object() {
-            agent["lastContextRepairCheck"] = previous;
-        }
+        archive_previous_repair(&mut agent)?;
         let repair = json!({
             "id":operation_id,
             "agent":id,
@@ -1683,7 +1729,7 @@ fn verify_native_items(
                 scope,
                 actor,
                 operation,
-                suffix: &format!("items-{page_index}"),
+                suffix: &item_read_suffix(turn, page_index),
                 method: studio_runtime_providers::Method::ThreadItemsList,
                 params,
                 deadline,
@@ -1716,6 +1762,63 @@ fn verify_native_items(
         cursor = Some(next.to_owned());
     }
     Err(RepairError::ReceiptHold)
+}
+
+fn item_read_suffix(turn: &str, page_index: usize) -> String {
+    format!(
+        "items-{}-{page_index}",
+        studio_runtime_store::sha256_hex(turn.as_bytes())
+    )
+}
+
+#[cfg(test)]
+mod item_read_identity_tests {
+    use super::item_read_suffix;
+
+    #[test]
+    fn item_read_identity_is_stable_per_turn_and_page() {
+        assert_eq!(item_read_suffix("turn-a", 0), item_read_suffix("turn-a", 0));
+        assert_ne!(item_read_suffix("turn-a", 0), item_read_suffix("turn-b", 0));
+        assert_ne!(item_read_suffix("turn-a", 0), item_read_suffix("turn-a", 1));
+    }
+}
+
+#[cfg(test)]
+mod repair_history_tests {
+    use super::archive_previous_repair;
+    use serde_json::json;
+
+    #[test]
+    fn completed_repair_is_kept_in_the_history_used_by_late_callbacks() {
+        let completed = json!({
+            "id":"repair-1",
+            "agent":"agent",
+            "phase":"completed",
+            "source":{"id":"agent","epoch":2,"accountKey":"default","threadId":"source"},
+            "newThreadId":"destination"
+        });
+        let mut agent = json!({"contextRepair":completed});
+
+        archive_previous_repair(&mut agent).expect("archive prior completed repair");
+
+        assert_eq!(agent["contextRepairHistory"], json!([completed]));
+        assert!(agent.get("lastContextRepairCheck").is_none());
+    }
+
+    #[test]
+    fn repair_with_rpc_method_is_kept_in_history_before_next_repair() {
+        let started = json!({
+            "id":"repair-rpc",
+            "phase":"preparing",
+            "rpcMethod":"thread/fork"
+        });
+        let mut agent = json!({"contextRepair":started});
+
+        archive_previous_repair(&mut agent).expect("archive prior dispatched repair");
+
+        assert_eq!(agent["contextRepairHistory"], json!([started]));
+        assert!(agent.get("lastContextRepairCheck").is_none());
+    }
 }
 
 fn verify_tool_receipts(

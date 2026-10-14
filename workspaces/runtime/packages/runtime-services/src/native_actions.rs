@@ -1,8 +1,8 @@
 //! Native maintenance intents. Admission, hand-off and settlement each commit
 //! separately; a committed hand-off is never automatically resent after restart.
 use crate::account_session_runtime::{
-    AccountSessionError, AccountSessionPort, ProviderRequest, ProviderResponse, RequestCertainty,
-    SessionReceipt,
+    AccountSessionError, AccountSessionPort, NotSentReason, ProviderRequest, ProviderResponse,
+    RequestCertainty, SessionReceipt,
 };
 use crate::account_worker::retained::RequestActor;
 use crate::workspace_operations::ProviderTicket;
@@ -223,20 +223,35 @@ pub fn reserve(
         .context
         .as_object()
         .ok_or(NativeError::Invalid("context"))?;
-    if context.iter().any(|(key, value)| {
-        !identity.get(key).is_some_and(|expected| {
-            expected == value
-                || (key == "epoch"
-                    && expected.as_i64().is_some_and(|expected| {
-                        value.as_f64().is_some_and(|value| {
-                            value.is_finite()
-                                && value.fract() == 0.0
-                                && value as i128 == i128::from(expected)
-                                && (value as i128) as f64 == value
-                        })
-                    }))
+    let matches_identity = |expected: &Value| {
+        context.iter().all(|(key, value)| {
+            expected.get(key).is_some_and(|expected| {
+                expected == value
+                    || (key == "epoch"
+                        && expected.as_i64().is_some_and(|expected| {
+                            value.as_f64().is_some_and(|value| {
+                                value.is_finite()
+                                    && value.fract() == 0.0
+                                    && value as i128 == i128::from(expected)
+                                    && (value as i128) as f64 == value
+                            })
+                        }))
+            })
         })
-    }) {
+    };
+    let current_matches = matches_identity(&identity);
+    let repair = agent.get("contextRepair").unwrap_or(&Value::Null);
+    let source = &repair["source"];
+    let repaired_destination = repair["phase"] == "completed"
+        && repair["agent"] == request.agent
+        && source["id"] == request.agent
+        && source["accountKey"] == identity["accountKey"]
+        && source["epoch"] == identity["epoch"]
+        && source["threadId"].is_string()
+        && source["threadId"] != identity["threadId"]
+        && repair["newThreadId"] == identity["threadId"]
+        && matches_identity(source);
+    if !current_matches && !repaired_destination {
         return Err(NativeError::Changed);
     }
     let receipt = json!({"requestId":request.request_id,"agentId":request.agent,"action":request.action,
@@ -364,6 +379,12 @@ pub fn claim(tx: &Transaction<'_>, id: &str, ticket: &ProviderTicket) -> Result<
     snapshot.agent["startAttempt"]["accountKey"] = json!(ticket.account);
     snapshot.agent["startAttempt"]["threadId"] = json!(ticket.thread);
     snapshot.agent["startAttempt"]["connectionId"] = json!(ticket.connection);
+    snapshot.agent["startAttempt"]["connectionGeneration"] = json!(ticket.generation);
+    snapshot.agent["startAttempt"]["requestTicket"] = json!(format!(
+        "retained:{}:{}",
+        ticket.account,
+        studio_runtime_store::sha256_hex(ticket.operation.as_bytes())
+    ));
     snapshot.agent["startAttempt"]["nativeRequest"] = json!(request);
     AgentRepository::put(tx, &AgentRecord::from_value(snapshot.agent)?)?;
     write_outcome(tx, id, &Outcome::Unknown { error: None })?;
@@ -486,11 +507,26 @@ fn validate_provider_receipt(expected: &NativeRequest, receipt: &SessionReceipt)
     let method = Method::from_wire(&expected.method).ok_or(NativeError::Invalid("method"))?;
     match receipt.certainty {
         RequestCertainty::NotSent => {
-            if receipt.ticket.is_some()
-                || receipt.result.is_some()
-                || receipt.not_sent_reason.is_none()
+            if receipt.result.is_some() || receipt.not_sent_reason.is_none() {
+                return Err(NativeError::Changed);
+            }
+            if receipt.not_sent_reason == Some(NotSentReason::WorkerNotSent)
+                && receipt.ticket.is_none()
             {
                 return Err(NativeError::Changed);
+            }
+            if let Some(provider_ticket) = receipt.ticket.as_ref() {
+                let expected_id = format!(
+                    "retained:{}:{}",
+                    ticket.account,
+                    studio_runtime_store::sha256_hex(ticket.operation.as_bytes())
+                );
+                if provider_ticket.generation != ticket.generation
+                    || provider_ticket.method != method
+                    || provider_ticket.id != RequestId::String(expected_id)
+                {
+                    return Err(NativeError::Changed);
+                }
             }
         }
         RequestCertainty::Written | RequestCertainty::Unknown => {
@@ -535,12 +571,14 @@ pub fn execute_provider_prepared(
     effects: &impl Acceptance,
     preparation: &impl Preparation,
 ) -> Result<Value> {
-    if let Some(snapshot) = store.read_transaction_with_error(|tx| replay(tx, request))?
+    let existing = store.read_transaction_with_error(|tx| replay(tx, request))?;
+    if let Some(snapshot) = existing.as_ref()
         && (!matches!(snapshot.outcome, Outcome::Pending { .. })
             || snapshot.agent["startAttempt"]["submitted"] == true)
     {
-        return Ok(response(&snapshot, true));
+        return Ok(response(snapshot, true));
     }
+    let resume_reserved = existing.is_some();
     let agent_snapshot = store.read_transaction_with_error(|tx| agent(tx, &request.agent))?;
     let account = agent_snapshot
         .get("accountKey")
@@ -559,7 +597,9 @@ pub fn execute_provider_prepared(
         if scope.account != account {
             return Err(NativeError::Changed);
         }
-        preparation.before_reserve(store, port, request, &scope)?;
+        if should_repair_before_reserve(resume_reserved) {
+            preparation.before_reserve(store, port, request, &scope)?;
+        }
         if port.current_scope(&account).as_ref() != Some(&scope) {
             return Err(NativeError::Changed);
         }
@@ -627,6 +667,88 @@ pub fn execute_provider_prepared(
         return Ok(value);
     }
     Err(NativeError::Unknown)
+}
+
+fn should_repair_before_reserve(resume_reserved: bool) -> bool {
+    !resume_reserved
+}
+
+#[cfg(test)]
+mod native_action_retry_tests {
+    use super::{
+        NativeRequest, RequestCertainty, SessionReceipt, should_repair_before_reserve,
+        validate_provider_receipt,
+    };
+    use crate::{
+        account_session_runtime::{ConnectionScope, NotSentReason},
+        workspace_operations::ProviderTicket,
+    };
+    use serde_json::json;
+    use studio_runtime_providers::{Method, RequestId, RequestTicket};
+
+    fn worker_not_sent_receipt(ticket: Option<RequestTicket>) -> SessionReceipt {
+        SessionReceipt {
+            scope: ConnectionScope {
+                account: "default".into(),
+                connection: "connection".into(),
+                generation: 4,
+            },
+            operation: "attempt".into(),
+            ticket,
+            certainty: RequestCertainty::NotSent,
+            result: None,
+            not_sent_reason: Some(NotSentReason::WorkerNotSent),
+        }
+    }
+
+    #[test]
+    fn preflight_repair_runs_only_for_new_admission() {
+        assert!(should_repair_before_reserve(false));
+        assert!(!should_repair_before_reserve(true));
+    }
+
+    #[test]
+    fn correlated_worker_not_sent_receipt_is_validated_for_retry() {
+        let request = NativeRequest {
+            ticket: ProviderTicket {
+                operation: "attempt".into(),
+                agent: "agent".into(),
+                epoch: 3,
+                account: "default".into(),
+                thread: Some("thread".into()),
+                connection: "connection".into(),
+                generation: 4,
+                request: "request".into(),
+            },
+            method: "thread/compact/start".into(),
+            params: json!({"threadId":"thread"}),
+        };
+        let matching_ticket = RequestTicket {
+            id: RequestId::String(format!(
+                "retained:default:{}",
+                studio_runtime_store::sha256_hex(b"attempt")
+            )),
+            generation: 4,
+            method: Method::from_wire("thread/compact/start").expect("known method"),
+        };
+        assert!(
+            validate_provider_receipt(&request, &worker_not_sent_receipt(Some(matching_ticket)))
+                .is_ok()
+        );
+        assert!(matches!(
+            validate_provider_receipt(&request, &worker_not_sent_receipt(None)),
+            Err(super::NativeError::Changed)
+        ));
+        let foreign_ticket = RequestTicket {
+            id: RequestId::String("foreign-ticket".into()),
+            generation: 4,
+            method: Method::from_wire("thread/compact/start").expect("known method"),
+        };
+        assert!(matches!(
+            validate_provider_receipt(&request, &worker_not_sent_receipt(Some(foreign_ticket))),
+            Err(super::NativeError::Changed)
+        ));
+    }
 }
 
 /// Validate and settle the exact receipt returned by the retained account broker.

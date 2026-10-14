@@ -1,8 +1,10 @@
 use rusqlite::{Connection, Transaction};
 use serde_json::{Value, json};
 use std::{path::Path, process::Command, sync::OnceLock};
+use studio_runtime_providers::{Method, RequestId, RequestTicket};
 use studio_runtime_services::workspace_operations::ProviderTicket;
 use studio_runtime_services::{
+    account_session_runtime::{ConnectionScope, NotSentReason, RequestCertainty, SessionReceipt},
     context_repair::{HistoryRewrite, RepairError, RepairEventSummary},
     native_actions::*,
     native_review::{self, ReviewPlan},
@@ -117,6 +119,41 @@ fn complete_python_native_admission_rows_match() {
         assert_eq!(row(&db), before);
     }
 }
+
+#[test]
+fn reservation_targets_the_authorized_repair_destination_and_keeps_request_identity() {
+    let mut case = corpus()["actions"][0].clone();
+    case["request"]["context"] = json!({
+        "accountKey":"default",
+        "threadId":"thread",
+        "epoch":3
+    });
+    case["agent"]["threadId"] = json!("thread-repaired");
+    case["agent"]["contextRepair"] = json!({
+        "id":"repair-1",
+        "agent":"lead",
+        "phase":"completed",
+        "source":{"id":"lead","accountKey":"default","threadId":"thread","epoch":3},
+        "newThreadId":"thread-repaired"
+    });
+    let mut db = db(&case);
+    reserve_case(&mut db, &case);
+
+    let receipt: Value = db
+        .query_row(
+            "SELECT receipt FROM runtime_native_action_receipts WHERE id='action-request'",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .map(|raw| serde_json::from_str(&raw).expect("receipt"))
+        .expect("reserved receipt");
+    assert_eq!(receipt["threadId"], "thread-repaired");
+    assert!(
+        row(&db)[1]
+            .as_str()
+            .is_some_and(|signature| signature.contains("\"threadId\":\"thread\""))
+    );
+}
 #[test]
 fn crash_matrix_never_reclaims_committed_handoff() {
     let case = &corpus()["actions"][0];
@@ -201,6 +238,41 @@ fn crash_matrix_never_reclaims_committed_handoff() {
         );
     }
 }
+
+#[test]
+fn claimed_native_action_is_correlated_by_the_scheduler_before_handoff() {
+    let case = &corpus()["actions"][0];
+    let mut db = db(case);
+    reserve_case(&mut db, case);
+    let tx = db.transaction().expect("begin claim");
+    claim(&tx, "action-request", &ticket()).expect("claim durable provider request");
+    tx.commit().expect("commit claim before provider handoff");
+
+    let correlated = studio_runtime_store::SchedulerRepository::find_attempt_for_thread(
+        &db,
+        "default",
+        ticket().generation,
+        "thread",
+        None,
+    )
+    .expect("scheduler lookup");
+    assert!(correlated.0, "known native action thread");
+    let Some((identity, source_bound)) = correlated.1 else {
+        panic!("submitted native action must be discoverable by the scheduler");
+    };
+    assert_eq!(identity.agent_id, "lead");
+    assert!(!source_bound);
+
+    let attempt = actor(&db)["startAttempt"].clone();
+    assert_eq!(attempt["connectionGeneration"], ticket().generation);
+    assert_eq!(
+        attempt["requestTicket"],
+        format!(
+            "retained:default:{}",
+            studio_runtime_store::sha256_hex(ticket().operation.as_bytes())
+        )
+    );
+}
 #[test]
 fn changed_payload_and_foreign_receipts_leave_intent_held() {
     let case = &corpus()["actions"][0];
@@ -245,6 +317,59 @@ fn changed_payload_and_foreign_receipts_leave_intent_held() {
         assert_eq!(row(&db)[3]["status"], "unknown");
     }
 }
+
+#[test]
+fn invalid_worker_not_sent_receipts_keep_intent_unknown_and_unclaimable() {
+    let case = &corpus()["actions"][0];
+    for receipt_ticket in [
+        None,
+        Some(RequestTicket {
+            id: RequestId::String("foreign-ticket".into()),
+            generation: ticket().generation,
+            method: Method::from_wire("thread/compact/start").expect("known method"),
+        }),
+    ] {
+        let mut db = db(case);
+        reserve_case(&mut db, case);
+        let tx = db.transaction().expect("begin claim");
+        claim(&tx, "action-request", &ticket()).expect("claim request before handoff");
+        tx.commit().expect("persist claim before native handoff");
+
+        let receipt = SessionReceipt {
+            scope: ConnectionScope {
+                account: "default".into(),
+                connection: "connection".into(),
+                generation: ticket().generation,
+            },
+            operation: ticket().operation,
+            ticket: receipt_ticket,
+            certainty: RequestCertainty::NotSent,
+            result: None,
+            not_sent_reason: Some(NotSentReason::WorkerNotSent),
+        };
+        let tx = db.transaction().expect("begin receipt settlement");
+        assert!(matches!(
+            settle_provider(&tx, "action-request", ticket(), Ok(receipt), &Accept),
+            Err(NativeError::Changed)
+        ));
+        drop(tx);
+
+        assert_eq!(row(&db)[3]["status"], "unknown");
+        assert_eq!(actor(&db)["startAttempt"]["submitted"], true);
+        let tx = db.transaction().expect("begin retry claim");
+        assert!(matches!(
+            claim(&tx, "action-request", &ticket()),
+            Err(NativeError::Unknown)
+        ));
+        drop(tx);
+        assert_eq!(
+            db.query_row("SELECT count(*) FROM effects", [], |r| r.get::<_, u32>(0))
+                .expect("no provider acceptance effects"),
+            0
+        );
+    }
+}
+
 #[test]
 fn review_worker_identity_and_saved_response_match_python() {
     for case in corpus()["reviews"].as_array().expect("reviews") {
