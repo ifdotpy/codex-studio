@@ -429,7 +429,6 @@ mod diagnostics_http_tests {
         let version_before: i64 = proof_connection
             .query_row("PRAGMA data_version", [], |row| row.get(0))
             .expect("initial database version");
-        let files_before = state_directory_snapshot(directory.path());
         let state = HttpState::new(
             "fixture-token".to_owned(),
             "fixture-workspace".to_owned(),
@@ -440,6 +439,9 @@ mod diagnostics_http_tests {
             Some(store),
             None,
         );
+        // HttpState creates the operational log as part of setup; take the
+        // no-write baseline after setup and immediately before the route call.
+        let files_before = state_directory_snapshot(directory.path());
         let response = router(state)
             .expect("registered HTTP router")
             .oneshot(diagnostics_request())
