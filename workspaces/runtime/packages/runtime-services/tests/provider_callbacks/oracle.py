@@ -20,6 +20,8 @@ if "--isolated" not in sys.argv:
     os.execve(sys.executable, [sys.executable, "-B", str(HERE), "--isolated", str(scratch)], owner._environment())
 
 import json
+import sqlite3
+import shutil
 from unittest.mock import patch
 sys.path.insert(0, str(SERVER / "src"))
 from codex_runtime import Runtime
@@ -266,5 +268,95 @@ with runtime.lock, runtime.db() as db:
     for actor in [lead,worker,foreign]:
         runtime.put(db,"agents",actor)
     db.commit()
+with patch("codex_runtime.time.time", return_value=19.0), patch.object(Runtime, "launch_monitor", lambda *_args: None):
+    managed_monitor = runtime.monitor(
+        lead["id"], {"command":"printf fixture"}, key="managed-monitor", approved=True, epoch=3)
+managed_monitor.update(status="running", operation={
+    "agent":lead["id"],"epoch":3,"accountKey":"default","connectionId":"connection",
+    "requestId":"managed-monitor"})
+def sort_json(value):
+    if isinstance(value, dict): return {key:sort_json(value[key]) for key in sorted(value)}
+    if isinstance(value, list): return [sort_json(item) for item in value]
+    return value
+managed_monitor = sort_json(managed_monitor)
+with runtime.lock, runtime.db() as db:
+    runtime.put(db,"monitors",managed_monitor)
 runtime.close()
-print(json.dumps({"agents":[lead,worker,foreign],"answers":answers,"reservations":reservations,"chat":{"page":chat_page,"expected":chat_expected},"dynamic":dynamic_cases,"resolutions":resolutions,"legacyCard":legacy_card,"reviewCases":review_cases,"baseWork":base_work,"projections":projections,"preview":{"item":item,"request":preview_request,"expected":preview_expected},"resolved":resolved_cases,"chatVisibility":chat_visibility,"template":str(root)},ensure_ascii=False))
+
+# Managed host tool differential cases run through the real Python tool handler
+# on a private clone. The original Python-written template stays the Rust input.
+managed_root = Path(sys.argv[-1]) / "managed-tools"
+shutil.copytree(root, managed_root)
+managed = Quiet(managed_root, lambda *_args, **_kwargs: None)
+managed.replies = []
+with managed.lock, managed.db() as db:
+    for actor in [lead, worker, foreign]:
+        managed.put(db, "agents", actor)
+    stored_monitor = json.loads(db.execute(
+        "SELECT record FROM runtime_monitors WHERE id=?", (managed_monitor["id"],)).fetchone()[0])
+    managed_monitor = sort_json(stored_monitor)
+    managed.put(db, "monitors", managed_monitor)
+baseline_canvas = Path(sys.argv[-1]) / "managed-canvas-baseline.sqlite3"
+with managed.db() as db:
+    baseline = sqlite3.connect(baseline_canvas)
+    db.backup(baseline)
+    baseline.close()
+managed_cases = []
+managed_tables = {
+    "orchestration_send": ["runtime_events", "runtime_rooms", "runtime_chat_messages"],
+    "orchestration_complaint": ["runtime_events", "runtime_complaints"],
+    "orchestration_search": [],
+    "orchestration_context": ["runtime_monitors"],
+    "orchestration_cancel_monitor": ["runtime_monitors", "runtime_events"],
+}
+def managed_snapshot(tool):
+    names = [*managed_tables[tool], "sync_entities", "sync_documents", "sync_versions", "sync_entity_meta"]
+    result = {}
+    with managed.db() as db:
+        for table in names:
+            columns = len(db.execute(f'SELECT * FROM "{table}" LIMIT 0').description)
+            where = " WHERE collection!='agent'" if table == "sync_entities" else ""
+            rows = db.execute(f'SELECT * FROM "{table}"' + where + ' ORDER BY ' + ','.join(str(i) for i in range(1, columns + 1))).fetchall()
+            normalized = []
+            for row in rows:
+                values = []
+                for column, value in enumerate(row):
+                    if table == "sync_entities" and column == 2:
+                        value = 0
+                    if isinstance(value, str):
+                        try: value = json.loads(value)
+                        except (ValueError, TypeError): pass
+                    elif isinstance(value, bytes):
+                        value = {"blobHex": value.hex()}
+                    values.append(value)
+                normalized.append(values)
+            result[table] = normalized
+    return result
+def managed_call(actor, tool, arguments, index, allow_failure=False):
+    message = {"id":f"rpc-managed-{index}","method":"item/tool/call","params":{
+        "threadId":actor["threadId"],"turnId":actor["turnId"],"callId":f"managed-{index}",
+        "tool":tool,"arguments":arguments}}
+    with patch("time.time", return_value=20.0):
+        managed.dynamic(message,"default","connection")
+    reply = managed.replies[-1]
+    managed_cases.append({"actor":actor["id"],"tool":tool,"arguments":arguments,
+                          "callId":message["params"]["callId"],"result":reply["result"],
+                          "rows":managed_snapshot(tool)})
+    if not reply["result"]["success"] and not allow_failure:
+        raise AssertionError(f"{tool} Python corpus case failed: {reply['result']}")
+    return json.loads(reply["result"]["contentItems"][0]["text"]) if reply["result"]["success"] else None
+managed_call(lead,"orchestration_send",{"agent_id":worker["id"],"text":"descendant input"},0)
+managed_call(worker,"orchestration_send",{"agent_id":"parent","text":"parent alias"},1)
+managed_call(worker,"orchestration_send",{"agent_id":lead["id"],"text":"parent id"},2)
+managed_call(worker,"orchestration_send",{"agent_id":"broadcast","text":"team notice"},3)
+managed_call(worker,"orchestration_send",{"agent_id":foreign["id"],"text":"peer refusal"},4,allow_failure=True)
+complaint = managed_call(worker,"orchestration_complaint",{"action":"submit","text":"Need help"},5)
+managed_call(lead,"orchestration_complaint",{"action":"read","complaint_id":complaint["id"]},6)
+managed_call(lead,"orchestration_complaint",{"action":"respond","complaint_id":complaint["id"],"text":"Investigating","status":"in_progress"},7)
+managed_call(lead,"orchestration_search",{"query":"fixture"},8)
+managed_call(lead,"orchestration_context",{"topic":"monitor","id":managed_monitor["id"]},9)
+managed_call(lead,"orchestration_cancel_monitor",{"monitor_id":managed_monitor["id"]},10)
+managed.close()
+shutil.copy2(baseline_canvas, managed_root / "canvas.sqlite3")
+shutil.copy2(baseline_canvas, root / "canvas.sqlite3")
+print(json.dumps({"agents":[lead,worker,foreign],"answers":answers,"reservations":reservations,"chat":{"page":chat_page,"expected":chat_expected},"dynamic":dynamic_cases,"resolutions":resolutions,"legacyCard":legacy_card,"reviewCases":review_cases,"baseWork":base_work,"projections":projections,"preview":{"item":item,"request":preview_request,"expected":preview_expected},"resolved":resolved_cases,"chatVisibility":chat_visibility,"managedToolCases":managed_cases,"template":str(root)},ensure_ascii=False))

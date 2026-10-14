@@ -275,8 +275,10 @@ impl crate::managed_host_tools::ContextPort for ProductionPorts {
             ));
         }
         let content = snapshot.record().clone();
-        let version =
-            studio_runtime_store::sha256_hex(content.to_string().as_bytes())[..24].to_owned();
+        let version = studio_runtime_store::sha256_hex(
+            studio_runtime_store::python_json_compact(&content).as_bytes(),
+        )[..24]
+            .to_owned();
         Ok(crate::managed_host_tools::OperationResult {
             value: json!({"topic":"monitor","version":version,"content":content}),
             signals: Vec::new(),

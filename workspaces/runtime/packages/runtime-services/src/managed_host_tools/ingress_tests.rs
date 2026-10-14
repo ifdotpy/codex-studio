@@ -11,6 +11,7 @@ use crate::provider_callbacks::{
     CallbackContext, CallbackDecision, CallbackError, dispatch_with_managed_tools,
 };
 use rusqlite::{Transaction, params};
+use rusqlite::types::ValueRef;
 use serde_json::{Value, json};
 use std::{
     path::PathBuf,
@@ -20,7 +21,7 @@ use std::{
         atomic::{AtomicBool, AtomicUsize, Ordering},
     },
 };
-use studio_runtime_providers::{Frame, Method, RequestFrame, RequestId};
+use studio_runtime_providers::{Frame, Method, RequestFrame, RequestId, ResponseBody};
 use studio_runtime_store::{RuntimeStore, StoreError};
 
 struct Template {
@@ -373,6 +374,60 @@ fn application_table_snapshot(store: &RuntimeStore) -> Vec<(String, Vec<String>)
     snapshot
 }
 
+fn managed_snapshot(store: &RuntimeStore, tables: &Value) -> Value {
+    let connection = store.read().unwrap();
+    let mut snapshot = serde_json::Map::new();
+    for name in tables.as_object().unwrap().keys() {
+        let quoted = name.replace('"', "\"\"");
+        let statement = connection
+            .prepare(&format!("SELECT * FROM \"{quoted}\""))
+            .unwrap();
+        let columns = statement.column_count();
+        drop(statement);
+        let ordering = (1..=columns)
+            .map(|column| column.to_string())
+            .collect::<Vec<_>>()
+            .join(",");
+        let projection_filter = if name == "sync_entities" {
+            " WHERE collection!='agent'"
+        } else {
+            ""
+        };
+        let mut statement = connection
+            .prepare(&format!("SELECT * FROM \"{quoted}\"{projection_filter} ORDER BY {ordering}"))
+            .unwrap();
+        let rows = statement
+            .query_map([], |row| {
+                let mut values = Vec::new();
+                for column in 0..columns {
+                    let value = if name == "sync_entities" && column == 2 {
+                        json!(0)
+                    } else {
+                        match row.get_ref(column)? {
+                        ValueRef::Null => Value::Null,
+                        ValueRef::Integer(value) => json!(value),
+                        ValueRef::Real(value) => json!(value),
+                        ValueRef::Text(value) => {
+                            let text = String::from_utf8_lossy(value);
+                            serde_json::from_str(&text).unwrap_or_else(|_| json!(text.as_ref()))
+                        }
+                        ValueRef::Blob(value) => json!({
+                            "blobHex":value.iter().map(|byte|format!("{byte:02x}")).collect::<String>()
+                        }),
+                        }
+                    };
+                    values.push(value);
+                }
+                Ok(Value::Array(values))
+            })
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        snapshot.insert(name.clone(), json!(rows));
+    }
+    Value::Object(snapshot)
+}
+
 #[test]
 fn named_refusals_leave_all_application_tables_unchanged() {
     let descendant = template().value["agents"][1]["id"]
@@ -441,6 +496,112 @@ fn named_refusals_leave_all_application_tables_unchanged() {
             .filter_map(|((name, old), (_, new))| (old != new).then_some(name.as_str()))
             .collect::<Vec<_>>();
         assert!(changed.is_empty(), "{tool} changed tables: {changed:?}");
+    }
+}
+
+#[test]
+fn managed_tools_match_python_rows_events_and_sync_projection() {
+    let (_root, store, _context) = fixture();
+    let oracle = &template().value;
+    let agents = oracle["agents"].as_array().unwrap();
+    let wake = std::sync::Arc::new(tokio::sync::Notify::new());
+    for expected in oracle["managedToolCases"].as_array().unwrap() {
+        let actor = agents
+            .iter()
+            .find(|actor| actor["id"] == expected["actor"])
+            .unwrap();
+        let context = CallbackContext {
+            agent: actor["id"].as_str().unwrap().to_owned(),
+            account: "default".into(),
+            connection: "connection".into(),
+            generation: 7,
+            epoch: actor["epoch"].as_u64().unwrap(),
+            thread: actor["threadId"].as_str().unwrap().to_owned(),
+            turn: actor["turnId"].as_str().unwrap().to_owned(),
+        };
+        let frame = call(
+            &context,
+            expected["callId"].as_str().unwrap(),
+            expected["tool"].as_str().unwrap(),
+            expected["arguments"].clone(),
+        );
+        let ports = crate::provider_callbacks::managed_tool_ports(
+            &store,
+            &context,
+            &frame,
+            wake.clone(),
+        )
+        .unwrap();
+        let decision = dispatch_with_managed_tools(&store, &context, &frame, 20.0, &ports).unwrap();
+        let CallbackDecision::Answer(reply) = decision else {
+            panic!("managed callback must answer: {}", expected["tool"])
+        };
+        let ResponseBody::Result(actual) = reply.body else {
+            panic!("managed callback result expected")
+        };
+        assert_eq!(
+            actual["success"],
+            expected["result"]["success"],
+            "success for {}",
+            expected["tool"]
+        );
+        let actual_text = actual["contentItems"][0]["text"].as_str().unwrap();
+        let expected_text = expected["result"]["contentItems"][0]["text"]
+            .as_str()
+            .unwrap();
+        if actual["success"] == true {
+            assert_eq!(
+                serde_json::from_str::<Value>(actual_text).unwrap(),
+                serde_json::from_str::<Value>(expected_text).unwrap(),
+                "tool value for {}",
+                expected["tool"]
+            );
+        } else if expected["tool"] != "orchestration_send" || expected["result"]["success"] == true {
+            assert_eq!(actual_text, expected_text, "tool refusal for {}", expected["tool"]);
+        }
+        let actual_rows = managed_snapshot(&store, &expected["rows"]);
+        let differences = expected["rows"]
+            .as_object()
+            .unwrap()
+            .iter()
+            .filter_map(|(table, expected_rows)| {
+                let actual_rows = actual_rows[table].as_array().unwrap();
+                (actual_rows != expected_rows.as_array().unwrap()).then(|| {
+                    let expected_rows = expected_rows.as_array().unwrap();
+                    let mismatch = actual_rows
+                        .iter()
+                        .zip(expected_rows)
+                        .find(|(actual, expected)| actual != expected);
+                    let detail = mismatch.map(|(actual, expected)| {
+                        if actual.as_array().is_some_and(|row| row.len() > 1)
+                            && expected.as_array().is_some_and(|row| row.len() > 1)
+                        {
+                            let actual_row = actual.as_array().unwrap();
+                            let expected_row = expected.as_array().unwrap();
+                            if table == "sync_entities" {
+                                return format!("actual={actual_row:?}; expected={expected_row:?}");
+                            }
+                            let fields = match (&actual_row[1], &expected_row[1]) {
+                                (Value::Object(actual), Value::Object(expected)) => actual
+                                    .keys()
+                                    .chain(expected.keys())
+                                    .collect::<std::collections::BTreeSet<_>>()
+                                    .into_iter()
+                                    .filter(|key| actual.get(*key) != expected.get(*key))
+                                    .cloned()
+                                    .collect::<Vec<_>>(),
+                                _ => vec!["row-value".to_owned()],
+                            };
+                            format!("id={:?} fields={fields:?}", actual_row[0])
+                        } else {
+                            format!("actual={actual:?} expected={expected:?}")
+                        }
+                    });
+                    format!("{table}: {detail:?}")
+                })
+            })
+            .collect::<Vec<_>>();
+        assert!(differences.is_empty(), "full rows differ: {differences:?}");
     }
 }
 
