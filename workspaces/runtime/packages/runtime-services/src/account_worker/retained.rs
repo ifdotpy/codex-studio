@@ -542,7 +542,11 @@ mod validation_tests {
 
         request.params["unexpected"] = json!(true);
         assert_eq!(validate(&request), Err(PortError::Invalid));
-        request.params.as_object_mut().unwrap().remove("unexpected");
+        request.params = json!({
+            "threadId":"fixture-thread",
+            "model":"fixture-model",
+            "serviceTier":"default"
+        });
         request.operation = "native-action".into();
         assert_eq!(validate(&request), Err(PortError::Invalid));
     }
