@@ -91,6 +91,8 @@ jobs:
         with:
           fetch-depth: 0
       - uses: ./.github/actions/fast-tier-setup
+      - name: Build Rust HTTP backend for server contracts
+        run: cargo build --locked --release -p studio-runtime-server
       - name: Confirm hosted runner has no Codex executable
         run: if command -v codex >/dev/null 2>&1; then echo "Codex must not be installed for this offline suite" >&2; exit 1; fi
       - name: Run server shard

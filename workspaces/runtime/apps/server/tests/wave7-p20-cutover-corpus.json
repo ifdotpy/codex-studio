@@ -3,24 +3,6 @@
     {
       "closures": [
         {
-          "closes": "NEW vault/runtime-service (out of scope)",
-          "kind": "external_or_scope",
-          "owner": "NEW vault/runtime-service (out of scope)"
-        }
-      ],
-      "dependency": "NEW vault/runtime-service (out of scope)",
-      "operation_count": 5,
-      "operations": [
-        "POST /api/vault/aws-login",
-        "POST /api/vault/pull",
-        "POST /api/vault/setup",
-        "POST /api/vault/setup/facts",
-        "POST /api/vault/unlock"
-      ]
-    },
-    {
-      "closures": [
-        {
           "closes": "R1",
           "kind": "external_or_scope",
           "owner": "R1"
@@ -84,34 +66,39 @@
     {
       "closures": [
         {
-          "closes": "R2",
-          "kind": "external_or_scope",
-          "owner": "R2"
+          "closes": "origin/feat/wave7-p18-account-catalog",
+          "kind": "accepted_branch",
+          "owner": "P18"
+        },
+        {
+          "closes": "Wave 7 P02 Host creation/configuration",
+          "kind": "open_task",
+          "owner": "P02"
         }
       ],
-      "dependency": "provider-session/voice",
+      "dependency": "provider-session/model-list",
       "operation_count": 4,
       "operations": [
-        "POST /api/voice/approve",
-        "POST /api/voice/end",
-        "POST /api/voice/speech",
-        "POST /api/voice/start"
+        "GET /api/models",
+        "POST /api/agents",
+        "POST /api/conversation",
+        "POST /api/leads"
       ]
     },
     {
       "closures": [
         {
-          "closes": "NEW project-secrets/runtime-service (out of scope)",
+          "closes": "R1",
           "kind": "external_or_scope",
-          "owner": "NEW project-secrets/runtime-service (out of scope)"
+          "owner": "R1"
         }
       ],
-      "dependency": "NEW project-secrets/runtime-service (out of scope)",
+      "dependency": "cross-server/remote-events",
       "operation_count": 3,
       "operations": [
-        "POST /api/project-secrets/list",
-        "POST /api/project-secrets/remove",
-        "POST /api/project-secrets/set"
+        "POST /api/answer",
+        "POST /api/messages",
+        "POST /api/monitor/cancel"
       ]
     },
     {
@@ -133,22 +120,17 @@
     {
       "closures": [
         {
-          "closes": "origin/feat/wave7-p18-account-catalog",
-          "kind": "accepted_branch",
-          "owner": "P18"
-        },
-        {
-          "closes": "Wave 7 P02 Host creation/configuration",
-          "kind": "open_task",
-          "owner": "P02"
+          "closes": "R1",
+          "kind": "external_or_scope",
+          "owner": "R1"
         }
       ],
-      "dependency": "provider-session/model-list",
+      "dependency": "multi-server-runtime/orchestration",
       "operation_count": 3,
       "operations": [
-        "POST /api/agents",
-        "POST /api/conversation",
-        "POST /api/leads"
+        "POST /api/browser/forward",
+        "POST /api/multi-server",
+        "POST /api/servers/orchestration"
       ]
     },
     {
@@ -170,77 +152,23 @@
     {
       "closures": [
         {
-          "closes": "origin/feat/wave7-p13-transcript-delivery",
+          "closes": "origin/feat/wave7-p18-account-catalog",
           "kind": "accepted_branch",
-          "owner": "P13"
+          "owner": "P18"
+        },
+        {
+          "closes": "Wave 7 P02 Host creation/configuration",
+          "kind": "open_task",
+          "owner": "P02"
         }
       ],
-      "dependency": "transcript/payload-store",
+      "dependency": "worker-driver/settings-catalog",
       "operation_count": 3,
       "operations": [
-        "GET /api/sync/pull",
-        "GET /api/transcript",
-        "GET /api/transcript/page"
+        "POST /api/agents",
+        "POST /api/conversation",
+        "POST /api/leads"
       ]
-    },
-    {
-      "closures": [
-        {
-          "closes": "origin/feat/wave7-p13-transcript-delivery",
-          "kind": "accepted_branch",
-          "owner": "P13"
-        }
-      ],
-      "dependency": "transcript/reasoning-page",
-      "operation_count": 3,
-      "operations": [
-        "GET /api/sync/pull",
-        "GET /api/transcript",
-        "GET /api/transcript/page"
-      ]
-    },
-    {
-      "closures": [
-        {
-          "closes": "origin/feat/wave7-p13-transcript-delivery",
-          "kind": "accepted_branch",
-          "owner": "P13"
-        }
-      ],
-      "dependency": "transcript/receipt-page",
-      "operation_count": 3,
-      "operations": [
-        "GET /api/sync/pull",
-        "GET /api/transcript",
-        "GET /api/transcript/page"
-      ]
-    },
-    {
-      "closures": [
-        {
-          "closes": "NEW linux-vm/settings-service (out of scope)",
-          "kind": "external_or_scope",
-          "owner": "NEW linux-vm/settings-service (out of scope)"
-        }
-      ],
-      "dependency": "NEW linux-vm/settings-service (out of scope)",
-      "operation_count": 2,
-      "operations": [
-        "GET /api/linux-vm/settings",
-        "POST /api/linux-vm/settings"
-      ]
-    },
-    {
-      "closures": [
-        {
-          "closes": "NEW mac-sync/runtime-service (out of scope)",
-          "kind": "external_or_scope",
-          "owner": "NEW mac-sync/runtime-service (out of scope)"
-        }
-      ],
-      "dependency": "NEW mac-sync/runtime-service (out of scope)",
-      "operation_count": 2,
-      "operations": ["POST /api/mac-sync/config", "POST /api/mac-sync/resolve"]
     },
     {
       "closures": [
@@ -315,18 +243,6 @@
     {
       "closures": [
         {
-          "closes": "R1",
-          "kind": "external_or_scope",
-          "owner": "R1"
-        }
-      ],
-      "dependency": "cross-server/remote-events",
-      "operation_count": 2,
-      "operations": ["POST /api/messages", "POST /api/monitor/cancel"]
-    },
-    {
-      "closures": [
-        {
           "closes": "origin/feat/wave7-p06-notification-effects",
           "kind": "accepted_branch",
           "owner": "P06"
@@ -356,6 +272,18 @@
     {
       "closures": [
         {
+          "closes": "NEW macOS layr-desk adapter (out of scope)",
+          "kind": "external_or_scope",
+          "owner": "NEW macOS layr-desk adapter (out of scope)"
+        }
+      ],
+      "dependency": "macos-platform/layr-desk",
+      "operation_count": 2,
+      "operations": ["POST /api/vault/pull", "POST /api/vault/unlock"]
+    },
+    {
+      "closures": [
+        {
           "closes": "origin/feat/wave7-p10-stop-delete",
           "kind": "accepted_branch",
           "owner": "P10"
@@ -369,21 +297,6 @@
       "dependency": "monitor-driver/agent-stop",
       "operation_count": 2,
       "operations": ["POST /api/conversation/delete", "POST /api/stop"]
-    },
-    {
-      "closures": [
-        {
-          "closes": "R1",
-          "kind": "external_or_scope",
-          "owner": "R1"
-        }
-      ],
-      "dependency": "multi-server-runtime/orchestration",
-      "operation_count": 2,
-      "operations": [
-        "POST /api/multi-server",
-        "POST /api/servers/orchestration"
-      ]
     },
     {
       "closures": [
@@ -441,21 +354,6 @@
     {
       "closures": [
         {
-          "closes": "origin/feat/wave7-p18-account-catalog",
-          "kind": "accepted_branch",
-          "owner": "P18"
-        }
-      ],
-      "dependency": "provider-session/codex-login",
-      "operation_count": 2,
-      "operations": [
-        "POST /api/accounts/login",
-        "POST /api/accounts/login/cancel"
-      ]
-    },
-    {
-      "closures": [
-        {
           "closes": "origin/feat/wave7-p15-monitors-rules",
           "kind": "accepted_branch",
           "owner": "P15"
@@ -464,42 +362,6 @@
       "dependency": "provider-session/monitor-commands",
       "operation_count": 2,
       "operations": ["POST /api/monitor/cancel", "POST /api/monitor/input"]
-    },
-    {
-      "closures": [
-        {
-          "closes": "origin/feat/wave7-p04-callback-runtime",
-          "kind": "accepted_branch",
-          "owner": "P04"
-        }
-      ],
-      "dependency": "provider-session/question-answer",
-      "operation_count": 2,
-      "operations": ["POST /api/answer", "POST /api/questions/delete"]
-    },
-    {
-      "closures": [
-        {
-          "closes": "origin/feat/wave7-p11-native-actions",
-          "kind": "accepted_branch",
-          "owner": "P11"
-        }
-      ],
-      "dependency": "provider-session/thread-fork",
-      "operation_count": 2,
-      "operations": ["POST /api/branch", "POST /api/checkpoint/restore"]
-    },
-    {
-      "closures": [
-        {
-          "closes": "first-cutover refusal",
-          "kind": "external_or_scope",
-          "owner": "first-cutover refusal"
-        }
-      ],
-      "dependency": "provider-session/thread-import",
-      "operation_count": 2,
-      "operations": ["GET /api/import", "POST /api/import"]
     },
     {
       "closures": [
@@ -681,30 +543,6 @@
     {
       "closures": [
         {
-          "closes": "origin/feat/wave7-p11-native-actions",
-          "kind": "accepted_branch",
-          "owner": "P11"
-        }
-      ],
-      "dependency": "account-worker/native-action",
-      "operation_count": 1,
-      "operations": ["POST /api/action"]
-    },
-    {
-      "closures": [
-        {
-          "closes": "origin/feat/wave7-p07-recovery-runtime",
-          "kind": "accepted_branch",
-          "owner": "P07"
-        }
-      ],
-      "dependency": "account-worker/recovery-history",
-      "operation_count": 1,
-      "operations": ["POST /api/connection-recovery"]
-    },
-    {
-      "closures": [
-        {
           "closes": "origin/feat/wave7-p03-message-ingress",
           "kind": "accepted_branch",
           "owner": "P03"
@@ -722,35 +560,6 @@
     {
       "closures": [
         {
-          "closes": "origin/feat/wave7-p11-native-actions",
-          "kind": "accepted_branch",
-          "owner": "P11"
-        }
-      ],
-      "dependency": "context-repair/native-history-rewrite",
-      "operation_count": 1,
-      "operations": ["POST /api/context-repair"]
-    },
-    {
-      "closures": [
-        {
-          "closes": "origin/feat/wave7-p09-budget-runtime",
-          "kind": "accepted_branch",
-          "owner": "P09"
-        },
-        {
-          "closes": "R5",
-          "kind": "external_or_scope",
-          "owner": "R5"
-        }
-      ],
-      "dependency": "costs/claude-local-usage",
-      "operation_count": 1,
-      "operations": ["GET /api/session-cost"]
-    },
-    {
-      "closures": [
-        {
           "closes": "R5",
           "kind": "external_or_scope",
           "owner": "R5"
@@ -759,23 +568,6 @@
       "dependency": "costs/local-scanner",
       "operation_count": 1,
       "operations": ["GET /api/costs"]
-    },
-    {
-      "closures": [
-        {
-          "closes": "origin/feat/wave7-p09-budget-runtime",
-          "kind": "accepted_branch",
-          "owner": "P09"
-        },
-        {
-          "closes": "R5",
-          "kind": "external_or_scope",
-          "owner": "R5"
-        }
-      ],
-      "dependency": "costs/pricing-refresh",
-      "operation_count": 1,
-      "operations": ["GET /api/session-cost"]
     },
     {
       "closures": [
@@ -855,6 +647,18 @@
     {
       "closures": [
         {
+          "closes": "origin/feat/wave7-p11-native-actions",
+          "kind": "accepted_branch",
+          "owner": "P11"
+        }
+      ],
+      "dependency": "cross-server/native-review",
+      "operation_count": 1,
+      "operations": ["POST /api/action"]
+    },
+    {
+      "closures": [
+        {
           "closes": "Wave 7 P12 Completion/continuations",
           "kind": "open_task",
           "owner": "P12"
@@ -904,18 +708,6 @@
       "dependency": "federation-driver/rooms",
       "operation_count": 1,
       "operations": ["POST /api/messages"]
-    },
-    {
-      "closures": [
-        {
-          "closes": "origin/feat/wave7-p19-projects-radio",
-          "kind": "accepted_branch",
-          "owner": "P19"
-        }
-      ],
-      "dependency": "host-project/radio-create",
-      "operation_count": 1,
-      "operations": ["POST /api/peer-teams"]
     },
     {
       "closures": [
@@ -997,9 +789,9 @@
           "owner": "P18"
         }
       ],
-      "dependency": "provider-session/model-list",
+      "dependency": "provider-session/account-rate-limits",
       "operation_count": 1,
-      "operations": ["GET /api/models"]
+      "operations": ["GET /api/limits"]
     },
     {
       "closures": [
@@ -1009,9 +801,9 @@
           "owner": "P18"
         }
       ],
-      "dependency": "provider-session/account-rate-limits",
+      "dependency": "provider-session/account-session",
       "operation_count": 1,
-      "operations": ["GET /api/limits"]
+      "operations": ["GET /api/models"]
     },
     {
       "closures": [
@@ -1038,38 +830,14 @@
     {
       "closures": [
         {
-          "closes": "origin/feat/wave7-p08-claude-runtime",
+          "closes": "origin/feat/wave7-p11-native-actions",
           "kind": "accepted_branch",
-          "owner": "P08"
+          "owner": "P11"
         }
       ],
-      "dependency": "provider-session/claude-controls",
+      "dependency": "provider-session/thread-fork",
       "operation_count": 1,
-      "operations": ["POST /api/claude/session"]
-    },
-    {
-      "closures": [
-        {
-          "closes": "origin/feat/wave7-p18-account-catalog",
-          "kind": "accepted_branch",
-          "owner": "P18"
-        }
-      ],
-      "dependency": "provider-session/claude-discovery",
-      "operation_count": 1,
-      "operations": ["POST /api/accounts/discover"]
-    },
-    {
-      "closures": [
-        {
-          "closes": "origin/feat/wave7-p18-account-catalog",
-          "kind": "accepted_branch",
-          "owner": "P18"
-        }
-      ],
-      "dependency": "provider-session/claude-profile-auth",
-      "operation_count": 1,
-      "operations": ["POST /api/claude/profiles"]
+      "operations": ["POST /api/checkpoint/restore"]
     },
     {
       "closures": [
@@ -1125,23 +893,6 @@
     {
       "closures": [
         {
-          "closes": "origin/feat/wave7-p04-callback-runtime",
-          "kind": "accepted_branch",
-          "owner": "P04"
-        },
-        {
-          "closes": "origin/feat/wave7-p15-monitors-rules",
-          "kind": "accepted_branch",
-          "owner": "P15"
-        }
-      ],
-      "dependency": "question-answer/monitor-approval",
-      "operation_count": 1,
-      "operations": ["POST /api/answer"]
-    },
-    {
-      "closures": [
-        {
           "closes": "R1",
           "kind": "external_or_scope",
           "owner": "R1"
@@ -1166,47 +917,6 @@
     {
       "closures": [
         {
-          "closes": "R5",
-          "kind": "external_or_scope",
-          "owner": "R5"
-        }
-      ],
-      "dependency": "runtime-process/process-tree",
-      "operation_count": 1,
-      "operations": ["GET /api/diagnostics"]
-    },
-    {
-      "closures": [
-        {
-          "closes": "R5",
-          "kind": "external_or_scope",
-          "owner": "R5"
-        }
-      ],
-      "dependency": "runtime-process/studio-loaded-threads",
-      "operation_count": 1,
-      "operations": ["GET /api/diagnostics"]
-    },
-    {
-      "closures": [
-        {
-          "closes": "origin/feat/wave7-p01-runtime-composition",
-          "kind": "accepted_branch",
-          "owner": "P01"
-        },
-        {
-          "closes": "R5",
-          "kind": "external_or_scope",
-          "owner": "R5"
-        }
-      ],
-      "dependency": "runtime-process/supervisor-status",
-      "operation_count": 1,
-      "operations": ["GET /api/diagnostics"]
-    },
-    {
-      "closures": [
-        {
           "closes": "origin/feat/wave7-p18-account-catalog",
           "kind": "accepted_branch",
           "owner": "P18"
@@ -1219,23 +929,6 @@
     {
       "closures": [
         {
-          "closes": "origin/feat/wave7-p09-budget-runtime",
-          "kind": "accepted_branch",
-          "owner": "P09"
-        },
-        {
-          "closes": "R5",
-          "kind": "external_or_scope",
-          "owner": "R5"
-        }
-      ],
-      "dependency": "store-bootstrap/analytics-usage-schema",
-      "operation_count": 1,
-      "operations": ["GET /api/session-cost"]
-    },
-    {
-      "closures": [
-        {
           "closes": "Wave 7 P12 Completion/continuations",
           "kind": "open_task",
           "owner": "P12"
@@ -1244,18 +937,6 @@
       "dependency": "store-bootstrap/capacity-retry-schema",
       "operation_count": 1,
       "operations": ["POST /api/capacity-retry"]
-    },
-    {
-      "closures": [
-        {
-          "closes": "origin/feat/wave7-p11-native-actions",
-          "kind": "accepted_branch",
-          "owner": "P11"
-        }
-      ],
-      "dependency": "store-bootstrap/context-repair-schema",
-      "operation_count": 1,
-      "operations": ["POST /api/context-repair"]
     },
     {
       "closures": [
@@ -1285,18 +966,6 @@
       "dependency": "thread-preparation/tool-catalog",
       "operation_count": 1,
       "operations": ["GET /api/capabilities"]
-    },
-    {
-      "closures": [
-        {
-          "closes": "origin/feat/wave7-p13-transcript-delivery",
-          "kind": "accepted_branch",
-          "owner": "P13"
-        }
-      ],
-      "dependency": "transcript/workspace-state",
-      "operation_count": 1,
-      "operations": ["GET /api/transcript"]
     },
     {
       "closures": [
@@ -1379,37 +1048,13 @@
       "dependency": "workspace-policy/message-admission",
       "operation_count": 1,
       "operations": ["POST /api/messages"]
-    },
-    {
-      "closures": [
-        {
-          "closes": "origin/feat/wave7-p19-projects-radio",
-          "kind": "accepted_branch",
-          "owner": "P19"
-        }
-      ],
-      "dependency": "workspace-state/peer-radio",
-      "operation_count": 1,
-      "operations": ["POST /api/peer-teams"]
-    },
-    {
-      "closures": [
-        {
-          "closes": "origin/feat/wave7-p19-projects-radio",
-          "kind": "accepted_branch",
-          "owner": "P19"
-        }
-      ],
-      "dependency": "workspace-state/worker-environment",
-      "operation_count": 1,
-      "operations": ["POST /api/projects"]
     }
   ],
   "counts": {
-    "implemented": 79,
-    "named_dependencies": 98,
-    "not_registered": 12,
-    "partial": 69,
+    "implemented": 108,
+    "named_dependencies": 72,
+    "not_registered": 0,
+    "partial": 52,
     "total": 160
   },
   "lifecycle_dependencies": {
@@ -1479,13 +1124,9 @@
       "status": "implemented"
     },
     {
-      "dependencies": [
-        "runtime-process/process-tree",
-        "runtime-process/studio-loaded-threads",
-        "runtime-process/supervisor-status"
-      ],
+      "dependencies": [],
       "operation": "GET /api/diagnostics",
-      "status": "partial"
+      "status": "implemented"
     },
     {
       "dependencies": [
@@ -1531,9 +1172,9 @@
       "status": "partial"
     },
     {
-      "dependencies": ["provider-session/thread-import"],
+      "dependencies": [],
       "operation": "GET /api/import",
-      "status": "partial"
+      "status": "implemented"
     },
     {
       "dependencies": ["provider-session/account-rate-limits"],
@@ -1541,9 +1182,9 @@
       "status": "partial"
     },
     {
-      "dependencies": ["NEW linux-vm/settings-service (out of scope)"],
+      "dependencies": [],
       "operation": "GET /api/linux-vm/settings",
-      "status": "not_registered"
+      "status": "implemented"
     },
     {
       "dependencies": [],
@@ -1556,7 +1197,10 @@
       "status": "implemented"
     },
     {
-      "dependencies": ["provider-session/model-list"],
+      "dependencies": [
+        "provider-session/account-session",
+        "provider-session/model-list"
+      ],
       "operation": "GET /api/models",
       "status": "partial"
     },
@@ -1646,13 +1290,9 @@
       "status": "implemented"
     },
     {
-      "dependencies": [
-        "costs/claude-local-usage",
-        "costs/pricing-refresh",
-        "store-bootstrap/analytics-usage-schema"
-      ],
+      "dependencies": [],
       "operation": "GET /api/session-cost",
-      "status": "partial"
+      "status": "implemented"
     },
     {
       "dependencies": ["provider-service/claude-discovery"],
@@ -1670,13 +1310,9 @@
       "status": "implemented"
     },
     {
-      "dependencies": [
-        "transcript/payload-store",
-        "transcript/reasoning-page",
-        "transcript/receipt-page"
-      ],
+      "dependencies": [],
       "operation": "GET /api/sync/pull",
-      "status": "partial"
+      "status": "implemented"
     },
     {
       "dependencies": [
@@ -1712,14 +1348,9 @@
       "status": "partial"
     },
     {
-      "dependencies": [
-        "transcript/payload-store",
-        "transcript/reasoning-page",
-        "transcript/receipt-page",
-        "transcript/workspace-state"
-      ],
+      "dependencies": [],
       "operation": "GET /api/transcript",
-      "status": "partial"
+      "status": "implemented"
     },
     {
       "dependencies": [],
@@ -1727,13 +1358,9 @@
       "status": "implemented"
     },
     {
-      "dependencies": [
-        "transcript/payload-store",
-        "transcript/reasoning-page",
-        "transcript/receipt-page"
-      ],
+      "dependencies": [],
       "operation": "GET /api/transcript/page",
-      "status": "partial"
+      "status": "implemented"
     },
     {
       "dependencies": [],
@@ -1796,19 +1423,19 @@
       "status": "implemented"
     },
     {
-      "dependencies": ["provider-session/claude-discovery"],
+      "dependencies": [],
       "operation": "POST /api/accounts/discover",
-      "status": "partial"
+      "status": "implemented"
     },
     {
-      "dependencies": ["provider-session/codex-login"],
+      "dependencies": [],
       "operation": "POST /api/accounts/login",
-      "status": "partial"
+      "status": "implemented"
     },
     {
-      "dependencies": ["provider-session/codex-login"],
+      "dependencies": [],
       "operation": "POST /api/accounts/login/cancel",
-      "status": "partial"
+      "status": "implemented"
     },
     {
       "dependencies": [],
@@ -1826,7 +1453,7 @@
       "status": "implemented"
     },
     {
-      "dependencies": ["account-worker/native-action"],
+      "dependencies": ["cross-server/native-review"],
       "operation": "POST /api/action",
       "status": "partial"
     },
@@ -1834,6 +1461,7 @@
       "dependencies": [
         "account-driver/unavailable",
         "provider-session/model-list",
+        "worker-driver/settings-catalog",
         "workspace-state/image-workspace",
         "workspace-state/vm-workspace"
       ],
@@ -1864,10 +1492,9 @@
     },
     {
       "dependencies": [
-        "provider-session/question-answer",
+        "cross-server/remote-events",
         "question-answer/async-question",
-        "question-answer/browser-open",
-        "question-answer/monitor-approval"
+        "question-answer/browser-open"
       ],
       "operation": "POST /api/answer",
       "status": "partial"
@@ -1878,14 +1505,14 @@
       "status": "implemented"
     },
     {
-      "dependencies": ["provider-session/thread-fork"],
+      "dependencies": [],
       "operation": "POST /api/branch",
-      "status": "partial"
+      "status": "implemented"
     },
     {
-      "dependencies": [],
+      "dependencies": ["multi-server-runtime/orchestration"],
       "operation": "POST /api/browser/forward",
-      "status": "implemented"
+      "status": "partial"
     },
     {
       "dependencies": [
@@ -1917,14 +1544,14 @@
       "status": "partial"
     },
     {
-      "dependencies": ["provider-session/claude-profile-auth"],
+      "dependencies": [],
       "operation": "POST /api/claude/profiles",
-      "status": "partial"
+      "status": "implemented"
     },
     {
-      "dependencies": ["provider-session/claude-controls"],
+      "dependencies": [],
       "operation": "POST /api/claude/session",
-      "status": "partial"
+      "status": "implemented"
     },
     {
       "dependencies": [],
@@ -1937,9 +1564,9 @@
       "status": "implemented"
     },
     {
-      "dependencies": ["account-worker/recovery-history"],
+      "dependencies": [],
       "operation": "POST /api/connection-recovery",
-      "status": "partial"
+      "status": "implemented"
     },
     {
       "dependencies": [],
@@ -1947,17 +1574,15 @@
       "status": "implemented"
     },
     {
-      "dependencies": [
-        "context-repair/native-history-rewrite",
-        "store-bootstrap/context-repair-schema"
-      ],
+      "dependencies": [],
       "operation": "POST /api/context-repair",
-      "status": "partial"
+      "status": "implemented"
     },
     {
       "dependencies": [
         "account-driver/unavailable",
-        "provider-session/model-list"
+        "provider-session/model-list",
+        "worker-driver/settings-catalog"
       ],
       "operation": "POST /api/conversation",
       "status": "partial"
@@ -2010,9 +1635,9 @@
       "status": "partial"
     },
     {
-      "dependencies": ["provider-session/thread-import"],
+      "dependencies": [],
       "operation": "POST /api/import",
-      "status": "partial"
+      "status": "implemented"
     },
     {
       "dependencies": [
@@ -2021,6 +1646,7 @@
         "cross-server-driver/project-binding",
         "project-driver/folder-selection",
         "provider-session/model-list",
+        "worker-driver/settings-catalog",
         "workspace-state/image-workspace",
         "workspace-state/vm-workspace"
       ],
@@ -2033,19 +1659,19 @@
       "status": "partial"
     },
     {
-      "dependencies": ["NEW linux-vm/settings-service (out of scope)"],
+      "dependencies": [],
       "operation": "POST /api/linux-vm/settings",
-      "status": "not_registered"
+      "status": "implemented"
     },
     {
-      "dependencies": ["NEW mac-sync/runtime-service (out of scope)"],
+      "dependencies": [],
       "operation": "POST /api/mac-sync/config",
-      "status": "not_registered"
+      "status": "implemented"
     },
     {
-      "dependencies": ["NEW mac-sync/runtime-service (out of scope)"],
+      "dependencies": [],
       "operation": "POST /api/mac-sync/resolve",
-      "status": "not_registered"
+      "status": "implemented"
     },
     {
       "dependencies": [
@@ -2116,11 +1742,7 @@
       "status": "implemented"
     },
     {
-      "dependencies": [
-        "cross-server-driver/peer-team-transport",
-        "host-project/radio-create",
-        "workspace-state/peer-radio"
-      ],
+      "dependencies": ["cross-server-driver/peer-team-transport"],
       "operation": "POST /api/peer-teams",
       "status": "partial"
     },
@@ -2135,26 +1757,25 @@
       "status": "implemented"
     },
     {
-      "dependencies": ["NEW project-secrets/runtime-service (out of scope)"],
+      "dependencies": [],
       "operation": "POST /api/project-secrets/list",
-      "status": "not_registered"
+      "status": "implemented"
     },
     {
-      "dependencies": ["NEW project-secrets/runtime-service (out of scope)"],
+      "dependencies": [],
       "operation": "POST /api/project-secrets/remove",
-      "status": "not_registered"
+      "status": "implemented"
     },
     {
-      "dependencies": ["NEW project-secrets/runtime-service (out of scope)"],
+      "dependencies": [],
       "operation": "POST /api/project-secrets/set",
-      "status": "not_registered"
+      "status": "implemented"
     },
     {
       "dependencies": [
         "cross-server-driver/local-identity",
         "cross-server-driver/project-location-write",
-        "cross-server-driver/project-registration",
-        "workspace-state/worker-environment"
+        "cross-server-driver/project-registration"
       ],
       "operation": "POST /api/projects",
       "status": "partial"
@@ -2165,9 +1786,9 @@
       "status": "implemented"
     },
     {
-      "dependencies": ["provider-session/question-answer"],
+      "dependencies": [],
       "operation": "POST /api/questions/delete",
-      "status": "partial"
+      "status": "implemented"
     },
     {
       "dependencies": [],
@@ -2272,29 +1893,29 @@
       "status": "partial"
     },
     {
-      "dependencies": ["NEW vault/runtime-service (out of scope)"],
+      "dependencies": [],
       "operation": "POST /api/vault/aws-login",
-      "status": "not_registered"
+      "status": "implemented"
     },
     {
-      "dependencies": ["NEW vault/runtime-service (out of scope)"],
+      "dependencies": ["macos-platform/layr-desk"],
       "operation": "POST /api/vault/pull",
-      "status": "not_registered"
+      "status": "partial"
     },
     {
-      "dependencies": ["NEW vault/runtime-service (out of scope)"],
+      "dependencies": [],
       "operation": "POST /api/vault/setup",
-      "status": "not_registered"
+      "status": "implemented"
     },
     {
-      "dependencies": ["NEW vault/runtime-service (out of scope)"],
+      "dependencies": [],
       "operation": "POST /api/vault/setup/facts",
-      "status": "not_registered"
+      "status": "implemented"
     },
     {
-      "dependencies": ["NEW vault/runtime-service (out of scope)"],
+      "dependencies": ["macos-platform/layr-desk"],
       "operation": "POST /api/vault/unlock",
-      "status": "not_registered"
+      "status": "partial"
     },
     {
       "dependencies": [],
@@ -2307,9 +1928,9 @@
       "status": "implemented"
     },
     {
-      "dependencies": ["provider-session/voice"],
+      "dependencies": [],
       "operation": "POST /api/voice/approve",
-      "status": "partial"
+      "status": "implemented"
     },
     {
       "dependencies": [],
@@ -2317,9 +1938,9 @@
       "status": "implemented"
     },
     {
-      "dependencies": ["provider-session/voice"],
+      "dependencies": [],
       "operation": "POST /api/voice/end",
-      "status": "partial"
+      "status": "implemented"
     },
     {
       "dependencies": [],
@@ -2332,14 +1953,14 @@
       "status": "implemented"
     },
     {
-      "dependencies": ["provider-session/voice"],
+      "dependencies": [],
       "operation": "POST /api/voice/speech",
-      "status": "partial"
+      "status": "implemented"
     },
     {
-      "dependencies": ["provider-session/voice"],
+      "dependencies": [],
       "operation": "POST /api/voice/start",
-      "status": "partial"
+      "status": "implemented"
     },
     {
       "dependencies": [],

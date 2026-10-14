@@ -7,6 +7,7 @@ from pathlib import Path
 
 CORPUS_TMPDIR = os.environ.get("TMPDIR")
 HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
 sys.path.insert(0, str(HERE.parents[2] / "packages/runtime-services/tests/turn_lifecycle"))
 from oracle_guard import install_guard
 install_guard()

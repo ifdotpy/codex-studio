@@ -143,6 +143,7 @@ Server suites: 0 passed, 1 failed, 0 skipped (opt-in), 0 skipped (environment), 
             "questionDelete", "providerQuestion", "projectPath", "claudeAccount",
             "voiceRecord", "voiceEndedSession", "voiceActiveSession",
             "analyticsAgent", "schemaHash", "approvalRequest", "codexLogin", "activeCommand",
+            "liveTerminal",
         }
 
         def references(value):

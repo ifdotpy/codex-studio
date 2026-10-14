@@ -84,6 +84,10 @@ EXACT_OWNERS: dict[str, list[str]] = {
     "context-repair/native-history-rewrite": ["P11"],
     "store-bootstrap/context-repair-schema": ["P11"],
     "cross-server/agent-management": ["R1", "P10"],
+    "cross-server/native-review": ["P11"],
+    # The wave 7 plan explicitly excludes the macOS vault adapter; the
+    # registered route keeps that platform dependency visible in the census.
+    "macos-platform/layr-desk": ["NEW macOS layr-desk adapter (out of scope)"],
     "cross-server/remote-events": ["R1"],
     "cross-server-driver/local-identity": ["P19", "R1"],
     "cross-server-driver/project-binding": ["P19"],
@@ -110,6 +114,7 @@ EXACT_OWNERS: dict[str, list[str]] = {
     "provider-service/claude-discovery": ["P18"],
     "provider-session/account-rate-limits": ["P18"],
     "provider-session/app-server": ["P01", "P14", "P17"],
+    "provider-session/account-session": ["P18"],
     "provider-session/claude-controls": ["P08"],
     "provider-session/claude-discovery": ["P18"],
     "provider-session/claude-login": ["P18"],
@@ -369,9 +374,9 @@ class RouteCensusContract(unittest.TestCase):
         expected = json.loads(CORPUS.read_text(encoding="utf-8"))
         self.assertEqual(actual, expected)
         self.assertEqual(actual["counts"]["total"], 160)
-        self.assertEqual(actual["counts"]["implemented"], 79)
-        self.assertEqual(actual["counts"]["partial"], 69)
-        self.assertEqual(actual["counts"]["not_registered"], 12)
+        self.assertEqual(actual["counts"]["implemented"], 108)
+        self.assertEqual(actual["counts"]["partial"], 52)
+        self.assertEqual(actual["counts"]["not_registered"], 0)
 
     def test_every_partial_and_unregistered_route_has_a_named_closure(self) -> None:
         census = json.loads(CORPUS.read_text(encoding="utf-8"))
