@@ -510,37 +510,22 @@ fn named_refusals_leave_all_application_tables_unchanged() {
         (
             "orchestration_interrupt",
             json!({"agent_id":descendant}),
-            "account-worker/agent-interrupt",
-        ),
-        (
-            "orchestration_status",
-            json!({}),
-            "model-directory/status-and-dispatch-capacity",
-        ),
-        (
-            "orchestration_watch",
-            json!({"action":"list"}),
-            "rules/runtime-driver",
-        ),
-        (
-            "orchestration_monitor",
-            json!({"command":"true"}),
-            "workspace-state/monitor-admission",
+            "agent-lifecycle/production-ports",
         ),
         (
             "orchestration_monitor_input",
             json!({"monitor_id":"missing-monitor","text":"input"}),
-            "monitor-input-request-identity",
+            "monitor-runtime/managed-input",
         ),
         (
             "orchestration_spawn",
             json!({"agents":[{"name":"Worker","prompt":"Task"}]}),
-            "agent-create/worker-driver",
+            "provider-session/model-list",
         ),
         (
             "orchestration_review",
             json!({"target":{"type":"uncommittedChanges"}}),
-            "agent-create/worker-driver",
+            "provider-session/model-list",
         ),
         (
             "orchestration_context",
@@ -569,6 +554,66 @@ fn named_refusals_leave_all_application_tables_unchanged() {
             .collect::<Vec<_>>();
         assert!(changed.is_empty(), "{tool} changed tables: {changed:?}");
     }
+}
+
+#[test]
+fn managed_monitor_create_persists_one_start_intent_and_replays_exactly() {
+    let (_root, store, context) = fixture();
+    let frame = call(
+        &context,
+        "managed-monitor-create",
+        "orchestration_monitor",
+        json!({"command":"printf managed-monitor","wake_on":"exit"}),
+    );
+    let wake = std::sync::Arc::new(tokio::sync::Notify::new());
+    let ports =
+        crate::provider_callbacks::managed_tool_ports(&store, &context, &frame, wake).unwrap();
+    let count_before: i64 = store
+        .read()
+        .unwrap()
+        .query_row("SELECT count(*) FROM runtime_monitors", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+
+    let first = dispatch_with_managed_tools(&store, &context, &frame, 20.0, &ports).unwrap();
+    assert!(matches!(first, CallbackDecision::Answer(_)));
+    let count: i64 = store
+        .read()
+        .unwrap()
+        .query_row("SELECT count(*) FROM runtime_monitors", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(count, count_before + 1);
+    let saved: Value = serde_json::from_str(
+        &store
+            .read()
+            .unwrap()
+            .query_row(
+                "SELECT record FROM runtime_monitors WHERE json_extract(record, '$.command')=?1",
+                ["printf managed-monitor"],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap(),
+    )
+    .unwrap();
+    assert!(
+        matches!(saved["status"].as_str(), Some("starting" | "approval")),
+        "unexpected monitor status: {}",
+        saved["status"]
+    );
+
+    let replay = dispatch_with_managed_tools(&store, &context, &frame, 21.0, &ports).unwrap();
+    assert!(matches!(replay, CallbackDecision::Answer(_)));
+    let replayed_count: i64 = store
+        .read()
+        .unwrap()
+        .query_row("SELECT count(*) FROM runtime_monitors", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(replayed_count, count_before + 1);
 }
 
 #[test]
@@ -1020,16 +1065,16 @@ fn startup_reconciles_reserved_callback_once() {
             Ok(())
         })
         .unwrap();
-    let queued: i64 = store
+    let running_claim: i64 = store
         .read()
         .unwrap()
         .query_row(
-            "SELECT count(*) FROM runtime_tool_requests WHERE json_extract(record,'$.tool')='orchestration_send' AND json_extract(record,'$.stage')='queued'",
+            "SELECT count(*) FROM runtime_tool_requests WHERE json_extract(record,'$.callId')='managed-0' AND json_extract(record,'$.tool')='orchestration_send' AND json_extract(record,'$.stage')='running' AND json_extract(record,'$.outcome')='pending'",
             [],
             |row| row.get(0),
         )
         .unwrap();
-    assert_eq!(queued, 1, "the admission transaction survives the crash");
+    assert_eq!(running_claim, 1, "the durable claim survives the crash");
     drop(store);
 
     // Reopen the real store and invoke the callback owner's startup recovery.
@@ -1049,14 +1094,14 @@ fn startup_reconciles_reserved_callback_once() {
         .read()
         .unwrap()
         .query_row(
-            "SELECT json_extract(record,'$.stage'),json_extract(record,'$.outcome') FROM runtime_tool_requests WHERE id LIKE '%:send:%'",
+            "SELECT json_extract(record,'$.stage'),json_extract(record,'$.outcome') FROM runtime_tool_requests WHERE json_extract(record,'$.callId')='managed-0' AND json_extract(record,'$.tool')='orchestration_send'",
             [],
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .unwrap();
     assert_eq!(
         (stage.as_str(), outcome.as_str()),
-        ("cancelled", "not_applied")
+        ("interrupted", "unknown")
     );
 }
 
@@ -1092,8 +1137,8 @@ fn every_managed_tool_runs_through_provider_callback_dispatch() {
         let decision = dispatch_with_managed_tools(&store, &context, &frame, 20.0, &ports).unwrap();
         assert!(matches!(decision, CallbackDecision::Answer(_)), "{tool}");
     }
-    // The plan topic has a local transactional projection; the other nine
-    // operations stage through the private adapter bundle.
+    // The plan topic has a local transactional projection and Interrupt now
+    // dispatches post-commit; the other nine operations use the test bundle.
     assert_eq!(ports.staged.load(Ordering::SeqCst), 9);
     assert_eq!(ports.released.load(Ordering::SeqCst), 9);
 }
@@ -1281,4 +1326,532 @@ fn queued_managed_tool_request_can_be_cancelled_before_dispatch() {
     assert_eq!(cancelled["stage"], "cancelled");
     assert_eq!(cancelled["cancelRequested"], true);
     assert_eq!(intent_count(&store, "spawn"), 0);
+}
+
+struct AllowWorkspace;
+impl crate::monitor_runtime::WorkspaceAdmission for AllowWorkspace {
+    fn check(
+        &self,
+        _: &studio_runtime_store::Transaction<'_>,
+        _: &studio_runtime_store::AgentRecord,
+    ) -> Result<(), crate::monitor_policy::MonitorError> {
+        Ok(())
+    }
+}
+
+struct CreationEnvironment;
+impl crate::managed_child_create::ManagedCreationEnvironment for CreationEnvironment {
+    fn select_worker_account(
+        &self,
+        parent_account_key: &str,
+        requested_account_key: Option<&str>,
+        default_account_key: Option<&str>,
+        model: &str,
+        excluded_account_keys: &[String],
+        project_account_keys: Option<&[String]>,
+    ) -> Result<(String, crate::host_worker_create::AccountIdentity), Error> {
+        if requested_account_key
+            .is_some_and(|key| default_account_key.is_some_and(|default| default != key))
+        {
+            return Err(Error::Invalid("Worker account differs from team defaults"));
+        }
+        let key = requested_account_key
+            .or(default_account_key)
+            .unwrap_or_else(|| {
+                if model == "gpt-6-luna" {
+                    "alternate"
+                } else {
+                    parent_account_key
+                }
+            });
+        if excluded_account_keys.iter().any(|excluded| excluded == key)
+            || project_account_keys.is_some_and(|keys| {
+                !keys.is_empty() && !keys.iter().any(|candidate| candidate == key)
+            })
+        {
+            return Err(Error::Invalid("Select a worker account of this project"));
+        }
+        let provider = if model.starts_with("claude-")
+            || ["default", "sonnet", "opus", "haiku"].contains(&model)
+        {
+            "claude"
+        } else {
+            "codex"
+        };
+        Ok((
+            key.to_owned(),
+            crate::host_worker_create::AccountIdentity {
+                provider: Some(provider.to_owned()),
+                home: None,
+                account_id: None,
+                email: None,
+            },
+        ))
+    }
+    fn catalog(&self) -> &dyn crate::host_worker_create::CreationCatalog {
+        &Self
+    }
+    fn prepare_workspace(
+        &self,
+        _: &Actor,
+        _: &Value,
+        _: &str,
+    ) -> Result<Box<dyn crate::monitor_runtime::WorkspaceAdmission + Send + Sync>, Error> {
+        Ok(Box::new(AllowWorkspace))
+    }
+}
+impl crate::host_worker_create::CreationCatalog for CreationEnvironment {
+    fn resolve(
+        &self,
+        _: &str,
+        _: &crate::host_worker_create::AccountIdentity,
+        model: &str,
+        effort: Option<&str>,
+        fast_mode: bool,
+        daybreak_enabled: bool,
+    ) -> Result<crate::host_worker_create::ExecutionSettings, crate::agents_create::CreateError>
+    {
+        Ok(crate::host_worker_create::ExecutionSettings {
+            model: model.to_owned(),
+            effort: effort.map(str::to_owned),
+            native_effort: effort.unwrap_or("low").to_owned(),
+            fast_mode,
+            daybreak_enabled,
+            cyber_access_program: "standard".to_owned(),
+        })
+    }
+}
+
+fn normalize_actor_ids(value: &mut Value) {
+    match value {
+        Value::Object(object) => {
+            if object.contains_key("actorId") {
+                object.insert("actorId".to_owned(), json!("normalized-actor-id"));
+            }
+            for nested in object.values_mut() {
+                normalize_actor_ids(nested);
+            }
+        }
+        Value::Array(values) => {
+            for nested in values {
+                normalize_actor_ids(nested);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn normalize_persisted_ids_and_times(value: &mut Value) {
+    match value {
+        Value::Object(object) => {
+            for (key, nested) in object.iter_mut() {
+                if matches!(
+                    key.as_str(),
+                    "id" | "actorId"
+                        | "agent"
+                        | "agentId"
+                        | "parentId"
+                        | "rootId"
+                        | "runId"
+                        | "attemptId"
+                        | "turnId"
+                        | "referenceId"
+                ) {
+                    *nested = json!("normalized-opaque-id");
+                } else if matches!(key.as_str(), "created" | "updated" | "timestamp") {
+                    *nested = json!(0);
+                } else {
+                    normalize_persisted_ids_and_times(nested);
+                }
+            }
+        }
+        Value::Array(values) => {
+            for nested in values {
+                normalize_persisted_ids_and_times(nested);
+            }
+        }
+        _ => {}
+    }
+}
+
+#[test]
+fn dispatcher_service_bundle_calls_spawn_and_review_entry_points() {
+    let (_root, store, context) = fixture();
+    let project_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .ancestors()
+        .nth(4)
+        .unwrap()
+        .canonicalize()
+        .unwrap();
+    let review_target = project_path.join("workspaces/runtime/apps/server");
+    let home = std::path::PathBuf::from(std::env::var_os("HOME").expect("test HOME"));
+    std::fs::create_dir_all(&home).unwrap();
+    let tilde_target = home.join("review-target");
+    let _ = std::fs::remove_file(&tilde_target);
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(&review_target, &tilde_target).unwrap();
+    let review_cwd = "~/review-target".to_owned();
+    let review_directory = review_target
+        .canonicalize()
+        .unwrap()
+        .to_string_lossy()
+        .into_owned();
+    let server_source = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src");
+    let oracle = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../apps/server/tests/spawn-review-child-oracle.py");
+    let mut python = Command::new(prepared_python::prepared_python(&server_source));
+    python.env("PYTHONDONTWRITEBYTECODE", "1");
+    python.env("HOME", &home);
+    python
+        .arg(&oracle)
+        .arg(&review_target.ancestors().nth(4).unwrap())
+        .arg(&review_cwd);
+    let output = prepared_python::output_with_timeout(
+        &mut python,
+        &oracle,
+        std::time::Duration::from_secs(180),
+    )
+    .expect("Python child creation corpus completes within its bound");
+    assert!(
+        output.status.success(),
+        "Python child creation corpus: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let expected: Value = serde_json::from_slice(&output.stdout).expect("Python corpus JSON");
+    let mut actor_value = {
+        let read = store.read().unwrap();
+        studio_runtime_store::AgentRepository::get(
+            &read,
+            &studio_runtime_store::AgentId::from(context.agent.as_str()),
+        )
+        .unwrap()
+        .unwrap()
+        .value()
+    };
+    actor_value["maxAgents"] = json!(64);
+    actor_value["cwd"] = json!(project_path);
+    actor_value["workspaceInGit"] = json!(true);
+    actor_value["workerDefaults"] = json!({});
+    actor_value["accountKey"] = json!("default");
+    actor_value["effort"] = json!("low");
+    store
+        .transaction_with::<_, StoreError>(|tx| {
+            let actor_record = studio_runtime_store::AgentRecord::from_value(actor_value.clone())
+                .map_err(|error| StoreError::SchemaMismatch(error.to_string()))?;
+            studio_runtime_store::AgentRepository::put(tx, &actor_record)?;
+            studio_runtime_store::ProjectsRepository::put_project(
+                tx,
+                &json!({"id":project_path,"path":project_path,"name":"corpus",
+                    "accountKey":"alternate","accountRevision":1,"workerBaseRef":"HEAD~1"}),
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    let actor = Actor::from_record(&actor_value, &context.agent, context.epoch).unwrap();
+
+    let run_id = "run:spawn-review-corpus";
+    let run = json!({"id":run_id,"agent":actor_value["id"],"accountKey":"default",
+        "epoch":context.epoch as i64,"threadId":actor_value.get("threadId").cloned().unwrap_or(Value::Null),
+        "turnId":null,"created":10.0,"status":"pending","firstAttemptId":null,
+        "rootAttemptId":null,"latestAttemptId":null});
+    store.transaction_with::<_, StoreError>(|tx| {
+        tx.execute("INSERT INTO runtime_execution_runs(id,agent,account,epoch,thread,turn,created,record) VALUES(?1,?2,?3,?4,?5,NULL,10,?6)",
+            rusqlite::params![run_id, actor_value["id"].as_str().unwrap(), "default", context.epoch as i64,
+                actor_value.get("threadId").and_then(Value::as_str), run.to_string()])?;
+        Ok(())
+    }).unwrap();
+
+    store
+        .transaction_with::<_, StoreError>(|tx| {
+            studio_runtime_store::ProfileRepository::save(
+                tx,
+                &studio_runtime_store::ProfileRecord {
+                    id: "profile-reviewer".to_owned(),
+                    name: "Profile reviewer".to_owned(),
+                    role: studio_runtime_store::ProfileRole::Implementer,
+                    model: "gpt-6-luna".to_owned(),
+                    effort: None,
+                    instructions: "profile instructions".to_owned(),
+                },
+            )?;
+            Ok(())
+        })
+        .unwrap();
+
+    // These are the exact value, identity and clock types passed by the
+    // managed callback service bundle after its durable claim commits.
+    let spawned = crate::managed_child_create::spawn_agents(
+        &store,
+        &actor,
+        &json!({"agents":[{"name":"Worker","prompt":"Run the task","workspace":"worktree",
+            "account_key":"alternate","profile_id":"profile-reviewer","effort":null}]}),
+        "dispatcher-spawn-api",
+        20.0,
+        &CreationEnvironment,
+    )
+    .unwrap();
+    assert_eq!(spawned.value["agents"].as_array().unwrap().len(), 1);
+    assert_eq!(spawned.value["requestId"], "dispatcher-spawn-api");
+    assert_eq!(spawned.value, expected["spawn"]["response"]);
+    let spawned_child_id = spawned.value["agents"][0]["id"].as_str().unwrap();
+    let read = store.read().unwrap();
+    let spawned_child = studio_runtime_store::AgentRepository::get(
+        &read,
+        &studio_runtime_store::AgentId::from(spawned_child_id),
+    )
+    .unwrap()
+    .unwrap()
+    .value();
+    assert_eq!(spawned_child["accountKey"], "alternate");
+    assert_eq!(spawned_child["model"], "gpt-6-luna");
+    assert_eq!(spawned_child["effort"], Value::Null);
+    assert_eq!(spawned_child["nativeEffort"], "low");
+    assert_eq!(spawned_child["profileInstructions"], "profile instructions");
+    assert_eq!(spawned.value["agents"][0]["baseRef"], "HEAD~1");
+    assert_eq!(
+        spawned.value["agents"][0]["baseCommit"],
+        expected["base"]["baseCommit"]
+    );
+    let mut expected_spawn_child = expected["spawn"]["child"].clone();
+    let mut actual_spawn_child = spawned_child.clone();
+    normalize_persisted_ids_and_times(&mut expected_spawn_child);
+    normalize_persisted_ids_and_times(&mut actual_spawn_child);
+    assert_eq!(
+        actual_spawn_child, expected_spawn_child,
+        "complete spawn child row"
+    );
+
+    let fallback = crate::managed_child_create::spawn_agents(
+        &store,
+        &actor,
+        &json!({"agents":[{"name":"Fallback","prompt":"Use the first available account",
+            "model":"gpt-6-luna","workspace":"shared"}]}),
+        "dispatcher-spawn-fallback",
+        20.5,
+        &CreationEnvironment,
+    )
+    .unwrap();
+    let fallback_id = fallback.value["agents"][0]["id"].as_str().unwrap();
+    let fallback_child = studio_runtime_store::AgentRepository::get(
+        &store.read().unwrap(),
+        &studio_runtime_store::AgentId::from(fallback_id),
+    )
+    .unwrap()
+    .unwrap()
+    .value();
+    assert_eq!(fallback_child["accountKey"], "alternate");
+    let mut expected_fallback = expected["fallback"]["child"].clone();
+    let mut actual_fallback = fallback_child;
+    normalize_persisted_ids_and_times(&mut expected_fallback);
+    normalize_persisted_ids_and_times(&mut actual_fallback);
+    assert_eq!(
+        actual_fallback, expected_fallback,
+        "complete implicit fallback child row"
+    );
+    let read = store.read().unwrap();
+    let event = read.query_row("SELECT json_object('id',id,'agent',agent,'kind',kind,'text',text,'status',status,'created',created,'epoch',epoch,'turn_id',turn_id,'error',error) FROM runtime_events WHERE id=?1", [format!("{spawned_child_id}:initial")], |row| row.get::<_, String>(0)).unwrap();
+    let event: Value = serde_json::from_str(&event).unwrap();
+    let effects = read.query_row("SELECT COALESCE(json_group_array(json(record)), '[]') FROM runtime_execution_effects WHERE reference=?1", [spawned_child_id], |row| row.get::<_, String>(0)).unwrap();
+    let effects: Value = serde_json::from_str(&effects).unwrap();
+    let nodes = read.query_row("SELECT COALESCE(json_group_array(json(record)), '[]') FROM runtime_execution_nodes WHERE json_extract(record,'$.agentId')=?1", [spawned_child_id], |row| row.get::<_, String>(0)).unwrap();
+    let nodes: Value = serde_json::from_str(&nodes).unwrap();
+    for (actual, expected_value, label) in [
+        (
+            event,
+            expected["spawn"]["event"].clone(),
+            "spawn initial event",
+        ),
+        (
+            effects,
+            expected["spawn"]["effects"].clone(),
+            "spawn execution effects",
+        ),
+        (
+            nodes,
+            expected["spawn"]["nodes"].clone(),
+            "spawn execution nodes",
+        ),
+    ] {
+        let mut actual = actual;
+        let mut expected_value = expected_value;
+        normalize_persisted_ids_and_times(&mut actual);
+        normalize_persisted_ids_and_times(&mut expected_value);
+        assert_eq!(actual, expected_value, "complete {label} row(s)");
+    }
+    let before_workspace_refusal: i64 = store
+        .read()
+        .unwrap()
+        .query_row("SELECT count(*) FROM runtime_agents", [], |row| row.get(0))
+        .unwrap();
+    assert!(crate::managed_child_create::spawn_agents(
+        &store,
+        &actor,
+        &json!({"agents":[{"name":"Reviewer","role":"reviewer","prompt":"Review","workspace":"shared"}]}),
+        "dispatcher-workspace-refusal",
+        20.25,
+        &CreationEnvironment,
+    )
+    .is_err());
+    let after_workspace_refusal: i64 = store
+        .read()
+        .unwrap()
+        .query_row("SELECT count(*) FROM runtime_agents", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(before_workspace_refusal, after_workspace_refusal);
+    assert_eq!(expected["workspaceRefused"], true);
+
+    let reviewed = crate::managed_child_create::request_review(
+        &store,
+        &actor,
+        &json!({"target":{"type":"uncommittedChanges"},"cwd":review_cwd}),
+        "dispatcher-review-api",
+        21.0,
+        &CreationEnvironment,
+    )
+    .unwrap_or_else(|error| panic!("review API call: {error:?}"));
+    assert_eq!(reviewed.value["requestId"], "dispatcher-review-api");
+    assert_eq!(reviewed.value["status"], "queued");
+    let mut expected_review_response = expected["review"]["response"].clone();
+    normalize_actor_ids(&mut expected_review_response);
+    let mut actual_review_response = reviewed.value.clone();
+    normalize_actor_ids(&mut actual_review_response);
+    assert_eq!(actual_review_response, expected_review_response);
+    let child = reviewed.value["agents"][0]["id"].as_str().unwrap();
+    let read = store.read().unwrap();
+    let child = studio_runtime_store::AgentRepository::get(
+        &read,
+        &studio_runtime_store::AgentId::from(child),
+    )
+    .unwrap()
+    .unwrap()
+    .value();
+    assert_eq!(child["cwd"], review_directory);
+    assert_eq!(child["nativeReview"]["status"], "pending");
+    let mut expected_review_child = expected["review"]["child"].clone();
+    let mut actual_review_child = child.clone();
+    normalize_persisted_ids_and_times(&mut expected_review_child);
+    normalize_persisted_ids_and_times(&mut actual_review_child);
+    assert_eq!(
+        actual_review_child, expected_review_child,
+        "complete review child row"
+    );
+    store
+        .transaction_with::<_, StoreError>(|tx| {
+            let root = studio_runtime_store::AgentRepository::get(
+                tx,
+                &studio_runtime_store::AgentId::from(context.agent.as_str()),
+            )?
+            .unwrap();
+            let mut root_value = root.value();
+            root_value["maxAgents"] = json!(1);
+            let root = studio_runtime_store::AgentRecord::from_value(root_value)
+                .map_err(|error| StoreError::SchemaMismatch(error.to_string()))?;
+            studio_runtime_store::AgentRepository::put(tx, &root)?;
+            Ok(())
+        })
+        .unwrap();
+    let latest_actor_value = {
+        let read = store.read().unwrap();
+        studio_runtime_store::AgentRepository::get(
+            &read,
+            &studio_runtime_store::AgentId::from(context.agent.as_str()),
+        )
+        .unwrap()
+        .unwrap()
+        .value()
+    };
+    let latest_actor =
+        Actor::from_record(&latest_actor_value, &context.agent, context.epoch).unwrap();
+    let before_capacity: i64 = store
+        .read()
+        .unwrap()
+        .query_row("SELECT count(*) FROM runtime_agents", [], |row| row.get(0))
+        .unwrap();
+    assert!(crate::managed_child_create::request_review(
+        &store,
+        &latest_actor,
+        &json!({"target":{"type":"uncommittedChanges"},"cwd":format!("{review_cwd}/workspaces/runtime/apps/server")}),
+        "dispatcher-capacity-refusal",
+        22.0,
+        &CreationEnvironment,
+    )
+    .is_err());
+    let after_capacity: i64 = store
+        .read()
+        .unwrap()
+        .query_row("SELECT count(*) FROM runtime_agents", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(before_capacity, after_capacity);
+    assert_eq!(
+        expected["capacity"]["countBefore"],
+        expected["capacity"]["countAfter"]
+    );
+    assert!(expected["capacity"]["error"].as_str().is_some());
+}
+
+#[test]
+fn spawn_child_and_first_turn_failpoints_roll_back_the_batch() {
+    for failpoint in ["child", "first-turn"] {
+        let (_root, store, context) = fixture();
+        let actor_value = {
+            let read = store.read().unwrap();
+            studio_runtime_store::AgentRepository::get(
+                &read,
+                &studio_runtime_store::AgentId::from(context.agent.as_str()),
+            )
+            .unwrap()
+            .unwrap()
+            .value()
+        };
+        let actor = Actor::from_record(&actor_value, &context.agent, context.epoch).unwrap();
+        let request_id = format!("spawn-failpoint-{failpoint}");
+        let child_id = uuid::Uuid::new_v5(
+            &uuid::Uuid::NAMESPACE_URL,
+            format!("{request_id}:0").as_bytes(),
+        )
+        .to_string();
+        store
+            .transaction_with::<_, StoreError>(|tx| {
+                let sql = if failpoint == "child" {
+                    format!("CREATE TRIGGER reject_child BEFORE INSERT ON runtime_agents WHEN NEW.id='{child_id}' BEGIN SELECT RAISE(ABORT,'child failpoint'); END;")
+                } else {
+                    format!("CREATE TRIGGER reject_initial BEFORE INSERT ON runtime_events WHEN NEW.id='{child_id}:initial' BEGIN SELECT RAISE(ABORT,'first turn failpoint'); END;")
+                };
+                tx.execute_batch(&sql)?;
+                Ok(())
+            })
+            .unwrap();
+        let args =
+            json!({"agents":[{"name":"Worker","prompt":"Do the task","workspace":"shared"}]});
+        assert!(
+            crate::managed_child_create::spawn_agents(
+                &store,
+                &actor,
+                &args,
+                &request_id,
+                20.0,
+                &CreationEnvironment,
+            )
+            .is_err(),
+            "expected {failpoint} write failure"
+        );
+        let read = store.read().unwrap();
+        assert!(
+            studio_runtime_store::AgentRepository::get(
+                &read,
+                &studio_runtime_store::AgentId::from(child_id.as_str()),
+            )
+            .unwrap()
+            .is_none(),
+            "child row survived {failpoint} failure"
+        );
+        let events: i64 = read
+            .query_row(
+                "SELECT COUNT(*) FROM runtime_events WHERE id=?1",
+                [format!("{child_id}:initial")],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(events, 0, "initial event survived {failpoint} failure");
+    }
 }

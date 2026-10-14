@@ -24,10 +24,70 @@ const COMMIT_HEX_LENGTHS: [usize; 2] = [40, 64];
 
 /// Freeze the parent repository's current commit before the caller opens a writer.
 pub fn freeze_base(path: &Path) -> Result<(String, String), CreateError> {
+    resolve_worker_base(path, None).map(|(reference, commit, _, _)| (reference, commit))
+}
+
+/// Resolve a requested Git ref and the available main-branch lag metadata before
+/// entering the writer, matching Python's worker-base selection contract.
+pub fn resolve_worker_base(
+    path: &Path,
+    requested: Option<&str>,
+) -> Result<(String, String, Option<String>, Option<i64>), CreateError> {
+    let selected = requested.unwrap_or("HEAD").trim();
+    if selected.is_empty() || selected.chars().count() > 1024 {
+        return Err(CreateError::InvalidCreation("base ref is invalid"));
+    }
+    let commit = git_value(
+        path,
+        &[
+            "rev-parse",
+            "--verify",
+            "--end-of-options",
+            &format!("{selected}^{{commit}}"),
+        ],
+    )?;
+    let main_candidates = ["main@{upstream}", "origin/main", "main"];
+    let mut main = None;
+    for candidate in main_candidates {
+        if let Ok(value) = git_value(
+            path,
+            &[
+                "rev-parse",
+                "--verify",
+                "--quiet",
+                "--end-of-options",
+                &format!("{candidate}^{{commit}}"),
+            ],
+        ) {
+            main = Some((candidate.to_owned(), value));
+            break;
+        }
+    }
+    let behind = main.as_ref().and_then(|(_, target)| {
+        if target == &commit {
+            return None;
+        }
+        let count = git_value(
+            path,
+            &["rev-list", "--count", &format!("{commit}..{target}")],
+        )
+        .ok()?;
+        count.parse::<i64>().ok()
+    });
+    validate_base(Some(selected), Some(&commit))?;
+    Ok((
+        selected.to_owned(),
+        commit,
+        main.map(|(reference, _)| reference),
+        behind,
+    ))
+}
+
+fn git_value(path: &Path, args: &[&str]) -> Result<String, CreateError> {
     let output = crate::bounded_child::run_without_git_environment(crate::bounded_child::Request {
         program: OsStr::new("git"),
         cwd: path.as_os_str(),
-        args: &["rev-parse", "--verify", "--end-of-options", "HEAD^{commit}"],
+        args,
         environment: &[("GIT_TERMINAL_PROMPT", "0"), ("GIT_CONFIG_NOSYSTEM", "1")],
         input: None,
         stdout_limit: 256,
@@ -35,12 +95,14 @@ pub fn freeze_base(path: &Path) -> Result<(String, String), CreateError> {
         timeout: Duration::from_secs(10),
     })
     .map_err(|_| CreateError::InvalidCreation("base commit could not be resolved"))?;
-    let commit = String::from_utf8(output.stdout.bytes)
+    let value = String::from_utf8(output.stdout.bytes)
         .map_err(|_| CreateError::InvalidCreation("base commit is invalid"))?
         .trim()
         .to_owned();
-    validate_base(Some("HEAD"), Some(&commit))?;
-    Ok(("HEAD".to_owned(), commit))
+    if value.is_empty() {
+        return Err(CreateError::InvalidCreation("base commit is invalid"));
+    }
+    Ok(value)
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -179,28 +241,34 @@ pub fn prepare_work_item(
     project_binding: Option<&Value>,
     account: &AccountIdentity,
     catalog: &dyn CreationCatalog,
+    role: &str,
+    worktree: bool,
+    fast_mode: bool,
+    daybreak_enabled: bool,
 ) -> Result<AgentRecord, CreateError> {
     if parent_epoch < 0 {
         return Err(CreateError::InvalidCreation("parent epoch"));
     }
-    validate_base(Some(base_ref), Some(base_commit))?;
-    let path = canonical_directory(path)?;
-    if path != parent_cwd {
-        return Err(CreateError::IdentityChanged);
+    if worktree {
+        validate_base(Some(base_ref), Some(base_commit))?;
     }
+    let path = canonical_directory(path)?;
     let account_key = required_string_value(body, "account_key")?;
     let name = required_string_value(body, "name")?.trim();
     if name.is_empty() || name.chars().count() > 100 {
         return Err(CreateError::InvalidCreation("name"));
     }
     let model = required_string_value(body, "model")?;
+    if !matches!(role, "implementer" | "reviewer") {
+        return Err(CreateError::InvalidCreation("role"));
+    }
     let settings = catalog.resolve(
         account_key,
         account,
         model,
         optional_string(body, "effort")?,
-        false,
-        false,
+        fast_mode,
+        daybreak_enabled,
     )?;
     let created = crate::event_write::unix_time().map_err(|_| CreateError::Internal)?;
     let mut draft = build_agent_record(
@@ -214,7 +282,7 @@ pub fn prepare_work_item(
         account_key,
         account.provider.as_deref().unwrap_or(""),
         true,
-        "implementer",
+        role,
         false,
         "queued",
         "worktree",
@@ -228,7 +296,7 @@ pub fn prepare_work_item(
     draft["rootId"] = json!(root_id.0);
     draft["parentId"] = json!(parent_id.0);
     draft["isLead"] = json!(false);
-    draft["role"] = json!("implementer");
+    draft["role"] = json!(role);
     draft["status"] = json!("queued");
     draft["prompt"] = body
         .get("prompt")
@@ -249,9 +317,23 @@ pub fn prepare_work_item(
         object.remove("concurrency");
         object.remove("maxAgentsExplicit");
     }
-    draft["worktree"] = json!(true);
-    draft["workerBaseRef"] = json!(base_ref);
-    draft["workerBaseCommit"] = json!(base_commit);
+    let workspace_in_git = git_value(Path::new(&path), &["rev-parse", "--show-toplevel"]).is_ok();
+    draft["workspaceInGit"] = json!(workspace_in_git);
+    draft["imageWorkspaceHasGit"] = json!(workspace_in_git);
+    draft["worktree"] = json!(worktree);
+    if !worktree {
+        draft["workspaceMode"] = json!("shared");
+    }
+    draft["workerBaseRef"] = if worktree {
+        json!(base_ref)
+    } else {
+        Value::Null
+    };
+    draft["workerBaseCommit"] = if worktree {
+        json!(base_commit)
+    } else {
+        Value::Null
+    };
     draft["model"] = json!(settings.model);
     draft["effort"] = json!(settings.effort);
     draft["nativeEffort"] = json!(settings.native_effort);
@@ -630,6 +712,17 @@ mod tests {
     }
 
     fn worker_draft_fixture(name: &str, prompt: &str) -> WorkerDraftFixture {
+        worker_draft_fixture_with_options(name, prompt, "implementer", true, false, false)
+    }
+
+    fn worker_draft_fixture_with_options(
+        name: &str,
+        prompt: &str,
+        role: &str,
+        worktree: bool,
+        fast_mode: bool,
+        daybreak_enabled: bool,
+    ) -> WorkerDraftFixture {
         let directory = tempdir().expect("temporary worker project");
         let cwd = directory.path().canonicalize().expect("canonical project");
         let cwd = cwd.to_str().expect("UTF-8 test path").to_owned();
@@ -700,6 +793,10 @@ mod tests {
             Some(&project),
             &account,
             &Catalog,
+            role,
+            worktree,
+            fast_mode,
+            daybreak_enabled,
         )
         .expect("typed worker draft");
         WorkerDraftFixture {
@@ -709,6 +806,88 @@ mod tests {
             parent_id,
             cwd,
         }
+    }
+
+    #[test]
+    fn work_item_options_set_role_workspace_and_execution_settings() {
+        let fixture = worker_draft_fixture_with_options(
+            "Review",
+            "Inspect the change",
+            "reviewer",
+            false,
+            true,
+            false,
+        );
+        assert_eq!(
+            field(&fixture.draft, "role").and_then(Value::as_str),
+            Some("reviewer")
+        );
+        assert_eq!(
+            field(&fixture.draft, "worktree").and_then(Value::as_bool),
+            Some(false)
+        );
+        assert_eq!(
+            field(&fixture.draft, "workspaceMode").and_then(Value::as_str),
+            Some("shared")
+        );
+        assert_eq!(field(&fixture.draft, "workerBaseRef"), Some(&Value::Null));
+        assert_eq!(
+            field(&fixture.draft, "fastMode").and_then(Value::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            field(&fixture.draft, "daybreakEnabled").and_then(Value::as_bool),
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn review_target_directory_can_differ_from_parent_workspace() {
+        let mut fixture = worker_draft_fixture("Review", "Inspect the change");
+        let target = tempfile::tempdir().expect("target repository directory");
+        let project = ProjectsRepository::get(&fixture.database, &fixture.cwd)
+            .expect("parent project lookup")
+            .expect("parent project exists")
+            .1;
+        let body = json!({"account_key":"worker-account","name":"Review",
+            "model":"model-one","prompt":"Inspect the change"});
+        let canonical_target = target
+            .path()
+            .canonicalize()
+            .expect("canonical review target directory");
+        let draft = prepare_work_item(
+            &body,
+            target.path(),
+            AgentId::from("review-child"),
+            fixture.parent_id.clone(),
+            fixture.parent_id.clone(),
+            "",
+            "",
+            0,
+            &fixture.cwd,
+            "parent-account",
+            None,
+            None,
+            Some(&project),
+            &fixture.account,
+            &Catalog,
+            "reviewer",
+            false,
+            false,
+            false,
+        )
+        .expect("review uses its validated target directory");
+        assert_eq!(
+            field(&draft, "cwd").and_then(Value::as_str),
+            canonical_target.to_str()
+        );
+        assert_eq!(
+            field(&draft, "_p02ParentCwd").and_then(Value::as_str),
+            Some(fixture.cwd.as_str())
+        );
+        let tx = fixture.database.transaction().expect("recheck transaction");
+        recheck_worker(&tx, &draft, 0, &fixture.account)
+            .expect("parent identity is rechecked against the stored parent cwd");
     }
 
     #[test]

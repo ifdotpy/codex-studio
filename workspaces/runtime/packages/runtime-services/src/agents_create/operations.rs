@@ -661,6 +661,10 @@ fn create_child(
         project_binding.as_ref(),
         &identity,
         catalog,
+        request.role.as_deref().unwrap_or("implementer"),
+        true,
+        fast_mode,
+        daybreak,
     )?;
     let checked = crate::host_worker_create::persisted_record(&draft)?;
     let mut record = checked.value();

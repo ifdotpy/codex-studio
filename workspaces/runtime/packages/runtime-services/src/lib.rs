@@ -70,6 +70,8 @@ pub mod linux_vm_guest;
 pub mod linux_vm_settings;
 pub mod mac_sync;
 pub mod maintenance;
+#[allow(dead_code)] // The managed-tools callback caller is integrated by its owning package.
+pub(crate) mod managed_child_create;
 pub(crate) mod managed_host_tools;
 pub mod managed_status_watch;
 pub mod message_admission;
