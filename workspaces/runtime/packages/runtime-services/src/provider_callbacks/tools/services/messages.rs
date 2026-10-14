@@ -194,7 +194,7 @@ fn send_as_actor(
     }
     if target.starts_with("remote:") || target.starts_with("federated:") {
         let room = if let Some(peer) = target.strip_prefix("remote:") {
-            let mut statement = tx.prepare(
+            let mut statement = tx.prepare_cached(
                 "SELECT id FROM runtime_federation_rooms WHERE json_extract(record,'$.peerId')=?1 AND json_extract(record,'$.status')='approved' AND json_extract(record,'$.localApproved')=1 AND json_extract(record,'$.remoteApproved')=1 AND EXISTS(SELECT 1 FROM json_each(record,'$.localMembers') WHERE value=?2) ORDER BY id LIMIT 2",
             )?;
             let rooms = statement

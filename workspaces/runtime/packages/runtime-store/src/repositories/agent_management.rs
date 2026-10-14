@@ -29,7 +29,7 @@ pub fn read(connection: &Connection) -> StoreResult<BTreeMap<String, Vec<Value>>
         if !exists {
             continue;
         }
-        let mut statement = connection.prepare(&format!(
+        let mut statement = connection.prepare_cached(&format!(
             "SELECT id,record FROM {table} ORDER BY rowid LIMIT {}",
             ROW_LIMIT + 1
         ))?;
@@ -53,7 +53,7 @@ pub fn read(connection: &Connection) -> StoreResult<BTreeMap<String, Vec<Value>>
         }
         tables.insert((*table).to_owned(), records);
     }
-    let mut statement = connection.prepare(&format!(
+    let mut statement = connection.prepare_cached(&format!(
         "SELECT id,agent,status,epoch FROM runtime_events ORDER BY rowid LIMIT {}",
         ROW_LIMIT + 1
     ))?;
@@ -80,7 +80,7 @@ pub fn read(connection: &Connection) -> StoreResult<BTreeMap<String, Vec<Value>>
         } else {
             "id,agent"
         };
-        let mut statement = connection.prepare(&format!(
+        let mut statement = connection.prepare_cached(&format!(
             "SELECT {columns} FROM {table} LIMIT {}",
             ROW_LIMIT + 1
         ))?;

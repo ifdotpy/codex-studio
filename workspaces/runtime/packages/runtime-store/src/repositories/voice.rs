@@ -117,7 +117,7 @@ impl VoiceRepository {
         agent: &str,
         after: i64,
     ) -> StoreResult<Vec<VoiceRecord>> {
-        let mut statement = connection.prepare(
+        let mut statement = connection.prepare_cached(
             "SELECT seq,id,agent,session,kind,text,item_id,previous_item_id,payload,created \
              FROM voice_records WHERE agent=?1 AND seq>?2 ORDER BY seq",
         )?;
@@ -185,7 +185,7 @@ impl VoiceRepository {
     }
 
     pub fn delivered(connection: &Connection, agent: &str) -> StoreResult<Vec<(String, String)>> {
-        let mut statement = connection.prepare(
+        let mut statement = connection.prepare_cached(
             "SELECT id,records FROM voice_deliveries WHERE agent=?1 \
              AND id IN (SELECT id FROM runtime_events)",
         )?;
@@ -250,7 +250,7 @@ impl VoiceRepository {
 
     pub fn deliveries(connection: &Connection, agent: &str) -> StoreResult<Vec<(String, String)>> {
         let mut statement =
-            connection.prepare("SELECT id,records FROM voice_deliveries WHERE agent=?1")?;
+            connection.prepare_cached("SELECT id,records FROM voice_deliveries WHERE agent=?1")?;
         let rows = statement.query_map([agent], |row| Ok((row.get(0)?, row.get(1)?)))?;
         rows.collect::<Result<Vec<_>, _>>()
             .map_err(StoreError::from)

@@ -436,7 +436,7 @@ fn matching_rpc_cards(
     rpc_id: &RequestId,
 ) -> Result<Vec<Value>, CallbackError> {
     let rpc_id = serde_json::to_string(rpc_id)?;
-    let mut statement = tx.prepare(
+    let mut statement = tx.prepare_cached(
         "SELECT record FROM runtime_requests \
          WHERE json_extract(record,'$.agent')=?1 \
            AND json_extract(record,'$.accountKey')=?2 \

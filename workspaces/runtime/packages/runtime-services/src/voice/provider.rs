@@ -131,7 +131,7 @@ pub fn capture_delete_sessions(
         .and_then(Value::as_str)
         .filter(|account| !account.is_empty())
         .unwrap_or("default");
-    let mut statement = connection.prepare(
+    let mut statement = connection.prepare_cached(
         "SELECT id,connection_id FROM voice_sessions \
          WHERE agent=?1 AND ended IS NULL AND account_key=?2 AND native_thread=?3 \
          AND connection_id IS NOT NULL ORDER BY created,id",
@@ -329,7 +329,7 @@ pub fn pending_delete_intents(
 ) -> Result<Vec<VoiceDeleteIntent>, VoiceProviderError> {
     reconcile_proven_unsent_held_sessions(store)?;
     let connection = store.read()?;
-    let mut statement = connection.prepare(
+    let mut statement = connection.prepare_cached(
         "SELECT id,signature,result FROM runtime_operation_receipts \
          WHERE id >= 'agent-delete-voice:' AND id < 'agent-delete-voice;' ORDER BY id",
     )?;
@@ -407,7 +407,7 @@ pub fn pending_delete_intents(
 /// permits a new delete-stop identity.
 fn reconcile_proven_unsent_held_sessions(store: &RuntimeStore) -> Result<(), VoiceProviderError> {
     store.transaction_with_error(|tx| {
-        let mut statement = tx.prepare(
+        let mut statement = tx.prepare_cached(
             "SELECT id,signature,result FROM runtime_operation_receipts \
              WHERE id >= 'agent-delete-voice:' AND id < 'agent-delete-voice;' ORDER BY id",
         )?;
@@ -810,7 +810,7 @@ impl VoiceCallbackActor {
     ) -> Result<usize, VoiceProviderError> {
         let ids = {
             let connection = store.read()?;
-            let mut statement = connection.prepare(
+            let mut statement = connection.prepare_cached(
                 "SELECT id FROM voice_sessions WHERE account_key=?1 AND connection_id=?2 AND ended IS NULL",
             )?;
             statement
@@ -1981,7 +1981,7 @@ pub fn handle_disconnect(
     now: f64,
 ) -> Result<usize, VoiceProviderError> {
     let connection = store.read()?;
-    let mut statement = connection.prepare(
+    let mut statement = connection.prepare_cached(
         "SELECT id,agent,created,ended,sdp,answer,native_thread,account_key,connection_id,state,error \
          FROM voice_sessions WHERE account_key=?1 AND connection_id=?2 AND ended IS NULL",
     )?;

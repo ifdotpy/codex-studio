@@ -103,7 +103,7 @@ pub fn peer_team_write(
         }).collect::<Result<std::collections::HashSet<_>,_>>()?;
         let agents = project_agents(tx)?;
         let mut teams = live_teams(&raw_teams, &agents, &path, &prepared)?;
-        let mut statement = tx.prepare("SELECT id FROM sync_entities WHERE collection='peerTeam' AND json_extract(payload,'$.value.projectPath')=?1")?;
+        let mut statement = tx.prepare_cached("SELECT id FROM sync_entities WHERE collection='peerTeam' AND json_extract(payload,'$.value.projectPath')=?1")?;
         previous_ids.extend(statement.query_map([&path], |row| row.get::<_,String>(0))?.collect::<Result<Vec<_>,_>>()?);
         drop(statement);
         match action {
@@ -282,7 +282,7 @@ pub(crate) fn refresh_project_rooms(
     if !exists {
         return Ok(());
     }
-    let mut statement = tx.prepare("SELECT id FROM runtime_rooms WHERE json_extract(record,'$.kind')='private' AND json_extract(record,'$.projectPath')=?1")?;
+    let mut statement = tx.prepare_cached("SELECT id FROM runtime_rooms WHERE json_extract(record,'$.kind')='private' AND json_extract(record,'$.projectPath')=?1")?;
     let ids = statement
         .query_map([path], |row| row.get::<_, String>(0))?
         .collect::<Result<Vec<_>, _>>()?;

@@ -108,7 +108,7 @@ impl WorkItemsRepository {
             .get("turnId")
             .and_then(serde_json::Value::as_str);
         let row: Option<(String, String)> = if let Some(turn) = turn {
-            let mut statement = connection.prepare(
+            let mut statement = connection.prepare_cached(
                 "SELECT id, record FROM runtime_execution_runs \
                  WHERE agent=?1 AND account=?2 AND thread IS ?3 AND turn=?4 LIMIT 2",
             )?;
@@ -176,7 +176,7 @@ impl WorkItemsRepository {
         root_id: &str,
         task_id: &str,
     ) -> StoreResult<Vec<StoredRecord>> {
-        let mut statement = connection.prepare(
+        let mut statement = connection.prepare_cached(
             "SELECT id, record FROM runtime_work \
              WHERE json_extract(record,'$.rootId')=?1 \
              AND EXISTS (SELECT 1 FROM json_each(record,'$.dependencies') AS dependency \
@@ -223,7 +223,7 @@ impl WorkItemsRepository {
         reason: &str,
         now: f64,
     ) -> StoreResult<Vec<Value>> {
-        let mut statement = connection.prepare(
+        let mut statement = connection.prepare_cached(
             "SELECT id, record FROM runtime_work \
              WHERE json_extract(record,'$.owner')=?1 \
              AND json_extract(record,'$.status') IN ('ready','running','blocked')",
@@ -381,7 +381,7 @@ impl WorkItemsRepository {
         agent: &str,
         epoch: i64,
     ) -> StoreResult<Vec<StoredQueueEvent>> {
-        let mut statement = connection.prepare(
+        let mut statement = connection.prepare_cached(
             "SELECT id,kind,text,status,created,error FROM runtime_events \
              WHERE agent=?1 AND epoch=?2 AND status IN ('pending','reserved') \
              AND kind IN ('user','followup') ORDER BY created,rowid",

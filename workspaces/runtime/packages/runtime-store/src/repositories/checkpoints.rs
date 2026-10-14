@@ -466,7 +466,7 @@ impl CheckpointsRepository {
                 |row| row.get::<_, i64>(0),
             )
             .optional()?;
-        let mut statement = connection.prepare(
+        let mut statement = connection.prepare_cached(
             "SELECT id FROM runtime_items WHERE agent=?1 \
              AND json_extract(record,'$.afterRestore') IS NULL \
              AND (?2 IS NULL OR rowid>?2) ORDER BY rowid",
@@ -840,7 +840,7 @@ fn read_all(connection: &Connection, table: &str) -> StoreResult<Vec<StoredCheck
         return Ok(Vec::new());
     }
     let mut statement =
-        connection.prepare(&format!("SELECT id,record FROM {table} ORDER BY rowid"))?;
+        connection.prepare_cached(&format!("SELECT id,record FROM {table} ORDER BY rowid"))?;
     let rows = statement.query_map([], read_stored_row)?;
     collect_records(rows, table)
 }
@@ -857,7 +857,7 @@ fn read_active(
     let placeholders = std::iter::repeat_n("?", values.len())
         .collect::<Vec<_>>()
         .join(",");
-    let mut statement = connection.prepare(&format!(
+    let mut statement = connection.prepare_cached(&format!(
         "SELECT id,record FROM {table} WHERE json_extract(record,'$.{field}') IN ({placeholders}) ORDER BY rowid"
     ))?;
     let rows = statement.query_map(rusqlite::params_from_iter(values.iter()), read_stored_row)?;

@@ -52,7 +52,7 @@ pub struct ProjectsRepository;
 
 impl ProjectsRepository {
     pub fn list(connection: &Connection) -> StoreResult<Vec<(String, Value)>> {
-        let mut statement = connection.prepare(
+        let mut statement = connection.prepare_cached(
             "SELECT id,record FROM runtime_projects ORDER BY json_extract(record,'$.created'),id",
         )?;
         statement
@@ -132,7 +132,7 @@ impl ProjectsRepository {
         if !exists {
             return Ok(Vec::new());
         }
-        let mut statement = connection.prepare("SELECT id,record FROM runtime_agents")?;
+        let mut statement = connection.prepare_cached("SELECT id,record FROM runtime_agents")?;
         statement
             .query_map([], |row| {
                 Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
@@ -172,7 +172,7 @@ impl ProjectsRepository {
         let removed = transaction.execute("DELETE FROM runtime_projects WHERE id=?1", [id])? > 0;
         if removed {
             SyncDocumentsRepository::put_entity(transaction, "project", id, json!({}), true)?;
-            let mut statement = transaction.prepare(
+            let mut statement = transaction.prepare_cached(
                 "SELECT id FROM sync_entities WHERE collection='peerTeam' AND deleted=0 \
                  AND json_extract(payload,'$.value.projectPath')=?1",
             )?;
@@ -196,7 +196,7 @@ impl ProjectsRepository {
             if !room_table {
                 return Ok(removed);
             }
-            let mut rooms = transaction.prepare(
+            let mut rooms = transaction.prepare_cached(
                 "SELECT id FROM runtime_rooms WHERE json_extract(record,'$.kind')='private' \
                  AND json_extract(record,'$.projectPath')=?1",
             )?;

@@ -184,7 +184,7 @@ pub fn load_recovery_jobs(
     // A located row refusal must not pin either table's disposable scan state.
     cursor.task_page = !task_page;
     if task_page {
-        let mut stmt=db.prepare("SELECT t.id,t.record,a.record,a.id FROM runtime_tasks t JOIN runtime_agents a ON a.id=json_extract(t.record,'$.agent') WHERE COALESCE(json_extract(a.record,'$.accountKey'),'default')=?1 AND t.id>?2 AND json_extract(t.record,'$.status')='running' AND json_extract(t.record,'$.type') IN ('commandExecution','fileChange','dynamicToolCall','mcpToolCall') ORDER BY t.id LIMIT ?3")?;
+        let mut stmt=db.prepare_cached("SELECT t.id,t.record,a.record,a.id FROM runtime_tasks t JOIN runtime_agents a ON a.id=json_extract(t.record,'$.agent') WHERE COALESCE(json_extract(a.record,'$.accountKey'),'default')=?1 AND t.id>?2 AND json_extract(t.record,'$.status')='running' AND json_extract(t.record,'$.type') IN ('commandExecution','fileChange','dynamicToolCall','mcpToolCall') ORDER BY t.id LIMIT ?3")?;
         let rows = stmt
             .query_map(
                 rusqlite::params![account, cursor.tasks, MAX_SCAN_JOBS as i64],
@@ -219,7 +219,7 @@ pub fn load_recovery_jobs(
             cursor.tasks.clear();
         }
     } else {
-        let mut stmt=db.prepare("SELECT id,record FROM runtime_agents WHERE COALESCE(json_extract(record,'$.accountKey'),'default')=?1 AND id>?2 ORDER BY id LIMIT ?3")?;
+        let mut stmt=db.prepare_cached("SELECT id,record FROM runtime_agents WHERE COALESCE(json_extract(record,'$.accountKey'),'default')=?1 AND id>?2 ORDER BY id LIMIT ?3")?;
         let rows = stmt
             .query_map(
                 rusqlite::params![account, cursor.agents, MAX_SCAN_JOBS as i64],

@@ -653,7 +653,7 @@ fn copy_branch_history(store: &RuntimeStore, copy: BranchCopy<'_>) -> Result<Val
         child.extra.insert("forkedFrom".into(),json!(source)); child.extra.insert("sourceMessage".into(),json!(selected.id));
         child.extra.insert("status".into(),json!("idle")); child.extra.insert("autoWake".into(),json!(true)); child.extra.insert("needsTitle".into(),json!(false));
         child.extra.remove("quickCreate"); child.extra.remove("quickCreateRequest");
-        let mut stmt=tx.prepare("SELECT id,record,created FROM runtime_items WHERE agent=?1 AND json_extract(record,'$.afterRestore') IS NULL ORDER BY created,id")?;
+        let mut stmt=tx.prepare_cached("SELECT id,record,created FROM runtime_items WHERE agent=?1 AND json_extract(record,'$.afterRestore') IS NULL ORDER BY created,id")?;
         let rows=stmt.query_map([source],|row|Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?,row.get::<_,f64>(2)?)))?.collect::<Result<Vec<_>,_>>()?;
         drop(stmt);
         let cutoff=match fork_turn {

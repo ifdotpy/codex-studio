@@ -353,7 +353,7 @@ impl MonitorRuntime {
     fn attach_batch(&self, scan: &mut Scan, now: f64) -> Result<(), MonitorError> {
         let ids = {
             let connection = self.store.read()?;
-            let mut query = connection.prepare("SELECT id FROM runtime_monitors WHERE id>?1 AND json_extract(record,'$.status')='lost' AND json_extract(record,'$.reattachRecovery.status')='running' ORDER BY id LIMIT ?2").map_err(studio_runtime_store::StoreError::from)?;
+            let mut query = connection.prepare_cached("SELECT id FROM runtime_monitors WHERE id>?1 AND json_extract(record,'$.status')='lost' AND json_extract(record,'$.reattachRecovery.status')='running' ORDER BY id LIMIT ?2").map_err(studio_runtime_store::StoreError::from)?;
             query
                 .query_map((&scan.monitor, BATCH as i64), |row| row.get::<_, String>(0))
                 .map_err(studio_runtime_store::StoreError::from)?

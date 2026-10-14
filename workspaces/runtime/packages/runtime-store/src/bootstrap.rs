@@ -54,6 +54,14 @@ pub(crate) fn prepare_sync_schema(transaction: &Transaction<'_>) -> StoreResult<
     Ok(())
 }
 
+pub(crate) fn prepare_runtime_event_indexes(transaction: &Transaction<'_>) -> StoreResult<()> {
+    transaction.execute_batch(
+        "CREATE INDEX IF NOT EXISTS runtime_events_agent_epoch_status_created \
+         ON runtime_events(agent,epoch,status,created,id)",
+    )?;
+    Ok(())
+}
+
 fn parse_sections(source: &str) -> StoreResult<[&str; 4]> {
     let mut sections = source.split("-- section: ").skip(1);
     let mut bodies = [""; 4];

@@ -52,7 +52,7 @@ pub fn execute(
     })?;
     let actor = serde_json::to_value(actor).map_err(StoreError::from)?;
     if matches!(action, Action::List) {
-        let mut statement=tx.prepare("SELECT id,record FROM runtime_tool_requests WHERE json_extract(record,'$.agent')=?1 ORDER BY json_extract(record,'$.updated') DESC LIMIT 50")?;
+        let mut statement=tx.prepare_cached("SELECT id,record FROM runtime_tool_requests WHERE json_extract(record,'$.agent')=?1 ORDER BY json_extract(record,'$.updated') DESC LIMIT 50")?;
         let mut requests = Vec::new();
         for row in statement.query_map([actor_id], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
@@ -133,7 +133,7 @@ fn resolve(tx: &Transaction<'_>, actor: &str, id: &str) -> Result<Option<Value>,
     if let Some(record) = records::get(tx, TABLE, id)?.filter(|r| r["agent"] == actor) {
         return Ok(Some(record));
     }
-    let mut statement = tx.prepare(
+    let mut statement = tx.prepare_cached(
         "SELECT request FROM runtime_tool_request_aliases WHERE agent=?1 AND alias=?2 LIMIT 2",
     )?;
     let aliases = statement
@@ -317,7 +317,7 @@ pub(crate) fn reconcile_effect(
             .filter(|v| truthy(Some(v)))
             .or_else(|| actor.get("turnId"));
         let account = actor["accountKey"].as_str().unwrap_or("default");
-        let mut statement = tx.prepare(
+        let mut statement = tx.prepare_cached(
             "SELECT id,record FROM runtime_execution_runs WHERE agent=?1 AND account=?2
              AND ((?6 AND thread IS ?3 AND turn=?4)
                OR (NOT ?6 AND epoch=?5 AND turn IS NULL AND ?4 IS NULL))

@@ -679,7 +679,7 @@ fn active_agents(
     tx: &Transaction<'_>,
     root_id: &str,
 ) -> Result<i64, crate::managed_host_tools::Error> {
-    let mut statement = tx.prepare("SELECT id,record FROM runtime_agents")?;
+    let mut statement = tx.prepare_cached("SELECT id,record FROM runtime_agents")?;
     let rows = statement.query_map([], |row| {
         Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
     })?;
@@ -735,7 +735,7 @@ fn record_spawn_effect(tx: &Transaction<'_>, actor: &AgentRecord, child: &Value,
             let turn = actor_value.get("turnId").and_then(Value::as_str);
             let active_turn = turn.filter(|turn| !turn.is_empty());
             let run = if let Some(turn) = active_turn {
-                let mut statement = tx.prepare(
+                let mut statement = tx.prepare_cached(
                     "SELECT id,record FROM runtime_execution_runs WHERE agent=?1 AND account=?2 AND thread IS ?3 AND turn=?4 LIMIT 2",
                 )?;
                 let rows = statement

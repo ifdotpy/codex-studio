@@ -338,7 +338,7 @@ impl SchedulerRepository {
     pub fn accounts_with_unknown_submitted_turns(
         connection: &Connection,
     ) -> StoreResult<Vec<String>> {
-        let mut statement = connection.prepare(
+        let mut statement = connection.prepare_cached(
             "SELECT DISTINCT COALESCE(json_extract(record,'$.accountKey'),'default') \
              FROM runtime_agents \
              WHERE COALESCE(json_extract(record,'$.provider'),'codex')='codex' \
@@ -395,7 +395,7 @@ impl SchedulerRepository {
         thread_id: &str,
         turn_id: Option<&str>,
     ) -> StoreResult<(bool, Option<(TurnAttemptIdentity, bool)>)> {
-        let mut statement = connection.prepare(
+        let mut statement = connection.prepare_cached(
             "SELECT id,record FROM runtime_agents \
              WHERE json_extract(record,'$.threadId')=?1 \
              AND COALESCE(json_extract(record,'$.accountKey'),'default')=?2 \
@@ -627,7 +627,7 @@ impl SchedulerRepository {
 
     /// Return only event reservations whose persisted attempt proves no turn was submitted.
     pub fn recover_unsubmitted(transaction: &Transaction<'_>) -> StoreResult<usize> {
-        let mut statement = transaction.prepare("SELECT DISTINCT COALESCE(json_extract(record,'$.accountKey'),'default') FROM runtime_agents")?;
+        let mut statement = transaction.prepare_cached("SELECT DISTINCT COALESCE(json_extract(record,'$.accountKey'),'default') FROM runtime_agents")?;
         let accounts = statement
             .query_map([], |row| row.get::<_, String>(0))?
             .collect::<Result<Vec<_>, _>>()?;
@@ -1499,7 +1499,7 @@ pub(super) fn select_agents(
     sql: &str,
     args: impl rusqlite::Params,
 ) -> StoreResult<Vec<AgentRecord>> {
-    let mut statement = db.prepare(sql)?;
+    let mut statement = db.prepare_cached(sql)?;
     let rows = statement.query_map(args, |r| {
         Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
     })?;

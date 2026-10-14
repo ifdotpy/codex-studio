@@ -153,7 +153,7 @@ pub(crate) fn receipt_state(
     if t["type"] != "dynamicToolCall" {
         return Ok((vec![], vec![]));
     }
-    let aliases: Vec<String> = tx.prepare("SELECT request FROM runtime_tool_request_aliases WHERE agent=?1 AND alias=?2 ORDER BY request LIMIT 2")?
+    let aliases: Vec<String> = tx.prepare_cached("SELECT request FROM runtime_tool_request_aliases WHERE agent=?1 AND alias=?2 ORDER BY request LIMIT 2")?
         .query_map(rusqlite::params![a["id"].as_str(),t["itemId"].as_str()], |r| r.get(0))?.collect::<Result<_,_>>()?;
     if aliases.len() > 1 {
         return Ok((aliases, vec![]));

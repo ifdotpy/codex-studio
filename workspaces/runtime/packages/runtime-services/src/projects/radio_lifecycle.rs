@@ -188,7 +188,7 @@ pub fn tick(
                     save(db, &mut room, prepared, now)?;
                     continue;
                 }
-                let mut query = db.prepare("SELECT seq,sender,text,created FROM runtime_chat_messages WHERE room=?1 AND seq>?2 ORDER BY seq")?;
+                let mut query = db.prepare_cached("SELECT seq,sender,text,created FROM runtime_chat_messages WHERE room=?1 AND seq>?2 ORDER BY seq")?;
                 let messages = query.query_map(params![room.id(),i64::try_from(cursor).map_err(|_|invalid(room.id()))?],|r| Ok(json!({"seq":r.get::<_,i64>(0)?,"sender":r.get::<_,String>(1)?,"text":r.get::<_,String>(2)?,"created":r.get::<_,f64>(3)?})))?.collect::<Result<Vec<_>,_>>()?;
                 let participants = room.members().iter().map(|key| {
                     let a=all_agents.get(key).ok_or_else(||invalid(room.id()))?;
@@ -275,7 +275,7 @@ fn reconcile(
         .active
         .as_ref()
         .ok_or_else(|| invalid(room.id()))?;
-    let mut query=db.prepare("SELECT id,record,created FROM runtime_items WHERE agent=?1 AND json_extract(record,'$.turnId')=?2 AND json_extract(record,'$.role')='assistant' ORDER BY created,id")?;
+    let mut query=db.prepare_cached("SELECT id,record,created FROM runtime_items WHERE agent=?1 AND json_extract(record,'$.turnId')=?2 AND json_extract(record,'$.role')='assistant' ORDER BY created,id")?;
     let rows = query
         .query_map(
             params![agent["id"].as_str().unwrap_or_default(), turn],

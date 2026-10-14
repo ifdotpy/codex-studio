@@ -10,6 +10,9 @@ const FEATURE_SCHEMA: &str = r#"
                 ON runtime_work(json_extract(record,'$.rootId'),json_extract(record,'$.status'));
             CREATE INDEX IF NOT EXISTS runtime_work_owner_status
                 ON runtime_work(json_extract(record,'$.owner'),json_extract(record,'$.status'));
+            CREATE INDEX IF NOT EXISTS runtime_work_owner_root_status_id ON runtime_work(
+                json_extract(record,'$.owner'),json_extract(record,'$.rootId'),
+                json_extract(record,'$.status'),id);
             CREATE INDEX IF NOT EXISTS runtime_work_archive_due ON runtime_work(
                 COALESCE(json_extract(record,'$.archiveIntent.nextAttemptAt'),0),id)
                 WHERE json_extract(record,'$.archiveIntent.status')='pending';

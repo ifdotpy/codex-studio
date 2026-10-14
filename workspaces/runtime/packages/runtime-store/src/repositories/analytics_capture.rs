@@ -76,7 +76,7 @@ impl AnalyticsCaptureRepository {
         turn: &Value,
         total: &Value,
     ) -> StoreResult<Option<Value>> {
-        let mut statement = db.prepare("SELECT record FROM analytics_usage WHERE agent=? AND thread IS ? AND turn IS ? AND json_extract(record,'$.total.totalTokens') IS NULL AND json_extract(record,'$.usageSource') IS NOT 'claudeResponse' ORDER BY seq LIMIT 129")?;
+        let mut statement = db.prepare_cached("SELECT record FROM analytics_usage WHERE agent=? AND thread IS ? AND turn IS ? AND json_extract(record,'$.total.totalTokens') IS NULL AND json_extract(record,'$.usageSource') IS NOT 'claudeResponse' ORDER BY seq LIMIT 129")?;
         let rows = statement
             .query_map(params![agent, thread.as_str(), turn.as_str()], |r| {
                 r.get::<_, String>(0)
@@ -233,7 +233,7 @@ pub fn check_state_readonly(root: &std::path::Path) -> StoreResult<Vec<crate::St
             |r| r.get(0),
         )?;
         if exists {
-            let mut statement = db.prepare(&format!("SELECT id,record FROM {}", table.name()))?;
+            let mut statement = db.prepare_cached(&format!("SELECT id,record FROM {}", table.name()))?;
             let mut rows = statement.query([])?;
             let mut failures = std::collections::BTreeMap::<(String, String), u64>::new();
             while let Some(row) = rows.next()? {

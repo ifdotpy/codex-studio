@@ -145,7 +145,7 @@ impl CoordinationRepository {
         connection: &rusqlite::Connection,
         room: &str,
     ) -> StoreResult<Vec<CanvasMessage>> {
-        let mut statement = connection.prepare("SELECT id,room,author,text,at,deliveries FROM messages WHERE room=?1 ORDER BY at DESC LIMIT 200")?;
+        let mut statement = connection.prepare_cached("SELECT id,room,author,text,at,deliveries FROM messages WHERE room=?1 ORDER BY at DESC LIMIT 200")?;
         let rows = statement.query_map([room], |row| {
             Ok(CanvasMessage {
                 id: row.get(0)?,
@@ -166,7 +166,7 @@ impl CoordinationRepository {
         room: &str,
     ) -> StoreResult<Vec<HistoricalParticipant>> {
         let mut statement =
-            connection.prepare("SELECT id,author,deliveries FROM messages WHERE room=?1")?;
+            connection.prepare_cached("SELECT id,author,deliveries FROM messages WHERE room=?1")?;
         let rows = statement.query_map([room], |row| {
             Ok(HistoricalParticipant {
                 id: row.get(0)?,
@@ -290,7 +290,7 @@ impl CoordinationRepository {
 }
 
 fn members(connection: &rusqlite::Connection, id: &str) -> StoreResult<Vec<String>> {
-    let mut statement = connection.prepare(
+    let mut statement = connection.prepare_cached(
         "SELECT source FROM graph_edges WHERE target=?1 AND kind='chat' ORDER BY source",
     )?;
     let rows = statement.query_map([id], |row| row.get(0))?;

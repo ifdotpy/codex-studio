@@ -116,7 +116,7 @@ fn rows(
     let sql = format!(
         "SELECT id,created,record FROM runtime_items WHERE agent=?1 AND json_extract(record,'$.afterRestore') IS NULL{filter} ORDER BY {order} LIMIT ?2"
     );
-    let mut statement = connection.prepare(&sql)?;
+    let mut statement = connection.prepare_cached(&sql)?;
     let mut values = vec![rusqlite::types::Value::Text(agent.to_owned()), limit.into()];
     if let Some((at, id)) = anchor {
         values.extend([at.into(), id.into()]);
@@ -296,7 +296,7 @@ fn receipts(
     let mut locations = represented(items, agent);
     if outstanding {
         let lower = items.first().and_then(|i| i["at"].as_f64()).unwrap_or(0.0);
-        let mut statement=connection.prepare("SELECT id,text,created,status FROM runtime_events WHERE agent=?1 AND kind='user' AND (status IN ('pending','reserved','dispatching','uncertain') OR (status='failed' AND created>=?2)) ORDER BY created")?;
+        let mut statement=connection.prepare_cached("SELECT id,text,created,status FROM runtime_events WHERE agent=?1 AND kind='user' AND (status IN ('pending','reserved','dispatching','uncertain') OR (status='failed' AND created>=?2)) ORDER BY created")?;
         let events = statement
             .query_map(params![agent, lower], |r| {
                 Ok((
@@ -421,7 +421,7 @@ fn tool_result(
     {
         return Ok(());
     }
-    let mut aliases = connection.prepare(
+    let mut aliases = connection.prepare_cached(
         "SELECT request FROM runtime_tool_request_aliases WHERE agent=?1 AND alias=?2 LIMIT 2",
     )?;
     let aliases = aliases
@@ -561,7 +561,7 @@ fn reasoning(
         return Ok(items);
     };
     let upper=connection.query_row("SELECT created FROM runtime_items WHERE agent=?1 AND json_extract(record,'$.afterRestore') IS NULL AND (created,id)>(?2,?3) ORDER BY created,id LIMIT 1",params![actor["id"].as_str(),last.created,last.id],|r|r.get::<_,f64>(0)).optional()?.unwrap_or(now);
-    let mut statement=analytics.prepare("SELECT id,record FROM analytics_items WHERE agent=?1 AND at>=?2 AND at<?3 AND type='reasoning' ORDER BY at,id")?;
+    let mut statement=analytics.prepare_cached("SELECT id,record FROM analytics_items WHERE agent=?1 AND at>=?2 AND at<?3 AND type='reasoning' ORDER BY at,id")?;
     let records = statement
         .query_map(params![actor["id"].as_str(), first.created, upper,], |r| {
             Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))

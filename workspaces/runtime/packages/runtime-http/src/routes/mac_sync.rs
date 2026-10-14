@@ -140,7 +140,7 @@ async fn lead_for_project(
         move || {
             let connection = store.read().map_err(|_| ApiError::internal())?;
             let mut statement = connection
-                .prepare("SELECT id FROM runtime_agents")
+                .prepare_cached("SELECT id FROM runtime_agents")
                 .map_err(|_| ApiError::internal())?;
             let ids = statement
                 .query_map([], |row| row.get::<_, String>(0))

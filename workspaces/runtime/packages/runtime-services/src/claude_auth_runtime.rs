@@ -79,7 +79,7 @@ pub fn due_waits(
 ) -> Result<Vec<(String, i64, Value)>> {
     store.transaction_with(|tx| {
         let mut statement = tx
-            .prepare(
+            .prepare_cached(
                 "SELECT agent FROM runtime_usage_resumes \
              WHERE json_extract(record,'$.status')='auth_probe_wait' \
                AND json_extract(record,'$.accountKey')=?1 \
