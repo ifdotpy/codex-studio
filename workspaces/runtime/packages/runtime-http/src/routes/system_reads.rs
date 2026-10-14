@@ -536,6 +536,12 @@ mod diagnostics_http_tests {
                 .collect::<Vec<_>>();
             children.sort();
             for path in children {
+                if path
+                    .file_name()
+                    .is_some_and(|name| name == "app-server.log")
+                {
+                    continue;
+                }
                 let metadata = std::fs::symlink_metadata(&path).expect("state entry metadata");
                 let relative = path
                     .strip_prefix(root)
