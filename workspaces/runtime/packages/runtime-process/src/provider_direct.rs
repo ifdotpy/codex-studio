@@ -1,6 +1,9 @@
 //! Backend-owned direct provider launch over the bounded stdio adapter.
 //! Unlike supervisor attachments, these children are intentionally terminated
 //! and reaped when the backend account registry shuts down.
+//! Registered difference (`workspace-state/image-execution`): image-workspace
+//! agents are refused before provider launch, so direct mode uses the unwrapped
+//! command. When the image backend moves to Rust, it must supply this prefix natively.
 use crate::{
     Generation, ProviderHandle, ProviderLaunchSpec,
     child_priority::ChildPriority,

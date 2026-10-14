@@ -277,6 +277,41 @@ async fn committed_input_reaches_one_retained_session_and_unknown_restart_does_n
 }
 
 #[tokio::test]
+async fn image_workspace_pending_event_is_refused_before_account_provider_launch() {
+    let fixture = tokio::task::spawn_blocking(Fixture::new).await.unwrap();
+    let agent_id = fixture.agents[0]["id"].as_str().unwrap();
+    fixture
+        .store
+        .transaction_with(|tx| {
+            tx.execute(
+                "UPDATE runtime_agents SET record=json_set(record,'$.workspaceMode','image') WHERE id=?1",
+                [agent_id],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    fixture.enqueue(0, "image-workspace-refused");
+    let (launcher, _writes) = scripted();
+    let mut registry = AccountRegistry::new(fixture.store.clone(), launcher.clone())
+        .await
+        .unwrap();
+
+    registry.reconcile(None).await.unwrap();
+
+    assert!(launcher.opened.lock().unwrap().is_empty());
+    let db = fixture.store.read().unwrap();
+    let status: String = db
+        .query_row(
+            "SELECT status FROM runtime_events WHERE id='annotation:image-workspace-refused'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(status, "pending");
+    registry.shutdown().await.unwrap();
+}
+
+#[tokio::test]
 async fn two_accounts_are_independent_and_shutdown_joins_all_attachments() {
     let fixture = tokio::task::spawn_blocking(Fixture::new).await.unwrap();
     fixture.enqueue(0, "first");
@@ -673,7 +708,6 @@ fn python_launch(
     isolated: bool,
     executable: &str,
     mode: &str,
-    provider_prefix: Option<&[String]>,
 ) -> Value {
     use std::io::Write;
     let source = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../server/src");
@@ -685,7 +719,7 @@ fn python_launch(
         .stderr(std::process::Stdio::piped())
         .spawn()
         .unwrap();
-    child.stdin.take().unwrap().write_all(json!({"root":root,"environment":environment,"home":home,"isolated":isolated,"executable":executable,"mode":mode,"providerPrefix":provider_prefix}).to_string().as_bytes()).unwrap();
+    child.stdin.take().unwrap().write_all(json!({"root":root,"environment":environment,"home":home,"isolated":isolated,"executable":executable,"mode":mode}).to_string().as_bytes()).unwrap();
     let output = child.wait_with_output().unwrap();
     assert!(
         output.status.success(),
@@ -766,7 +800,6 @@ async fn every_launch_signature_field_matches_real_python_appserver() {
             isolated,
             "/fixture/codex",
             "supervisor",
-            None,
         );
         let launch = host_runtime::codex_launch(
             Some("/fixture/codex"),
@@ -848,7 +881,6 @@ fn direct_launch_command_and_environment_match_python() {
             isolated,
             "/fixture/codex",
             "direct",
-            None,
         );
         let launch = host_runtime::codex_launch(
             Some("/fixture/codex"),
@@ -873,60 +905,6 @@ fn direct_launch_command_and_environment_match_python() {
             oracle["cwd"].as_str().map(str::to_owned)
         );
     }
-}
-
-#[cfg(target_os = "linux")]
-#[tokio::test]
-async fn direct_launch_applies_python_shared_mount_wrapper_when_available() {
-    let root = tempfile::tempdir().unwrap();
-    let home = root.path().join("codex");
-    std::fs::create_dir(&home).unwrap();
-    let environment = BTreeMap::from([
-        ("HOME".into(), root.path().to_string_lossy().into_owned()),
-        ("CODEX_HOME".into(), home.to_string_lossy().into_owned()),
-        ("PATH".into(), "/usr/bin:/bin".into()),
-    ]);
-    let prefix = vec!["/bin/true".to_owned()];
-    let executable = "/fixture/codex";
-    let oracle = python_launch(
-        root.path(),
-        &environment,
-        &home,
-        false,
-        executable,
-        "direct-wrapped",
-        Some(&prefix),
-    );
-    let python_source = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../server/src");
-    let python = prepared_python::prepared_python(&python_source);
-    let launch = host_runtime::provider_process_command_with_prefix(
-        &python,
-        host_runtime::codex_launch(
-            Some(executable),
-            environment,
-            home.to_string_lossy().into_owned(),
-            false,
-            root.path().into(),
-        ),
-        prefix,
-    )
-    .await
-    .unwrap();
-    assert_eq!(
-        serde_json::to_value(launch.command).unwrap(),
-        oracle["command"]
-    );
-    assert_eq!(
-        serde_json::to_value(launch.environment).unwrap(),
-        oracle["env"]
-    );
-    assert_eq!(
-        launch
-            .cwd
-            .as_ref()
-            .map(|path| path.to_string_lossy().into_owned()),
-        oracle["cwd"].as_str().map(str::to_owned)
-    );
 }
 
 #[cfg(target_os = "linux")]
@@ -1201,7 +1179,6 @@ async fn host_start_reattaches_python_launch_and_delivers_http_input() {
         false,
         executable.to_str().unwrap(),
         "supervisor",
-        None,
     );
     let root = fixture._root.path().to_path_buf();
     let mut supervisor = tokio::task::spawn_blocking(move || {

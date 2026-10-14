@@ -42,7 +42,6 @@ impl HostRuntime {
         };
         let python =
             resolve_python(std::env::var_os("CODEX_AGENTS_PYTHON").map(PathBuf::from)).await?;
-        let provider_python = python.clone();
         let catalog = state.model_catalog_handle();
         let resources = tokio::task::spawn_blocking(move || {
             PreparationResources::bundled(String::new(), catalog, python)
@@ -63,7 +62,6 @@ impl HostRuntime {
             accounts,
             store: store.clone(),
             root: store.root().to_owned(),
-            python: provider_python,
             native_path,
             resources,
             environment: std::env::vars().collect(),
@@ -103,7 +101,6 @@ struct HostLauncher {
     accounts: Arc<AccountDriver>,
     store: Arc<RuntimeStore>,
     root: PathBuf,
-    python: PathBuf,
     native_path: Option<String>,
     resources: PreparationResources,
     environment: BTreeMap<String, String>,
@@ -127,7 +124,6 @@ impl AccountLauncher for HostLauncher {
                 isolated,
                 self.root.clone(),
             );
-            let launch = provider_process_command(&self.python, launch).await?;
             // Existing catalog refresh owns its bounded one-off child; both
             // HTTP reads and preparation observe this same retained service.
             let _catalog_status = self
@@ -247,83 +243,6 @@ pub(crate) fn codex_launch(
         environment.remove("CODEX_API_KEY");
     }
     ProviderLaunchSpec::new(command, environment, root).with_inherited_cwd()
-}
-
-async fn provider_process_command(
-    python: &std::path::Path,
-    launch: ProviderLaunchSpec,
-) -> Result<ProviderLaunchSpec, WorkerError> {
-    run_provider_process_command(python, launch, None).await
-}
-
-#[cfg(test)]
-#[allow(
-    dead_code,
-    reason = "the integration test injects the Python wrapper prefix"
-)]
-pub(crate) async fn provider_process_command_with_prefix(
-    python: &std::path::Path,
-    launch: ProviderLaunchSpec,
-    prefix: Vec<String>,
-) -> Result<ProviderLaunchSpec, WorkerError> {
-    run_provider_process_command(python, launch, Some(prefix)).await
-}
-
-async fn run_provider_process_command(
-    python: &std::path::Path,
-    mut launch: ProviderLaunchSpec,
-    injected_prefix: Option<Vec<String>>,
-) -> Result<ProviderLaunchSpec, WorkerError> {
-    use tokio::io::AsyncWriteExt;
-
-    let invalid =
-        || WorkerError::PreparationRefused("provider-session/provider-process-command".into());
-    let source = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../server/src");
-    let (script, extra_args) = if let Some(prefix) = injected_prefix {
-        let prefix = serde_json::to_string(&prefix).map_err(|_| invalid())?;
-        (
-            "import json,shutil,sys,types\n".to_owned()
-                + "module=types.ModuleType('codex_workspace_images')\n"
-                + "module.exec_prefix=lambda:json.loads(sys.argv[2])\n"
-                + "sys.modules['codex_workspace_images']=module\n"
-                + "shutil.which=lambda value:value if value==json.loads(sys.argv[2])[0] else None\n"
-                + "sys.path.insert(0,sys.argv[1])\n"
-                + "from codex_runtime import provider_process_command\n"
-                + "print(json.dumps(provider_process_command(json.load(sys.stdin))))\n",
-            vec![prefix],
-        )
-    } else {
-        (
-            "import json,sys\nsys.path.insert(0,sys.argv[1])\nfrom codex_runtime import provider_process_command\nprint(json.dumps(provider_process_command(json.load(sys.stdin))))\n".into(),
-            vec![],
-        )
-    };
-    let mut child = tokio::process::Command::new(python)
-        .args(["-B", "-c", &script])
-        .arg(source)
-        .args(extra_args)
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        .kill_on_drop(true)
-        .spawn()
-        .map_err(|_| invalid())?;
-    let input = serde_json::to_vec(&launch.command).map_err(|_| invalid())?;
-    let mut stdin = child.stdin.take().ok_or_else(invalid)?;
-    stdin.write_all(&input).await.map_err(|_| invalid())?;
-    drop(stdin);
-    let output = tokio::time::timeout(std::time::Duration::from_secs(10), child.wait_with_output())
-        .await
-        .map_err(|_| invalid())?
-        .map_err(|_| invalid())?;
-    if !output.status.success() || output.stdout.len() > 64 * 1024 {
-        return Err(invalid());
-    }
-    launch.command = serde_json::from_slice(&output.stdout).map_err(|_| invalid())?;
-    if launch.command.is_empty() || launch.command.iter().any(|arg| arg.contains('\0')) {
-        return Err(invalid());
-    }
-    Ok(launch)
 }
 
 fn next_direct_generation(store: &RuntimeStore, account: &str) -> Result<Generation, WorkerError> {
