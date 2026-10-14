@@ -71,6 +71,8 @@ async fn branch(
     let (source, selected, operation) =
         studio_runtime_process::blocking_pool::spawn_blocking("runtime-http/routes/branches", {
             let store = store.clone();
+            let port = port.clone();
+            let scope_account = account.clone();
             let agent_id = body.agent.clone();
             let message_id = body.message_id.clone();
             let operation_id = operation_id.clone();
@@ -112,7 +114,7 @@ async fn branch(
                 }
                 // Match Python's read-only request validation before requiring a live native
                 // consumer. Invalid branch inputs must not depend on provider availability.
-                let scope = port.current_scope(&scope_account).ok_or_else(unavailable)?;
+                let _scope = port.current_scope(&scope_account).ok_or_else(unavailable)?;
                 let mut operation = None;
                 store
                     .transaction_with(|tx| {
