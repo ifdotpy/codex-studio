@@ -7733,6 +7733,34 @@ export interface components {
       /** Serverid */
       serverId: string;
     };
+    /** BlockingPoolGroupMetrics */
+    BlockingPoolGroupMetrics: {
+      /** Closureavgms */
+      closureAvgMs: number;
+      /** Closuremaxms */
+      closureMaxMs: number;
+      /** Count */
+      count: number;
+      /** Group */
+      group: string;
+      /** Queuewaitavgms */
+      queueWaitAvgMs: number;
+      /** Queuewaitmaxms */
+      queueWaitMaxMs: number;
+    };
+    /** BlockingPoolMetrics */
+    BlockingPoolMetrics: {
+      /** Enabled */
+      enabled: boolean;
+      /** Groups */
+      groups: components["schemas"]["BlockingPoolGroupMetrics"][];
+      /** Peakoccupancy */
+      peakOccupancy: number;
+      /** Queued */
+      queued: number;
+      /** Running */
+      running: number;
+    };
     /** BranchDraft */
     BranchDraft: {
       /**
@@ -11531,6 +11559,8 @@ export interface components {
       analyticsCapture: components["schemas"]["AnalyticsCaptureStatus"];
       /** At */
       at: string;
+      /** @default null */
+      blockingPoolMetrics?: components["schemas"]["BlockingPoolMetrics"] | null;
       executions: components["schemas"]["ExecutionLedger"];
       hostResources: components["schemas"]["HostResources"];
       httpRequestMetrics: components["schemas"]["HttpRequestMetrics"];
