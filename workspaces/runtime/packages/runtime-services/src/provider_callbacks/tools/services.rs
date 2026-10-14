@@ -97,6 +97,9 @@ impl crate::managed_host_tools::SendPort for ProductionPorts {
         let value = messages::send(tx, &snapshot, &chat_args, request_id, now).map_err(
             |error| match error {
                 CallbackError::Store(error) => crate::managed_host_tools::Error::Store(error),
+                CallbackError::Dependency(name) => {
+                    crate::managed_host_tools::Error::Unavailable(name)
+                }
                 _ => crate::managed_host_tools::Error::Invalid(
                     "Message ingress refused this request",
                 ),

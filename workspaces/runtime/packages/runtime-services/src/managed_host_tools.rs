@@ -639,8 +639,21 @@ fn remote_dependency(
     let moved_from = truthy(actor.record.extra.get("movedFrom"));
     let dependency = match call.tool {
         ManagedHostTool::Send => {
+            // Python routes every moved remote-origin send through move_send
+            // before resolving the target, including a local descendant.
+            if moved_from {
+                return Ok(Some("multi-server-runtime/move-send"));
+            }
             let target = required_text(&call.args, "agent_id")?;
-            (!is_descendant(tx, actor, target)?).then_some("multi-server-runtime/message")
+            // chat_message owns user messages and approved federation targets
+            // locally. Let its adapter return those dependencies instead of
+            // misrouting them through the remote message transport.
+            if target == "user" || target.starts_with("remote:") || target.starts_with("federated:")
+            {
+                None
+            } else {
+                (!is_descendant(tx, actor, target)?).then_some("multi-server-runtime/message")
+            }
         }
         ManagedHostTool::Status => Some("multi-server-runtime/directory"),
         ManagedHostTool::Complaint => Some("multi-server-runtime/complaint"),

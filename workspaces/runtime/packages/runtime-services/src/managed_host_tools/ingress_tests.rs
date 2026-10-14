@@ -572,6 +572,95 @@ fn named_refusals_leave_all_application_tables_unchanged() {
 }
 
 #[test]
+fn send_remote_routing_refusals_match_python_and_write_nothing() {
+    let descendant = template().value["agents"][1]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    // Runtime.dynamic routes movedFrom actors to move_send before target
+    // resolution (codex_runtime.py:9048-9049). Ordinary remote actors reach
+    // chat_message, where user uses send_to_user and remote/federated targets
+    // use federation locally (codex_runtime.py:9858-9877).
+    let cases = [
+        (
+            "moved descendant",
+            descendant,
+            json!({"remoteOrigin":"source-server","movedFrom":true}),
+            "multi-server-runtime/move-send",
+        ),
+        (
+            "remote to user",
+            "user".to_owned(),
+            json!({"remoteOrigin":"source-server"}),
+            "user-messages/agent-admission",
+        ),
+        (
+            "remote to remote target",
+            "remote:peer".to_owned(),
+            json!({"remoteOrigin":"source-server"}),
+            "federation/agent-message",
+        ),
+        (
+            "remote to federated target",
+            "federated:peer:room".to_owned(),
+            json!({"remoteOrigin":"source-server"}),
+            "federation/agent-message",
+        ),
+    ];
+    for (index, (label, target, flags, dependency)) in cases.into_iter().enumerate() {
+        let (_root, store, mut context) = fixture();
+        if label != "moved descendant" {
+            let worker = &template().value["agents"][1];
+            context.agent = worker["id"].as_str().unwrap().to_owned();
+            context.thread = worker["threadId"].as_str().unwrap().to_owned();
+            context.turn = worker["turnId"].as_str().unwrap().to_owned();
+        }
+        store
+            .transaction_with::<_, StoreError>(|tx| {
+                let raw: String = tx.query_row(
+                    "SELECT record FROM runtime_agents WHERE id=?1",
+                    [&context.agent],
+                    |row| row.get(0),
+                )?;
+                let mut actor: Value = serde_json::from_str(&raw).unwrap();
+                for (key, value) in flags.as_object().unwrap() {
+                    actor[key] = value.clone();
+                }
+                tx.execute(
+                    "UPDATE runtime_agents SET record=?2 WHERE id=?1",
+                    params![context.agent, actor.to_string()],
+                )?;
+                Ok(())
+            })
+            .unwrap();
+        let before = application_table_snapshot(&store);
+        let frame = call(
+            &context,
+            &format!("remote-send-{index}"),
+            "orchestration_send",
+            json!({"agent_id":target,"text":"remote send"}),
+        );
+        let ports = crate::provider_callbacks::managed_tool_ports(
+            &store,
+            &context,
+            &frame,
+            std::sync::Arc::new(tokio::sync::Notify::new()),
+        )
+        .unwrap();
+        let decision = dispatch_with_managed_tools(&store, &context, &frame, 20.0, &ports).unwrap();
+        assert!(
+            format!("{decision:?}").contains(dependency),
+            "{label} did not name {dependency}: {decision:?}"
+        );
+        assert_eq!(
+            before,
+            application_table_snapshot(&store),
+            "{label} changed application state"
+        );
+    }
+}
+
+#[test]
 fn managed_tools_match_python_rows_events_and_sync_projection() {
     let (_root, store, _context) = fixture();
     let oracle = &template().value;
