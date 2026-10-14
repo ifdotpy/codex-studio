@@ -147,51 +147,74 @@ fn python_written_completed_start_recovery_exclusion_matches_rust_scans() {
     let _scratch = Scratch(base.clone());
     let mut oracle = Oracle::new(&base);
     let cases = [
-        ("completed_start", json!({})),
-        ("in_flight", json!({"inFlight":true})),
-        ("action", json!({"startAttempt.action":"turn/start"})),
+        ("completed_start", json!({}), Some("completed")),
+        ("in_flight", json!({}), Some("written")),
+        ("action", json!({"startAttempt.action":"turn/start"}), None),
         (
             "active_reservation",
             json!({"startAttempt.activeAtReservation":true}),
+            None,
         ),
         (
             "outcome_hold",
             json!({"startOutcomeHold":{"stage":"account_settlement"}}),
+            None,
         ),
         (
             "response_error",
             json!({"startAttempt.responseError":"lost response"}),
+            None,
         ),
         (
             "unknown_outcome",
             json!({"startAttempt.executionOutcome":"unknown"}),
+            None,
         ),
         (
             "different_turn",
             json!({"startAttempt.turnId":"other-turn"}),
+            None,
         ),
         (
             "non_completed_last_status",
             json!({"lastCompletedTurnStatus":"failed"}),
+            None,
         ),
-        ("outside_idle_status", json!({"status":"queued"})),
+        ("outside_idle_status", json!({"status":"queued"}), None),
+        ("auth_pin_changed", json!({}), Some("auth_pin_changed")),
     ];
     let registry: Value = serde_json::from_str(include_str!("turn_lifecycle/deviations.json"))
         .expect("central deviations");
-    for (index, (id, mutations)) in cases.iter().enumerate() {
+    for (index, (id, mutations, flow)) in cases.iter().enumerate() {
         let root = base.join(format!("python-{index}"));
         let rust = base.join(format!("rust-{index}"));
         let result = oracle.call(json!({
-            "command":"run", "module":"recovery_exclusion", "case":{"id":id,"mutations":mutations},
+            "command":"run", "module":"recovery_exclusion",
+            "case":{"id":id,"mutations":mutations,"flow":flow},
             "root":root,"rust":rust
         }));
+        if let Some(flow) = flow {
+            assert_eq!(
+                result["flow"],
+                json!(flow),
+                "{id}: oracle did not execute the requested fixture flow"
+            );
+            if *flow != "auth_pin_changed" {
+                assert_eq!(
+                    result["providerFrameCount"], 1,
+                    "{id}: scripted provider did not receive exactly one turn/start frame"
+                );
+            }
+        }
         let store = RuntimeStore::open(Some(&rust)).expect("open Python-written Rust state");
-        recover_on_startup(&store).expect("run both Rust startup recovery scans");
+        recover_on_startup(&store).unwrap_or_else(|error| {
+            panic!("run both Rust startup recovery scans for {id}: {error}")
+        });
         let actual = oracle.call(json!({"command":"normalize","value":rust_state(&store)}));
         let expected = oracle.call(json!({"command":"normalize","value":result["after"]}));
         let mut paths = Vec::new();
         diff_paths(&actual, &expected, "", &mut paths);
-        if *id == "unknown_outcome" {
+        if matches!(*id, "unknown_outcome" | "in_flight") {
             let deviation = &registry["durable_reconciliation_hold"];
             let fields = deviation["fields"].as_array().expect("registered fields");
             assert!(!paths.is_empty(), "{id}: registered difference disappeared");

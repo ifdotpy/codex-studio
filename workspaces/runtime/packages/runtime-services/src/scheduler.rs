@@ -1,6 +1,5 @@
 //! Durable claim and settlement operations owned by the account turn worker.
 
-use rusqlite::OptionalExtension;
 use serde_json::{Value, json};
 use studio_runtime_store::{
     AgentId, AgentRecord, AgentRepository, AgentStatus, ExecutionHistoryRepository, RuntimeStore,
@@ -81,16 +80,23 @@ pub(crate) fn lifecycle_transaction_with<T, E: From<StoreError>>(
 
 /// Run once during scheduler startup to release only persisted claims proven unsubmitted.
 pub fn recover_on_startup(store: &RuntimeStore) -> Result<usize, SchedulerError> {
+    let account_registry = std::fs::read(store.root().join("accounts/registry.json"))
+        .ok()
+        .and_then(|bytes| crate::account_policy::decode_registry(&bytes).ok())
+        .map(|(value, _)| value);
     Ok(lifecycle_transaction(store, |transaction| {
         let unsubmitted = SchedulerRepository::recover_unsubmitted(transaction)?;
         let submitted = SchedulerRepository::recover_submitted(transaction)?;
-        clear_startup_agent_state(transaction)?;
+        clear_startup_agent_state(transaction, account_registry.as_ref())?;
         Ok(unsubmitted + submitted)
     })?)
 }
 
 /// Mirror Python's final per-agent startup cleanup after both recovery scans.
-fn clear_startup_agent_state(transaction: &rusqlite::Transaction<'_>) -> Result<(), StoreError> {
+fn clear_startup_agent_state(
+    transaction: &rusqlite::Transaction<'_>,
+    account_registry: Option<&Value>,
+) -> Result<(), StoreError> {
     let mut statement = transaction.prepare(
         "SELECT id,record FROM runtime_agents \
          WHERE COALESCE(json_extract(record,'$.remoteWorker'),0)=0 \
@@ -111,7 +117,8 @@ fn clear_startup_agent_state(transaction: &rusqlite::Transaction<'_>) -> Result<
             })?;
         let in_flight_changed = agent.get("inFlight") != Some(&Value::Bool(false));
         agent["inFlight"] = json!(false);
-        let keep_attempt = preparation_eligible(&agent) || retained_auth_wait(transaction, &agent)?;
+        let keep_attempt = preparation_eligible(&agent)
+            || retained_auth_wait(transaction, &agent, account_registry)?;
         let removed_attempt = if keep_attempt {
             false
         } else {
@@ -177,6 +184,7 @@ fn preparation_eligible(agent: &Value) -> bool {
 fn retained_auth_wait(
     transaction: &rusqlite::Transaction<'_>,
     agent: &Value,
+    account_registry: Option<&Value>,
 ) -> Result<bool, StoreError> {
     let attempt_id = agent
         .pointer("/startAttempt/id")
@@ -198,22 +206,26 @@ fn retained_auth_wait(
     if !exists {
         return Ok(false);
     }
-    let saved: Option<String> = transaction
-        .query_row(
-            "SELECT record FROM runtime_usage_resumes WHERE id=?1 AND agent=?2",
-            rusqlite::params![receipt_id, agent_id],
-            |row| row.get(0),
-        )
-        .optional()?;
-    let Some(saved) = saved else {
+    let settings = preparation_settings(agent);
+    let account_key = agent
+        .get("accountKey")
+        .and_then(Value::as_str)
+        .unwrap_or("default");
+    let receipt_exists: bool = transaction.query_row(
+        "SELECT EXISTS(SELECT 1 FROM runtime_usage_resumes WHERE id=?1 AND agent=?2)",
+        rusqlite::params![receipt_id, agent_id],
+        |row| row.get(0),
+    )?;
+    if !receipt_exists {
+        return Ok(false);
+    }
+    let Some(current_account) = account_registry
+        .and_then(|registry| registry.get("accounts"))
+        .and_then(|accounts| accounts.get(account_key))
+    else {
         return Ok(false);
     };
-    let receipt: Value = match serde_json::from_str(&saved) {
-        Ok(receipt) => receipt,
-        Err(_) => return Ok(false),
-    };
-    let settings = preparation_settings(agent);
-    let pin = &receipt["accountPin"];
+    let current_pin = crate::claude_auth_wait::account_pin(current_account);
     let raw = studio_runtime_store::ContinuationRepository::snapshot(
         transaction,
         agent_id,
@@ -223,8 +235,11 @@ fn retained_auth_wait(
     let Ok(snapshot) = crate::continuation::Snapshot::from_records(raw) else {
         return Ok(false);
     };
-    // The current account pin is checked by the auth wait tick before any probe.
-    Ok(crate::claude_auth_wait::retained(&snapshot, &settings, pin))
+    Ok(crate::claude_auth_wait::retained(
+        &snapshot,
+        &settings,
+        &current_pin,
+    ))
 }
 
 /// Match Runtime.preparation_settings when validating a retained auth wait receipt.
