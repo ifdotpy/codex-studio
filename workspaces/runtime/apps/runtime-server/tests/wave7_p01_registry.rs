@@ -275,7 +275,7 @@ impl Fixture {
 fn store_with_change_signal(root: &std::path::Path) -> (Arc<RuntimeStore>, watch::Receiver<u64>) {
     let store = Arc::new(RuntimeStore::open(Some(root)).unwrap());
     let (sender, changes) = watch::channel(0_u64);
-    store.set_commit_notifier(move || {
+    store.add_commit_observer(move || {
         sender.send_modify(|generation| *generation = generation.wrapping_add(1));
     });
     (store, changes)
@@ -433,7 +433,7 @@ impl ProviderTaskFactory for WireFactory {
             });
             let mut stop = shutdown.subscribe();
             let task = tokio::spawn(async move {
-                let mut status = status;
+                let status = status;
                 let events = response_events;
                 let mut sequence = 0;
                 loop {

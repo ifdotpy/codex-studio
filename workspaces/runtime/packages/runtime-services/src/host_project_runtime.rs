@@ -158,10 +158,10 @@ fn agent_fences_match(before: &[AgentFence], current: &[AgentFence]) -> bool {
         })
 }
 
-// Python's start boundary rechecks attempt id, epoch, autoWake, deletedAt,
-// threadId and accountKey before submission (codex_runtime.py:7092-7096,
-// 6375-6379). Preserve every field in the snapshot; only the same dispatch's
-// idle→running status transition is benign.
+// Python checks epoch, deletedAt, threadId and accountKey before thread
+// preparation (codex_runtime.py:6505-6511), then attempt ID, epoch and autoWake
+// before submission (codex_runtime.py:7231-7235). Preserve every other field;
+// only the same attempt progressing idle/starting→running is benign.
 fn benign_status_transition(
     before: &Option<Value>,
     current: &Option<Value>,
@@ -178,7 +178,7 @@ fn benign_status_transition(
                 before.as_ref().and_then(Value::as_str),
                 current.as_ref().and_then(Value::as_str)
             ),
-            (Some("idle"), Some("running"))
+            (Some("idle" | "starting"), Some("running"))
         )
 }
 

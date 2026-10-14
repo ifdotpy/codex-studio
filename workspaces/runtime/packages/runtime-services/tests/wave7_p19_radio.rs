@@ -723,6 +723,28 @@ fn prepared_host_fences_source_rows_changed_before_the_writer() {
     store
         .transaction_with(|db| prepared.recheck(db))
         .expect("same dispatch status change preserves prepared paths");
+    let prepared = PreparedHost::load(&store).expect("fresh prepare for startup progression");
+    store
+        .transaction(|db| {
+            db.execute(
+                "UPDATE runtime_agents SET record=json_set(record,'$.status','starting') WHERE id='a'",
+                [],
+            )?;
+            Ok(())
+        })
+        .expect("same dispatch enters starting");
+    store
+        .transaction(|db| {
+            db.execute(
+                "UPDATE runtime_agents SET record=json_set(record,'$.status','running') WHERE id='a'",
+                [],
+            )?;
+            Ok(())
+        })
+        .expect("same dispatch progresses to running");
+    store
+        .transaction_with(|db| prepared.recheck(db))
+        .expect("same start attempt progressing to running is permitted");
     for terminal_status in ["interrupted", "archived"] {
         let prepared = PreparedHost::load(&store).expect("fresh prepare");
         store
