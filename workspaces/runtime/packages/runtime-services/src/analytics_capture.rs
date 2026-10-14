@@ -423,43 +423,17 @@ pub fn capture_notification_effect(
     }
     let generation = i64::try_from(generation).map_err(|_| CaptureError::Invalid("/generation"))?;
     let cursor = i64::try_from(cursor).map_err(|_| CaptureError::Invalid("/cursor"))?;
-    let effect_bit = if capture_kind == "analytics" {
-        1_i64
-    } else {
-        2_i64
-    };
     store.analytics_transaction(|tx, canvas| {
         tx.execute(
-            "CREATE TABLE IF NOT EXISTS analytics_capture_receipts (provider TEXT PRIMARY KEY,generation INTEGER NOT NULL,cursor INTEGER NOT NULL,effects INTEGER NOT NULL)",
+            "CREATE TABLE IF NOT EXISTS analytics_capture_effect_receipts (provider TEXT NOT NULL,generation INTEGER NOT NULL,cursor INTEGER NOT NULL,effect TEXT NOT NULL,PRIMARY KEY(provider,generation,cursor,effect))",
             [],
         )?;
-        let prior: Option<(i64, i64, i64)> = tx
-            .query_row(
-                "SELECT generation,cursor,effects FROM analytics_capture_receipts WHERE provider=?1",
-                [provider_handle],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-            )
-            .optional()?;
-        if prior.is_some_and(|(saved_generation, saved_cursor, effects)| {
-            generation < saved_generation
-                || generation == saved_generation
-                    && (cursor < saved_cursor
-                        || cursor == saved_cursor && effects & effect_bit != 0)
-        }) {
+        let inserted = tx.execute(
+            "INSERT OR IGNORE INTO analytics_capture_effect_receipts(provider,generation,cursor,effect) VALUES (?1,?2,?3,?4)",
+            params![provider_handle, generation, cursor, capture_kind],
+        )?;
+        if inserted == 0 {
             return Ok(false);
-        }
-        if prior.is_some_and(|(saved_generation, saved_cursor, _)| {
-            generation > saved_generation || cursor > saved_cursor
-        }) {
-            tx.execute(
-                "UPDATE analytics_capture_receipts SET generation=?2,cursor=?3,effects=?4 WHERE provider=?1",
-                params![provider_handle, generation, cursor, effect_bit],
-            )?;
-        } else {
-            tx.execute(
-                "INSERT INTO analytics_capture_receipts(provider,generation,cursor,effects) VALUES (?1,?2,?3,?4) ON CONFLICT(provider) DO UPDATE SET effects=analytics_capture_receipts.effects | excluded.effects",
-                params![provider_handle, generation, cursor, effect_bit],
-            )?;
         }
         check_identity(canvas, prepared.agent())?;
         let mut decision = decide(CaptureSnapshot::load(tx, prepared.clone())?)?;
@@ -509,6 +483,7 @@ pub fn start_token_rate_process(
 /// of failing the already committed provider notification.
 pub fn record_publication_overflow(
     store: &RuntimeStore,
+    receipt_id: &str,
     analytics_overflow: u64,
     publication_overflow: u64,
 ) -> Result<(), CaptureError> {
@@ -516,14 +491,41 @@ pub fn record_publication_overflow(
     if dropped == 0 {
         return Ok(());
     }
+    if receipt_id.is_empty() || receipt_id.len() > 1024 {
+        return Err(CaptureError::Invalid("/receiptId"));
+    }
     store.analytics_transaction(|tx, _| {
+        tx.execute(
+            "CREATE TABLE IF NOT EXISTS analytics_publication_overflow_receipts (receipt_id TEXT PRIMARY KEY,analytics_overflow INTEGER NOT NULL,publication_overflow INTEGER NOT NULL)",
+            [],
+        )?;
+        let prior: Option<(i64, i64)> = tx
+            .query_row(
+                "SELECT analytics_overflow,publication_overflow FROM analytics_publication_overflow_receipts WHERE receipt_id=?1",
+                [receipt_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
+        let analytics_overflow = analytics_overflow.min(i64::MAX as u64) as i64;
+        let publication_overflow = publication_overflow.min(i64::MAX as u64) as i64;
+        let additional_analytics = analytics_overflow.saturating_sub(prior.map_or(0, |row| row.0));
+        let additional_publications =
+            publication_overflow.saturating_sub(prior.map_or(0, |row| row.1));
+        let additional = additional_analytics.saturating_add(additional_publications);
+        if additional == 0 {
+            return Ok(());
+        }
+        tx.execute(
+            "INSERT INTO analytics_publication_overflow_receipts(receipt_id,analytics_overflow,publication_overflow) VALUES (?1,?2,?3) ON CONFLICT(receipt_id) DO UPDATE SET analytics_overflow=MAX(analytics_publication_overflow_receipts.analytics_overflow,excluded.analytics_overflow),publication_overflow=MAX(analytics_publication_overflow_receipts.publication_overflow,excluded.publication_overflow)",
+            params![receipt_id, analytics_overflow, publication_overflow],
+        )?;
         tx.execute(
             "CREATE TABLE IF NOT EXISTS analytics_meta (key TEXT PRIMARY KEY,value TEXT NOT NULL)",
             [],
         )?;
         tx.execute(
             "INSERT INTO analytics_meta(key,value) VALUES ('captureErrors',json_object('count',?1,'last',json_object('at',strftime('%s','now'),'operation','analytics_capture_queue','code','queueOverflow','error','Publication queue limit reached'))) ON CONFLICT(key) DO UPDATE SET value=json_set(analytics_meta.value,'$.count',COALESCE(json_extract(analytics_meta.value,'$.count'),0)+?1,'$.last',json_object('at',strftime('%s','now'),'operation','analytics_capture_queue','code','queueOverflow','error','Publication queue limit reached'))",
-            [dropped.min(i64::MAX as u64) as i64],
+            [additional],
         )?;
         Ok(())
     })

@@ -154,6 +154,12 @@ impl NotificationStreamBuffer {
         }
         self.post_commit.push(effect);
     }
+
+    pub(crate) fn queue_effects(&mut self, effects: Vec<NotificationPostCommit>) {
+        for effect in effects {
+            self.queue_effect(effect);
+        }
+    }
     pub(crate) fn stage_recovered_notification(
         &mut self,
         identity: String,

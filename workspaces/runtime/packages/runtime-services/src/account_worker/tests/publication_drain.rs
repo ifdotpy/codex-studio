@@ -71,6 +71,36 @@ fn token_rate_usage_effect(cursor: u64) -> NotificationPostCommit {
     })
 }
 
+fn token_rate_association_effect(cursor: u64) -> NotificationPostCommit {
+    NotificationPostCommit::TokenRateAssociation(NotificationObservation {
+        agent: Some(rate_agent()),
+        method: "item/started".into(),
+        params: json!({"threadId":"thread","turnId":"turn","item":{"id":"item","type":"commandExecution"}}),
+        delivery: ProviderDeliveryIdentity {
+            provider_handle: "account:default".into(),
+            generation: 7,
+            cursor,
+        },
+        observed_at: 10.0 + cursor as f64,
+        provider_at: 10.0 + cursor as f64,
+    })
+}
+
+fn token_rate_started_effect(cursor: u64) -> NotificationPostCommit {
+    NotificationPostCommit::TokenRateUsage(NotificationObservation {
+        agent: Some(rate_agent()),
+        method: "turn/started".into(),
+        params: json!({"turnId":"turn"}),
+        delivery: ProviderDeliveryIdentity {
+            provider_handle: "account:default".into(),
+            generation: 7,
+            cursor,
+        },
+        observed_at: 10.0 + cursor as f64,
+        provider_at: 10.0 + cursor as f64,
+    })
+}
+
 fn seed_analytics_agent(store: &RuntimeStore) {
     let agent = rate_agent();
     store
@@ -155,9 +185,9 @@ impl NotificationPostCommitSink for RecordingSink {
             // the cursor failure injector does not apply to that lane.
             NotificationPostCommit::Recovered { .. } => None,
         };
-        if cursor.is_some_and(|cursor| {
-            *self.fail_cursor.lock().expect("failure state") == Some(cursor)
-        }) {
+        if cursor
+            .is_some_and(|cursor| *self.fail_cursor.lock().expect("failure state") == Some(cursor))
+        {
             return Err(
                 crate::notification_dispatch::NotificationDispatchError::Dependency(
                     "test/publication-sink",
@@ -340,16 +370,27 @@ fn analytics_backlog_at_receipt_bound_drops_capture_without_failing_write() {
         )
         .expect("record dropped analytics capture");
     assert_eq!(overflow, 1);
-    stage(
-        &store,
-        3,
-        0,
-        json!({"account":"default","sequence":3,"index":0,"analyticsOverflow":overflow}),
-    );
     let sink = RecordingSink::default();
-    while store::drain_publications(&store, "default", &sink).expect("drain overflow diagnostic")
-        > 0
-    {}
+    let mut before_delete_calls = 0;
+    for _ in 0..(store::MAX_PENDING_PUBLICATION_RECEIPTS / store::PUBLICATION_DRAIN_LIMIT) - 1 {
+        assert_eq!(
+            store::drain_publications(&store, "default", &sink).expect("drain bounded batch"),
+            store::PUBLICATION_DRAIN_LIMIT
+        );
+        before_delete_calls += store::PUBLICATION_DRAIN_LIMIT;
+    }
+    assert!(
+        store::drain_publications_with_hook(&store, "default", &sink, || {
+            before_delete_calls += 1;
+            if before_delete_calls == store::MAX_PENDING_PUBLICATION_RECEIPTS {
+                Err(WorkerError::TaskFailed)
+            } else {
+                Ok(())
+            }
+        })
+        .is_err()
+    );
+    assert_eq!(pending_count(&store), 1);
     let analytics =
         rusqlite::Connection::open(root.join("analytics.sqlite3")).expect("open analytics store");
     let errors: String = analytics
@@ -362,6 +403,47 @@ fn analytics_backlog_at_receipt_bound_drops_capture_without_failing_write() {
     assert_eq!(
         serde_json::from_str::<Value>(&errors).expect("decode errors")["count"],
         1
+    );
+    assert_eq!(
+        store::drain_publications(&store, "default", &sink).expect("retry overflow receipt"),
+        1
+    );
+    let repeated: String = analytics
+        .query_row(
+            "SELECT value FROM analytics_meta WHERE key='captureErrors'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("overflow metadata remains available");
+    assert_eq!(
+        serde_json::from_str::<Value>(&repeated).expect("decode repeated errors")["count"],
+        1
+    );
+    drop(store);
+    std::fs::remove_dir_all(root).expect("remove test state");
+}
+
+#[test]
+fn publication_overflow_receipt_records_only_newly_attached_counts() {
+    let (root, store) = test_store();
+    crate::analytics_capture::record_publication_overflow(&store, "receipt:overflow", 1, 0)
+        .expect("record initial overflow");
+    crate::analytics_capture::record_publication_overflow(&store, "receipt:overflow", 3, 0)
+        .expect("record increased overflow count");
+    crate::analytics_capture::record_publication_overflow(&store, "receipt:overflow", 3, 0)
+        .expect("replay overflow count");
+    let analytics =
+        rusqlite::Connection::open(root.join("analytics.sqlite3")).expect("open analytics DB");
+    let errors: String = analytics
+        .query_row(
+            "SELECT value FROM analytics_meta WHERE key='captureErrors'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("read coverage error count");
+    assert_eq!(
+        serde_json::from_str::<Value>(&errors).expect("decode coverage errors")["count"],
+        3
     );
     drop(store);
     std::fs::remove_dir_all(root).expect("remove test state");
@@ -377,7 +459,7 @@ async fn provider_notification_is_acknowledged_at_the_publication_bound() {
     let backlog = NotificationPublicationBatch {
         sequence: 10_000,
         effects: (1..=store::MAX_PENDING_PUBLICATION_RECEIPTS as u64)
-            .map(|cursor| analytics_effect(cursor, "turn/started", json!({"turnId":"turn"})))
+            .map(publication_effect)
             .collect(),
         analytics_overflow: 0,
     };
@@ -464,8 +546,8 @@ fn publication_bound_keeps_state_invalidation_and_token_rate_usage() {
     seed_analytics_agent(&store);
     let backlog = NotificationPublicationBatch {
         sequence: 1,
-        effects: (1..=store::MAX_PENDING_PUBLICATION_RECEIPTS as u64)
-            .map(|cursor| analytics_effect(cursor, "turn/started", json!({"turnId":"turn"})))
+        effects: std::iter::once(token_rate_started_effect(1))
+            .chain((2..=store::MAX_PENDING_PUBLICATION_RECEIPTS as u64).map(publication_effect))
             .collect(),
         analytics_overflow: 0,
     };
@@ -484,6 +566,7 @@ fn publication_bound_keeps_state_invalidation_and_token_rate_usage() {
                 }}),
             ),
             token_rate_usage_effect(300),
+            token_rate_association_effect(300),
         ],
         analytics_overflow: 0,
     };
@@ -493,6 +576,29 @@ fn publication_bound_keeps_state_invalidation_and_token_rate_usage() {
     assert_eq!(
         pending_count(&store),
         store::MAX_PENDING_PUBLICATION_RECEIPTS as i64
+    );
+    let coalesced_effects: String = store
+        .read()
+        .expect("read coalesced effects")
+        .query_row(
+            "SELECT result FROM runtime_operation_receipts WHERE id LIKE 'account-worker:notification-publication:default:%' AND json_extract(result,'$.tokenRateCoalesced')=1 ORDER BY rowid DESC LIMIT 1",
+            [],
+            |row| row.get(0),
+        )
+        .expect("saturated receipt retains token-rate effects");
+    let coalesced: Value = serde_json::from_str(&coalesced_effects).expect("coalesced JSON");
+    let effects = std::iter::once(&coalesced["effect"])
+        .chain(coalesced["coalescedEffects"].as_array().unwrap().iter())
+        .collect::<Vec<_>>();
+    assert!(
+        effects
+            .iter()
+            .any(|effect| effect["TokenRateUsage"].is_object())
+    );
+    assert!(
+        effects
+            .iter()
+            .any(|effect| effect["TokenRateAssociation"].is_object())
     );
     let invalidations: i64 = store
         .read()
@@ -603,6 +709,49 @@ fn production_sink_replay_keeps_analytics_rows_unchanged() {
     assert_eq!(changes.snapshot().revision, revision);
     assert_eq!(sink.token_rates.snapshot(), snapshot);
     assert_eq!(pending_count(&store), 0);
+    std::fs::remove_dir_all(root).expect("remove test state");
+}
+
+#[test]
+fn delayed_analytics_capture_is_not_rejected_by_a_later_cursor() {
+    let (root, store) = test_store();
+    let agent = rate_agent();
+    seed_analytics_agent(&store);
+    let prepared = crate::analytics_capture::PreparedCapture::event(
+        &agent,
+        "turn/started",
+        &json!({"turnId":"turn"}),
+        10.0,
+        10.0,
+        crate::analytics_capture::CaptureSource::Live,
+    )
+    .expect("prepare turn capture");
+    let deliver = |cursor| {
+        crate::analytics_capture::capture_notification_effect(
+            &store,
+            "account:default",
+            7,
+            cursor,
+            "analytics",
+            &prepared,
+            None,
+        )
+        .expect("capture analytics effect")
+    };
+
+    assert!(deliver(4));
+    assert!(deliver(3), "delayed first delivery remains capturable");
+    assert!(!deliver(3), "only an exact replay is deduplicated");
+    let analytics =
+        rusqlite::Connection::open(root.join("analytics.sqlite3")).expect("open analytics DB");
+    let receipts: i64 = analytics
+        .query_row(
+            "SELECT count(*) FROM analytics_capture_effect_receipts WHERE provider='account:default' AND generation=7 AND effect='analytics'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("count exact delivery receipts");
+    assert_eq!(receipts, 2);
     std::fs::remove_dir_all(root).expect("remove test state");
 }
 

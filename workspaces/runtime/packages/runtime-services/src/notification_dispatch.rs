@@ -315,6 +315,19 @@ pub fn dispatch_notification_with_effects(
                 );
             }
             if kind == "provider/generationStarted" {
+                let agent = NotificationDispatchRepository::agent_record(transaction, agent_id)?
+                    .ok_or_else(|| stored("runtime_agents", agent_id))?;
+                if agent.get("deletedAt").is_some_and(|value| !value.is_null()) {
+                    return save_outcome(
+                        transaction,
+                        &receipt_id,
+                        &content_signature,
+                        DispatchOutcome::Ignored {
+                            reason: "deleted-agent".to_owned(),
+                        },
+                    );
+                }
+                before = Some(agent);
                 effects.generation_started()?;
                 return save_outcome(
                     transaction,

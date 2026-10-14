@@ -63,6 +63,38 @@ fn p06_empty_deltas_arm_timer_and_coalesce_without_refusal() {
 }
 
 #[test]
+fn generation_start_stages_token_rate_observation_with_its_agent() {
+    let mut db = super::tests::database();
+    let tx = db.transaction().expect("test transaction");
+    let frame = super::tests::frame(&json!({
+        "method":"provider/generationStarted",
+        "params":{"threadId":"thread","turnId":"turn"}
+    }));
+    let result = super::dispatch_notification_with_effects(
+        &tx,
+        "agent",
+        &PublicationContext::default(),
+        &NotificationStreamBuffer::default(),
+        &ProviderDeliveryIdentity {
+            provider_handle: "account:default".into(),
+            generation: 7,
+            cursor: 1,
+        },
+        &frame,
+        1234.5,
+        &crate::notification_runtime_effects::RuntimeNotificationEffects,
+    )
+    .expect("generation-start notification");
+    assert_eq!(result.outcome, DispatchOutcome::Written);
+    let Some(NotificationPostCommit::TokenRateStream(observation)) =
+        result.post_commit.effects.first()
+    else {
+        panic!("generation start stages a token-rate observation");
+    };
+    assert_eq!(observation.agent.as_ref().unwrap()["id"], "agent");
+}
+
+#[test]
 fn p06_recovery_message_retains_buffered_text_questions_and_atomicity() {
     let mut db = super::tests::database();
     db.execute_batch("CREATE TABLE runtime_requests(id TEXT PRIMARY KEY,record TEXT NOT NULL); UPDATE runtime_agents SET record=json_set(record,'$.isLead',json('true')) WHERE id='agent';").expect("test invariant");

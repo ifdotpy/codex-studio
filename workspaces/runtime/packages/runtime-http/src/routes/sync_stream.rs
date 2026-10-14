@@ -187,6 +187,7 @@ async fn sync_stream(
         changes,
         notifications: state.resource_notifications,
         token_rates,
+        prefer_resource_next: true,
         _progress_watch: progress_watch,
         heartbeat: interval_at(
             Instant::now() + Duration::from_secs(SYNC_RESOURCE_HEARTBEAT_SECONDS),
@@ -303,6 +304,7 @@ struct ResourceStream {
     changes: tokio::sync::watch::Receiver<ChangeSnapshot>,
     notifications: Arc<ResourceNotifications>,
     token_rates: tokio::sync::watch::Receiver<TokenRates>,
+    prefer_resource_next: bool,
     _progress_watch: Option<ProgressFileWatch>,
     heartbeat: Interval,
 }
@@ -315,21 +317,38 @@ async fn next_frame(
     }
 
     loop {
-        let heartbeat = tokio::select! {
-            biased;
-            // A pending latest-value slot wins even when every reader poll follows a publication.
-            changed = state.token_rates.changed() => {
-                if changed.is_err() { return None; }
-                let (rates, cursor) = token_snapshot(&mut state.token_rates, || state.changes.borrow().clone());
-                if cursor.closed { return None; }
-                return Some((Ok(token_rate_event(&state.workspace_id, &cursor, &rates)), state));
-            },
-            changed = state.changes.changed() => {
-                if changed.is_err() { return None; }
-                state.changes.borrow_and_update();
-                false
-            },
-            _ = state.heartbeat.tick() => true,
+        let prefer_resource = state.prefer_resource_next;
+        state.prefer_resource_next = !state.prefer_resource_next;
+        let heartbeat = if prefer_resource {
+            tokio::select! {
+                biased;
+                changed = state.changes.changed() => {
+                    if changed.is_err() { return None; }
+                    state.changes.borrow_and_update();
+                    false
+                },
+                changed = state.token_rates.changed() => {
+                    if changed.is_err() { return None; }
+                    let frame = token_rate_sse_frame(&mut state)?;
+                    return Some((Ok(frame), state));
+                },
+                _ = state.heartbeat.tick() => true,
+            }
+        } else {
+            tokio::select! {
+                biased;
+                changed = state.token_rates.changed() => {
+                    if changed.is_err() { return None; }
+                    let frame = token_rate_sse_frame(&mut state)?;
+                    return Some((Ok(frame), state));
+                },
+                changed = state.changes.changed() => {
+                    if changed.is_err() { return None; }
+                    state.changes.borrow_and_update();
+                    false
+                },
+                _ = state.heartbeat.tick() => true,
+            }
         };
         let view = match state
             .notifications
@@ -372,6 +391,14 @@ async fn next_frame(
             ));
         }
     }
+}
+
+fn token_rate_sse_frame(state: &mut ResourceStream) -> Option<Event> {
+    let (rates, cursor) = token_snapshot(&mut state.token_rates, || state.changes.borrow().clone());
+    if cursor.closed {
+        return None;
+    }
+    Some(token_rate_event(&state.workspace_id, &cursor, &rates))
 }
 
 // Keep the rate read guard until its cursor is captured: publishers take these locks in this order.
@@ -600,6 +627,7 @@ mod tests {
             changes,
             notifications: Arc::new(ResourceNotifications::new(Arc::new(hub.clone()))),
             token_rates: tokens.subscribe(),
+            prefer_resource_next: true,
             _progress_watch: None,
             heartbeat: interval_at(
                 Instant::now() + Duration::from_secs(SYNC_RESOURCE_HEARTBEAT_SECONDS),
@@ -640,6 +668,7 @@ mod tests {
             changes,
             notifications: notifications.clone(),
             token_rates: token_hub.subscribe(),
+            prefer_resource_next: true,
             _progress_watch: None,
             heartbeat: interval_at(
                 Instant::now() + Duration::from_secs(SYNC_RESOURCE_HEARTBEAT_SECONDS),
@@ -669,6 +698,30 @@ mod tests {
                 .publish(json!({"rates":{},"teams":{}}))
                 .expect("publish disconnected")
         );
+    }
+
+    #[tokio::test]
+    async fn pending_resource_change_gets_a_turn_before_continuous_token_updates() {
+        let hub = Arc::new(ChangeNotificationHub::new());
+        let notifications = Arc::new(ResourceNotifications::new(hub.clone()));
+        let token_hub = TokenRateHub::with_change_hub(hub.clone());
+        let state = test_stream(
+            &hub,
+            &token_hub,
+            notifications,
+            vec![json!({"kind":"accounts"})],
+        );
+        token_hub.publish(test_rates(1)).expect("first rate");
+        hub.notify_one();
+        token_hub.publish(test_rates(2)).expect("second rate");
+
+        let (resource, state) = next_frame(state).await.expect("resource event");
+        let resource = event_document(resource).await;
+        assert_eq!(resource["resources"], json!([{"kind":"accounts"}]));
+
+        let (token, _state) = next_frame(state).await.expect("latest token snapshot");
+        let token = event_document(token).await;
+        assert_eq!(token["rates"]["agent"]["rate"].as_f64(), Some(2.0));
     }
 
     #[test]
@@ -715,6 +768,7 @@ mod tests {
             changes,
             notifications,
             token_rates: tokens.subscribe(),
+            prefer_resource_next: true,
             _progress_watch: None,
             heartbeat: interval_at(
                 Instant::now() + Duration::from_secs(15),
@@ -948,6 +1002,7 @@ mod tests {
             changes,
             notifications: Arc::new(ResourceNotifications::new(Arc::new(hub.clone()))),
             token_rates: TokenRateHub::new().subscribe(),
+            prefer_resource_next: true,
             _progress_watch: None,
             heartbeat: interval_at(
                 Instant::now() + Duration::from_secs(SYNC_RESOURCE_HEARTBEAT_SECONDS),

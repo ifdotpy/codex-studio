@@ -1,11 +1,11 @@
 //! Synchronous account transactions. Only StoreBridge calls these operations.
 use super::*;
 use crate::notification_dispatch::{
-    NotificationPublicationBatch, PreparedSubmission, ProviderDeliveryIdentity,
-    dispatch_notification_with_effects, flush_notification_streams,
+    NotificationEffects, NotificationPublicationBatch, PreparedSubmission,
+    ProviderDeliveryIdentity, dispatch_notification_with_effects, flush_notification_streams,
 };
 use rusqlite::{OptionalExtension, params};
-use studio_runtime_store::EventWriteRepository;
+use studio_runtime_store::{EventWriteRepository, NotificationDispatchRepository};
 
 pub(super) const PUBLICATION_DRAIN_LIMIT: usize = 64;
 pub(super) const MAX_PENDING_PUBLICATION_RECEIPTS: usize = 256;
@@ -676,14 +676,41 @@ pub(super) fn journal(
                     match method {
                         "turn/started" => {
                             if let Some(turn) = turn
-                                && SchedulerRepository::observe_started(tx, &identity, turn)?
-                                    == Some(true)
+                                && let Some(interrupt) =
+                                    SchedulerRepository::observe_started(tx, &identity, turn)?
                             {
-                                effect = Some(Effect::Interrupt {
-                                    agent: identity.agent_id,
-                                    thread: thread.into(),
-                                    turn: turn.into(),
-                                });
+                                let agent = NotificationDispatchRepository::agent_record(
+                                    tx,
+                                    &identity.agent_id,
+                                )?
+                                .ok_or_else(|| invalid(&identity.agent_id))?;
+                                let frame = json!({"method":method,"params":params});
+                                let delivery = ProviderDeliveryIdentity {
+                                    provider_handle: ProviderHandle::for_account(account)
+                                        .as_str()
+                                        .into(),
+                                    generation: entry.generation.0,
+                                    cursor: entry.cursor.0,
+                                };
+                                next.queue_effects(
+                                    crate::notification_runtime_effects::RuntimeNotificationEffects
+                                        .post_commit(
+                                            Some(&agent),
+                                            Some(&agent),
+                                            &frame,
+                                            &delivery,
+                                            now(),
+                                            &crate::notification_dispatch::DispatchOutcome::Written,
+                                        ),
+                                );
+                                publications.push(next.take_post_commit()?);
+                                if interrupt {
+                                    effect = Some(Effect::Interrupt {
+                                        agent: identity.agent_id,
+                                        thread: thread.into(),
+                                        turn: turn.into(),
+                                    });
+                                }
                             }
                         }
                         "turn/completed" => {
@@ -699,7 +726,37 @@ pub(super) fn journal(
                             )?
                             .unwrap_or_else(|| streams.clone());
                             publications.push(next.take_post_commit()?);
+                            let agent_before = NotificationDispatchRepository::agent_record(
+                                tx,
+                                &identity.agent_id,
+                            )?
+                            .ok_or_else(|| invalid(&identity.agent_id))?;
                             if scheduler::settle_terminal_in_transaction(tx, &identity, params)? {
+                                let agent_after = NotificationDispatchRepository::agent_record(
+                                    tx,
+                                    &identity.agent_id,
+                                )?
+                                .ok_or_else(|| invalid(&identity.agent_id))?;
+                                let frame = json!({"method":method,"params":params});
+                                let delivery = ProviderDeliveryIdentity {
+                                    provider_handle: ProviderHandle::for_account(account)
+                                        .as_str()
+                                        .into(),
+                                    generation: entry.generation.0,
+                                    cursor: entry.cursor.0,
+                                };
+                                next.queue_effects(
+                                    crate::notification_runtime_effects::RuntimeNotificationEffects
+                                        .post_commit(
+                                            Some(&agent_before),
+                                            Some(&agent_after),
+                                            &frame,
+                                            &delivery,
+                                            now(),
+                                            &crate::notification_dispatch::DispatchOutcome::Written,
+                                        ),
+                                );
+                                publications.push(next.take_post_commit()?);
                                 crate::notification_dispatch::prune_inactive_streams(
                                     tx,
                                     &mut next,
@@ -1259,7 +1316,7 @@ fn coalesce_token_rate_receipt(
 ) -> Result<(), WorkerError> {
     let row: Option<(String, String)> = tx
         .query_row(
-            "SELECT id,result FROM runtime_operation_receipts WHERE id>=?1 AND id<?2 AND (json_type(result,'$.effect.TokenRateStream') IS NOT NULL OR json_type(result,'$.effect.TokenRateAssociation') IS NOT NULL OR json_type(result,'$.effect.TokenRateUsage') IS NOT NULL) ORDER BY json_extract(result,'$.sequence') DESC,json_extract(result,'$.index') DESC,rowid DESC LIMIT 1",
+            "SELECT id,result FROM runtime_operation_receipts WHERE id>=?1 AND id<?2 AND (json_type(result,'$.effect.TokenRateStream') IS NOT NULL OR json_type(result,'$.effect.TokenRateAssociation') IS NOT NULL OR json_type(result,'$.effect.TokenRateUsage') IS NOT NULL OR EXISTS (SELECT 1 FROM json_each(result,'$.coalescedEffects') AS effect WHERE json_type(effect.value,'$.TokenRateStream') IS NOT NULL OR json_type(effect.value,'$.TokenRateAssociation') IS NOT NULL OR json_type(effect.value,'$.TokenRateUsage') IS NOT NULL)) ORDER BY json_extract(result,'$.sequence') DESC,json_extract(result,'$.index') DESC,rowid DESC LIMIT 1",
             params![prefix, format!("{prefix}~")],
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
@@ -1276,7 +1333,40 @@ fn coalesce_token_rate_receipt(
     };
     if let Some((id, result)) = row {
         let mut value: Value = serde_json::from_str(&result).map_err(|_| invalid(&id))?;
-        value["effect"] = serde_json::to_value(effect).map_err(|_| invalid(&id))?;
+        let mut effects: Vec<crate::notification_dispatch::NotificationPostCommit> = Vec::new();
+        if let Some(primary) = value.get("effect") {
+            effects.push(serde_json::from_value(primary.clone()).map_err(|_| invalid(&id))?);
+        }
+        if let Some(additional) = value.get("coalescedEffects") {
+            let additional = additional.as_array().ok_or_else(|| invalid(&id))?;
+            effects.extend(
+                additional
+                    .iter()
+                    .cloned()
+                    .map(serde_json::from_value)
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(|_| invalid(&id))?,
+            );
+        }
+        if let Some(existing) = effects
+            .iter_mut()
+            .find(|existing| same_token_rate_coalesce_key(existing, effect))
+        {
+            merge_token_rate_effect(existing, effect)?;
+        } else {
+            effects.push(effect.clone());
+        }
+        let primary = effects.first().ok_or_else(|| invalid(&id))?;
+        value["effect"] = serde_json::to_value(primary).map_err(|_| invalid(&id))?;
+        if effects.len() > 1 {
+            value["coalescedEffects"] =
+                serde_json::to_value(&effects[1..]).map_err(|_| invalid(&id))?;
+        } else {
+            value
+                .as_object_mut()
+                .ok_or_else(|| invalid(&id))?
+                .remove("coalescedEffects");
+        }
         value["tokenRateCoalesced"] = json!(true);
         tx.execute(
             "UPDATE runtime_operation_receipts SET result=?2 WHERE id=?1",
@@ -1284,6 +1374,84 @@ fn coalesce_token_rate_receipt(
         )?;
     } else {
         return Err(WorkerError::Capacity);
+    }
+    Ok(())
+}
+
+fn token_rate_coalesce_key(
+    effect: &crate::notification_dispatch::NotificationPostCommit,
+) -> Option<(u8, String, String)> {
+    use crate::notification_dispatch::NotificationPostCommit as Effect;
+    let (kind, observation) = match effect {
+        Effect::TokenRateStream(observation) => (1, observation),
+        Effect::TokenRateAssociation(observation) => (2, observation),
+        Effect::TokenRateUsage(observation) => (3, observation),
+        _ => return None,
+    };
+    let agent = observation.agent.as_ref()?.get("id")?.as_str()?.to_owned();
+    let thread = observation.params["threadId"].as_str().unwrap_or_default();
+    let turn = observation.params["turnId"]
+        .as_str()
+        .or_else(|| observation.params["turn"]["id"].as_str())
+        .unwrap_or_default();
+    let item = if kind == 2 {
+        format!(
+            "{}:{}:{}",
+            observation.method,
+            observation.params["itemId"].as_str().unwrap_or_default(),
+            observation.params["item"]["id"]
+                .as_str()
+                .unwrap_or_default()
+        )
+    } else {
+        String::new()
+    };
+    let discriminator = format!("{thread}:{turn}:{item}");
+    Some((kind, agent, discriminator))
+}
+
+fn same_token_rate_coalesce_key(
+    left: &crate::notification_dispatch::NotificationPostCommit,
+    right: &crate::notification_dispatch::NotificationPostCommit,
+) -> bool {
+    token_rate_coalesce_key(left).is_some_and(|key| token_rate_coalesce_key(right) == Some(key))
+}
+
+fn merge_token_rate_effect(
+    existing: &mut crate::notification_dispatch::NotificationPostCommit,
+    incoming: &crate::notification_dispatch::NotificationPostCommit,
+) -> Result<(), WorkerError> {
+    use crate::notification_dispatch::NotificationPostCommit as Effect;
+    match (existing, incoming) {
+        (Effect::TokenRateStream(previous), Effect::TokenRateStream(next)) => {
+            let previous_characters = previous.params["coalescedDeltaCharacters"]
+                .as_u64()
+                .or_else(|| {
+                    previous.params["delta"]
+                        .as_str()
+                        .map(|value| value.chars().count() as u64)
+                })
+                .unwrap_or_default();
+            let next_characters = next.params["coalescedDeltaCharacters"]
+                .as_u64()
+                .or_else(|| {
+                    next.params["delta"]
+                        .as_str()
+                        .map(|value| value.chars().count() as u64)
+                })
+                .unwrap_or_default();
+            let mut merged = next.clone();
+            merged.params["coalescedDeltaCharacters"] =
+                json!(previous_characters.saturating_add(next_characters));
+            *previous = merged;
+        }
+        (Effect::TokenRateUsage(previous), Effect::TokenRateUsage(next)) => {
+            *previous = next.clone();
+        }
+        (Effect::TokenRateAssociation(previous), Effect::TokenRateAssociation(next)) => {
+            *previous = next.clone();
+        }
+        _ => return Err(WorkerError::Capacity),
     }
     Ok(())
 }
@@ -1328,27 +1496,48 @@ pub(super) fn drain_publications_with_hook(
     let mut delivered = 0;
     for (id, result) in pending {
         let value: Value = serde_json::from_str(&result).map_err(|_| invalid(&id))?;
-        if let Some(effect) = value.get("effect") {
-            let effect: crate::notification_dispatch::NotificationPostCommit =
-                serde_json::from_value(effect.clone()).map_err(|_| invalid(&id))?;
-            // The sink's delivery identity is the effect's provider identity.
-            // It must make a replay after a crash between publish and delete safe.
-            sink.publish(&effect)?;
-        } else if value.get("analyticsOverflow").is_none() {
-            return Err(invalid(&id));
-        } else {
+        let analytics_overflow = value
+            .get("analyticsOverflow")
+            .and_then(Value::as_u64)
+            .unwrap_or_default();
+        let publication_overflow = value
+            .get("publicationOverflow")
+            .and_then(Value::as_u64)
+            .unwrap_or_default();
+        if analytics_overflow > 0 || publication_overflow > 0 {
             crate::analytics_capture::record_publication_overflow(
                 store,
-                value
-                    .get("analyticsOverflow")
-                    .and_then(Value::as_u64)
-                    .unwrap_or_default(),
-                value
-                    .get("publicationOverflow")
-                    .and_then(Value::as_u64)
-                    .unwrap_or_default(),
+                &id,
+                analytics_overflow,
+                publication_overflow,
             )
             .map_err(|_| WorkerError::Capacity)?;
+        }
+        let mut effects = Vec::new();
+        if let Some(effect) = value.get("effect") {
+            effects.push(serde_json::from_value(effect.clone()).map_err(|_| invalid(&id))?);
+        }
+        if let Some(coalesced) = value.get("coalescedEffects") {
+            let coalesced = coalesced.as_array().ok_or_else(|| invalid(&id))?;
+            effects.extend(
+                coalesced
+                    .iter()
+                    .cloned()
+                    .map(serde_json::from_value)
+                    .collect::<Result<Vec<crate::notification_dispatch::NotificationPostCommit>, _>>()
+                    .map_err(|_| invalid(&id))?,
+            );
+        }
+        if !effects.is_empty() {
+            // The sink's delivery identity is the effect's provider identity.
+            // It must make a replay after a crash between publish and delete safe.
+            for effect in effects {
+                sink.publish(&effect)?;
+            }
+        } else if value.get("analyticsOverflow").is_none()
+            && value.get("publicationOverflow").is_none()
+        {
+            return Err(invalid(&id));
         }
         if value.get("stateInvalidation") == Some(&Value::Bool(true)) {
             let generation = value

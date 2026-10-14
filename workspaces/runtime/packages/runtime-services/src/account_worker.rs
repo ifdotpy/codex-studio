@@ -620,8 +620,14 @@ impl Worker {
                     Some(AccountCommand::JournalBarrier(command)) => self.retained_barrier(command).await?,
                     Some(AccountCommand::Wake { agent_id, epoch }) => self.wake(agent_id, epoch).await?,
                     Some(AccountCommand::Stop { agent_id }) => self.stop_agent(agent_id).await?,
-                    Some(AccountCommand::RestartRecoveryDone) => { self.restart_recovery.take(); },
-                    Some(AccountCommand::RestartStreams(streams)) => { self.streams = *streams; },
+                    Some(AccountCommand::RestartRecoveryDone) => {
+                        self.restart_recovery.take();
+                        self.schedule_publication_drain();
+                    },
+                    Some(AccountCommand::RestartStreams(streams)) => {
+                        self.streams = *streams;
+                        self.schedule_publication_drain();
+                    },
                     None => return Ok(()),
                 },
                 event = self.events.recv() => match event { Some(event) => self.event(event).await?, None => return Ok(()) },

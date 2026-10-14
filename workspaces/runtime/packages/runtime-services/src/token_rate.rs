@@ -296,10 +296,19 @@ fn project_effect(
                 }
             }
             "item/agentMessage/delta" | "item/reasoning/textDelta" => {
-                if state.active
-                    && let Some(delta) = params["delta"].as_str()
-                {
-                    let tokens = delta.chars().count() as f64 * TOKEN_ESTIMATE_TOKENS_PER_CHARACTER;
+                if state.active {
+                    let characters = params["coalescedDeltaCharacters"]
+                        .as_u64()
+                        .map(|count| count as f64)
+                        .or_else(|| {
+                            params["delta"]
+                                .as_str()
+                                .map(|delta| delta.chars().count() as f64)
+                        });
+                    let Some(characters) = characters else {
+                        return;
+                    };
+                    let tokens = characters * TOKEN_ESTIMATE_TOKENS_PER_CHARACTER;
                     state.pending += tokens;
                     state.estimated = true;
                     state.samples.push_back((at, tokens));
@@ -421,19 +430,19 @@ fn project_usage(state: &mut ProjectedAgent, params: &serde_json::Value, at: f64
         state.lifetime = Some(total);
     }
     if let Some(response) = response {
-        let duration = state
+        let queued_duration = state
             .response_durations
             .pop_front()
             .map(|(duration, pending)| {
                 state.response_duration_pending_tokens =
                     (state.response_duration_pending_tokens - pending).max(0.0);
                 duration
-            })
-            .or_else(|| {
-                state.generation_started.map(|started| {
-                    state.generation_elapsed + (at - started).max(MIN_GENERATION_DURATION_SECONDS)
-                })
             });
+        let duration = queued_duration.or_else(|| {
+            state.generation_started.map(|started| {
+                state.generation_elapsed + (at - started).max(MIN_GENERATION_DURATION_SECONDS)
+            })
+        });
         if state.active
             && state.timing_valid
             && let Some(duration) = duration
@@ -441,10 +450,12 @@ fn project_usage(state: &mut ProjectedAgent, params: &serde_json::Value, at: f64
             state.rate = round_rate(
                 (response / duration.max(MIN_GENERATION_DURATION_SECONDS)).min(MAX_TOKEN_RATE),
             );
-            state.pending = 0.0;
-            state.estimated = false;
-            state.generation_started = Some(at);
-            state.generation_elapsed = 0.0;
+            if queued_duration.is_none() {
+                state.pending = 0.0;
+                state.estimated = false;
+                state.generation_started = Some(at);
+                state.generation_elapsed = 0.0;
+            }
         }
     }
 }
@@ -636,6 +647,31 @@ mod tests {
         assert_eq!(state.response_durations.front(), Some(&(1.0, 1.0)));
         assert_eq!(state.response_durations.back(), Some(&(1024.0, 1.0)));
         assert_eq!(state.response_duration_pending_tokens, 1024.0);
+    }
+
+    #[test]
+    fn delayed_usage_keeps_the_newer_response_estimate_and_timing() {
+        let mut state = super::ProjectedAgent {
+            active: true,
+            estimated: true,
+            pending: 20.0,
+            turn: "turn".into(),
+            timing_valid: true,
+            generation_started: Some(5.0),
+            generation_elapsed: 2.0,
+            response_durations: [(1.0, 10.0)].into(),
+            response_duration_pending_tokens: 10.0,
+            ..super::ProjectedAgent::default()
+        };
+
+        super::project_usage(&mut state, &json!({"responseOutputTokens":10}), 8.0);
+
+        assert_eq!(state.actual, 10.0);
+        assert_eq!(state.pending, 20.0);
+        assert!(state.estimated);
+        assert_eq!(state.generation_started, Some(5.0));
+        assert_eq!(state.generation_elapsed, 2.0);
+        assert_eq!(state.response_duration_pending_tokens, 0.0);
     }
 
     #[test]
