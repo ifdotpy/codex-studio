@@ -36411,3 +36411,5 @@ export type TaskEntityDto = components["schemas"]["TaskEntityDto"];
 export type WorkEntityDto = components["schemas"]["WorkEntityDto"];
 export type WorkspaceEntityDto = components["schemas"]["WorkspaceEntityDto"];
 export type SyncEntityPayload = components["schemas"]["SyncEntityPayload"];
+
+export const SYNC_PROTOCOL_VERSION = 3 as const;

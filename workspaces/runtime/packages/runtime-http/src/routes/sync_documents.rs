@@ -8,6 +8,7 @@ use axum::http::StatusCode;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::path::PathBuf;
+use studio_runtime_schema::SYNC_PROTOCOL_VERSION;
 use studio_runtime_services::sync_documents::{self, DraftWrite};
 use studio_runtime_services::sync_policy::{self, PreferenceScope, SyncPolicyError};
 use studio_runtime_services::transcript;
@@ -54,8 +55,8 @@ pub(crate) async fn protocol(State(state): State<HttpState>) -> Result<Json<Valu
         capabilities.push("unixSocket");
     }
     let response = json!({
-        "protocolVersion": 3,
-        "supportedVersions": [3],
+        "protocolVersion": SYNC_PROTOCOL_VERSION,
+        "supportedVersions": [SYNC_PROTOCOL_VERSION],
         "capabilities": capabilities,
         "scopes": ["state:entities:v1", "transcript:<agent-id>", "drafts"],
         "pullEndpoint": "/api/sync/pull",

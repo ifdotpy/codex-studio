@@ -11,6 +11,7 @@ from codex_nested_delegation import (
     DEFAULT_DELEGATION_DEPTH, MAX_DELEGATION_DEPTH, MIN_DELEGATION_DEPTH,
 )
 from studio_api.sync.preferences import UiPreferencesDto
+from studio_api.sync.protocol import SYNC_PROTOCOL_VERSION
 from studio_api.models import (
     ContractModel,
     ContractStrEnum,
@@ -1158,8 +1159,8 @@ class WorkspaceEntityDto(ContractModel):
 
 
 class SyncProtocolResponse(ResponseModel):
-    protocolVersion: Literal[3]
-    supportedVersions: list[Literal[3]]
+    protocolVersion: Literal[SYNC_PROTOCOL_VERSION]
+    supportedVersions: list[Literal[SYNC_PROTOCOL_VERSION]]
     capabilities: list[str]
     scopes: list[str]
     pullEndpoint: Literal["/api/sync/pull"]
@@ -1182,7 +1183,7 @@ class SyncStreamQuery(ContractModel):
     after: SafeQueryInt | None = None
     resources: str | None = Field(
         default=None,
-        description="Protocol 3 JSON-encoded array of ResourceRef values",
+        description=f"Protocol {SYNC_PROTOCOL_VERSION} JSON-encoded array of ResourceRef values",
     )
     apiSchema: str | None = None
 

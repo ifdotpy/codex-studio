@@ -13,6 +13,7 @@ use axum::response::{IntoResponse, Response};
 use futures_util::Stream;
 use futures_util::stream;
 use serde_json::{Value, json};
+use studio_runtime_schema::{SYNC_PROTOCOL_VERSION, SYNC_PROTOCOL_VERSION_TEXT};
 use studio_runtime_services::change_notifications::{ChangeSnapshot, MAX_SAFE_REVISION};
 use studio_runtime_services::progress_watch::{ProgressFileWatch, watch_progress_files};
 use studio_runtime_store::{AgentId, AgentRepository, RuntimeStore, SyncDocumentsRepository};
@@ -60,15 +61,16 @@ async fn sync_stream(
 ) -> Response {
     let protocol = query.typed_value("protocol").and_then(Value::as_str);
     let header_protocol = headers.get("x-codex-sync-protocol").and_then(Value::as_str);
-    if protocol.is_some_and(|value| value != "3")
-        || header_protocol.is_some_and(|value| value != "3")
-        || (protocol != Some("3") && header_protocol != Some("3"))
+    if protocol.is_some_and(|value| value != SYNC_PROTOCOL_VERSION_TEXT)
+        || header_protocol.is_some_and(|value| value != SYNC_PROTOCOL_VERSION_TEXT)
+        || (protocol != Some(SYNC_PROTOCOL_VERSION_TEXT)
+            && header_protocol != Some(SYNC_PROTOCOL_VERSION_TEXT))
     {
         return (
             StatusCode::UPGRADE_REQUIRED,
             Json(json!({
                 "error": "Unsupported sync protocol version",
-                "supportedVersions": [3],
+                "supportedVersions": [SYNC_PROTOCOL_VERSION],
             })),
         )
             .into_response();
@@ -344,7 +346,7 @@ async fn next_frame(
         }
         if snapshot.revision == state.last_revision {
             let event = json!({
-                "protocol": 3,
+                "protocol": SYNC_PROTOCOL_VERSION,
                 "workspaceId": state.workspace_id,
                 "epoch": state.epoch,
                 "revision": snapshot.revision,
@@ -368,7 +370,7 @@ fn token_rates_event(
         "token-rates",
         Some(revision),
         json!({
-            "protocol": 3,
+            "protocol": SYNC_PROTOCOL_VERSION,
             "workspaceId": workspace_id,
             "epoch": epoch,
             "revision": revision,
@@ -398,7 +400,7 @@ fn resource_event(
         })
         .collect::<Vec<_>>();
     json!({
-        "protocol": 3,
+        "protocol": SYNC_PROTOCOL_VERSION,
         "workspaceId": workspace_id,
         "epoch": epoch,
         "revision": revision,

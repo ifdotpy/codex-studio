@@ -9,6 +9,8 @@ pub use jsonschema::{Draft, Registry as JsonSchemaRegistry, Validator};
 use serde_json::{Value, json};
 
 pub mod agent_limits_generated;
+pub mod sync_protocol;
+pub use sync_protocol::{SYNC_PROTOCOL_VERSION, SYNC_PROTOCOL_VERSION_TEXT};
 
 pub const OPENAPI_URI: &str = "https://codex-studio.invalid/openapi.json";
 const ACCOUNT_REGISTRY_URI: &str = "https://codex-studio.invalid/account-registry.schema.json";

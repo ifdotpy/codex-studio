@@ -16,6 +16,7 @@ from uuid import uuid4
 from pydantic import ValidationError
 
 from studio_api.models import SyncEntity
+from studio_api.sync.protocol import SYNC_PROTOCOL_VERSION
 from studio_api.sync.entity_response import response_entity_document
 
 from studio_api.sync.resources.models import (
@@ -612,7 +613,7 @@ class ResourceHub:
         entity_changes: EntityChangeBatch | None = None,
     ) -> ResourceChangeEvent:
         return ResourceChangeEvent(
-            protocol=3,
+            protocol=SYNC_PROTOCOL_VERSION,
             workspaceId=self.workspace_id,
             epoch=self.epoch,
             revision=self._revision,
@@ -641,7 +642,7 @@ class ResourceHub:
 
     def _heartbeat(self) -> ResourceHeartbeatEvent:
         return ResourceHeartbeatEvent(
-            protocol=3,
+            protocol=SYNC_PROTOCOL_VERSION,
             workspaceId=self.workspace_id,
             epoch=self.epoch,
             revision=self._revision,
@@ -649,7 +650,7 @@ class ResourceHub:
 
     def _token_rates_event(self, snapshot: TokenRateSnapshot) -> ResourceTokenRatesEvent:
         return ResourceTokenRatesEvent(
-            protocol=3,
+            protocol=SYNC_PROTOCOL_VERSION,
             workspaceId=self.workspace_id,
             epoch=self.epoch,
             revision=self._revision,

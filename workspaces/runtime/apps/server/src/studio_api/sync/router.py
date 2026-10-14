@@ -24,6 +24,7 @@ from studio_api.sync.preferences import (
     PreferencePushResponse,
     merge_preferences,
 )
+from studio_api.sync.protocol import SYNC_PROTOCOL_VERSION
 from studio_api.responses import (
     API_BOUNDARY_RESPONSE_HEADERS,
     API_CONTEXT_RESPONSE_HEADERS,
@@ -216,8 +217,8 @@ def create_router(context: ApiContext) -> APIRouter:
         if (Path(context.canvas.root) / "canvas.sock").exists():
             capabilities.append("unixSocket")
         value = {
-            "protocolVersion": 3,
-            "supportedVersions": [3],
+            "protocolVersion": SYNC_PROTOCOL_VERSION,
+            "supportedVersions": [SYNC_PROTOCOL_VERSION],
             "capabilities": capabilities,
             "scopes": ["state:entities:v1", "transcript:<agent-id>", "drafts"],
             "pullEndpoint": "/api/sync/pull",
@@ -325,15 +326,18 @@ def create_router(context: ApiContext) -> APIRouter:
     ) -> Response:
         protocol_value = protocol
         header_version = sync_protocol_header
-        if protocol_value not in (None, "3") or header_version not in (None, "3"):
+        protocol_version_text = str(SYNC_PROTOCOL_VERSION)
+        if (protocol_value not in (None, protocol_version_text)
+                or header_version not in (None, protocol_version_text)):
             response = context.send(
                 request,
-                {"error": "Unsupported sync protocol version", "supportedVersions": [3]},
+                {"error": "Unsupported sync protocol version",
+                 "supportedVersions": [SYNC_PROTOCOL_VERSION]},
                 status=426,
             )
             return response
 
-        if protocol_value == "3" or header_version == "3":
+        if protocol_value == protocol_version_text or header_version == protocol_version_text:
             renderer_hash = request.headers.get(API_SCHEMA_HASH_HEADER)
             if renderer_hash is None:
                 renderer_hash = _query.apiSchema
@@ -450,7 +454,8 @@ def create_router(context: ApiContext) -> APIRouter:
 
         return context.send(
             request,
-            {"error": "Unsupported sync protocol version", "supportedVersions": [3]},
+            {"error": "Unsupported sync protocol version",
+             "supportedVersions": [SYNC_PROTOCOL_VERSION]},
             status=426,
         )
 

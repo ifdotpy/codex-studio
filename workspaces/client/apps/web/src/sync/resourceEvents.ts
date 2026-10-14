@@ -3,7 +3,7 @@ import {
   type ServerEventSource,
 } from "../servers/eventSource";
 import { serverStorageName } from "../servers/environment";
-import type { components } from "../generated/api";
+import { SYNC_PROTOCOL_VERSION, type components } from "../generated/api";
 import { API_SCHEMA_HASH, API_SCHEMA_HASH_PARAM } from "../generated/apiSchema";
 import {
   clearSchemaUpdateAttemptAfterMatch,
@@ -703,7 +703,7 @@ function replayResourceBaseline(resources: ResourceRef[]) {
     broadcast({
       kind: "resource-event",
       event: {
-        protocol: 3,
+        protocol: SYNC_PROTOCOL_VERSION,
         workspaceId: workspaceId!,
         epoch: version.epoch,
         revision: version.revision,
@@ -824,7 +824,7 @@ function openSource() {
   keepLiveOnReconfigure = false;
   try {
     const query = new URLSearchParams({
-      protocol: "3",
+      protocol: String(SYNC_PROTOCOL_VERSION),
       resources: JSON.stringify(resources),
       [API_SCHEMA_HASH_PARAM]: API_SCHEMA_HASH,
     });

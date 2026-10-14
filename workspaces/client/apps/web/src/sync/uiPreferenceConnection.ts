@@ -1,4 +1,5 @@
 import { SignedEventSource } from "../servers/eventSource";
+import { SYNC_PROTOCOL_VERSION } from "../generated/api";
 import {
   API_SCHEMA_HASH,
   API_SCHEMA_HASH_HEADER,
@@ -275,7 +276,7 @@ export function connectUiPreferences(
   const openStream = () => {
     if (stopped || stream) return;
     const query = new URLSearchParams({
-      protocol: "3",
+      protocol: String(SYNC_PROTOCOL_VERSION),
       resources: JSON.stringify([{ kind: "state" }]),
       [API_SCHEMA_HASH_PARAM]: API_SCHEMA_HASH,
     });

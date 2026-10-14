@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import cast
 
 from studio_api.models import JsonValue
+from studio_api.sync.protocol import SYNC_PROTOCOL_VERSION
 from studio_api.schema import (
     bound_integer_schemas,
     API_SCHEMA_HASH_HEADER,
@@ -32,6 +33,7 @@ from codex_layout import REPOSITORY_ROOT, WEB_ROOT
 ROOT = REPOSITORY_ROOT
 OUTPUT = WEB_ROOT / "src" / "generated" / "api.ts"
 SCHEMA_OUTPUT = WEB_ROOT / "src" / "generated" / "apiSchema.ts"
+SYNC_PROTOCOL_OUTPUT = ROOT / "workspaces/runtime/packages/runtime-schema/src/sync_protocol.rs"
 OPENAPI_AUTHORITY = ROOT / "workspaces/runtime/packages/runtime-http/openapi.json"
 DEFAULT_CACHE_ROOT = Path.home() / ".cache"
 CACHE_ROOT_ENV = "XDG_CACHE_HOME"
@@ -52,6 +54,43 @@ def _entity_aliases(names: list[str], include_sync_entity_payload: bool = False)
     if include_sync_entity_payload:
         aliases += '\nexport type SyncEntityPayload = components["schemas"]["SyncEntityPayload"];'
     return aliases
+
+
+def _sync_protocol_version(document: dict[str, JsonValue]) -> int:
+    components = document.get("components")
+    schemas = components.get("schemas") if isinstance(components, dict) else None
+    response = schemas.get("SyncProtocolResponse") if isinstance(schemas, dict) else None
+    properties = response.get("properties") if isinstance(response, dict) else None
+    protocol = properties.get("protocolVersion") if isinstance(properties, dict) else None
+    versions = properties.get("supportedVersions") if isinstance(properties, dict) else None
+    protocol_value = _single_schema_value(protocol)
+    versions_items = versions.get("items") if isinstance(versions, dict) else None
+    supported_value = _single_schema_value(versions_items)
+    if protocol_value != SYNC_PROTOCOL_VERSION or supported_value != SYNC_PROTOCOL_VERSION:
+        raise ValueError("SyncProtocolResponse must use the shared single supported version")
+    return SYNC_PROTOCOL_VERSION
+
+
+def _single_schema_value(schema: object) -> object:
+    if not isinstance(schema, dict):
+        return None
+    if "const" in schema:
+        return schema["const"]
+    values = schema.get("enum")
+    return values[0] if isinstance(values, list) and len(values) == 1 else None
+
+
+def render_sync_protocol_rust(document: dict[str, JsonValue]) -> str:
+    version = _sync_protocol_version(document)
+    return (
+        "// Generated from the Pydantic SyncProtocolResponse contract.\n"
+        f"pub const SYNC_PROTOCOL_VERSION: u32 = {version};\n"
+        f"pub const SYNC_PROTOCOL_VERSION_TEXT: &str = {json.dumps(str(version))};\n"
+    )
+
+
+def render_sync_protocol_typescript(document: dict[str, JsonValue]) -> str:
+    return f"export const SYNC_PROTOCOL_VERSION = {_sync_protocol_version(document)} as const;"
 
 
 def _normalize_recursive_json_value(generated: str) -> str:
@@ -79,6 +118,7 @@ def render(document: dict[str, JsonValue]) -> str:
     validate_contract_schemas(document)
     validate_error_responses(document)
     entities = entity_schema_names(document)
+    sync_protocol_typescript = render_sync_protocol_typescript(document)
     components = document.get("components")
     schemas = components.get("schemas") if isinstance(components, dict) else None
     include_sync_entity_payload = isinstance(schemas, dict) and "SyncEntityPayload" in schemas
@@ -131,7 +171,7 @@ def render(document: dict[str, JsonValue]) -> str:
             check=True,
             text=True,
         )
-        return output_path.read_text(encoding="utf-8")
+        return output_path.read_text(encoding="utf-8") + f"\n{sync_protocol_typescript}\n"
 
 
 def _agent_limit(document: dict[str, JsonValue], model: str, field: str, key: str) -> int:
@@ -202,6 +242,7 @@ def main(argv: list[str] | None = None) -> int:
         expected_files = {
             OUTPUT: render(document),
             SCHEMA_OUTPUT: render_schema_identity(schema_hash, document),
+            SYNC_PROTOCOL_OUTPUT: render_sync_protocol_rust(document),
         }
     except (FileNotFoundError, RuntimeError, ValueError, subprocess.CalledProcessError) as error:
         print(f"API type generation failed: {error}", file=sys.stderr)
