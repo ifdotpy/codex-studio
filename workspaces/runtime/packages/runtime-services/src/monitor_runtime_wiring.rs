@@ -86,6 +86,7 @@ pub struct MonitorRuntime {
     port: Arc<dyn MonitorPort>,
     output: MonitorOutput,
     scan: Mutex<Scan>,
+    dispatch_wake: Arc<Notify>,
     wake: Arc<Notify>,
     last_tick_error: Mutex<Option<String>>,
 }
@@ -97,12 +98,18 @@ impl MonitorRuntime {
             port,
             wake,
             output: MonitorOutput::default(),
+            dispatch_wake: Arc::new(Notify::new()),
             scan: Mutex::new(Scan {
                 recovering_rules: true,
                 ..Scan::default()
             }),
             last_tick_error: Mutex::new(None),
         }
+    }
+
+    /// Handle used by committed lifecycle adapters to wake cancellation dispatch.
+    pub fn dispatch_wake_handle(&self) -> Arc<Notify> {
+        Arc::clone(&self.dispatch_wake)
     }
 
     /// Last timer failure, cleared after a successful tick. The host can inspect
@@ -470,7 +477,7 @@ pub fn start(
                 changed = shutdown.changed() => {
                     if changed.is_err() || *shutdown.borrow() { return Ok(()); }
                 }
-                _ = runtime.wake.notified() => {
+                _ = runtime.dispatch_wake.notified() => {
                     let tick_runtime = runtime.clone();
                     match tokio::task::spawn_blocking(move || tick_runtime.tick(event_write::unix_time()?)).await {
                         Ok(Err(error)) if error.store_failure_for_task() => return Err(error),

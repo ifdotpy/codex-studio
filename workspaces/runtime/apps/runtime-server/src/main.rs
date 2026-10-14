@@ -176,7 +176,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     let lifecycle_ports: Arc<dyn studio_runtime_services::agent_lifecycle_runtime::LifecyclePorts> =
         Arc::new(
-            studio_runtime_services::monitor_lifecycle::MonitorLifecyclePorts::new(monitor_wake),
+            studio_runtime_services::monitor_lifecycle::MonitorLifecyclePorts::new(
+                monitor_runtime.dispatch_wake_handle(),
+            ),
         );
     let sync_changes = state.sync_changes_handle();
     let app = match router(state.clone()) {
