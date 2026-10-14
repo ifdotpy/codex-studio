@@ -1,4 +1,5 @@
 from typing import Literal
+from codex_shared_values import OPERATIONS_PYTHON_PROTOCOL_VERSION
 
 EventName = Literal[
     "Admit",
@@ -32,7 +33,7 @@ PersistedStage = Literal[
 ]
 PersistedOutcome = Literal["pending", "not_applied", "applied", "unknown"]
 
-PROTOCOL_VERSION: Literal[4]
+PROTOCOL_VERSION: Literal[OPERATIONS_PYTHON_PROTOCOL_VERSION]
 EVENT_NAMES: list[EventName]
 PROOF_NAMES: list[ProofName]
 RESULT_NAMES: list[ResultKind]

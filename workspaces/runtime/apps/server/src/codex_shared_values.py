@@ -1,6 +1,9 @@
 """Authoritative cross-language values for generated consumers."""
 
+from typing import Final
+
 PROCESS_SUPERVISOR_PROTOCOL_VERSION = 1
+OPERATIONS_PYTHON_PROTOCOL_VERSION: Final = 4
 
 MAX_USER_ATTACHMENT_BYTES = 20 * 1024 * 1024
 MAX_PROJECT_SECRET_VALUE_BYTES = 16 * 1024
