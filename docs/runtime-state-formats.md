@@ -2,6 +2,8 @@
 
 This inventory is for M-07.3 of [issue #37](https://github.com/ifdotpy/codex-studio/issues/37). It describes the current Python runtime formats that the whole-runtime Rust replacement must preserve while opening the configured state directory in place. Source references below are code-verified; fresh SQLite schema and reader behavior are also observed in disposable test state.
 
+For desktop Rust selection, table dispositions, and the rollback owner/build fence, see [Rust desktop backend and state compatibility](rust-backend-state-compatibility.md). That matrix is a source-only review and does not claim full Python/Rust state parity.
+
 ## Findings that affect the Rust move
 
 - **The state identity is the directory, not a database filename.** `CODEX_AGENTS_STATE_DIR` selects it; otherwise the platform state root is used by [`codex_state.py`](../workspaces/runtime/apps/server/src/codex_state.py). The runtime acquires an exclusive OS lock at `runtime.lock` before opening either database. Preserve the same directory and do not start two owners.

@@ -38,6 +38,8 @@ if (!uiOnly) {
         "--locked",
         "--release",
         "-p",
+        "studio-runtime-server",
+        "-p",
         "studio-diagnostics",
         "-p",
         "studio-operations-python",
@@ -169,6 +171,22 @@ try {
         !source.endsWith(".pyc"),
     });
     await cp(diagnosticsBinary, path.join(resources, "bin/codex-diagnostics"));
+    await cp(
+      path.join(
+        cargoTargetDirectory,
+        "release",
+        process.platform === "win32"
+          ? "studio-runtime-server.exe"
+          : "studio-runtime-server",
+      ),
+      path.join(
+        resources,
+        "bin",
+        process.platform === "win32"
+          ? "studio-runtime-server.exe"
+          : "studio-runtime-server",
+      ),
+    );
     execFileSync(
       "pnpm",
       [
