@@ -132,7 +132,11 @@ async fn diagnostics(State(state): State<HttpState>) -> Result<Json<Value>, ApiE
         missing_ports.push(DIAGNOSTICS_DEPENDENCIES[1]);
     }
     if !missing_ports.is_empty() {
-        return Err(dependency_error("GET", "/api/diagnostics", &missing_ports));
+        return Err(dependency_error(
+            "GET",
+            "/api/diagnostics",
+            &DIAGNOSTICS_DEPENDENCIES,
+        ));
     }
     let (provider_port, supervisor_port) =
         match (state.diagnostics_provider, state.diagnostics_supervisor) {
