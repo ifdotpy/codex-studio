@@ -918,6 +918,8 @@ fn startup_reconciles_reserved_callback_once() {
     let expected = &oracle["managedToolCases"][0];
     store
         .transaction_with::<_, StoreError>(|tx| {
+            tx.execute("DELETE FROM runtime_requests", [])?;
+            tx.execute("DELETE FROM runtime_operation_receipts", [])?;
             tx.execute_batch("CREATE TRIGGER p05_crash_after_reservation BEFORE INSERT ON runtime_tool_results BEGIN SELECT RAISE(ABORT,'crash after reservation'); END")?;
             Ok(())
         })
