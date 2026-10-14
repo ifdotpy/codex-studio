@@ -109,6 +109,21 @@ async fn dispatch<T: serde::de::DeserializeOwned + serde::Serialize>(
             }
             ManagementError::Store(_) => ApiError::internal(),
         })?;
+        if matches!(action, Action::Delete { .. }) {
+            let deleted = result
+                .get("deleted")
+                .and_then(Value::as_array)
+                .ok_or_else(ApiError::internal)?;
+            for agent in deleted {
+                let id = agent.as_str().ok_or_else(ApiError::internal)?;
+                studio_runtime_services::workspace_cleanup_runtime::cleanup_agent_workspace(
+                    store,
+                    id,
+                    studio_runtime_services::workspace_cleanup_runtime::CleanupAction::Delete,
+                )
+                .map_err(|_| ApiError::internal())?;
+            }
+        }
         super::generated_json::<T>(result).map(Json)
     })
     .await

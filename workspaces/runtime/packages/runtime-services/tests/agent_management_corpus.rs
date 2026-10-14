@@ -2,10 +2,16 @@
 #[path = "support/prepared_python.rs"]
 mod prepared_python_support;
 use serde_json::{Value, json};
-use std::{path::PathBuf, process::Command};
-use studio_runtime_services::agent_management::{
-    Action, ManagementError, ManagementSnapshot, Records, decide,
+use std::{
+    path::{Path, PathBuf},
+    process::Command,
 };
+use studio_runtime_services::{
+    agent_lifecycle_runtime::{self, LifecycleEffect, LifecyclePorts},
+    agent_management::{Action, ManagementError, ManagementSnapshot, Records, decide},
+    workspace_cleanup_runtime::{self, CleanupEffect, CleanupPorts, EffectFailure},
+};
+use studio_runtime_store::{RuntimeStore, Transaction, agent_management as repository};
 
 fn corpus() -> Vec<Value> {
     let python = prepared_python_support::prepared_python(
@@ -47,11 +53,307 @@ fn apply(
     records
 }
 
+fn template(root: &Path) {
+    let schema: Value = serde_json::from_str(include_str!(
+        "../../runtime-store/tests/fixtures/live-state-schema.json"
+    ))
+    .expect("runtime schema fixture");
+    for database in ["canvas.sqlite3", "analytics.sqlite3"] {
+        let connection = rusqlite::Connection::open(root.join(database)).expect("fixture database");
+        connection
+            .execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; BEGIN;")
+            .expect("fixture durability");
+        let mut objects = schema[database]["sqlite_master"]
+            .as_array()
+            .expect("schema objects")
+            .iter()
+            .filter(|object| {
+                ![
+                    "runtime_search_next_config",
+                    "runtime_search_next_data",
+                    "runtime_search_next_docsize",
+                    "runtime_search_next_idx",
+                ]
+                .contains(&object["name"].as_str().expect("schema object name"))
+            })
+            .filter_map(|object| {
+                Some((
+                    object["type"].as_str()?,
+                    object["name"].as_str()?,
+                    object["sql"].as_str()?,
+                ))
+            })
+            .collect::<Vec<_>>();
+        objects.sort_by_key(|(kind, _, _)| match *kind {
+            "table" => 0,
+            "index" => 1,
+            "view" => 2,
+            _ => 3,
+        });
+        for (_, _, sql) in objects {
+            connection
+                .execute_batch(sql)
+                .expect("fixture schema object");
+        }
+        connection
+            .execute_batch("COMMIT")
+            .expect("fixture schema commit");
+    }
+}
+
+fn seed_store(store: &RuntimeStore, records: &Records) {
+    store
+        .transaction(|tx| {
+            for (table, rows) in &records.tables {
+                for row in rows {
+                    if table == "runtime_events" {
+                        tx.execute(
+                            "INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch) VALUES(?1,?2,'user','input',?3,1,?4)",
+                            rusqlite::params![row["id"].as_str(), row["agent"].as_str(), row["status"].as_str(), row["epoch"].as_i64()],
+                        )?;
+                    } else if table == "voice_sessions" {
+                        tx.execute(
+                            "INSERT INTO voice_sessions(id,agent,created,ended,state) VALUES(?1,?2,?3,?4,?5)",
+                            rusqlite::params![
+                                row["id"].as_str(),
+                                row["agent"].as_str(),
+                                row["created"].as_f64().unwrap_or(1.0),
+                                row["ended"].as_f64(),
+                                row["state"].as_str(),
+                            ],
+                        )?;
+                    } else if [
+                        "runtime_monitors",
+                        "runtime_tasks",
+                        "runtime_tool_requests",
+                    ]
+                    .contains(&table.as_str())
+                    {
+                        tx.execute(
+                            &format!("INSERT INTO {table}(id,record) VALUES(?1,?2)"),
+                            rusqlite::params![
+                                row["id"].as_str(),
+                                serde_json::to_string(row)?,
+                            ],
+                        )?;
+                    } else {
+                        repository::write(tx, table, row)?;
+                    }
+                }
+            }
+            Ok(())
+        })
+        .expect("Python records seed into store");
+}
+
+struct FakeCleanup;
+impl CleanupPorts for FakeCleanup {
+    fn perform(
+        &self,
+        _agent: &Value,
+        _effect: &CleanupEffect,
+        _request_id: &str,
+    ) -> Result<Value, EffectFailure> {
+        Ok(json!({"state":"done"}))
+    }
+}
+
+struct PostCommitCleanup<'a> {
+    store: &'a RuntimeStore,
+}
+impl LifecyclePorts for PostCommitCleanup<'_> {
+    fn stage(&self, _: &Transaction<'_>, _: &LifecycleEffect) -> Result<(), ManagementError> {
+        Ok(())
+    }
+
+    fn committed(&self) -> Result<(), ManagementError> {
+        let reader = self.store.read()?;
+        let records = repository::read(&reader)?;
+        for agent in records
+            .get("runtime_agents")
+            .into_iter()
+            .flatten()
+            .filter(|agent| {
+                agent
+                    .pointer("/workspaceCleanupIntent/phase")
+                    .and_then(Value::as_str)
+                    == Some("queued")
+            })
+        {
+            let action = serde_json::from_value(
+                agent
+                    .pointer("/workspaceCleanupIntent/action")
+                    .cloned()
+                    .ok_or(ManagementError::Invalid("Missing cleanup action"))?,
+            )
+            .map_err(|_| ManagementError::Invalid("Invalid cleanup action"))?;
+            let id = agent["id"]
+                .as_str()
+                .ok_or(ManagementError::Invalid("Invalid cleanup agent"))?;
+            workspace_cleanup_runtime::cleanup_agent_workspace_with_ports(
+                self.store,
+                id,
+                action,
+                &FakeCleanup,
+            )
+            .map_err(|_| ManagementError::Unavailable("workspace-cleanup/agent-management"))?;
+        }
+        Ok(())
+    }
+}
+
+fn run_lifecycle_end_state(case: &Value) -> (Value, Value) {
+    let root = tempfile::tempdir().expect("tmpfs test root");
+    template(root.path());
+    let store = RuntimeStore::open(Some(root.path())).expect("fixture store opens");
+    let records: Records = serde_json::from_value(case["records"].clone()).expect("records");
+    seed_store(&store, &records);
+    let action: Action = serde_json::from_value(case["action"].clone()).expect("lifecycle action");
+    let ports = PostCommitCleanup { store: &store };
+    let result = agent_lifecycle_runtime::execute(
+        &store,
+        &action,
+        case["now"].as_f64().expect("time"),
+        &ports,
+    );
+    let saved = store.read().expect("read final store");
+    let rows = repository::read(&saved).expect("complete final rows");
+    let final_state = serde_json::to_value(Records { tables: rows }).expect("serialize final rows");
+    let result = match result {
+        Ok(result) => json!({"result":result}),
+        Err(error) => json!({"error":error.to_string()}),
+    };
+    (result, final_state)
+}
+
+struct CrashBeforeCleanup;
+impl LifecyclePorts for CrashBeforeCleanup {
+    fn stage(&self, _: &Transaction<'_>, _: &LifecycleEffect) -> Result<(), ManagementError> {
+        Ok(())
+    }
+
+    fn committed(&self) -> Result<(), ManagementError> {
+        Err(ManagementError::Invalid("simulated cleanup wake loss"))
+    }
+}
+
+#[test]
+fn archive_cleanup_wake_loss_keeps_queued_intent_for_restart() {
+    let case = corpus()
+        .into_iter()
+        .find(|case| case["name"] == "archive-completed")
+        .expect("archive witness");
+    let root = tempfile::tempdir().expect("tmpfs test root");
+    template(root.path());
+    let store = RuntimeStore::open(Some(root.path())).expect("fixture store opens");
+    let records: Records = serde_json::from_value(case["records"].clone()).expect("records");
+    seed_store(&store, &records);
+    let action: Action = serde_json::from_value(case["action"].clone()).expect("archive action");
+    assert!(
+        agent_lifecycle_runtime::execute(
+            &store,
+            &action,
+            case["now"].as_f64().expect("time"),
+            &CrashBeforeCleanup,
+        )
+        .is_err()
+    );
+    let saved = store.read().expect("read committed intent");
+    let rows = repository::read(&saved).expect("read complete rows");
+    let worker = rows["runtime_agents"]
+        .iter()
+        .find(|row| row["id"] == "worker")
+        .expect("archived worker");
+    assert_eq!(
+        worker.pointer("/workspaceCleanupIntent/phase"),
+        Some(&json!("queued"))
+    );
+    assert_eq!(
+        worker.pointer("/agentArchive/cleanupPending"),
+        Some(&json!(true))
+    );
+    drop(saved);
+    drop(store);
+
+    let store = RuntimeStore::open(Some(root.path())).expect("restart store");
+    let saved = store.read().expect("read after restart");
+    let rows = repository::read(&saved).expect("read restarted rows");
+    let worker = rows["runtime_agents"]
+        .iter()
+        .find(|row| row["id"] == "worker")
+        .expect("archived worker after restart");
+    assert_eq!(
+        worker.pointer("/workspaceCleanupIntent/phase"),
+        Some(&json!("queued"))
+    );
+    assert_eq!(
+        worker.pointer("/agentArchive/cleanupPending"),
+        Some(&json!(true))
+    );
+}
+
 #[test]
 fn python_lifecycle_decisions_and_complete_stored_rows_match() {
     let cases = corpus();
     assert!(cases.len() >= 35);
     for case in cases {
+        if matches!(
+            case["action"]["action"].as_str(),
+            Some("archive" | "stop" | "delete")
+        ) {
+            let (actual_result, actual_records) = run_lifecycle_end_state(&case);
+            let mut expected_tables = case["expected"]["records"]["tables"].clone();
+            let actual_tables = actual_records["tables"]
+                .as_object()
+                .expect("complete runtime tables");
+            let expected_tables = expected_tables
+                .as_object_mut()
+                .expect("Python oracle tables");
+            for table in actual_tables.keys() {
+                expected_tables
+                    .entry(table.clone())
+                    .or_insert_with(|| json!([]));
+            }
+            assert_eq!(
+                actual_tables, expected_tables,
+                "complete post-cleanup rows for {}",
+                case["name"]
+            );
+            if case["expected"].get("error").is_some() {
+                assert_eq!(
+                    actual_result,
+                    json!({"error":case["expected"]["error"]}),
+                    "{}",
+                    case["name"]
+                );
+            } else if case["action"]["action"] == "archive" {
+                assert_eq!(
+                    actual_result["result"]["status"], case["expected"]["result"]["status"],
+                    "{}",
+                    case["name"]
+                );
+                if actual_result["result"]["status"] == "archived" {
+                    let saved = actual_records["tables"]["runtime_agents"]
+                        .as_array()
+                        .expect("agent rows")
+                        .iter()
+                        .find(|row| row["id"] == case["action"]["target"])
+                        .expect("archived agent");
+                    assert_eq!(
+                        saved.pointer("/agentArchive/cleanupPending"),
+                        Some(&json!(false))
+                    );
+                    assert!(saved.get("workspaceCleanupIntent").is_none());
+                }
+            } else {
+                assert_eq!(
+                    actual_result["result"], case["expected"]["result"],
+                    "lifecycle result for {}",
+                    case["name"]
+                );
+            }
+            continue;
+        }
         let records: Records = serde_json::from_value(case["records"].clone()).expect("records");
         let action: Action = serde_json::from_value(case["action"].clone()).expect("action");
         let snapshot = ManagementSnapshot::from_records(records.clone())
