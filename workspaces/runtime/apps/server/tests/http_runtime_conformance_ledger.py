@@ -37,6 +37,12 @@ DEFAULT_LEDGER = DEFAULT_CACHE / "codex-studio" / "rust-runtime-http-conformance
 MISSING_SERVICE_TESTS: dict[str, dict[str, dict[str, str]]] = {
 }
 
+# This HTTP suite proves Python's explicit-null refusal. Its paired Rust
+# evidence is the native `wave7_p04_callback_http` integration test.
+PYTHON_BASELINE_ONLY_SUITES = frozenset({
+    "workspaces/runtime/apps/server/tests/wave7-p04-native-http-contract.py",
+})
+
 # These tests need provider turn execution, but no current route declares that
 # dependency. Keep them under one explicit unresolved-service group and fail
 # if a route starts advertising the dependency before these exclusions are
@@ -1658,6 +1664,15 @@ def case_results(log_text: str) -> list[dict[str, Any]]:
             current = None
     if current is not None:
         cases.append({**current, "status": "unreported"})
+    for failure in failure_headings(log_text):
+        if failure["test"] == "setUpClass":
+            test_id = f"setUpClass ({failure['context']})"
+            if not any(case["testId"] == test_id for case in cases):
+                cases.append({
+                    "test": failure["test"],
+                    "testId": test_id,
+                    "status": failure["kind"],
+                })
     return cases
 
 
@@ -1755,8 +1770,13 @@ def run_suite(
 ) -> dict[str, Any]:
     relative = str(path.relative_to(ROOT))
     trace_path = trace_root / f"{path.stem}.jsonl"
+    python_baseline_only = relative in PYTHON_BASELINE_ONLY_SUITES
     suite_environment = environment.copy()
-    suite_environment["STUDIO_HTTP_LEDGER_TRACE"] = str(trace_path)
+    if python_baseline_only:
+        suite_environment.pop("STUDIO_HTTP_BACKEND_COMMAND", None)
+        suite_environment.pop("STUDIO_HTTP_LEDGER_TRACE", None)
+    else:
+        suite_environment["STUDIO_HTTP_LEDGER_TRACE"] = str(trace_path)
     # Preserve complete unittest records and HTTP attribution across runner output.
     suite_environment["CODEX_SERVER_TEST_JOBS"] = "1"
     skipped_for_service = missing_service_tests_for_suite(relative)
@@ -1800,7 +1820,14 @@ def run_suite(
         "skipped": sum(case["status"] == "skipped" for case in cases),
     }
     ran_summaries = re.findall(r"^Ran (\d+) tests? in ", log_text, re.MULTILINE)
-    ran_count = sum(map(int, ran_summaries))
+    setup_failures = {
+        failure["context"]
+        for failure in failure_headings(log_text)
+        if failure["test"] == "setUpClass"
+    }
+    # unittest reports a failed class setup as a failure but excludes it from
+    # `Ran N tests`; include each such suite-level case in the count contract.
+    ran_count = sum(map(int, ran_summaries)) + len(setup_failures)
     suite_summary = re.search(
         r"Server suites: (\d+) passed, (\d+) failed, (\d+) skipped \(opt-in\), (\d+) skipped \(environment\)",
         log_text,
@@ -1899,6 +1926,7 @@ def run_suite(
         case["standard501Envelope"] = all(valid_501_envelope(event, manifest) for event in case_requests if event["status"] == 501)
     return {
         "suite": relative,
+        "backend": "python-baseline" if python_baseline_only else "rust",
         "status": result.get("status", "failed"),
         "passed": result.get("passed") or 0,
         "failed": result.get("failed") or 0,
