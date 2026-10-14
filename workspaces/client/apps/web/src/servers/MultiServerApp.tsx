@@ -72,6 +72,7 @@ import {
   fontFamilies,
 } from "../studioPreferences";
 import type { GetResult } from "../api";
+import { alertsSince } from "../desktop/desktopAlerts";
 import "./servers.css";
 const uiOnly =
   new URLSearchParams(location.search).get("studio-ui-only") === "1";
@@ -157,7 +158,9 @@ export default function MultiServerApp() {
     Record<string, { results: SearchRow[]; error?: string }>
   >({});
   const searchRequest = useRef("");
-  const notificationState = useRef(new Map<string, Set<string>>());
+  const notificationState = useRef(
+    new Map<string, { seen: Set<string>; started: number }>(),
+  );
   const [sidebarHidden, setSidebarHidden] = useState(false);
   // Each server view reports its terminal panel; the shell draws the closed bar under
   // its sidebar and makes room for the open panel (servers.css "Terminal under the sidebar").
@@ -298,12 +301,17 @@ export default function MultiServerApp() {
     if (value.ready) {
       const previous = notificationState.current.get(id);
       const alerts = value.alerts || [];
-      const seen = previous || new Set<string>();
+      const known = previous || {
+        seen: new Set<string>(),
+        started: Date.now(),
+      };
       const fresh = previous
-        ? alerts.filter((alert) => !seen.has(alert.id))
+        ? alerts
+            .filter((alert) => !known.seen.has(alert.id))
+            .filter(alertsSince(known.started))
         : [];
-      for (const alert of alerts) seen.add(alert.id);
-      notificationState.current.set(id, seen);
+      for (const alert of alerts) known.seen.add(alert.id);
+      notificationState.current.set(id, known);
       for (const alert of fresh) {
         const server =
           readServers().find((row) => row.id === id) || localServer();
