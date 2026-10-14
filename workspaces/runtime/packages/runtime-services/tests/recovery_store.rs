@@ -317,6 +317,7 @@ fn recovery_transaction_restart_matrix() {
     preparation_transaction_failpoints_roll_back_every_row();
     orphan_requires_the_completed_turn_receipt_and_no_uncertain_input();
     queued_active_wait_is_adopted_and_keeps_input_pending();
+    pending_native_request_blocks_queued_wait_adoption();
     queued_active_wait_terminal_is_reconciled_and_saved();
 }
 
@@ -368,6 +369,30 @@ fn queued_active_wait_is_adopted_and_keeps_input_pending() {
         after["connectionRecovery"]["requestReceipt"]["status"],
         "adopted"
     );
+    assert_eq!(events(&store), vec![("event".into(), "pending".into())]);
+}
+
+fn pending_native_request_blocks_queued_wait_adoption() {
+    let root = fixture();
+    let store = RuntimeStore::open(Some(root.path())).expect("store");
+    let before = queued_active_snapshot(&store);
+    store
+        .transaction(|tx| {
+            tx.execute(
+                "INSERT INTO runtime_requests(id,record) VALUES('pending-request',?1)",
+                [json!({"agent":"agent","turnId":"turn","status":"pending"}).to_string()],
+            )?;
+            Ok(())
+        })
+        .expect("seed pending runtime request");
+    let original = snapshot(&store).record().clone();
+    let turn = json!({"id":"turn","threadId":"thread","status":"inProgress","items":[],"itemsView":"full"});
+    assert_eq!(
+        apply_lifecycle(&store, &before, RecoveryAction::AdoptQueuedWait { turn })
+            .expect("pending request makes adoption unconfirmed"),
+        RecoveryOutcome::Unconfirmed
+    );
+    assert_eq!(snapshot(&store).record(), &original);
     assert_eq!(events(&store), vec![("event".into(), "pending".into())]);
 }
 

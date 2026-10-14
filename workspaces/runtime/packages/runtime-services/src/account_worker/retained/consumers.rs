@@ -125,6 +125,7 @@ pub struct HistoryPort {
     actor: RequestActor,
     runtime: tokio::runtime::Handle,
     recovery_id: String,
+    read_step: u64,
 }
 impl HistoryPort {
     pub fn new(
@@ -138,6 +139,7 @@ impl HistoryPort {
             actor,
             runtime,
             recovery_id,
+            read_step: 0,
         }
     }
 }
@@ -160,7 +162,8 @@ impl crate::recovery_runtime::RetainedHistory for HistoryPort {
         if scope != self.port.scope() {
             return Err(HistoryError::Identity);
         }
-        let operation = history_operation(&self.recovery_id, method, &params);
+        let operation = history_operation(&self.recovery_id, self.read_step, method, &params);
+        self.read_step = self.read_step.saturating_add(1);
         let receipt = self
             .runtime
             .block_on(self.port.request(SessionRequest {
@@ -190,9 +193,14 @@ impl crate::recovery_runtime::RetainedHistory for HistoryPort {
     }
 }
 
-fn history_operation(recovery_id: &str, method: HistoryMethod, params: &Value) -> String {
+fn history_operation(
+    recovery_id: &str,
+    step: u64,
+    method: HistoryMethod,
+    params: &Value,
+) -> String {
     let query = crate::event_write::request_signature(&json!([method.as_str(), params]));
-    format!("recovery-history:{recovery_id}:{query}")
+    format!("recovery-history:{recovery_id}:step:{step}:{query}")
 }
 
 #[cfg(test)]
@@ -202,23 +210,28 @@ mod history_identity_tests {
     #[test]
     fn recovery_history_identity_is_stable_per_command_and_query() {
         let params = json!({"threadId":"thread-1","includeTurns":false});
-        let first = history_operation("recovery-1", HistoryMethod::Thread, &params);
+        let first = history_operation("recovery-1", 0, HistoryMethod::Thread, &params);
         assert_eq!(
             first,
-            history_operation("recovery-1", HistoryMethod::Thread, &params)
+            history_operation("recovery-1", 0, HistoryMethod::Thread, &params)
         );
         assert_ne!(
             first,
-            history_operation("recovery-2", HistoryMethod::Thread, &params)
+            history_operation("recovery-1", 1, HistoryMethod::Thread, &params)
         );
         assert_ne!(
             first,
-            history_operation("recovery-1", HistoryMethod::Turns, &params)
+            history_operation("recovery-2", 0, HistoryMethod::Thread, &params)
+        );
+        assert_ne!(
+            first,
+            history_operation("recovery-1", 0, HistoryMethod::Turns, &params)
         );
         assert_ne!(
             first,
             history_operation(
                 "recovery-1",
+                0,
                 HistoryMethod::Thread,
                 &json!({"threadId":"thread-2","includeTurns":false})
             )

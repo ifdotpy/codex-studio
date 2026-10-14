@@ -923,45 +923,39 @@ async fn repeated_retained_history_reads_observe_fresh_provider_state() {
     let first_params = params.clone();
     let first = tokio::task::spawn_blocking(move || {
         let mut history = first_history;
-        history.request(
+        let receipt = history.request(
             &first_scope,
             HistoryMethod::Thread,
             first_params,
             first_deadline,
-        )
+        );
+        (history, receipt)
     });
     let first_wire = peer.write("thread/read").await;
     let first_cursor = peer
         .frame(json!({
             "id":first_wire["id"],
-            "result":{"thread":{"id":"fake-thread-0","revision":1}}
+            "result":{"thread":{"id":"fake-thread-0","status":{"type":"active"},"revision":1}}
         }))
         .await;
     peer.acknowledged_or_worker_exits(first_cursor, &mut worker)
         .await;
-    let first_result: HistoryReceipt = first.await.unwrap().unwrap();
+    let (history, first_result): (HistoryPort, Result<HistoryReceipt, _>) = first.await.unwrap();
+    let first_result = first_result.unwrap();
 
     let second_scope = scope.clone();
     let second_params = params.clone();
     let second_deadline =
         (tokio::time::Instant::now() + std::time::Duration::from_secs(60)).into_std();
-    let second_history = HistoryPort::new(
-        retained,
-        RequestActor {
-            agent: state.agent.clone(),
-            epoch: state.epoch,
-        },
-        tokio::runtime::Handle::current(),
-        "history-read-test".into(),
-    );
     let second = tokio::task::spawn_blocking(move || {
-        let mut history = second_history;
-        history.request(
+        let mut history = history;
+        let receipt = history.request(
             &second_scope,
             HistoryMethod::Thread,
             second_params,
             second_deadline,
-        )
+        );
+        (history, receipt)
     });
     let mut second = second;
     let second_wire = tokio::select! {
@@ -973,14 +967,17 @@ async fn repeated_retained_history_reads_observe_fresh_provider_state() {
     let second_cursor = peer
         .frame(json!({
             "id":second_wire["id"],
-            "result":{"thread":{"id":"fake-thread-0","revision":2}}
+            "result":{"thread":{"id":"fake-thread-0","status":{"type":"idle"},"revision":2}}
         }))
         .await;
     peer.acknowledged_or_worker_exits(second_cursor, &mut worker)
         .await;
-    let second_result = second.await.unwrap().unwrap();
+    let (_history, second_result) = second.await.unwrap();
+    let second_result = second_result.unwrap();
     assert_eq!(first_result.body["thread"]["revision"], 1);
     assert_eq!(second_result.body["thread"]["revision"], 2);
+    assert_eq!(first_result.body["thread"]["status"]["type"], "active");
+    assert_eq!(second_result.body["thread"]["status"]["type"], "idle");
     worker.shutdown().await.unwrap();
 }
 #[tokio::test(start_paused = true)]

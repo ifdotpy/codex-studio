@@ -79,9 +79,11 @@ pub(super) fn run(command: Command) -> Result<Completed, RecoveryError> {
         completed_turn: None,
     };
     let observed_scope = command.scope.clone();
+    let live_session = command.session.clone();
     let observed_value = observation.clone();
-    let observe =
-        move |scope: &ConnectionScope| (scope == &observed_scope).then(|| observed_value.clone());
+    let observe = move |scope: &ConnectionScope| {
+        observe_live_session(&live_session, &observed_scope, &observed_value, scope)
+    };
     let source: &crate::recovery_runtime::ObservationSource<'_> = &observe;
     let mut history = HistoryPort::new(
         command.session,
@@ -268,6 +270,15 @@ fn saved_receipt_matches_current(agent: &Value) -> bool {
         || (current[4].is_null() && agent["connectionRecovery"]["turnId"] == saved[4])
 }
 
+fn observe_live_session(
+    session: &RetainedSessionPort,
+    expected_scope: &ConnectionScope,
+    observation: &RecoveryObservation,
+    scope: &ConnectionScope,
+) -> Option<RecoveryObservation> {
+    (scope == expected_scope && session.is_live()).then(|| observation.clone())
+}
+
 struct NoTaskCompletion;
 impl TaskCompletionWriter for NoTaskCompletion {
     fn resolve_receipt(&mut self, _: &Value) -> Result<Value, RecoveryError> {
@@ -291,8 +302,40 @@ fn unix_seconds() -> f64 {
 
 #[cfg(test)]
 mod tests {
-    use super::saved_receipt_matches_current;
+    use super::{RecoveryObservation, observe_live_session, saved_receipt_matches_current};
+    use crate::{account_worker::retained::RetainedSessionPort, recovery_history::ConnectionScope};
     use serde_json::json;
+
+    #[test]
+    fn replacing_worker_invalidates_the_effect_transaction_observation() {
+        let scope = ConnectionScope {
+            account: "default".into(),
+            connection: "connection-1".into(),
+            generation: 1,
+        };
+        let (commands, receiver) = tokio::sync::mpsc::channel(1);
+        let stop = studio_runtime_process::provider_seam::Shutdown::default();
+        let session = RetainedSessionPort {
+            scope: scope.clone(),
+            commands,
+            stop: stop.clone(),
+        };
+        let observation = RecoveryObservation {
+            scope: scope.clone(),
+            at: 1.0,
+            supervisor: None,
+            quiet: false,
+            journal_drained: false,
+            account_reserved: false,
+            tools_refreshing: false,
+            preparation_pending: false,
+            completed_turn: None,
+        };
+        assert!(observe_live_session(&session, &scope, &observation, &scope).is_some());
+        stop.cancel(); // The old account worker was replaced while recovery was reading.
+        assert!(observe_live_session(&session, &scope, &observation, &scope).is_none());
+        drop(receiver);
+    }
 
     #[test]
     fn saved_receipt_survives_its_completion_but_not_a_new_disconnect() {
