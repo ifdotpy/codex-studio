@@ -90,6 +90,8 @@ pub struct StoreBridge {
     accounts: Arc<std::sync::Mutex<BTreeSet<String>>>,
     event_wake: Arc<std::sync::RwLock<Arc<Notify>>>,
     monitor_dispatch_wake: Arc<std::sync::RwLock<Arc<Notify>>>,
+    managed_tool_runtime:
+        Arc<std::sync::RwLock<Option<Arc<crate::provider_callbacks::ManagedToolRuntime>>>>,
     #[cfg(test)]
     faults: Arc<tests::Faults>,
     #[cfg(test)]
@@ -104,6 +106,7 @@ impl StoreBridge {
             accounts: Arc::default(),
             event_wake: Arc::new(std::sync::RwLock::new(Arc::new(Notify::new()))),
             monitor_dispatch_wake: Arc::new(std::sync::RwLock::new(Arc::new(Notify::new()))),
+            managed_tool_runtime: Arc::new(std::sync::RwLock::new(None)),
             #[cfg(test)]
             faults: Arc::default(),
             #[cfg(test)]
@@ -131,6 +134,23 @@ impl StoreBridge {
             .monitor_dispatch_wake
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = wake;
+    }
+    pub fn set_managed_tool_runtime(
+        &self,
+        runtime: Arc<crate::provider_callbacks::ManagedToolRuntime>,
+    ) {
+        *self
+            .managed_tool_runtime
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(runtime);
+    }
+    pub(crate) fn managed_tool_runtime(
+        &self,
+    ) -> Option<Arc<crate::provider_callbacks::ManagedToolRuntime>> {
+        self.managed_tool_runtime
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
     pub(crate) fn monitor_dispatch_wake(&self) -> Arc<Notify> {
         self.monitor_dispatch_wake
@@ -1305,6 +1325,7 @@ impl Worker {
             let frame = frame.clone();
             let wake = self.bridge.event_wake();
             let monitor_dispatch_wake = self.bridge.monitor_dispatch_wake();
+            let managed_tool_runtime = self.bridge.managed_tool_runtime();
             if let Some(response) = self
                 .db("managed_tool_callback", move |store| {
                     Ok(callback::managed_response(
@@ -1315,6 +1336,7 @@ impl Worker {
                         now,
                         wake,
                         monitor_dispatch_wake,
+                        managed_tool_runtime,
                     ))
                 })
                 .await?

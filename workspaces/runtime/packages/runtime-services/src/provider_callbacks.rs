@@ -77,9 +77,12 @@ pub trait ManagedCreationAccountRead: Send + Sync {
     ) -> Result<ManagedAccountIdentity, ManagedCreationAccountError>;
 }
 
+pub use tools::ManagedToolRuntime;
 pub(crate) use tools::ManagedToolRuntimePorts;
 #[cfg(test)]
 pub(crate) use tools::{MonitorCancelPort, MonitorInputPort};
+#[cfg(test)]
+pub(crate) use tools::{MonitorInputRequest, WorkerAccountSelection, select_worker_account};
 
 pub(crate) struct ManagedToolPortsConfig {
     pub(crate) wake: std::sync::Arc<tokio::sync::Notify>,
@@ -128,6 +131,7 @@ pub(crate) fn managed_tool_ports(
     )
 }
 
+#[cfg(test)]
 pub(crate) fn managed_tool_ports_with_monitor_wake(
     store: &RuntimeStore,
     context: &CallbackContext,
@@ -166,6 +170,36 @@ pub(crate) fn managed_tool_ports_with_runtime(
         return Err(CallbackError::Invalid("Expected a managed tool callback"));
     }
     tools::production_ports(store, context, &request, config)
+}
+
+pub(crate) fn managed_tool_ports_with_bundle(
+    store: &RuntimeStore,
+    context: &CallbackContext,
+    frame: &Frame,
+    wake: std::sync::Arc<tokio::sync::Notify>,
+    monitor_dispatch_wake: std::sync::Arc<tokio::sync::Notify>,
+    runtime: Option<&ManagedToolRuntime>,
+) -> Result<impl crate::managed_host_tools::Ports, CallbackError> {
+    let runtime_ports =
+        runtime
+            .map(ManagedToolRuntime::ports)
+            .unwrap_or_else(|| ManagedToolRuntimePorts {
+                status_watch: None,
+                child_creation: None,
+                interrupt: None,
+                monitor_input: None,
+                monitor_cancel: None,
+            });
+    managed_tool_ports_with_runtime(
+        store,
+        context,
+        frame,
+        ManagedToolPortsConfig {
+            wake,
+            monitor_dispatch_wake,
+            runtime_ports,
+        },
+    )
 }
 
 /// Account workers with a retained host runtime pass its explicit staged-effect

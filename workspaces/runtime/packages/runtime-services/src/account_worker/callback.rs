@@ -23,6 +23,7 @@ pub(super) fn managed_response(
     now: f64,
     wake: std::sync::Arc<Notify>,
     monitor_dispatch_wake: std::sync::Arc<Notify>,
+    managed_runtime: Option<std::sync::Arc<crate::provider_callbacks::ManagedToolRuntime>>,
 ) -> Option<Frame> {
     let Frame::Request(request) = frame else {
         return None;
@@ -47,12 +48,13 @@ pub(super) fn managed_response(
         return Some(unknown_managed_agent_response(request));
     };
     let body = match callback_context(store, account, generation, thread, turn) {
-        Ok(Some(context)) => match crate::provider_callbacks::managed_tool_ports_with_monitor_wake(
+        Ok(Some(context)) => match crate::provider_callbacks::managed_tool_ports_with_bundle(
             store,
             &context,
             frame,
             wake,
             monitor_dispatch_wake,
+            managed_runtime.as_deref(),
         )
         .and_then(|ports| {
             crate::provider_callbacks::dispatch_with_managed_tools(

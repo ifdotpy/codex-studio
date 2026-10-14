@@ -6,10 +6,16 @@ use studio_runtime_providers::{RequestId, ResponseBody};
 use studio_runtime_store::{RuntimeStore, system_reads as records};
 
 mod runtime_dispatch;
+mod runtime_ports;
 pub(crate) mod services;
-pub(crate) use runtime_dispatch::{ManagedToolRuntimePorts, MonitorPort};
+pub(crate) use runtime_dispatch::ManagedToolRuntimePorts;
 #[cfg(test)]
 pub(crate) use runtime_dispatch::{MonitorCancelPort, MonitorInputPort};
+#[cfg(test)]
+pub(crate) use runtime_dispatch::{
+    MonitorInputRequest, WorkerAccountSelection, select_worker_account,
+};
+pub use runtime_ports::ManagedToolRuntime;
 impl From<tool_requests::ToolRequestError> for CallbackError {
     fn from(error: tool_requests::ToolRequestError) -> Self {
         match error {
@@ -196,7 +202,25 @@ pub(super) fn dispatch_with_ports<P: crate::managed_host_tools::Ports>(
     }
     // The complete call identity and arguments commit before a service can act.
     store.transaction_with(|tx| {
-        storage::snapshot(tx, context)?.active()?;
+        let snapshot = storage::snapshot(tx, context)?;
+        snapshot.active()?;
+        if call.name == "orchestration_monitor_input" {
+            let actor = crate::managed_host_tools::Actor::from_record(
+                snapshot.actor(),
+                &context.agent,
+                context.epoch,
+            )
+            .map_err(services::managed_error)?;
+            runtime_dispatch::authorize_monitor_input_in_transaction(
+                tx,
+                &actor,
+                call.args
+                    .get("monitor_id")
+                    .and_then(Value::as_str)
+                    .ok_or(CallbackError::Invalid("Missing monitor_id"))?,
+            )
+            .map_err(services::managed_error)?;
+        }
         let mut candidate = json!({
             "id":call.id, "agent":context.agent, "threadId":context.thread,
             "callId":call.call, "tool":call.name, "signature":call.signature,

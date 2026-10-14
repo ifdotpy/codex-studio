@@ -11,20 +11,36 @@ use crate::managed_host_tools::{
     Actor, DeliveryCertainty, DispatchedOperation, Error, OperationResult, WakeSignal,
 };
 
-pub(crate) fn select_worker_account(
-    accounts: &dyn crate::provider_callbacks::ManagedCreationAccountRead,
-    parent_account_key: &str,
-    requested_account_key: Option<&str>,
-    default_account_key: Option<&str>,
-    model: &str,
-    excluded_account_keys: &[String],
-    project_account_keys: Option<&[String]>,
-    mut model_available: impl FnMut(
+#[cfg(test)]
+pub(crate) struct WorkerAccountSelection<'a> {
+    pub(crate) accounts: &'a dyn crate::provider_callbacks::ManagedCreationAccountRead,
+    pub(crate) parent_account_key: &'a str,
+    pub(crate) requested_account_key: Option<&'a str>,
+    pub(crate) default_account_key: Option<&'a str>,
+    pub(crate) model: &'a str,
+    pub(crate) excluded_account_keys: &'a [String],
+    pub(crate) project_account_keys: Option<&'a [String]>,
+    pub(crate) model_available: &'a mut dyn FnMut(
         &str,
         &crate::provider_callbacks::ManagedAccountIdentity,
         &str,
     ) -> Result<bool, Error>,
+}
+
+#[cfg(test)]
+pub(crate) fn select_worker_account(
+    request: WorkerAccountSelection<'_>,
 ) -> Result<(String, crate::provider_callbacks::ManagedAccountIdentity), Error> {
+    let WorkerAccountSelection {
+        accounts,
+        parent_account_key,
+        requested_account_key,
+        default_account_key,
+        model,
+        excluded_account_keys,
+        project_account_keys,
+        model_available,
+    } = request;
     let selected_default = default_account_key.filter(|key| !key.is_empty());
     if selected_default.is_some()
         && requested_account_key.is_some()
@@ -81,6 +97,7 @@ pub(crate) fn select_worker_account(
     Err(Error::Unavailable("provider-session/model-list"))
 }
 
+#[cfg(test)]
 fn account_read_error(error: crate::provider_callbacks::ManagedCreationAccountError) -> Error {
     use crate::provider_callbacks::ManagedCreationAccountError as AccountError;
     match error {
@@ -96,6 +113,7 @@ fn account_read_error(error: crate::provider_callbacks::ManagedCreationAccountEr
     }
 }
 
+#[cfg(test)]
 fn validate_selected_account(
     account_key: &str,
     excluded: &[String],
@@ -115,6 +133,7 @@ fn validate_selected_account(
     Ok(())
 }
 
+#[cfg(test)]
 fn ordered_worker_account_candidates<'a>(
     listing: &'a crate::provider_callbacks::ManagedCreationAccountListing,
     parent: &str,
@@ -152,6 +171,7 @@ fn ordered_worker_account_candidates<'a>(
     ordered
 }
 
+#[cfg(test)]
 fn worker_model_provider(model: &str) -> Option<&'static str> {
     if model.starts_with("gpt-") {
         Some("codex")
@@ -223,16 +243,16 @@ pub(crate) trait InterruptPort: Send + Sync {
 pub(crate) trait MonitorInputPort: Send + Sync {
     /// The authenticated caller is explicit even though the retained native
     /// runtime's input method takes the owner from the persisted monitor.
-    fn input(
-        &self,
-        store: &RuntimeStore,
-        caller_id: &str,
-        caller_epoch: i64,
-        monitor_id: &str,
-        ticket: &str,
-        input: &Value,
-        now: f64,
-    ) -> Result<Value, Error>;
+    fn input(&self, request: MonitorInputRequest<'_>) -> Result<Value, Error>;
+}
+
+pub(crate) struct MonitorInputRequest<'a> {
+    pub(crate) caller_id: &'a str,
+    pub(crate) caller_epoch: i64,
+    pub(crate) monitor_id: &'a str,
+    pub(crate) ticket: &'a str,
+    pub(crate) input: &'a Value,
+    pub(crate) now: f64,
 }
 
 pub(crate) trait MonitorCancelPort: Send + Sync {
@@ -248,16 +268,28 @@ pub(crate) struct ManagedToolRuntimePorts {
     pub(crate) monitor_cancel: Option<std::sync::Arc<dyn MonitorCancelPort>>,
 }
 
-pub(super) fn dispatch(
-    store: &RuntimeStore,
-    actor: &Actor,
-    context: &crate::provider_callbacks::CallbackContext,
-    tool: &str,
-    args: &Value,
-    request_id: &str,
-    now: f64,
-    ports: &ManagedToolRuntimePorts,
-) -> Result<Option<DispatchedOperation>, Error> {
+pub(super) struct DispatchRequest<'a> {
+    pub(super) store: &'a RuntimeStore,
+    pub(super) actor: &'a Actor,
+    pub(super) context: &'a crate::provider_callbacks::CallbackContext,
+    pub(super) tool: &'a str,
+    pub(super) args: &'a Value,
+    pub(super) request_id: &'a str,
+    pub(super) now: f64,
+    pub(super) ports: &'a ManagedToolRuntimePorts,
+}
+
+pub(super) fn dispatch(request: DispatchRequest<'_>) -> Result<Option<DispatchedOperation>, Error> {
+    let DispatchRequest {
+        store,
+        actor,
+        context,
+        tool,
+        args,
+        request_id,
+        now,
+        ports,
+    } = request;
     let actor_id = actor.record().id.0.as_str();
     let actor_epoch = actor.record().epoch;
     let dispatched = match tool {
@@ -343,15 +375,14 @@ pub(super) fn dispatch(
             let input: Value = serde_json::from_value(args.clone())
                 .map_err(|_| Error::Invalid("Invalid monitor input"))?;
             authorize_monitor_input(store, actor, monitor_id)?;
-            match port.input(
-                store,
-                actor_id,
-                actor_epoch,
+            match port.input(MonitorInputRequest {
+                caller_id: actor_id,
+                caller_epoch: actor_epoch,
                 monitor_id,
-                request_id,
-                &input,
+                ticket: request_id,
+                input: &input,
                 now,
-            ) {
+            }) {
                 Ok(value) => written(value, Vec::new()),
                 Err(error) => match input_attempt(store, monitor_id, request_id) {
                     Ok(Some(record)) => managed_input_receipt(&record, request_id)?,
@@ -389,34 +420,42 @@ pub(crate) fn authorize_monitor_input(
     caller: &Actor,
     monitor_id: &str,
 ) -> Result<(), Error> {
-    store.transaction_with(|tx| {
-        let caller_record = studio_runtime_store::system_reads::get(
-            tx,
-            "runtime_agents",
-            caller.record().id.0.as_str(),
-        )?
-        .ok_or(Error::Stale)?;
-        if caller_record.get("epoch").and_then(Value::as_i64) != Some(caller.record().epoch)
-            || caller_record.get("autoWake") != Some(&Value::Bool(true))
-            || studio_runtime_store::truthy(caller_record.get("deletedAt"))
-        {
-            return Err(Error::Stale);
-        }
-        let (snapshot, owner) = crate::monitor_runtime::snapshot(tx, monitor_id)
-            .map_err(|_| Error::Invalid("Unknown monitor in this caller's scope"))?;
-        let monitor_epoch = snapshot.record().get("epoch").and_then(Value::as_i64);
-        if snapshot.agent() != caller.record().id.0
-            || monitor_epoch != Some(caller.record().epoch)
-            || owner.epoch != caller.record().epoch
-            || owner.extra.get("autoWake") != Some(&Value::Bool(true))
-            || studio_runtime_store::truthy(owner.extra.get("deletedAt"))
-        {
-            return Err(Error::Invalid(
-                "You can input only to your own active monitor",
-            ));
-        }
-        Ok(())
+    store.read_transaction_with_error(|tx| {
+        authorize_monitor_input_in_transaction(tx, caller, monitor_id)
     })
+}
+
+pub(crate) fn authorize_monitor_input_in_transaction(
+    tx: &rusqlite::Transaction<'_>,
+    caller: &Actor,
+    monitor_id: &str,
+) -> Result<(), Error> {
+    let caller_record = studio_runtime_store::system_reads::get(
+        tx,
+        "runtime_agents",
+        caller.record().id.0.as_str(),
+    )?
+    .ok_or(Error::Stale)?;
+    if caller_record.get("epoch").and_then(Value::as_i64) != Some(caller.record().epoch)
+        || caller_record.get("autoWake") != Some(&Value::Bool(true))
+        || studio_runtime_store::truthy(caller_record.get("deletedAt"))
+    {
+        return Err(Error::Stale);
+    }
+    let (snapshot, owner) = crate::monitor_runtime::snapshot(tx, monitor_id)
+        .map_err(|_| Error::Invalid("Unknown monitor in this caller's scope"))?;
+    let monitor_epoch = snapshot.record().get("epoch").and_then(Value::as_i64);
+    if snapshot.agent() != caller.record().id.0
+        || monitor_epoch != Some(caller.record().epoch)
+        || owner.epoch != caller.record().epoch
+        || owner.extra.get("autoWake") != Some(&Value::Bool(true))
+        || studio_runtime_store::truthy(owner.extra.get("deletedAt"))
+    {
+        return Err(Error::Invalid(
+            "You can input only to your own active monitor",
+        ));
+    }
+    Ok(())
 }
 
 pub(crate) fn managed_input_receipt(
@@ -502,7 +541,8 @@ mod tests {
             ("pending", DeliveryCertainty::Unknown),
         ] {
             let record = json!({"lastInputAttempt":{"id":"stable-input","status":status,"response":{"ok":true}}});
-            let result = managed_input_receipt(&record, "stable-input").unwrap();
+            let result = managed_input_receipt(&record, "stable-input")
+                .expect("known receipt has durable outcome");
             assert_eq!(result.certainty, expected, "status {status}");
             assert_eq!(
                 result.applied,
@@ -518,7 +558,7 @@ mod tests {
 
 #[cfg(test)]
 mod account_identity_tests {
-    use super::select_worker_account;
+    use super::{WorkerAccountSelection, select_worker_account};
     use crate::provider_callbacks::{
         ManagedAccountIdentity, ManagedCreationAccountCandidate as Candidate,
         ManagedCreationAccountError, ManagedCreationAccountListing as Listing,
@@ -579,29 +619,35 @@ mod account_identity_tests {
     #[test]
     fn implicit_worker_accounts_follow_python_order_and_filters() {
         let accounts = accounts();
-        let selected = select_worker_account(
-            &accounts,
-            "parent",
-            None,
-            None,
-            "gpt-5",
-            &["configured".to_owned()],
-            None,
-            |key, _, _| Ok(key == "parent"),
-        )
+        let mut available_parent = |key: &str,
+                                    _: &crate::provider_callbacks::ManagedAccountIdentity,
+                                    _: &str| Ok(key == "parent");
+        let selected = select_worker_account(WorkerAccountSelection {
+            accounts: &accounts,
+            parent_account_key: "parent",
+            requested_account_key: None,
+            default_account_key: None,
+            model: "gpt-5",
+            excluded_account_keys: &["configured".to_owned()],
+            project_account_keys: None,
+            model_available: &mut available_parent,
+        })
         .expect("parent is the first eligible model account");
         assert_eq!(selected.0, "parent");
 
-        let selected = select_worker_account(
-            &accounts,
-            "parent",
-            None,
-            None,
-            "gpt-5",
-            &[],
-            None,
-            |key, _, _| Ok(key == "ready"),
-        )
+        let mut available_ready = |key: &str,
+                                   _: &crate::provider_callbacks::ManagedAccountIdentity,
+                                   _: &str| Ok(key == "ready");
+        let selected = select_worker_account(WorkerAccountSelection {
+            accounts: &accounts,
+            parent_account_key: "parent",
+            requested_account_key: None,
+            default_account_key: None,
+            model: "gpt-5",
+            excluded_account_keys: &[],
+            project_account_keys: None,
+            model_available: &mut available_ready,
+        })
         .expect("configured and ready candidates are probed in order");
         assert_eq!(selected.0, "ready");
     }
@@ -609,16 +655,18 @@ mod account_identity_tests {
     #[test]
     fn explicit_worker_account_never_falls_back() {
         let accounts = accounts();
-        let result = select_worker_account(
-            &accounts,
-            "parent",
-            Some("offline"),
-            None,
-            "gpt-5",
-            &[],
-            None,
-            |_, _, _| Ok(false),
-        );
+        let mut unavailable =
+            |_: &str, _: &crate::provider_callbacks::ManagedAccountIdentity, _: &str| Ok(false);
+        let result = select_worker_account(WorkerAccountSelection {
+            accounts: &accounts,
+            parent_account_key: "parent",
+            requested_account_key: Some("offline"),
+            default_account_key: None,
+            model: "gpt-5",
+            excluded_account_keys: &[],
+            project_account_keys: None,
+            model_available: &mut unavailable,
+        });
         assert!(result.is_err());
     }
 }

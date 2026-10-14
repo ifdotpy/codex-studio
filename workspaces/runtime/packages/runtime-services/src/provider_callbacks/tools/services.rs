@@ -495,16 +495,16 @@ impl crate::managed_host_tools::PostCommitPort for ProductionPorts {
         Option<crate::managed_host_tools::DispatchedOperation>,
         crate::managed_host_tools::Error,
     > {
-        super::runtime_dispatch::dispatch(
+        super::runtime_dispatch::dispatch(super::runtime_dispatch::DispatchRequest {
             store,
             actor,
-            &self.context,
+            context: &self.context,
             tool,
             args,
             request_id,
             now,
-            &self.runtime_ports,
-        )
+            ports: &self.runtime_ports,
+        })
     }
 
     fn release(
