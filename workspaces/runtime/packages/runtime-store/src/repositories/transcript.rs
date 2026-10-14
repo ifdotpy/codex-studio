@@ -769,8 +769,15 @@ fn enrich_persisted_items(
         return Ok(());
     }
     let placeholders = vec!["?"; represented.len()].join(",");
+    let metadata_column = if event_meta_table { "m.record" } else { "NULL" };
+    let metadata_join = if event_meta_table {
+        "LEFT JOIN runtime_event_meta m ON m.id=e.id"
+    } else {
+        ""
+    };
     let sql = format!(
-        "SELECT id,status,error FROM runtime_events WHERE agent=? AND kind='user' AND id IN ({placeholders})"
+        "SELECT e.id,e.status,e.error,{metadata_column} FROM runtime_events e {metadata_join} \
+         WHERE e.agent=? AND e.kind='user' AND e.id IN ({placeholders})"
     );
     let mut statement = connection.prepare(&sql)?;
     let mut values: Vec<rusqlite::types::Value> = vec![agent.to_owned().into()];
@@ -781,27 +788,18 @@ fn enrich_persisted_items(
                 row.get::<_, String>(0)?,
                 row.get::<_, String>(1)?,
                 row.get::<_, Option<String>>(2)?,
+                row.get::<_, Option<String>>(3)?,
             ))
         })?
         .collect::<Result<Vec<_>, _>>()?;
-    for (event, status, error) in rows {
-        let metadata = if event_meta_table {
-            connection
-                .query_row(
-                    "SELECT record FROM runtime_event_meta WHERE id=?1",
-                    [&event],
-                    |row| row.get::<_, String>(0),
-                )
-                .optional()?
-                .map(|raw| {
-                    serde_json::from_str::<Value>(&raw)
-                        .map_err(|_| invalid_record("runtime_event_meta", &event))
-                })
-                .transpose()?
-                .unwrap_or(Value::Null)
-        } else {
-            Value::Null
-        };
+    for (event, status, error, raw_metadata) in rows {
+        let metadata = raw_metadata
+            .map(|raw| {
+                serde_json::from_str::<Value>(&raw)
+                    .map_err(|_| invalid_record("runtime_event_meta", &event))
+            })
+            .transpose()?
+            .unwrap_or(Value::Null);
         let delivery = metadata
             .get("requestedDelivery")
             .or_else(|| metadata.get("delivery"))
