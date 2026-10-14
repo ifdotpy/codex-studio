@@ -47,6 +47,11 @@ pub enum TranscriptError {
 impl From<TranscriptStoreError> for TranscriptError {
     fn from(error: TranscriptStoreError) -> Self {
         match error {
+            TranscriptStoreError::Sqlite(rusqlite::Error::SqliteFailure(error, _))
+                if error.code == rusqlite::ErrorCode::ReadOnly =>
+            {
+                Self::ReadOnlyRepair
+            }
             TranscriptStoreError::InvalidStoredObject { table, id } => {
                 Self::InvalidStoredObject { table, id }
             }

@@ -906,14 +906,10 @@ mod tests {
             ("agent queue", "runtime_agents", "UPDATE"),
         ];
         for (index, (boundary, table, operation)) in failure_points.into_iter().enumerate() {
-            let state = std::path::PathBuf::from(
-                std::env::var_os("CODEX_AGENTS_STATE_DIR").expect("isolated state directory"),
-            );
-            std::fs::create_dir_all(&state).expect("isolated state directory exists");
-            let path = state.join(format!(
-                "creation-failpoint-{}-{index}.sqlite3",
-                std::process::id()
-            ));
+            let state = tempfile::tempdir().expect("isolated state directory");
+            let path = state
+                .path()
+                .join(format!("creation-failpoint-{index}.sqlite3"));
             let mut connection = Connection::open(&path).expect("failure database opens");
             create_schema(&connection);
             connection

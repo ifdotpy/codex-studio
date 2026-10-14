@@ -68,6 +68,9 @@ fn seed(store: &RuntimeStore, snapshot: &Value) {
         r#"{"serverId":"local-test","label":"fixture","publicKey":"fixture"}"#,
     )
     .expect("identity");
+    store
+        .set_local_server_id(Some("local-test".to_owned()))
+        .expect("register fixture server identity");
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;

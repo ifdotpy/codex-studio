@@ -316,7 +316,6 @@ async fn next_frame(
 
     loop {
         let heartbeat = tokio::select! {
-            biased;
             // A pending latest-value slot wins even when every reader poll follows a publication.
             changed = state.token_rates.changed() => {
                 if changed.is_err() { return None; }

@@ -52,19 +52,28 @@ impl PairedExchange for Exchange {
     }
 }
 
-fn python_corpus() -> Value {
+fn python_corpus() -> (Value, prepared_python::IsolatedTestEnvironment) {
     let source = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src");
     let python = prepared_python::prepared_python(&source);
     let script = concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/tests/browser_bridge/oracle.py"
     );
-    let output = Command::new(python)
-        .arg(script)
-        .output()
-        .expect("run guarded Python browser oracle");
+    let environment = prepared_python::IsolatedTestEnvironment::new();
+    let mut command = Command::new(python);
+    command.arg(script);
+    environment.apply(&mut command);
+    let output = prepared_python::output_with_timeout(
+        &mut command,
+        std::path::Path::new(script),
+        std::time::Duration::from_secs(60),
+    )
+    .expect("run guarded Python browser oracle");
     assert!(output.status.success(), "guarded browser oracle failed");
-    serde_json::from_slice(&output.stdout).expect("oracle emits complete JSON outputs")
+    (
+        serde_json::from_slice(&output.stdout).expect("oracle emits complete JSON outputs"),
+        environment,
+    )
 }
 
 fn input() -> ForwardInput {
@@ -390,7 +399,7 @@ fn rust_response(case: &Value) -> (Value, Vec<Value>) {
 
 #[test]
 fn python_browser_corpus_matches_rust_and_config_decisions() {
-    let oracle = python_corpus();
+    let (oracle, _environment) = python_corpus();
     assert_eq!(oracle["lifecycle"]["expiredClosed"], true);
     assert_eq!(oracle["lifecycle"]["eightAdmitted"], 8);
     assert_eq!(oracle["lifecycle"]["ninthClosed"], true);
@@ -544,10 +553,14 @@ fn python_browser_corpus_matches_rust_and_config_decisions() {
             paths.sort();
             paths.dedup();
             panic!(
-                "browser config differs for {} at {paths:?}",
+                "browser config differs for {} at {paths:?}, reason={:?}, assets={:?}: Rust={:?}, Python={:?}",
                 case["name"]
                     .as_str()
-                    .expect("valid browser differential fixture")
+                    .expect("valid browser differential fixture"),
+                decision.unavailable_reason,
+                case["assets"],
+                decision.overrides.pointer("/mcp_servers.node_repl"),
+                python_overrides.pointer("/mcp_servers.node_repl")
             );
         }
         assert!(

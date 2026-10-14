@@ -12,7 +12,8 @@ use std::time::Duration;
 use base64::Engine as _;
 use serde_json::{Value, json};
 use studio_runtime_process::{
-    LocalPtyHost, PtyHost, PtyIdentity, PtySession, cleanup_orphan, terminal_environment,
+    LocalPtyHost, PtyHost, PtyHostError, PtyIdentity, PtySession, cleanup_orphan,
+    terminal_environment,
 };
 
 use crate::terminal_driver::{
@@ -279,7 +280,10 @@ impl TerminalSession for PtyTerminalSession {
                 self.with_session(id, |session| {
                     self.host
                         .write(session, &bytes)
-                        .map_err(|_| SessionError::Disconnected)
+                        .map_err(|error| match error {
+                            PtyHostError::InputTimeout => SessionError::UnknownOutcome,
+                            _ => SessionError::Disconnected,
+                        })
                 })?;
                 Ok(json!({"ok":true}))
             }

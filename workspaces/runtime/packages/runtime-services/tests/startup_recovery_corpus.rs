@@ -22,21 +22,25 @@ fn oracle(root: &Path, command: &str) -> Value {
     let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let source = manifest.join("../../apps/server/src");
     let python = prepared_python::prepared_python(&source);
-    let cache = std::env::var_os("XDG_CACHE_HOME").expect("isolated Python cache");
-    let isolation = std::env::var_os("STUDIO_TEST_ISOLATION_ROOT").expect("isolated Python home");
+    let isolation = tempfile::Builder::new()
+        .prefix("startup-recovery-oracle-")
+        .tempdir()
+        .expect("isolated Python environment");
+    let cache = isolation.path().join("cache");
+    for directory in ["home", "codex", "claude", "cache"] {
+        std::fs::create_dir_all(isolation.path().join(directory))
+            .expect("create isolated Python directory");
+    }
     let output = Command::new(python)
         .arg(manifest.join("tests/startup_recovery/oracle.py"))
         .arg(command)
         .arg(root)
         .env_clear()
-        .env("HOME", PathBuf::from(&isolation).join("home"))
-        .env("CODEX_HOME", PathBuf::from(&isolation).join("codex"))
-        .env(
-            "CLAUDE_CONFIG_DIR",
-            PathBuf::from(&isolation).join("claude"),
-        )
+        .env("HOME", isolation.path().join("home"))
+        .env("CODEX_HOME", isolation.path().join("codex"))
+        .env("CLAUDE_CONFIG_DIR", isolation.path().join("claude"))
         .env("XDG_CACHE_HOME", cache)
-        .env("STUDIO_TEST_ISOLATION_ROOT", isolation)
+        .env("STUDIO_TEST_ISOLATION_ROOT", isolation.path())
         .env("PATH", "/usr/local/bin:/usr/bin:/bin")
         .env("TMPDIR", std::env::temp_dir())
         .env("CODEX_NODE", "/usr/bin/node")
