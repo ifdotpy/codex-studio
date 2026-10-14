@@ -312,16 +312,6 @@ class RustCatalogHttpContract(unittest.TestCase):
 
     def test_capabilities_reads_scripted_skills_and_mcp_and_caches_per_agent(self) -> None:
         path = "/api/capabilities?agent=catalog-http-agent"
-        if self.rust_backend:
-            frames_before = self.backend.received_provider_frames()
-            for _ in range(2):
-                response = self.backend.request("GET", path)
-                assert_status(response, 501)
-                self.assertEqual(response.json(), {
-                    "error": "Not implemented: requires thread-preparation/tool-catalog",
-                })
-            self.assertEqual(self.backend.received_provider_frames(), frames_before)
-            return
         first = self.backend.request("GET", path)
         assert_status(first, 200)
         body = first.json()
@@ -430,16 +420,10 @@ class RustCatalogHttpContract(unittest.TestCase):
                 "X-Canvas-Token": self.backend.session["token"],
             },
         )
-        if self.rust_backend:
-            assert_status(notify, 501)
-            self.assertEqual(notify.json(), {
-                "error": "Not implemented: requires sync-policy/resource-notify",
-            })
-        else:
-            assert_status(notify, 200)
-            self.assertEqual(notify.json(), {
-                "requestId": "catalog-http-notify", "accepted": True,
-            })
+        assert_status(notify, 200)
+        self.assertEqual(notify.json(), {
+            "requestId": "catalog-http-notify", "accepted": True,
+        })
 
     def test_limits_repeated_scalar_query_returns_located_400(self) -> None:
         result = self.backend.request(

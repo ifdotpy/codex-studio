@@ -137,8 +137,7 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
         "primary": {"query": {"agent": "$analyticsAgent"}, "query_omit": ["view", "detail", "item", "turn", "thread", "turns", "tool", "timing", "export"], "expected": "2xx"},
     },
     ("GET", "/api/capabilities"): {
-        "primary": {"query": {"agent": "$agent"}, "expected": "501",
-                    "expected_error": "Not implemented: requires thread-preparation/tool-catalog", "assert_no_write": True},
+        "primary": {"query": {"agent": "$agent"}, "expected": "2xx"},
     },
     ("GET", "/api/changes"): {
         "primary": {
@@ -280,10 +279,14 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
         "additional": [{"name": "list", "query": {"agent": "$agent"}, "query_omit": ["request_id"], "expected": "2xx", "assert_no_write": True}],
     },
     ("GET", "/api/transcript"): {
-        "primary": {"query": {"id": "$agent"}, "expected": "501"},
+        "primary": {"query": {"id": "$agent"}, "expected": "2xx"},
     },
     ("GET", "/api/transcript/page"): {
-        "primary": {"query": {"id": "$agent"}, "expected": "501"},
+        "primary": {
+            "query": {"id": "$agent"},
+            "query_omit": ["before", "around", "after"],
+            "expected": "2xx",
+        },
     },
     ("GET", "/api/accounts/claude/login"): {
         "primary": {"query": {"request_id": "88888888-8888-4888-8888-888888888888"}, "expected": "400"},
@@ -295,7 +298,7 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
         "primary": {"query": {"id": "$agent", "message_id": "$item"}, "expected": "2xx"},
     },
     ("GET", "/api/search"): {
-        "primary": {"query": {"q": "ledger-probe"}, "expected": "501"},
+        "primary": {"query": {"q": "ledger-probe"}, "expected": "2xx"},
     },
     ("GET", "/api/complaint"): {
         "primary": {"query": {"id": "$complaint"}},
@@ -598,9 +601,7 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
     ("POST", "/api/sync/notify"): {
         "primary": {
             "body": {"requestId": "ledger-sync-notify", "resources": [{"kind": "state"}]},
-            "expected": "501",
-            "expected_error": "Not implemented: requires sync-policy/resource-notify",
-            "assert_no_write": True,
+            "expected": "2xx",
         },
     },
     ("POST", "/api/usage-resume"): {
