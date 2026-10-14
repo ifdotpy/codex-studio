@@ -421,18 +421,38 @@ fn write_bounded(master: &Pty, bytes: &[u8], deadline: Instant) -> Result<(), Pt
     rustix::fs::fcntl_setfl(master.as_fd(), flags | rustix::fs::OFlags::NONBLOCK)
         .map_err(std::io::Error::from)?;
     let mut master = master;
+    write_all_until(
+        bytes,
+        deadline,
+        Instant::now,
+        |remaining| master.write(remaining),
+        std::thread::sleep,
+    )
+}
+
+fn write_all_until(
+    bytes: &[u8],
+    deadline: Instant,
+    mut now: impl FnMut() -> Instant,
+    mut write: impl FnMut(&[u8]) -> std::io::Result<usize>,
+    mut sleep: impl FnMut(Duration),
+) -> Result<(), PtyHostError> {
+    const RETRY_DELAY: Duration = Duration::from_millis(10);
     let mut written = 0;
     while written < bytes.len() {
-        match master.write(&bytes[written..]) {
+        let current = now();
+        if current >= deadline {
+            return Err(PtyHostError::InputTimeout);
+        }
+        match write(&bytes[written..]) {
             Ok(0) => return Err(PtyHostError::InputTimeout),
             Ok(count) => written += count,
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                if Instant::now() >= deadline {
-                    return Err(PtyHostError::InputTimeout);
-                }
-                std::thread::sleep(Duration::from_millis(10));
+                sleep(RETRY_DELAY.min(deadline.saturating_duration_since(now())));
             }
-            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {
+                sleep(Duration::from_millis(1).min(deadline.saturating_duration_since(now())));
+            }
             Err(error) => return Err(PtyHostError::Io(error)),
         }
     }
@@ -733,7 +753,51 @@ mod tests {
     use std::sync::mpsc;
     use std::thread;
 
-    use super::{LocalPtyHost, PtyHost, PtyHostError, write_bounded};
+    use super::{LocalPtyHost, PtyHost, PtyHostError, write_all_until, write_bounded};
+
+    #[test]
+    fn bounded_write_checks_deadline_after_interruption_and_partial_progress() {
+        let start = std::time::Instant::now();
+        let deadline = start + std::time::Duration::from_millis(5);
+        let elapsed = std::cell::Cell::new(std::time::Duration::ZERO);
+        let attempts = std::cell::Cell::new(0);
+        let result = write_all_until(
+            b"payload",
+            deadline,
+            || start + elapsed.get(),
+            |_| {
+                attempts.set(attempts.get() + 1);
+                Err(std::io::Error::from(std::io::ErrorKind::Interrupted))
+            },
+            |_| elapsed.set(std::time::Duration::from_millis(5)),
+        );
+        assert!(matches!(result, Err(PtyHostError::InputTimeout)));
+        assert_eq!(
+            attempts.get(),
+            1,
+            "interrupted writes must not bypass deadline"
+        );
+
+        let elapsed = std::cell::Cell::new(std::time::Duration::ZERO);
+        let attempts = std::cell::Cell::new(0);
+        let result = write_all_until(
+            b"payload",
+            deadline,
+            || start + elapsed.get(),
+            |_| {
+                attempts.set(attempts.get() + 1);
+                elapsed.set(std::time::Duration::from_millis(5));
+                Ok(1)
+            },
+            |_| panic!("partial writes should not sleep"),
+        );
+        assert!(matches!(result, Err(PtyHostError::InputTimeout)));
+        assert_eq!(
+            attempts.get(),
+            1,
+            "partial progress must not bypass deadline"
+        );
+    }
 
     #[test]
     fn backpressured_terminal_input_returns_uncertain_instead_of_blocking() {
