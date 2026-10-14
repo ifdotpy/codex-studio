@@ -754,7 +754,7 @@ async fn serve_connection(
                 .store(should_close, Ordering::Release);
             #[cfg(test)]
             if let Some(probe_task) = probe_task {
-                let _ = probe_task.await;
+                probe_task.await.expect("half-close observer task");
             }
             Ok::<_, std::convert::Infallible>(response)
         }
