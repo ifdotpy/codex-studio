@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Context repair's genuine no-op success and no-write native-rewrite refusal."""
+"""Context repair's no-op success and held-receipt no-write contract."""
 from __future__ import annotations
 
 import json
@@ -13,7 +13,7 @@ from test_isolation import isolate_supervisor_environment
 
 isolate_supervisor_environment()
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-from http_backend_harness import BackendProcess, TimedHTTPContractTest
+from http_backend_harness import BackendProcess, TimedHTTPContractTest, no_write_snapshot
 from runtime_test_environment import make_runtime
 
 
@@ -69,15 +69,15 @@ class ContextRepairHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         response = self.post({"id": self.ids["held"]})
         self.assertEqual(response.status, 400, response.body)
 
-    def test_native_rewrite_refusal_writes_nothing(self):
-        before = self.snapshot()
+    def test_uncertain_native_receipt_refuses_without_writes(self):
+        # Both backends implement repair_idle; this exact uncertain input is a
+        # hold, not a missing native-history-rewrite consumer.
+        before = (self.snapshot(), no_write_snapshot(self.backend.state))
         response = self.post({"id": self.ids["rewrite"]})
-        if os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"):
-            self.assertEqual(response.status, 501, response.body)
-            self.assertEqual(response.json()["error"], "Not implemented: requires context-repair/native-history-rewrite")
-        else:
-            self.assertEqual(response.status, 400, response.body)
-        self.assertEqual(self.snapshot(), before)
+        self.assertEqual(response.status, 400, response.body)
+        self.assertEqual(
+            (self.snapshot(), no_write_snapshot(self.backend.state)), before
+        )
 
     def test_validation_and_missing_agent(self):
         self.assertEqual(self.post({}).status, 400)

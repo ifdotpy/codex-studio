@@ -1030,13 +1030,17 @@ pub fn repair_idle(store: &RuntimeStore, id: &str) -> Result<Value, RepairError>
                 json!({"id": id, "repair": agent.get("contextRepair").cloned().unwrap_or(Value::Null)}),
             );
         }
+        let epoch = agent["epoch"]
+            .as_i64()
+            .ok_or(RepairError::Invalid("agent.epoch"))?;
+        if !uncertain_input_receipts(db, id, epoch)?.is_empty() {
+            return Err(RepairError::ReceiptHold);
+        }
         require_schema(db, &["runtime_event_meta"])?;
         if !ContextRepairRepository::has_candidates(
             db,
             id,
-            agent["epoch"]
-                .as_i64()
-                .ok_or(RepairError::Invalid("agent.epoch"))?,
+            epoch,
         )? {
             return Ok(
                 json!({"id": id, "repair": agent.get("contextRepair").cloned().unwrap_or(Value::Null)}),

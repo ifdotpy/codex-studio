@@ -78,7 +78,6 @@ async fn branch(
             let operation_id = operation_id.clone();
             let signature = signature.clone();
             move || {
-                let scope = port.current_scope(&scope_account).ok_or_else(unavailable)?;
                 let snapshot = {
                     let db = store.read().map_err(ApiError::stored)?;
                     CheckpointsRepository::workspace_snapshot(&db, &agent_id)
@@ -113,6 +112,9 @@ async fn branch(
                 {
                     return Err(bad_request("Wait for this turn to finish before branching"));
                 }
+                // Match Python's read-only request validation before requiring a live native
+                // consumer. Invalid branch inputs must not depend on provider availability.
+                let scope = port.current_scope(&scope_account).ok_or_else(unavailable)?;
                 let mut operation = None;
                 store
                     .transaction_with(|tx| {
