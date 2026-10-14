@@ -26,10 +26,20 @@ CATALOG = {"data": [{"model": model, "defaultReasoningEffort": "low",
 with tempfile.TemporaryDirectory(prefix="spawn-review-corpus-", dir=CORPUS_TMPDIR) as temporary:
     root = Path(temporary)
     project = Path(sys.argv[1]).resolve(strict=True)
+    review_cwd = sys.argv[2]
     runtime = make_runtime(fixture.ControlledRuntime, root / "state", fixture.f.FakeServer)
-    runtime.catalog = lambda account="default": CATALOG
+    python_home = Path(os.environ["HOME"])
+    python_home.mkdir(parents=True, exist_ok=True)
+    (python_home / "review-target").symlink_to(project / "workspaces/runtime/apps/server", target_is_directory=True)
+    runtime.catalog = lambda account="default": {"data": [row for row in CATALOG["data"]
+        if row["model"] != "gpt-6-luna" or account == "alternate"]}
     lead = runtime.new_lead({"cwd": str(project), "workspaceMode": "worktree"})
     with runtime.db() as db:
+        from codex_execution import ensure_tables, _new_run, _save_run
+        ensure_tables(db)
+        run = _new_run(lead, "spawn-review-corpus", {"created": 10.0})
+        run["status"] = "pending"
+        _save_run(db, run)
         db.execute("INSERT INTO runtime_profiles(id,record) VALUES (?,?)", (
             "profile-reviewer", json.dumps({"id": "profile-reviewer", "name": "Profile",
                 "role": "implementer", "model": "gpt-6-luna", "effort": None,
@@ -55,7 +65,7 @@ with tempfile.TemporaryDirectory(prefix="spawn-review-corpus-", dir=CORPUS_TMPDI
         return rows
     runtime.accounts.get = account
     runtime.accounts.list = accounts
-    lead["accountKey"] = "alternate"
+    lead["accountKey"] = "default"
     lead["effort"] = "low"
     with runtime.db() as db:
         runtime.put(db, "agents", lead)
@@ -64,8 +74,11 @@ with tempfile.TemporaryDirectory(prefix="spawn-review-corpus-", dir=CORPUS_TMPDI
         "dispatcher-spawn-api")
     spawn_id = spawned["agents"][0]["id"]
     spawn_child = runtime.agent(spawn_id)
+    fallback = runtime.spawn_agents(lead, {"agents": [{"name": "Fallback", "prompt": "Use the first available account",
+        "model": "gpt-6-luna", "workspace": "shared"}]}, "dispatcher-spawn-fallback")
+    fallback_child = runtime.agent(fallback["agents"][0]["id"])
     reviewed = __import__("codex_agent_review").request(runtime, lead,
-        {"target": {"type": "uncommittedChanges"}, "cwd": str(project / "workspaces/runtime/apps/server")}, "dispatcher-review-api")
+        {"target": {"type": "uncommittedChanges"}, "cwd": review_cwd}, "dispatcher-review-api")
     review_child = runtime.agent(reviewed["agentId"])
     try:
         runtime.spawn_agents(lead, {"agents": [{"name": "Explicit reviewer workspace", "role": "reviewer",
@@ -86,11 +99,24 @@ with tempfile.TemporaryDirectory(prefix="spawn-review-corpus-", dir=CORPUS_TMPDI
         capacity_error = str(error)
     with runtime.db() as db:
         count_after = db.execute("SELECT count(*) FROM runtime_agents").fetchone()[0]
-    print(json.dumps({"spawn": {"response": spawned, "child": {key: spawn_child.get(key) for key in
-        ("id", "accountKey", "model", "effort", "nativeEffort", "role", "profileInstructions")}},
+    with runtime.db() as db:
+        def event(agent_id):
+            row = db.execute("SELECT id,agent,kind,text,status,created,epoch,turn_id,error FROM runtime_events WHERE id=?",
+                             (agent_id + ":initial",)).fetchone()
+            return dict(row) if row else None
+        def execution_rows(table, agent_id):
+            return [json.loads(row[0]) for row in db.execute(
+                "SELECT record FROM runtime_execution_" + table + " WHERE " +
+                ("reference=?" if table == "effects" else "json_extract(record,'$.agentId')=?"),
+                (agent_id,))]
+        spawn_event = event(spawn_id)
+        spawn_effects = execution_rows("effects", spawn_id)
+        spawn_nodes = execution_rows("nodes", spawn_id)
+    print(json.dumps({"spawn": {"response": spawned, "child": spawn_child,
+        "event": spawn_event, "effects": spawn_effects, "nodes": spawn_nodes},
+        "fallback": {"response": fallback, "child": fallback_child},
         "base": spawned["agents"][0],
         "workspaceRefused": workspace_refused,
         "capacity": {"error": capacity_error, "countBefore": count_before, "countAfter": count_after},
-        "review": {"response": reviewed, "child": {key: review_child.get(key) for key in
-        ("id", "cwd", "status", "nativeReview")}}}, sort_keys=True, separators=(",", ":")))
+        "review": {"response": reviewed, "child": review_child}}, sort_keys=True, separators=(",", ":")))
     runtime.close()

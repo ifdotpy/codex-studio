@@ -20,10 +20,26 @@ const MAX_PROMPT_CHARS: usize = 32_000;
 /// Host account facts and model admission. Production implementations resolve
 /// model settings through the retained `AccountSessionPort` broker.
 pub(crate) trait ManagedCreationEnvironment {
-    fn account_identity(
+    /// Resolve the account and model as `codex_worker_accounts.resolve` does.
+    /// `requested_account_key` is the per-worker `account_key`; the default is
+    /// kept separate so an explicit value can be checked against chat settings.
+    /// `excluded_account_keys` comes from the root agent. Project keys are the
+    /// resolved project settings allowlist, when the root has a project binding.
+    /// Implicit selection probes parent, configured default, then AccountDriver
+    /// list order, filtering disabled/unusable accounts, project keys, provider,
+    /// and models (including aliases); explicit selection never falls back.
+    fn select_worker_account(
         &self,
-        account_key: &str,
-    ) -> Result<crate::host_worker_create::AccountIdentity, crate::managed_host_tools::Error>;
+        parent_account_key: &str,
+        requested_account_key: Option<&str>,
+        default_account_key: Option<&str>,
+        model: &str,
+        excluded_account_keys: &[String],
+        project_account_keys: Option<&[String]>,
+    ) -> Result<
+        (String, crate::host_worker_create::AccountIdentity),
+        crate::managed_host_tools::Error,
+    >;
     fn catalog(&self) -> &dyn crate::host_worker_create::CreationCatalog;
     fn prepare_workspace(
         &self,
@@ -34,6 +50,20 @@ pub(crate) trait ManagedCreationEnvironment {
         Box<dyn crate::monitor_runtime::WorkspaceAdmission + Send + Sync>,
         crate::managed_host_tools::Error,
     >;
+}
+
+fn expand_review_home(path: &str, home: Option<&str>) -> PathBuf {
+    if path == "~" {
+        return home
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(path));
+    }
+    if let Some(rest) = path.strip_prefix("~/") {
+        if let Some(home) = home {
+            return Path::new(home).join(rest);
+        }
+    }
+    PathBuf::from(path)
 }
 
 #[derive(Debug, Error)]
@@ -280,36 +310,68 @@ pub(crate) fn spawn_agents(
             .into());
         }
         let id = child_id(request_id, index);
-        let account_key = spec
-            .get("account_key")
-            .and_then(Value::as_str)
-            .or_else(|| defaults.get("accountKey").and_then(Value::as_str))
-            .unwrap_or(parent_account);
-        if defaults
-            .get("accountKey")
-            .and_then(Value::as_str)
-            .is_some_and(|saved| saved != account_key)
-        {
-            return Err(crate::managed_host_tools::Error::Invalid(
-                "Worker account differs from team defaults",
-            )
-            .into());
-        }
-        let account = environment.account_identity(account_key)?;
+        let requested_account_key = spec.get("account_key").and_then(Value::as_str);
+        let default_account_key = defaults.get("accountKey").and_then(Value::as_str);
         let workspace_admission = environment.prepare_workspace(actor, spec, request_id)?;
-        let provider = account.provider.as_deref().unwrap_or("codex");
         let profile_model = profile.as_ref().map(|profile| profile.model.as_str());
-        let model = spec
+        let requested_model = spec
             .get("model")
             .and_then(Value::as_str)
             .or(profile_model)
             .or_else(|| defaults.get("model").and_then(Value::as_str))
             .or_else(|| root_value.get("model").and_then(Value::as_str))
-            .unwrap_or(if provider == "claude" {
-                "default"
-            } else {
-                "gpt-6-astra"
+            .unwrap_or("gpt-6-astra");
+        let excluded_account_keys = root_value
+            .get("excludedAccountKeys")
+            .and_then(Value::as_array)
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_owned)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let project_account_keys = root_value
+            .get("projectId")
+            .and_then(Value::as_str)
+            .zip(root_value.get("projectServerId").and_then(Value::as_str))
+            .and_then(|(project_id, home_server)| {
+                let read = store.read().ok()?;
+                let (_, record) = studio_runtime_store::ProjectsRepository::get(&read, project_id)
+                    .ok()
+                    .flatten()?;
+                (record["homeServerId"] == home_server)
+                    .then(|| {
+                        record["accountKeys"].as_array().map(|keys| {
+                            keys.iter()
+                                .filter_map(Value::as_str)
+                                .map(str::to_owned)
+                                .collect::<Vec<_>>()
+                        })
+                    })
+                    .flatten()
             });
+        let (account_key, account) = environment.select_worker_account(
+            parent_account,
+            requested_account_key,
+            default_account_key,
+            requested_model,
+            &excluded_account_keys,
+            project_account_keys.as_deref(),
+        )?;
+        let provider = account.provider.as_deref().unwrap_or("codex");
+        let model = if requested_model == "gpt-6-astra"
+            && root_value.get("model").is_none()
+            && defaults.get("model").is_none()
+            && profile_model.is_none()
+            && spec.get("model").is_none()
+            && provider == "claude"
+        {
+            "default"
+        } else {
+            requested_model
+        };
         let effort = if spec.get("effort").is_some() {
             spec.get("effort").and_then(Value::as_str)
         } else if let Some(effort) = profile.as_ref().and_then(|profile| profile.effort) {
@@ -389,7 +451,6 @@ pub(crate) fn spawn_agents(
         record["provider"] = json!(provider);
         record["workerBaseMainRef"] = json!(main_ref.clone());
         record["workerBaseBehindMain"] = json!(behind_main);
-        record["creationIntent"] = spec.clone();
         if let Some(profile_id) = spec.get("profile_id") {
             record["profileId"] = profile_id.clone();
         }
@@ -451,15 +512,15 @@ pub(crate) fn spawn_agents(
         let mut signals = Vec::new();
         for (draft, saved) in drafts.iter().zip(existing) {
             if let Some(saved) = saved {
-                if saved.value().get("creationIntent") != Some(&draft.intent) {
-                    return Err(crate::managed_host_tools::Error::Invalid("This request id has different content"));
-                }
                 children.push(project_child(&saved.value(), draft.task_id.as_deref(), draft.worktree));
                 continue;
             }
             let mut text = draft.prompt.clone();
             if draft.worktree {
                 text.push_str(&format!("\n\n[Studio worker base] Commit {} from ref {}.", draft.record["workerBaseCommit"].as_str().unwrap_or_default(), draft.record["workerBaseRef"].as_str().unwrap_or("HEAD")));
+                if let Some(behind) = draft.worker_base_behind_main.filter(|behind| *behind != 0) {
+                    text.push_str(&format!(" This base is {behind} commits behind {}. Check for newer project instructions before starting.", draft.worker_base_main_ref.as_deref().unwrap_or("main")));
+                }
             }
             if let Some(task) = &draft.task_id {
                 let work = studio_runtime_store::WorkItemsRepository::work_record(tx, task)?
@@ -912,7 +973,7 @@ pub(crate) fn request_review(
     let mut directory_path = args
         .get("cwd")
         .and_then(Value::as_str)
-        .map(PathBuf::from)
+        .map(|path| expand_review_home(path, std::env::var("HOME").ok().as_deref()))
         .unwrap_or_else(|| PathBuf::from(parent_cwd));
     if !directory_path.is_absolute() {
         directory_path = Path::new(parent_cwd).join(directory_path);
@@ -946,15 +1007,22 @@ pub(crate) fn request_review(
         .get("accountKey")
         .and_then(Value::as_str)
         .unwrap_or("default");
-    let account = environment.account_identity(account_key)?;
-    // Review is read-only in the parent's managed workspace. Its requested
-    // repository is validated separately and may differ from the actor's cwd.
-    let workspace_admission =
-        environment.prepare_workspace(actor, &json!({"workspace":"shared"}), request_id)?;
     let spec = plan.spec();
     let model = spec.get("model").and_then(Value::as_str).ok_or(
         crate::managed_host_tools::Error::Invalid("Invalid native review model"),
     )?;
+    let (account_key, account) = environment.select_worker_account(
+        account_key,
+        Some(account_key),
+        None,
+        model,
+        &[],
+        None,
+    )?;
+    // Review is read-only in the parent's managed workspace. Its requested
+    // repository is validated separately and may differ from the actor's cwd.
+    let workspace_admission =
+        environment.prepare_workspace(actor, &json!({"workspace":"shared"}), request_id)?;
     let effort = spec.get("effort").and_then(Value::as_str);
     let fast_mode = spec
         .get("fast_mode")
@@ -987,7 +1055,7 @@ pub(crate) fn request_review(
         &base_commit,
         actor_record.epoch,
         parent_cwd,
-        account_key,
+        &account_key,
         parent_value.get("projectId"),
         parent_value.get("projectServerId"),
         project.as_ref(),
@@ -1006,9 +1074,10 @@ pub(crate) fn request_review(
     record["yoloMode"] = json!(false);
     record["worktree"] = json!(false);
     record["workspaceMode"] = json!("shared");
+    record["workspaceInGit"] = json!(false);
+    record["imageWorkspaceHasGit"] = json!(false);
     record["workerBaseRef"] = Value::Null;
     record["workerBaseCommit"] = Value::Null;
-    record["creationIntent"] = spec.clone();
     record["maxAgents"] = root_value.get("maxAgents").cloned().unwrap_or(json!(64));
     record["tokenBudget"] = root_value
         .get("tokenBudget")

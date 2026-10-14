@@ -317,6 +317,9 @@ pub fn prepare_work_item(
         object.remove("concurrency");
         object.remove("maxAgentsExplicit");
     }
+    let workspace_in_git = git_value(Path::new(&path), &["rev-parse", "--show-toplevel"]).is_ok();
+    draft["workspaceInGit"] = json!(workspace_in_git);
+    draft["imageWorkspaceHasGit"] = json!(workspace_in_git);
     draft["worktree"] = json!(worktree);
     if !worktree {
         draft["workspaceMode"] = json!("shared");

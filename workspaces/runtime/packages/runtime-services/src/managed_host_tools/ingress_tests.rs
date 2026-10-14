@@ -1138,9 +1138,9 @@ fn every_managed_tool_runs_through_provider_callback_dispatch() {
         assert!(matches!(decision, CallbackDecision::Answer(_)), "{tool}");
     }
     // The plan topic has a local transactional projection and Interrupt now
-    // dispatches post-commit; the other eight operations use the test bundle.
-    assert_eq!(ports.staged.load(Ordering::SeqCst), 8);
-    assert_eq!(ports.released.load(Ordering::SeqCst), 8);
+    // dispatches post-commit; the other nine operations use the test bundle.
+    assert_eq!(ports.staged.load(Ordering::SeqCst), 9);
+    assert_eq!(ports.released.load(Ordering::SeqCst), 9);
 }
 
 #[test]
@@ -1341,16 +1341,52 @@ impl crate::monitor_runtime::WorkspaceAdmission for AllowWorkspace {
 
 struct CreationEnvironment;
 impl crate::managed_child_create::ManagedCreationEnvironment for CreationEnvironment {
-    fn account_identity(
+    fn select_worker_account(
         &self,
-        _: &str,
-    ) -> Result<crate::host_worker_create::AccountIdentity, Error> {
-        Ok(crate::host_worker_create::AccountIdentity {
-            provider: Some("codex".to_owned()),
-            home: None,
-            account_id: None,
-            email: None,
-        })
+        parent_account_key: &str,
+        requested_account_key: Option<&str>,
+        default_account_key: Option<&str>,
+        model: &str,
+        excluded_account_keys: &[String],
+        project_account_keys: Option<&[String]>,
+    ) -> Result<(String, crate::host_worker_create::AccountIdentity), Error> {
+        if requested_account_key
+            .is_some_and(|key| default_account_key.is_some_and(|default| default != key))
+        {
+            return Err(Error::Invalid("Worker account differs from team defaults"));
+        }
+        let key = requested_account_key
+            .or(default_account_key)
+            .unwrap_or_else(|| {
+                if model == "gpt-6-luna" {
+                    "alternate"
+                } else {
+                    parent_account_key
+                }
+            });
+        if excluded_account_keys.iter().any(|excluded| excluded == key)
+            || project_account_keys.is_some_and(|keys| {
+                !keys.is_empty() && !keys.iter().any(|candidate| candidate == key)
+            })
+        {
+            return Err(Error::Invalid("Select a worker account of this project"));
+        }
+        let provider = if model.starts_with("claude-")
+            || ["default", "sonnet", "opus", "haiku"].contains(&model)
+        {
+            "claude"
+        } else {
+            "codex"
+        };
+        Ok((
+            key.to_owned(),
+            crate::host_worker_create::AccountIdentity {
+                provider: Some(provider.to_owned()),
+                home: None,
+                account_id: None,
+                email: None,
+            },
+        ))
     }
     fn catalog(&self) -> &dyn crate::host_worker_create::CreationCatalog {
         &Self
@@ -1405,13 +1441,57 @@ fn normalize_actor_ids(value: &mut Value) {
     }
 }
 
+fn normalize_persisted_ids_and_times(value: &mut Value) {
+    match value {
+        Value::Object(object) => {
+            for (key, nested) in object.iter_mut() {
+                if matches!(
+                    key.as_str(),
+                    "id" | "actorId"
+                        | "agent"
+                        | "agentId"
+                        | "parentId"
+                        | "rootId"
+                        | "runId"
+                        | "attemptId"
+                        | "turnId"
+                        | "referenceId"
+                ) {
+                    *nested = json!("normalized-opaque-id");
+                } else if matches!(key.as_str(), "created" | "updated" | "timestamp") {
+                    *nested = json!(0);
+                } else {
+                    normalize_persisted_ids_and_times(nested);
+                }
+            }
+        }
+        Value::Array(values) => {
+            for nested in values {
+                normalize_persisted_ids_and_times(nested);
+            }
+        }
+        _ => {}
+    }
+}
+
 #[test]
 fn dispatcher_service_bundle_calls_spawn_and_review_entry_points() {
     let (_root, store, context) = fixture();
-    let review_cwd = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+    let project_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .ancestors()
         .nth(4)
         .unwrap()
+        .canonicalize()
+        .unwrap();
+    let review_target = project_path.join("workspaces/runtime/apps/server");
+    let home = std::path::PathBuf::from(std::env::var_os("HOME").expect("test HOME"));
+    std::fs::create_dir_all(&home).unwrap();
+    let tilde_target = home.join("review-target");
+    let _ = std::fs::remove_file(&tilde_target);
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(&review_target, &tilde_target).unwrap();
+    let review_cwd = "~/review-target".to_owned();
+    let review_directory = review_target
         .canonicalize()
         .unwrap()
         .to_string_lossy()
@@ -1421,7 +1501,11 @@ fn dispatcher_service_bundle_calls_spawn_and_review_entry_points() {
         .join("../../apps/server/tests/spawn-review-child-oracle.py");
     let mut python = Command::new(prepared_python::prepared_python(&server_source));
     python.env("PYTHONDONTWRITEBYTECODE", "1");
-    python.arg(&oracle).arg(&review_cwd);
+    python.env("HOME", &home);
+    python
+        .arg(&oracle)
+        .arg(&review_target.ancestors().nth(4).unwrap())
+        .arg(&review_cwd);
     let output = prepared_python::output_with_timeout(
         &mut python,
         &oracle,
@@ -1445,8 +1529,10 @@ fn dispatcher_service_bundle_calls_spawn_and_review_entry_points() {
         .value()
     };
     actor_value["maxAgents"] = json!(64);
-    actor_value["cwd"] = json!(review_cwd);
-    actor_value["accountKey"] = json!("alternate");
+    actor_value["cwd"] = json!(project_path);
+    actor_value["workspaceInGit"] = json!(true);
+    actor_value["workerDefaults"] = json!({});
+    actor_value["accountKey"] = json!("default");
     actor_value["effort"] = json!("low");
     store
         .transaction_with::<_, StoreError>(|tx| {
@@ -1455,13 +1541,25 @@ fn dispatcher_service_bundle_calls_spawn_and_review_entry_points() {
             studio_runtime_store::AgentRepository::put(tx, &actor_record)?;
             studio_runtime_store::ProjectsRepository::put_project(
                 tx,
-                &json!({"id":review_cwd,"path":review_cwd,"name":"corpus",
+                &json!({"id":project_path,"path":project_path,"name":"corpus",
                     "accountKey":"alternate","accountRevision":1,"workerBaseRef":"HEAD~1"}),
             )?;
             Ok(())
         })
         .unwrap();
     let actor = Actor::from_record(&actor_value, &context.agent, context.epoch).unwrap();
+
+    let run_id = "run:spawn-review-corpus";
+    let run = json!({"id":run_id,"agent":actor_value["id"],"accountKey":"default",
+        "epoch":context.epoch as i64,"threadId":actor_value.get("threadId").cloned().unwrap_or(Value::Null),
+        "turnId":null,"created":10.0,"status":"pending","firstAttemptId":null,
+        "rootAttemptId":null,"latestAttemptId":null});
+    store.transaction_with::<_, StoreError>(|tx| {
+        tx.execute("INSERT INTO runtime_execution_runs(id,agent,account,epoch,thread,turn,created,record) VALUES(?1,?2,?3,?4,?5,NULL,10,?6)",
+            rusqlite::params![run_id, actor_value["id"].as_str().unwrap(), "default", context.epoch as i64,
+                actor_value.get("threadId").and_then(Value::as_str), run.to_string()])?;
+        Ok(())
+    }).unwrap();
 
     store
         .transaction_with::<_, StoreError>(|tx| {
@@ -1514,19 +1612,71 @@ fn dispatcher_service_bundle_calls_spawn_and_review_entry_points() {
         spawned.value["agents"][0]["baseCommit"],
         expected["base"]["baseCommit"]
     );
-    for field in [
-        "id",
-        "accountKey",
-        "model",
-        "effort",
-        "nativeEffort",
-        "role",
-        "profileInstructions",
+    let mut expected_spawn_child = expected["spawn"]["child"].clone();
+    let mut actual_spawn_child = spawned_child.clone();
+    normalize_persisted_ids_and_times(&mut expected_spawn_child);
+    normalize_persisted_ids_and_times(&mut actual_spawn_child);
+    assert_eq!(
+        actual_spawn_child, expected_spawn_child,
+        "complete spawn child row"
+    );
+
+    let fallback = crate::managed_child_create::spawn_agents(
+        &store,
+        &actor,
+        &json!({"agents":[{"name":"Fallback","prompt":"Use the first available account",
+            "model":"gpt-6-luna","workspace":"shared"}]}),
+        "dispatcher-spawn-fallback",
+        20.5,
+        &CreationEnvironment,
+    )
+    .unwrap();
+    let fallback_id = fallback.value["agents"][0]["id"].as_str().unwrap();
+    let fallback_child = studio_runtime_store::AgentRepository::get(
+        &store.read().unwrap(),
+        &studio_runtime_store::AgentId::from(fallback_id),
+    )
+    .unwrap()
+    .unwrap()
+    .value();
+    assert_eq!(fallback_child["accountKey"], "alternate");
+    let mut expected_fallback = expected["fallback"]["child"].clone();
+    let mut actual_fallback = fallback_child;
+    normalize_persisted_ids_and_times(&mut expected_fallback);
+    normalize_persisted_ids_and_times(&mut actual_fallback);
+    assert_eq!(
+        actual_fallback, expected_fallback,
+        "complete implicit fallback child row"
+    );
+    let read = store.read().unwrap();
+    let event = read.query_row("SELECT json_object('id',id,'agent',agent,'kind',kind,'text',text,'status',status,'created',created,'epoch',epoch,'turn_id',turn_id,'error',error) FROM runtime_events WHERE id=?1", [format!("{spawned_child_id}:initial")], |row| row.get::<_, String>(0)).unwrap();
+    let event: Value = serde_json::from_str(&event).unwrap();
+    let effects = read.query_row("SELECT COALESCE(json_group_array(json(record)), '[]') FROM runtime_execution_effects WHERE reference=?1", [spawned_child_id], |row| row.get::<_, String>(0)).unwrap();
+    let effects: Value = serde_json::from_str(&effects).unwrap();
+    let nodes = read.query_row("SELECT COALESCE(json_group_array(json(record)), '[]') FROM runtime_execution_nodes WHERE json_extract(record,'$.agentId')=?1", [spawned_child_id], |row| row.get::<_, String>(0)).unwrap();
+    let nodes: Value = serde_json::from_str(&nodes).unwrap();
+    for (actual, expected_value, label) in [
+        (
+            event,
+            expected["spawn"]["event"].clone(),
+            "spawn initial event",
+        ),
+        (
+            effects,
+            expected["spawn"]["effects"].clone(),
+            "spawn execution effects",
+        ),
+        (
+            nodes,
+            expected["spawn"]["nodes"].clone(),
+            "spawn execution nodes",
+        ),
     ] {
-        assert_eq!(
-            spawned_child[field], expected["spawn"]["child"][field],
-            "spawn child {field}"
-        );
+        let mut actual = actual;
+        let mut expected_value = expected_value;
+        normalize_persisted_ids_and_times(&mut actual);
+        normalize_persisted_ids_and_times(&mut expected_value);
+        assert_eq!(actual, expected_value, "complete {label} row(s)");
     }
     let before_workspace_refusal: i64 = store
         .read()
@@ -1553,7 +1703,7 @@ fn dispatcher_service_bundle_calls_spawn_and_review_entry_points() {
     let reviewed = crate::managed_child_create::request_review(
         &store,
         &actor,
-        &json!({"target":{"type":"uncommittedChanges"},"cwd":format!("{review_cwd}/workspaces/runtime/apps/server")}),
+        &json!({"target":{"type":"uncommittedChanges"},"cwd":review_cwd}),
         "dispatcher-review-api",
         21.0,
         &CreationEnvironment,
@@ -1575,18 +1725,16 @@ fn dispatcher_service_bundle_calls_spawn_and_review_entry_points() {
     .unwrap()
     .unwrap()
     .value();
-    assert_eq!(
-        child["cwd"],
-        format!("{review_cwd}/workspaces/runtime/apps/server")
-    );
+    assert_eq!(child["cwd"], review_directory);
     assert_eq!(child["nativeReview"]["status"], "pending");
-    for field in ["id", "cwd", "status", "nativeReview"] {
-        let mut expected_value = expected["review"]["child"][field].clone();
-        let mut actual_value = child[field].clone();
-        normalize_actor_ids(&mut expected_value);
-        normalize_actor_ids(&mut actual_value);
-        assert_eq!(actual_value, expected_value, "review child {field}");
-    }
+    let mut expected_review_child = expected["review"]["child"].clone();
+    let mut actual_review_child = child.clone();
+    normalize_persisted_ids_and_times(&mut expected_review_child);
+    normalize_persisted_ids_and_times(&mut actual_review_child);
+    assert_eq!(
+        actual_review_child, expected_review_child,
+        "complete review child row"
+    );
     store
         .transaction_with::<_, StoreError>(|tx| {
             let root = studio_runtime_store::AgentRepository::get(
