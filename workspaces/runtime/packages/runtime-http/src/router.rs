@@ -27,8 +27,8 @@ pub struct HttpState {
         Option<Arc<studio_runtime_services::multi_server_pairing::MultiServerBoundary>>,
     pub account_driver:
         Option<std::sync::Arc<studio_runtime_services::account_driver::AccountDriver>>,
-    pub(crate) voice_provider:
-        Option<Arc<dyn studio_runtime_services::voice::provider::VoiceProviderPort>>,
+    pub(crate) voice_request_port:
+        Option<Arc<dyn studio_runtime_services::voice::runtime::VoiceRequestPort>>,
     pub(crate) credentials: Arc<studio_runtime_services::federation_credentials::Credentials>,
     pub(crate) token: String,
     pub(crate) workspace_id: String,
@@ -76,7 +76,7 @@ impl HttpState {
             message_admission: None,
             account_driver: None,
             claude_login: None,
-            voice_provider: None,
+            voice_request_port: None,
             credentials: Arc::default(),
             multi_server_boundary: None,
             token,
@@ -116,11 +116,11 @@ impl HttpState {
     }
 
     /// Attach the account worker's generic provider-session voice adapter.
-    pub fn with_voice_provider(
+    pub fn with_voice_request_port(
         mut self,
-        provider: Arc<dyn studio_runtime_services::voice::provider::VoiceProviderPort>,
+        provider: Arc<dyn studio_runtime_services::voice::runtime::VoiceRequestPort>,
     ) -> Self {
-        self.voice_provider = Some(provider);
+        self.voice_request_port = Some(provider);
         self
     }
 

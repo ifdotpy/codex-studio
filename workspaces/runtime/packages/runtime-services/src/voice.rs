@@ -22,6 +22,9 @@ pub use audio::{VoiceAudioError, save_audio};
 #[path = "voice/provider.rs"]
 pub mod provider;
 
+#[path = "voice_runtime.rs"]
+pub mod runtime;
+
 const MAX_RECORD_TEXT: usize = 100_000;
 const MAX_IDENTITY: usize = 240;
 const MAX_PAYLOAD: usize = 100_000;
