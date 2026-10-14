@@ -74,16 +74,6 @@ pub trait AccountSessionPort: Send + Sync {
     fn read_limits(&self, _account: &str) -> Result<Value, AccountSessionError> {
         Err(AccountSessionError::Requires(LIMITS_REQUIRED))
     }
-    /// Read one model/list page from the account's retained provider session.
-    /// The model-catalog service owns pagination, response validation and cache.
-    fn model_list(
-        &self,
-        _account: &str,
-        _provider: &str,
-        _params: Value,
-    ) -> Result<Value, AccountSessionError> {
-        Err(AccountSessionError::Requires("provider-session/model-list"))
-    }
 }
 
 pub const LIMITS_REQUIRED: &str = "provider-session/account-rate-limits";
