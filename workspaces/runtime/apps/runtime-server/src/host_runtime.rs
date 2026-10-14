@@ -58,6 +58,12 @@ impl HostRuntime {
             root: store.root().to_owned(),
             native_path,
             resources,
+            publication_sink: Arc::new(
+                studio_runtime_services::notification_runtime_effects::RuntimeNotificationPostCommitSink {
+                    token_rates: state.token_rate_handle(),
+                    resources: state.resource_notifications_handle(),
+                },
+            ),
             environment: std::env::vars().collect(),
         });
         Self::with_launcher(store, launcher, state.event_wake_handle()).await
@@ -94,6 +100,8 @@ struct HostLauncher {
     root: PathBuf,
     native_path: Option<String>,
     resources: PreparationResources,
+    publication_sink:
+        Arc<dyn studio_runtime_services::notification_runtime_effects::NotificationPostCommitSink>,
     environment: BTreeMap<String, String>,
 }
 
@@ -157,6 +165,7 @@ impl AccountLauncher for HostLauncher {
                     recovered: vec![],
                 },
                 resources,
+                publication_sink: Arc::clone(&self.publication_sink),
             })
         })
     }
