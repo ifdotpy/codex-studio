@@ -16,8 +16,8 @@ use studio_runtime_providers::{Method, RequestId, RequestTicket};
 use studio_runtime_services::{
     account_driver::AccountDriver,
     account_session_runtime::{
-        AccountSessionError, AccountSessionRuntime, ConnectionScope, ProviderRequest,
-        ProviderResponse, RequestCertainty, RetainedAccountSession, SessionFuture, SessionReceipt,
+        AccountSessionRuntime, ConnectionScope, ProviderRequest, ProviderResponse,
+        RequestCertainty, RetainedAccountSession, SessionFuture, SessionReceipt,
     },
 };
 use tower::ServiceExt;
