@@ -31,10 +31,11 @@
 //! `monitor-input-request-identity`; unsupported Context topics require
 //! `model-context/requested-topic`. Refused operations write nothing.
 //!
-//! Registered difference: all `remoteOrigin` host-tool calls and spawn requests
-//! targeting another server are rejected before a host operation. Rust has no
-//! local cross-server worker-call adapter here, so it cannot silently route a
-//! host tool to another team or server.
+//! Remote-origin routing follows Python `Runtime.dynamic` (codex_runtime.py
+//! 8969–8997, 9004–9049): Search and local Context topics remain local, while
+//! context plan/complaints, Complaint, Status, non-descendant Send, and moved
+//! Spawn/Interrupt require named `multi-server-runtime/*` adapters. The
+//! monitor Context topic remains a local monitor snapshot.
 
 use rusqlite::Transaction;
 use serde::Deserialize;
@@ -158,8 +159,12 @@ pub(crate) enum Error {
     Invalid(&'static str),
     #[error("The caller identity changed")]
     Stale,
-    #[error("Communication is limited to your team")]
-    CrossTeam,
+    #[error("invalid stored object {table}/{id} at {location}")]
+    InvalidStored {
+        table: &'static str,
+        id: String,
+        location: String,
+    },
     #[error("Not implemented: requires {0}")]
     Unavailable(&'static str),
     #[error(transparent)]
@@ -526,8 +531,8 @@ pub(crate) fn execute(
     if !now.is_finite() || now < 0.0 {
         return Err(Error::Invalid("Invalid callback clock"));
     }
-    if actor.remote_origin {
-        return Err(Error::CrossTeam);
+    if let Some(dependency) = remote_dependency(tx, actor, &call)? {
+        return Err(Error::Unavailable(dependency));
     }
     if actor.execution_move {
         return Err(Error::Invalid(
@@ -617,6 +622,38 @@ pub(crate) fn execute(
         value: result.value,
         signals: result.signals,
     })
+}
+
+/// Match Runtime.dynamic's remote-origin branches. Search, monitor Context,
+/// watches, monitors, reviews and ordinary interrupts remain local. Calls whose
+/// Python branch delegates to multi_server.worker_call retain a named refusal
+/// until that adapter is available.
+fn remote_dependency(
+    tx: &Transaction<'_>,
+    actor: &Actor,
+    call: &Call,
+) -> Result<Option<&'static str>, Error> {
+    if !actor.remote_origin {
+        return Ok(None);
+    }
+    let moved_from = truthy(actor.record.extra.get("movedFrom"));
+    let dependency = match call.tool {
+        ManagedHostTool::Send => {
+            let target = required_text(&call.args, "agent_id")?;
+            (!is_descendant(tx, actor, target)?).then_some("multi-server-runtime/message")
+        }
+        ManagedHostTool::Status => Some("multi-server-runtime/directory"),
+        ManagedHostTool::Complaint => Some("multi-server-runtime/complaint"),
+        ManagedHostTool::Context
+            if matches!(call.args["topic"].as_str(), Some("plan" | "complaints")) =>
+        {
+            Some("multi-server-runtime/context")
+        }
+        ManagedHostTool::Spawn if moved_from => Some("multi-server-runtime/spawn"),
+        ManagedHostTool::Interrupt if moved_from => Some("multi-server-runtime/interrupt"),
+        _ => None,
+    };
+    Ok(dependency)
 }
 
 fn spawn(
@@ -941,7 +978,7 @@ mod tests {
     }
 
     #[test]
-    fn remote_origin_is_rejected_before_any_adapter_can_run() {
+    fn remote_local_reads_are_allowed_and_cross_server_calls_name_the_dependency() {
         let actor = Actor::from_record(
             &json!({"id":"worker","rootId":"lead","epoch":5,"status":"running","remoteOrigin":true}),
             "worker",
@@ -950,7 +987,7 @@ mod tests {
         .unwrap();
         let mut connection = rusqlite::Connection::open_in_memory().unwrap();
         let transaction = connection.transaction().unwrap();
-        let result = execute(
+        let remote_status = execute(
             &transaction,
             &actor,
             "orchestration_status",
@@ -959,7 +996,10 @@ mod tests {
             1.0,
             &UnavailablePorts,
         );
-        assert!(matches!(result, Err(Error::CrossTeam)));
+        assert!(matches!(
+            remote_status,
+            Err(Error::Unavailable("multi-server-runtime/directory"))
+        ));
     }
 }
 

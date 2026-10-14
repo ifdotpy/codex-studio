@@ -234,15 +234,7 @@ impl crate::managed_host_tools::SearchPort for ProductionPorts {
             Some(&actor.record().id.0),
             limit,
         )
-        .map_err(|error| match error {
-            crate::transcript::TranscriptError::InvalidSearch => {
-                crate::managed_host_tools::Error::Invalid("Invalid search query")
-            }
-            crate::transcript::TranscriptError::Store => {
-                crate::managed_host_tools::Error::Unavailable("transcript/search-store")
-            }
-            _ => crate::managed_host_tools::Error::Unavailable("transcript/search-read"),
-        })?;
+        .map_err(search_error)?;
         Ok(crate::managed_host_tools::OperationResult {
             value,
             signals: Vec::new(),
@@ -266,9 +258,8 @@ impl crate::managed_host_tools::ContextPort for ProductionPorts {
             .ok_or(crate::managed_host_tools::Error::Invalid(
                 "Missing monitor id",
             ))?;
-        let (snapshot, monitor_actor) = crate::monitor_runtime::snapshot(tx, id).map_err(|_| {
-            crate::managed_host_tools::Error::Unavailable("monitor-runtime/context-read")
-        })?;
+        let (snapshot, monitor_actor) =
+            crate::monitor_runtime::snapshot(tx, id).map_err(monitor_context_error)?;
         if monitor_actor.root_id != actor.record().root_id {
             return Err(crate::managed_host_tools::Error::Invalid(
                 "Unknown monitor in this team",
@@ -463,6 +454,12 @@ impl crate::managed_host_tools::PostCommitPort for ProductionPorts {
             // The account registry re-reads committed rows and wakes the owning
             // worker. Lost notifications are harmless: startup and timer passes
             // reconcile the same durable event intents.
+            // The `monitor-driver` owner is currently reachable only from the
+            // runtime server's MonitorRuntime::dispatch_wake_handle (the
+            // rust-leaves-2 main.rs composition); the account-worker callback
+            // constructor supplies only this registry wake. Wiring that handle
+            // into ProductionPorts remains an integration line when direct
+            // provider launch is composed on this branch.
             self.event_wake.notify_one();
         }
         Ok(())
@@ -692,7 +689,11 @@ fn managed_error(error: crate::managed_host_tools::Error) -> CallbackError {
     match error {
         E::Invalid(message) => CallbackError::Invalid(message),
         E::Stale => CallbackError::Stale,
-        E::CrossTeam => CallbackError::Invalid("Communication is limited to your team"),
+        E::InvalidStored {
+            table,
+            id,
+            location,
+        } => CallbackError::Stored(format!("{table}/{id} at {location}")),
         E::Unavailable(name) => CallbackError::Dependency(name),
         E::Store(error) => CallbackError::Store(error),
         E::Sqlite(error) => CallbackError::Store(error.into()),
@@ -701,6 +702,43 @@ fn managed_error(error: crate::managed_host_tools::Error) -> CallbackError {
         E::Work(crate::work_write::WorkWriteError::NotImplemented(name)) => {
             CallbackError::Dependency(name)
         }
+    }
+}
+
+fn search_error(error: crate::transcript::TranscriptError) -> crate::managed_host_tools::Error {
+    use crate::managed_host_tools::Error as E;
+    use crate::transcript::TranscriptError as T;
+    match error {
+        T::InvalidSearch => E::Invalid("Invalid search query"),
+        T::InvalidStoredObject { table, id } => {
+            E::Store(studio_runtime_store::StoreError::InvalidStoredObject { table, id })
+        }
+        T::InvalidStoredState { table, id } => {
+            E::Store(studio_runtime_store::StoreError::InvalidSyncObject { scope: table, id })
+        }
+        T::RequiresDependency(name) => E::Unavailable(name),
+        T::Store => E::Store(studio_runtime_store::StoreError::SchemaMismatch(
+            "transcript storage failed".into(),
+        )),
+        _ => E::Invalid("Search result is unavailable"),
+    }
+}
+
+fn monitor_context_error(
+    error: crate::monitor_policy::MonitorError,
+) -> crate::managed_host_tools::Error {
+    use crate::managed_host_tools::Error as E;
+    use crate::monitor_policy::MonitorError as M;
+    match error {
+        M::Store(error) => E::Store(error),
+        M::InvalidStored { id, location } => E::InvalidStored {
+            table: "runtime_monitors",
+            id,
+            location,
+        },
+        M::Unavailable(name) => E::Unavailable(name),
+        M::Event(crate::event_write::EventWriteError::Store(error)) => E::Store(error),
+        _ => E::Invalid("Monitor context is unavailable"),
     }
 }
 fn text<'a>(v: &'a Value, key: &str) -> Result<&'a str, CallbackError> {

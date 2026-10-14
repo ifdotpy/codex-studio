@@ -138,7 +138,12 @@ pub(crate) fn agent_complaint_action(
         .ok_or_else(|| stored("runtime_agents", actor_id))?;
     let root = AgentRepository::get(tx, &AgentId::from(root_id))?
         .ok_or_else(|| stored("runtime_agents", root_id))?;
-    if root.extra.get("isLead") != Some(&Value::Bool(true)) {
+    if root.extra.get("isLead") != Some(&Value::Bool(true))
+        || root
+            .extra
+            .get("deletedAt")
+            .is_some_and(|deleted_at| !deleted_at.is_null())
+    {
         return Err(NotificationDispatchError::InvalidNotification);
     }
     match args["action"].as_str() {

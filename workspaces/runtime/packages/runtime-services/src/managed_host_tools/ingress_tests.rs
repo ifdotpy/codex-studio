@@ -381,6 +381,13 @@ fn managed_snapshot(store: &RuntimeStore, tables: &Value) -> Value {
     let mut snapshot = serde_json::Map::new();
     for name in tables.as_object().unwrap().keys() {
         let quoted = name.replace('"', "\"\"");
+        let column_names = connection
+            .prepare(&format!("PRAGMA table_info(\"{quoted}\")"))
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(1))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
         let statement = connection
             .prepare(&format!("SELECT * FROM \"{quoted}\""))
             .unwrap();
@@ -390,21 +397,14 @@ fn managed_snapshot(store: &RuntimeStore, tables: &Value) -> Value {
             .map(|column| column.to_string())
             .collect::<Vec<_>>()
             .join(",");
-        let projection_filter = if name == "sync_entities" {
-            " WHERE collection!='agent'"
-        } else {
-            ""
-        };
         let mut statement = connection
-            .prepare(&format!(
-                "SELECT * FROM \"{quoted}\"{projection_filter} ORDER BY {ordering}"
-            ))
+            .prepare(&format!("SELECT * FROM \"{quoted}\" ORDER BY {ordering}"))
             .unwrap();
         let rows = statement
             .query_map([], |row| {
                 let mut values = Vec::new();
-                for column in 0..columns {
-                    let value = if name == "sync_entities" && column == 2 {
+                for (column, column_name) in column_names.iter().enumerate().take(columns) {
+                    let mut value = if name == "sync_entities" && column_name == "seq" {
                         json!(0)
                     } else {
                         match row.get_ref(column)? {
@@ -420,7 +420,39 @@ fn managed_snapshot(store: &RuntimeStore, tables: &Value) -> Value {
                         }),
                         }
                     };
+                    // Python's callback harness updates unrelated model
+                    // context fields while resolving calls. The event timing
+                    // and agent serverId are fixture-specific. Preserve every
+                    // other row and projection field.
+                    if name == "runtime_agents"
+                        && column_name == "record"
+                        && let Some(record) = value.as_object_mut()
+                    {
+                        record.remove("concurrency");
+                        record.remove("deliveredMode");
+                    }
+                    if name == "runtime_event_meta"
+                        && column_name == "record"
+                        && let Some(record) = value.as_object_mut()
+                    {
+                        record.remove("timing");
+                    }
+                    if name == "sync_entities"
+                        && column_name == "payload"
+                        && let Some(payload) = value.as_object_mut()
+                        && payload["collection"] == "agent"
+                        && let Some(record) = payload["value"].as_object_mut()
+                    {
+                        record.remove("concurrency");
+                        record.remove("deliveredMode");
+                        record.remove("serverId");
+                    }
                     values.push(value);
+                }
+                if name == "sync_entities" && values.first() == Some(&json!("agent")) {
+                    // hash commits the full projection, including the
+                    // fixture-specific agent serverId omitted above.
+                    values[3] = json!("normalized-agent-projection-hash");
                 }
                 Ok(Value::Array(values))
             })
@@ -559,6 +591,17 @@ fn managed_tools_match_python_rows_events_and_sync_projection() {
             thread: actor["threadId"].as_str().unwrap().to_owned(),
             turn: actor["turnId"].as_str().unwrap().to_owned(),
         };
+        if expected["remoteOrigin"] == true {
+            store
+                .transaction_with::<_, StoreError>(|tx| {
+                    tx.execute(
+                        "UPDATE runtime_agents SET record=json_set(record,'$.remoteOrigin','source-server') WHERE id=?1",
+                        [context.agent.as_str()],
+                    )?;
+                    Ok(())
+                })
+                .unwrap();
+        }
         let frame = call(
             &context,
             expected["callId"].as_str().unwrap(),
@@ -643,6 +686,128 @@ fn managed_tools_match_python_rows_events_and_sync_projection() {
             .collect::<Vec<_>>();
         assert!(differences.is_empty(), "full rows differ: {differences:?}");
     }
+}
+
+#[test]
+fn deleted_team_root_refuses_complaint_without_writes() {
+    let (_root, store, _) = fixture();
+    let oracle = &template().value;
+    let expected = &oracle["managedRootDeletedRefusal"];
+    assert_eq!(expected["result"]["success"], false);
+    assert_eq!(expected["before"], expected["rows"]);
+    let worker = oracle["agents"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|agent| agent["id"] == expected["actor"])
+        .unwrap();
+    let root_id = worker["rootId"].as_str().unwrap();
+    store
+        .transaction_with::<_, StoreError>(|tx| {
+            tx.execute(
+                "UPDATE runtime_agents SET record=json_set(record,'$.deletedAt',20.0) WHERE id=?1",
+                [root_id],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    let before = application_table_snapshot(&store);
+    let decision = dispatch_python_case(
+        &store,
+        oracle,
+        expected,
+        Some(expected["arguments"].clone()),
+    )
+    .unwrap();
+    let CallbackDecision::Answer(reply) = decision else {
+        panic!("deleted-root refusal must return a callback answer")
+    };
+    assert!(matches!(reply.body, ResponseBody::Result(ref value) if value["success"] == false));
+    assert_eq!(before, application_table_snapshot(&store));
+}
+
+#[test]
+fn managed_reads_preserve_corrupt_record_identity() {
+    let (_root, store, context) = fixture();
+    let monitor_id = template().value["managedToolCases"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|case| case["tool"] == "orchestration_context")
+        .unwrap()["arguments"]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let search = call(
+        &context,
+        "corrupt-search",
+        "orchestration_search",
+        json!({"query":"fixture"}),
+    );
+    let search_ports = crate::provider_callbacks::managed_tool_ports(
+        &store,
+        &context,
+        &search,
+        std::sync::Arc::new(tokio::sync::Notify::new()),
+    )
+    .unwrap();
+    // Prepare the search directory first; the corrupt row is deliberately
+    // outside sync so the read reaches its stored-object validation path.
+    store
+        .transaction_with::<_, StoreError>(|tx| {
+            tx.execute(
+                "INSERT INTO runtime_work(id,record) VALUES('p05-corrupt-work',?1)",
+                [json!({"id":"p05-corrupt-work","rootId":context.agent,"title":17,"status":"ready"}).to_string()],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    let search_result = dispatch_with_managed_tools(&store, &context, &search, 20.0, &search_ports);
+    assert!(
+        matches!(
+            &search_result,
+            Err(CallbackError::Store(StoreError::InvalidStoredObject { table, id }))
+                if *table == "runtime_work" && id == "p05-corrupt-work"
+        ),
+        "corrupt work result: {search_result:?}"
+    );
+
+    store
+        .transaction_with::<_, StoreError>(|tx| {
+            tx.execute("DELETE FROM runtime_work WHERE id='p05-corrupt-work'", [])?;
+            tx.execute(
+                "UPDATE runtime_monitors SET record=?1 WHERE id=?2",
+                [
+                    json!({"id":monitor_id,"agent":context.agent,"command":17}).to_string(),
+                    monitor_id.clone(),
+                ],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    let context_call = call(
+        &context,
+        "corrupt-context",
+        "orchestration_context",
+        json!({"topic":"monitor","id":monitor_id}),
+    );
+    let context_ports = crate::provider_callbacks::managed_tool_ports(
+        &store,
+        &context,
+        &context_call,
+        std::sync::Arc::new(tokio::sync::Notify::new()),
+    )
+    .unwrap();
+    let context_result =
+        dispatch_with_managed_tools(&store, &context, &context_call, 20.0, &context_ports);
+    assert!(
+        matches!(
+            &context_result,
+        Err(CallbackError::Store(StoreError::InvalidStoredObject { table, id }))
+            if *table == "runtime_monitors" && id == &monitor_id
+        ),
+        "corrupt monitor result: {context_result:?}"
+    );
 }
 
 #[test]
@@ -921,11 +1086,23 @@ fn same_request_replays_saved_result_without_a_second_effect() {
 }
 
 #[test]
-fn remote_origin_cannot_use_managed_ports() {
+fn remote_origin_search_and_monitor_context_stay_local() {
     let (_root, store, context) = fixture();
-    let ports = PortBundle::default();
+    let monitor_id = template().value["managedToolCases"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|case| case["tool"] == "orchestration_context")
+        .unwrap()["arguments"]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
     store
         .transaction_with::<_, StoreError>(|tx| {
+            tx.execute(
+                "UPDATE runtime_monitors SET record=?1 WHERE id=?2",
+                [json!({"id":monitor_id,"agent":context.agent,"command":"printf fixture","created":20.0,"status":"running"}).to_string(), monitor_id.clone()],
+            )?;
             let raw: String = tx.query_row(
                 "SELECT record FROM runtime_agents WHERE id=?1",
                 [&context.agent],
@@ -940,23 +1117,43 @@ fn remote_origin_cannot_use_managed_ports() {
             Ok(())
         })
         .unwrap();
-    let frame = call(
-        &context,
-        "cross-team",
-        "orchestration_search",
-        json!({"query":"private"}),
-    );
-    let answer = dispatch_with_managed_tools(&store, &context, &frame, 20.0, &ports).unwrap();
-    assert!(matches!(answer, CallbackDecision::Answer(_)));
-    assert_eq!(ports.staged.load(Ordering::SeqCst), 0);
-    assert_eq!(ports.released.load(Ordering::SeqCst), 0);
-    assert_eq!(intent_count(&store, "search"), 0);
+    for (rpc, tool, args) in [
+        (
+            "remote-search",
+            "orchestration_search",
+            json!({"query":"fixture"}),
+        ),
+        (
+            "remote-monitor-context",
+            "orchestration_context",
+            json!({"topic":"monitor","id":monitor_id}),
+        ),
+    ] {
+        let frame = call(&context, rpc, tool, args);
+        let ports = crate::provider_callbacks::managed_tool_ports(
+            &store,
+            &context,
+            &frame,
+            std::sync::Arc::new(tokio::sync::Notify::new()),
+        )
+        .unwrap();
+        let CallbackDecision::Answer(reply) =
+            dispatch_with_managed_tools(&store, &context, &frame, 20.0, &ports).unwrap()
+        else {
+            panic!("remote-origin local read must answer: {tool}")
+        };
+        assert!(
+            matches!(reply.body, ResponseBody::Result(ref value) if value["success"] == true),
+            "{tool}: {:?}",
+            reply.body
+        );
+    }
 }
 
 #[test]
 fn queued_managed_tool_request_can_be_cancelled_before_dispatch() {
     let (_root, store, context) = fixture();
-    let queued = template().value["reservations"]
+    let mut queued = template().value["reservations"]
         .as_array()
         .unwrap()
         .iter()
@@ -964,16 +1161,22 @@ fn queued_managed_tool_request_can_be_cancelled_before_dispatch() {
         .find(|record| record["tool"] == "orchestration_spawn")
         .unwrap()
         .clone();
-    let request_id = queued["id"].as_str().unwrap().to_owned();
+    let request_id = "thread-0:spawn:p05-cancel";
+    queued["id"] = json!(request_id);
+    queued["request_id"] = json!("p05-cancel");
     store
         .transaction_with(|tx| {
+            tx.execute(
+                "INSERT INTO runtime_tool_requests(id,record) VALUES(?1,?2)",
+                params![request_id, queued.to_string()],
+            )?;
             let stored =
-                studio_runtime_store::system_reads::get(tx, "runtime_tool_requests", &request_id)?;
+                studio_runtime_store::system_reads::get(tx, "runtime_tool_requests", request_id)?;
             assert_eq!(stored.as_ref(), Some(&queued));
             let result = crate::tool_requests::execute(
                 tx,
                 &context.agent,
-                crate::tool_requests::Action::Cancel(&request_id),
+                crate::tool_requests::Action::Cancel(request_id),
                 21.0,
             )?;
             Ok::<_, CallbackError>(result)
@@ -981,7 +1184,7 @@ fn queued_managed_tool_request_can_be_cancelled_before_dispatch() {
         .unwrap();
     let connection = store.read().unwrap();
     let cancelled =
-        studio_runtime_store::system_reads::get(&connection, "runtime_tool_requests", &request_id)
+        studio_runtime_store::system_reads::get(&connection, "runtime_tool_requests", request_id)
             .unwrap()
             .unwrap();
     assert_eq!(cancelled["stage"], "cancelled");

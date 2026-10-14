@@ -445,14 +445,27 @@ pub(crate) fn search_work_in_transaction(
         ("runtime_complaints", "complaint", "title"),
         ("runtime_plans", "plan", "text"),
     ] {
-        for stored in WorkspaceViewsRepository::records(connection, table)
-            .map_err(|_| TranscriptError::Store)?
+        for stored in
+            WorkspaceViewsRepository::records(connection, table).map_err(|error| match error {
+                StoreError::InvalidStoredObject { table, id } => {
+                    TranscriptError::InvalidStoredObject { table, id }
+                }
+                _ => TranscriptError::Store,
+            })?
         {
             let Some(encoded) = stored.record else {
                 return Err(invalid_stored(table, &stored.id));
             };
             let record: Value =
                 serde_json::from_str(&encoded).map_err(|_| invalid_stored(table, &stored.id))?;
+            let schema = studio_runtime_schema::table_schema(table)
+                .ok_or_else(|| invalid_stored(table, &stored.id))?;
+            if studio_runtime_schema::first_error(schema, &record)
+                .map_err(|_| invalid_stored(table, &stored.id))?
+                .is_some()
+            {
+                return Err(invalid_stored(table, &stored.id));
+            }
             let root = record
                 .get("rootId")
                 .filter(|value| truthy(Some(value)))
