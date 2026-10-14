@@ -671,6 +671,7 @@ fn accepted_start_after_concurrent_stop_stages_interrupt_then_commits_lifecycle(
         release: Mutex::new(release_rx),
     });
     let lifecycle = Arc::new(LifecycleProbe::new(Arc::clone(&store)));
+    let resources = test_resources();
     let retry_store = Arc::clone(&store);
     let retry_session = Arc::clone(&session);
     let retry_lifecycle = Arc::clone(&lifecycle);
@@ -678,7 +679,7 @@ fn accepted_start_after_concurrent_stop_stages_interrupt_then_commits_lifecycle(
         let result = safety_buffering::execute_action(
             &retry_store,
             retry_session.as_ref(),
-            &test_resources(),
+            &resources,
             Some(retry_lifecycle.as_ref()),
             "agent",
             RequestActor {
