@@ -11,11 +11,12 @@ use crate::{
 fn request(state: &State, port: &RetainedSessionPort, operation: &str) -> SessionRequest {
     SessionRequest {
         scope: port.scope().clone(),
+        expected_scope: None,
         operation: operation.into(),
-        actor: RequestActor {
+        actor: Some(RequestActor {
             agent: state.agent.clone(),
             epoch: state.epoch,
-        },
+        }),
         method: Method::ThreadRead,
         params: json!({"threadId":"fake-thread-0","includeTurns":false}),
         deadline: (tokio::time::Instant::now() + std::time::Duration::from_secs(60)).into_std(),
@@ -65,6 +66,24 @@ async fn retained_reply_replays_without_resending_and_rejects_changed_payload() 
     assert_eq!(
         port.request(altered).await.unwrap_err(),
         PortError::Identity
+    );
+    assert!(peer.writes.try_recv().is_err());
+    worker.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn retained_request_rejects_a_stale_expected_connection_before_dispatch() {
+    let state = State::new().await;
+    let mut peer = Peer::new();
+    let mut worker = peer.worker(state.bridge.clone()).await;
+    let port = worker.retained_session();
+    let mut call = request(&state, &port, "expected-scope-mismatch");
+    let mut expected = port.scope().clone();
+    expected.connection = "stale-connection".into();
+    call.expected_scope = Some(expected);
+    assert_eq!(
+        port.request(call).await.unwrap_err(),
+        PortError::ScopeMismatch
     );
     assert!(peer.writes.try_recv().is_err());
     worker.shutdown().await.unwrap();
@@ -429,7 +448,7 @@ async fn retained_scope_epoch_and_expired_queue_refuse_before_write() {
     call.scope.generation += 1;
     assert_eq!(port.request(call).await.unwrap_err(), PortError::Identity);
     let mut call = request(&state, &port, "epoch");
-    call.actor.epoch += 1;
+    call.actor.as_mut().expect("actor-bound request").epoch += 1;
     assert_eq!(port.request(call).await.unwrap_err(), PortError::Identity);
     let mut call = request(&state, &port, "expired");
     call.deadline = tokio::time::Instant::now().into_std();
