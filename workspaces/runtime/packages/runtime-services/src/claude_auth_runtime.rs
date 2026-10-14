@@ -515,7 +515,7 @@ mod tests {
         let proof = json!({"account":{"type":"claude","email":"a@example.test","planType":"max"},
             "requiresOpenaiAuth":false});
         assert_eq!(
-            confirm_account_read(&pin, &proof).unwrap()["status"],
+            confirm_account_read(&pin, &proof).expect("matching account proof")["status"],
             "ready"
         );
         let wrong =
