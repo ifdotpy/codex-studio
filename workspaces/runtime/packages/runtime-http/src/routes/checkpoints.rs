@@ -12,9 +12,7 @@ use studio_runtime_store::StoreError;
 use crate::error::ApiError;
 use crate::router::HttpState;
 
-const IMAGE_EXECUTION_DEPENDENCY: &str = "workspace-state/image-execution";
 const THREAD_FORK_DEPENDENCY: &str = "provider-session/thread-fork";
-const IMAGE_DEPENDENCIES: [Dependency; 1] = [Dependency::new(IMAGE_EXECUTION_DEPENDENCY)];
 const THREAD_FORK_DEPENDENCIES: [Dependency; 1] = [Dependency::new(THREAD_FORK_DEPENDENCY)];
 
 pub(crate) fn routes() -> RouteGroup {
@@ -24,14 +22,10 @@ pub(crate) fn routes() -> RouteGroup {
             OperationStatus::partial(&THREAD_FORK_DEPENDENCIES),
             branch,
         ),
-        post(
-            "/api/checkpoint",
-            OperationStatus::partial(&IMAGE_DEPENDENCIES),
-            capture,
-        ),
+        post("/api/checkpoint", OperationStatus::Implemented, capture),
         post(
             "/api/checkpoint/preview",
-            OperationStatus::partial(&IMAGE_DEPENDENCIES),
+            OperationStatus::Implemented,
             preview,
         ),
         post(
@@ -48,11 +42,9 @@ pub(crate) async fn capture(
 ) -> Result<Json<Value>, ApiError> {
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
     let result = tokio::task::spawn_blocking(move || {
-        let snapshot = checkpoints::capture_context(&store, &body.agent)
-            .map_err(|error| map_error(error, "/api/checkpoint"))?;
+        let snapshot = checkpoints::capture_context(&store, &body.agent).map_err(map_error)?;
         let label = body.label.unwrap_or_else(|| "Checkpoint".to_owned());
-        let record = checkpoints::capture(&store, snapshot, &label)
-            .map_err(|error| map_error(error, "/api/checkpoint"))?;
+        let record = checkpoints::capture(&store, snapshot, &label).map_err(map_error)?;
         super::generated_json::<crate::generated::CheckpointCaptureResponse>(record)
     })
     .await
@@ -67,9 +59,8 @@ pub(crate) async fn preview(
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
     let result = tokio::task::spawn_blocking(move || {
         let context = checkpoints::preview_context(&store, &body.agent, &body.checkpoint)
-            .map_err(|error| map_error(error, "/api/checkpoint/preview"))?;
-        let value = checkpoints::preview(&store, context)
-            .map_err(|error| map_error(error, "/api/checkpoint/preview"))?;
+            .map_err(map_error)?;
+        let value = checkpoints::preview(&store, context).map_err(map_error)?;
         super::generated_json::<crate::generated::CheckpointPreviewResponse>(value)
     })
     .await
@@ -95,7 +86,7 @@ pub(crate) async fn branch(
     )
 }
 
-fn map_error(error: CheckpointsError, path: &'static str) -> ApiError {
+fn map_error(error: CheckpointsError) -> ApiError {
     match error {
         CheckpointsError::UnknownAgent => {
             ApiError::new(StatusCode::BAD_REQUEST, "Unknown managed agent")
@@ -110,10 +101,10 @@ fn map_error(error: CheckpointsError, path: &'static str) -> ApiError {
         CheckpointsError::DeletedAgent => {
             ApiError::new(StatusCode::BAD_REQUEST, "This agent was deleted")
         }
-        CheckpointsError::ExecutionWorkspace => {
-            dependency_unavailable("POST", path, &IMAGE_DEPENDENCIES)
-                .unwrap_or_else(|_| ApiError::internal())
-        }
+        CheckpointsError::ExecutionWorkspace => ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "Studio Git checkpoints are unavailable for image workspaces",
+        ),
         CheckpointsError::ActivityChanged => ApiError::new(
             StatusCode::BAD_REQUEST,
             "Workspace activity changed before checkpoint capture",
@@ -163,7 +154,6 @@ inventory::submit! {
         routes: Some(routes),
         dependencies: &[
         "provider-session/thread-fork",
-        "workspace-state/image-execution",
         ],
     }
 }

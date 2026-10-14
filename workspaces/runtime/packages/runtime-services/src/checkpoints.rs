@@ -267,7 +267,7 @@ fn capture_reserved(
 }
 
 pub fn preview(store: &RuntimeStore, context: PreviewContext) -> Result<Value, CheckpointsError> {
-    ensure_agent_available(&context.agent)?;
+    ensure_agent_identity(&context.agent)?;
     let cwd = context
         .agent
         .record
@@ -325,22 +325,25 @@ pub fn preview(store: &RuntimeStore, context: PreviewContext) -> Result<Value, C
 pub(crate) fn ensure_agent_available(
     agent: &StoredCheckpointObject,
 ) -> Result<(), CheckpointsError> {
+    ensure_agent_identity(agent)?;
+    if is_image_workspace(agent) {
+        return Err(CheckpointsError::ExecutionWorkspace);
+    }
+    Ok(())
+}
+
+fn ensure_agent_identity(agent: &StoredCheckpointObject) -> Result<(), CheckpointsError> {
     if agent.record.get("id").and_then(Value::as_str) != Some(agent.id.as_str()) {
         return Err(invalid_agent(&agent.id));
     }
     if truthy(agent.record.get("deletedAt")) {
         return Err(CheckpointsError::DeletedAgent);
     }
-    if agent.record.get("imageWorkspace").and_then(Value::as_bool) == Some(true)
-        || agent.record.get("executionMode").and_then(Value::as_str) == Some("vm")
-        || matches!(
-            agent.record.get("workspaceMode").and_then(Value::as_str),
-            Some("image" | "layr")
-        )
-    {
-        return Err(CheckpointsError::ExecutionWorkspace);
-    }
     Ok(())
+}
+
+fn is_image_workspace(agent: &StoredCheckpointObject) -> bool {
+    agent.record.get("imageWorkspace").and_then(Value::as_bool) == Some(true)
 }
 
 pub(crate) fn ensure_workspace_idle(
