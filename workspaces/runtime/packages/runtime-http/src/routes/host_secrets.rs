@@ -15,6 +15,9 @@ const GUEST_RPC: &[Dependency] = &[Dependency::new("linux-vm/guest-rpc")];
 const VAULT_DESK: &[Dependency] = &[Dependency::new("macos-platform/layr-desk")];
 const VAULT_SETUP_TIMEOUT: Duration = studio_runtime_services::vault::VAULT_SETUP_TIMEOUT;
 const VAULT_LOGIN_TIMEOUT: Duration = studio_runtime_services::vault::VAULT_LOGIN_TIMEOUT;
+const VAULT_PROGRESS_LINE_MAX_BYTES: usize = 16 * 1024;
+const INVALID_LOGIN_JSON: &str = "layr-desk aws-login returned invalid JSON";
+const OVERSIZED_PROGRESS_LINE: &str = "layr-desk emitted an oversized progress line";
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 enum VaultJobKind {
@@ -158,7 +161,7 @@ async fn remove_secret(
 }
 
 async fn aws_login(
-    State(_state): State<HttpState>,
+    State(state): State<HttpState>,
     ApiJson(body): ApiJson<Value>,
 ) -> Result<Json<Value>, ApiError> {
     let profile = request_string(&body, "profile")?.to_owned();
@@ -172,10 +175,14 @@ async fn aws_login(
             "Name an AWS profile",
         ));
     }
+    let host_command = state
+        .vault_host_command
+        .clone()
+        .ok_or_else(ApiError::internal)?;
     let initial = serde_json::json!({"requestId":request_id,"state":"running"});
     let (job, started) = reserve_job(VaultJobKind::Login, &request_id, initial)?;
     if started {
-        tokio::spawn(run_login_job(request_id, profile));
+        tokio::spawn(run_login_job(request_id, profile, host_command));
     }
     Ok(Json(job))
 }
@@ -216,7 +223,14 @@ async fn setup(
     let initial = serde_json::json!({"requestId":request_id,"state":"running","prefix":prefix});
     let (job, started) = reserve_job(VaultJobKind::Setup, &request_id, initial)?;
     if started {
-        tokio::spawn(run_setup_job(request_id, prefix, profile, region, writer));
+        tokio::spawn(run_setup_job(
+            request_id,
+            prefix,
+            profile,
+            region,
+            writer,
+            host_command.clone(),
+        ));
     }
     Ok(Json(job))
 }
@@ -324,7 +338,76 @@ fn finish_job(kind: VaultJobKind, request_id: &str, mut fields: Value) {
     });
 }
 
-async fn run_login_job(request_id: String, profile: String) {
+/// Consume newline-delimited output while keeping an unfinished record bounded.
+/// Oversized records are discarded through their next newline and reported to the caller.
+fn consume_progress_lines(
+    pending: &mut String,
+    discarding_oversized: &mut bool,
+    chunk: &str,
+    mut on_line: impl FnMut(&str),
+) -> bool {
+    let mut oversized = false;
+    for part in chunk.split_inclusive('\n') {
+        let complete = part.ends_with('\n');
+        if *discarding_oversized {
+            if complete {
+                *discarding_oversized = false;
+            }
+            continue;
+        }
+        let line_part = if complete {
+            &part[..part.len() - 1]
+        } else {
+            part
+        };
+        if pending.len().saturating_add(line_part.len()) > VAULT_PROGRESS_LINE_MAX_BYTES {
+            pending.clear();
+            oversized = true;
+            *discarding_oversized = !complete;
+            continue;
+        }
+        pending.push_str(line_part);
+        if complete {
+            on_line(pending.trim_end_matches('\r'));
+            pending.clear();
+        }
+    }
+    oversized
+}
+
+fn login_progress(request_id: &str, line: &str) -> Result<(), &'static str> {
+    let value = serde_json::from_str::<Value>(line).map_err(|_| INVALID_LOGIN_JSON)?;
+    if let Some(page) = value.get("page").and_then(Value::as_str)
+        && page.starts_with("https://")
+    {
+        let code = value
+            .get("code")
+            .map(|code| match code {
+                Value::String(value) => value.clone(),
+                other => other.to_string(),
+            })
+            .unwrap_or_default();
+        update_job(VaultJobKind::Login, request_id, |job| {
+            job["page"] = Value::String(page.to_owned());
+            job["code"] = Value::String(code.chars().take(40).collect());
+        });
+    }
+    Ok(())
+}
+
+fn setup_progress(request_id: &str, line: &str) {
+    if let Some(progress) = line.strip_prefix("layr-desk: ") {
+        update_job(VaultJobKind::Setup, request_id, |job| {
+            job["progress"] = Value::String(progress.trim().chars().take(200).collect());
+        });
+    }
+}
+
+async fn run_login_job(
+    request_id: String,
+    profile: String,
+    host_command: studio_runtime_services::vault::VaultHostCommand,
+) {
     let args = vec![
         "aws-login".to_owned(),
         "--profile".to_owned(),
@@ -332,33 +415,43 @@ async fn run_login_job(request_id: String, profile: String) {
         "--json".to_owned(),
     ];
     let mut pending = String::new();
+    let mut discarding_oversized = false;
+    let mut output_error = None;
     let mut on_output = |stdout: bool, chunk: &str| {
         if !stdout {
             return;
         }
-        pending.push_str(chunk);
-        while let Some(end) = pending.find('\n') {
-            let line: String = pending.drain(..=end).collect();
-            if let Ok(value) = serde_json::from_str::<Value>(line.trim())
-                && let Some(page) = value.get("page").and_then(Value::as_str)
-                && page.starts_with("https://")
-            {
-                let code = value
-                    .get("code")
-                    .map(|code| match code {
-                        Value::String(value) => value.clone(),
-                        other => other.to_string(),
-                    })
-                    .unwrap_or_default();
-                update_job(VaultJobKind::Login, &request_id, |job| {
-                    job["page"] = Value::String(page.to_owned());
-                    job["code"] = Value::String(code.chars().take(40).collect());
-                });
-            }
+        let oversized =
+            consume_progress_lines(&mut pending, &mut discarding_oversized, chunk, |line| {
+                if output_error.is_none()
+                    && let Err(error) = login_progress(&request_id, line)
+                {
+                    output_error = Some(error);
+                }
+            });
+        if oversized {
+            output_error = Some(OVERSIZED_PROGRESS_LINE);
         }
     };
-    let result =
-        studio_runtime_services::vault::run_desk(&args, VAULT_LOGIN_TIMEOUT, &mut on_output).await;
+    let result = host_command
+        .run_desk(&args, VAULT_LOGIN_TIMEOUT, &mut on_output)
+        .await;
+    drop(on_output);
+    if output_error.is_none()
+        && !discarding_oversized
+        && !pending.is_empty()
+        && let Err(error) = login_progress(&request_id, pending.trim_end_matches('\r'))
+    {
+        output_error = Some(error);
+    }
+    if let Some(error) = output_error {
+        finish_job(
+            VaultJobKind::Login,
+            &request_id,
+            serde_json::json!({"state":"failed","error":error}),
+        );
+        return;
+    }
     match result {
         Ok(result) if result.code == Some(0) && !result.timed_out => {
             finish_job(
@@ -391,6 +484,7 @@ async fn run_setup_job(
     profile: String,
     region: String,
     writer: String,
+    host_command: studio_runtime_services::vault::VaultHostCommand,
 ) {
     let args = vec![
         "deploy".to_owned(),
@@ -404,22 +498,35 @@ async fn run_setup_job(
         writer,
     ];
     let mut pending = String::new();
+    let mut discarding_oversized = false;
+    let mut output_error = None;
     let mut on_output = |stdout: bool, chunk: &str| {
         if stdout {
             return;
         }
-        pending.push_str(chunk);
-        while let Some(end) = pending.find('\n') {
-            let line: String = pending.drain(..=end).collect();
-            if let Some(progress) = line.strip_prefix("layr-desk: ") {
-                update_job(VaultJobKind::Setup, &request_id, |job| {
-                    job["progress"] = Value::String(progress.trim().chars().take(200).collect());
-                });
-            }
+        let oversized =
+            consume_progress_lines(&mut pending, &mut discarding_oversized, chunk, |line| {
+                setup_progress(&request_id, line)
+            });
+        if oversized {
+            output_error = Some(OVERSIZED_PROGRESS_LINE);
         }
     };
-    let result =
-        studio_runtime_services::vault::run_desk(&args, VAULT_SETUP_TIMEOUT, &mut on_output).await;
+    let result = host_command
+        .run_desk(&args, VAULT_SETUP_TIMEOUT, &mut on_output)
+        .await;
+    drop(on_output);
+    if output_error.is_none() && !discarding_oversized && !pending.is_empty() {
+        setup_progress(&request_id, pending.trim_end_matches('\r'));
+    }
+    if let Some(error) = output_error {
+        finish_job(
+            VaultJobKind::Setup,
+            &request_id,
+            serde_json::json!({"state":"failed","error":error}),
+        );
+        return;
+    }
     match result {
         Ok(result) if result.code == Some(0) && !result.timed_out => {
             let site = result
@@ -520,7 +627,10 @@ inventory::submit! {
 
 #[cfg(test)]
 mod tests {
-    use super::GuestRpc;
+    use super::{
+        GuestRpc, INVALID_LOGIN_JSON, OVERSIZED_PROGRESS_LINE, VAULT_PROGRESS_LINE_MAX_BYTES,
+        VaultJobKind, consume_progress_lines, find_job, reserve_job, run_login_job, run_setup_job,
+    };
     use crate::router::HttpState;
     use axum::body::Body;
     use axum::extract::ConnectInfo;
@@ -585,6 +695,62 @@ mod tests {
         crate::router::router(state).expect("runtime HTTP router starts")
     }
 
+    #[cfg(unix)]
+    fn fake_host_command(
+        directory: &std::path::Path,
+        script_body: &str,
+    ) -> studio_runtime_services::vault::VaultHostCommand {
+        use std::os::unix::fs::PermissionsExt;
+
+        let executable = directory.join("layr-desk");
+        std::fs::write(&executable, format!("#!/bin/sh\n{script_body}\n")).unwrap();
+        std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755)).unwrap();
+        studio_runtime_services::vault::VaultHostCommand::new(
+            std::path::PathBuf::from("/tmp/python"),
+            std::path::PathBuf::from("/tmp/server"),
+        )
+        .with_desk_program(executable)
+    }
+
+    fn test_request_id(label: &str) -> String {
+        format!(
+            "{label}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        )
+    }
+
+    #[test]
+    fn progress_buffer_stays_bounded_and_discards_until_the_next_newline() {
+        let mut pending = String::new();
+        let mut discarding = false;
+        let mut lines = Vec::new();
+        let oversized = "x".repeat(VAULT_PROGRESS_LINE_MAX_BYTES + 1);
+
+        assert!(consume_progress_lines(
+            &mut pending,
+            &mut discarding,
+            &oversized,
+            |line| lines.push(line.to_owned()),
+        ));
+        assert!(pending.is_empty());
+        assert!(pending.len() <= VAULT_PROGRESS_LINE_MAX_BYTES);
+        assert!(discarding);
+        assert!(lines.is_empty());
+
+        assert!(!consume_progress_lines(
+            &mut pending,
+            &mut discarding,
+            "\nnext record\n",
+            |line| lines.push(line.to_owned()),
+        ));
+        assert!(!discarding);
+        assert_eq!(lines, ["next record"]);
+    }
+
     fn authorized_request(body: Value) -> Request<Body> {
         authorized_request_at("/api/project-secrets/set", body)
     }
@@ -610,8 +776,6 @@ mod tests {
 
     #[tokio::test]
     async fn vault_setup_facts_route_uses_the_host_command_and_cached_project() {
-        use std::os::unix::fs::PermissionsExt;
-
         let state = tempfile::tempdir().unwrap();
         let project = state.path().join("linux-vm/layr-projects/p1");
         std::fs::create_dir_all(&project).unwrap();
@@ -620,20 +784,10 @@ mod tests {
             br#"{"projectId":"p1","source":"/tmp/Project One"}"#,
         )
         .unwrap();
-        let bin = state.path().join("bin");
-        std::fs::create_dir(&bin).unwrap();
-        let fake = bin.join("layr-desk");
-        std::fs::write(
-            &fake,
-            "#!/bin/sh\n[ \"$1\" = aws-profiles ] && [ \"$2\" = --json ] || exit 91\nprintf '%s\\n' '{\"profiles\":[{\"name\":\"fixture\"}]}'\n",
-        )
-        .unwrap();
-        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
-        let host_command = studio_runtime_services::vault::VaultHostCommand::new(
-            std::path::PathBuf::from("/tmp/python"),
-            std::path::PathBuf::from("/tmp/server"),
-        )
-        .with_desk_program(fake);
+        let host_command = fake_host_command(
+            state.path(),
+            "[ \"$1\" = aws-profiles ] && [ \"$2\" = --json ] || exit 91\nprintf '%s\\n' '{\"profiles\":[{\"name\":\"fixture\"}]}'",
+        );
         let app = app(state.path(), None, Some(host_command));
         let request = authorized_request_at("/api/vault/setup/facts", json!({"projectId":"p1"}));
 
@@ -726,5 +880,67 @@ mod tests {
         assert!(body.contains("linux-vm/guest-rpc"));
         assert!(!body.contains("generated-test-value"));
         assert!(!state.path().join("layr-projects").exists());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn malformed_login_json_fails_the_job() {
+        let root = tempfile::tempdir().unwrap();
+        let request_id = test_request_id("malformed-login");
+        let host_command = fake_host_command(root.path(), "printf '%s\\n' '{malformed'");
+        reserve_job(
+            VaultJobKind::Login,
+            &request_id,
+            json!({"requestId":request_id,"state":"running"}),
+        )
+        .unwrap();
+
+        run_login_job(request_id.clone(), "default".to_owned(), host_command).await;
+
+        let job = find_job(VaultJobKind::Login, &request_id).unwrap().unwrap();
+        assert_eq!(job["state"], "failed");
+        assert_eq!(job["error"], INVALID_LOGIN_JSON);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn oversized_login_and_setup_lines_fail_the_jobs_with_bounded_buffers() {
+        let root = tempfile::tempdir().unwrap();
+        let login_id = test_request_id("oversized-login");
+        reserve_job(
+            VaultJobKind::Login,
+            &login_id,
+            json!({"requestId":login_id,"state":"running"}),
+        )
+        .unwrap();
+        run_login_job(
+            login_id.clone(),
+            "default".to_owned(),
+            fake_host_command(root.path(), "printf '%16385s' ''"),
+        )
+        .await;
+        let login = find_job(VaultJobKind::Login, &login_id).unwrap().unwrap();
+        assert_eq!(login["state"], "failed");
+        assert_eq!(login["error"], OVERSIZED_PROGRESS_LINE);
+
+        let setup_id = test_request_id("oversized-setup");
+        reserve_job(
+            VaultJobKind::Setup,
+            &setup_id,
+            json!({"requestId":setup_id,"state":"running"}),
+        )
+        .unwrap();
+        run_setup_job(
+            setup_id.clone(),
+            "project".to_owned(),
+            "default".to_owned(),
+            "eu-central-1".to_owned(),
+            "writer".to_owned(),
+            fake_host_command(root.path(), "printf '%16385s' '' >&2"),
+        )
+        .await;
+        let setup = find_job(VaultJobKind::Setup, &setup_id).unwrap().unwrap();
+        assert_eq!(setup["state"], "failed");
+        assert_eq!(setup["error"], OVERSIZED_PROGRESS_LINE);
     }
 }
