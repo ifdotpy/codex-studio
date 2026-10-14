@@ -352,7 +352,7 @@ mod tests {
         let changed = std::str::from_utf8(&changed).expect("UTF-8 JSON");
         assert_eq!(
             changed,
-            r#"{ "n" : 1e+03, "name":"kept" ,"_syncEntities":[],"_syncEntitiesAfter":7 }"#
+            r#"{ "n" : 1e+03, "name":"kept" ,"_syncEntities":[],"_syncEntitiesAfter":7}"#
         );
     }
 
