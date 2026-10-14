@@ -365,13 +365,6 @@ def no_write_snapshot(
                     ):
                         for field in row_owned_fields.get(values["id"], frozenset()):
                             values[field] = None
-                    row_json_fields = {}
-                    if table in BACKGROUND_OWNED_ROW_JSON_FIELDS and "id" in columns:
-                        row_json_fields = next((
-                            fields
-                            for prefix, fields in BACKGROUND_OWNED_ROW_JSON_FIELDS[table].items()
-                            if isinstance(values.get("id"), str) and values["id"].startswith(prefix)
-                        ), {})
                     for json_column in ("record", "payload", "result"):
                         encoded = values.get(json_column)
                         if not isinstance(encoded, (str, bytes, bytearray)):

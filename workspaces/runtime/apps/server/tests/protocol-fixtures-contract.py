@@ -44,7 +44,7 @@ def assert_frame_matches(
             child_path = f"{path}.{key}"
             if key not in actual:
                 raise AssertionError(
-                    f"supervisor action {action!r} frame {child_path}: expected key, got missing"
+                    f"supervisor action {action!r} frame {child_path}: expected key, got missing in {actual!r}"
                 )
             assert_frame_matches(actual[key], value, state, action=action, path=child_path)
     elif isinstance(expected, list):

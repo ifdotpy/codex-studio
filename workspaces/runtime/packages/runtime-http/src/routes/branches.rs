@@ -68,11 +68,9 @@ async fn branch(
         .map_err(|_| ApiError::internal())?
         .as_bytes(),
     );
-    let (source, selected, scope, operation) =
+    let (source, selected, operation) =
         studio_runtime_process::blocking_pool::spawn_blocking("runtime-http/routes/branches", {
             let store = store.clone();
-            let port = port.clone();
-            let scope_account = account.clone();
             let agent_id = body.agent.clone();
             let message_id = body.message_id.clone();
             let operation_id = operation_id.clone();
@@ -140,10 +138,11 @@ async fn branch(
                                 ));
                             }
                             match prior.get("phase").and_then(Value::as_str) {
-                                Some("completed" | "provider_ready") => {
+                                Some("completed") => {
                                     operation = Some(prior);
                                     return Ok(());
                                 }
+                                Some("provider_ready") => {}
                                 Some("failed") => {
                                     prior["phase"] = json!("provider_pending");
                                     if let Some(value) = prior.as_object_mut() {
@@ -160,6 +159,47 @@ async fn branch(
                                     // Re-submit the same broker operation identity
                                     // below. The retained broker returns its saved
                                     // receipt or Unknown and never sends a duplicate.
+                                    let mut actor = AgentRepository::get(
+                                        tx,
+                                        &AgentId::from(agent_id.as_str()),
+                                    )?
+                                    .ok_or_else(|| {
+                                        rusqlite::Error::QueryReturnedNoRows
+                                    })?;
+                                    if (actor.extra.get("workspaceOperation").is_some_and(
+                                        |value| !value.is_null() && value != "",
+                                    ) && actor
+                                        .extra
+                                        .get("workspaceReservationId")
+                                        .and_then(Value::as_str)
+                                        != Some(operation_id.as_str()))
+                                        || snapshot.agents.iter().any(|entry| {
+                                            entry.id != agent_id
+                                                && entry.record.get("cwd") == source.get("cwd")
+                                                && entry.record.get("workspaceOperation").is_some_and(
+                                                    |value| !value.is_null() && value != "",
+                                                )
+                                        })
+                                    {
+                                        return Err(
+                                            studio_runtime_store::StoreError::SchemaMismatch(
+                                                "workspace is busy".into(),
+                                            ),
+                                        );
+                                    }
+                                    actor
+                                        .extra
+                                        .insert("workspaceOperation".into(), json!("branch"));
+                                    actor.extra.insert(
+                                        "workspaceReservationId".into(),
+                                        json!(operation_id),
+                                    );
+                                    AgentRepository::put(tx, &actor)?;
+                                    prior["reserved"] = json!(true);
+                                    tx.execute(
+                                        "UPDATE runtime_workspace_operations SET record=?2 WHERE id=?1",
+                                        params![operation_id, prior.to_string()],
+                                    )?;
                                     operation = Some(prior);
                                     return Ok(());
                                 }
@@ -235,11 +275,15 @@ async fn branch(
                         Ok(())
                     })
                     .map_err(|error| bad_request(&error.to_string()))?;
-                Ok::<_, ApiError>((source, selected, scope, operation))
+                Ok::<_, ApiError>((source, selected, operation))
             }
         })
         .await
         .map_err(|_| ApiError::internal())??;
+    let needs_catalog = branch_needs_catalog(&store, &operation_id, &signature).await?;
+    if needs_catalog {
+        ensure_branch_model_catalog(&state, &account).await?;
+    }
     if let Some(result) = operation
         .as_ref()
         .and_then(|op| op.get("result"))
@@ -257,6 +301,23 @@ async fn branch(
         .as_ref()
         .and_then(|op| op.get("provider"))
         .cloned();
+    let scope = {
+        let port = port.clone();
+        let account = account.clone();
+        studio_runtime_process::blocking_pool::spawn_blocking(
+            "runtime-http/routes/branches",
+            move || {
+                port.ensure_session(&account).map_err(|error| {
+                    ApiError::new(
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        format!("Could not ensure account session: {error}"),
+                    )
+                })
+            },
+        )
+        .await
+        .map_err(|_| ApiError::internal())??
+    };
     let branch_model = if source.get("isLead").and_then(Value::as_bool) == Some(true) {
         source["model"].as_str().unwrap_or("gpt-5.6-sol")
     } else {
@@ -414,7 +475,16 @@ async fn branch(
                 settle_failure(&store, &operation_id, false, "Provider fork was not sent")?;
                 return Err(unavailable());
             }
-            Err(AccountSessionError::Unknown) | Ok(_) => {
+            Err(AccountSessionError::Unknown) => {
+                settle_failure(
+                    &store,
+                    &operation_id,
+                    true,
+                    "Provider fork outcome is unknown",
+                )?;
+                return Err(unavailable());
+            }
+            Ok(_) => {
                 settle_failure(
                     &store,
                     &operation_id,
@@ -483,7 +553,7 @@ async fn branch(
     }
     ensure_branch_source(&store, &operation_id, &body.agent)?;
     let child_id = deterministic_uuid(&operation_id);
-    let Json(created) = super::agents_create::create_branch_draft(
+    let created = super::agents_create::create_branch_draft(
         state.clone(),
         json!({
         "id":child_id,"name":format!("{} (branch)",source["name"].as_str().unwrap_or("Lead").chars().take(90).collect::<String>()),
@@ -492,7 +562,14 @@ async fn branch(
             "profile_id":source["profileId"]
         }),
     )
-    .await?;
+    .await;
+    let Json(created) = match created {
+        Ok(created) => created,
+        Err(error) => {
+            release_provider_ready_reservation(&store, &operation_id, &body.agent)?;
+            return Err(error);
+        }
+    };
     let child_id = created.id;
     let branch_result = copy_branch_history(
         &store,
@@ -522,22 +599,41 @@ fn provider_request(
     method: Method,
     params: Value,
 ) -> Result<Value, ApiError> {
-    let receipt = port
-        .provider_request(ProviderRequest {
-            account: account.to_owned(),
-            operation,
-            actor,
-            expected_scope: Some(scope.clone()),
-            deleted_actor_session: None,
-            method,
-            params,
-            deadline: Instant::now() + Duration::from_secs(30),
-        })
+    let mut request = ProviderRequest {
+        account: account.to_owned(),
+        operation,
+        actor,
+        expected_scope: Some(scope.clone()),
+        deleted_actor_session: None,
+        method,
+        params,
+        deadline: Instant::now() + Duration::from_secs(30),
+    };
+    let mut receipt = port
+        .provider_request(request.clone())
         .map_err(|error| match error {
             AccountSessionError::Requires(name) => ApiError::dependency(name),
             AccountSessionError::Unknown => unavailable(),
             _ => bad_request(&error.to_string()),
         })?;
+    if receipt.certainty == RequestCertainty::NotSent {
+        // A worker can disappear between ensuring the account session and
+        // submitting the request. A NotSent receipt permits retrying, but the
+        // operation identity and payload remain unchanged.
+        request.expected_scope = Some(port.ensure_session(account).map_err(|error| {
+            ApiError::new(
+                StatusCode::SERVICE_UNAVAILABLE,
+                format!("Could not ensure account session: {error}"),
+            )
+        })?);
+        receipt = port
+            .provider_request(request)
+            .map_err(|error| match error {
+                AccountSessionError::Requires(name) => ApiError::dependency(name),
+                AccountSessionError::Unknown => unavailable(),
+                _ => bad_request(&error.to_string()),
+            })?;
+    }
     match (receipt.certainty, receipt.result) {
         (RequestCertainty::Written, Some(ProviderResponse::Reply(value))) => Ok(value),
         (RequestCertainty::Written, Some(ProviderResponse::Rejected(error))) => {
@@ -590,6 +686,48 @@ fn settle_failure(
         .map_err(ApiError::stored)
 }
 
+fn release_provider_ready_reservation(
+    store: &RuntimeStore,
+    operation_id: &str,
+    agent_id: &str,
+) -> Result<(), ApiError> {
+    store
+        .transaction_with(|tx| {
+            let raw: String = tx.query_row(
+                "SELECT record FROM runtime_workspace_operations WHERE id=?1",
+                [operation_id],
+                |row| row.get(0),
+            )?;
+            let mut operation: Value = serde_json::from_str(&raw)?;
+            if operation.get("phase").and_then(Value::as_str) != Some("provider_ready")
+                || operation.get("provider").is_none()
+            {
+                return Err(studio_runtime_store::StoreError::SchemaMismatch(
+                    "branch provider result is not durably ready".into(),
+                ));
+            }
+            operation["reserved"] = json!(false);
+            tx.execute(
+                "UPDATE runtime_workspace_operations SET record=?2 WHERE id=?1",
+                params![operation_id, operation.to_string()],
+            )?;
+            if let Some(mut actor) = AgentRepository::get(tx, &AgentId::from(agent_id))? {
+                if actor
+                    .extra
+                    .get("workspaceReservationId")
+                    .and_then(Value::as_str)
+                    == Some(operation_id)
+                {
+                    actor.extra.remove("workspaceReservationId");
+                    actor.extra.insert("workspaceOperation".into(), Value::Null);
+                    AgentRepository::put(tx, &actor)?;
+                }
+            }
+            Ok::<_, studio_runtime_store::StoreError>(())
+        })
+        .map_err(ApiError::stored)
+}
+
 fn persist_fork_turn(
     store: &RuntimeStore,
     operation_id: &str,
@@ -611,6 +749,91 @@ fn persist_fork_turn(
             Ok::<_, studio_runtime_store::StoreError>(())
         })
         .map_err(ApiError::stored)
+}
+
+async fn ensure_branch_model_catalog(state: &HttpState, account_key: &str) -> Result<(), ApiError> {
+    let policy = state
+        .account_policy
+        .clone()
+        .ok_or_else(ApiError::internal)?;
+    let driver = state.account_driver.clone();
+    let snapshot = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-http/routes/branches",
+        move || match driver {
+            Some(driver) => driver.snapshot().map_err(|_| ApiError::internal()),
+            None => Ok(policy.accounts()),
+        },
+    )
+    .await
+    .map_err(|_| ApiError::internal())??;
+    state.model_catalog.retain_accounts(&snapshot.accounts);
+    state
+        .model_catalog
+        .set_account_session(state.account_session.clone());
+    let account = snapshot
+        .accounts
+        .iter()
+        .find(|row| row.get("id").and_then(Value::as_str) == Some(account_key))
+        .ok_or_else(|| bad_request("Unknown Codex account"))?;
+    if matches!(
+        account.get("status").and_then(Value::as_str),
+        Some("changed" | "error")
+    ) {
+        return Err(bad_request("Account is unavailable"));
+    }
+    let home = account
+        .get("home")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let provider = account
+        .get("provider")
+        .and_then(Value::as_str)
+        .unwrap_or("codex");
+    match state
+        .model_catalog
+        .read_until_fresh(account_key, home, provider)
+        .await
+    {
+        studio_runtime_services::model_catalog::CatalogRead::Ready(_) => Ok(()),
+        studio_runtime_services::model_catalog::CatalogRead::Pending
+        | studio_runtime_services::model_catalog::CatalogRead::Unavailable => {
+            Err(ApiError::dependency("provider-session/model-list"))
+        }
+    }
+}
+
+async fn branch_needs_catalog(
+    store: &std::sync::Arc<RuntimeStore>,
+    operation_id: &str,
+    signature: &str,
+) -> Result<bool, ApiError> {
+    let store = store.clone();
+    let operation_id = operation_id.to_owned();
+    let signature = signature.to_owned();
+    studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-http/routes/branches",
+        move || {
+            let db = store.read().map_err(ApiError::stored)?;
+            let Some(raw) = db
+                .query_row(
+                    "SELECT record FROM runtime_workspace_operations WHERE id=?1",
+                    [&operation_id],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()
+                .map_err(|_| ApiError::internal())?
+            else {
+                return Ok(true);
+            };
+            let operation: Value = serde_json::from_str(&raw).map_err(|_| ApiError::internal())?;
+            if operation.get("signature").and_then(Value::as_str) != Some(signature.as_str()) {
+                return Err(bad_request("branch request id has different content"));
+            }
+            Ok(operation.get("phase").and_then(Value::as_str) != Some("completed"))
+        },
+    )
+    .await
+    .map_err(|_| ApiError::internal())?
 }
 
 struct BranchCopy<'a> {

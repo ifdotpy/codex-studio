@@ -80,9 +80,9 @@ pub(super) struct Faults {
     entered: tokio::sync::Notify,
     fired_notify: tokio::sync::Notify,
     pub(super) shutdown_wait: tokio::sync::Notify,
-    pub(super) shutdown_callbacks_draining: tokio::sync::Notify,
     pub(super) startup_recovery_done: std::sync::atomic::AtomicBool,
     pub(super) startup_recovery: tokio::sync::Notify,
+    pub(super) shutdown_callbacks_draining: tokio::sync::Notify,
 }
 type Boundary = (String, usize, Option<String>);
 type NamedBoundary = (String, usize, Option<String>, bool);

@@ -249,6 +249,8 @@ fn session_reply(
                 certainty: RequestCertainty::Written,
                 result: Some(ProviderResponse::Reply(value.clone())),
                 not_sent_reason: None,
+
+                replayed: false,
             },
             value,
         ));
@@ -1186,6 +1188,7 @@ mod retained_executor_tests {
                 certainty: RequestCertainty::Written,
                 result: Some(ProviderResponse::Reply(value)),
                 not_sent_reason: None,
+                replayed: false,
             }
         }
     }

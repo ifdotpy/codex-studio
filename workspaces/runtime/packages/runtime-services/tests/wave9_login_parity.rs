@@ -66,6 +66,8 @@ impl RetainedAccountSession for CodexSession {
                 certainty: RequestCertainty::Written,
                 result: Some(ProviderResponse::Reply(result)),
                 not_sent_reason: None,
+
+                replayed: false,
             })
         })
     }

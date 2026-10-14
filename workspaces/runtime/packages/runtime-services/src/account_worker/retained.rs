@@ -43,6 +43,8 @@ pub struct SessionReceipt {
     pub operation: String,
     pub ticket: RequestTicket,
     pub result: RequestResult,
+    /// True only when this receipt came from checkpoint-verified durable replay.
+    pub replayed: bool,
 }
 #[derive(Clone, Debug, thiserror::Error, PartialEq, Eq)]
 pub enum PortError {
@@ -537,6 +539,7 @@ impl Call {
             operation: self.operation.clone(),
             ticket,
             result,
+            replayed: false,
         }
     }
 }

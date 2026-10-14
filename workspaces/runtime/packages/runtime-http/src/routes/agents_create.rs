@@ -31,6 +31,32 @@ struct ManagedCreationEnvironment {
 impl studio_runtime_services::provider_callbacks::ManagedCreationEnvironment
     for ManagedCreationEnvironment
 {
+    fn wait_for_catalog<'a>(
+        &'a self,
+        account_key: &'a str,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<(), studio_runtime_services::provider_callbacks::ManagedCreationEnvironmentError>> + Send + 'a>,
+    > {
+        Box::pin(async move {
+            use studio_runtime_services::provider_callbacks::ManagedCreationEnvironmentError as E;
+            use studio_runtime_services::provider_callbacks::ManagedCreationAccountRead;
+            let identity = DriverManagedAccountRead(self.accounts.as_ref())
+                .resolve_identity(account_key, account_key)
+                .map_err(|_| E::Unavailable("account-driver/managed-child-account"))?;
+            let account = host_account_identity(&identity);
+            let (Some(home), Some(provider)) = (account.home.as_deref(), account.provider.as_deref()) else {
+                return Err(E::Unavailable("provider-session/model-list"));
+            };
+            match self.catalog.service.wait_for_admission_catalog(account_key, home, provider).await {
+                studio_runtime_services::model_catalog::AdmissionCatalogRead::Fresh { .. } => Ok(()),
+                studio_runtime_services::model_catalog::AdmissionCatalogRead::Pending
+                | studio_runtime_services::model_catalog::AdmissionCatalogRead::Unavailable => {
+                    Err(E::Unavailable("provider-session/model-list"))
+                }
+            }
+        })
+    }
+
     fn select_worker_account(
         &self,
         parent_account_key: &str,
@@ -303,7 +329,9 @@ fn host_account_identity(
     identity: &studio_runtime_services::provider_callbacks::ManagedAccountIdentity,
 ) -> studio_runtime_services::host_worker_create::AccountIdentity {
     studio_runtime_services::host_worker_create::AccountIdentity {
-        provider: identity.provider.clone(),
+        // Older/default Codex registry rows omit provider; the account registry
+        // contract treats that representation as Codex.
+        provider: Some(identity.provider.as_deref().unwrap_or("codex").to_owned()),
         home: identity.home.clone(),
         account_id: identity.account_id.clone(),
         email: identity.email.clone(),
@@ -604,7 +632,15 @@ async fn create_lead(
     State(state): State<HttpState>,
     ApiJson(body): ApiJson<generated::CreateLeadRequest>,
 ) -> Result<Json<generated::AgentResponse>, ApiError> {
-    if body.model.as_ref().is_some_and(Option::is_some) {
+    create_lead_with_model(State(state), ApiJson(body), false).await
+}
+
+async fn create_lead_with_model(
+    State(state): State<HttpState>,
+    ApiJson(body): ApiJson<generated::CreateLeadRequest>,
+    allow_requested_model: bool,
+) -> Result<Json<generated::AgentResponse>, ApiError> {
+    if !allow_requested_model && body.model.as_ref().is_some_and(Option::is_some) {
         return Err(ApiError::new(
             StatusCode::NOT_IMPLEMENTED,
             "Not implemented: requires provider-session/model-list",
@@ -698,7 +734,7 @@ pub(super) async fn create_branch_draft(
 ) -> Result<Json<generated::AgentResponse>, ApiError> {
     let body: generated::CreateLeadRequest =
         serde_json::from_value(body).map_err(|_| ApiError::internal())?;
-    create_lead(State(state), ApiJson(body)).await
+    create_lead_with_model(State(state), ApiJson(body), true).await
 }
 async fn configure(
     State(state): State<HttpState>,

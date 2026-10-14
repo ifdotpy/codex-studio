@@ -26,6 +26,17 @@ pub enum ManagedCreationEnvironmentError {
 /// Host account facts and model admission. Production implementations resolve
 /// model settings through the retained `AccountSessionPort` broker.
 pub trait ManagedCreationEnvironment: Send + Sync {
+    /// Wait for the actor account's model catalog at the callback's async
+    /// boundary. Implementations keep this bounded and never run it at worker
+    /// startup or inside the synchronous store callback.
+    fn wait_for_catalog<'a>(
+        &'a self,
+        _account_key: &'a str,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<(), ManagedCreationEnvironmentError>> + Send + 'a>,
+    > {
+        Box::pin(async { Ok(()) })
+    }
     /// Resolve the account and model as `codex_worker_accounts.resolve` does.
     /// `requested_account_key` is the per-worker `account_key`; the default is
     /// kept separate so an explicit value can be checked against chat settings.

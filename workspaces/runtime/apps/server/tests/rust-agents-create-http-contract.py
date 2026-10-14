@@ -189,6 +189,11 @@ BACKGROUND_CHILD_COMPLETION_FIELDS = frozenset({
     "lastEvent", "nativeRoleGuidance", "nativeTeleportTool", "nativeToolCatalog",
     "nativeToolSource", "prepareAttempt", "preparedContext", "tail",
     "threadId", "worktreeReady", "branch", "cwd",
+    # Python's reviewer archive scheduler writes/retries these after delivering
+    # child results (codex_agent_management.py:789, 818-826); the quiet draft
+    # oracle does not run that scheduler.
+    "reviewArchiveAttempts", "reviewArchiveError", "reviewArchiveNextAt",
+    "reviewArchiveScheduled",
     # Python's successful thread preparation callback records these even when
     # the provider reply omits them (codex_runtime.py:6477-6478).
     "approvalPolicy", "profile", "sandbox",
@@ -773,6 +778,59 @@ class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             )
         self.quiesce_fixture_agent(request["id"])
         self.quiesce_fixture_agent(maximum_name_request["id"])
+
+    def test_reviewer_child_uses_shared_workspace_and_read_only_permissions(self):
+        parent_request = {
+            "id": str(uuid.uuid4()),
+            "cwd": str(self.backend.cwd),
+            "workspaceMode": "worktree",
+            "yolo_mode": False,
+        }
+        parent = python_draft(self.backend, parent_request)
+        request = {
+            "id": str(uuid.uuid4()),
+            "parent": parent["record"]["id"],
+            "name": "Reviewer workspace contract",
+            "prompt": "Review the shared workspace read-only.",
+            "role": "reviewer",
+        }
+        expected = python_worker_draft(
+            self.backend,
+            {**request, "_workspaceMode": "shared", "_workspaceExplicit": False},
+            parent["record"]["id"],
+        )
+        self.backend.start()
+        account_key = parent["record"].get("accountKey", "default")
+        self.await_model_catalog(account_key)
+        response = self.backend.request(
+            "POST", "/api/agents", body=request, headers=self.headers(),
+        )
+        self.assertEqual(response.status, 200, response.body[:1000])
+        self.await_background_quiescence()
+        with database_connection(self.backend.state / "canvas.sqlite3") as database:
+            saved = json.loads(database.execute(
+                "SELECT record FROM runtime_agents WHERE id=?", (request["id"],),
+            ).fetchone()[0])
+        self.assertEqual(saved["role"], "reviewer")
+        self.assertEqual(saved["workspaceMode"], "shared")
+        self.assertIs(saved["worktree"], False)
+        self.assertIs(saved["yoloMode"], False)
+        turn = next(
+            frame for frame in reversed(self.backend.received_provider_frames())
+            if frame.get("method") == "turn/start"
+            and frame.get("params", {}).get("threadId") == saved.get("threadId")
+            and frame.get("params", {}).get("input")
+        )
+        self.assertEqual(turn["params"]["sandboxPolicy"], {"type": "readOnly"})
+        saved_for_creation = normalized_agent(saved)
+        expected_for_creation = normalized_agent(expected)
+        for field in BACKGROUND_CHILD_COMPLETION_FIELDS:
+            saved_for_creation.pop(field, None)
+            expected_for_creation.pop(field, None)
+        self.assertEqual(
+            agent_delta(saved_for_creation, expected_for_creation),
+            {},
+        )
 
     def test_rename_reads_python_written_agent_and_projection(self):
         before = rename_state(self.backend.state, self.agent_id, "title-request-1")

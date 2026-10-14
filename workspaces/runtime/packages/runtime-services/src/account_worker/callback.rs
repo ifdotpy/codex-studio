@@ -91,6 +91,29 @@ pub(super) fn managed_response(
     })
 }
 
+pub(super) async fn wait_for_managed_catalog(
+    store: &RuntimeStore,
+    account: &str,
+    generation: u64,
+    frame: &Frame,
+    runtime: Option<&crate::provider_callbacks::ManagedToolRuntime>,
+) -> Result<(), &'static str> {
+    let Some(runtime) = runtime else { return Ok(()); };
+    let Frame::Request(request) = frame else { return Ok(()); };
+    if request.method.as_str() != "item/tool/call"
+        || request.params.as_ref().and_then(|params| params.get("tool")).and_then(Value::as_str)
+            != Some("orchestration_spawn")
+    {
+        return Ok(());
+    }
+    let Some(thread) = request.params.as_ref().and_then(|params| params.get("threadId")).and_then(Value::as_str) else { return Ok(()); };
+    let Some(turn) = request.params.as_ref().and_then(|params| params.get("turnId")).and_then(Value::as_str) else { return Ok(()); };
+    let Some(context) = callback_context(store, account, generation, thread, turn).map_err(|_| "Managed tool callback context is unavailable")? else {
+        return Ok(());
+    };
+    runtime.wait_for_catalog(&context.account).await.map_err(|_| "provider-session/model-list")
+}
+
 fn callback_context(
     store: &RuntimeStore,
     account: &str,
@@ -154,7 +177,7 @@ fn unsupported() -> ResponseBody {
     )
 }
 
-fn tool_call_failure(request: &studio_runtime_providers::RequestFrame, message: &str) -> Frame {
+pub(super) fn tool_call_failure(request: &studio_runtime_providers::RequestFrame, message: &str) -> Frame {
     Frame::Response {
         id: request.id.clone(),
         body: tool_call_failure_body(message),

@@ -19,12 +19,13 @@ use crate::managed_host_tools::{
 /// through a production `ManagedCreationEnvironment`.
 pub struct ManagedToolRuntime {
     ports: ManagedToolRuntimePorts,
+    creation_environment: Option<Arc<dyn crate::managed_child_create::ManagedCreationEnvironment>>,
 }
 
 impl ManagedToolRuntime {
     #[cfg(test)]
     pub(crate) fn from_ports_for_test(ports: ManagedToolRuntimePorts) -> Arc<Self> {
-        Arc::new(Self { ports })
+        Arc::new(Self { ports, creation_environment: None })
     }
 
     pub fn new(
@@ -51,9 +52,9 @@ impl ManagedToolRuntime {
             Arc::new(ManagedChildCreationAdapter(Arc::clone(environment)))
                 as Arc<dyn ChildCreationPort>
         });
-        let monitor_create = environment.map(|environment| {
+        let monitor_create = environment.as_ref().map(|environment| {
             Arc::new(ManagedMonitorCreateAdapter {
-                environment,
+                environment: Arc::clone(environment),
                 runtime: Arc::clone(&monitor),
             }) as Arc<dyn MonitorCreatePort>
         });
@@ -68,7 +69,15 @@ impl ManagedToolRuntime {
                 })),
                 monitor_cancel: Some(Arc::new(ManagedMonitorCancelAdapter { runtime: monitor })),
             },
+            creation_environment: environment,
         })
+    }
+
+    pub(crate) async fn wait_for_catalog(&self, account_key: &str) -> Result<(), crate::managed_child_create::ManagedCreationEnvironmentError> {
+        match &self.creation_environment {
+            Some(environment) => environment.wait_for_catalog(account_key).await,
+            None => Ok(()),
+        }
     }
 
     pub(crate) fn ports(&self) -> ManagedToolRuntimePorts {
