@@ -38,6 +38,10 @@ from studio_api.work.models import (
     _record_response_model,
 )
 from codex_records import SafeNumber, WorktreeCleanupRecord
+from studio_api.sync.resources.models import (
+    MAX_TOKEN_RATE_ENTRIES,
+    MAX_TOKEN_RATE_TOTAL_ENTRIES,
+)
 import codex_records as record_contracts
 from studio_api.io.models import TerminalRecord
 from studio_api.work.models import RuleRecord, WorkItem
@@ -119,6 +123,43 @@ def sample_document(response_schema: dict[str, JsonValue]) -> dict[str, JsonValu
                 },
                 "Status": {"type": "string", "enum": ["idle", "running"]},
                 "TaskEntityDto": {"type": "object", "properties": {"id": {"type": "string"}}},
+                "TokenRateSnapshot": {
+                    "type": "object",
+                    "required": ["rates", "teams"],
+                    "properties": {
+                        "rates": {
+                            "type": "object",
+                            "maxProperties": MAX_TOKEN_RATE_ENTRIES,
+                            "additionalProperties": {
+                                "$ref": "#/components/schemas/TokenRateValue",
+                            },
+                        },
+                        "teams": {
+                            "type": "object",
+                            "maxProperties": MAX_TOKEN_RATE_ENTRIES,
+                            "additionalProperties": {
+                                "type": "object",
+                                "maxProperties": MAX_TOKEN_RATE_ENTRIES,
+                                "additionalProperties": {
+                                    "$ref": "#/components/schemas/TokenRateValue",
+                                },
+                            },
+                        },
+                    },
+                    "additionalProperties": False,
+                },
+                "TokenRateValue": {
+                    "type": "object",
+                    "required": ["turnId", "active", "estimated", "rate", "outputTokens"],
+                    "properties": {
+                        "turnId": {"type": "string", "minLength": 1},
+                        "active": {"type": "boolean"},
+                        "estimated": {"type": "boolean"},
+                        "rate": {"type": "number", "minimum": 0},
+                        "outputTokens": {"type": "number", "minimum": 0},
+                    },
+                    "additionalProperties": False,
+                },
             }
         },
     }
@@ -128,6 +169,16 @@ def sample_document(response_schema: dict[str, JsonValue]) -> dict[str, JsonValu
 
 
 class SchemaContractTests(unittest.TestCase):
+    def assert_token_rate_limit_exports(self, generated: str) -> None:
+        self.assertIn(
+            f"export const TOKEN_RATE_MAX_ENTRIES = {MAX_TOKEN_RATE_ENTRIES} as const;",
+            generated,
+        )
+        self.assertIn(
+            f"export const TOKEN_RATE_MAX_TOTAL_ENTRIES = {MAX_TOKEN_RATE_TOTAL_ENTRIES} as const;",
+            generated,
+        )
+
     def test_agent_capacity_contracts_derive_from_runtime_limits(self) -> None:
         document = openapi_document()
         components = document["components"]
@@ -1268,6 +1319,7 @@ class SchemaContractTests(unittest.TestCase):
         self.assertIn('export type AgentEntityDto = components["schemas"]["AgentEntityDto"];', generated)
         self.assertIn('export type TaskEntityDto = components["schemas"]["TaskEntityDto"];', generated)
         self.assertIn('Status: "idle" | "running";', generated)
+        self.assert_token_rate_limit_exports(generated)
 
     def test_sync_pull_registers_entity_payload_union_and_all_dtos(self) -> None:
         document = openapi_document()
@@ -1388,6 +1440,7 @@ class SchemaContractTests(unittest.TestCase):
             'export type SyncEntityPayload = components["schemas"]["SyncEntityPayload"];',
             generated,
         )
+        self.assert_token_rate_limit_exports(generated)
 
     def test_generator_preserves_required_and_optional_defaulted_properties(self) -> None:
         document = sample_document({"$ref": "#/components/schemas/ResponseContract"})
@@ -1428,6 +1481,7 @@ class SchemaContractTests(unittest.TestCase):
         }
 
         generated = render(document)
+        self.assert_token_rate_limit_exports(generated)
 
         monitor_input = generated.split("MonitorInput: {", 1)[1].split("\n    };", 1)[0]
         response_contract = generated.split("ResponseContract: {", 1)[1].split("\n    };", 1)[0]
