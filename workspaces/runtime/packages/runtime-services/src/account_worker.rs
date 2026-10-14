@@ -365,13 +365,13 @@ pub async fn start_account_worker_with_preparation(
     let events = std::mem::replace(&mut session.events, mpsc::channel(1).1);
     let (commands, inbox) = mpsc::channel(COMMAND_CAPACITY);
     let stop = Shutdown::default();
-    let retained_scope = crate::recovery_history::ConnectionScope {
+    let scope = crate::recovery_history::ConnectionScope {
         account: account.clone(),
         connection: generation.0.to_string(),
         generation: generation.0,
     };
     let retained_port = retained::RetainedSessionPort {
-        scope: retained_scope.clone(),
+        scope: scope.clone(),
         commands: commands.clone(),
         stop: stop.clone(),
     };
@@ -392,7 +392,7 @@ pub async fn start_account_worker_with_preparation(
         inbox,
         commands: commands.clone(),
         retained_session: retained::RetainedSessionPort {
-            scope: retained_scope,
+            scope: scope.clone(),
             commands: commands.clone(),
             stop: stop.clone(),
         },

@@ -4,6 +4,7 @@ use crate::account_registry::{AccountLaunch, AccountLauncher, AccountRegistry, L
 use serde_json::json;
 use std::{
     collections::BTreeMap,
+    env,
     path::{Path, PathBuf},
     sync::Arc,
 };
