@@ -230,10 +230,18 @@ impl SchedulerRepository {
         let Some(attempt) = agent.extra.get("startAttempt") else {
             return Ok(false);
         };
-        if agent.extra.get("threadId").and_then(Value::as_str) != Some(thread)
-            || !["turnId", "observedTurnId"]
+        let active_turn = !turn.is_empty()
+            && ["turnId", "observedTurnId"]
                 .iter()
-                .any(|k| attempt[*k] == turn)
+                .any(|k| attempt[*k] == turn);
+        let active_review = turn.is_empty()
+            && agent.extra.get("nativeReview").and_then(Value::as_bool) == Some(true)
+            && agent.extra.get("inFlight").and_then(Value::as_bool) == Some(true)
+            && attempt.get("action").and_then(Value::as_str) == Some("review")
+            && attempt.get("submitted").and_then(Value::as_bool) == Some(true)
+            && attempt.get("threadId").and_then(Value::as_str) == Some(thread);
+        if agent.extra.get("threadId").and_then(Value::as_str) != Some(thread)
+            || !(active_turn || active_review)
             || interrupt_uncertain(attempt, thread, turn)
         {
             return Ok(false);

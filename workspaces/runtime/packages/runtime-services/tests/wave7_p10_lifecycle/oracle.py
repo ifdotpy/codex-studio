@@ -126,7 +126,9 @@ def corpus():
                             startAttempt=dict(id="attempt", epoch=3, submitted=phase != "preparing"))
             if phase in {"submitted", "unknown", "running"}:
                 lead.update(threadId="thread", accountKey="fixture-account")
-                lead["startAttempt"].update(connectionGeneration=7, requestTicket=91)
+                lead["startAttempt"].update(
+                    connectionGeneration=7, connectionId="fixture-connection",
+                    accountKey="fixture-account", requestTicket=91, events=[])
             if phase == "unknown":
                 lead["startAttempt"]["executionOutcome"] = "unknown"
                 lead["error"] = "turn/start response timed out; outcome unknown"
@@ -140,6 +142,9 @@ def corpus():
                         parkReceipt=dict(event="ready", epoch=3, sequence=1), capacityRetryCount=2)
             cases.append(case(phase+"-"+str(descendants), records,
                               dict(action="stop", target="lead", descendants=descendants)))
+    running = next(item for item in cases if item["name"] == "running-True")
+    cases.append(case("delete-running", running["records"],
+                      dict(action="delete", target="lead")))
     deleted = case("delete", seed(), dict(action="delete", target="lead"))
     cases.append(deleted)
     cases.append(case("delete-replay", deleted["expected"]["records"], dict(action="delete", target="lead")))
