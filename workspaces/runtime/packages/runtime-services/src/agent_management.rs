@@ -698,6 +698,20 @@ fn stop(
         let object = record
             .as_object_mut()
             .ok_or(ManagementError::Invalid("Invalid agent"))?;
+        let retry_id = object
+            .get("capacityRetry")
+            .and_then(|retry| retry.get("id"))
+            .and_then(Value::as_str);
+        let cancel_unsubmitted_retry = retry_id.is_some_and(|retry_id| {
+            object.get("startAttempt").is_some_and(|attempt| {
+                attempt.get("capacityRetryId").and_then(Value::as_str) == Some(retry_id)
+                    && attempt.get("submitted") != Some(&json!(true))
+            })
+        });
+        if cancel_unsubmitted_retry {
+            object.remove("startAttempt");
+            object.insert("inFlight".to_owned(), json!(false));
+        }
         let receipt = object.remove("parkReceipt");
         object.remove("parkedEvent");
         object.remove("parkAfterTurn");
