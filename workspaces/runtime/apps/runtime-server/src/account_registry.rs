@@ -201,6 +201,41 @@ impl studio_runtime_services::account_session_runtime::RetainedAccountSession
             dispatch_request(session, request).await
         })
     }
+
+    fn callback_barrier(
+        &self,
+        account: String,
+        expected_scope: studio_runtime_services::account_session_runtime::ConnectionScope,
+        deadline: std::time::Instant,
+    ) -> studio_runtime_services::account_session_runtime::BarrierFuture {
+        let session = self
+            .sessions
+            .read()
+            .ok()
+            .and_then(|sessions| sessions.get(&account).cloned());
+        Box::pin(async move {
+            let Some(session) = session.filter(|session| session.is_live()) else {
+                return Err(
+                    studio_runtime_services::account_session_runtime::AccountSessionError::Refused(
+                        "No live account worker",
+                    ),
+                );
+            };
+            session
+                .barrier(&expected_scope, deadline)
+                .await
+                .map_err(|error| match error {
+                    studio_runtime_services::account_worker::retained::PortError::Unknown => {
+                        studio_runtime_services::account_session_runtime::AccountSessionError::Unknown
+                    }
+                    studio_runtime_services::account_worker::retained::PortError::Identity
+                    | studio_runtime_services::account_worker::retained::PortError::ScopeMismatch => {
+                        studio_runtime_services::account_session_runtime::AccountSessionError::Refused("Provider session scope changed")
+                    }
+                    _ => studio_runtime_services::account_session_runtime::AccountSessionError::Refused("Callback barrier was not completed"),
+                })
+        })
+    }
 }
 
 fn not_sent_receipt(
