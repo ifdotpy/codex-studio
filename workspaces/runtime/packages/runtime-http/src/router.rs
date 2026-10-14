@@ -35,6 +35,10 @@ pub struct HttpState {
     pub(crate) public_origin: Option<String>,
     pub(crate) validators: Registry,
     pub(crate) store: Option<Arc<RuntimeStore>>,
+    pub(crate) diagnostics_provider:
+        Option<Arc<dyn studio_runtime_services::diagnostics::ProviderDiagnosticsPort>>,
+    pub(crate) diagnostics_supervisor:
+        Option<Arc<dyn studio_runtime_services::diagnostics::SupervisorDiagnosticsPort>>,
     pub(crate) account_policy:
         Option<Arc<studio_runtime_services::account_policy::AccountPolicyState>>,
     pub(crate) tool_catalog: Option<Arc<studio_runtime_services::thread_prepare::CatalogSnapshot>>,
@@ -68,6 +72,9 @@ impl HttpState {
         if let Some(store) = &store {
             let changes = Arc::clone(&sync_changes);
             store.set_commit_notifier(move || changes.notify_one());
+            store.set_diagnostics_callback(Some(
+                studio_runtime_services::diagnostics::observe_store_event,
+            ));
         }
         Self {
             account_driver: None,
@@ -83,6 +90,8 @@ impl HttpState {
             public_origin,
             validators: Registry::default(),
             store,
+            diagnostics_provider: None,
+            diagnostics_supervisor: None,
             account_policy,
             tool_catalog: None,
             model_catalog,
@@ -99,6 +108,24 @@ impl HttpState {
         boundary: Arc<studio_runtime_services::multi_server_pairing::MultiServerBoundary>,
     ) -> Self {
         self.multi_server_boundary = Some(boundary);
+        self
+    }
+
+    /// Attach the cached provider and loaded-thread diagnostics source.
+    pub fn with_diagnostics_provider(
+        mut self,
+        provider: Arc<dyn studio_runtime_services::diagnostics::ProviderDiagnosticsPort>,
+    ) -> Self {
+        self.diagnostics_provider = Some(provider);
+        self
+    }
+
+    /// Attach runtime-server's current supervisor state.
+    pub fn with_diagnostics_supervisor(
+        mut self,
+        supervisor: Arc<dyn studio_runtime_services::diagnostics::SupervisorDiagnosticsPort>,
+    ) -> Self {
+        self.diagnostics_supervisor = Some(supervisor);
         self
     }
 
@@ -315,6 +342,9 @@ fn with_boundary(router: Router<HttpState>, state: HttpState) -> Router {
     router
         .method_not_allowed_fallback(any(dispatch))
         .fallback(any(dispatch))
+        .layer(axum_middleware::from_fn(
+            middleware::diagnostics_http_timing,
+        ))
         .layer(axum_middleware::from_fn_with_state(
             state.clone(),
             middleware::boundary,

@@ -26439,6 +26439,28 @@ export interface components {
         "application/json": components["schemas"]["ErrorResponse"];
       };
     };
+    /** @description Not implemented: a named dependency is unavailable */
+    ApiError501: {
+      headers: {
+        "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
+        "Access-Control-Expose-Headers": components["headers"]["AccessControlExposeHeaders"];
+        "Cache-Control": components["headers"]["CacheControl"];
+        "Content-Encoding": components["headers"]["ContentEncoding"];
+        "Content-Length": components["headers"]["ContentLength"];
+        "Content-Security-Policy": components["headers"]["ContentSecurityPolicy"];
+        "Content-Type": components["headers"]["ContentType"];
+        "Referrer-Policy": components["headers"]["ReferrerPolicy"];
+        "Server-Timing": components["headers"]["ServerTiming"];
+        Vary: components["headers"]["Vary"];
+        "X-Content-Type-Options": components["headers"]["XContentTypeOptions"];
+        "X-Studio-API-Schema": components["headers"]["StudioApiSchema"];
+        "X-Studio-Server": components["headers"]["StudioServer"];
+        [name: string]: unknown;
+      };
+      content: {
+        "application/json": components["schemas"]["ErrorResponse"];
+      };
+    };
     /** @description Bad gateway */
     ApiError502: {
       headers: {
@@ -29410,6 +29432,8 @@ export interface operations {
       429: components["responses"]["ApiError429"];
       /** @description Internal Server Error */
       500: components["responses"]["ApiError500"];
+      /** @description Not Implemented */
+      501: components["responses"]["ApiError501"];
       /** @description Service Unavailable */
       503: components["responses"]["ApiError503"];
     };

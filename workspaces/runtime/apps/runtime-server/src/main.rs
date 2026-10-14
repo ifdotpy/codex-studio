@@ -18,6 +18,9 @@ const DEFAULT_PORT: u16 = 4620;
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     studio_runtime_process::child_priority::ChildPriority::from_environment();
+    studio_runtime_services::diagnostics::mark_startup_memory(
+        studio_runtime_services::diagnostics::StartupMemoryMark::ProcessStarted,
+    );
     let args = env::args().skip(1).collect::<Vec<_>>();
     if args.first().map(String::as_str) == Some("state-check") {
         let state_dir = args
@@ -39,6 +42,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let token = data_encoding::HEXLOWER.encode(&token);
     let configured_state_dir = env::var_os("CODEX_AGENTS_STATE_DIR").map(PathBuf::from);
     let store = Arc::new(RuntimeStore::open(configured_state_dir.as_deref())?);
+    studio_runtime_services::diagnostics::mark_startup_memory(
+        studio_runtime_services::diagnostics::StartupMemoryMark::StoreOpened,
+    );
     studio_runtime_services::workspace_operations_effects::startup_recovery(&store)?;
     let workspace_id = studio_runtime_store::SyncDocumentsRepository::workspace_id(&store.read()?)?;
     let state_root = store.root().canonicalize()?;
@@ -105,6 +111,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     claude_login::attach(&mut state, PathBuf::from(&state_dir), store, account_driver).await?;
     let sync_changes = state.sync_changes_handle();
     let app = router(state.clone())?;
+    studio_runtime_services::diagnostics::mark_startup_memory(
+        studio_runtime_services::diagnostics::StartupMemoryMark::HttpReady,
+    );
     println!("Codex Canvas: http://{}:{}", address.ip(), address.port());
     let result = axum::serve(
         listener,

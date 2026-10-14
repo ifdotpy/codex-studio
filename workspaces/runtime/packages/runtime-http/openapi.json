@@ -718,6 +718,57 @@
           }
         }
       },
+      "ApiError501": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorResponse"
+            }
+          }
+        },
+        "description": "Not implemented: a named dependency is unavailable",
+        "headers": {
+          "Access-Control-Allow-Origin": {
+            "$ref": "#/components/headers/AccessControlAllowOrigin"
+          },
+          "Access-Control-Expose-Headers": {
+            "$ref": "#/components/headers/AccessControlExposeHeaders"
+          },
+          "Cache-Control": {
+            "$ref": "#/components/headers/CacheControl"
+          },
+          "Content-Encoding": {
+            "$ref": "#/components/headers/ContentEncoding"
+          },
+          "Content-Length": {
+            "$ref": "#/components/headers/ContentLength"
+          },
+          "Content-Security-Policy": {
+            "$ref": "#/components/headers/ContentSecurityPolicy"
+          },
+          "Content-Type": {
+            "$ref": "#/components/headers/ContentType"
+          },
+          "Referrer-Policy": {
+            "$ref": "#/components/headers/ReferrerPolicy"
+          },
+          "Server-Timing": {
+            "$ref": "#/components/headers/ServerTiming"
+          },
+          "Vary": {
+            "$ref": "#/components/headers/Vary"
+          },
+          "X-Content-Type-Options": {
+            "$ref": "#/components/headers/XContentTypeOptions"
+          },
+          "X-Studio-API-Schema": {
+            "$ref": "#/components/headers/StudioApiSchema"
+          },
+          "X-Studio-Server": {
+            "$ref": "#/components/headers/StudioServer"
+          }
+        }
+      },
       "ApiError502": {
         "content": {
           "application/json": {
@@ -66069,6 +66120,10 @@
           "500": {
             "$ref": "#/components/responses/ApiError500",
             "description": "Internal Server Error"
+          },
+          "501": {
+            "$ref": "#/components/responses/ApiError501",
+            "description": "Not Implemented"
           },
           "503": {
             "$ref": "#/components/responses/ApiError503",

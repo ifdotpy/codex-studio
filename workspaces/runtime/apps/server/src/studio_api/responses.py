@@ -32,6 +32,7 @@ _API_ERROR_RESPONSE_DESCRIPTIONS = {
     502: "Bad gateway",
     503: "Service unavailable",
     429: "Too many requests",
+    501: "Not implemented: a named dependency is unavailable",
 }
 WRITE_METHODS = frozenset({"POST", "PUT", "PATCH"})
 OPENAPI_COMPONENTS_EXTENSION = "x-studio-components"

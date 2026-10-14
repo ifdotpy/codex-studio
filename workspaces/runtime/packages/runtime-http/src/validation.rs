@@ -118,6 +118,8 @@ impl Registry {
             "ComplaintEntityDto",
             "ComplaintRecordResponse",
             "ConfigureResponse",
+            "DiagnosticsResponse",
+            "ErrorResponse",
             "EdgeEntityDto",
             "EventEntityDto",
             "MonitorEntityDto",
