@@ -557,7 +557,7 @@ fn named_refusals_leave_all_application_tables_unchanged() {
 }
 
 #[test]
-fn managed_monitor_create_persists_one_start_intent_and_replays_exactly() {
+fn managed_monitor_create_refuses_without_admission_and_replays_exactly() {
     let (_root, store, context) = fixture();
     let frame = call(
         &context,
@@ -568,52 +568,26 @@ fn managed_monitor_create_persists_one_start_intent_and_replays_exactly() {
     let wake = std::sync::Arc::new(tokio::sync::Notify::new());
     let ports =
         crate::provider_callbacks::managed_tool_ports(&store, &context, &frame, wake).unwrap();
-    let count_before: i64 = store
-        .read()
-        .unwrap()
-        .query_row("SELECT count(*) FROM runtime_monitors", [], |row| {
-            row.get(0)
-        })
-        .unwrap();
-
+    let before = application_table_snapshot(&store);
     let first = dispatch_with_managed_tools(&store, &context, &frame, 20.0, &ports).unwrap();
-    assert!(matches!(first, CallbackDecision::Answer(_)));
-    let count: i64 = store
-        .read()
-        .unwrap()
-        .query_row("SELECT count(*) FROM runtime_monitors", [], |row| {
-            row.get(0)
-        })
-        .unwrap();
-    assert_eq!(count, count_before + 1);
-    let saved: Value = serde_json::from_str(
-        &store
-            .read()
-            .unwrap()
-            .query_row(
-                "SELECT record FROM runtime_monitors WHERE json_extract(record, '$.command')=?1",
-                ["printf managed-monitor"],
-                |row| row.get::<_, String>(0),
-            )
-            .unwrap(),
-    )
-    .unwrap();
+    let CallbackDecision::Answer(reply) = &first else {
+        panic!("monitor refusal is answered durably: {first:?}");
+    };
+    let ResponseBody::Result(result) = &reply.body else {
+        panic!("monitor refusal is a tool result: {:?}", reply.body);
+    };
+    assert_eq!(result["success"], false);
     assert!(
-        matches!(saved["status"].as_str(), Some("starting" | "approval")),
-        "unexpected monitor status: {}",
-        saved["status"]
+        result["contentItems"][0]["text"]
+            .as_str()
+            .is_some_and(|text| text.contains("requires workspace-state/monitor-admission")),
+        "unexpected refusal result: {result}"
     );
+    assert_eq!(before, application_table_snapshot(&store));
 
     let replay = dispatch_with_managed_tools(&store, &context, &frame, 21.0, &ports).unwrap();
-    assert!(matches!(replay, CallbackDecision::Answer(_)));
-    let replayed_count: i64 = store
-        .read()
-        .unwrap()
-        .query_row("SELECT count(*) FROM runtime_monitors", [], |row| {
-            row.get(0)
-        })
-        .unwrap();
-    assert_eq!(replayed_count, count_before + 1);
+    assert_eq!(first, replay);
+    assert_eq!(before, application_table_snapshot(&store));
 }
 
 #[test]
