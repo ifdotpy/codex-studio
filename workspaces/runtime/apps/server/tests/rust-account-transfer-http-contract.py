@@ -80,6 +80,7 @@ class AccountTransferHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             operation=json.loads(db.execute('SELECT record FROM runtime_account_transfers WHERE id=?',
                 (self.operations['replay'],)).fetchone()[0])
             self.assertEqual(operation['requests'][request_id],dict(leadId='replay',targetAccountKey='default',scope='team'))
+        before=self.stored('replay')
         conflict=self.post(dict(request_id=self.operations['replay'],id='replay',account_key='default',scope='subagents'))
         self.assertEqual(conflict.status,400,conflict.body)
         self.assertEqual(self.stored('replay'),before)

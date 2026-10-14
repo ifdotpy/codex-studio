@@ -8,7 +8,7 @@
 use crate::{
     account_session_runtime::{
         AccountSessionError, AccountSessionPort, ProviderRequest, ProviderResponse,
-        RequestCertainty, SessionReceipt,
+        RequestCertainty, SessionReceipt, TransferProviderRequest,
     },
     account_transfer::TransferError,
     account_transfer_driver::{
@@ -176,6 +176,7 @@ fn session_reply(
     agent: &str,
     account: &str,
     actor: Option<crate::account_worker::retained::RequestActor>,
+    transfer_source_thread: Option<&str>,
     operation: String,
     method: Method,
     params: Value,
@@ -243,8 +244,20 @@ fn session_reply(
     }
     let mut last_receipt = None;
     for attempt in 0..2 {
-        let receipt = session
-            .provider_request(ProviderRequest {
+        let receipt = (if let Some(thread_id) = transfer_source_thread {
+            session.transfer_provider_request(TransferProviderRequest {
+                transfer_id: transfer.into(),
+                member: agent.into(),
+                source_account: account.into(),
+                thread_id: thread_id.into(),
+                operation: operation.clone(),
+                expected_scope: scope.clone(),
+                method,
+                params: params.clone(),
+                deadline: Instant::now() + deadline,
+            })
+        } else {
+            session.provider_request(ProviderRequest {
                 account: account.into(),
                 operation: operation.clone(),
                 actor: actor.clone(),
@@ -253,12 +266,13 @@ fn session_reply(
                 params: params.clone(),
                 deadline: Instant::now() + deadline,
             })
-            .map_err(|error| match error {
-                AccountSessionError::Requires(name) => TransferError::Requires(name),
-                _ => TransferError::Refused(
-                    "The retained provider request failed; inspect its durable intent",
-                ),
-            })?;
+        })
+        .map_err(|error| match error {
+            AccountSessionError::Requires(name) => TransferError::Requires(name),
+            _ => TransferError::Refused(
+                "The retained provider request failed; inspect its durable intent",
+            ),
+        })?;
         let certainty = match receipt.certainty {
             RequestCertainty::Written => "written",
             RequestCertainty::NotSent => "not_sent",
@@ -322,6 +336,35 @@ fn session_reply(
     ))
 }
 
+fn source_transfer_call(
+    store: &RuntimeStore,
+    session: &dyn AccountSessionPort,
+    transfer: &str,
+    agent: &str,
+    account: &str,
+    thread: &str,
+    suffix: &str,
+    method: Method,
+    params: Value,
+    now: f64,
+) -> Result<Value, TransferError> {
+    let (_, response) = session_reply(
+        store,
+        session,
+        transfer,
+        agent,
+        account,
+        None,
+        Some(thread),
+        format!("transfer:{transfer}:{agent}:{suffix}"),
+        method,
+        params,
+        now,
+        READ_DEADLINE,
+    )?;
+    Ok(response)
+}
+
 fn read_catalog(
     store: &RuntimeStore,
     session: &dyn AccountSessionPort,
@@ -349,6 +392,7 @@ fn read_catalog(
             transfer,
             agent,
             account,
+            None,
             None,
             operation,
             Method::ModelList,
@@ -652,6 +696,7 @@ impl TransferExecutor for AccountTransferExecutor<'_> {
                 agent_id,
                 source_account,
                 None,
+                None,
                 operation_id,
                 Method::ThreadRead,
                 json!({"threadId":thread_id,"includeTurns":false}),
@@ -667,6 +712,91 @@ impl TransferExecutor for AccountTransferExecutor<'_> {
                 Some("idle" | "notLoaded" | "systemError")
             ) {
                 return Err(TransferError::Refused("Source thread is not idle"));
+            }
+            let queue = source_transfer_call(
+                self.store,
+                &*self.session,
+                transfer_id,
+                agent_id,
+                source_account,
+                thread_id,
+                "queue-before",
+                Method::ThreadQueueList,
+                json!({"threadId":thread_id}),
+                self.now,
+            )?;
+            if !queue["data"].is_array() {
+                return Err(TransferError::Refused("Invalid source native queue page"));
+            }
+            if !queue["data"].as_array().is_some_and(Vec::is_empty)
+                || !queue.get("nextCursor").is_none_or(Value::is_null)
+            {
+                return Err(TransferError::Refused(
+                    "Source native thread has queued input; saved input remains queued",
+                ));
+            }
+            if matches!(
+                thread["status"]["type"].as_str(),
+                Some("idle" | "systemError")
+            ) {
+                let background = source_transfer_call(
+                    self.store,
+                    &*self.session,
+                    transfer_id,
+                    agent_id,
+                    source_account,
+                    thread_id,
+                    "background-before",
+                    Method::ThreadBackgroundTerminalsList,
+                    json!({"threadId":thread_id}),
+                    self.now,
+                )?;
+                if !background["data"].is_array() {
+                    return Err(TransferError::Refused(
+                        "Invalid source background command page",
+                    ));
+                }
+                if !background["data"].as_array().is_some_and(Vec::is_empty)
+                    || !background.get("nextCursor").is_none_or(Value::is_null)
+                {
+                    return Err(TransferError::Refused(
+                        "Source native thread has background commands; saved input remains queued",
+                    ));
+                }
+                source_transfer_call(
+                    self.store,
+                    &*self.session,
+                    transfer_id,
+                    agent_id,
+                    source_account,
+                    thread_id,
+                    "unsubscribe",
+                    Method::ThreadUnsubscribe,
+                    json!({"threadId":thread_id}),
+                    self.now,
+                )?;
+            }
+            let queue = source_transfer_call(
+                self.store,
+                &*self.session,
+                transfer_id,
+                agent_id,
+                source_account,
+                thread_id,
+                "queue-after",
+                Method::ThreadQueueList,
+                json!({"threadId":thread_id}),
+                self.now,
+            )?;
+            if !queue["data"].is_array() {
+                return Err(TransferError::Refused("Invalid source native queue page"));
+            }
+            if !queue["data"].as_array().is_some_and(Vec::is_empty)
+                || !queue.get("nextCursor").is_none_or(Value::is_null)
+            {
+                return Err(TransferError::Refused(
+                    "Source native thread has queued input; saved input remains queued",
+                ));
             }
             let portable_required = source_provider != target_provider
                 || source_provider == "claude"
@@ -702,6 +832,7 @@ impl TransferExecutor for AccountTransferExecutor<'_> {
                     transfer_id,
                     agent_id,
                     source_account,
+                    None,
                     None,
                     format!("account-transfer:{transfer_id}:{agent_id}:turns:{page}"),
                     Method::ThreadTurnsList,
@@ -1008,5 +1139,211 @@ mod destination_settings_tests {
                 "The destination account has no available default model"
             ))
         ));
+    }
+}
+
+#[cfg(test)]
+mod retained_executor_tests {
+    use super::*;
+    use crate::account_session_runtime::{
+        AccountSessionError, ConnectionScope, ProviderRequest, RequestCertainty, SessionReceipt,
+    };
+    use serde_json::json;
+    use std::sync::Mutex;
+    use studio_runtime_providers::{RequestId, RequestTicket};
+    use studio_runtime_store::{AgentId, AgentRecord, AgentRepository};
+
+    struct GuardSession {
+        store: Arc<RuntimeStore>,
+        transfer_id: String,
+        requests: Mutex<Vec<String>>,
+    }
+
+    impl GuardSession {
+        fn scope(account: &str) -> ConnectionScope {
+            ConnectionScope {
+                account: account.into(),
+                connection: format!("{account}-connection"),
+                generation: 7,
+            }
+        }
+
+        fn receipt(
+            &self,
+            account: &str,
+            operation: String,
+            method: Method,
+            value: Value,
+        ) -> SessionReceipt {
+            SessionReceipt {
+                scope: Self::scope(account),
+                operation,
+                ticket: Some(RequestTicket {
+                    generation: 7,
+                    id: RequestId::Number(1),
+                    method,
+                }),
+                certainty: RequestCertainty::Written,
+                result: Some(ProviderResponse::Reply(value)),
+                not_sent_reason: None,
+            }
+        }
+    }
+
+    impl AccountSessionPort for GuardSession {
+        fn current_scope(&self, account: &str) -> Option<ConnectionScope> {
+            Some(Self::scope(account))
+        }
+
+        fn provider_request(
+            &self,
+            request: ProviderRequest,
+        ) -> Result<SessionReceipt, AccountSessionError> {
+            self.requests
+                .lock()
+                .unwrap()
+                .push(request.method.as_str().into());
+            let value = match request.method {
+                Method::ModelList => json!({"data":[{"model":"gpt-6-astra","isDefault":true,
+                    "supportedReasoningEfforts":[{"reasoningEffort":"medium"}]}]}),
+                Method::ThreadRead => {
+                    json!({"thread":{"id":"source-thread","status":{"type":"idle"}}})
+                }
+                _ => return Err(AccountSessionError::Refused("unexpected provider request")),
+            };
+            Ok(self.receipt(&request.account, request.operation, request.method, value))
+        }
+
+        fn transfer_provider_request(
+            &self,
+            request: TransferProviderRequest,
+        ) -> Result<SessionReceipt, AccountSessionError> {
+            assert_eq!(request.transfer_id, self.transfer_id);
+            assert_eq!(request.member, "lead");
+            assert_eq!(request.source_account, "source");
+            assert_eq!(request.thread_id, "source-thread");
+            assert_eq!(request.params, json!({"threadId":"source-thread"}));
+            assert!(
+                request
+                    .operation
+                    .starts_with(&format!("transfer:{}:lead:", self.transfer_id))
+            );
+            let raw: String = self
+                .store
+                .read()
+                .unwrap()
+                .query_row(
+                    "SELECT record FROM runtime_account_transfers WHERE id=?1",
+                    [&self.transfer_id],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            let operation: Value = serde_json::from_str(&raw).unwrap();
+            assert!(
+                operation["members"]["lead"]["providerReadIntents"]
+                    .get(&request.operation)
+                    .is_some()
+            );
+            self.requests
+                .lock()
+                .unwrap()
+                .push(request.method.as_str().into());
+            Ok(self.receipt(
+                &request.source_account,
+                request.operation,
+                request.method,
+                json!({"data":[{"id":"queued-input"}],"nextCursor":null}),
+            ))
+        }
+    }
+
+    #[test]
+    fn before_start_executor_checks_and_durably_authorizes_source_queue() {
+        let root = tempfile::tempdir().unwrap();
+        let store = Arc::new(RuntimeStore::open(Some(root.path())).unwrap());
+        let lead = AgentRecord::from_value(json!({"id":"lead","rootId":"lead","epoch":1,
+            "status":"idle","isLead":true,"accountKey":"source","provider":"codex",
+            "model":"gpt-6-astra","cwd":"/tmp/work","threadId":"source-thread"}))
+        .unwrap();
+        store
+            .transaction_with_error(|tx| {
+                AgentRepository::put(tx, &lead)?;
+                Ok::<_, studio_runtime_store::StoreError>(())
+            })
+            .unwrap();
+        let transfer_id = "5a300f72-4ea6-4d30-8a0e-9b2c13c42281";
+        crate::account_transfer_driver::request(
+            &store,
+            transfer_id,
+            "lead",
+            "target",
+            "team",
+            "codex",
+            1.0,
+        )
+        .unwrap();
+        let session = Arc::new(GuardSession {
+            store: store.clone(),
+            transfer_id: transfer_id.into(),
+            requests: Mutex::new(Vec::new()),
+        });
+        let catalog = ModelCatalogService::new(None);
+        catalog.retain_accounts(&[
+            json!({"id":"source","home":"/tmp/source","provider":"codex"}),
+            json!({"id":"target","home":"/tmp/target","provider":"codex"}),
+        ]);
+        let resources = crate::account_worker::preparation::PreparationResources {
+            instructions: String::new(),
+            progress_template: String::new(),
+            thread_config: Default::default(),
+            tools: vec![],
+            legacy_tools: vec![],
+            skills_root: PathBuf::from("/tmp/skills"),
+            role_guidance: Default::default(),
+            model_catalog: catalog.clone(),
+            account_home: "/tmp/target".into(),
+            server_source_root: PathBuf::from("/tmp/server"),
+            python_executable: PathBuf::from("/usr/bin/python3"),
+            account_session: Some(session.clone()),
+        };
+
+        let result = before_start(
+            &store,
+            Some(session.clone()),
+            &catalog,
+            &resources,
+            "lead",
+            2.0,
+        );
+
+        assert!(matches!(
+            result,
+            Err(TransferError::Refused(
+                "Source native thread has queued input; saved input remains queued"
+            ))
+        ));
+        assert_eq!(
+            *session.requests.lock().unwrap(),
+            ["model/list", "thread/read", "thread/queue/list"]
+        );
+        let operation: String = store
+            .read()
+            .unwrap()
+            .query_row(
+                "SELECT record FROM runtime_account_transfers WHERE id=?1",
+                [transfer_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let operation: Value = serde_json::from_str(&operation).unwrap();
+        let intent = operation["members"]["lead"]["providerReadIntents"]
+            .as_object()
+            .unwrap();
+        assert_eq!(intent.len(), 3);
+        assert!(
+            AgentRepository::get(&store.read().unwrap(), &AgentId::from("lead"))
+                .unwrap()
+                .is_some()
+        );
     }
 }

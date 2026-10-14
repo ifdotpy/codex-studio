@@ -511,11 +511,23 @@ impl Snapshot {
         params: Value,
     ) -> Result<Decision, TransferError> {
         let member = &self.operation["members"][agent];
+        let source_guard = matches!(
+            method,
+            "thread/queue/list" | "thread/backgroundTerminals/list" | "thread/unsubscribe"
+        ) && member.get("sourceAccountKey").and_then(Value::as_str)
+            == Some(account)
+            && member.get("sourceThreadId").and_then(Value::as_str)
+                == params.get("threadId").and_then(Value::as_str)
+            && params
+                .as_object()
+                .is_some_and(|params| params.len() == 1 && params.contains_key("threadId"))
+            && operation.starts_with(&format!("transfer:{}:{agent}:", self.identity.id));
         if !self.pending()
             || self.phase(agent)? != Phase::Reading
             || operation.is_empty()
             || account.is_empty()
-            || !matches!(method, "model/list" | "thread/read" | "thread/turns/list")
+            || (!matches!(method, "model/list" | "thread/read" | "thread/turns/list")
+                && !source_guard)
             || !params.is_object()
             || !scope.is_object()
         {
@@ -577,7 +589,10 @@ impl Snapshot {
         let intent = member
             .get("providerReadIntents")
             .and_then(Value::as_object)
-            .and_then(|intents| intents.get(operation));
+            .and_then(|intents| intents.get(operation))
+            .ok_or(TransferError::Refused(
+                "Provider read receipt has no durable intent",
+            ))?;
         let existing = member
             .get("providerReadReceipts")
             .and_then(Value::as_object)
@@ -586,10 +601,9 @@ impl Snapshot {
             return Ok(self.decision(self.operation.clone(), self.agents.clone(), vec![]));
         }
         if self.phase(agent)? != Phase::Reading
-            || intent.is_none()
             || !matches!(certainty, "written" | "not_sent" | "unknown")
             || receipt["operation"] != operation
-            || receipt["scope"] != intent.unwrap()["scope"]
+            || receipt["scope"] != intent["scope"]
             || receipt["certainty"] != certainty
             || (certainty == "not_sent" && !receipt["ticket"].is_null())
             || (certainty != "not_sent" && receipt["ticket"].is_null())
@@ -1606,5 +1620,61 @@ mod provider_receipt_tests {
         );
         assert_eq!(held.operation["members"]["agent"]["phase"], "unknown");
         assert!(intent(&held).is_err());
+    }
+
+    #[test]
+    fn source_queue_preflight_requires_transfer_scope_and_exact_receipt() {
+        let reading = after(snapshot().begin_read("agent").unwrap());
+        let params = json!({"threadId":"source-thread"});
+        let scope = json!({"account":"source","connection":"source-conn","generation":2});
+        assert!(
+            reading
+                .provider_read_intent(
+                    "agent",
+                    "untrusted:queue",
+                    "source",
+                    scope.clone(),
+                    "thread/queue/list",
+                    params.clone(),
+                )
+                .is_err()
+        );
+        let operation = "transfer:transfer:agent:queue-before";
+        let intent = after(
+            reading
+                .provider_read_intent(
+                    "agent",
+                    operation,
+                    "source",
+                    scope.clone(),
+                    "thread/queue/list",
+                    params.clone(),
+                )
+                .unwrap(),
+        );
+        assert_eq!(
+            intent.operation["members"]["agent"]["providerReadIntents"][operation]["params"],
+            params
+        );
+        let receipt = json!({"operation":operation,"scope":scope,"certainty":"written",
+            "ticket":{"generation":2,"id":"queue-ticket","method":"thread/queue/list"}});
+        let response = json!({"data":[],"nextCursor":null});
+        let recorded = after(
+            intent
+                .provider_read_receipt(
+                    "agent",
+                    operation,
+                    receipt,
+                    Some(json!({"kind":"reply","value":response})),
+                    "written",
+                )
+                .unwrap(),
+        );
+        assert_eq!(recorded.operation["members"]["agent"]["phase"], "reading");
+        assert_eq!(
+            recorded.operation["members"]["agent"]["providerReadReceipts"][operation]["result"]["value"]
+                ["data"],
+            json!([])
+        );
     }
 }
