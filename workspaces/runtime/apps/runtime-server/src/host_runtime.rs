@@ -140,6 +140,9 @@ impl HostRuntime {
         let catalog = state.model_catalog_handle();
         let resource_root = install_root.workspace_root().to_owned();
         let server_source = install_root.server_source();
+        *state = state
+            .clone()
+            .with_vault_host_command(python.clone(), server_source.clone());
         let resources = tokio::task::spawn_blocking(move || {
             PreparationResources::bundled_at(
                 String::new(),
