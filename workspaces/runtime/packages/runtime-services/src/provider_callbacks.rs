@@ -86,7 +86,7 @@ pub(crate) use tools::ManagedToolRuntimePorts;
 pub(crate) use tools::MonitorInputRequest;
 #[cfg(test)]
 pub(crate) use tools::{MonitorCancelPort, MonitorInputPort};
-pub use tools::{WorkerAccountSelection, select_worker_account};
+pub use tools::{WorkerAccountSelection, select_worker_account, validate_worker_model_choice};
 
 pub(crate) struct ManagedToolPortsConfig {
     pub(crate) wake: std::sync::Arc<tokio::sync::Notify>,

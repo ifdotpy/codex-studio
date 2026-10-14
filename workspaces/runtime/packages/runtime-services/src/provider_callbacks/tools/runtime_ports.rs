@@ -129,17 +129,6 @@ impl MonitorCreatePort for ManagedMonitorCreateAdapter {
         request_id: &str,
         now: f64,
     ) -> Result<Value, Error> {
-        let workspace = self
-            .environment
-            .prepare_workspace(store, actor.record(), args, request_id)
-            .map_err(|error| match error {
-                crate::managed_child_create::ManagedCreationEnvironmentError::Invalid(message) => {
-                    Error::Invalid(message)
-                }
-                crate::managed_child_create::ManagedCreationEnvironmentError::Unavailable(name) => {
-                    Error::Unavailable(name)
-                }
-            })?;
         let log_root = store.root().join("monitor-logs");
         let log_root = log_root
             .to_str()
@@ -151,6 +140,23 @@ impl MonitorCreatePort for ManagedMonitorCreateAdapter {
             request: args,
             log_root,
         };
+        if let Some(value) = crate::monitor_runtime::stored_create_result(store, &admission, now)
+            .map_err(monitor_error)?
+        {
+            self.runtime.wake_tick();
+            return Ok(value);
+        }
+        let workspace = self
+            .environment
+            .prepare_workspace(store, actor.record(), args, request_id)
+            .map_err(|error| match error {
+                crate::managed_child_create::ManagedCreationEnvironmentError::Invalid(message) => {
+                    Error::Invalid(message)
+                }
+                crate::managed_child_create::ManagedCreationEnvironmentError::Unavailable(name) => {
+                    Error::Unavailable(name)
+                }
+            })?;
         let value = store
             .transaction_with(|tx| {
                 crate::monitor_runtime::create_in_transaction(

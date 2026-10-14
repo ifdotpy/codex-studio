@@ -8,12 +8,14 @@ use studio_runtime_store::{RuntimeStore, system_reads as records};
 mod runtime_dispatch;
 mod runtime_ports;
 pub(crate) mod services;
-pub(crate) use runtime_dispatch::ManagedToolRuntimePorts;
 #[cfg(test)]
 pub(crate) use runtime_dispatch::MonitorInputRequest;
+pub(crate) use runtime_dispatch::{ManagedToolRuntimePorts, MonitorCreatePort};
 #[cfg(test)]
 pub(crate) use runtime_dispatch::{MonitorCancelPort, MonitorInputPort};
-pub use runtime_dispatch::{WorkerAccountSelection, select_worker_account};
+pub use runtime_dispatch::{
+    WorkerAccountSelection, select_worker_account, validate_worker_model_choice,
+};
 pub use runtime_ports::ManagedToolRuntime;
 impl From<tool_requests::ToolRequestError> for CallbackError {
     fn from(error: tool_requests::ToolRequestError) -> Self {

@@ -96,6 +96,39 @@ pub fn select_worker_account(
     Err(CreationError::Unavailable("provider-session/model-list"))
 }
 
+/// Apply Python's explicit subagent model-provider and cached-price limits.
+/// `prices` is absent before the first pricing snapshot, matching Python's
+/// permissive first-run behavior.
+pub fn validate_worker_model_choice(
+    requested: &str,
+    default: &str,
+    prices: Option<(Option<(f64, f64)>, Option<(f64, f64)>)>,
+) -> Result<(), CreationError> {
+    if requested == default {
+        return Ok(());
+    }
+    let provider = worker_model_provider(default);
+    if provider.is_some() && worker_model_provider(requested) != provider {
+        return Err(CreationError::Invalid(
+            "Choose a model from the provider selected in chat settings",
+        ));
+    }
+    let Some((Some(requested), Some(default))) = prices else {
+        if prices.is_some() {
+            return Err(CreationError::Invalid(
+                "Studio cannot compare this model's price with the default subagent model",
+            ));
+        }
+        return Ok(());
+    };
+    if requested.0 > default.0 || requested.1 > default.1 {
+        return Err(CreationError::Invalid(
+            "Choose a model that costs no more than the default subagent model",
+        ));
+    }
+    Ok(())
+}
+
 fn account_read_error(
     error: crate::provider_callbacks::ManagedCreationAccountError,
 ) -> CreationError {
@@ -550,7 +583,7 @@ fn written(value: Value, signals: Vec<WakeSignal>) -> DispatchedOperation {
 
 #[cfg(test)]
 mod tests {
-    use super::managed_input_receipt;
+    use super::{managed_input_receipt, validate_worker_model_choice};
     use crate::managed_host_tools::DeliveryCertainty;
     use serde_json::json;
 
@@ -574,6 +607,27 @@ mod tests {
                 }
             );
         }
+    }
+
+    #[test]
+    fn managed_spawn_refuses_cross_provider_and_more_expensive_model_choices() {
+        assert!(validate_worker_model_choice("claude-sonnet-4", "gpt-6", None).is_err());
+        assert!(
+            validate_worker_model_choice(
+                "gpt-6-expensive",
+                "gpt-6-default",
+                Some((Some((2.0, 3.0)), Some((1.0, 1.0)))),
+            )
+            .is_err()
+        );
+        assert!(
+            validate_worker_model_choice(
+                "gpt-6-cheaper",
+                "gpt-6-default",
+                Some((Some((0.5, 0.8)), Some((1.0, 1.0)))),
+            )
+            .is_ok()
+        );
     }
 }
 

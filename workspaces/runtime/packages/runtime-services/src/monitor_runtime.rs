@@ -971,6 +971,41 @@ pub struct MonitorAdmission<'a> {
     pub log_root: &'a str,
 }
 
+/// Return an exact prior create result without workspace preparation. This is
+/// a read-only fast path; `create_in_transaction` repeats the identity check
+/// under the committing transaction to close the race with a concurrent create.
+pub fn stored_create_result(
+    store: &RuntimeStore,
+    admission: &MonitorAdmission<'_>,
+    now: f64,
+) -> Result<Option<Value>, MonitorError> {
+    store.transaction_with(|tx| {
+        let actor = event_write::checked_agent(tx, admission.actor_id)?;
+        let actor_value =
+            serde_json::to_value(&actor).map_err(studio_runtime_store::StoreError::from)?;
+        let record = policy::create_record(
+            &actor_value,
+            admission.request,
+            admission.request_id,
+            admission.log_root,
+            now,
+        )?;
+        let id = record
+            .get("id")
+            .and_then(Value::as_str)
+            .ok_or(MonitorError::Refused("Invalid monitor identity"))?;
+        match MonitorsRepository::get(tx, id)? {
+            Some(previous) if policy::same_request(previous.value(), &record) => {
+                Ok(Some(previous.value().clone()))
+            }
+            Some(_) => Err(MonitorError::Refused(
+                "This monitor request id has different content",
+            )),
+            None => Ok(None),
+        }
+    })
+}
+
 /// Implemented by workspace admission. This check performs only transactional
 /// reads: preparation, filesystem and provider calls have already completed.
 pub trait WorkspaceAdmission {

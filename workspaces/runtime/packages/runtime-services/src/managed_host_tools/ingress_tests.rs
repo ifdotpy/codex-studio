@@ -1289,6 +1289,39 @@ fn managed_monitor_create_persists_one_start_intent_and_replays_exactly() {
             .is_some_and(|id| id.ends_with(":managed-monitor-create"))
     );
 
+    let actor_record = {
+        let read = store.read().unwrap();
+        studio_runtime_store::AgentRepository::get(
+            &read,
+            &studio_runtime_store::AgentId::from(context.agent.as_str()),
+        )
+        .unwrap()
+        .unwrap()
+    };
+    let actor = Actor::from_record(
+        &actor_record.value(),
+        &context.agent,
+        u64::try_from(actor_record.epoch).unwrap(),
+    )
+    .unwrap();
+    let arguments = match &frame {
+        Frame::Request(request) => request.params.as_ref().unwrap()["arguments"].clone(),
+        _ => unreachable!(),
+    };
+    let monitor_create = runtime.ports().monitor_create.unwrap();
+    FAIL_MANAGED_WORKSPACE_PREPARATION.with(|fail| fail.set(true));
+    let adapter_replay = crate::provider_callbacks::tools::MonitorCreatePort::create(
+        monitor_create.as_ref(),
+        &store,
+        &actor,
+        &arguments,
+        saved["requestId"].as_str().unwrap(),
+        21.0,
+    )
+    .unwrap();
+    FAIL_MANAGED_WORKSPACE_PREPARATION.with(|fail| fail.set(false));
+    assert_eq!(adapter_replay, saved);
+
     let replay = dispatch_with_managed_tools(&store, &context, &frame, 21.0, &ports).unwrap();
     assert!(matches!(replay, CallbackDecision::Answer(_)));
     let replayed_count: i64 = store
@@ -2046,6 +2079,9 @@ impl crate::monitor_runtime::WorkspaceAdmission for AllowWorkspace {
 }
 
 struct CreationEnvironment;
+thread_local! {
+    static FAIL_MANAGED_WORKSPACE_PREPARATION: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
 impl crate::managed_child_create::ManagedCreationEnvironment for CreationEnvironment {
     fn select_worker_account(
         &self,
@@ -2108,6 +2144,16 @@ impl crate::managed_child_create::ManagedCreationEnvironment for CreationEnviron
     fn catalog(&self) -> &dyn crate::host_worker_create::CreationCatalog {
         &Self
     }
+    fn validate_worker_choice(
+        &self,
+        _: &RuntimeStore,
+        _: &str,
+        _: &crate::host_worker_create::AccountIdentity,
+        _: &str,
+        _: &str,
+    ) -> Result<(), crate::managed_child_create::ManagedCreationEnvironmentError> {
+        Ok(())
+    }
     fn prepare_workspace(
         &self,
         _: &RuntimeStore,
@@ -2118,6 +2164,13 @@ impl crate::managed_child_create::ManagedCreationEnvironment for CreationEnviron
         Box<dyn crate::monitor_runtime::WorkspaceAdmission + Send + Sync>,
         crate::managed_child_create::ManagedCreationEnvironmentError,
     > {
+        if FAIL_MANAGED_WORKSPACE_PREPARATION.with(std::cell::Cell::get) {
+            return Err(
+                crate::managed_child_create::ManagedCreationEnvironmentError::Unavailable(
+                    "workspace-state/host-preparation",
+                ),
+            );
+        }
         Ok(Box::new(AllowWorkspace))
     }
 }
@@ -2208,7 +2261,7 @@ fn dispatcher_service_bundle_calls_spawn_and_review_entry_points() {
     let home = std::path::PathBuf::from(std::env::var_os("HOME").expect("test HOME"));
     std::fs::create_dir_all(&home).unwrap();
     let tilde_target = home.join("review-target");
-    if tilde_target.exists() {
+    if std::fs::symlink_metadata(&tilde_target).is_ok() {
         std::fs::remove_file(&tilde_target).expect("remove stale review target link");
     }
     #[cfg(unix)]

@@ -43,6 +43,14 @@ pub trait ManagedCreationEnvironment: Send + Sync {
         excluded_account_keys: &[String],
         project_account_keys: Option<&[String]>,
     ) -> Result<(String, crate::host_worker_create::AccountIdentity), ManagedCreationEnvironmentError>;
+    fn validate_worker_choice(
+        &self,
+        store: &RuntimeStore,
+        account_key: &str,
+        account: &crate::host_worker_create::AccountIdentity,
+        requested: &str,
+        default: &str,
+    ) -> Result<(), ManagedCreationEnvironmentError>;
     fn catalog(&self) -> &dyn crate::host_worker_create::CreationCatalog;
     fn prepare_workspace(
         &self,
@@ -376,6 +384,21 @@ pub(crate) fn spawn_agents(
             &excluded_account_keys,
             project_account_keys.as_deref(),
         )?;
+        if spec.get("model").and_then(Value::as_str).is_some() || profile_model.is_some() {
+            let default_model = defaults
+                .get("model")
+                .and_then(Value::as_str)
+                .filter(|model| !model.is_empty())
+                .or_else(|| root_value.get("model").and_then(Value::as_str))
+                .unwrap_or(requested_model);
+            environment.validate_worker_choice(
+                store,
+                &account_key,
+                &account,
+                requested_model,
+                default_model,
+            )?;
+        }
         let provider = account.provider.as_deref().unwrap_or("codex");
         let model = if requested_model == "gpt-6-astra"
             && root_value.get("model").is_none()
