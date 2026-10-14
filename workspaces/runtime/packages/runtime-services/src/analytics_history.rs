@@ -34,6 +34,8 @@ pub enum HistoryError {
     Capture(#[from] CaptureError),
     #[error(transparent)]
     Store(#[from] studio_runtime_store::StoreError),
+    #[error(transparent)]
+    Budget(#[from] crate::budget::BudgetError),
     #[error("analytics history read failed")]
     Read,
     #[error("analytics history checkpoint advanced concurrently")]
@@ -69,20 +71,52 @@ impl Default for BatchLimits {
     }
 }
 /// Budget receipts must be idempotent by provider response/counter identity.
-/// A failure aborts the batch before its analytics cursor is acknowledged.
-/// The sink verifies current agent/account/epoch ownership in its own writer
-/// transaction, then calls `budget_service::capture` with History source and
-/// CURRENT durable agent ownership, not the supplied historical agent copy.
-/// Historical response/turn IDs remain in params; collection time supplies now.
-/// A replay must reuse the durable charge identity. The integrator must test
-/// the real sink across lost acknowledgements, failures and stale batches;
-/// analytics and budget databases cannot share a SQLite commit.
+/// The sink applies every capture for this bounded page in one writer
+/// transaction. A failure aborts the page before its analytics cursor is
+/// acknowledged. Historical response/turn IDs remain in params; collection
+/// time supplies `now`. Analytics and budget databases commit separately.
 pub trait HistoryBudgetSink {
-    fn capture(&self, agent: &Value, params: &Value, at: f64) -> Result<(), HistoryError>;
+    fn capture_page(&self, captures: &[(Value, Value, f64)], now: f64) -> Result<(), HistoryError>;
 }
+
+/// The production page sink. Identity and budget state are re-read through
+/// `budget_service::capture` while holding one admitted canvas writer.
+pub struct StoreHistoryBudgetSink<'a> {
+    store: &'a RuntimeStore,
+}
+
+impl<'a> StoreHistoryBudgetSink<'a> {
+    pub fn new(store: &'a RuntimeStore) -> Self {
+        Self { store }
+    }
+}
+
+impl HistoryBudgetSink for StoreHistoryBudgetSink<'_> {
+    fn capture_page(&self, captures: &[(Value, Value, f64)], now: f64) -> Result<(), HistoryError> {
+        if captures.is_empty() {
+            return Ok(());
+        }
+        self.store.transaction_with::<_, HistoryError>(|tx| {
+            for (agent, params, at) in captures {
+                let mut agent = agent.clone();
+                crate::budget_service::capture(
+                    tx,
+                    &mut agent,
+                    params,
+                    *at,
+                    crate::budget::CaptureSource::History,
+                    now,
+                )?;
+            }
+            Ok(())
+        })?;
+        Ok(())
+    }
+}
+
 pub struct BudgetUnavailable;
 impl HistoryBudgetSink for BudgetUnavailable {
-    fn capture(&self, _: &Value, _: &Value, _: f64) -> Result<(), HistoryError> {
+    fn capture_page(&self, _: &[(Value, Value, f64)], _: f64) -> Result<(), HistoryError> {
         Err(HistoryError::BudgetUnavailable)
     }
 }
@@ -149,8 +183,8 @@ impl HistoryBatch {
         if let Some(proof) = &mut self.read_proof {
             proof.validate()?;
         }
-        for (agent, params, at) in &self.budget {
-            budget.capture(agent, params, *at)?;
+        if !self.budget.is_empty() {
+            budget.capture_page(&self.budget, now)?;
         }
         store.analytics_transaction(|tx, canvas| {
             check_identity(canvas, &self.agent)?;
@@ -217,7 +251,8 @@ fn collect_path(
         text(&agent["threadId"])
     );
     crate::analytics_history_repair::repair_terminal_errors(store)?;
-    let budget_advanced = crate::analytics_history_repair::migrate_budget(store, &agent, budget)?;
+    let budget_advanced =
+        crate::analytics_history_repair::migrate_budget(store, &agent, budget, now)?;
     let read = AnalyticsRepository::new(store.root())
         .open_read_only()
         .map_err(|_| HistoryError::Read)?;
