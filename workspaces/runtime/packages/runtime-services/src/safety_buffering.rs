@@ -1,4 +1,7 @@
-//! Pure safety-retry decisions. RPC execution belongs to the turn driver.
+//! Safety-retry decision core and durable retained-session executor.
+
+mod executor;
+pub use executor::execute_action;
 
 use serde_json::{Map, Value, json};
 use thiserror::Error;
@@ -82,6 +85,16 @@ pub enum SafetyBufferingError {
     ThreadNotOpen,
     #[error("Codex did not offer another model")]
     MissingFasterModel,
+    #[error("Safety retry persistence failed")]
+    Persistence,
+    #[error("Safety retry preparation failed: {0}")]
+    Preparation(String),
+    #[error("Not implemented: requires {0}")]
+    Requires(&'static str),
+    #[error("The provider request outcome is unknown; inspect its receipt before retrying")]
+    ProviderUnknown,
+    #[error("The provider rejected the safety retry request")]
+    ProviderRejected,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

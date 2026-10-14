@@ -11,6 +11,7 @@ import oracle_guard  # The imported lifecycle oracle installs this guard once.
 sys.path.insert(0, str(HERE.parent / "agent_management"))
 from oracle import MemoryRuntime, NOW, Runtime, seed
 from codex_sync_entities import encoded, project
+from codex_capacity_retry import CapacityRetryMixin
 
 
 class LifecycleRuntime(MemoryRuntime):
@@ -33,14 +34,32 @@ class LifecycleRuntime(MemoryRuntime):
         self.interrupted.append(copy.deepcopy(agent))
 
     child_stopped_event = Runtime.child_stopped_event
+    capacity_reset = CapacityRetryMixin.capacity_reset
+
+    def capacity_save(self, db, agent, retry):
+        retry["updatedAt"] = NOW
+        if (agent.get("capacityRetry") or {}).get("id") in (None, retry["id"]):
+            agent["capacityRetry"] = retry
 
     def enqueue_recovery_event(self, db, agent, kind, text, key):
-        db.execute(
+        pending_recovery = Runtime._recovery_event_pending(self, agent) or bool(
+            agent.get("moveImportPending"))
+        inserted = db.execute(
             "INSERT OR IGNORE INTO runtime_events "
             "(id,agent,kind,text,status,created,epoch,turn_id,error) "
-            "VALUES(?,?,?,?,'pending',?, ?,NULL,NULL)",
-            (key, agent["id"], kind, text, NOW, agent["epoch"]),
+            "VALUES(?,?,?,?,?,?,?,NULL,NULL)",
+            (key, agent["id"], kind, text,
+             "pending" if agent["autoWake"] or pending_recovery else "cancelled",
+             NOW, agent["epoch"]),
         )
+        idle_busy_label = (agent["status"] in {"running", "starting"}
+                           and not agent.get("inFlight") and not agent.get("turnId")
+                           and not agent.get("startAttempt"))
+        if (inserted.rowcount and not pending_recovery and agent["autoWake"]
+                and not agent.get("nativeFailureHold")
+                and (agent["status"] not in {"running", "starting", "approval"} or idle_busy_label)):
+            agent["status"] = "queued"
+            self.put(db, "agents", agent)
 
     def latest_work_result_file(self, db, agent_id):
         return None
@@ -126,7 +145,9 @@ def corpus():
                             startAttempt=dict(id="attempt", epoch=3, submitted=phase != "preparing"))
             if phase in {"submitted", "unknown", "running"}:
                 lead.update(threadId="thread", accountKey="fixture-account")
-                lead["startAttempt"].update(connectionGeneration=7, requestTicket=91)
+                lead["startAttempt"].update(
+                    connectionGeneration=7, connectionId="fixture-connection",
+                    accountKey="fixture-account", requestTicket=91, events=[])
             if phase == "unknown":
                 lead["startAttempt"]["executionOutcome"] = "unknown"
                 lead["error"] = "turn/start response timed out; outcome unknown"
@@ -140,6 +161,21 @@ def corpus():
                         parkReceipt=dict(event="ready", epoch=3, sequence=1), capacityRetryCount=2)
             cases.append(case(phase+"-"+str(descendants), records,
                               dict(action="stop", target="lead", descendants=descendants)))
+    capacity_retry = seed()
+    capacity_lead = capacity_retry["tables"]["runtime_agents"][0]
+    capacity_lead.update(
+        status="starting", inFlight=True,
+        capacityRetry=dict(id="capacity-retry-1", status="scheduled", dueAt=NOW + 10),
+        capacityRetryCount=1,
+        startAttempt=dict(
+            id="capacity-attempt-1", action="capacity", submitted=False,
+            capacityRetryId="capacity-retry-1", accountKey="fixture-account"))
+    cases.append(case(
+        "stop-capacity-retry-unsubmitted", capacity_retry,
+        dict(action="stop", target="lead", descendants=False)))
+    running = next(item for item in cases if item["name"] == "running-True")
+    cases.append(case("delete-running", running["records"],
+                      dict(action="delete", target="lead")))
     deleted = case("delete", seed(), dict(action="delete", target="lead"))
     cases.append(deleted)
     cases.append(case("delete-replay", deleted["expected"]["records"], dict(action="delete", target="lead")))

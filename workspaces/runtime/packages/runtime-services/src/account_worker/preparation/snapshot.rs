@@ -4,7 +4,6 @@ use crate::{model_catalog::ModelCatalogService, thread_prepare as thread, turn_p
 use serde::{Deserialize, de::DeserializeOwned};
 use serde_json::Map;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use studio_runtime_store::{AgentRecord, Transaction};
 
 #[derive(Clone)]
@@ -187,37 +186,7 @@ pub(super) fn authorize(
     tx: &Transaction<'_>,
     intent: &TurnIntent,
     filesystem: &FilesystemSnapshot,
-    prepared_host: Option<&crate::host_project_runtime::PreparedHost>,
 ) -> Result<(), WorkerError> {
-    if intent.radio_authorized {
-        let prepared = prepared_host.ok_or_else(|| invalid("radio/prepared-host"))?;
-        let radio_events = intent
-            .events
-            .iter()
-            .filter(|event| event.kind == "radio_turn")
-            .map(|event| {
-                studio_runtime_store::QueueEventRepository::get(
-                    tx,
-                    &studio_runtime_store::QueueEventId::from(event.id.as_str()),
-                )?
-                .ok_or_else(|| invalid("radio/event"))
-            })
-            .collect::<Result<Vec<_>, WorkerError>>()?;
-        if radio_events.len() != 1 {
-            return Err(refusal("radio/turn-selection-changed".into()));
-        }
-        let selected = crate::radio_runtime::select_pending(
-            tx,
-            prepared,
-            &agent(tx, &intent.agent_id)?.value(),
-            &radio_events,
-            now(),
-        )
-        .map_err(|error| refusal(error.to_string()))?;
-        if selected.len() != 1 || selected[0].id.0 != radio_events[0].id.0 {
-            return Err(refusal("radio/turn-selection-changed".into()));
-        }
-    }
     let agents = records(tx, "runtime_agents")?;
     let projects = records(tx, "runtime_projects")?;
     let resolved_paths = filesystem.resolved_paths.clone();
@@ -232,7 +201,6 @@ pub(super) fn authorize(
         events: intent
             .events
             .iter()
-            .filter(|event| !(intent.radio_authorized && event.kind == "radio_turn"))
             .map(|e| crate::submit_gates::StoredEvent {
                 id: e.id.clone(),
                 kind: e.kind.clone(),
@@ -476,7 +444,6 @@ pub(super) fn thread_snapshot(
     } else {
         None
     };
-    let guidance = guidance(resources, record, state_root)?;
     Ok(thread::Snapshot {
         actor: thread::Actor {
             id: id.into(),
@@ -532,7 +499,7 @@ pub(super) fn thread_snapshot(
             daybreak_enabled: stored(record, "daybreakEnabled")?,
             cyber_access_program: stored(record, "cyberAccessProgram")?,
         },
-        guidance,
+        guidance: guidance(resources, record, state_root)?,
         catalog: thread::CatalogSnapshot {
             source,
             definitions,

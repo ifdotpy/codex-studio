@@ -30,39 +30,8 @@ pub(super) fn authorize(tx: &rusqlite::Transaction<'_>, call: &Call) -> Result<b
                     "thread/queue/list" | "thread/backgroundTerminals/list" | "thread/unsubscribe"
                 ));
         }
-        return Ok(match call.method.as_str() {
-            "thread/list" => call.params.get("threadId").is_none(),
-            "thread/loaded/list" | "model/list" | "claude/diagnostics" => true,
-            "thread/read" => {
-                call.params
-                    .get("threadId")
-                    .and_then(Value::as_str)
-                    .is_some_and(|id| !id.is_empty())
-                    && call
-                        .params
-                        .get("includeTurns")
-                        .is_none_or(|value| value == &json!(false))
-            }
-            "thread/turns/list" => {
-                call.params
-                    .get("threadId")
-                    .and_then(Value::as_str)
-                    .is_some_and(|id| !id.is_empty())
-                    && call
-                        .params
-                        .get("limit")
-                        .and_then(Value::as_u64)
-                        .is_some_and(|limit| limit <= 20)
-                    && call.params.get("sortDirection").and_then(Value::as_str) == Some("desc")
-                    && call.params.get("itemsView").and_then(Value::as_str) == Some("full")
-            }
-            "operationStatus" => call
-                .params
-                .get("operationId")
-                .and_then(Value::as_str)
-                .is_some_and(|id| id.starts_with("monitor:") && id.len() > "monitor:".len()),
-            _ => false,
-        });
+        return Ok(Method::from_wire(&call.method)
+            .is_some_and(|method| super::valid_actorless_read_shape(method, &call.params)));
     };
     let Some(agent_record) = AgentRepository::get(tx, &AgentId::from(actor.agent.as_str()))? else {
         return Ok(false);
@@ -76,8 +45,12 @@ pub(super) fn authorize(tx: &rusqlite::Transaction<'_>, call: &Call) -> Result<b
         && !studio_runtime_store::truthy(agent_record.extra.get("deletedAt"))
         && agent_record.extra.get("deleted") != Some(&json!(true));
     let actor_identity = common_identity && agent_record.epoch == actor.epoch;
+    let deleted_voice_stop = authorize_deleted_voice_stop(tx, call, actor, &agent_record.extra)?;
     let repair_fork = if call.method == "thread/fork" {
-        let repair = &agent_record.extra["contextRepair"];
+        let repair = agent_record
+            .extra
+            .get("contextRepair")
+            .unwrap_or(&Value::Null);
         let source = &repair["source"];
         let snapshot = &repair["snapshot"];
         let fork_params = &repair["forkParams"];
@@ -234,13 +207,82 @@ pub(super) fn authorize(tx: &rusqlite::Transaction<'_>, call: &Call) -> Result<b
     } else {
         false
     };
-    Ok((actor_identity || stopped_turn_interrupt)
-        && (thread_matches
-            || (actor_identity && repair_fork)
-            || thread_start
-            || ephemeral_turn
-            || config_read
-            || monitor_matches))
+    Ok(
+        (actor_identity || stopped_turn_interrupt || deleted_voice_stop)
+            && (thread_matches
+                || (actor_identity && repair_fork)
+                || thread_start
+                || ephemeral_turn
+                || config_read
+                || monitor_matches
+                || deleted_voice_stop),
+    )
+}
+
+fn authorize_deleted_voice_stop(
+    tx: &rusqlite::Transaction<'_>,
+    call: &Call,
+    actor: &RequestActor,
+    agent_extra: &std::collections::BTreeMap<String, Value>,
+) -> Result<bool, WorkerError> {
+    let Some(session_id) = call.deleted_actor_session.as_deref() else {
+        return Ok(false);
+    };
+    let Some(thread_id) = call.params.get("threadId").and_then(Value::as_str) else {
+        return Ok(false);
+    };
+    let deleted = studio_runtime_store::truthy(agent_extra.get("deletedAt"))
+        || agent_extra.get("deleted") == Some(&json!(true));
+    if session_id.is_empty()
+        || call.method != "thread/realtime/stop"
+        || call.operation != format!("voice:delete-stop:{session_id}")
+        || call
+            .params
+            .as_object()
+            .is_none_or(|params| params.len() != 1)
+        || !deleted
+        || actor.epoch < 0
+        || agent_extra
+            .get("accountKey")
+            .and_then(Value::as_str)
+            .unwrap_or("default")
+            != call.scope.account
+    {
+        return Ok(false);
+    }
+    let receipt_id = format!("agent-delete-voice:{}:{}", actor.agent, actor.epoch);
+    let raw: Option<String> = tx
+        .query_row(
+            "SELECT result FROM runtime_operation_receipts WHERE id=?1",
+            [&receipt_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let Some(raw) = raw else {
+        return Ok(false);
+    };
+    let Ok(receipt) = serde_json::from_str::<Value>(&raw) else {
+        return Ok(false);
+    };
+    if receipt.get("agent").and_then(Value::as_str) != Some(actor.agent.as_str())
+        || receipt.get("epoch").and_then(Value::as_i64) != Some(actor.epoch)
+    {
+        return Ok(false);
+    }
+    let Some(sessions) = receipt.get("voiceEndSessions").and_then(Value::as_array) else {
+        return Ok(false);
+    };
+    Ok(sessions.iter().any(|session| {
+        session.get("sessionId").and_then(Value::as_str) == Some(session_id)
+            && session.get("agentId").and_then(Value::as_str) == Some(actor.agent.as_str())
+            && session.get("epoch").and_then(Value::as_i64) == Some(actor.epoch)
+            && session.get("accountKey").and_then(Value::as_str)
+                == Some(call.scope.account.as_str())
+            && session.get("threadId").and_then(Value::as_str) == Some(thread_id)
+            && session.get("connectionId").and_then(Value::as_str)
+                == Some(call.scope.connection.as_str())
+            && session.get("generation").and_then(Value::as_u64) == Some(call.scope.generation)
+    }))
 }
 
 fn thread_started_for_actor(

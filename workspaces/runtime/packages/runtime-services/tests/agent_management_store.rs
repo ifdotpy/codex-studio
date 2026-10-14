@@ -5,10 +5,11 @@ use rusqlite::{Connection, params};
 use serde_json::{Value, json};
 use std::{fs, path::Path, process::Command};
 use studio_runtime_services::{
+    agent_lifecycle_runtime::{self, LifecycleEffect, LifecyclePorts},
     agent_management::{Action, ManagementError, Records},
     agent_management_store::execute,
 };
-use studio_runtime_store::{RuntimeStore, agent_management};
+use studio_runtime_store::{RuntimeStore, Transaction, agent_management};
 
 fn template(root: &Path) {
     let schema: Value = serde_json::from_str(include_str!(
@@ -97,6 +98,45 @@ fn state(store: &RuntimeStore) -> Value {
         .collect::<Result<Vec<_>, _>>()
         .expect("sync rows");
     json!({"tables":records,"sync":sync})
+}
+
+struct AcceptLifecycleEffects;
+impl LifecyclePorts for AcceptLifecycleEffects {
+    fn stage(&self, _: &Transaction<'_>, _: &LifecycleEffect) -> Result<(), ManagementError> {
+        Ok(())
+    }
+
+    fn committed(&self) -> Result<(), ManagementError> {
+        Ok(())
+    }
+}
+
+#[test]
+fn stop_clears_the_matching_unsubmitted_capacity_retry_attempt() {
+    let case = cases()
+        .into_iter()
+        .find(|case| case["name"] == "stop-capacity-retry-unsubmitted")
+        .expect("Python retry-stop case");
+    let root = tempfile::tempdir().expect("root");
+    template(root.path());
+    let store = RuntimeStore::open(Some(root.path())).expect("open");
+    seed(
+        &store,
+        serde_json::from_value(case["records"].clone()).expect("Python rows"),
+    );
+    let action: Action = serde_json::from_value(case["action"].clone()).expect("action");
+    let result = agent_lifecycle_runtime::execute(
+        &store,
+        &action,
+        case["now"].as_f64().expect("time"),
+        &AcceptLifecycleEffects,
+    )
+    .expect("stop");
+    assert_eq!(result, case["expected"]["result"]);
+    assert_eq!(
+        state(&store)["tables"]["runtime_agents"],
+        case["expected"]["records"]["tables"]["runtime_agents"]
+    );
 }
 
 #[test]

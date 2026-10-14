@@ -47,6 +47,7 @@ pub mod claude_login;
 /// Receipt-scoped retained controls; worker submission uses claude_input_recovery::runtime.
 pub mod claude_runtime;
 pub mod context_repair;
+pub mod context_repair_files;
 pub mod continuation;
 pub mod continuation_driver;
 pub mod continuation_runtime;

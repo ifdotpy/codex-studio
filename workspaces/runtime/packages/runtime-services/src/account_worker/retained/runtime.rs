@@ -36,6 +36,7 @@ impl Worker {
             operation: request.operation,
             actor: request.actor,
             transfer: request.transfer,
+            deleted_actor_session: request.deleted_actor_session,
             method: request.method.as_str().into(),
             params: request.params,
         };

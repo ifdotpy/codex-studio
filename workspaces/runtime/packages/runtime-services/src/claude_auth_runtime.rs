@@ -450,6 +450,7 @@ pub async fn account_read(
             operation,
             actor: Some(actor),
             transfer: None,
+            deleted_actor_session: None,
             method: Method::AccountRead,
             params: json!({}),
             deadline,

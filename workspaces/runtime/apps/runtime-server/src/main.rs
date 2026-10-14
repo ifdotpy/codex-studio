@@ -309,9 +309,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
     let sync_changes = state.sync_changes_handle();
     let app = match router(state.clone()) {
-        Ok(app) => app
-            .layer(Extension(Arc::clone(&monitor_runtime)))
-            .layer(Extension(lifecycle_ports)),
+        Ok(app) => {
+            let app = app
+                .layer(Extension(Arc::clone(&monitor_runtime)))
+                .layer(Extension(lifecycle_ports));
+            #[cfg(unix)]
+            let app = if let Some(resources) = runtime.preparation_resources() {
+                let repair: Arc<dyn studio_runtime_http::NativeContextRepairPort> =
+                    Arc::new(NativeContextRepairAdapter);
+                app.layer(Extension(resources)).layer(Extension(repair))
+            } else {
+                app
+            };
+            app
+        }
         Err(error) => {
             #[cfg(unix)]
             {
@@ -425,6 +436,34 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     state.shutdown_services().await?;
     result?;
     Ok(())
+}
+
+#[cfg(unix)]
+struct NativeContextRepairAdapter;
+
+#[cfg(unix)]
+impl studio_runtime_http::NativeContextRepairPort for NativeContextRepairAdapter {
+    fn repair_idle(
+        &self,
+        store: Arc<RuntimeStore>,
+        agent_id: String,
+        provider_home: PathBuf,
+        broker: Arc<dyn studio_runtime_services::account_session_runtime::AccountSessionPort>,
+        deadline: std::time::Instant,
+    ) -> studio_runtime_services::native_actions::Result<serde_json::Value> {
+        studio_runtime_services::context_repair::repair_idle_with_broker(
+            store.as_ref(),
+            &agent_id,
+            provider_home.as_path(),
+            broker.as_ref(),
+            deadline,
+        )
+        .map_err(|_| {
+            studio_runtime_services::native_actions::NativeError::Unavailable(
+                "context-repair/repair-idle-broker",
+            )
+        })
+    }
 }
 
 #[cfg(unix)]

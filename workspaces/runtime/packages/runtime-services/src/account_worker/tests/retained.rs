@@ -18,6 +18,7 @@ fn request(state: &State, port: &RetainedSessionPort, operation: &str) -> Sessio
             epoch: state.epoch,
         }),
         transfer: None,
+        deleted_actor_session: None,
         method: Method::ThreadRead,
         params: json!({"threadId":"fake-thread-0","includeTurns":false}),
         deadline: (tokio::time::Instant::now() + std::time::Duration::from_secs(60)).into_std(),
@@ -86,6 +87,37 @@ async fn retained_request_rejects_a_stale_expected_connection_before_dispatch() 
         port.request(call).await.unwrap_err(),
         PortError::ScopeMismatch
     );
+    assert!(peer.writes.try_recv().is_err());
+    worker.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn actorless_account_read_only_allows_non_refreshing_voice_shape() {
+    let state = State::new().await;
+    let mut peer = Peer::new();
+    let mut worker = peer.worker(state.bridge.clone()).await;
+    let port = worker.retained_session();
+    let mut call = request(&state, &port, "voice-account-read");
+    call.actor = None;
+    call.expected_scope = Some(port.scope().clone());
+    call.method = Method::AccountRead;
+    call.params = json!({"refreshToken":false});
+
+    let sender = port.clone();
+    let task = tokio::spawn(async move { sender.request(call.clone()).await });
+    let wire = peer.write("account/read").await;
+    peer.reply(&wire, json!({"account":{"id":"fixture"}})).await;
+    assert_eq!(
+        task.await.unwrap().unwrap().result,
+        RequestResult::Reply(json!({"account":{"id":"fixture"}}))
+    );
+
+    let mut refresh = request(&state, &port, "voice-account-refresh");
+    refresh.actor = None;
+    refresh.expected_scope = Some(port.scope().clone());
+    refresh.method = Method::AccountRead;
+    refresh.params = json!({"refreshToken":true});
+    assert_eq!(port.request(refresh).await.unwrap_err(), PortError::Invalid);
     assert!(peer.writes.try_recv().is_err());
     worker.shutdown().await.unwrap();
 }
@@ -486,6 +518,70 @@ async fn retained_authorization_refuses_deleted_agent() {
         PortError::Identity
     );
     assert!(peer.writes.try_recv().is_err());
+    worker.shutdown().await.unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn deleted_voice_stop_requires_the_exact_committed_session() {
+    let state = State::new().await;
+    let mut peer = Peer::new();
+    let mut worker = peer.worker(state.bridge.clone()).await;
+    let port = worker.retained_session();
+    let actor = state.agent.clone();
+    let epoch = state.epoch;
+    let scope = port.scope().clone();
+    let receipt_id = format!("agent-delete-voice:{actor}:{epoch}");
+    let session = json!({
+        "sessionId":"voice-session-7",
+        "agentId":actor,
+        "epoch":epoch,
+        "accountKey":scope.account,
+        "threadId":"fake-thread-0",
+        "connectionId":scope.connection,
+        "generation":scope.generation
+    });
+    let actor_for_store = actor.clone();
+    state.bridge.run(move |store| {
+        store.transaction_with(|tx| {
+            tx.execute(
+                "UPDATE runtime_agents SET record=json_set(record,'$.deletedAt',1) WHERE id=?1",
+                [&actor_for_store],
+            )?;
+            tx.execute(
+                "INSERT INTO runtime_operation_receipts(id,signature,result) VALUES(?1,'voice-delete',?2)",
+                rusqlite::params![receipt_id, json!({"agent":actor_for_store,"epoch":epoch,"voiceEndSessions":[session]}).to_string()],
+            )?;
+            Ok::<(), studio_runtime_store::StoreError>(())
+        })?;
+        Ok(())
+    }).await.unwrap();
+
+    let mut call = request(&state, &port, "voice:delete-stop:voice-session-7");
+    call.method = Method::ThreadRealtimeStop;
+    call.params = json!({"threadId":"fake-thread-0"});
+    call.expected_scope = Some(scope.clone());
+    call.deleted_actor_session = Some("voice-session-7".into());
+    let sender = port.clone();
+    let task = tokio::spawn(async move { sender.request(call).await });
+    let wire = peer.write("thread/realtime/stop").await;
+    peer.reply(&wire, json!({})).await;
+    assert_eq!(
+        task.await.unwrap().unwrap().result,
+        RequestResult::Reply(json!({}))
+    );
+    assert!(peer.writes.try_recv().is_err());
+
+    let mut mismatched = request(&state, &port, "voice:delete-stop:unlisted-session");
+    mismatched.method = Method::ThreadRealtimeStop;
+    mismatched.params = json!({"threadId":"fake-thread-0"});
+    mismatched.expected_scope = Some(scope);
+    mismatched.deleted_actor_session = Some("unlisted-session".into());
+    assert_eq!(
+        port.request(mismatched).await.unwrap_err(),
+        PortError::Identity
+    );
+    assert!(peer.writes.try_recv().is_err());
+
     worker.shutdown().await.unwrap();
 }
 
