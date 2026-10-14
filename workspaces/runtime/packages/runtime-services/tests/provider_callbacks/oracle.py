@@ -292,6 +292,10 @@ managed.replies = []
 with managed.lock, managed.db() as db:
     for actor in [lead, worker, foreign]:
         managed.put(db, "agents", actor)
+    # The cloned Runtime performs Python restart recovery and expires native
+    # pending requests. The Rust callback fixture uses the original live
+    # Python-written pending card, so retain that original row in its snapshot.
+    managed.put(db, "requests", legacy_card)
     stored_monitor = json.loads(db.execute(
         "SELECT record FROM runtime_monitors WHERE id=?", (managed_monitor["id"],)).fetchone()[0])
     managed_monitor = sort_json(stored_monitor)
