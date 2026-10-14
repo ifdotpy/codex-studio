@@ -3,7 +3,21 @@
 mod prepared_python_support;
 use rusqlite::{Connection, params};
 use serde_json::{Value, json};
-use std::{collections::BTreeMap, fs, path::Path, process::Command};
+use std::{
+    collections::BTreeMap,
+    fs,
+    path::Path,
+    process::Command,
+    sync::{Arc, Mutex},
+};
+use studio_runtime_providers::{RequestId, RequestTicket};
+use studio_runtime_services::{
+    account_session_runtime::{
+        AccountSessionError, AccountSessionPort, ConnectionScope, ProviderRequest,
+        ProviderResponse, RequestCertainty, SessionReceipt,
+    },
+    lifecycle_effects::ProductionLifecyclePorts,
+};
 use studio_runtime_services::{
     agent_lifecycle_runtime::{
         self, LifecycleEffect, LifecycleEffectKind, LifecyclePorts, UnavailableLifecyclePorts,
@@ -11,6 +25,7 @@ use studio_runtime_services::{
     agent_management::{Action, ManagementError, Records},
 };
 use studio_runtime_store::{RuntimeStore, Transaction, agent_management};
+use tokio::sync::Notify;
 
 fn template(root: &Path) {
     let schema: Value = serde_json::from_str(include_str!(
@@ -103,9 +118,17 @@ fn state(store: &RuntimeStore) -> Value {
 
 // A fixture for the transaction boundary only. Provider transport is owned by
 // account_worker, whose direct Stop receipt tests run in the crate suite.
-#[derive(Default)]
 struct InterruptFixture {
     notification_payloads: BTreeMap<String, String>,
+    pending_deleted: Mutex<Vec<String>>,
+}
+impl Default for InterruptFixture {
+    fn default() -> Self {
+        Self {
+            notification_payloads: BTreeMap::new(),
+            pending_deleted: Mutex::new(Vec::new()),
+        }
+    }
 }
 impl InterruptFixture {
     fn for_case(case: &Value) -> Self {
@@ -122,7 +145,55 @@ impl InterruptFixture {
             .collect();
         Self {
             notification_payloads,
+            pending_deleted: Mutex::new(Vec::new()),
         }
+    }
+
+    fn settle_deleted(&self, store: &RuntimeStore) {
+        let pending = std::mem::take(&mut *self.pending_deleted.lock().expect("delete queue"));
+        store
+            .transaction(|tx| {
+                for id in pending {
+                    if let Some(mut agent) = studio_runtime_store::AgentRepository::get(
+                        tx,
+                        &studio_runtime_store::AgentId::from(id.as_str()),
+                    )? {
+                        if agent.extra.get("deletedAt").is_none_or(Value::is_null) {
+                            continue;
+                        }
+                        let attempt = agent.extra.get("startAttempt").unwrap_or(&Value::Null);
+                        let needs_settlement = agent.extra.get("inFlight").and_then(Value::as_bool)
+                            == Some(true)
+                            || agent.extra.get("turnId").is_some_and(|turn| {
+                                turn.as_str().is_some_and(|value| !value.is_empty())
+                            })
+                            || attempt.get("activeAtReservation").and_then(Value::as_bool)
+                                == Some(true)
+                            || agent
+                                .extra
+                                .get("status")
+                                .and_then(Value::as_str)
+                                .is_some_and(|status| {
+                                    ["running", "starting", "approval"].contains(&status)
+                                });
+                        if !needs_settlement {
+                            continue;
+                        }
+                        agent.extra.insert("inFlight".to_owned(), json!(false));
+                        agent.extra.insert("turnId".to_owned(), Value::Null);
+                        agent.extra.insert("activity".to_owned(), Value::Null);
+                        agent.extra.insert("activeTools".to_owned(), json!([]));
+                        if let Some(attempt) = agent.extra.get_mut("startAttempt")
+                            && attempt.get("activeAtReservation") == Some(&json!(true))
+                        {
+                            attempt["activeAtReservation"] = json!(false);
+                        }
+                        studio_runtime_store::AgentRepository::put(tx, &agent)?;
+                    }
+                }
+                Ok(())
+            })
+            .expect("post-commit delete reconciliation");
     }
 }
 impl LifecyclePorts for InterruptFixture {
@@ -130,6 +201,16 @@ impl LifecyclePorts for InterruptFixture {
         Ok(())
     }
     fn stage(&self, tx: &Transaction<'_>, effect: &LifecycleEffect) -> Result<(), ManagementError> {
+        if effect.kind() == LifecycleEffectKind::FinalizeDeleted {
+            let id = effect.before()["id"]
+                .as_str()
+                .expect("deleted agent identity");
+            self.pending_deleted
+                .lock()
+                .map_err(|_| ManagementError::Invalid("Lifecycle deletion queue unavailable"))?
+                .push(id.to_owned());
+            return Ok(());
+        }
         if effect.kind() == LifecycleEffectKind::NotifyParent {
             let before = effect.before();
             let stopped = effect.stopped();
@@ -236,7 +317,7 @@ fn assert_records(store: &RuntimeStore, case: &Value) {
 #[test]
 fn python_stop_corpus_complete_records_and_exact_descendants() {
     let cases = cases();
-    assert_eq!(cases.len(), 18);
+    assert_eq!(cases.len(), 19);
     let base = tempfile::tempdir().expect("template");
     template(base.path());
     for case in cases {
@@ -257,6 +338,7 @@ fn python_stop_corpus_complete_records_and_exact_descendants() {
             result = agent_lifecycle_runtime::execute(&store, &action, 1234567.5, &ports)
                 .expect("stop commits");
         }
+        ports.settle_deleted(&store);
         assert_eq!(result, case["expected"]["result"], "{}", case["name"]);
         let db = store.read().expect("notification reader");
         let notifications = db
@@ -352,6 +434,312 @@ fn lifecycle_store_failpoints_and_missing_consumer_leave_no_writes() {
             assert_records(&store, &case);
         }
     }
+}
+
+#[test]
+fn production_interrupt_is_durable_post_commit_and_retry_coalesces_after_rollback() {
+    struct Broker {
+        store: Arc<RuntimeStore>,
+        scope: ConnectionScope,
+        calls: Mutex<Vec<ProviderRequest>>,
+    }
+    impl AccountSessionPort for Broker {
+        fn current_scope(&self, account: &str) -> Option<ConnectionScope> {
+            (account == self.scope.account).then(|| self.scope.clone())
+        }
+
+        fn provider_request(
+            &self,
+            request: ProviderRequest,
+        ) -> Result<SessionReceipt, AccountSessionError> {
+            assert_eq!(request.expected_scope.as_ref(), Some(&self.scope));
+            let reader = self
+                .store
+                .read()
+                .expect("intent is committed before dispatch");
+            let raw: String = reader
+                .query_row(
+                    "SELECT record FROM runtime_agents WHERE id='lead'",
+                    [],
+                    |row| row.get(0),
+                )
+                .expect("stopped agent row");
+            let agent: Value = serde_json::from_str(&raw).expect("agent record");
+            assert_eq!(agent["startAttempt"]["interrupt"]["outcome"], "unknown");
+            assert_eq!(
+                agent["startAttempt"]["interrupt"]["requestTicket"],
+                request.operation
+            );
+            self.calls.lock().expect("calls lock").push(request.clone());
+            Ok(SessionReceipt {
+                scope: self.scope.clone(),
+                operation: request.operation.clone(),
+                ticket: Some(RequestTicket {
+                    generation: self.scope.generation,
+                    id: RequestId::String(request.operation),
+                    method: request.method,
+                }),
+                certainty: RequestCertainty::Written,
+                result: Some(ProviderResponse::Reply(json!({"ok":true}))),
+                not_sent_reason: None,
+            })
+        }
+    }
+
+    let corpus = cases();
+    for case_name in ["running-True", "delete-running"] {
+        let case = corpus
+            .iter()
+            .find(|case| case["name"] == case_name)
+            .expect("Python active stop/delete corpus case");
+        for boundary in ["BEFORE", "AFTER"] {
+            let root = tempfile::tempdir().expect("root");
+            template(root.path());
+            let store = Arc::new(RuntimeStore::open(Some(root.path())).expect("open"));
+            seed(
+                &store,
+                serde_json::from_value(case["records"].clone()).expect("Python rows"),
+            );
+            let before = state(&store);
+            store
+            .transaction(|tx| {
+                tx.execute_batch(&format!(
+                    "CREATE TRIGGER interrupt_projection_fail {boundary} INSERT ON sync_entities BEGIN SELECT RAISE(ABORT,'projection failure'); END"
+                ))?;
+                Ok(())
+            })
+            .expect("install projection failpoint");
+            let broker = Arc::new(Broker {
+                store: store.clone(),
+                scope: ConnectionScope {
+                    account: "fixture-account".into(),
+                    connection: "fixture-connection".into(),
+                    generation: 7,
+                },
+                calls: Mutex::new(Vec::new()),
+            });
+            let ports = ProductionLifecyclePorts::new(
+                store.clone(),
+                Arc::new(Notify::new()),
+                Arc::new(Notify::new()),
+                broker.clone(),
+            );
+            let action: Action = serde_json::from_value(case["action"].clone()).expect("action");
+            assert!(
+                ports
+                    .execute(&action, case["now"].as_f64().expect("time"))
+                    .is_err()
+            );
+            assert_eq!(
+                state(&store),
+                before,
+                "rollback at {boundary} sync projection"
+            );
+            assert!(broker.calls.lock().expect("calls lock").is_empty());
+            store
+                .transaction(|tx| {
+                    tx.execute_batch("DROP TRIGGER interrupt_projection_fail")?;
+                    Ok(())
+                })
+                .expect("remove failpoint");
+
+            assert_eq!(
+                ports
+                    .execute(&action, case["now"].as_f64().expect("time"))
+                    .expect("retry"),
+                case["expected"]["result"]
+            );
+            let calls = broker.calls.lock().expect("calls lock");
+            assert_eq!(
+                calls.len(),
+                1,
+                "one provider dispatch after {boundary} rollback"
+            );
+            assert_eq!(
+                calls[0].actor.as_ref().map(|actor| actor.agent.as_str()),
+                Some("lead")
+            );
+            assert_eq!(calls[0].actor.as_ref().map(|actor| actor.epoch), Some(3));
+            drop(calls);
+            let reader = store.read().expect("settled receipt");
+            let raw: String = reader
+                .query_row(
+                    "SELECT record FROM runtime_agents WHERE id='lead'",
+                    [],
+                    |row| row.get(0),
+                )
+                .expect("agent row");
+            let agent: Value = serde_json::from_str(&raw).expect("agent record");
+            assert_eq!(agent["startAttempt"]["interrupt"]["outcome"], "accepted");
+            let actual = state(&store);
+            for (table, expected) in case["expected"]["records"]["tables"]
+                .as_object()
+                .expect("Python output tables")
+            {
+                let mut actual_rows = actual["tables"][table].clone();
+                if table == "runtime_agents" {
+                    for row in actual_rows.as_array_mut().expect("agent rows") {
+                        if let Some(attempt) = row.get_mut("startAttempt") {
+                            attempt
+                                .as_object_mut()
+                                .expect("attempt object")
+                                .remove("interrupt");
+                        }
+                    }
+                }
+                assert_eq!(actual_rows, *expected, "Python effect corpus rows: {table}");
+            }
+        }
+    }
+}
+
+#[test]
+fn production_child_notification_matches_python_corpus() {
+    struct NoBroker;
+    impl AccountSessionPort for NoBroker {}
+
+    let case = cases()
+        .into_iter()
+        .find(|case| case["name"] == "stop-worker-notification")
+        .expect("Python child-stop corpus case");
+    let root = tempfile::tempdir().expect("root");
+    template(root.path());
+    let store = Arc::new(RuntimeStore::open(Some(root.path())).expect("open"));
+    seed(
+        &store,
+        serde_json::from_value(case["records"].clone()).expect("Python rows"),
+    );
+    let ports = ProductionLifecyclePorts::new(
+        store.clone(),
+        Arc::new(Notify::new()),
+        Arc::new(Notify::new()),
+        Arc::new(NoBroker),
+    );
+    let action: Action = serde_json::from_value(case["action"].clone()).expect("action");
+    assert_eq!(
+        ports
+            .execute(&action, case["now"].as_f64().expect("time"))
+            .expect("local stop and durable parent event"),
+        case["expected"]["result"]
+    );
+    // The Python oracle injects `enqueue_recovery_event` as a rows-only
+    // boundary, while the production event writer also queues an auto-wake
+    // parent. Compare the child event rows and every other record verbatim.
+    let actual = state(&store);
+    for (table, expected) in case["expected"]["records"]["tables"]
+        .as_object()
+        .expect("Python output tables")
+    {
+        if table != "runtime_agents" {
+            assert_eq!(
+                &actual["tables"][table], expected,
+                "Python event corpus: {table}"
+            );
+        }
+    }
+    let actual_events = actual["tables"]["runtime_events"].clone();
+    assert_eq!(
+        actual_events, case["expected"]["records"]["tables"]["runtime_events"],
+        "Python child notification event rows"
+    );
+    let actual_sync = actual["sync"]
+        .as_array()
+        .expect("sync rows")
+        .iter()
+        .filter(|row| row[0] != "workspace" && row[0] != "agent")
+        .map(|row| json!([row[0], row[1], row[4], row[5]]))
+        .collect::<Vec<_>>();
+    let mut expected_sync = case["expected"]["syncEntities"]
+        .as_array()
+        .expect("Python sync rows")
+        .iter()
+        .filter(|row| row[0] != "agent")
+        .map(|row| json!([row[0], row[1], row[2], row[3]]))
+        .collect::<Vec<_>>();
+    expected_sync.sort_by_key(|row| (row[0].to_string(), row[1].to_string()));
+    assert_eq!(
+        actual_sync, expected_sync,
+        "Python notification projections"
+    );
+}
+
+#[test]
+fn production_unknown_interrupt_is_never_resent_on_repeated_stop() {
+    struct UnknownBroker {
+        scope: ConnectionScope,
+        calls: Mutex<Vec<ProviderRequest>>,
+    }
+    impl AccountSessionPort for UnknownBroker {
+        fn current_scope(&self, account: &str) -> Option<ConnectionScope> {
+            (account == self.scope.account).then(|| self.scope.clone())
+        }
+
+        fn provider_request(
+            &self,
+            request: ProviderRequest,
+        ) -> Result<SessionReceipt, AccountSessionError> {
+            self.calls
+                .lock()
+                .expect("broker calls")
+                .push(request.clone());
+            Ok(SessionReceipt {
+                scope: self.scope.clone(),
+                operation: request.operation,
+                ticket: None,
+                certainty: RequestCertainty::Unknown,
+                result: None,
+                not_sent_reason: None,
+            })
+        }
+    }
+
+    let case = cases()
+        .into_iter()
+        .find(|case| case["name"] == "running-True")
+        .expect("Python running stop case");
+    let root = tempfile::tempdir().expect("root");
+    template(root.path());
+    let store = Arc::new(RuntimeStore::open(Some(root.path())).expect("open"));
+    seed(
+        &store,
+        serde_json::from_value(case["records"].clone()).expect("Python rows"),
+    );
+    let broker = Arc::new(UnknownBroker {
+        scope: ConnectionScope {
+            account: "fixture-account".into(),
+            connection: "fixture-connection".into(),
+            generation: 7,
+        },
+        calls: Mutex::new(Vec::new()),
+    });
+    let ports = ProductionLifecyclePorts::new(
+        store.clone(),
+        Arc::new(Notify::new()),
+        Arc::new(Notify::new()),
+        broker.clone(),
+    );
+    let action: Action = serde_json::from_value(case["action"].clone()).expect("action");
+    ports
+        .execute(&action, case["now"].as_f64().expect("time"))
+        .expect("first stop commits with unknown interrupt");
+    let first = state(&store)["tables"]["runtime_agents"][0]["startAttempt"]["interrupt"].clone();
+    assert_eq!(first["outcome"], "unknown");
+    ports
+        .execute(&action, case["now"].as_f64().expect("time"))
+        .expect("repeat stop commits without another interrupt");
+    let calls = broker.calls.lock().expect("broker calls");
+    assert_eq!(calls.len(), 1);
+    drop(calls);
+    let reader = store.read().expect("reader");
+    let raw: String = reader
+        .query_row(
+            "SELECT record FROM runtime_agents WHERE id='lead'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("agent row");
+    let agent: Value = serde_json::from_str(&raw).expect("agent");
+    assert_eq!(agent["startAttempt"]["interrupt"], first);
 }
 
 #[test]

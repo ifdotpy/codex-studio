@@ -161,7 +161,6 @@ fn execute_decision(
                 "autoWake",
                 "status",
                 "deletedAt",
-                "startAttempt",
                 "threadId",
                 "accountKey",
                 "connectionId",
@@ -173,6 +172,17 @@ fn execute_decision(
                         "Lifecycle adapter changed stop identity",
                     ));
                 }
+            }
+            // Interrupt preparation is the one permitted amendment to the
+            // saved attempt: it durably records the ticket before transport.
+            // All other attempt fields still match the lifecycle decision.
+            if !same_attempt_except_interrupt(
+                current.get("startAttempt").unwrap_or(&Value::Null),
+                write.record.get("startAttempt").unwrap_or(&Value::Null),
+            ) {
+                return Err(ManagementError::Invalid(
+                    "Lifecycle adapter changed stop identity",
+                ));
             }
         }
     }
@@ -198,4 +208,44 @@ fn execute_decision(
         )?;
     }
     Ok(decision.result)
+}
+
+fn same_attempt_except_interrupt(current: &Value, expected: &Value) -> bool {
+    let expected_had_interrupt = expected
+        .as_object()
+        .is_some_and(|object| object.contains_key("interrupt"));
+    let current_had_interrupt = current
+        .as_object()
+        .is_some_and(|object| object.contains_key("interrupt"));
+    if expected_had_interrupt && !current_had_interrupt {
+        return false;
+    }
+    let mut current = current.clone();
+    let mut expected = expected.clone();
+    if let Some(object) = current.as_object_mut() {
+        object.remove("interrupt");
+    }
+    if let Some(object) = expected.as_object_mut() {
+        object.remove("interrupt");
+    }
+    current == expected
+}
+
+#[cfg(test)]
+mod lifecycle_identity_tests {
+    use super::same_attempt_except_interrupt;
+    use serde_json::json;
+
+    #[test]
+    fn lifecycle_guard_allows_only_interrupt_intent_change() {
+        let expected = json!({"id":"attempt","submitted":true,"turnId":"turn"});
+        let prepared = json!({"id":"attempt","submitted":true,"turnId":"turn","interrupt":{"requestTicket":"ticket","outcome":"unknown"}});
+        assert!(same_attempt_except_interrupt(&prepared, &expected));
+
+        let interrupted = json!({"id":"attempt","submitted":true,"turnId":"turn","interrupt":{"outcome":"unknown"}});
+        assert!(!same_attempt_except_interrupt(&expected, &interrupted));
+
+        let modified = json!({"id":"other-attempt","submitted":true,"turnId":"turn","interrupt":{"requestTicket":"ticket","outcome":"unknown"}});
+        assert!(!same_attempt_except_interrupt(&modified, &expected));
+    }
 }
