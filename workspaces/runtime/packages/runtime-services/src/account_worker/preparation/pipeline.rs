@@ -640,7 +640,6 @@ fn ensure_image_workspace_temp(
 
 fn ensure_private_directory(path: &std::path::Path) -> Result<(), WorkerError> {
     use std::fs;
-    use std::os::unix::fs::PermissionsExt;
     match fs::symlink_metadata(path) {
         Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_dir() => {
             return Err(refusal("monitor-preparation/image-temp-unsafe".into()));

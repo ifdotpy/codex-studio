@@ -1562,6 +1562,7 @@ fn broker_call(
         account: scope.account.clone(),
         operation: operation.to_owned(),
         actor: Some(actor.clone()),
+        deleted_actor_session: None,
         expected_scope: Some(scope.clone()),
         method,
         params,
