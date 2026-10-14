@@ -496,7 +496,7 @@ class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             "id": str(uuid.uuid4()),
             "parent": parent_request["id"],
             "cwd": str(self.backend.cwd),
-            "name": "  P02 child  ",
+            "name": REVIEW_CORPUS["childNameCases"]["trimmedInput"],
             "prompt": "  Use the frozen base.  ",
             "workspaceMode": "worktree",
         }
@@ -550,6 +550,54 @@ class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             agent_delta(normalized_agent(saved), normalized_agent(expected)),
             {},
         )
+
+        maximum_name_request = {
+            **request,
+            "id": str(uuid.uuid4()),
+            "name": "x" * REVIEW_CORPUS["childNameCases"]["maximumLength"],
+        }
+        expected_maximum_name = python_worker_draft(
+            self.backend,
+            {
+                **{key: value for key, value in maximum_name_request.items() if key != "workspaceMode"},
+                "_workerBaseRef": "HEAD",
+                "_workerBaseCommit": base_commit,
+                "_workspaceMode": "worktree",
+                "_workspaceExplicit": True,
+            },
+            parent["record"]["id"],
+        )
+        self.backend.start()
+        self.await_model_catalog(account_key)
+        maximum_name_response = self.backend.request(
+            "POST", "/api/agents", body=maximum_name_request, headers=self.headers()
+        )
+        self.assertEqual(maximum_name_response.status, 200, maximum_name_response.body[:1000])
+        with database_connection(self.backend.state / "canvas.sqlite3") as database:
+            saved_maximum_name = json.loads(
+                database.execute(
+                    "SELECT record FROM runtime_agents WHERE id=?",
+                    (maximum_name_request["id"],),
+                ).fetchone()[0]
+            )
+        self.assertEqual(
+            agent_delta(normalized_agent(saved_maximum_name), normalized_agent(expected_maximum_name)),
+            {},
+        )
+
+        self.backend.stop()
+        self.backend.start()
+        replay = self.backend.request("POST", "/api/agents", body=request, headers=self.headers())
+        self.assertEqual(replay.status, 200, replay.body[:1000])
+        self.assertEqual(replay.json()["id"], request["id"])
+        with database_connection(self.backend.state / "canvas.sqlite3") as database:
+            self.assertEqual(
+                database.execute(
+                    "SELECT COUNT(*) FROM runtime_agents WHERE id=?",
+                    (maximum_name_request["id"],),
+                ).fetchone()[0],
+                1,
+            )
 
     def test_rename_reads_python_written_agent_and_projection(self):
         before = rename_state(self.backend.state, self.agent_id, "title-request-1")

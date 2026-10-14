@@ -1495,14 +1495,7 @@ fn resolve_project_binding(
     project_id: Option<&str>,
     home_server: Option<&str>,
 ) -> Result<Value, OperationError> {
-    let local = crate::sync_entity_context::local_server_id(
-        context
-            .store
-            .root()
-            .to_str()
-            .ok_or(OperationError::Internal)?,
-    )?
-    .ok_or(OperationError::Unavailable(
+    let local = local_server_id(context)?.ok_or(OperationError::Unavailable(
         "cross-server-driver/local-identity",
     ))?;
     let connection = context.store.read()?;

@@ -3,6 +3,10 @@
 //! Drafting is read-only and happens before the caller's transaction. The caller
 //! owns durable intent, filesystem effects, and insertion; `recheck` validates
 //! the project and parent identities again inside that transaction.
+//!
+//! Registered Python difference: Rust `str::trim` does not strip U+001C–U+001F,
+//! while Python `str.strip()` does. Names and prompts ending or beginning with
+//! those characters keep them in Rust.
 
 use crate::agents_create::{
     CreateError, DEFAULT_CONCURRENCY, DEFAULT_MAX_AGENTS, build_agent_record,
@@ -184,8 +188,8 @@ pub fn prepare_work_item(
         return Err(CreateError::IdentityChanged);
     }
     let account_key = required_string_value(body, "account_key")?;
-    let name = required_string_value(body, "name")?;
-    if name.chars().count() > 80 {
+    let name = required_string_value(body, "name")?.trim();
+    if name.is_empty() || name.chars().count() > 100 {
         return Err(CreateError::InvalidCreation("name"));
     }
     let model = required_string_value(body, "model")?;
@@ -624,7 +628,7 @@ mod tests {
         cwd: String,
     }
 
-    fn worker_draft_fixture() -> WorkerDraftFixture {
+    fn worker_draft_fixture(name: &str, prompt: &str) -> WorkerDraftFixture {
         let directory = tempdir().expect("temporary worker project");
         let cwd = directory.path().canonicalize().expect("canonical project");
         let cwd = cwd.to_str().expect("UTF-8 test path").to_owned();
@@ -676,8 +680,8 @@ mod tests {
             )
             .expect("save project binding");
         let body = json!({
-            "account_key":"worker-account","name":"Named worker",
-            "model":"model-one","prompt":"Do the task"
+            "account_key":"worker-account","name":name,
+            "model":"model-one","prompt":prompt
         });
         let draft = prepare_work_item(
             &body,
@@ -704,6 +708,20 @@ mod tests {
             parent_id,
             cwd,
         }
+    }
+
+    #[test]
+    fn rust_trim_keeps_python_strip_only_edge_controls() {
+        let value = "\u{1c}edge\u{1c}";
+        let fixture = worker_draft_fixture(value, value);
+        assert_eq!(
+            field(&fixture.draft, "name").and_then(Value::as_str),
+            Some(value)
+        );
+        assert_eq!(
+            field(&fixture.draft, "prompt").and_then(Value::as_str),
+            Some(value)
+        );
     }
 
     fn assert_worker_recheck_refuses_without_writes(fixture: &mut WorkerDraftFixture) {
@@ -864,7 +882,7 @@ mod tests {
 
     #[test]
     fn worker_recheck_refuses_parent_cwd_changes() {
-        let mut fixture = worker_draft_fixture();
+        let mut fixture = worker_draft_fixture("Named worker", "Do the task");
         fixture
             .database
             .execute(
@@ -877,7 +895,7 @@ mod tests {
 
     #[test]
     fn worker_recheck_refuses_parent_account_changes() {
-        let mut fixture = worker_draft_fixture();
+        let mut fixture = worker_draft_fixture("Named worker", "Do the task");
         fixture
             .database
             .execute(
@@ -890,7 +908,7 @@ mod tests {
 
     #[test]
     fn worker_recheck_refuses_parent_project_binding_changes() {
-        let mut fixture = worker_draft_fixture();
+        let mut fixture = worker_draft_fixture("Named worker", "Do the task");
         fixture
             .database
             .execute(
@@ -903,7 +921,7 @@ mod tests {
 
     #[test]
     fn worker_recheck_refuses_parent_project_server_changes() {
-        let mut fixture = worker_draft_fixture();
+        let mut fixture = worker_draft_fixture("Named worker", "Do the task");
         fixture
             .database
             .execute(
@@ -916,7 +934,7 @@ mod tests {
 
     #[test]
     fn worker_recheck_refuses_project_binding_changes() {
-        let mut fixture = worker_draft_fixture();
+        let mut fixture = worker_draft_fixture("Named worker", "Do the task");
         fixture
             .database
             .execute(
