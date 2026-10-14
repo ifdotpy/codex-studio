@@ -18,8 +18,7 @@ fn request(id: &str, resources: Value) -> Value {
 }
 
 fn rates(index: usize) -> Value {
-    let rate = index as f64;
-    let rate = json!({"turnId": "turn", "active": true, "estimated": false, "rate": rate, "outputTokens": rate});
+    let rate = json!({"turnId": "turn", "active": true, "estimated": false, "rate": index, "outputTokens": index});
     json!({"rates": {"agent": rate}, "teams": {"lead": {"agent": rate}}})
 }
 

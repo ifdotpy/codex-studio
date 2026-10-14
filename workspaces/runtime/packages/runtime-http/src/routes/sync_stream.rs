@@ -490,7 +490,7 @@ mod tests {
         use std::io::Write;
         use std::path::Path;
         use std::process::{Command, Stdio};
-        let rate = json!({"turnId":"turn", "active":false,"estimated":true,"rate":1.25,"outputTokens":400.0});
+        let rate = json!({"turnId":"turn", "active":false,"estimated":true,"rate":1.25,"outputTokens":400});
         let cases = json!([
             {"resources":[{"kind":"accounts"},{"kind":"session-cost","agentId":"agent"}],"sequence":0,"reconnect":false,"rates":{"rates":{},"teams":{}}},
             {"resources":[{"kind":"state"}],"sequence":42,"reconnect":true,"rates":{"rates":{"agent":rate},"teams":{"lead":{"agent":rate}}}}
@@ -673,7 +673,6 @@ mod tests {
     }
 
     fn test_rates(rate: u64) -> Value {
-        let rate = rate as f64;
         json!({"rates":{"agent":{"turnId":"turn","active":true,"estimated":false,"rate":rate,"outputTokens":rate}},"teams":{}})
     }
 
