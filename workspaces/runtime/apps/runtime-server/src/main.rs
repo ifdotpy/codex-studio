@@ -297,10 +297,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 Arc::clone(&account_session),
             ),
         );
-    let managed_tool_runtime = studio_runtime_services::provider_callbacks::ManagedToolRuntime::new(
-        Arc::clone(&monitor_runtime),
-        Arc::clone(&lifecycle_ports),
+    let creation_environment = studio_runtime_http::routes::managed_creation_environment(
+        Arc::clone(&account_driver),
+        state.model_catalog_handle(),
     );
+    let managed_tool_runtime =
+        studio_runtime_services::provider_callbacks::ManagedToolRuntime::with_creation(
+            Arc::clone(&monitor_runtime),
+            Arc::clone(&lifecycle_ports),
+            creation_environment,
+        );
     #[cfg(unix)]
     let runtime = match host_runtime::HostRuntime::start_with_monitor_wake_and_native_runtime(
         &mut state,
