@@ -67,6 +67,7 @@ pub mod host_project_runtime;
 pub mod host_worker_create;
 pub mod maintenance;
 pub(crate) mod managed_host_tools;
+pub mod managed_status_watch;
 pub mod message_admission;
 pub mod model_catalog;
 pub mod monitor_driver;
