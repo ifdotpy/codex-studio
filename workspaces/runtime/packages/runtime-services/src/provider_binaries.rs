@@ -551,14 +551,14 @@ impl NativePlatform {
         }
     }
 
-    const fn executable_name(self) -> &'static str {
+    pub const fn executable_name(self) -> &'static str {
         match self {
             Self::WindowsX64 | Self::WindowsArm64 => "codex.exe",
             _ => "codex",
         }
     }
 
-    const fn is_windows(self) -> bool {
+    pub const fn is_windows(self) -> bool {
         matches!(self, Self::WindowsX64 | Self::WindowsArm64)
     }
 }
