@@ -40,8 +40,8 @@ use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
 use std::io::BufReader;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use rusqlite::trace::{TraceEvent, TraceEventCodes};
@@ -245,6 +245,10 @@ pub struct RuntimeStore {
     version_reader: Mutex<Connection>,
     identity_registry_path: PathBuf,
     commit_notifier: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
+    /// Count of committed transactions that changed rows; owned and advanced by the writer.
+    committed_change_generation: AtomicU64,
+    last_entity_projection_state: Mutex<Option<(u64, String)>>,
+    entity_projection_maintenance_lock: Mutex<()>,
 }
 
 impl RuntimeStore {
@@ -303,6 +307,9 @@ impl RuntimeStore {
             version_reader: Mutex::new(version_reader),
             identity_registry_path,
             commit_notifier: Mutex::new(None),
+            committed_change_generation: AtomicU64::new(0),
+            last_entity_projection_state: Mutex::new(None),
+            entity_projection_maintenance_lock: Mutex::new(()),
         };
         store.transaction(|transaction| {
             bootstrap::prepare_sync_schema(transaction)?;
@@ -420,6 +427,19 @@ impl RuntimeStore {
     where
         E: From<StoreError>,
     {
+        self.transaction_with_commit_generation(operation)
+            .map(|(value, _)| value)
+    }
+
+    /// Run a write transaction and return its committed change generation.
+    /// The generation unit is one committed transaction with row changes.
+    pub fn transaction_with_commit_generation<T, E>(
+        &self,
+        operation: impl FnOnce(&Transaction<'_>) -> Result<T, E>,
+    ) -> Result<(T, u64), E>
+    where
+        E: From<StoreError>,
+    {
         let diagnostics_enabled = DIAGNOSTICS_ENABLED.load(Ordering::Acquire);
         let waiting = diagnostics_enabled.then(Instant::now);
         let mut writer = self.writer.lock().map_err(|_| StoreError::WriterPoisoned)?;
@@ -438,9 +458,12 @@ impl RuntimeStore {
                         .commit()
                         .map_err(StoreError::CommitOutcomeUnknown)?;
                     if changed {
+                        self.committed_change_generation
+                            .fetch_add(1, Ordering::Release);
                         self.notify_commit();
                     }
-                    Ok(value)
+                    let generation = self.committed_change_generation();
+                    Ok((value, generation))
                 }
                 Err(error) => {
                     // Dropping rolls back best-effort. Preserve the operation's
@@ -514,6 +537,52 @@ impl RuntimeStore {
             .lock()
             .map_err(|_| StoreError::WriterPoisoned)?;
         Ok(reader.query_row("PRAGMA data_version", [], |row| row.get(0))?)
+    }
+
+    /// Return the number of committed writer transactions that changed rows.
+    /// This is process-local and intentionally distinct from sync-document generation.
+    pub fn committed_change_generation(&self) -> u64 {
+        self.committed_change_generation.load(Ordering::Acquire)
+    }
+
+    /// Whether projection maintenance has not observed the current commit generation and vault signature.
+    pub fn entity_projections_need_maintenance(&self, vault_signature: &str) -> StoreResult<bool> {
+        let last = self
+            .last_entity_projection_state
+            .lock()
+            .map_err(|_| StoreError::WriterPoisoned)?;
+        let current_generation = self.committed_change_generation();
+        Ok(match last.as_ref() {
+            Some((generation, signature)) => {
+                *generation != current_generation || signature != vault_signature
+            }
+            None => true,
+        })
+    }
+
+    /// Serialize the cold entity projection maintenance path for this process store.
+    pub fn lock_entity_projection_maintenance(&self) -> StoreResult<MutexGuard<'_, ()>> {
+        self.entity_projection_maintenance_lock
+            .lock()
+            .map_err(|_| StoreError::WriterPoisoned)
+    }
+
+    /// Record the committed store generation and vault input signature after maintenance commits.
+    pub fn mark_entity_projections_maintained(
+        &self,
+        generation: u64,
+        vault_signature: String,
+    ) -> StoreResult<()> {
+        if generation > self.committed_change_generation() {
+            return Err(StoreError::RecordContract(
+                "entity projection generation is newer than committed store state",
+            ));
+        }
+        *self
+            .last_entity_projection_state
+            .lock()
+            .map_err(|_| StoreError::WriterPoisoned)? = Some((generation, vault_signature));
+        Ok(())
     }
 
     pub fn verify_schema(&self) -> StoreResult<()> {
@@ -660,6 +729,9 @@ mod diagnostics_hook_tests {
             version_reader: Mutex::new(reader),
             identity_registry_path: directory.path().join("canvas.sqlite3"),
             commit_notifier: Mutex::new(None),
+            committed_change_generation: AtomicU64::new(0),
+            last_entity_projection_state: Mutex::new(None),
+            entity_projection_maintenance_lock: Mutex::new(()),
         };
         EVENTS.store(0, Ordering::Relaxed);
         store.set_diagnostics_callback(Some(count_event));
@@ -699,6 +771,9 @@ mod commit_notification_tests {
             version_reader: Mutex::new(Connection::open_in_memory().expect("reader connection")),
             identity_registry_path: directory.path().join("canvas.sqlite3"),
             commit_notifier: Mutex::new(None),
+            committed_change_generation: AtomicU64::new(0),
+            last_entity_projection_state: Mutex::new(None),
+            entity_projection_maintenance_lock: Mutex::new(()),
         };
         let notifications = Arc::new(AtomicUsize::new(0));
         let notified = Arc::clone(&notifications);
@@ -716,6 +791,7 @@ mod commit_notification_tests {
             .transaction(|_| Ok(()))
             .expect("no-op transaction succeeds");
         assert_eq!(notifications.load(Ordering::Relaxed), 0);
+        assert_eq!(store.committed_change_generation(), 0);
 
         store
             .transaction(|transaction| {
@@ -724,5 +800,71 @@ mod commit_notification_tests {
             })
             .expect("write transaction succeeds");
         assert_eq!(notifications.load(Ordering::Relaxed), 1);
+        assert_eq!(store.committed_change_generation(), 1);
+    }
+}
+
+#[cfg(test)]
+mod projection_generation_tests {
+    use super::*;
+
+    #[test]
+    fn projection_watermark_tracks_changes_and_restarts_unset() {
+        let directory = tempfile::tempdir().expect("temporary state directory");
+        let store = RuntimeStore::open(Some(directory.path())).expect("store opens");
+        assert!(
+            store
+                .entity_projections_need_maintenance("vault-a")
+                .expect("watermark is readable")
+        );
+
+        let initial = store.committed_change_generation();
+        store
+            .mark_entity_projections_maintained(initial, "vault-a".to_owned())
+            .expect("initial projection generation is recorded");
+        assert!(
+            !store
+                .entity_projections_need_maintenance("vault-a")
+                .expect("watermark is readable")
+        );
+        assert!(
+            store
+                .entity_projections_need_maintenance("vault-b")
+                .expect("changed vault signature invalidates watermark")
+        );
+        store
+            .transaction(|_| Ok(()))
+            .expect("no-op transaction succeeds");
+        assert!(
+            !store
+                .entity_projections_need_maintenance("vault-a")
+                .expect("no-op preserves watermark")
+        );
+
+        store
+            .transaction(|transaction| {
+                transaction.execute(
+                    "INSERT INTO runtime_agents(id,record) VALUES (?1,?2)",
+                    [
+                        "generation-agent",
+                        r#"{"id":"generation-agent","rootId":"generation-agent","epoch":0,"status":"idle"}"#,
+                    ],
+                )?;
+                Ok(())
+            })
+            .expect("source record write succeeds");
+        assert!(
+            store
+                .entity_projections_need_maintenance("vault-a")
+                .expect("source write advances generation")
+        );
+        drop(store);
+
+        let restarted = RuntimeStore::open(Some(directory.path())).expect("store reopens");
+        assert!(
+            restarted
+                .entity_projections_need_maintenance("vault-a")
+                .expect("restart begins without a process-local watermark")
+        );
     }
 }
