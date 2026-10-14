@@ -267,10 +267,22 @@ def update_tick(filename, config, state, run=subprocess.run):
     return {0: "update installed", 75: "update waiting"}.get(result.returncode, "update failed")
 
 
+def own_code():
+    """The bytes of this agent's files in the installed app, or None when they are unreadable."""
+    try:
+        here = Path(__file__).resolve()
+        return tuple(path.read_bytes() for path in (here, here.with_name("install_update.py")) if path.exists())
+    except OSError:
+        return None
+
+
 def run(filename, interval=5):
     os.umask(0o077)
     state = filename.parent.resolve()
     stopping = False
+    # A manual install replaces the app under this running agent. Its code stays old in memory
+    # until launchd starts it again, so it exits when its files changed.
+    started_code = own_code()
 
     def stop(*_):
         nonlocal stopping
@@ -355,6 +367,11 @@ def run(filename, interval=5):
             if status != previous:
                 print(json.dumps({"event": "backend-recovery", "status": status}), flush=True)
                 previous = status
+            current_code = own_code()
+            if started_code is not None and current_code is not None and current_code != started_code:
+                # launchd starts this agent again from the installed app; the backend keeps running.
+                print(json.dumps({"event": "backend-recovery", "status": "agent code changed"}), flush=True)
+                return
             deadline = time.monotonic() + interval
             while not stopping and time.monotonic() < deadline:
                 time.sleep(min(.2, max(0, deadline - time.monotonic())))
