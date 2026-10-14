@@ -22,6 +22,9 @@ pub use audio::{VoiceAudioError, save_audio};
 #[path = "voice/provider.rs"]
 pub mod provider;
 
+#[path = "voice_runtime.rs"]
+pub mod runtime;
+
 const MAX_RECORD_TEXT: usize = 100_000;
 const MAX_IDENTITY: usize = 240;
 const MAX_PAYLOAD: usize = 100_000;
@@ -458,9 +461,8 @@ pub fn approval_speech(
         .ok_or(VoiceError::InvalidRequest(
             "The approval request is no longer pending",
         ))?;
-    let fingerprint =
-        studio_runtime_store::sha256_hex(event_write::python_json(request).as_bytes());
-    let params = serde_json::to_string(request.get("params").unwrap_or(&Value::Null))?;
+    let fingerprint = approval_fingerprint(request);
+    let params = studio_runtime_store::python_json(request.get("params").unwrap_or(&Value::Null));
     let text = format!("Запрос разрешения. {params}. Для подтверждения скажите «разрешаю».");
     if text.chars().count() > 4096 {
         return Err(VoiceError::InvalidRequest(
@@ -481,6 +483,10 @@ pub fn approval_speech(
             internal: true,
         },
     )
+}
+
+pub(super) fn approval_fingerprint(request: &Value) -> String {
+    studio_runtime_store::sha256_hex(event_write::python_json(request).as_bytes())
 }
 
 fn checked_agent(

@@ -1,9 +1,18 @@
 //! Voice-session RPC port and durable request adapter.
+//!
+//! Registered differences from Python:
+//! - `UnknownVoiceWriteHeld`: an unknown provider write is never resent after
+//!   a retry or restart.
+//! - `VoiceApprovalContextRechecked`: approval request identity, epoch,
+//!   playback, and transcript are revalidated immediately before dispatch.
+//! - New Rust speech receipts bind the transcript digest to the Python-compatible
+//!   `<session>:<record>` identity and refuse changed text under that identity.
 
 use std::collections::HashMap;
-use std::future::Future;
-use std::pin::Pin;
-use std::sync::{Mutex, OnceLock, Weak};
+use std::{
+    sync::{Mutex, OnceLock, Weak},
+    time::{Duration, Instant},
+};
 
 use rusqlite::OptionalExtension;
 use serde_json::{Value, json};
@@ -15,9 +24,13 @@ use thiserror::Error;
 use super::policy::{
     self, SessionSignal, StartDecision, StartRequest, VoiceSession, VoiceSessionRow,
 };
+use super::runtime::{
+    VoiceConnectionScope as VoiceProviderContext, VoiceReply,
+    VoiceRequestPort as VoiceProviderPort, VoiceRequestReceipt, VoiceRpcId, VoiceWriteCertainty,
+};
 
-pub type ProviderFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 const MAX_TRACKED_VOICE_SESSIONS: usize = 1024;
+const VOICE_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 type SessionDispatchLocks = HashMap<(String, String), Weak<tokio::sync::Mutex<()>>>;
 static DISPATCH_LOCKS: OnceLock<Mutex<SessionDispatchLocks>> = OnceLock::new();
@@ -42,52 +55,37 @@ async fn session_dispatch_guard(
     lock.lock_owned().await
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct VoiceProviderContext {
-    pub agent_id: String,
-    pub epoch: i64,
-    pub account_key: String,
-    pub thread_id: String,
-    pub connection_id: String,
-}
-
 #[derive(Clone, Debug, PartialEq)]
 pub struct VoiceRpcCall {
     pub operation_id: String,
     pub context: VoiceProviderContext,
     pub method: Method,
     pub params: Value,
+    pub deadline: Instant,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum VoiceWriteCertainty {
-    NotSent,
-    Unknown,
-    Rejected(String),
+async fn request(provider: &dyn VoiceProviderPort, call: VoiceRpcCall) -> VoiceRequestReceipt {
+    provider
+        .request(
+            call.context,
+            call.operation_id,
+            call.method,
+            call.params,
+            call.deadline,
+        )
+        .await
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct VoiceProviderFailure {
-    pub certainty: VoiceWriteCertainty,
-    pub message: String,
+fn request_deadline() -> Instant {
+    Instant::now() + VOICE_REQUEST_TIMEOUT
 }
 
-/// Implemented by the account-session adapter. `prepare` must verify ChatGPT
-/// auth and prepare an idle thread; `request` submits through the generic
-/// provider session and reports admission certainty, never SDP connectivity.
-pub trait VoiceProviderPort: Send + Sync {
-    fn prepare<'a>(
-        &'a self,
-        agent_id: &'a str,
-        account_key: &'a str,
-        thread_id: &'a str,
-        epoch: i64,
-    ) -> ProviderFuture<'a, Result<VoiceProviderContext, VoiceProviderFailure>>;
-
-    fn request<'a>(
-        &'a self,
-        call: VoiceRpcCall,
-    ) -> ProviderFuture<'a, Result<(), VoiceProviderFailure>>;
+fn certainty_error(certainty: VoiceWriteCertainty) -> VoiceProviderError {
+    match certainty {
+        VoiceWriteCertainty::NotSent => VoiceProviderError::NotSent,
+        VoiceWriteCertainty::Unknown => VoiceProviderError::Unknown,
+        VoiceWriteCertainty::Written => VoiceProviderError::Operation,
+    }
 }
 
 #[derive(Default)]
@@ -319,9 +317,11 @@ pub enum VoiceProviderError {
     #[error("voice provider request outcome is unknown")]
     Unknown,
     #[error("voice provider rejected the request")]
-    Rejected(String),
+    Rejected,
     #[error("voice provider adapter is unavailable")]
     AdapterUnavailable,
+    #[error("Not implemented: requires {0}")]
+    RequiresDependency(&'static str),
     #[error("voice operation failed")]
     Operation,
 }
@@ -358,17 +358,19 @@ pub async fn end(
         context: context.clone(),
         method: Method::ThreadRealtimeStop,
         params: json!({"threadId": context.thread_id}),
+        deadline: request_deadline(),
     };
-    if let Err(error) = provider.request(call).await {
+    let receipt = request(provider.as_ref(), call).await;
+    if receipt.certainty != VoiceWriteCertainty::Written {
         let store_for_update = store.clone();
         let id = session_id.clone();
-        let failure = error.clone();
+        let certainty = receipt.certainty;
         tokio::task::spawn_blocking(move || {
-            update_stop_failure(&store_for_update, &id, &failure, now)
+            update_stop_failure(&store_for_update, &id, certainty, now)
         })
         .await
         .map_err(|_| VoiceProviderError::Operation)??;
-        return Err(provider_error(error));
+        return Err(certainty_error(receipt.certainty));
     }
     load_session(&store, &agent_id, &session_id)
 }
@@ -424,19 +426,22 @@ pub fn read_speech_receipt(
     )
 }
 
-fn speech_receipt_id(session_id: &str, record_id: &str) -> String {
-    let mut identity = Vec::with_capacity(session_id.len() + record_id.len() + 16);
-    identity.extend_from_slice(&(session_id.len() as u64).to_be_bytes());
-    identity.extend_from_slice(session_id.as_bytes());
-    identity.extend_from_slice(&(record_id.len() as u64).to_be_bytes());
-    identity.extend_from_slice(record_id.as_bytes());
-    format!(
-        "voice-speech:{}",
-        studio_runtime_store::sha256_hex(&identity)
-    )
+fn public_speech_receipt(mut receipt: Value) -> Value {
+    if let Some(error) = receipt["error"].as_str()
+        && error.starts_with("voice-content-sha256:")
+    {
+        receipt["error"] = error.split_once('|').map_or(Value::Null, |(_, detail)| {
+            if detail.is_empty() {
+                Value::Null
+            } else {
+                Value::String(detail.to_owned())
+            }
+        });
+    }
+    receipt
 }
 
-fn legacy_speech_receipt_id(session_id: &str, record_id: &str) -> String {
+fn speech_receipt_id(session_id: &str, record_id: &str) -> String {
     format!("{session_id}:{record_id}")
 }
 
@@ -446,16 +451,21 @@ fn lookup_speech_receipt(
     record_id: &str,
     request_id: &str,
 ) -> Result<Option<Value>, VoiceProviderError> {
-    for id in [
-        request_id.to_owned(),
-        legacy_speech_receipt_id(session_id, record_id),
-    ] {
-        if let Some(receipt) = VoiceRepository::speech_receipt(connection, &id)? {
-            if receipt["session"] == session_id && receipt["record_id"] == record_id {
-                return Ok(Some(receipt));
-            }
-            return Err(policy::VoiceError::SessionIdentityConflict.into());
+    lookup_speech_receipt_raw(connection, session_id, record_id, request_id)
+        .map(|receipt| receipt.map(public_speech_receipt))
+}
+
+fn lookup_speech_receipt_raw(
+    connection: &Connection,
+    session_id: &str,
+    record_id: &str,
+    request_id: &str,
+) -> Result<Option<Value>, VoiceProviderError> {
+    if let Some(receipt) = VoiceRepository::speech_receipt(connection, request_id)? {
+        if receipt["session"] == session_id && receipt["record_id"] == record_id {
+            return Ok(Some(receipt));
         }
+        return Err(policy::VoiceError::SessionIdentityConflict.into());
     }
     Ok(None)
 }
@@ -482,7 +492,11 @@ fn prepare_end(
         };
         let session = VoiceSession::from_row(row)?;
         if session.ended().is_some()
-            || matches!(session.state(), Some(policy::VoiceSessionState::Ended | policy::VoiceSessionState::Stopping))
+            || matches!(session.state(), Some(
+                policy::VoiceSessionState::Ended
+                    | policy::VoiceSessionState::Stopping
+                    | policy::VoiceSessionState::Unknown
+            ))
         {
             return Ok((session_value(&session), None));
         }
@@ -573,35 +587,290 @@ pub async fn speech(
         context,
         method: Method::ThreadRealtimeAppendSpeech,
         params: json!({"threadId": thread_id, "text": text}),
+        deadline: request_deadline(),
     };
-    let outcome = provider.request(call).await;
-    let state = match &outcome {
-        Ok(()) => ("submitted", None),
-        Err(error)
-            if matches!(
-                error.certainty,
-                VoiceWriteCertainty::NotSent | VoiceWriteCertainty::Rejected(_)
-            ) =>
-        {
-            ("failed", Some(error.message.clone()))
-        }
-        Err(error) => ("unknown", Some(error.message.clone())),
+    let outcome = request(provider.as_ref(), call).await;
+    let state = match outcome.certainty {
+        VoiceWriteCertainty::Written => ("submitted", None),
+        VoiceWriteCertainty::NotSent => ("failed", Some("Request was not sent")),
+        VoiceWriteCertainty::Unknown => ("unknown", Some("Request outcome is unknown")),
     };
     let store_for_update = store.clone();
     let id = receipt_id.clone();
     let state_name = state.0.to_owned();
-    let state_error = state.1.clone();
+    let state_error = state.1;
     tokio::task::spawn_blocking(move || {
-        update_speech(&store_for_update, &id, &state_name, state_error.as_deref())
+        update_speech(&store_for_update, &id, &state_name, state_error)
     })
     .await
     .map_err(|_| VoiceProviderError::Operation)??;
-    if let Err(error) = outcome {
-        return Err(provider_error(error));
+    if outcome.certainty != VoiceWriteCertainty::Written {
+        return Err(certainty_error(outcome.certainty));
     }
     let connection = store.read()?;
     lookup_speech_receipt(&connection, &session_id, &record_id, &receipt_id)?
         .ok_or(VoiceProviderError::Operation)
+}
+
+enum ApprovalDispatch {
+    Replay(Value),
+    Send {
+        request_id: String,
+        context: VoiceProviderContext,
+        rpc_id: VoiceRpcId,
+    },
+}
+
+pub async fn approve(
+    store: std::sync::Arc<RuntimeStore>,
+    provider: std::sync::Arc<dyn VoiceProviderPort>,
+    agent_id: String,
+    session_id: String,
+    speech_id: String,
+    transcript_id: String,
+    _now: f64,
+) -> Result<Value, VoiceProviderError> {
+    let store_for_reserve = store.clone();
+    let reserve_agent = agent_id.clone();
+    let reserve_session = session_id.clone();
+    let reserve_speech = speech_id.clone();
+    let reserve_transcript = transcript_id.clone();
+    let reservation = tokio::task::spawn_blocking(move || {
+        reserve_approval(
+            &store_for_reserve,
+            &reserve_agent,
+            &reserve_session,
+            &reserve_speech,
+            &reserve_transcript,
+        )
+    })
+    .await
+    .map_err(|_| VoiceProviderError::Operation)??;
+    let (request_id, context, rpc_id) = match reservation {
+        ApprovalDispatch::Replay(value) => return Ok(value),
+        ApprovalDispatch::Send {
+            request_id,
+            context,
+            rpc_id,
+        } => (request_id, context, rpc_id),
+    };
+
+    let receipt = provider
+        .reply(
+            context,
+            format!("voice:approve:{request_id}"),
+            VoiceReply {
+                rpc_id,
+                result: json!({"decision": "accept"}),
+            },
+            request_deadline(),
+        )
+        .await;
+    let certainty = receipt.certainty;
+    let id = request_id.clone();
+    let state = match certainty {
+        VoiceWriteCertainty::Written => "accepted",
+        VoiceWriteCertainty::NotSent => "not_sent",
+        VoiceWriteCertainty::Unknown => "unknown",
+    };
+    let state_value = state.to_owned();
+    let result = json!({"status": "answered"});
+    let result_json = (certainty == VoiceWriteCertainty::Written)
+        .then(|| serde_json::to_string(&result))
+        .transpose()
+        .map_err(|_| VoiceProviderError::Operation)?;
+    tokio::task::spawn_blocking(move || {
+        store.transaction_with_error(|transaction| -> Result<_, VoiceProviderError> {
+            transaction.execute(
+                "UPDATE voice_approvals SET status=?1,result=?2 WHERE id=?3",
+                rusqlite::params![state_value, result_json, id],
+            )?;
+            Ok(())
+        })?;
+        Ok::<_, VoiceProviderError>(())
+    })
+    .await
+    .map_err(|_| VoiceProviderError::Operation)??;
+    if certainty != VoiceWriteCertainty::Written {
+        return Err(certainty_error(certainty));
+    }
+    Ok(result)
+}
+
+fn reserve_approval(
+    store: &RuntimeStore,
+    agent_id: &str,
+    session_id: &str,
+    speech_id: &str,
+    transcript_id: &str,
+) -> Result<ApprovalDispatch, VoiceProviderError> {
+    store.transaction_with_error(|transaction| -> Result<_, VoiceProviderError> {
+        let actor = super::checked_agent(transaction, agent_id)
+            .map_err(|_| VoiceProviderError::ContextUnavailable)?;
+        let transcript = VoiceRepository::record(transaction, transcript_id)?
+            .ok_or(policy::VoiceError::UnknownSession)?;
+        super::validate_record(&transcript)?;
+        if transcript.agent != agent_id
+            || transcript.session != session_id
+            || transcript.kind != "user"
+            || transcript
+                .text
+                .trim()
+                .to_lowercase()
+                .trim_matches(|character| matches!(character, '.' | '!' | '?' | ' '))
+                != "разрешаю"
+        {
+            return Err(VoiceProviderError::ContextChanged);
+        }
+        let played = transaction.query_row(
+            "SELECT seq,payload FROM voice_records WHERE agent=?1 AND session=?2 AND kind='playback' AND text='played' ORDER BY seq DESC LIMIT 1",
+            rusqlite::params![agent_id, session_id],
+            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)),
+        ).optional()?;
+        let Some((played_seq, played_payload)) = played else {
+            return Err(VoiceProviderError::ContextChanged);
+        };
+        let played_payload: Value = serde_json::from_str(&played_payload)
+            .map_err(|_| VoiceProviderError::Operation)?;
+        if played_payload.get("record_id").and_then(Value::as_str) != Some(speech_id)
+            || transcript.sequence <= played_seq
+        {
+            return Err(VoiceProviderError::ContextChanged);
+        }
+        let speech = VoiceRepository::record(transaction, speech_id)?
+            .ok_or(policy::VoiceError::UnknownSession)?;
+        super::validate_record(&speech)?;
+        if speech.agent != agent_id || speech.kind != "orchestrator" {
+            return Err(policy::VoiceError::UnknownSession.into());
+        }
+        let metadata: Value = serde_json::from_str(&speech.payload)
+            .map_err(|_| VoiceProviderError::Operation)?;
+        let request_id = metadata
+            .get("request_id")
+            .and_then(Value::as_str)
+            .filter(|id| !id.is_empty())
+            .ok_or(VoiceProviderError::Operation)?
+            .to_owned();
+        let previous = approval_receipt(transaction, &request_id)?;
+        if let Some((owner, old_speech, old_transcript, status, result)) = previous.as_ref() {
+            if owner != agent_id || old_speech != speech_id || old_transcript != transcript_id {
+                return Err(VoiceProviderError::ContextChanged);
+            }
+            if status == "accepted" {
+                let value = result.as_ref().ok_or(VoiceProviderError::Operation)?;
+                return Ok(ApprovalDispatch::Replay(serde_json::from_str(value).map_err(|_| VoiceProviderError::Operation)?));
+            }
+            if status != "not_sent" {
+                return Err(VoiceProviderError::Unknown);
+            }
+        }
+        let current = transaction.query_row(
+            "SELECT record FROM runtime_requests WHERE id=?1",
+            [&request_id],
+            |row| row.get::<_, String>(0),
+        ).optional()?.ok_or(VoiceProviderError::ContextUnavailable)?;
+        let current: Value = serde_json::from_str(&current)
+            .map_err(|_| VoiceProviderError::Operation)?;
+        let method = current.get("method").and_then(Value::as_str);
+        if method == Some("monitor/approve") {
+            return Err(VoiceProviderError::RequiresDependency("monitor-approval/voice"));
+        }
+        let rpc_id = current.get("rpcId").and_then(parse_rpc_id)
+            .ok_or(VoiceProviderError::ContextUnavailable)?;
+        let fingerprint = super::approval_fingerprint(&current);
+        if current.get("agent").and_then(Value::as_str) != Some(agent_id)
+            || current.get("status").and_then(Value::as_str) != Some("pending")
+            || !method.is_some_and(|method| super::APPROVAL_METHODS.contains(&method) && method != "monitor/approve")
+            || metadata.get("fingerprint").and_then(Value::as_str) != Some(fingerprint.as_str())
+            || current.get("epoch").and_then(Value::as_i64) != Some(actor.epoch)
+            || actor.extra.get("autoWake").and_then(Value::as_bool) != Some(true)
+        {
+            return Err(VoiceProviderError::ContextChanged);
+        }
+        let session = load_row(transaction, session_id, agent_id)?
+            .ok_or(policy::VoiceError::UnknownSession)?;
+        let session = VoiceSession::from_row(session)?;
+        if session.native_thread().is_some() {
+            return Err(VoiceProviderError::ContextChanged);
+        }
+        let thread_id = actor
+            .extra
+            .get("threadId")
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+            .ok_or(VoiceProviderError::ContextUnavailable)?;
+        let account_key = actor
+            .extra
+            .get("accountKey")
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+            .unwrap_or("default");
+        if session.account_key() != Some(account_key) {
+            return Err(VoiceProviderError::ContextChanged);
+        }
+        let context = VoiceProviderContext {
+            agent_id: agent_id.to_owned(),
+            epoch: actor.epoch,
+            account_key: account_key.to_owned(),
+            thread_id: thread_id.to_owned(),
+            connection_id: session.connection_id().ok_or(VoiceProviderError::ContextUnavailable)?.to_owned(),
+        };
+        let request_account = current.get("accountKey").and_then(Value::as_str);
+        let request_connection = current.get("connectionId").and_then(Value::as_str);
+        let request_thread = current.get("params").and_then(|params| params.get("threadId")).and_then(Value::as_str);
+        // Python's connectionId is a generation-scoped identity. Bind the stored
+        // RPC to the exact retained connection, thread and account before reply.
+        if request_account != Some(context.account_key.as_str())
+            || request_connection != Some(context.connection_id.as_str())
+            || request_thread != Some(context.thread_id.as_str())
+        {
+            return Err(VoiceProviderError::ContextChanged);
+        }
+        if previous.is_some() {
+            transaction.execute("UPDATE voice_approvals SET status='uncertain' WHERE id=?1", [&request_id])?;
+        } else {
+            transaction.execute(
+                "INSERT INTO voice_approvals(id,agent,speech,transcript,status,result) VALUES(?1,?2,?3,?4,'uncertain',NULL)",
+                rusqlite::params![request_id, agent_id, speech_id, transcript_id],
+            )?;
+        }
+        Ok(ApprovalDispatch::Send {
+            request_id,
+            context,
+            rpc_id,
+        })
+    })
+}
+
+type ApprovalReceiptRow = (String, String, String, String, Option<String>);
+
+fn approval_receipt(
+    connection: &Connection,
+    request_id: &str,
+) -> Result<Option<ApprovalReceiptRow>, VoiceProviderError> {
+    Ok(connection
+        .query_row(
+            "SELECT agent,speech,transcript,status,result FROM voice_approvals WHERE id=?1",
+            [request_id],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            },
+        )
+        .optional()?)
+}
+
+fn parse_rpc_id(value: &Value) -> Option<VoiceRpcId> {
+    match value {
+        Value::String(value) if !value.is_empty() => Some(VoiceRpcId::String(value.clone())),
+        Value::Number(value) => value.as_i64().map(VoiceRpcId::Number),
+        _ => None,
+    }
 }
 
 fn reserve_speech(
@@ -617,9 +886,21 @@ fn reserve_speech(
         let session = load_row(transaction, session_id, agent_id)?
             .ok_or(policy::VoiceError::UnknownSession)?;
         let session = VoiceSession::from_row(session)?;
-        if let Some(old) = lookup_speech_receipt(transaction, session_id, record_id, request_id)? {
+        let record = VoiceRepository::record(transaction, record_id)?
+            .ok_or(policy::VoiceError::UnknownSession)?;
+        super::validate_record(&record)?;
+        if record.agent != agent_id || record.kind != "orchestrator" {
+            return Err(policy::VoiceError::UnknownSession.into());
+        }
+        if let Some(old) = lookup_speech_receipt_raw(transaction, session_id, record_id, request_id)? {
             if old["session"] != session_id || old["record_id"] != record_id {
                 return Err(VoiceProviderError::Policy(policy::VoiceError::SessionIdentityConflict));
+            }
+            if let Some(marker) = old["error"].as_str().and_then(|error| error.strip_prefix("voice-content-sha256:")) {
+                let stored = marker.split('|').next().unwrap_or_default();
+                if stored != studio_runtime_store::sha256_hex(record.text.as_bytes()) {
+                    return Err(policy::VoiceError::SessionIdentityConflict.into());
+                }
             }
             return Ok(None);
         }
@@ -639,15 +920,10 @@ fn reserve_speech(
             thread_id: thread_id.to_owned(),
             connection_id: session.connection_id().ok_or(VoiceProviderError::ContextUnavailable)?.to_owned(),
         };
-        let record = VoiceRepository::record(transaction, record_id)?
-            .ok_or(policy::VoiceError::UnknownSession)?;
-        super::validate_record(&record)?;
-        if record.agent != agent_id || record.kind != "orchestrator" {
-            return Err(policy::VoiceError::UnknownSession.into());
-        }
+        let marker = format!("voice-content-sha256:{}|", studio_runtime_store::sha256_hex(record.text.as_bytes()));
         transaction.execute(
-            "INSERT INTO voice_speech_requests(id,session,record_id,state,error) VALUES(?1,?2,?3,'pending',NULL)",
-            rusqlite::params![request_id,session_id,record_id],
+            "INSERT INTO voice_speech_requests(id,session,record_id,state,error) VALUES(?1,?2,?3,'pending',?4)",
+            rusqlite::params![request_id,session_id,record_id,marker],
         )?;
         Ok(Some((context, record.text)))
     })
@@ -673,17 +949,18 @@ fn update_session(
 fn update_stop_failure(
     store: &RuntimeStore,
     session_id: &str,
-    failure: &VoiceProviderFailure,
+    certainty: VoiceWriteCertainty,
     now: f64,
 ) -> Result<(), VoiceProviderError> {
-    let (state, ended) = match failure.certainty {
+    let (state, ended) = match certainty {
         VoiceWriteCertainty::NotSent => ("ended", Some(now)),
-        VoiceWriteCertainty::Unknown | VoiceWriteCertainty::Rejected(_) => ("unknown", None),
+        VoiceWriteCertainty::Unknown => ("unknown", None),
+        VoiceWriteCertainty::Written => ("ended", Some(now)),
     };
     store.transaction_with_error(|transaction| -> Result<_, VoiceProviderError> {
         transaction.execute(
             "UPDATE voice_sessions SET state=?1,error=?2,ended=COALESCE(ended,?3) WHERE id=?4",
-            rusqlite::params![state, failure.message, ended, session_id],
+            rusqlite::params![state, "Voice stop outcome is unresolved", ended, session_id],
         )?;
         Ok(())
     })?;
@@ -697,9 +974,28 @@ fn update_speech(
     error: Option<&str>,
 ) -> Result<(), VoiceProviderError> {
     store.transaction_with_error(|transaction| -> Result<_, VoiceProviderError> {
+        let current: Option<String> = transaction
+            .query_row(
+                "SELECT error FROM voice_speech_requests WHERE id=?1",
+                [request_id],
+                |row| row.get(0),
+            )
+            .optional()?
+            .flatten();
+        let marker = current
+            .and_then(|value| value.split('|').next().map(str::to_owned))
+            .unwrap_or_default();
+        let detail = error.unwrap_or_default();
+        let stored_error = if marker.is_empty() {
+            error.map(str::to_owned)
+        } else if detail.is_empty() {
+            Some(format!("{marker}|"))
+        } else {
+            Some(format!("{marker}|{detail}"))
+        };
         transaction.execute(
             "UPDATE voice_speech_requests SET state=?1,error=?2 WHERE id=?3",
-            rusqlite::params![state, error, request_id],
+            rusqlite::params![state, stored_error, request_id],
         )?;
         Ok(())
     })?;
@@ -831,13 +1127,9 @@ pub fn handle_notification(
             })?;
         }
         "thread/realtime/error" => {
-            let reason = params
-                .get("message")
-                .and_then(Value::as_str)
-                .map(str::to_owned);
             let transition = policy::transition_session(
                 &session_value,
-                SessionSignal::ProviderFailed(reason),
+                SessionSignal::ProviderFailed(None),
                 now,
             )?;
             store.transaction_with_error(|transaction| {
@@ -972,6 +1264,7 @@ pub fn stop_call_for_notification(
         },
         method: Method::ThreadRealtimeStop,
         params: json!({"threadId": thread_id}),
+        deadline: request_deadline(),
     }))
 }
 
@@ -1017,7 +1310,7 @@ pub async fn start(
     now: f64,
 ) -> Result<Value, VoiceProviderError> {
     let _dispatch = session_dispatch_guard(&agent_id, &session_id).await;
-    let request = StartRequest::new(
+    let start_request = StartRequest::new(
         AgentId::from(agent_id.as_str()),
         session_id.clone(),
         offer.clone(),
@@ -1026,7 +1319,12 @@ pub async fn start(
     let agent_for_read = agent_id.clone();
     let session_for_read = session_id.clone();
     let existing = tokio::task::spawn_blocking(move || {
-        read_start_rows(&store_for_read, &agent_for_read, &session_for_read, request)
+        read_start_rows(
+            &store_for_read,
+            &agent_for_read,
+            &session_for_read,
+            start_request,
+        )
     })
     .await
     .map_err(|_| VoiceProviderError::Operation)??;
@@ -1038,7 +1336,7 @@ pub async fn start(
     let context = provider
         .prepare(&agent_id, &account_key, &thread_id, epoch)
         .await
-        .map_err(provider_error)?;
+        .map_err(certainty_error)?;
     if context.agent_id != agent_id
         || context.account_key != account_key
         || context.thread_id != thread_id
@@ -1070,16 +1368,17 @@ pub async fn start(
     }
 
     let call = start_call(context, &session_id, &offer);
-    if let Err(error) = provider.request(call).await {
-        let error_for_store = error.clone();
+    let receipt = request(provider.as_ref(), call).await;
+    if receipt.certainty != VoiceWriteCertainty::Written {
         let store_for_error = store.clone();
         let id = session_id.clone();
+        let certainty = receipt.certainty;
         tokio::task::spawn_blocking(move || {
-            set_start_failure(&store_for_error, &id, &error_for_store, now)
+            set_start_failure(&store_for_error, &id, certainty, now)
         })
         .await
         .map_err(|_| VoiceProviderError::Operation)??;
-        return Err(provider_error(error));
+        return Err(certainty_error(receipt.certainty));
     }
     load_session(&store, &agent_id, &session_id)
 }
@@ -1189,29 +1488,22 @@ fn create_session(
 fn set_start_failure(
     store: &RuntimeStore,
     session_id: &str,
-    failure: &VoiceProviderFailure,
+    certainty: VoiceWriteCertainty,
     now: f64,
 ) -> Result<(), VoiceProviderError> {
-    let state = match failure.certainty {
-        VoiceWriteCertainty::NotSent | VoiceWriteCertainty::Rejected(_) => "failed",
+    let state = match certainty {
+        VoiceWriteCertainty::NotSent => "failed",
         VoiceWriteCertainty::Unknown => "unknown",
+        VoiceWriteCertainty::Written => "connecting",
     };
     store.transaction_with_error(|transaction| -> Result<_, VoiceProviderError> {
         transaction.execute(
             "UPDATE voice_sessions SET state=?1,error=?2,ended=COALESCE(ended,?3) WHERE id=?4",
-            rusqlite::params![state, failure.message, now, session_id],
+            rusqlite::params![state, "Voice start outcome is unresolved", now, session_id],
         )?;
         Ok(())
     })?;
     Ok(())
-}
-
-fn provider_error(error: VoiceProviderFailure) -> VoiceProviderError {
-    match error.certainty {
-        VoiceWriteCertainty::NotSent => VoiceProviderError::NotSent,
-        VoiceWriteCertainty::Unknown => VoiceProviderError::Unknown,
-        VoiceWriteCertainty::Rejected(_) => VoiceProviderError::Rejected(error.message),
-    }
 }
 
 fn load_session(
@@ -1290,12 +1582,14 @@ fn start_call(context: VoiceProviderContext, session_id: &str, offer: &str) -> V
             "flushTranscriptTailOnSessionEnd": false,
             "transport": {"type": "webrtc", "sdp": offer},
         }),
+        deadline: request_deadline(),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::voice::runtime::VoiceFuture;
     use std::sync::{Arc, Mutex};
 
     struct ScriptedProvider {
@@ -1309,7 +1603,7 @@ mod tests {
             account_key: &'a str,
             thread_id: &'a str,
             epoch: i64,
-        ) -> ProviderFuture<'a, Result<VoiceProviderContext, VoiceProviderFailure>> {
+        ) -> VoiceFuture<'a, Result<VoiceProviderContext, VoiceWriteCertainty>> {
             Box::pin(async move {
                 Ok(VoiceProviderContext {
                     agent_id: agent_id.to_owned(),
@@ -1323,11 +1617,56 @@ mod tests {
 
         fn request<'a>(
             &'a self,
-            call: VoiceRpcCall,
-        ) -> ProviderFuture<'a, Result<(), VoiceProviderFailure>> {
+            scope: VoiceProviderContext,
+            operation_id: String,
+            method: Method,
+            params: Value,
+            deadline: Instant,
+        ) -> VoiceFuture<'a, VoiceRequestReceipt> {
             Box::pin(async move {
-                self.calls.lock().expect("scripted calls lock").push(call);
-                Ok(())
+                self.calls
+                    .lock()
+                    .expect("scripted calls lock")
+                    .push(VoiceRpcCall {
+                        context: scope,
+                        operation_id,
+                        method,
+                        params,
+                        deadline,
+                    });
+                VoiceRequestReceipt {
+                    certainty: VoiceWriteCertainty::Written,
+                }
+            })
+        }
+
+        fn reply<'a>(
+            &'a self,
+            _scope: VoiceProviderContext,
+            operation_id: String,
+            _reply: VoiceReply,
+            _deadline: Instant,
+        ) -> VoiceFuture<'a, VoiceRequestReceipt> {
+            Box::pin(async move {
+                self.calls
+                    .lock()
+                    .expect("scripted calls lock")
+                    .push(VoiceRpcCall {
+                        context: VoiceProviderContext {
+                            agent_id: String::new(),
+                            epoch: 0,
+                            account_key: String::new(),
+                            thread_id: String::new(),
+                            connection_id: String::new(),
+                        },
+                        operation_id,
+                        method: Method::ItemCommandExecutionRequestApproval,
+                        params: Value::Null,
+                        deadline: Instant::now(),
+                    });
+                VoiceRequestReceipt {
+                    certainty: VoiceWriteCertainty::Written,
+                }
             })
         }
     }
@@ -1345,10 +1684,8 @@ mod tests {
             connection_id: "connection".into(),
         };
         let call = start_call(context, "session", "v=0\r\n...");
-        provider
-            .request(call.clone())
-            .await
-            .expect("scripted provider accepts");
+        let receipt = request(provider.as_ref(), call.clone()).await;
+        assert_eq!(receipt.certainty, VoiceWriteCertainty::Written);
         let calls = provider.calls.lock().expect("scripted calls lock");
         assert_eq!(calls.as_slice(), &[call]);
         assert_eq!(calls[0].method, Method::ThreadRealtimeStart);
@@ -1383,9 +1720,9 @@ mod tests {
 
     #[test]
     fn speech_receipt_identity_is_tuple_unambiguous_and_replay_checks_record() {
-        assert_ne!(
-            speech_receipt_id("sessionone", "record"),
-            speech_receipt_id("session", "onerecord")
+        assert_eq!(
+            speech_receipt_id("session:one", "record"),
+            "session:one:record"
         );
         let connection = Connection::open_in_memory().expect("receipt database");
         connection
