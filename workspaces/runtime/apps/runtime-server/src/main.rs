@@ -199,7 +199,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         account_driver,
         native_path,
         monitor_runtime.dispatch_wake_handle(),
-        account_session_broker,
+        account_session_broker.clone(),
     )
     .await
     {
@@ -214,10 +214,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     let lifecycle_ports: Arc<dyn studio_runtime_services::agent_lifecycle_runtime::LifecyclePorts> =
         Arc::new(
-            studio_runtime_services::monitor_lifecycle::MonitorLifecyclePorts::new(
+            studio_runtime_services::lifecycle_effects::ProductionLifecyclePorts::new(
+                Arc::clone(&store),
                 monitor_runtime.dispatch_wake_handle(),
+                Arc::clone(&monitor_wake),
+                Arc::new(account_session_broker),
             ),
         );
+    if let Err(error) = studio_runtime_services::agent_lifecycle_runtime::LifecyclePorts::committed(
+        lifecycle_ports.as_ref(),
+    ) {
+        eprintln!("lifecycle startup reconciliation remains pending: {error}");
+    }
     let sync_changes = state.sync_changes_handle();
     let app = match router(state.clone()) {
         Ok(app) => app
