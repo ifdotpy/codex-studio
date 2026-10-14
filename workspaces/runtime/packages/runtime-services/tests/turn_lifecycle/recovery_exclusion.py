@@ -1,0 +1,147 @@
+"""Differential fixtures for the completed-start restart recovery exclusion."""
+import copy
+import importlib.util
+import json
+import pathlib
+import shutil
+import sqlite3
+import sys
+
+
+CASES = [
+    {"id": "completed_start", "flow": "completed", "mutations": {}},
+    {"id": "in_flight", "flow": "written", "mutations": {}},
+    {"id": "unknown_outcome", "flow": "unknown", "mutations": {}},
+    {"id": "action", "mutations": {"startAttempt.action": "turn/start"},
+     "handShapedReason": "The public flow cannot persist an action field on a completed start receipt."},
+    {"id": "active_reservation", "mutations": {"startAttempt.activeAtReservation": True},
+     "handShapedReason": "This is a scheduler reservation predicate; the provider flow does not expose a completed receipt with the reservation bit retained."},
+    {"id": "outcome_hold", "mutations": {"startOutcomeHold": {"stage": "account_settlement"}},
+     "handShapedReason": "The hold is an account-settlement recovery marker, unavailable from the scripted provider's normal completion path."},
+    {"id": "response_error", "mutations": {"startAttempt.responseError": "lost response"},
+     "handShapedReason": "The stored responseError is an internal recovery field; the scripted provider flow covers unknown response separately."},
+    {"id": "different_turn", "mutations": {"startAttempt.turnId": "other-turn"},
+     "handShapedReason": "A contradictory turn binding is an intentionally malformed historical receipt, not a possible successful provider flow."},
+    {"id": "non_completed_last_status", "mutations": {"lastCompletedTurnStatus": "failed"},
+     "handShapedReason": "This isolates the terminal-status predicate while retaining a completed start receipt, which the normal provider flow cannot produce."},
+    {"id": "outside_idle_status", "mutations": {"status": "queued"},
+     "handShapedReason": "This isolates the completed-start status predicate while avoiding the independent running-turn interruption path; the real in-flight case is covered separately."},
+]
+
+
+def _set_path(value, path, replacement):
+    parts = path.split(".")
+    target = value
+    for part in parts[:-1]:
+        target = target.setdefault(part, {})
+    target[parts[-1]] = replacement
+
+
+def _state(root):
+    with sqlite3.connect(pathlib.Path(root) / "canvas.sqlite3") as db:
+        agents = [{"id": row[0], "record": json.loads(row[1])} for row in db.execute("SELECT id,record FROM runtime_agents ORDER BY id")]
+        names = [row[1] for row in db.execute("PRAGMA table_info(runtime_events)")]
+        events = [dict(zip(names, row)) for row in db.execute("SELECT * FROM runtime_events ORDER BY id")]
+    return {"agents": agents, "events": events}
+
+
+def _changed_paths(before, after, path=""):
+    if isinstance(before, dict) and isinstance(after, dict):
+        return sorted(set().union(*(
+            _changed_paths(before.get(key), after.get(key), path + "/" + key)
+            for key in before.keys() | after.keys()
+        )))
+    if isinstance(before, list) and isinstance(after, list) and len(before) == len(after):
+        return sorted(set().union(*(
+            _changed_paths(left, right, path + "/" + str(index))
+            for index, (left, right) in enumerate(zip(before, after))
+        )))
+    return [] if before == after else [path]
+
+
+def run_case(command, template, QuietRuntime):
+    case = command["case"]
+    root = pathlib.Path(command["root"])
+    rust = pathlib.Path(command["rust"])
+    if case.get("flow"):
+        fixture_path = pathlib.Path(__file__).parents[1] / "turn-start-contract.py"
+        spec = importlib.util.spec_from_file_location("turn_start_fixture", fixture_path)
+        fixture = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = fixture
+        spec.loader.exec_module(fixture)
+        flow = fixture.TurnStartContract("test_completed_turn_survives_timeout_and_late_reply")
+        flow.setUp()
+        runtime = flow.runtime
+        root = pathlib.Path(flow.temp.name)
+        try:
+            mode = {"completed": "completed", "written": "started", "unknown": "silent"}[case["flow"]]
+            agent_id = flow.start(mode)
+            if case["flow"] in {"completed", "written"}:
+                flow.accept()
+                entry = runtime.server.deferred[0]
+                if case["flow"] == "completed":
+                    fixture.eventually(lambda: runtime.agent(agent_id)["status"] == "completed")
+                else:
+                    fixture.eventually(lambda: runtime.agent(agent_id)["startAttempt"].get("submitted") is True)
+                assert entry["handled"].wait(60)
+            else:
+                fixture.eventually(lambda: runtime.agent(agent_id)["startAttempt"].get("executionOutcome") == "unknown")
+            agent = runtime.agent(agent_id)
+            if case.get("mutations"):
+                for path, value in case["mutations"].items():
+                    _set_path(agent, path, value)
+                with runtime.db() as db:
+                    runtime.put(db, "agents", agent)
+            before = _state(root)
+            rust.mkdir(parents=True)
+            shutil.copytree(root / "multi-server", rust / "multi-server", dirs_exist_ok=True)
+            if (root / "analytics.sqlite3").exists():
+                shutil.copyfile(root / "analytics.sqlite3", rust / "analytics.sqlite3")
+            with sqlite3.connect(root / "canvas.sqlite3") as source, sqlite3.connect(rust / "canvas.sqlite3") as target:
+                source.backup(target)
+            runtime.close()
+            runtime = QuietRuntime(root, lambda *_a, **_kw: None)
+            after = _state(root)
+            return {"case": case["id"], "before": before, "after": after,
+                    "pythonChangedPaths": _changed_paths(before, after),
+                    "handShapedReason": case.get("handShapedReason")}
+        finally:
+            runtime.close()
+            flow.temp.cleanup()
+
+    shutil.copytree(template, root)
+    runtime = QuietRuntime(root, lambda *_a, **_kw: None)
+    try:
+        # These predicate variants intentionally isolate internal receipt fields.
+        # Completed, written and unknown attempts above are produced by the scripted provider.
+        agent = runtime.create({"name": "recovery fixture", "cwd": str(root), "prompt": "seed"}, defer=True)
+        agent.update(status="completed", threadId="thread", turnId="turn",
+                     lastCompletedTurn="turn", lastCompletedTurnStatus="completed",
+                     inFlight=False, autoWake=False)
+        agent["startAttempt"] = {
+            "id": "attempt", "epoch": agent["epoch"], "accountKey": "default",
+            "events": ["event"], "submitted": True, "activeAtReservation": False,
+            "executionOutcome": "completed", "turnId": "turn",
+        }
+        for path, value in case["mutations"].items():
+            _set_path(agent, path, value)
+        with runtime.db() as db:
+            runtime.put(db, "agents", agent)
+            runtime.enqueue(db, agent, "user", "recovery fixture", key="event")
+        before = _state(root)
+        rust.mkdir(parents=True)
+        shutil.copytree(root / "multi-server", rust / "multi-server", dirs_exist_ok=True)
+        shutil.copyfile(root / "analytics.sqlite3", rust / "analytics.sqlite3")
+        with sqlite3.connect(root / "canvas.sqlite3") as source, sqlite3.connect(rust / "canvas.sqlite3") as target:
+            source.backup(target)
+
+        # Runtime construction is the production restart path and applies the
+        # scheduler/recovery predicates to Python-written durable state.
+        runtime.close()
+        runtime = QuietRuntime(root, lambda *_a, **_kw: None)
+        after = _state(root)
+        return {"case": case["id"], "before": before, "after": after,
+                "pythonChangedPaths": _changed_paths(before, after),
+                "handShapedReason": case.get("handShapedReason")}
+    finally:
+        runtime.close()
