@@ -9,7 +9,7 @@ use serde_json::Value;
 use studio_runtime_services::voice::{self, VoiceError};
 
 use super::extractors::ApiJson;
-use super::manifest::{Dependency, OperationStatus, RouteGroup, dependency_unavailable, post};
+use super::manifest::{Dependency, OperationStatus, RouteGroup, post};
 use crate::error::ApiError;
 use crate::router::HttpState;
 
@@ -27,29 +27,13 @@ pub(crate) fn routes() -> RouteGroup {
             OperationStatus::Implemented,
             approvals,
         ),
-        post(
-            "/api/voice/approve",
-            OperationStatus::partial(&VOICE_PROVIDER),
-            approve,
-        ),
+        post("/api/voice/approve", OperationStatus::Implemented, approve),
         post("/api/voice/audio", OperationStatus::Implemented, audio),
-        post(
-            "/api/voice/end",
-            OperationStatus::partial(&VOICE_PROVIDER),
-            end,
-        ),
+        post("/api/voice/end", OperationStatus::Implemented, end),
         post("/api/voice/record", OperationStatus::Implemented, record),
         post("/api/voice/records", OperationStatus::Implemented, records),
-        post(
-            "/api/voice/speech",
-            OperationStatus::partial(&VOICE_PROVIDER),
-            speech,
-        ),
-        post(
-            "/api/voice/start",
-            OperationStatus::partial(&VOICE_PROVIDER),
-            start,
-        ),
+        post("/api/voice/speech", OperationStatus::Implemented, speech),
+        post("/api/voice/start", OperationStatus::Implemented, start),
         post("/api/voice/status", OperationStatus::Implemented, status),
         post("/api/voice/submit", OperationStatus::Implemented, submit),
     ])
@@ -225,10 +209,7 @@ async fn end(
                 crate::generated::VoiceSessionResponse,
             >(result)?));
         }
-        return Err(
-            dependency_unavailable("POST", "/api/voice/end", &VOICE_PROVIDER)
-                .unwrap_or_else(|_| ApiError::internal()),
-        );
+        return Err(voice_provider_unavailable());
     };
     let now = now_seconds()?;
     let result = voice::provider::end(store, provider, agent, session, now)
@@ -254,10 +235,7 @@ async fn speech(
                 crate::generated::VoiceSpeechReceiptResponse,
             >(result)?));
         }
-        return Err(
-            dependency_unavailable("POST", "/api/voice/speech", &VOICE_PROVIDER)
-                .unwrap_or_else(|_| ApiError::internal()),
-        );
+        return Err(voice_provider_unavailable());
     };
     let result = voice::provider::speech(store, provider, agent, session, record, None)
         .await
@@ -271,10 +249,10 @@ async fn approve(
     State(state): State<HttpState>,
     ApiJson(body): ApiJson<crate::generated::VoiceApproveRequest>,
 ) -> Result<Json<Value>, ApiError> {
-    let provider = state.voice_request_port.clone().ok_or_else(|| {
-        dependency_unavailable("POST", "/api/voice/approve", &VOICE_PROVIDER)
-            .unwrap_or_else(|_| ApiError::internal())
-    })?;
+    let provider = state
+        .voice_request_port
+        .clone()
+        .ok_or_else(voice_provider_unavailable)?;
     let store = state.store.ok_or_else(ApiError::internal)?;
     let result = voice::provider::approve(
         store,
@@ -318,10 +296,10 @@ async fn start(
     State(state): State<HttpState>,
     ApiJson(body): ApiJson<crate::generated::VoiceStartRequest>,
 ) -> Result<Json<Value>, ApiError> {
-    let provider = state.voice_request_port.clone().ok_or_else(|| {
-        dependency_unavailable("POST", "/api/voice/start", &VOICE_PROVIDER)
-            .unwrap_or_else(|_| ApiError::internal())
-    })?;
+    let provider = state
+        .voice_request_port
+        .clone()
+        .ok_or_else(voice_provider_unavailable)?;
     let store = state.store.ok_or_else(ApiError::internal)?;
     let result = voice::provider::start(
         store,
@@ -345,6 +323,13 @@ fn now_seconds() -> Result<f64, ApiError> {
         .as_secs_f64())
 }
 
+fn voice_provider_unavailable() -> ApiError {
+    ApiError::new(
+        StatusCode::NOT_IMPLEMENTED,
+        format!("Not implemented: requires {}", VOICE_PROVIDER[0].name()),
+    )
+}
+
 fn provider_error(error: voice::provider::VoiceProviderError) -> ApiError {
     use voice::provider::VoiceProviderError as E;
     match error {
@@ -357,6 +342,7 @@ fn provider_error(error: voice::provider::VoiceProviderError) -> ApiError {
             "voice provider context is unavailable",
         ),
         E::ContextChanged => ApiError::new(StatusCode::CONFLICT, "voice provider context changed"),
+        E::AdmissionDenied(message) => ApiError::new(StatusCode::CONFLICT, message),
         E::NotSent => ApiError::new(
             StatusCode::SERVICE_UNAVAILABLE,
             "voice request was not sent",

@@ -199,8 +199,7 @@ impl HostRuntime {
                 session_broker.callback_reply_port(tokio::runtime::Handle::current()),
             ),
         );
-        *state = state
-            .clone()
+        *state = install_host_voice_port(state.clone(), store.clone(), callback_runtime.clone())
             .with_tool_catalog(CatalogSnapshot {
                 source: CatalogSource::Current,
                 definitions: resources.tools.clone(),
@@ -298,6 +297,31 @@ impl HostRuntime {
     pub async fn shutdown(self) -> Result<(), WorkerError> {
         self.shutdown.cancel();
         self.task.await.map_err(|_| WorkerError::TaskFailed)?
+    }
+}
+
+/// The HTTP adapter shares the retained account session and committed callback
+/// reply lane used by the account worker registry.
+///
+/// Lifecycle deletion integration hook: in the same transaction that tombstones
+/// the agent and deletes its voice rows, call
+/// `voice::provider::stage_delete_sessions(tx, agent_id)` before row cleanup.
+/// After commit, pass the returned intent's `id` and `sessions` to
+/// `voice::provider::end_deleted_sessions` using this installed voice port.
+fn install_host_voice_port(
+    state: HttpState,
+    store: Arc<RuntimeStore>,
+    callbacks: Arc<studio_runtime_services::callback_runtime::CallbackRuntime>,
+) -> HttpState {
+    match state.account_session.clone() {
+        Some(account_session) => state.with_voice_request_port(Arc::new(
+            studio_runtime_services::voice::account_session::AccountSessionVoicePort::new(
+                store,
+                account_session,
+                callbacks,
+            ),
+        )),
+        None => state,
     }
 }
 
@@ -616,6 +640,501 @@ mod install_root_tests {
         let (python_server_source, python_bridge) = python_layout(&packaged_scripts);
         assert_eq!(packaged_layout.server_source(), python_server_source);
         assert_eq!(packaged_layout.claude_bridge_dir(), python_bridge);
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod voice_composition_tests {
+    use super::install_host_voice_port;
+    use axum::{
+        body::{Body, to_bytes},
+        extract::ConnectInfo,
+        http::{Request, StatusCode},
+    };
+    use serde_json::{Value, json};
+    use std::{
+        collections::BTreeMap,
+        fs,
+        path::Path,
+        sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        },
+    };
+    use studio_runtime_http::{HttpState, router};
+    use studio_runtime_process::{
+        EventCursor, Generation, OperationId, ProviderHandle, ProviderLaunchSpec,
+        provider_seam::{
+            AdapterCommand, AttachmentInfo, AttachmentStatus, CommandReceipt, InitializationStatus,
+            JournalEntry, JournalPayload, LANE_CAPACITY, OpenFuture, OpenOptions,
+            ProviderAttachment, ProviderTaskFactory, SessionClock, Shutdown, TaskExit,
+        },
+    };
+    use studio_runtime_providers::{Frame, RequestId, ResponseBody};
+    use studio_runtime_services::{
+        account_driver::AccountDriver,
+        account_session_runtime::{
+            AccountSessionError, AccountSessionRuntime, ConnectionScope, NotSentReason,
+            ProviderRequest, ProviderResponse, RequestCertainty, RetainedAccountSession,
+            SessionFuture, SessionReceipt as AccountSessionReceipt,
+        },
+        account_worker::{
+            AccountHandle, StoreBridge,
+            preparation::PreparationResources,
+            retained::{PortError, RequestResult, SessionRequest},
+            start_account_worker_with_preparation,
+        },
+        callback_runtime::{CallbackReplyPort, CallbackRuntime, ReplyReceipt},
+        model_catalog::ModelCatalogService,
+        provider_callbacks::{CallbackError, Reply},
+        provider_session_task::SessionTaskConfig,
+    };
+    use studio_runtime_store::RuntimeStore;
+    use tokio::sync::Notify;
+    use tower::ServiceExt;
+
+    struct WorkerSessionAdapter {
+        port: studio_runtime_services::account_worker::retained::RetainedSessionPort,
+    }
+
+    impl RetainedAccountSession for WorkerSessionAdapter {
+        fn current_scope(&self, account: &str) -> Option<ConnectionScope> {
+            let scope = self.port.scope().clone();
+            (scope.account == account).then_some(scope)
+        }
+
+        fn request(&self, request: ProviderRequest) -> SessionFuture {
+            let port = self.port.clone();
+            Box::pin(async move {
+                let scope = port.scope().clone();
+                if request.account != scope.account {
+                    return Err(AccountSessionError::Refused(
+                        "Provider session identity changed",
+                    ));
+                }
+                let operation = request.operation.clone();
+                let retained = port
+                    .request(SessionRequest {
+                        scope,
+                        expected_scope: request.expected_scope,
+                        operation,
+                        actor: request.actor,
+                        transfer: None,
+                        deleted_actor_session: request.deleted_actor_session,
+                        method: request.method,
+                        params: request.params,
+                        deadline: request.deadline,
+                    })
+                    .await
+                    .map_err(|error| match error {
+                        PortError::Unknown => AccountSessionError::Unknown,
+                        PortError::Capacity => AccountSessionError::Persistence,
+                        PortError::Identity
+                        | PortError::ScopeMismatch
+                        | PortError::Invalid
+                        | PortError::NotSent
+                        | PortError::Deadline => {
+                            AccountSessionError::Refused("Provider request was refused")
+                        }
+                    })?;
+                let (certainty, result) = match retained.result {
+                    RequestResult::Reply(value) => (
+                        RequestCertainty::Written,
+                        Some(ProviderResponse::Reply(value)),
+                    ),
+                    RequestResult::Rejected(value) => (
+                        RequestCertainty::Written,
+                        Some(ProviderResponse::Rejected(value)),
+                    ),
+                    RequestResult::NotSent => (RequestCertainty::NotSent, None),
+                    RequestResult::Unknown => (RequestCertainty::Unknown, None),
+                };
+                Ok(AccountSessionReceipt {
+                    scope: retained.scope,
+                    operation: retained.operation,
+                    ticket: Some(retained.ticket),
+                    certainty,
+                    result,
+                    not_sent_reason: (certainty == RequestCertainty::NotSent)
+                        .then_some(NotSentReason::WorkerNotSent),
+                })
+            })
+        }
+    }
+
+    struct UnusedCallbackReplyPort;
+
+    impl CallbackReplyPort for UnusedCallbackReplyPort {
+        fn deliver(
+            &self,
+            _reply: &Reply,
+            _deadline: std::time::Duration,
+        ) -> Result<ReplyReceipt, CallbackError> {
+            Err(CallbackError::Dependency(
+                "test callback reply lane is unused",
+            ))
+        }
+    }
+
+    struct VoiceFactory {
+        stop_writes: Arc<AtomicUsize>,
+        unknown_stop_at: Option<usize>,
+        unknown_stop_written: Arc<Notify>,
+    }
+
+    impl ProviderTaskFactory for VoiceFactory {
+        fn open(
+            &self,
+            handle: ProviderHandle,
+            _options: OpenOptions,
+            shutdown: Shutdown,
+        ) -> OpenFuture<'_> {
+            let generation = Generation(42);
+            let (commands, mut inbox) = tokio::sync::mpsc::channel(LANE_CAPACITY);
+            let (events, journal) = tokio::sync::mpsc::channel(LANE_CAPACITY);
+            let (status, receiver) = tokio::sync::watch::channel(AttachmentStatus {
+                handle: handle.clone(),
+                open_attempted: true,
+                info: Some(AttachmentInfo {
+                    handle: handle.clone(),
+                    generation,
+                    pid: 42,
+                    acknowledged: EventCursor(0),
+                    resumed: false,
+                }),
+                initialization: InitializationStatus::AwaitingReply,
+            });
+            let mut stop = shutdown.subscribe();
+            let stop_writes = Arc::clone(&self.stop_writes);
+            let unknown_stop_at = self.unknown_stop_at;
+            let unknown_stop_written = Arc::clone(&self.unknown_stop_written);
+            let task = tokio::spawn(async move {
+                let mut cursor = 0_u64;
+                loop {
+                    let command = tokio::select! {
+                        _ = stop.changed() => break,
+                        command = inbox.recv() => command,
+                    };
+                    let Some(command) = command else { break };
+                    match command {
+                        AdapterCommand::Write {
+                            write,
+                            reply,
+                            observed,
+                        } => {
+                            let message = write.message();
+                            let method = message
+                                .get("method")
+                                .and_then(Value::as_str)
+                                .unwrap_or_default();
+                            if method == "initialize" {
+                                let _ignored =
+                                    reply.send(CommandReceipt::CachedInitialize(json!({})));
+                                let _ = observed.await;
+                                continue;
+                            }
+                            let _ignored = reply.send(CommandReceipt::Written {
+                                remote_id: None,
+                                duplicate: false,
+                            });
+                            if observed.await.is_err() {
+                                break;
+                            }
+                            let Some(id) = message
+                                .get("id")
+                                .cloned()
+                                .and_then(|id| serde_json::from_value::<RequestId>(id).ok())
+                            else {
+                                continue;
+                            };
+                            if method == "thread/realtime/stop" {
+                                let stop_number = stop_writes.fetch_add(1, Ordering::SeqCst) + 1;
+                                if unknown_stop_at == Some(stop_number) {
+                                    unknown_stop_written.notify_one();
+                                    continue;
+                                }
+                            }
+                            let result = match method {
+                                "account/read" => json!({"account":{"type":"chatgpt"}}),
+                                _ => json!({}),
+                            };
+                            cursor += 1;
+                            if events
+                                .send(JournalEntry {
+                                    received_at_ms: cursor,
+                                    cursor: EventCursor(cursor),
+                                    generation,
+                                    payload: JournalPayload::Frame(Frame::Response {
+                                        id,
+                                        body: ResponseBody::Result(result),
+                                        fields: Default::default(),
+                                    }),
+                                })
+                                .await
+                                .is_err()
+                            {
+                                break;
+                            }
+                        }
+                        AdapterCommand::Ack { cursor, reply } => {
+                            let _ignored = reply.send(CommandReceipt::Acknowledged(cursor));
+                        }
+                    }
+                }
+                drop(status);
+                TaskExit {
+                    result: Ok(()),
+                    cleanup_error: None,
+                    recovery_needed: None,
+                }
+            });
+            Box::pin(async move {
+                Ok(ProviderAttachment::from_task(
+                    commands, journal, receiver, shutdown, task,
+                ))
+            })
+        }
+    }
+
+    async fn start_voice_worker(
+        directory: &Path,
+        store: Arc<RuntimeStore>,
+        factory: Arc<VoiceFactory>,
+    ) -> (
+        AccountHandle,
+        Arc<AccountSessionRuntime>,
+        Arc<CallbackRuntime>,
+    ) {
+        let bridge = StoreBridge::new(store.clone()).await.unwrap();
+        let resources = PreparationResources {
+            instructions: String::new(),
+            progress_template: String::new(),
+            thread_config: Default::default(),
+            tools: Vec::new(),
+            legacy_tools: Vec::new(),
+            skills_root: directory.to_path_buf(),
+            role_guidance: BTreeMap::new(),
+            model_catalog: ModelCatalogService::new(None),
+            account_home: String::new(),
+            server_source_root: directory.to_path_buf(),
+            python_executable: "/usr/bin/python3".into(),
+            account_session: None,
+        };
+        let worker = start_account_worker_with_preparation(
+            bridge,
+            "voice-account".into(),
+            factory,
+            OpenOptions {
+                clock: SessionClock::default(),
+                launch: ProviderLaunchSpec::new(
+                    vec!["fake".into()],
+                    BTreeMap::new(),
+                    "/tmp".into(),
+                ),
+                expected_generation: None,
+            },
+            SessionTaskConfig {
+                initialize_params: json!({}),
+                generation: Generation(42),
+                claude: false,
+                timeout_ms: 2_000,
+                initialize_operation: OperationId("initialize:voice-account".into()),
+                request_id_prefix: Some("voice-account".into()),
+                recovered: Vec::new(),
+            },
+            resources,
+        )
+        .await
+        .unwrap();
+        let account_root = directory.join("accounts");
+        fs::create_dir_all(&account_root).unwrap();
+        let registry_path = account_root.join("registry.json");
+        if !registry_path.exists() {
+            fs::write(
+                &registry_path,
+                json!({
+                    "version":1,"defaultAccountKey":"voice-account",
+                    "accounts":{"voice-account":{"id":"voice-account","home":directory,"label":"voice","source":"test","status":"signedOut"}},
+                    "logins":{},"deleteReceipts":{}
+                })
+                .to_string(),
+            )
+            .unwrap();
+        }
+        let driver = Arc::new(AccountDriver::open(registry_path).unwrap());
+        let retained: Arc<dyn RetainedAccountSession> = Arc::new(WorkerSessionAdapter {
+            port: worker.retained_session(),
+        });
+        let session = Arc::new(AccountSessionRuntime::new(
+            driver,
+            Some(retained),
+            tokio::runtime::Handle::current(),
+            account_root,
+            directory.to_path_buf(),
+            directory.to_path_buf(),
+        ));
+        let callbacks = Arc::new(CallbackRuntime::new(
+            store,
+            Arc::new(UnusedCallbackReplyPort),
+        ));
+        (worker, session, callbacks)
+    }
+
+    #[tokio::test]
+    async fn composed_runtime_server_routes_voice_through_the_shared_account_session() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = Arc::new(RuntimeStore::open(Some(directory.path())).unwrap());
+        let agent_record = json!({
+            "id":"voice-composed-agent", "rootId":"voice-composed-agent", "epoch":3,
+            "status":"idle", "isLead":true, "threadId":"voice-thread", "accountKey":"voice-account"
+        })
+        .to_string();
+        store
+            .transaction(|tx| {
+                tx.execute(
+                    "INSERT INTO runtime_agents(id,record) VALUES(?1,?2)",
+                    ("voice-composed-agent", agent_record.as_str()),
+                )?;
+                Ok(())
+            })
+            .unwrap();
+
+        let factory = Arc::new(VoiceFactory {
+            stop_writes: Arc::new(AtomicUsize::new(0)),
+            unknown_stop_at: Some(2),
+            unknown_stop_written: Arc::new(Notify::new()),
+        });
+        let (mut worker, session, callbacks) =
+            start_voice_worker(directory.path(), store.clone(), Arc::clone(&factory)).await;
+        let mut state = HttpState::new(
+            "token".into(),
+            "workspace".into(),
+            None,
+            directory.path().display().to_string(),
+            4620,
+            None,
+            Some(store.clone()),
+            None,
+        );
+        state.account_session = Some(session);
+        let app = router(install_host_voice_port(
+            state,
+            Arc::clone(&store),
+            callbacks,
+        ))
+        .unwrap();
+        let mut request = Request::builder()
+            .method("POST")
+            .uri("/api/voice/start")
+            .header("host", "127.0.0.1:4620")
+            .header("x-canvas-token", "token")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                r#"{"agent":"voice-composed-agent","session_id":"voice-session","sdp":"v=0\r\n"}"#,
+            ))
+            .unwrap();
+        request.extensions_mut().insert(ConnectInfo(
+            "127.0.0.1:32100".parse::<std::net::SocketAddr>().unwrap(),
+        ));
+        let response = app.oneshot(request).await.unwrap();
+        let status = response.status();
+        let body = to_bytes(response.into_body(), 100_000).await.unwrap();
+        assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
+        let response: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(response["session_id"], "voice-session");
+        assert_eq!(response["state"], "connecting");
+
+        // The deletion transaction persists stop authorization before removing
+        // voice rows, matching Python's delete-before-post-commit-stop ordering.
+        let delete_intent = store
+            .transaction_with_error(|transaction| -> Result<_, studio_runtime_services::voice::provider::VoiceProviderError> {
+                transaction.execute(
+                    "INSERT INTO voice_sessions(id,agent,created,native_thread,account_key,connection_id,state) \
+                     SELECT 'voice-session-unknown',agent,created+1,native_thread,account_key,connection_id,state \
+                     FROM voice_sessions WHERE id='voice-session' AND agent='voice-composed-agent'",
+                    [],
+                )?;
+                transaction.execute(
+                    "UPDATE runtime_agents SET record=json_set(record,'$.deletedAt',1) WHERE id='voice-composed-agent'",
+                    [],
+                )?;
+                let intent = studio_runtime_services::voice::provider::stage_delete_sessions(
+                    transaction,
+                    "voice-composed-agent",
+                )?;
+                transaction.execute(
+                    "DELETE FROM voice_sessions WHERE agent='voice-composed-agent'",
+                    [],
+                )?;
+                Ok(intent)
+            })
+            .unwrap();
+        assert_eq!(delete_intent.sessions.len(), 2);
+
+        // Simulate a crash after the transaction commits but before its caller
+        // can issue the provider stops. A restarted worker sends the two saved
+        // operations once; the second request becomes Unknown when the worker
+        // is shut down before its provider response.
+        worker.shutdown().await.unwrap();
+        let (mut post_delete_worker, post_delete_session, post_delete_callbacks) =
+            start_voice_worker(directory.path(), Arc::clone(&store), Arc::clone(&factory)).await;
+        let delete_provider: Arc<dyn studio_runtime_services::voice::runtime::VoiceRequestPort> =
+            Arc::new(
+                studio_runtime_services::voice::account_session::AccountSessionVoicePort::new(
+                    Arc::clone(&store),
+                    post_delete_session,
+                    post_delete_callbacks,
+                ),
+            );
+        let unknown_written = factory.unknown_stop_written.notified();
+        tokio::pin!(unknown_written);
+        let intent_for_delivery = delete_intent.clone();
+        let delivery = tokio::spawn(async move {
+            studio_runtime_services::voice::provider::end_deleted_sessions(
+                delete_provider,
+                intent_for_delivery.id,
+                intent_for_delivery.sessions,
+                2.0,
+            )
+            .await
+        });
+        unknown_written.await;
+        post_delete_worker.shutdown().await.unwrap();
+        let receipts = delivery.await.unwrap().unwrap();
+        assert_eq!(receipts.len(), 2);
+        assert_eq!(
+            receipts[0].certainty,
+            studio_runtime_services::voice::runtime::VoiceWriteCertainty::Written
+        );
+        assert_eq!(
+            receipts[1].certainty,
+            studio_runtime_services::voice::runtime::VoiceWriteCertainty::Unknown
+        );
+
+        // Recovery replays the known receipt and retains Unknown without another
+        // provider write, even after another worker restart.
+        let (mut recovered_worker, recovered_session, recovered_callbacks) =
+            start_voice_worker(directory.path(), Arc::clone(&store), Arc::clone(&factory)).await;
+        let recovered_provider: Arc<dyn studio_runtime_services::voice::runtime::VoiceRequestPort> =
+            Arc::new(
+                studio_runtime_services::voice::account_session::AccountSessionVoicePort::new(
+                    Arc::clone(&store),
+                    recovered_session,
+                    recovered_callbacks,
+                ),
+            );
+        let replay = studio_runtime_services::voice::provider::end_deleted_sessions(
+            recovered_provider,
+            delete_intent.id,
+            delete_intent.sessions,
+            3.0,
+        )
+        .await
+        .unwrap();
+        assert_eq!(replay, receipts);
+        assert_eq!(factory.stop_writes.load(Ordering::SeqCst), 2);
+        recovered_worker.shutdown().await.unwrap();
     }
 }
 

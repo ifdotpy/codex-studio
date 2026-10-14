@@ -84,7 +84,6 @@ with runtime.db() as connection:
 voice = VoiceStore.__new__(VoiceStore)
 voice.__init__(runtime)
 voice._publish_voice = lambda _agent: None
-voice._assert_start_context = lambda context, db: runtime.agent(context["agent"], db)
 codex_native_voice.time.time = lambda: 100.0
 
 with patch.object(threading.Thread, "start", lambda thread: thread.run()):
@@ -105,4 +104,5 @@ with runtime.db() as connection:
                          ("voice_speech_requests", "id"), ("runtime_events", "created,id"),
                          ("sync_entities", "collection,id"), ("sync_documents", "scope,id,seq")):
         tables[table] = [dict(row) for row in connection.execute(f"SELECT * FROM {table} ORDER BY {order}")]
-print(json.dumps({"tables": tables, "provider_calls": runtime.server.calls}, ensure_ascii=False))
+    agent = runtime.agent("agent", connection)
+print(json.dumps({"tables": tables, "provider_calls": runtime.server.calls, "agent": agent}, ensure_ascii=False))
