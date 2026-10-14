@@ -36,11 +36,7 @@ impl PreparedHost {
                 }
             }
         }
-        let root = store
-            .root()
-            .to_str()
-            .ok_or(ProjectsError::Invalid("state path is invalid"))?;
-        let server = crate::sync_entity_context::local_server_id(root)?;
+        let server = store.local_server_id()?;
         Ok(Self {
             projects,
             agents,

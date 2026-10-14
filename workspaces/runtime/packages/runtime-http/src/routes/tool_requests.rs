@@ -52,7 +52,7 @@ async fn run(
 ) -> Result<Json<Value>, ApiError> {
     let store = state.store.ok_or_else(ApiError::internal)?;
     let value = tokio::task::spawn_blocking(move || {
-        store.transaction_with_error(|tx| {
+        let operation = |tx: &studio_runtime_store::Transaction<'_>| {
             let action = match (id.as_deref(), cancel) {
                 (Some(id), true) => Action::Cancel(id),
                 (Some(id), false) => Action::Get(id),
@@ -77,7 +77,19 @@ async fn run(
                     &canonical,
                 ))
             })
-        })
+        };
+        if cancel {
+            store.transaction_with_error(operation)
+        } else {
+            match store.read_transaction_with_error(|tx| operation(tx)) {
+                Err(ToolRequestError::Store(studio_runtime_store::StoreError::Sqlite(
+                    studio_runtime_store::SqliteError::SqliteFailure(error, _),
+                ))) if error.code == studio_runtime_store::ErrorCode::ReadOnly => {
+                    store.transaction_with_error(|tx| operation(tx))
+                }
+                result => result,
+            }
+        }
     })
     .await
     .map_err(|_| ApiError::internal())?

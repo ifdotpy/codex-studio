@@ -150,6 +150,14 @@ impl HttpState {
         self
     }
 
+    pub fn with_credentials(
+        mut self,
+        credentials: Arc<studio_runtime_services::federation_credentials::Credentials>,
+    ) -> Self {
+        self.credentials = credentials;
+        self
+    }
+
     /// Attach the account worker's generic provider-session voice adapter.
     pub fn with_voice_provider(
         mut self,

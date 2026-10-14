@@ -5,8 +5,8 @@ pub use operations::*;
 use rusqlite::{Connection, OptionalExtension};
 use serde_json::{Value, json};
 use studio_runtime_store::{
-    AgentId, AgentRecord, AgentRepository, AgentStatus, EventWriteRepository, StoreError,
-    SyncDocumentsRepository, Transaction,
+    AgentId, AgentRecord, AgentRepository, AgentStatus, EventWriteRepository, RuntimeStore,
+    StoreError, SyncDocumentsRepository, Transaction,
 };
 use thiserror::Error;
 
@@ -98,12 +98,7 @@ pub fn mode_fields(record: &mut Value) {
 fn sync_projection(transaction: &Transaction<'_>, record: &Value) -> Result<Value, StoreError> {
     let mut record = record.clone();
     mode_fields(&mut record);
-    let server_id = transaction
-        .path()
-        .and_then(|path| std::path::Path::new(path).parent()?.to_str())
-        .map(crate::sync_entity_context::local_server_id)
-        .transpose()?
-        .flatten();
+    let server_id = RuntimeStore::transaction_local_server_id(transaction)?;
     let context =
         crate::sync_entity_context::agent_view_context(transaction, &record, server_id.as_deref())?;
     crate::sync_views::agent_entity_view(&record, &context)

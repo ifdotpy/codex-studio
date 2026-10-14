@@ -6,7 +6,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use studio_runtime_providers::Frame;
 use studio_runtime_store::{
-    NotificationDispatchRepository, StoreError, SyncDocumentsRepository, Transaction, sha256_hex,
+    NotificationDispatchRepository, RuntimeStore, StoreError, SyncDocumentsRepository, Transaction,
+    sha256_hex,
 };
 use thiserror::Error;
 
@@ -56,9 +57,9 @@ pub struct PublicationContext {
     server_id: Option<String>,
 }
 impl PublicationContext {
-    pub fn load(root: &std::path::Path) -> Result<Self, NotificationDispatchError> {
+    pub fn load(store: &RuntimeStore) -> Result<Self, NotificationDispatchError> {
         Ok(Self {
-            server_id: crate::sync_entity_context::local_server_id(&root.to_string_lossy())?,
+            server_id: store.local_server_id()?,
         })
     }
 }

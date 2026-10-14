@@ -181,14 +181,13 @@ pub(super) fn dispatch(
     now: f64,
 ) -> Result<CallbackDecision, CallbackError> {
     let call = ToolCall::parse(input, context)?;
-    if let Some(decision) = store.transaction_with(|tx| {
-        storage::saved_decision(tx, &ReplyIdentity::new(context, &input.id), input)
-    })? {
-        return Ok(decision);
-    }
     // Admission commits before any execution. All enabled services are local,
     // transactional writes. External effects need a durable admission adapter.
-    store.transaction_with(|tx| {
+    if let Some(decision) = store.transaction_with(|tx| {
+        let identity = ReplyIdentity::new(context, &input.id);
+        if let Some(decision) = storage::saved_decision(tx, &identity, input)? {
+            return Ok(Some(decision));
+        }
         storage::snapshot(tx, context)?.active()?;
         let mut candidate = json!({
             "id":call.id, "agent":context.agent, "threadId":context.thread,
@@ -204,8 +203,10 @@ pub(super) fn dispatch(
             candidate["request_id"] = json!(alias);
         }
         admission::reserve(tx, candidate, &call.call, &call.prefix, call.alias.clone())?;
-        Ok::<_, CallbackError>(())
-    })?;
+        Ok::<_, CallbackError>(None)
+    })? {
+        return Ok(decision);
+    }
     store.transaction_with(|tx| {
         let snapshot = storage::snapshot(tx, context)?;
         snapshot.active()?;

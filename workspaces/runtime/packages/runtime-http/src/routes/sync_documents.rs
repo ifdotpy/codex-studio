@@ -11,6 +11,7 @@ use std::path::PathBuf;
 use studio_runtime_services::sync_documents::{self, DraftWrite};
 use studio_runtime_services::sync_policy::{self, PreferenceScope, SyncPolicyError};
 use studio_runtime_services::transcript;
+use studio_runtime_store::Transaction;
 use studio_runtime_store::{StoreError, SyncDocumentsRepository};
 
 use crate::error::ApiError;
@@ -147,103 +148,46 @@ pub(crate) async fn pull(
             }
             return Ok(response);
         }
-        store
-            .transaction(|transaction| {
-                sync_policy::maintain_entity_projections(
-                    transaction,
-                    &state_dir,
-                    |collection, id, value, deleted| {
-                        validate_entity_envelope(
-                            &json!({"collection":collection,"id":id,"value":value}),
-                            collection,
-                            id,
-                            deleted,
+        let project_server_id = store.local_server_id().map_err(map_sync_store_error)?;
+        match store.read_transaction(|transaction| {
+            pull_entities(
+                transaction,
+                &state_dir,
+                project_server_id.as_deref(),
+                after,
+                limit,
+                fresh,
+                initial_high,
+                reset_support,
+                priority_id.as_deref(),
+                generation,
+                &validators,
+            )
+        }) {
+            Err(StoreError::Sqlite(
+                studio_runtime_store::SqliteError::SqliteFailure(error, _),
+            )) if error.code == studio_runtime_store::ErrorCode::ReadOnly =>
+            {
+                store
+                    .transaction(|transaction| {
+                        pull_entities(
+                            transaction,
+                            &state_dir,
+                            project_server_id.as_deref(),
+                            after,
+                            limit,
+                            fresh,
+                            initial_high,
+                            reset_support,
+                            priority_id.as_deref(),
+                            generation,
                             &validators,
                         )
-                    },
-                )?;
-                let page = SyncDocumentsRepository::pull_entities(
-                    transaction,
-                    after,
-                    limit,
-                    fresh,
-                    initial_high,
-                    reset_support,
-                    priority_id.as_deref(),
-                )?;
-                let workspace_id = SyncDocumentsRepository::workspace_id(transaction)?;
-                let response = if page.reset {
-                    json!({
-                        "workspaceId": workspace_id,
-                        "generation": generation,
-                        "reset": true,
-                        "floor": page.tombstone_floor,
-                        "maxSeq": page.max_sequence,
                     })
-                } else {
-                    let mut documents = Vec::with_capacity(page.rows.len());
-                    for row in &page.rows {
-                        let raw = row.payload.as_deref().ok_or_else(|| {
-                            invalid_entity(&row.collection, &row.id)
-                        })?;
-                        let payload: Value = serde_json::from_str(raw)
-                            .map_err(|_| invalid_entity(&row.collection, &row.id))?;
-                        if !validate_entity_envelope(
-                            &payload,
-                            &row.collection,
-                            &row.id,
-                            row.deleted,
-                            &validators,
-                        ) {
-                            return Err(invalid_entity(&row.collection, &row.id));
-                        }
-                        documents.push(json!({
-                            "id": format!("entity:{}:{}", row.collection, row.id),
-                            "payload": raw,
-                            "seq": row.sequence,
-                            "_deleted": row.deleted,
-                        }));
-                    }
-                    json!({
-                        "workspaceId": workspace_id,
-                        "generation": generation,
-                        "documents": documents,
-                        "checkpoint": {"seq": page.checkpoint},
-                        "maxSeq": page.max_sequence,
-                        "initialHigh": page.initial_high,
-                    })
-                };
-                let schema = if page.reset {
-                    "SyncPullResetResponse"
-                } else {
-                    "SyncPullResponse"
-                };
-                if !validators.validate_stored(schema, &response) {
-                    return Err(invalid_entity("sync_entities", "pull-response"));
-                }
-                let generated_response_valid = if page.reset {
-                    serde_json::from_value::<crate::generated::SyncPullResetResponse>(
-                        response.clone(),
-                    )
-                    .is_ok()
-                } else {
-                    serde_json::from_value::<crate::generated::SyncPullResponse>(
-                        response.clone(),
-                    )
-                    .is_ok()
-                };
-                if !generated_response_valid {
-                    return Err(invalid_entity("sync_entities", "pull-response"));
-                }
-                Ok(response)
-            })
-            .map_err(|error| match error {
-                StoreError::InvalidSyncObject { scope, id } => ApiError::new(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    format!("Invalid stored sync object {scope}/{id}"),
-                ),
-                _ => ApiError::internal(),
-            })
+                    .map_err(map_sync_store_error)
+            }
+            result => result.map_err(map_sync_store_error),
+        }
     })
     .await
     .map_err(|_| ApiError::internal())??;
@@ -376,6 +320,112 @@ pub(crate) async fn push_preferences(
     Ok(Json(super::generated_json::<
         crate::generated::PreferencePushResponse,
     >(response)?))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn pull_entities(
+    transaction: &Transaction<'_>,
+    state_dir: &str,
+    project_server_id: Option<&str>,
+    after: i64,
+    limit: i64,
+    fresh: bool,
+    initial_high: i64,
+    reset_support: bool,
+    priority_id: Option<&str>,
+    generation: i64,
+    validators: &crate::validation::Registry,
+) -> Result<Value, StoreError> {
+    sync_policy::maintain_entity_projections_with_server_id(
+        transaction,
+        state_dir,
+        project_server_id,
+        |collection, id, value, deleted| {
+            validate_entity_envelope(
+                &json!({"collection":collection,"id":id,"value":value}),
+                collection,
+                id,
+                deleted,
+                validators,
+            )
+        },
+    )?;
+    let page = SyncDocumentsRepository::pull_entities(
+        transaction,
+        after,
+        limit,
+        fresh,
+        initial_high,
+        reset_support,
+        priority_id,
+    )?;
+    let workspace_id = SyncDocumentsRepository::workspace_id(transaction)?;
+    let response = if page.reset {
+        json!({
+            "workspaceId": workspace_id,
+            "generation": generation,
+            "reset": true,
+            "floor": page.tombstone_floor,
+            "maxSeq": page.max_sequence,
+        })
+    } else {
+        let mut documents = Vec::with_capacity(page.rows.len());
+        for row in &page.rows {
+            let raw = row
+                .payload
+                .as_deref()
+                .ok_or_else(|| invalid_entity(&row.collection, &row.id))?;
+            let payload: Value =
+                serde_json::from_str(raw).map_err(|_| invalid_entity(&row.collection, &row.id))?;
+            if !validate_entity_envelope(
+                &payload,
+                &row.collection,
+                &row.id,
+                row.deleted,
+                validators,
+            ) {
+                return Err(invalid_entity(&row.collection, &row.id));
+            }
+            documents.push(json!({
+                "id": format!("entity:{}:{}", row.collection, row.id),
+                "payload": raw,
+                "seq": row.sequence,
+                "_deleted": row.deleted,
+            }));
+        }
+        json!({
+            "workspaceId": workspace_id,
+            "generation": generation,
+            "documents": documents,
+            "checkpoint": {"seq": page.checkpoint},
+            "maxSeq": page.max_sequence,
+            "initialHigh": page.initial_high,
+        })
+    };
+    let schema = if page.reset {
+        "SyncPullResetResponse"
+    } else {
+        "SyncPullResponse"
+    };
+    let generated_response_valid = if page.reset {
+        serde_json::from_value::<crate::generated::SyncPullResetResponse>(response.clone()).is_ok()
+    } else {
+        serde_json::from_value::<crate::generated::SyncPullResponse>(response.clone()).is_ok()
+    };
+    if !validators.validate_stored(schema, &response) || !generated_response_valid {
+        return Err(invalid_entity("sync_entities", "pull-response"));
+    }
+    Ok(response)
+}
+
+fn map_sync_store_error(error: StoreError) -> ApiError {
+    match error {
+        StoreError::InvalidSyncObject { scope, id } => ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Invalid stored sync object {scope}/{id}"),
+        ),
+        _ => ApiError::internal(),
+    }
 }
 
 fn draft_validation_error(index: usize, document: &str, field: &str) -> ApiError {

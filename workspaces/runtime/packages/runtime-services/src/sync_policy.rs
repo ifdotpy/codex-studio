@@ -27,7 +27,23 @@ const TASK_RETIRE_BATCH: usize = 100;
 /// sequences because the repository compares canonical payloads before write.
 pub fn maintain_entity_projections(
     transaction: &Transaction<'_>,
+    _state_dir: &str,
+    validate_projection: impl Fn(&str, &str, &Value, bool) -> bool,
+) -> StoreResult<()> {
+    let project_server_id =
+        studio_runtime_store::RuntimeStore::transaction_local_server_id(transaction)?;
+    maintain_entity_projections_with_server_id(
+        transaction,
+        _state_dir,
+        project_server_id.as_deref(),
+        validate_projection,
+    )
+}
+
+pub fn maintain_entity_projections_with_server_id(
+    transaction: &Transaction<'_>,
     state_dir: &str,
+    project_server_id: Option<&str>,
     validate_projection: impl Fn(&str, &str, &Value, bool) -> bool,
 ) -> StoreResult<()> {
     for table in [
@@ -45,7 +61,6 @@ pub fn maintain_entity_projections(
         let _ = stored_records(transaction, table)?;
     }
     let rooms = crate::sync_entity_context::RoomDirectory::load(transaction)?;
-    let project_server_id = crate::sync_entity_context::local_server_id(state_dir)?;
     maintain_peer_team_entities(transaction, &validate_projection)?;
     let mut current_rooms = BTreeSet::new();
     for (table, collection) in [
@@ -75,7 +90,7 @@ pub fn maintain_entity_projections(
                     &crate::sync_entity_context::agent_view_context(
                         transaction,
                         &record,
-                        project_server_id.as_deref(),
+                        project_server_id,
                     )?,
                 ),
                 "room" => {
@@ -320,11 +335,20 @@ pub(crate) fn maintain_task_window(
         put_projection(transaction, "task", id, json!({}), true, validate)?;
     }
     if stale.is_empty() {
-        transaction.execute(
-            "INSERT INTO sync_entity_meta(key,value) VALUES('task_window_migrated','1') \
-             ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-            [],
-        )?;
+        let migrated = transaction
+            .query_row(
+                "SELECT value FROM sync_entity_meta WHERE key='task_window_migrated'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        if migrated.as_deref() != Some("1") {
+            transaction.execute(
+                "INSERT INTO sync_entity_meta(key,value) VALUES('task_window_migrated','1') \
+                 ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                [],
+            )?;
+        }
     }
     Ok(())
 }
@@ -552,11 +576,21 @@ fn retire_unkept(
             [collection],
             |row| row.get::<_, i64>(0),
         )?;
-        transaction.execute(
-            "INSERT INTO sync_entity_meta(key,value) VALUES(?1,?2) \
-             ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-            rusqlite::params![marker, sequence.to_string()],
-        )?;
+        let sequence = sequence.to_string();
+        let current = transaction
+            .query_row(
+                "SELECT value FROM sync_entity_meta WHERE key=?1",
+                [marker],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        if current.as_deref() != Some(sequence.as_str()) {
+            transaction.execute(
+                "INSERT INTO sync_entity_meta(key,value) VALUES(?1,?2) \
+                 ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                rusqlite::params![marker, sequence],
+            )?;
+        }
     }
     Ok(())
 }

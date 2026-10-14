@@ -53,9 +53,16 @@ async fn directories(
         .typed_value("server")
         .and_then(Value::as_str)
         .unwrap_or("");
-    let local = server.is_empty()
-        || server == "local"
-        || local_server_id(&state.state_dir).as_deref() == Some(server);
+    let local = if server.is_empty() || server == "local" {
+        true
+    } else {
+        let store = state.store.as_ref().ok_or_else(ApiError::internal)?;
+        store
+            .local_server_id()
+            .map_err(ApiError::stored)?
+            .as_deref()
+            == Some(server)
+    };
     if !local {
         let store = state.store.clone().ok_or_else(ApiError::internal)?;
         let server = server.to_owned();
@@ -156,17 +163,6 @@ async fn ui_summary(State(state): State<HttpState>) -> Result<Json<Value>, ApiEr
 
 fn directory_error(error: SystemReadError) -> ApiError {
     ApiError::new(StatusCode::BAD_REQUEST, error.to_string())
-}
-
-fn local_server_id(state_dir: &str) -> Option<String> {
-    let raw =
-        std::fs::read_to_string(std::path::Path::new(state_dir).join("multi-server/identity.json"))
-            .ok()?;
-    serde_json::from_str::<Value>(&raw)
-        .ok()?
-        .get("serverId")?
-        .as_str()
-        .map(str::to_owned)
 }
 
 fn dependency_error(method: &str, path: &str, deps: &[Dependency]) -> ApiError {
