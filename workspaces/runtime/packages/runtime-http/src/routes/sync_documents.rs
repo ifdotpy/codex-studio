@@ -111,10 +111,7 @@ pub(crate) async fn pull(
                 .map_err(super::transcript::map_transcript_error)?;
             // Python samples generation after transcript maintenance commits.
             response["generation"] = json!(store.generation().map_err(|_| ApiError::internal())?);
-            if !validators.validate_stored("SyncPullResponse", &response)
-                || serde_json::from_value::<crate::generated::SyncPullResponse>(response.clone())
-                    .is_err()
-            {
+            if !validators.validate_stored("SyncPullResponse", &response) {
                 return Err(invalid_entity("sync_entities", "transcript-pull-response").into());
             }
             return Ok(response);
@@ -432,12 +429,7 @@ fn pull_entities(
     } else {
         "SyncPullResponse"
     };
-    let generated_response_valid = if page.reset {
-        serde_json::from_value::<crate::generated::SyncPullResetResponse>(response.clone()).is_ok()
-    } else {
-        serde_json::from_value::<crate::generated::SyncPullResponse>(response.clone()).is_ok()
-    };
-    if !validators.validate_stored(schema, &response) || !generated_response_valid {
+    if !validators.validate_stored(schema, &response) {
         return Err(invalid_entity("sync_entities", "pull-response"));
     }
     Ok(response)
