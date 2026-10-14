@@ -3,8 +3,11 @@
 
 use serde_json::{Value, json};
 use std::time::Duration;
+use studio_runtime_schema::shared_values::{
+    MAX_PROJECT_SECRET_VALUE_BYTES, PROJECT_SECRETS_GUEST_TIMEOUT_SECONDS,
+};
 
-const GUEST_CALL_TIMEOUT: Duration = Duration::from_secs(30);
+const GUEST_CALL_TIMEOUT: Duration = Duration::from_secs(PROJECT_SECRETS_GUEST_TIMEOUT_SECONDS);
 
 /// The narrow guest RPC surface used here; the Linux VM slice supplies the production adapter.
 pub trait GuestRpc: Send + Sync {
@@ -58,14 +61,16 @@ impl std::fmt::Debug for GuestCallError {
 
 pub enum ProjectSecretsError {
     Guest(GuestCallError),
-    InvalidReply,
+    InvalidValue,
+    InvalidReply { uncertain: bool },
 }
 
 impl std::fmt::Debug for ProjectSecretsError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Guest(error) => formatter.debug_tuple("Guest").field(error).finish(),
-            Self::InvalidReply => formatter.write_str("InvalidReply"),
+            Self::InvalidValue => formatter.write_str("InvalidValue"),
+            Self::InvalidReply { .. } => formatter.write_str("InvalidReply"),
         }
     }
 }
@@ -74,21 +79,24 @@ impl ProjectSecretsError {
     pub fn code(&self) -> Option<&str> {
         match self {
             Self::Guest(error) => Some(&error.code),
-            Self::InvalidReply => None,
+            Self::InvalidValue => Some("invalid_params"),
+            Self::InvalidReply { .. } => None,
         }
     }
 
     pub fn detail(&self) -> &'static str {
         match self {
             Self::Guest(_) => "The guest request failed",
-            Self::InvalidReply => "The VM returned an invalid list of secret names.",
+            Self::InvalidValue => "The project secret value is invalid.",
+            Self::InvalidReply { .. } => "The VM returned an invalid list of secret names.",
         }
     }
 
     pub fn uncertain(&self) -> bool {
         match self {
             Self::Guest(error) => error.uncertain,
-            Self::InvalidReply => true,
+            Self::InvalidValue => false,
+            Self::InvalidReply { uncertain } => *uncertain,
         }
     }
 }
@@ -102,7 +110,7 @@ pub fn list_names(guest: &dyn GuestRpc, project_id: &str) -> Result<Value, Proje
             GUEST_CALL_TIMEOUT,
         )
         .map_err(ProjectSecretsError::Guest)?;
-    names_reply(project_id, result)
+    names_reply(project_id, result, true)
 }
 
 pub fn set_secret(
@@ -112,6 +120,12 @@ pub fn set_secret(
     value: &str,
     request_id: &str,
 ) -> Result<Value, ProjectSecretsError> {
+    if value.is_empty()
+        || value.len() > MAX_PROJECT_SECRET_VALUE_BYTES
+        || value.as_bytes().contains(&0)
+    {
+        return Err(ProjectSecretsError::InvalidValue);
+    }
     let operation_id = format!("secrets-set:{request_id}");
     let result = guest.call(
         "secrets.set",
@@ -125,7 +139,7 @@ pub fn set_secret(
         }
         ProjectSecretsError::Guest(error)
     })?;
-    names_reply(project_id, result)
+    names_reply(project_id, result, true)
 }
 
 pub fn remove_secret(
@@ -143,22 +157,27 @@ pub fn remove_secret(
             GUEST_CALL_TIMEOUT,
         )
         .map_err(ProjectSecretsError::Guest)?;
-    names_reply(project_id, result)
+    names_reply(project_id, result, true)
 }
 
-fn names_reply(project_id: &str, result: Value) -> Result<Value, ProjectSecretsError> {
+fn names_reply(
+    project_id: &str,
+    result: Value,
+    uncertain: bool,
+) -> Result<Value, ProjectSecretsError> {
     let names = result
         .get("names")
         .and_then(Value::as_array)
         .filter(|names| names.iter().all(Value::is_string))
-        .ok_or(ProjectSecretsError::InvalidReply)?;
+        .ok_or(ProjectSecretsError::InvalidReply { uncertain })?;
     Ok(json!({"projectId": project_id, "names": names}))
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        GuestCallError, GuestRpc, ProjectSecretsError, list_names, remove_secret, set_secret,
+        GUEST_CALL_TIMEOUT, GuestCallError, GuestRpc, MAX_PROJECT_SECRET_VALUE_BYTES,
+        ProjectSecretsError, list_names, remove_secret, set_secret,
     };
     use serde_json::{Value, json};
     use std::sync::Mutex;
@@ -206,7 +225,7 @@ mod tests {
                 "secrets.list".to_owned(),
                 json!({"projectId":"project-1"}),
                 None,
-                Duration::from_secs(30)
+                GUEST_CALL_TIMEOUT
             )]
         );
     }
@@ -226,7 +245,7 @@ mod tests {
             json!({"projectId":"p","name":"TOKEN","value":"generated-test-value"})
         );
         assert_eq!(calls[0].2.as_deref(), Some("secrets-set:req-9"));
-        assert_eq!(calls[0].3, Duration::from_secs(30));
+        assert_eq!(calls[0].3, GUEST_CALL_TIMEOUT);
         assert!(!response.to_string().contains("generated-test-value"));
     }
 
@@ -244,13 +263,26 @@ mod tests {
     }
 
     #[test]
-    fn malformed_guest_names_are_a_located_uncertain_refusal() {
+    fn malformed_read_reply_is_uncertain_like_python() {
         let guest = FakeGuest::default();
         *guest.reply.lock().unwrap() = json!({"names":["TOKEN", 7]});
 
         let error = list_names(&guest, "p").unwrap_err();
 
-        assert!(matches!(error, ProjectSecretsError::InvalidReply));
+        assert!(matches!(
+            error,
+            ProjectSecretsError::InvalidReply { uncertain: true }
+        ));
+        assert!(error.uncertain());
+    }
+
+    #[test]
+    fn malformed_mutation_reply_is_uncertain() {
+        let guest = FakeGuest::default();
+        *guest.reply.lock().unwrap() = json!({"names":["TOKEN", 7]});
+
+        let error = set_secret(&guest, "p", "TOKEN", "generated-test-value", "req-1").unwrap_err();
+
         assert!(error.uncertain());
     }
 
@@ -269,5 +301,28 @@ mod tests {
         if let ProjectSecretsError::Guest(error) = error {
             assert!(!error.detail.contains("generated-test-value"));
         }
+    }
+
+    #[test]
+    fn invalid_secret_values_are_refused_before_guest_call() {
+        let guest = FakeGuest::default();
+        let oversized_value = "é".repeat(MAX_PROJECT_SECRET_VALUE_BYTES);
+        for value in ["", "bad\0value", oversized_value.as_str()] {
+            let error = set_secret(&guest, "p", "TOKEN", value, "req-1").unwrap_err();
+            assert!(matches!(error, ProjectSecretsError::InvalidValue));
+            assert!(!error.uncertain());
+        }
+        assert!(guest.calls.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn exactly_the_shared_utf8_byte_limit_is_forwarded() {
+        let guest = FakeGuest::default();
+        *guest.reply.lock().unwrap() = json!({"names":["TOKEN"]});
+        let value = "é".repeat(MAX_PROJECT_SECRET_VALUE_BYTES / 2);
+
+        set_secret(&guest, "p", "TOKEN", &value, "req-1").unwrap();
+
+        assert_eq!(guest.calls.lock().unwrap().len(), 1);
     }
 }

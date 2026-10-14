@@ -27,12 +27,11 @@ pub enum VaultError {
 /// Read the cached writer report without contacting the VM.
 pub fn view(state_dir: &Path, project_id: &str) -> Result<Option<Value>, VaultError> {
     let folder = project_folder(state_dir, project_id)?;
-    let status = match load_object(&folder.join("vault.json"), "vault.json") {
+    let status = match load_view_object(&folder.join("vault.json")) {
         Ok(status) => status,
         Err(_) => return Ok(Some(unreadable_view(project_id))),
     };
-    let site_record = match load_optional_object(&folder.join("vault-site.json"), "vault-site.json")
-    {
+    let site_record = match load_view_object(&folder.join("vault-site.json")) {
         Ok(record) => record,
         Err(_) => return Ok(Some(unreadable_view(project_id))),
     };
@@ -73,13 +72,12 @@ pub fn view(state_dir: &Path, project_id: &str) -> Result<Option<Value>, VaultEr
     if let Some(site) = site_record.get("site").and_then(Value::as_str) {
         result.insert("site".to_owned(), Value::String(site.to_owned()));
     }
-    if let Ok(mac) = load_optional_object(&folder.join("vault-mac.json"), "vault-mac.json") {
-        if let Some(unlocked) = mac.get("unlocked").and_then(Value::as_bool) {
-            result.insert("unlocked".to_owned(), Value::Bool(unlocked));
-        }
-        if let Some(disk) = mac.get("disk").and_then(Value::as_str) {
-            result.insert("disk".to_owned(), Value::String(disk.to_owned()));
-        }
+    let mac = load_view_object(&folder.join("vault-mac.json")).unwrap_or_default();
+    if let Some(unlocked) = mac.get("unlocked").and_then(Value::as_bool) {
+        result.insert("unlocked".to_owned(), Value::Bool(unlocked));
+    }
+    if let Some(disk) = mac.get("disk").and_then(Value::as_str) {
+        result.insert("disk".to_owned(), Value::String(disk.to_owned()));
     }
     Ok(Some(Value::Object(result)))
 }
@@ -90,6 +88,18 @@ fn unreadable_view(project_id: &str) -> Value {
         "state": "error",
         "reason": "The vault records are unreadable"
     })
+}
+
+fn load_view_object(path: &Path) -> Result<Map<String, Value>, ()> {
+    let bytes = match fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Map::new()),
+        Err(_) => return Err(()),
+    };
+    Ok(serde_json::from_slice::<Value>(&bytes)
+        .ok()
+        .and_then(|value| value.as_object().cloned())
+        .unwrap_or_default())
 }
 
 /// Store the Desk site after validating and normalizing its scheme and trailing slash.
@@ -290,6 +300,24 @@ mod tests {
         let result = view(root.path(), "p1").unwrap().unwrap();
 
         assert_eq!(result["lastPush"], 1791720000);
+    }
+
+    #[test]
+    fn view_is_absent_before_a_cached_record_and_redacts_unreadable_records() {
+        let root = state();
+        assert_eq!(view(root.path(), "p1").unwrap(), None);
+
+        let project = root.path().join("layr-projects/p1");
+        fs::write(project.join("vault.json"), b"not-json").unwrap();
+        assert_eq!(view(root.path(), "p1").unwrap(), None);
+        fs::remove_file(project.join("vault.json")).unwrap();
+        fs::create_dir(project.join("vault.json")).unwrap();
+        let result = view(root.path(), "p1").unwrap().unwrap();
+
+        assert_eq!(
+            result,
+            json!({"projectId":"p1","state":"error","reason":"The vault records are unreadable"})
+        );
     }
 
     #[test]

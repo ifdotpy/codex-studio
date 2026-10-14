@@ -9,11 +9,13 @@ pub use crate::sync_views::{
 use rusqlite::{OptionalExtension, Transaction};
 use serde_json::{Map, Value, json};
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::{Component, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 use studio_runtime_schema::SYNC_ENTITY_SCOPE;
 pub use studio_runtime_schema::shared_values::{SYNC_BATCH_LIMIT, SYNC_ENTITY_PAGE_LIMIT};
-use studio_runtime_store::{RuntimeStore, StoreError, StoreResult, SyncDocumentsRepository};
+use studio_runtime_store::{
+    RuntimeStore, StoreError, StoreResult, SyncDocumentsRepository, sha256_hex,
+};
 use thiserror::Error;
 
 pub const ENTITY_PAGE_LIMIT: i64 = SYNC_ENTITY_PAGE_LIMIT;
@@ -116,11 +118,25 @@ pub fn maintain_entity_projections_with_server_id(
                     let prior =
                         prior.and_then(|payload| serde_json::from_str::<Value>(&payload).ok());
                     let value = prior.as_ref().and_then(|payload| payload.get("value"));
+                    let readiness = value.and_then(|value| value.get("layrReadiness"));
+                    let readiness_is_ready = readiness.is_some_and(|value| {
+                        value.get("state").and_then(Value::as_str) == Some("ready")
+                    });
+                    let cached_vault = if readiness_is_ready {
+                        project_vault_view(state_dir, &record)
+                    } else {
+                        None
+                    };
+                    let vault = if readiness_is_ready && !state_dir.is_empty() {
+                        cached_vault.as_ref()
+                    } else {
+                        value.and_then(|value| value.get("vault"))
+                    };
                     project_entity_view(
                         &record,
-                        value.and_then(|value| value.get("layrReadiness")),
+                        readiness,
                         value.and_then(|value| value.get("layrSync")),
-                        value.and_then(|value| value.get("vault")),
+                        vault,
                     )
                 }
                 _ => project_persisted_record(collection, &record),
@@ -187,6 +203,33 @@ pub fn maintain_entity_projections_with_server_id(
         )?;
     }
     Ok(())
+}
+
+/// Cached counterpart to Python's `codex_vm_agents.project_vault`; it never refreshes VM status.
+fn project_vault_view(state_dir: &str, project: &Value) -> Option<Value> {
+    let aliases = project.get("projectAliases").and_then(Value::as_array);
+    let logical_id = aliases
+        .and_then(|aliases| aliases.first())
+        .and_then(|alias| alias.get("projectId"))
+        .and_then(Value::as_str)
+        .filter(|id| !id.is_empty());
+    let source = logical_id
+        .or_else(|| {
+            project
+                .get("id")
+                .and_then(Value::as_str)
+                .filter(|id| !id.is_empty())
+        })
+        .or_else(|| {
+            project
+                .get("path")
+                .and_then(Value::as_str)
+                .filter(|id| !id.is_empty())
+        })?;
+    let project_id = sha256_hex(source.as_bytes());
+    crate::vault::view(Path::new(state_dir), &project_id)
+        .ok()
+        .flatten()
 }
 
 fn put_projection(
@@ -1129,6 +1172,8 @@ pub fn push_preferences(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
+    use studio_runtime_store::ProjectsRepository;
 
     #[test]
     fn draft_identity_matches_row_key_and_allows_extension_members() {
@@ -1189,5 +1234,59 @@ mod tests {
             Err(SyncPolicyError::InvalidStoredObject { scope, id })
                 if scope == "uiPreferences" && id == "user"
         ));
+    }
+
+    #[test]
+    fn maintained_project_projection_reads_cached_vault_view_matching_python_corpus() {
+        let cases: Vec<Value> =
+            serde_json::from_str(include_str!("../tests/vault/project-view-cases.json"))
+                .expect("project vault corpus");
+        let case = &cases[0];
+        let root = tempfile::tempdir().expect("isolated state directory");
+        let store = RuntimeStore::open(Some(root.path())).expect("open isolated runtime store");
+        let project_id = case["projectId"].as_str().unwrap();
+        let folder = store.root().join("layr-projects").join(project_id);
+        fs::create_dir_all(&folder).unwrap();
+        for (name, value) in case["records"].as_object().unwrap() {
+            fs::write(folder.join(name), serde_json::to_vec(value).unwrap()).unwrap();
+        }
+        let workspace = root.path().join("workspace");
+        fs::create_dir(&workspace).unwrap();
+        let mut project = case["project"].clone();
+        project["path"] = json!(workspace.to_string_lossy());
+        let mut prior = project.clone();
+        prior["layrReadiness"] = json!({"state":"ready"});
+        prior["layrSync"] = json!({"state":"ok"});
+        prior["vault"] = json!({"state":"stale"});
+
+        store
+            .transaction(|transaction| {
+                ProjectsRepository::put_project(transaction, &project)?;
+                SyncDocumentsRepository::put_entity(
+                    transaction,
+                    "project",
+                    project["id"].as_str().unwrap(),
+                    prior,
+                    false,
+                )?;
+                let rooms = crate::sync_entity_context::RoomDirectory::load(transaction)?;
+                let state_dir = store.root().to_string_lossy();
+                maintain_entity_projections_with_server_id(
+                    transaction,
+                    &state_dir,
+                    None,
+                    &rooms,
+                    |_, _, _, _| true,
+                )?;
+                let payload: String = transaction.query_row(
+                    "SELECT payload FROM sync_entities WHERE collection='project' AND id=?1 AND deleted=0",
+                    [project["id"].as_str().unwrap()],
+                    |row| row.get(0),
+                )?;
+                let payload: Value = serde_json::from_str(&payload)?;
+                assert_eq!(payload["value"]["vault"], case["expected"]);
+                Ok(())
+            })
+            .expect("maintain project projection");
     }
 }

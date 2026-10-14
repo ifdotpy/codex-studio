@@ -1,0 +1,36 @@
+[
+  {
+    "project": {
+      "id": "/workspace/Project One",
+      "path": "/workspace/Project One",
+      "projectAliases": [{ "projectId": "/workspace/Project One" }]
+    },
+    "projectId": "9b9022bbf51f2fff927e10824d61dd8dba302836fd71783e25b30fc0eafe2ad7",
+    "records": {
+      "vault.json": {
+        "configured": true,
+        "prefix": "project-one",
+        "lastPush": 1791720000,
+        "lastError": "fixture S3 failure",
+        "accessKeyId": "fixture-only-do-not-return"
+      },
+      "vault-site.json": {
+        "site": "https://desk.example.test/"
+      },
+      "vault-mac.json": {
+        "unlocked": false,
+        "disk": "/fixture/Desk/project-one"
+      }
+    },
+    "expected": {
+      "projectId": "9b9022bbf51f2fff927e10824d61dd8dba302836fd71783e25b30fc0eafe2ad7",
+      "state": "error",
+      "prefix": "project-one",
+      "lastPush": 1791720000,
+      "reason": "fixture S3 failure",
+      "site": "https://desk.example.test/",
+      "unlocked": false,
+      "disk": "/fixture/Desk/project-one"
+    }
+  }
+]
