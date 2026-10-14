@@ -92,6 +92,12 @@ pub struct ProfileRequest {
 /// registry/store lock. These defaults also allow composition one capability at a
 /// time without advertising success for an absent consumer.
 pub trait AccountSessionPort: Send + Sync {
+    /// Ensure the account's retained worker is live before an account-scoped read.
+    fn ensure_session(&self, _account: &str) -> Result<ConnectionScope, AccountSessionError> {
+        Err(AccountSessionError::Requires(
+            "provider-session/account-session",
+        ))
+    }
     fn current_scope(&self, _account: &str) -> Option<ConnectionScope> {
         None
     }
@@ -266,6 +272,13 @@ pub trait RetainedAccountSession: Send + Sync {
     fn current_scope(&self, _account: &str) -> Option<ConnectionScope> {
         None
     }
+    fn ensure_session(&self, _account: String) -> SessionFutureScope {
+        Box::pin(async {
+            Err(AccountSessionError::Requires(
+                "provider-session/account-session",
+            ))
+        })
+    }
     fn request(&self, request: ProviderRequest) -> SessionFuture;
     fn transfer_request(&self, _request: TransferProviderRequest) -> SessionFuture {
         Box::pin(async {
@@ -288,8 +301,12 @@ pub trait RetainedAccountSession: Send + Sync {
     }
 }
 
+pub type SessionFutureScope =
+    Pin<Box<dyn Future<Output = Result<ConnectionScope, AccountSessionError>> + Send>>;
+
 /// Called on the HTTP edge's blocking pool. Only the retained-session wait uses
 /// the Tokio handle; no store transaction or registry lock spans that wait.
+#[derive(Clone)]
 pub struct AccountSessionRuntime {
     driver: Arc<AccountDriver>,
     session: Option<Arc<dyn RetainedAccountSession>>,
@@ -298,7 +315,61 @@ pub struct AccountSessionRuntime {
     base_home: PathBuf,
     home: PathBuf,
     limits: Option<Arc<crate::account_policy::AccountPolicyState>>,
+    store: Option<Arc<studio_runtime_store::RuntimeStore>>,
+    refreshed_limits: Arc<std::sync::Mutex<std::collections::BTreeMap<String, Value>>>,
+    pending_limit_refreshes: Arc<std::sync::Mutex<std::collections::BTreeSet<String>>>,
 }
+
+fn persist_limits(
+    store: &studio_runtime_store::RuntimeStore,
+    refreshed_limits: &std::sync::Mutex<std::collections::BTreeMap<String, Value>>,
+    account: &str,
+    value: &Value,
+) -> Result<(), AccountSessionError> {
+    use rusqlite::OptionalExtension;
+    use studio_runtime_store::SyncDocumentsRepository;
+    let mut refreshed = refreshed_limits
+        .lock()
+        .map_err(|_| AccountSessionError::Persistence)?;
+    let result = store.transaction(|transaction| {
+        let raw = transaction
+            .query_row(
+                "SELECT payload FROM sync_entities WHERE collection='workspace' AND id='current' AND deleted=0",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        let mut by_account = raw
+            .map(|raw| serde_json::from_str::<Value>(&raw))
+            .transpose()
+            .map_err(|_| studio_runtime_store::StoreError::InvalidSyncObject {
+                scope: "workspace".into(),
+                id: "current".into(),
+            })?
+            .and_then(|entity| entity.pointer("/value/rateLimitsByAccount").cloned())
+            .unwrap_or_else(|| serde_json::json!({}));
+        let by_account = by_account
+            .as_object_mut()
+            .ok_or_else(|| studio_runtime_store::StoreError::InvalidSyncObject {
+                scope: "workspace".into(),
+                id: "current".into(),
+            })?;
+        by_account.insert(account.to_owned(), value.clone());
+        let mut patch = serde_json::json!({"rateLimitsByAccount":by_account});
+        if account == "default" {
+            patch["rateLimits"] = value.clone();
+        }
+        SyncDocumentsRepository::patch_entity(transaction, "workspace", "current", patch)
+            .map_err(|_| studio_runtime_store::StoreError::InvalidSyncObject {
+                scope: "workspace".into(),
+                id: "current".into(),
+            })
+    });
+    result.map_err(|_| AccountSessionError::Persistence)?;
+    refreshed.insert(account.to_owned(), value.clone());
+    Ok(())
+}
+
 impl AccountSessionRuntime {
     fn block_on_retained<F: std::future::Future>(&self, future: F) -> F::Output {
         if tokio::runtime::Handle::try_current().is_ok() {
@@ -324,11 +395,27 @@ impl AccountSessionRuntime {
             base_home,
             home,
             limits: None,
+            store: None,
+            refreshed_limits: Arc::new(std::sync::Mutex::new(std::collections::BTreeMap::new())),
+            pending_limit_refreshes: Arc::new(std::sync::Mutex::new(
+                std::collections::BTreeSet::new(),
+            )),
         }
     }
     pub fn with_limits(mut self, policy: Arc<crate::account_policy::AccountPolicyState>) -> Self {
         self.limits = Some(policy);
         self
+    }
+    pub fn with_store(mut self, store: Arc<studio_runtime_store::RuntimeStore>) -> Self {
+        self.store = Some(store);
+        self
+    }
+    fn persist_limits(&self, account: &str, value: &Value) -> Result<(), AccountSessionError> {
+        let store = self
+            .store
+            .as_ref()
+            .ok_or(AccountSessionError::Requires(LIMITS_REQUIRED))?;
+        persist_limits(store, &self.refreshed_limits, account, value)
     }
     fn exchange(
         &self,
@@ -484,6 +571,19 @@ impl AccountSessionPort for AccountSessionRuntime {
         self.session.as_ref()?.current_scope(account)
     }
 
+    fn ensure_session(&self, account: &str) -> Result<ConnectionScope, AccountSessionError> {
+        let session = self.session.as_ref().ok_or(AccountSessionError::Requires(
+            "provider-session/account-session",
+        ))?;
+        let scope = self.block_on_retained(session.ensure_session(account.to_owned()))?;
+        if scope.account != account {
+            return Err(AccountSessionError::Refused(
+                "Provider session account mismatch",
+            ));
+        }
+        Ok(scope)
+    }
+
     fn provider_request(
         &self,
         request: ProviderRequest,
@@ -587,13 +687,89 @@ impl AccountSessionPort for AccountSessionRuntime {
         {
             return Err(AccountSessionError::Refused("Unknown Codex account"));
         }
-        Err(AccountSessionError::Requires(LIMITS_REQUIRED))
+        let scope = self.ensure_session(account)?;
+        static SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        let operation = format!(
+            "limits-read:{account}:{}:{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_err(|_| AccountSessionError::Persistence)?
+                .as_nanos(),
+            SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        );
+        let receipt = self.provider_request(ProviderRequest {
+            account: account.to_owned(),
+            operation: operation.clone(),
+            actor: None,
+            expected_scope: Some(scope.clone()),
+            deleted_actor_session: None,
+            method: Method::AccountRateLimitsRead,
+            params: serde_json::json!({}),
+            deadline: std::time::Instant::now() + Duration::from_secs(10),
+        })?;
+        if receipt.scope != scope
+            || receipt.operation != operation
+            || receipt.certainty != RequestCertainty::Written
+            || receipt.ticket.is_none()
+        {
+            return Err(AccountSessionError::Unknown);
+        }
+        let data = match receipt.result {
+            Some(ProviderResponse::Reply(data)) => data,
+            Some(ProviderResponse::Rejected(_)) | None => {
+                return Err(AccountSessionError::Refused("Account limits read failed"));
+            }
+        };
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|_| AccountSessionError::Persistence)?
+            .as_secs_f64();
+        let value = LimitsSnapshot::read(
+            account,
+            serde_json::json!({"accountKey":account,"data":data,"at":now,"readAt":now,"error":null}),
+        )?
+        .into_value();
+        self.persist_limits(account, &value)?;
+        Ok(value)
     }
     fn limits_snapshot(&self, account: &str) -> Result<Value, AccountSessionError> {
+        if let Some(value) = self
+            .refreshed_limits
+            .lock()
+            .map_err(|_| AccountSessionError::Persistence)?
+            .get(account)
+        {
+            return Ok(value.clone());
+        }
         self.limits
             .as_ref()
             .map(|policy| policy.limits(account))
             .ok_or(AccountSessionError::Requires(LIMITS_REQUIRED))
+    }
+    fn refresh_limits(&self, account: &str) -> Result<(), AccountSessionError> {
+        let account = account.to_owned();
+        {
+            let mut pending = self
+                .pending_limit_refreshes
+                .lock()
+                .map_err(|_| AccountSessionError::Persistence)?;
+            if !pending.insert(account.clone()) {
+                return Ok(());
+            }
+        }
+        let runtime = self.clone();
+        let pending = Arc::clone(&self.pending_limit_refreshes);
+        self.runtime.spawn(async move {
+            let refresh_account = account.clone();
+            let _ = tokio::task::spawn_blocking(move || {
+                AccountSessionPort::read_limits(&runtime, &refresh_account)
+            })
+            .await;
+            if let Ok(mut pending) = pending.lock() {
+                pending.remove(&account);
+            }
+        });
+        Ok(())
     }
     fn login(&self, mut request: LoginRequest) -> Result<Value, AccountSessionError> {
         request.login_id = uuid::Uuid::parse_str(&request.login_id)
@@ -949,4 +1125,84 @@ pub fn normalize_profile(
     }
     crate::claude_bridge::bridge_options(&value).map_err(|_| invalid())?;
     Ok(options)
+}
+
+#[cfg(test)]
+mod persistence_tests {
+    use super::{AccountSessionError, persist_limits};
+    use serde_json::{Value, json};
+    use std::{collections::BTreeMap, sync::Mutex};
+    use studio_runtime_store::{RuntimeStore, SyncDocumentsRepository};
+
+    fn stored_workspace(store: &RuntimeStore) -> Value {
+        let db = store.read().unwrap();
+        let raw: String = db
+            .query_row(
+                "SELECT payload FROM sync_entities WHERE collection='workspace' AND id='current'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        serde_json::from_str(&raw).unwrap()
+    }
+
+    #[test]
+    fn refreshed_limits_persist_and_preserve_other_accounts() {
+        let root = tempfile::tempdir().unwrap();
+        let store = RuntimeStore::open(Some(root.path())).unwrap();
+        store
+            .transaction(|tx| {
+                SyncDocumentsRepository::put_entity(
+                    tx,
+                    "workspace",
+                    "current",
+                    json!({"rateLimitsByAccount":{"other":{"accountKey":"other"}}}),
+                    false,
+                )?;
+                Ok(())
+            })
+            .unwrap();
+        let cache = Mutex::new(BTreeMap::new());
+        let value = json!({"accountKey":"default","data":{"accountId":"fixture"},"at":1.0,"readAt":1.0,"error":null});
+
+        persist_limits(&store, &cache, "default", &value).unwrap();
+
+        let entity = stored_workspace(&store);
+        assert_eq!(entity["value"]["rateLimits"], value);
+        assert_eq!(entity["value"]["rateLimitsByAccount"]["default"], value);
+        assert_eq!(
+            entity["value"]["rateLimitsByAccount"]["other"]["accountKey"],
+            "other"
+        );
+        assert_eq!(cache.lock().unwrap().get("default"), Some(&value));
+    }
+
+    #[test]
+    fn limits_persistence_failure_leaves_no_partial_write_or_cache_update() {
+        let root = tempfile::tempdir().unwrap();
+        let store = RuntimeStore::open(Some(root.path())).unwrap();
+        store
+            .transaction(|tx| {
+                SyncDocumentsRepository::put_entity(
+                    tx,
+                    "workspace",
+                    "current",
+                    json!({"rateLimitsByAccount":"invalid-shape","untouched":true}),
+                    false,
+                )?;
+                Ok(())
+            })
+            .unwrap();
+        let before = stored_workspace(&store);
+        let cache = Mutex::new(BTreeMap::new());
+        let value = json!({"accountKey":"default","data":{"accountId":"fixture"},"at":1.0,"readAt":1.0,"error":null});
+
+        assert!(matches!(
+            persist_limits(&store, &cache, "default", &value),
+            Err(AccountSessionError::Persistence)
+        ));
+
+        assert_eq!(stored_workspace(&store), before);
+        assert!(cache.lock().unwrap().is_empty());
+    }
 }
