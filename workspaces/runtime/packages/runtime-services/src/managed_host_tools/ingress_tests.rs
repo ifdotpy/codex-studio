@@ -311,6 +311,139 @@ fn intent_count(store: &RuntimeStore, kind: &str) -> i64 {
         .unwrap()
 }
 
+fn application_table_snapshot(store: &RuntimeStore) -> Vec<(String, Vec<String>)> {
+    use rusqlite::types::ValueRef;
+    let connection = store.read().unwrap();
+    let mut tables = connection
+        .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name")
+        .unwrap();
+    let names = tables
+        .query_map([], |row| row.get::<_, String>(0))
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    let mut snapshot = Vec::new();
+    for name in names {
+        // Callback ingress necessarily persists its idempotency/result receipt.
+        // The tested operation must leave every other row byte-for-byte stable.
+        if matches!(
+            name.as_str(),
+            "runtime_tool_requests" | "runtime_tool_results" | "runtime_tool_request_aliases"
+        ) {
+            continue;
+        }
+        let quoted = name.replace('"', "\"\"");
+        let statement = connection
+            .prepare(&format!("SELECT * FROM \"{quoted}\""))
+            .unwrap();
+        let columns = statement.column_count();
+        drop(statement);
+        let ordering = (1..=columns)
+            .map(|column| column.to_string())
+            .collect::<Vec<_>>()
+            .join(",");
+        let receipt_filter = if name == "runtime_operation_receipts" {
+            " WHERE signature!='provider-callback'"
+        } else {
+            ""
+        };
+        let mut statement = connection
+            .prepare(&format!("SELECT * FROM \"{quoted}\"{receipt_filter} ORDER BY {ordering}"))
+            .unwrap();
+        let rows = statement
+            .query_map([], |row| {
+                let mut values = Vec::new();
+                for column in 0..columns {
+                    let value = row.get_ref(column)?;
+                    values.push(match value {
+                        ValueRef::Null => "null".to_owned(),
+                        ValueRef::Integer(value) => format!("i:{value}"),
+                        ValueRef::Real(value) => format!("r:{value:?}"),
+                        ValueRef::Text(value) => format!("t:{}", String::from_utf8_lossy(value)),
+                        ValueRef::Blob(value) => format!("b:{value:?}"),
+                    });
+                }
+                Ok(values.join("\u{1f}"))
+            })
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        snapshot.push((name, rows));
+    }
+    snapshot
+}
+
+#[test]
+fn named_refusals_leave_all_application_tables_unchanged() {
+    let descendant = template().value["agents"][1]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let cases = [
+        (
+            "orchestration_interrupt",
+            json!({"agent_id":descendant}),
+            "account-worker/agent-interrupt",
+        ),
+        (
+            "orchestration_status",
+            json!({}),
+            "model-directory/status-and-dispatch-capacity",
+        ),
+        (
+            "orchestration_watch",
+            json!({"action":"list"}),
+            "rules/runtime-driver",
+        ),
+        (
+            "orchestration_monitor",
+            json!({"command":"true"}),
+            "workspace-state/monitor-admission",
+        ),
+        (
+            "orchestration_monitor_input",
+            json!({"monitor_id":"missing-monitor","text":"input"}),
+            "monitor-input-request-identity",
+        ),
+        (
+            "orchestration_spawn",
+            json!({"agents":[{"name":"Worker","prompt":"Task"}]}),
+            "agent-create/worker-driver",
+        ),
+        (
+            "orchestration_review",
+            json!({"target":{"type":"uncommittedChanges"}}),
+            "agent-create/worker-driver",
+        ),
+        (
+            "orchestration_context",
+            json!({"topic":"profiles"}),
+            "model-context/requested-topic",
+        ),
+    ];
+    for (index, (tool, args, dependency)) in cases.into_iter().enumerate() {
+        let (_root, store, context) = fixture();
+        let before = application_table_snapshot(&store);
+        let rpc = format!("refusal-{index}");
+        let frame = call(&context, &rpc, tool, args);
+        let wake = std::sync::Arc::new(tokio::sync::Notify::new());
+        let ports = crate::provider_callbacks::managed_tool_ports(&store, &context, &frame, wake)
+            .unwrap();
+        let decision = dispatch_with_managed_tools(&store, &context, &frame, 20.0, &ports).unwrap();
+        assert!(
+            format!("{decision:?}").contains(dependency),
+            "{tool} did not name {dependency}: {decision:?}"
+        );
+        let after = application_table_snapshot(&store);
+        let changed = before
+            .iter()
+            .zip(&after)
+            .filter_map(|((name, old), (_, new))| (old != new).then_some(name.as_str()))
+            .collect::<Vec<_>>();
+        assert!(changed.is_empty(), "{tool} changed tables: {changed:?}");
+    }
+}
+
 #[test]
 fn every_managed_tool_runs_through_provider_callback_dispatch() {
     let (_root, store, context) = fixture();

@@ -183,37 +183,16 @@ impl crate::managed_host_tools::ChildCreationPort for ProductionPorts {
 impl crate::managed_host_tools::InterruptPort for ProductionPorts {
     fn interrupt_in_transaction(
         &self,
-        tx: &Transaction<'_>,
+        _: &Transaction<'_>,
         _: &crate::managed_host_tools::Actor,
-        target_id: &str,
         _: &str,
         _: &str,
-        now: f64,
+        _: &str,
+        _: f64,
     ) -> Result<crate::managed_host_tools::OperationResult, crate::managed_host_tools::Error> {
-        let value = crate::agent_lifecycle_runtime::execute_in_transaction(
-            tx,
-            &crate::agent_management::Action::Stop {
-                target: target_id.to_owned(),
-                descendants: false,
-            },
-            now,
-            &crate::agent_lifecycle_runtime::UnavailableLifecyclePorts,
-        )
-        .map_err(|error| match error {
-            crate::agent_management::ManagementError::Unavailable(name) => {
-                crate::managed_host_tools::Error::Unavailable(name)
-            }
-            crate::agent_management::ManagementError::Store(error) => {
-                crate::managed_host_tools::Error::Store(error)
-            }
-            _ => crate::managed_host_tools::Error::Invalid("Lifecycle action was refused"),
-        })?;
-        Ok(crate::managed_host_tools::OperationResult {
-            value,
-            signals: vec![crate::managed_host_tools::WakeSignal::new(
-                "account-worker/agent-interrupt",
-            )],
-        })
+        Err(crate::managed_host_tools::Error::Unavailable(
+            "account-worker/agent-interrupt",
+        ))
     }
 }
 
