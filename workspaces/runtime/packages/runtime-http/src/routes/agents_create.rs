@@ -2,15 +2,14 @@
 use super::extractors::ApiJson;
 use super::manifest::{Dependency, OperationStatus, RouteGroup, post};
 use crate::{error::ApiError, generated, router::HttpState};
-use axum::{Json, extract::State, http::StatusCode};
-use serde_json::{Value, json};
+use axum::{Json, extract::State, http::StatusCode, response::IntoResponse};
+use serde_json::Value;
 use studio_runtime_services::agents_create::{
     self, Context, CreateError, Creation, OperationError,
 };
 use studio_runtime_services::host_worker_create::{
     AccountIdentity, CreationCatalog, ExecutionSettings,
 };
-use studio_runtime_services::model_catalog::ModelListPort;
 
 /// Compose the same fresh model admission and P02 host snapshot used by agent
 /// creation for managed Spawn, Review, and monitor admission.
@@ -605,11 +604,17 @@ async fn create_lead(
     State(state): State<HttpState>,
     ApiJson(body): ApiJson<generated::CreateLeadRequest>,
 ) -> Result<Json<generated::AgentResponse>, ApiError> {
+    if body.model.as_ref().is_some_and(Option::is_some) {
+        return Err(ApiError::new(
+            StatusCode::NOT_IMPLEMENTED,
+            "Not implemented: requires provider-session/model-list",
+        ));
+    }
     let request = Creation {
         intent: serde_json::to_value(&body).map_err(|_| ApiError::internal())?,
-        catalog: body.effort.is_some()
-            || body.fast_mode.is_some()
-            || body.daybreak_enabled.is_some()
+        catalog: body.effort.as_ref().is_some_and(Option::is_some)
+            || body.fast_mode.as_ref().is_some_and(Option::is_some)
+            || body.daybreak_enabled.as_ref().is_some_and(Option::is_some)
             || body.model.as_ref().is_some_and(Option::is_some),
         worker_catalog: body.worker_defaults.is_some() || body.review_defaults.is_some(),
         project_binding: body.project_id.flatten().is_some()
@@ -648,10 +653,10 @@ async fn create_agent_with_import(
     }
     let request = Creation {
         intent: serde_json::to_value(&body).map_err(|_| ApiError::internal())?,
-        catalog: body.model.is_some()
-            || body.effort.is_some()
-            || body.fast_mode.is_some()
-            || body.daybreak_enabled.is_some(),
+        catalog: body.model.as_ref().is_some_and(Option::is_some)
+            || body.effort.as_ref().is_some_and(Option::is_some)
+            || body.fast_mode.as_ref().is_some_and(Option::is_some)
+            || body.daybreak_enabled.as_ref().is_some_and(Option::is_some),
         worker_catalog: body.worker_defaults.is_some(),
         id: body.id.flatten(),
         cwd: body.cwd,
@@ -714,8 +719,18 @@ async fn configure(
 }
 async fn conversation(
     State(state): State<HttpState>,
-    ApiJson(body): ApiJson<generated::ConversationRequest>,
+    ApiJson(value): ApiJson<Value>,
 ) -> Result<Json<generated::AgentResponse>, ApiError> {
+    for field in ["model", "fast_mode", "worker_defaults", "review_defaults"] {
+        if value.get(field).is_some_and(Value::is_null) {
+            return Err(ApiError::validation(vec![
+                Value::String("body".to_owned()),
+                Value::String(field.to_owned()),
+            ]));
+        }
+    }
+    let body: generated::ConversationRequest = serde_json::from_value(value)
+        .map_err(|_| ApiError::validation(vec![Value::String("body".to_owned())]))?;
     let request = agents_create::Conversation {
         non_defaults: body.next_turn.is_some() || body.request_id.is_some(),
         model_present: body.model.is_some(),
@@ -777,150 +792,62 @@ async fn conversation(
 async fn rename(
     State(state): State<HttpState>,
     ApiJson(body): ApiJson<generated::RenameRequest>,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<axum::response::Response, ApiError> {
     let name = body.name.flatten();
     if name.is_none() {
-        let Some(port) = state.title_request.clone() else {
-            return Err(ApiError::new(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "Title generation is unavailable",
-            ));
-        };
-        let request_id = body
+        let _request_id = body
             .request_id
             .flatten()
             .filter(|id| !id.is_empty())
             .ok_or_else(|| ApiError::validation(vec![Value::String("body".to_owned())]))?;
-        let store = state.store.clone().ok_or_else(ApiError::internal)?;
-        let agent_id = body.id.clone();
-        let agent = studio_runtime_process::blocking_pool::spawn_blocking(
-            "runtime-http/routes/agents_create",
-            {
-                let store = store.clone();
-                let agent_id = agent_id.clone();
-                move || {
-                    let connection = store.read().map_err(|_| ApiError::internal())?;
-                    studio_runtime_store::AgentRepository::get(
-                        &connection,
-                        &studio_runtime_store::AgentId::from(agent_id),
-                    )
-                    .map_err(|_| ApiError::internal())?
-                    .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "Unknown managed agent"))
-                }
-            },
-        )
-        .await
-        .map_err(|_| ApiError::internal())??;
-        let account_key = agent
-            .extra
-            .get("accountKey")
-            .and_then(Value::as_str)
-            .unwrap_or("default")
-            .to_owned();
-        let driver = state.account_driver.as_ref().ok_or_else(|| {
-            ApiError::new(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "Account metadata is unavailable",
-            )
-        })?;
-        let snapshot = driver.snapshot().map_err(|_| ApiError::internal())?;
-        let account = snapshot
-            .accounts
-            .iter()
-            .find(|row| row.get("id").and_then(Value::as_str) == Some(&account_key))
-            .cloned()
-            .ok_or_else(|| {
-                ApiError::new(StatusCode::BAD_REQUEST, "Unknown account for managed agent")
-            })?;
-        let _home = account.get("home").and_then(Value::as_str).ok_or_else(|| {
-            ApiError::new(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "Provider account home is unavailable",
-            )
-        })?;
-        let provider = account
-            .get("provider")
-            .and_then(Value::as_str)
-            .unwrap_or("codex");
-        state
-            .model_catalog
-            .set_account_session(state.account_session.clone());
-        state.model_catalog.retain_accounts(&snapshot.accounts);
-        let catalog = state
-            .model_catalog
-            .list(
-                &account_key,
-                provider,
-                json!({
-                    "limit": studio_runtime_schema::shared_values::MODEL_CATALOG_ITEMS_PER_PAGE
-                }),
-            )
-            .await
-            .map_err(|error| match error {
-                studio_runtime_services::model_catalog::ModelListError::Pending => {
-                    ApiError::new(StatusCode::CONFLICT, "Model catalog is pending")
-                }
-                studio_runtime_services::model_catalog::ModelListError::UnknownAccount
-                | studio_runtime_services::model_catalog::ModelListError::ProviderMismatch => {
-                    ApiError::new(StatusCode::BAD_REQUEST, "Account model catalog changed")
-                }
-                studio_runtime_services::model_catalog::ModelListError::InvalidParams => {
-                    ApiError::internal()
-                }
-                studio_runtime_services::model_catalog::ModelListError::Unavailable => {
-                    ApiError::new(
-                        StatusCode::SERVICE_UNAVAILABLE,
-                        "Provider model catalog is unavailable",
-                    )
-                }
-            })?;
-        let deadline = std::time::SystemTime::now() + std::time::Duration::from_secs(30);
-        let generated = studio_runtime_services::title_generation::generate(
-            &store,
-            port.as_ref(),
-            &body.id,
-            &catalog,
-            &request_id,
-            deadline,
-        )
-        .await
-        .map_err(|_| {
-            ApiError::new(
-                StatusCode::CONFLICT,
-                "Title generation could not be completed",
-            )
-        })?;
-        let result = match generated {
-            studio_runtime_services::title_generation::TitleResult::Applied { title } => {
-                json!({"id":body.id,"name":title,"request_id":request_id,"status":"applied"})
-            }
-            studio_runtime_services::title_generation::TitleResult::Skipped => {
-                json!({"id":body.id,"status":"skipped"})
-            }
-            studio_runtime_services::title_generation::TitleResult::Discarded => {
-                json!({"id":body.id,"status":"discarded"})
-            }
-            studio_runtime_services::title_generation::TitleResult::RetryableNotSent => {
-                json!({"id":body.id,"request_id":request_id,"status":"not_sent"})
-            }
-            studio_runtime_services::title_generation::TitleResult::HeldUnknown => {
-                json!({"id":body.id,"request_id":request_id,"status":"unknown"})
-            }
-        };
-        return Ok(Json(result));
+        return Err(ApiError::new(
+            StatusCode::NOT_IMPLEMENTED,
+            "Not implemented: requires provider-session/title-generation",
+        ));
     }
-    let Json(result) = dispatch::<generated::RenameResponse>(state, move |context| {
-        agents_create::rename_operation(
-            context,
-            &body.id,
-            name.as_deref(),
-            body.request_id.flatten().as_deref(),
-        )
-    })
-    .await?;
-    Ok(Json(
-        serde_json::to_value(result).map_err(|_| ApiError::internal())?,
-    ))
+    studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-http/routes/agents_create/rename",
+        move || {
+            let store = state.store.as_deref().ok_or_else(ApiError::internal)?;
+            let catalog = RouteCreationCatalog {
+                service: state.model_catalog.clone(),
+            };
+            let context = Context {
+                store,
+                accounts: state.account_policy.as_deref(),
+                driver: state.account_driver.as_deref(),
+                catalog: Some(&catalog),
+                validate: &|schema, value| match schema {
+                    "PersistedAgentRecord" => state
+                        .validators
+                        .validate_table_record("runtime_agents", value),
+                    _ => state.validators.validate_stored(schema, value),
+                },
+            };
+            let result = agents_create::rename_operation(
+                &context,
+                &body.id,
+                name.as_deref(),
+                body.request_id.flatten().as_deref(),
+            )
+            .map_err(operation_error)?;
+            if !result.replayed {
+                state.event_wake.notify_one();
+            }
+            let mut response = super::generated_json::<generated::RenameResponse>(result.response)
+                .map(Json)
+                .map_err(|_| ApiError::internal())?
+                .into_response();
+            if result.replayed {
+                response
+                    .extensions_mut()
+                    .insert(crate::mutation_sync::SkipMutationSyncEnvelope);
+            }
+            Ok(response)
+        },
+    )
+    .await
+    .map_err(|_| ApiError::internal())?
 }
 fn operation_error(error: OperationError) -> ApiError {
     use agents_create::MutationError;
@@ -934,9 +861,7 @@ fn operation_error(error: OperationError) -> ApiError {
         &error,
         OperationError::Create(
             MutationError::CapabilityUnavailable(
-                "account-driver/unavailable"
-                    | "provider-session/model-list"
-                    | "provider-session/title-generation"
+                "account-driver/unavailable" | "provider-session/title-generation"
             ) | MutationError::TitleGenerationUnavailable
         )
     );

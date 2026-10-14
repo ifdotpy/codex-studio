@@ -32,8 +32,29 @@ from http_backend_harness import (
     HTTP_WAIT_GUARD_SECONDS,
     TimedHTTPContractTest,
     start_contract_backend,
-    no_write_snapshot,
+    no_write_snapshot as _no_write_snapshot,
 )
+
+# These routes can write these application rows. Their dispatcher wakes the
+# scheduler only after success; meanwhile it can reserve an earlier queued
+# event, so that event's status is treated as background-owned by the harness.
+AGENT_CREATE_WRITE_TABLES = frozenset({
+    "runtime_agents",
+    "runtime_events",
+    "runtime_event_meta",
+    "runtime_lead_requests",
+    "runtime_operation_receipts",
+    "runtime_projects",
+    "sync_entities",
+})
+
+
+def no_write_snapshot(
+    state: Path, *, before: tuple[object, ...] | None = None,
+) -> tuple[object, ...]:
+    return _no_write_snapshot(
+        state, include_tables=AGENT_CREATE_WRITE_TABLES, baseline_snapshot=before,
+    )
 
 _fixture_spec = importlib.util.spec_from_file_location(
     "agents_create_runtime_fixture", HERE / "runtime-contract.py"
@@ -188,7 +209,7 @@ class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             headers=self.headers(),
         )
 
-        def next_event(response, deadline):
+        def next_resource_event(response, deadline):
             event = None
             raw_socket = response.fp.raw._sock
             while time.monotonic() < deadline:
@@ -197,27 +218,24 @@ class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
                 if line.startswith("event: "):
                     event = line.removeprefix("event: ")
                 elif not line and event is not None:
-                    return event
+                    if event == "resources":
+                        return
             raise TimeoutError("Model catalog readiness event did not arrive")
 
         with urlopen(request, timeout=HTTP_WAIT_GUARD_SECONDS) as response:
             deadline = time.monotonic() + HTTP_WAIT_GUARD_SECONDS
-            while next_event(response, deadline) != "resources":
-                pass
             catalog_query = urlencode({"account_key": account_key})
-            initial = backend.request(
-                "GET", f"/api/models?{catalog_query}", headers=self.headers()
-            )
-            if initial.status == 200:
-                return
-            self.assertEqual(initial.status, 400, initial.body[:1000])
-            self.assertTrue(initial.json().get("catalogPending"), initial.body[:1000])
-            while next_event(response, deadline) != "resources":
-                pass
-            ready = backend.request(
-                "GET", f"/api/models?{catalog_query}", headers=self.headers()
-            )
-            self.assertEqual(ready.status, 200, ready.body[:1000])
+            while time.monotonic() < deadline:
+                result = backend.request(
+                    "GET", f"/api/models?{catalog_query}", headers=self.headers(),
+                    timeout=max(0.01, deadline - time.monotonic()),
+                )
+                if result.status == 200:
+                    return
+                self.assertEqual(result.status, 400, result.body[:1000])
+                self.assertTrue(result.json().get("catalogPending"), result.body[:1000])
+                next_resource_event(response, deadline)
+            self.fail("Model catalog did not become ready before the shared deadline")
 
     def test_draft_creation_replays_same_content_and_syncs_python_shape(self):
         reference_request = {
@@ -570,7 +588,10 @@ class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         # backend has already scheduled the child. Python Runtime.schedule()
         # also reserves queued workers (codex_runtime.py around 6503/7036),
         # changing only these lifecycle fields after create.
-        scheduler_fields = {"status", "inFlight", "startAttempt", "turnId", "turnEpoch"}
+        scheduler_fields = {
+            "status", "inFlight", "startAttempt", "turnId", "turnEpoch",
+            "workspaceOperation", "workspaceReservationId", "worktreePreparation",
+        }
         saved_for_creation = normalized_agent(saved)
         expected_for_creation = normalized_agent(expected)
         for field in scheduler_fields:
@@ -653,12 +674,10 @@ class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             },
         )
         after = rename_state(self.backend.state, self.agent_id, "title-request-1")
-        self.assertEqual(
-            response_body["_syncEntitiesAfter"], before["projection"][0]
-        )
         self.assertEqual(len(response_body["_syncEntities"]), 1)
         entity = response_body["_syncEntities"][0]
         self.assertEqual(entity["id"], f"entity:agent:{self.agent_id}")
+        self.assertEqual(entity["seq"], response_body["_syncEntitiesAfter"] + 1)
         self.assertEqual(entity["seq"], after["projection"][0])
         self.assertFalse(entity["_deleted"])
         self.assertEqual(
@@ -818,7 +837,7 @@ class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             with self.subTest(field=field):
                 before = no_write_snapshot(self.backend.state)
                 self.post("/api/agents", {**body, field: value}, 400)
-                self.assertEqual(no_write_snapshot(self.backend.state), before)
+                self.assertEqual(no_write_snapshot(self.backend.state, before=before), before)
         self.post("/api/rename", {"id": body["id"], "name": "Changed"})
         self.assertEqual(self.post("/api/agents", body)["name"], "Changed")
         draft = self.draft()
@@ -833,7 +852,7 @@ class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         before = no_write_snapshot(self.backend.state)
         result = self.post("/api/leads", body, 500)
         self.assertIn("runtime_lead_requests/" + body["id"], result["error"])
-        self.assertEqual(no_write_snapshot(self.backend.state), before)
+        self.assertEqual(no_write_snapshot(self.backend.state, before=before), before)
 
     def test_probe_admission_invalid_stored_agent_is_refused_by_rename(self):
         self.rust_only()
@@ -844,7 +863,7 @@ class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             before = no_write_snapshot(self.backend.state)
             result = self.post("/api/rename", {"id": body["id"], "name": "Invalid kept"}, 500)
             self.assertIn("runtime_agents/" + body["id"], result["error"])
-            self.assertEqual(no_write_snapshot(self.backend.state), before)
+            self.assertEqual(no_write_snapshot(self.backend.state, before=before), before)
         finally:
             self.save(record)
 
@@ -858,7 +877,7 @@ class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             before = no_write_snapshot(self.backend.state)
             result = self.post("/api/leads", {"id": str(uuid.uuid4()), "cwd": str(self.backend.cwd), "account_key": "default"}, 500)
             self.assertIn("runtime_projects/" + str(self.backend.cwd), result["error"])
-            self.assertEqual(no_write_snapshot(self.backend.state), before)
+            self.assertEqual(no_write_snapshot(self.backend.state, before=before), before)
         finally:
             with database_connection(self.backend.state / "canvas.sqlite3") as db:
                 db.execute("UPDATE runtime_projects SET record=? WHERE id=?", (original, str(self.backend.cwd)))
@@ -902,7 +921,7 @@ class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
                 if field == "effort":
                     self.assertEqual(self.stored(self.agent_id)["nativeEffort"], "medium")
                 else:
-                    self.assertEqual(no_write_snapshot(self.backend.state), before)
+                    self.assertEqual(no_write_snapshot(self.backend.state, before=before), before)
 
     def test_probe_boundaries_explicit_nulls_are_located_schema_refusals(self):
         corpus = [("/api/leads", {"cwd": str(self.backend.cwd)}, ("reuse_empty", "yolo_mode", "cwd", "account_key", "workspaceMode")),
@@ -958,9 +977,11 @@ class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         for field in ("concurrency", "agentMode", "subagentConcurrencyVersion"):
             self.assertNotIn(field, saved)
         # The live scheduler can reserve the queued worker before this request.
-        # Python Runtime.configure() rejects execution-setting writes while a
-        # turn is in flight (codex_runtime.py:5331, 5353), so this is a valid
-        # refusal once the Rust scheduler has advanced the child.
+        # Make the Python owner's active-turn precondition explicit rather
+        # than depending on scheduler timing (codex_runtime.py:5331, 5353).
+        active = self.stored(body["id"])
+        active.update(status="running", inFlight=True)
+        self.save(active)
         self.post("/api/conversation", {"id": body["id"]}, 400)
 
     def test_probe_extra_null_creation_effort_and_invalid_stored_name(self):
@@ -978,7 +999,7 @@ class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             before = no_write_snapshot(self.backend.state)
             result = self.post("/api/conversation", {"id": body["id"], "excluded_account_keys": []}, 500)
             self.assertIn("runtime_agents/" + body["id"], result["error"])
-            self.assertEqual(no_write_snapshot(self.backend.state), before)
+            self.assertEqual(no_write_snapshot(self.backend.state, before=before), before)
         finally:
             self.save(original)
 
@@ -995,7 +1016,7 @@ class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             self.backend.start()
             before = no_write_snapshot(self.backend.state)
             self.post("/api/leads", body)
-            self.assertEqual(no_write_snapshot(self.backend.state), before)
+            self.assertEqual(no_write_snapshot(self.backend.state, before=before), before)
         finally:
             self.backend.stop()
             path.write_bytes(original)
@@ -1006,7 +1027,7 @@ class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         body = {"id": str(uuid.uuid4()), "cwd": str(self.backend.cwd), "prompt": "Task", "profile_id": "unknown-profile"}
         before = no_write_snapshot(self.backend.state)
         self.post("/api/agents", body, 400)
-        self.assertEqual(no_write_snapshot(self.backend.state), before)
+        self.assertEqual(no_write_snapshot(self.backend.state, before=before), before)
         profile = {"id": "plain-profile", "name": "Plain", "role": "reviewer", "model": "gpt-6-astra", "effort": None, "instructions": "Follow the fixture instructions."}
         with database_connection(self.backend.state / "canvas.sqlite3") as db:
             db.execute("INSERT INTO runtime_profiles VALUES(?,?)", (profile["id"], json.dumps(profile)))
@@ -1022,7 +1043,7 @@ class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             else:
                 before = no_write_snapshot(self.backend.state)
                 self.post("/api/agents", {**body, "id": agent_id, "profile_id": profile["id"]}, status)
-                self.assertEqual(no_write_snapshot(self.backend.state), before)
+                self.assertEqual(no_write_snapshot(self.backend.state, before=before), before)
 
     def test_probe_admission_completed_worker_result_file_survives_configure(self):
         self.rust_only()
@@ -1049,11 +1070,11 @@ class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
                         self.post(path, {**body, **preferences}, 501)["error"],
                         "Not implemented: requires provider-session/model-list",
                     )
-                    self.assertEqual(no_write_snapshot(self.backend.state), before)
+                    self.assertEqual(no_write_snapshot(self.backend.state, before=before), before)
                 else:
                     before = no_write_snapshot(self.backend.state)
                     self.assertEqual(self.post(path, {**body, **preferences}, 501)["error"], "Not implemented: requires " + dependency)
-                    self.assertEqual(no_write_snapshot(self.backend.state), before)
+                    self.assertEqual(no_write_snapshot(self.backend.state, before=before), before)
 
     def test_probe_refusal_configure_response_failure_rolls_back_every_write(self):
         self.rust_only()
@@ -1066,7 +1087,7 @@ class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             before = no_write_snapshot(self.backend.state)
             result = self.post("/api/configure", {"id": body["id"], "tokenBudget": 13}, 500)
             self.assertIn("runtime_agents/" + body["id"], result["error"])
-            self.assertEqual(no_write_snapshot(self.backend.state), before)
+            self.assertEqual(no_write_snapshot(self.backend.state, before=before), before)
         finally:
             self.save(original)
 
@@ -1079,7 +1100,7 @@ class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
                     self.save({**original, **change})
                     before = no_write_snapshot(self.backend.state)
                     self.post("/api/leads", {"id": str(uuid.uuid4()), "previous": previous["id"], "reuse_empty": False}, 400)
-                    self.assertEqual(no_write_snapshot(self.backend.state), before)
+                    self.assertEqual(no_write_snapshot(self.backend.state, before=before), before)
             self.save({**original, "prompt": "This conversation has content"})
             reuse_request = {"id": str(uuid.uuid4()), "previous": previous["id"], "reuse_empty": True}
             result = self.post("/api/leads", reuse_request)
@@ -1120,7 +1141,7 @@ class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
                 before = no_write_snapshot(self.backend.state)
                 result = self.post("/api/conversation", {"id": body["id"], "excluded_account_keys": [], field: None}, 400)
                 self.assertIn("Wait for this turn", result["error"])
-                self.assertEqual(no_write_snapshot(self.backend.state), before)
+                self.assertEqual(no_write_snapshot(self.backend.state, before=before), before)
         finally:
             self.save(original)
 
@@ -1132,7 +1153,7 @@ class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         result = self.post("/api/agents", {"id": self.agent_id, "name": original["name"], "prompt": original["prompt"], "cwd": original["cwd"]}, 400)
         self.assertIn("No saved creation intent", result["error"])
         self.assertIn("inspect the existing agent", result["error"])
-        self.assertEqual(no_write_snapshot(self.backend.state), before)
+        self.assertEqual(no_write_snapshot(self.backend.state, before=before), before)
 
     def test_probe_trim_creation_intent_and_rename_use_python_whitespace(self):
         self.rust_only()
@@ -1155,10 +1176,10 @@ class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         self.assertEqual(result["name"], "Renamed")
         before = no_write_snapshot(self.backend.state)
         self.assertEqual(self.post("/api/rename", {**rename, "name": "Renamed"})["name"], "Renamed")
-        self.assertEqual(no_write_snapshot(self.backend.state), before)
+        self.assertEqual(no_write_snapshot(self.backend.state, before=before), before)
         before = no_write_snapshot(self.backend.state)
         self.post("/api/rename", {"id": request["id"], "name": "\u001c\u001f"}, 400)
-        self.assertEqual(no_write_snapshot(self.backend.state), before)
+        self.assertEqual(no_write_snapshot(self.backend.state, before=before), before)
 
     def test_shared_projection_local_server_identity(self):
         body = self.draft()

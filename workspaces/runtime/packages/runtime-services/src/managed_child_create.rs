@@ -461,7 +461,10 @@ pub(crate) fn spawn_agents(
             (String::new(), String::new(), None, None)
         };
         let body = json!({"account_key":account_key,"name":name,"model":model,"effort":effort,
-            "prompt":prompt,"workspace_explicit":spec.get("workspace").is_some()});
+            "prompt":prompt,"workspace_explicit":spec.get("workspace").is_some(),
+            "_workspaceInGit":parent_value.get("workspaceInGit").and_then(Value::as_bool).unwrap_or(false),
+            "_imageWorkspaceHasGit":parent_value.get("workspaceInGit").and_then(Value::as_bool).unwrap_or(false)
+                || parent_value.get("imageWorkspaceHasGit").and_then(Value::as_bool).unwrap_or(false)});
         let draft = crate::host_worker_create::prepare_work_item(
             &body,
             Path::new(parent_cwd),
@@ -1087,7 +1090,10 @@ pub(crate) fn request_review(
             .map(|(_, project)| project)
     };
     let body = json!({"account_key":account_key,"name":"Review","model":model,
-        "effort":effort,"prompt":spec.get("prompt").and_then(Value::as_str).unwrap_or("")});
+        "effort":effort,"prompt":spec.get("prompt").and_then(Value::as_str).unwrap_or(""),
+        "_workspaceInGit":parent_value.get("workspaceInGit").and_then(Value::as_bool).unwrap_or(false),
+        "_imageWorkspaceHasGit":parent_value.get("workspaceInGit").and_then(Value::as_bool).unwrap_or(false)
+            || parent_value.get("imageWorkspaceHasGit").and_then(Value::as_bool).unwrap_or(false)});
     let prepared = crate::host_worker_create::prepare_work_item(
         &body,
         Path::new(&directory),
