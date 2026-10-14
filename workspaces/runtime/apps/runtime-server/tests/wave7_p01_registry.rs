@@ -738,7 +738,10 @@ async fn provider_input_barrier(root: &std::path::Path, backend_id: &str) -> Val
     )
     .await;
     let attached = wire_read(&mut peer).await;
-    assert!(attached["error"].is_null(), "supervisor attach failed: {attached}");
+    assert!(
+        attached["error"].is_null(),
+        "supervisor attach failed: {attached}"
+    );
     wire_send(
         &mut peer,
         json!({
