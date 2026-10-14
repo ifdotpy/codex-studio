@@ -579,7 +579,10 @@ struct Worker {
 }
 impl Worker {
     async fn run(mut self) -> Result<(), WorkerError> {
-        let result = self.serve().await;
+        let mut result = self.serve().await;
+        if let Err(error) = self.drain_managed_callbacks().await {
+            result = Err(error);
+        }
         if let Some(recovery) = self.restart_recovery.take() {
             recovery.abort();
             let _joined = recovery.await;
@@ -652,7 +655,7 @@ impl Worker {
             self.bridge.faults.cycle();
             tokio::select! {
                 biased;
-                _ = Shutdown::cancelled(&mut self.stop) => { self.closing = true; self.control.cancel(); },
+                _ = Shutdown::cancelled(&mut self.stop) => { self.closing = true; },
                 _ = tokio::time::sleep_until(self.flush_at.unwrap_or_else(||tokio::time::Instant::now()+STREAM_CADENCE)), if self.flush_at.is_some() => self.flush().await?,
                 _ = tokio::time::sleep_until(self.publication_retry_at.unwrap_or_else(||tokio::time::Instant::now()+STREAM_CADENCE)), if self.publication_retry_at.is_some() => self.drain_publications().await?,
                 _ = tokio::time::sleep_until(self.retry_at.unwrap_or_else(|| tokio::time::Instant::now() + PREPARATION_RETRY)), if self.retry_at.is_some() => self.retry_preparations().await?,
@@ -1479,6 +1482,69 @@ impl Worker {
             }
             Err(error) => Err(error),
         }
+    }
+    async fn drain_managed_callbacks(&mut self) -> Result<(), WorkerError> {
+        #[cfg(test)]
+        self.bridge.faults.shutdown_callbacks_draining.notify_one();
+        let deadline = tokio::time::Instant::now() + SHUTDOWN_GRACE;
+        let completed = tokio::time::timeout_at(deadline, async {
+            while let Some(callback) = self.managed_callbacks.join_next().await {
+                match callback {
+                    Ok((cursor, Some(response))) => {
+                        self.push(Effect::Callback(cursor, response))?;
+                    }
+                    Ok((_, None)) => {}
+                    Err(error) => {
+                        eprintln!(
+                            "managed account callback task failed during shutdown; account={} generation={} cursors={:?}: {error}",
+                            self.account, self.generation.0, self.managed_callback_cursors
+                        );
+                    }
+                }
+            }
+            Ok::<(), WorkerError>(())
+        })
+        .await;
+        match completed {
+            Ok(result) => result?,
+            Err(_) => {
+                eprintln!(
+                    "managed account callbacks did not finish before shutdown; account={} generation={} cursors={:?}",
+                    self.account, self.generation.0, self.managed_callback_cursors
+                );
+            }
+        }
+
+        // Use the same callback admission and write path as normal serving.
+        let mut remaining = VecDeque::new();
+        while let Some(effect) = self.effects.pop_front() {
+            match effect {
+                Effect::Callback(cursor, response) => {
+                    self.answer_callback(cursor, response).await?;
+                }
+                effect => remaining.push_back(effect),
+            }
+        }
+        self.effects = remaining;
+
+        let written = tokio::time::timeout_at(deadline, async {
+            while !self.callbacks.is_empty() {
+                let event = self.events.recv().await.ok_or(WorkerError::Closed)?;
+                self.event(event).await?;
+            }
+            Ok::<(), WorkerError>(())
+        })
+        .await;
+        match written {
+            Ok(result) => result?,
+            Err(_) => eprintln!(
+                "managed callback responses were not confirmed written before shutdown; account={} generation={} cursors={:?}",
+                self.account,
+                self.generation.0,
+                self.callbacks.values().collect::<Vec<_>>()
+            ),
+        }
+        Ok(())
     }
     async fn finish(&mut self, exit: SessionExit) -> Result<(), WorkerError> {
         self.closing = true;
