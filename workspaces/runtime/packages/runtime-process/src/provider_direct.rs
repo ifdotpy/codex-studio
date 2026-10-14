@@ -96,6 +96,7 @@ impl ProviderTaskFactory for PreparedDirectProviderTask {
                 deadline: Instant::now() + DIRECT_LIFETIME,
                 max_frame_bytes: MAX_FRAME_BYTES,
                 max_output_bytes: MAX_OUTPUT_BYTES,
+                stderr_log: None,
             };
             factory
                 .open_with_priority(
