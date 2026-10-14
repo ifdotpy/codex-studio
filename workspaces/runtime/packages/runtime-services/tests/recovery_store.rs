@@ -517,7 +517,11 @@ fn restart_not_applied_failpoints_roll_back_event_and_agent_together() {
             agent["autoWake"] = json!(true);
             agent["inFlight"] = json!(false);
             agent["error"] = json!(null);
-            agent.as_object_mut().unwrap().remove("startAttempt");
+            if let Some(agent) = agent.as_object_mut() {
+                agent.remove("startAttempt");
+            } else {
+                panic!("restore oracle agent is not an object");
+            }
             seed_agent(&store, &agent);
             let before = snapshot(&store);
             let queue = events(&store);
