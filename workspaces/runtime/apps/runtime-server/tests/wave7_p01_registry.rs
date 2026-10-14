@@ -5,7 +5,9 @@ mod account_registry;
 #[path = "../../../packages/runtime-services/tests/support/prepared_python.rs"]
 mod prepared_python;
 
-use account_registry::{AccountLaunch, AccountLauncher, AccountRegistry, LaunchFuture};
+use account_registry::{
+    AccountLaunch, AccountLauncher, AccountRegistry, AccountSessionBroker, LaunchFuture,
+};
 use serde_json::{Value, json};
 use std::{
     collections::BTreeMap,
@@ -200,6 +202,37 @@ impl ProviderTaskFactory for WireFactory {
                                             fields: Default::default(),
                                         }),
                                     }).await.unwrap();
+                                    CommandReceipt::Written {
+                                        remote_id: Some(sequence),
+                                        duplicate: false,
+                                    }
+                                }
+                                Some("thread/start" | "thread/fork") => {
+                                    writes
+                                        .send((handle.as_str().into(), write.message().clone()))
+                                        .unwrap();
+                                    sequence += 1;
+                                    events
+                                        .send(JournalEntry {
+                                            received_at_ms: 0,
+                                            cursor: EventCursor(sequence),
+                                            generation: Generation(7),
+                                            payload: JournalPayload::Frame(Frame::Response {
+                                                id: serde_json::from_value::<RequestId>(
+                                                    write.message()["id"].clone(),
+                                                )
+                                                .unwrap(),
+                                                body: ResponseBody::Result(json!({
+                                                    "thread":{"id":"restored-thread"},
+                                                    "sandbox":{"type":"workspaceWrite"},
+                                                    "approvalPolicy":"never",
+                                                    "activePermissionProfile":null
+                                                })),
+                                                fields: Default::default(),
+                                            }),
+                                        })
+                                        .await
+                                        .unwrap();
                                     CommandReceipt::Written {
                                         remote_id: Some(sequence),
                                         duplicate: false,
@@ -480,6 +513,352 @@ async fn accepted_http_message_wakes_retained_worker_and_receipt_replay_does_not
     assert!(writes.try_recv().is_err());
     assert_eq!(launcher.active.load(Ordering::SeqCst), 0);
     state.shutdown_services().await.unwrap();
+}
+
+#[tokio::test]
+async fn checkpoint_restore_http_uses_the_composed_retained_broker_for_fork_and_start() {
+    use axum::{
+        body::{Body, to_bytes},
+        extract::ConnectInfo,
+        http::Request,
+    };
+    use std::process::Command;
+    use tower::ServiceExt;
+
+    for (case, turn_id) in [("fork", "turn-before-restore"), ("start", "")] {
+        let root = tempfile::tempdir().unwrap();
+        let state_dir = root.path().join("state");
+        std::fs::create_dir_all(&state_dir).unwrap();
+        let workspace = root.path().join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        std::fs::write(workspace.join("tracked.txt"), "checkpoint state\n").unwrap();
+        Command::new("git")
+            .args(["init", "--quiet"])
+            .current_dir(&workspace)
+            .status()
+            .unwrap();
+        Command::new("git")
+            .args(["add", "tracked.txt"])
+            .current_dir(&workspace)
+            .status()
+            .unwrap();
+        let commit = Command::new("git")
+            .args([
+                "-c",
+                "user.name=Restore Fixture",
+                "-c",
+                "user.email=restore@example.invalid",
+                "commit",
+                "--quiet",
+                "-m",
+                "base",
+            ])
+            .current_dir(&workspace)
+            .status()
+            .unwrap();
+        assert!(commit.success());
+        let source = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../server/src");
+        let fixture_script = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/wave9_checkpoint_restore_fixture.py");
+        let seeded = std::process::Command::new(prepared_python::prepared_python(&source))
+            .arg("-B")
+            .arg(fixture_script)
+            .arg(&state_dir)
+            .arg(&workspace)
+            .arg(turn_id)
+            .output()
+            .unwrap();
+        assert!(
+            seeded.status.success(),
+            "{}",
+            String::from_utf8_lossy(&seeded.stderr)
+        );
+        let oracle: Value = serde_json::from_slice(&seeded.stdout).unwrap();
+        let store = Arc::new(RuntimeStore::open(Some(&state_dir)).unwrap());
+        let python_oracle_script = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/wave9_checkpoint_restore_python_oracle.py");
+        let python_oracle = std::process::Command::new(prepared_python::prepared_python(&source))
+            .arg("-B")
+            .arg(python_oracle_script)
+            .arg(root.path())
+            .arg(&workspace)
+            .arg(oracle["agent"].as_str().unwrap())
+            .arg(oracle["checkpoint"].as_str().unwrap())
+            .arg(oracle["expectedTree"].as_str().unwrap())
+            .arg(case)
+            .output()
+            .unwrap();
+        assert!(
+            python_oracle.status.success(),
+            "{}",
+            String::from_utf8_lossy(&python_oracle.stderr)
+        );
+        let python_oracle: Value = serde_json::from_slice(&python_oracle.stdout).unwrap();
+        let (launcher, mut writes) = scripted_with_unknown_writes(false);
+        let broker = AccountSessionBroker::new();
+        let mut registry = AccountRegistry::new_with_broker(
+            store.clone(),
+            launcher,
+            Arc::new(Notify::new()),
+            broker.clone(),
+        )
+        .await
+        .unwrap();
+        registry.start("default").await.unwrap();
+
+        let (driver, home) = account_driver(root.path());
+        let account_session: Arc<
+            dyn studio_runtime_services::account_session_runtime::AccountSessionPort,
+        > = Arc::new(
+            studio_runtime_services::account_session_runtime::AccountSessionRuntime::new(
+                driver,
+                Some(Arc::new(broker)),
+                tokio::runtime::Handle::current(),
+                root.path().join("accounts"),
+                home.clone(),
+                home,
+            ),
+        );
+        let resources = PreparationResources::bundled(
+            String::new(),
+            ModelCatalogService::new(None),
+            PathBuf::from("/isolated/python"),
+        )
+        .unwrap()
+        .with_account_session(Some(account_session.clone()));
+        let mut state = studio_runtime_http::HttpState::new(
+            "fixture-token".into(),
+            "fixture".into(),
+            None,
+            state_dir.to_string_lossy().into(),
+            49171,
+            None,
+            Some(store.clone()),
+            None,
+        );
+        state.account_session = Some(account_session);
+        state.preparation_resources = Some(Arc::new(resources));
+        let app = studio_runtime_http::router(state.clone()).unwrap();
+        let payload = json!({
+            "agent":oracle["agent"],
+            "checkpoint":oracle["checkpoint"],
+            "expectedTree":oracle["expectedTree"],
+        });
+        let request = Request::builder()
+            .method("POST")
+            .uri("/api/checkpoint/restore")
+            .header("host", "127.0.0.1:49171")
+            .header("content-type", "application/json")
+            .header("x-canvas-token", "fixture-token")
+            .header(
+                studio_runtime_http::API_SCHEMA_HASH_HEADER,
+                studio_runtime_http::schema::api_schema_hash(),
+            )
+            .extension(ConnectInfo(
+                "127.0.0.1:12345".parse::<std::net::SocketAddr>().unwrap(),
+            ))
+            .body(Body::from(payload.to_string()))
+            .unwrap();
+        let response = app.clone().oneshot(request).await.unwrap();
+        let status = response.status();
+        let bytes = to_bytes(response.into_body(), 1024 * 1024).await.unwrap();
+        assert_eq!(status, 200, "{case}: {}", String::from_utf8_lossy(&bytes));
+        let response: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(response["status"], "restored");
+        assert_eq!(response["checkpoint"], oracle["checkpoint"]);
+        assert_eq!(response["status"], python_oracle["result"]["status"]);
+        assert_eq!(
+            response["checkpoint"],
+            python_oracle["result"]["checkpoint"]
+        );
+
+        let (account, provider_request) =
+            tokio::time::timeout(std::time::Duration::from_secs(10), writes.recv())
+                .await
+                .expect("restore provider request hang guard")
+                .unwrap();
+        assert_eq!(account, "account:default");
+        assert_eq!(
+            provider_request["method"],
+            if case == "fork" {
+                "thread/fork"
+            } else {
+                "thread/start"
+            }
+        );
+        if case == "fork" {
+            let mut expected = json!({
+                "threadId":oracle["threadId"],
+                "lastTurnId":oracle["turnId"],
+                "cwd":workspace.to_string_lossy(),
+                "config":oracle["threadConfig"],
+                "model":oracle["model"],
+            });
+            for field in ["approvalPolicy", "sandbox"] {
+                if let Some(value) = oracle["startParams"].get(field) {
+                    expected[field] = value.clone();
+                }
+            }
+            assert_eq!(provider_request["params"], expected, "Python fork params");
+        } else {
+            let expected = &oracle["startParams"];
+            assert!(
+                provider_request["params"] == *expected,
+                "Python start params match"
+            );
+        }
+        let mut python_request = python_oracle["requests"][0].clone();
+        python_request["params"]["cwd"] = json!(workspace.to_string_lossy());
+        assert_eq!(
+            json!({"method":provider_request["method"],"params":provider_request["params"]}),
+            python_request,
+            "{case}: provider request matches Python"
+        );
+
+        let agent: Value = serde_json::from_str(
+            &store
+                .read()
+                .unwrap()
+                .query_row(
+                    "SELECT record FROM runtime_agents WHERE id=?1",
+                    [oracle["agent"].as_str().unwrap()],
+                    |row| row.get::<_, String>(0),
+                )
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(agent["threadId"], "restored-thread");
+        assert_eq!(agent["restoredCheckpoint"], oracle["checkpoint"]);
+        assert_eq!(agent["status"], "paused");
+        for field in [
+            "threadId",
+            "sandbox",
+            "approvalPolicy",
+            "profile",
+            "turnId",
+            "inFlight",
+            "status",
+            "autoWake",
+            "restoredCheckpoint",
+            "lastCompletedTurn",
+            "checkpointHistoryHead",
+            "workspaceOperation",
+        ] {
+            assert_eq!(
+                agent[field], python_oracle["agent"][field],
+                "{case}: agent.{field}"
+            );
+        }
+        let operation: Value = serde_json::from_str(
+            &store
+                .read()
+                .unwrap()
+                .query_row(
+                    "SELECT record FROM runtime_workspace_operations WHERE json_extract(record,'$.kind')='restore'",
+                    [],
+                    |row| row.get::<_, String>(0),
+                )
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(operation["phase"], "completed");
+        assert_eq!(
+            operation["nativeRequest"]["method"],
+            provider_request["method"]
+        );
+        assert_eq!(
+            operation["nativeRequest"]["params"],
+            provider_request["params"]
+        );
+        for field in [
+            "kind",
+            "agent",
+            "checkpoint",
+            "expectedTree",
+            "phase",
+            "provider",
+            "result",
+        ] {
+            assert_eq!(
+                operation[field], python_oracle["operation"][field],
+                "{case}: operation.{field}"
+            );
+        }
+        let tree = Command::new("git")
+            .args(["write-tree"])
+            .current_dir(&workspace)
+            .output()
+            .unwrap();
+        assert!(tree.status.success());
+        assert_eq!(
+            String::from_utf8_lossy(&tree.stdout).trim(),
+            oracle["checkpointTree"].as_str().unwrap(),
+            "{case}: restored Git tree"
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&tree.stdout).trim(),
+            python_oracle["tree"].as_str().unwrap(),
+            "{case}: Rust and Python workspace trees"
+        );
+        let rust_items: Vec<Value> = store
+            .read()
+            .unwrap()
+            .prepare("SELECT record FROM runtime_items WHERE agent=?1 ORDER BY id")
+            .unwrap()
+            .query_map([oracle["agent"].as_str().unwrap()], |row| {
+                row.get::<_, String>(0)
+            })
+            .unwrap()
+            .map(|row| serde_json::from_str(&row.unwrap()).unwrap())
+            .collect();
+        let project_items = |items: &[Value]| {
+            items
+                .iter()
+                .map(|item| {
+                    json!({
+                        "id":item["id"],
+                        "role":item["role"],
+                        "title":item["title"],
+                        "text":item["text"],
+                        "afterRestore":item["afterRestore"],
+                    })
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            project_items(&rust_items),
+            project_items(python_oracle["items"].as_array().unwrap()),
+            "{case}: transcript rows match Python"
+        );
+        let rust_checkpoints: Vec<Value> = store
+            .read()
+            .unwrap()
+            .prepare("SELECT record FROM runtime_checkpoints ORDER BY id")
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(0))
+            .unwrap()
+            .map(|row| {
+                let row: String = row.unwrap();
+                let value: Value = serde_json::from_str(&row).unwrap();
+                json!({"label":value["label"],"tree":value["tree"]})
+            })
+            .collect();
+        let mut python_checkpoints: Vec<Value> = python_oracle["checkpoints"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|value| json!({"label":value["label"],"tree":value["tree"]}))
+            .collect();
+        python_checkpoints.sort_by_key(|v| v["label"].as_str().unwrap_or_default().to_owned());
+        let mut rust_checkpoints = rust_checkpoints;
+        rust_checkpoints.sort_by_key(|v| v["label"].as_str().unwrap_or_default().to_owned());
+        assert_eq!(
+            rust_checkpoints, python_checkpoints,
+            "{case}: checkpoint rows match Python"
+        );
+        registry.shutdown().await.unwrap();
+        state.shutdown_services().await.unwrap();
+    }
 }
 
 #[tokio::test]

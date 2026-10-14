@@ -1125,7 +1125,7 @@ fn complete_restore(
         operation["result"] = result.clone();
         operation["updated"] = json!(now_seconds());
         WorkspaceOperationsRepository::put_operation(tx, &operation)?;
-        let item_id = format!("restore:{checkpoint_id}");
+        let item_id = format!("{agent_id}:restore:{checkpoint_id}");
         let label = checkpoint.record.get("label").and_then(Value::as_str).unwrap_or("checkpoint");
         let item = json!({"id":item_id,"role":"system","title":"Checkpoint","text":format!("Restored workspace and conversation to {label}")});
         TranscriptRepository::put_notification_item(tx, &item_id, agent_id, &item, now_seconds(), item["text"].as_str().unwrap_or_default(), false)
