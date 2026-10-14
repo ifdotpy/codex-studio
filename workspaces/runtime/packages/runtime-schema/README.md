@@ -3,9 +3,10 @@
 ## Change Contract
 
 - **Responsibility:** Compile the committed OpenAPI and persisted-state JSON
-  schemas once and provide validators to runtime HTTP and store crates.
+  schemas once, and provide generated shared runtime values to Rust consumers.
 - **Public interface:** `initialize`, `validate`, `registry_for_document`,
-  `OPENAPI_URI`, and the `JsonSchemaRegistry` type alias.
+  `OPENAPI_URI`, the `JsonSchemaRegistry` type alias, and values in
+  `shared_values`.
 - **Boundaries:** This crate owns no SQL, records, route handlers, or request
   parsing. `runtime-store` owns stored-object validation through `Table<R>`;
   `runtime-http` owns request validation and resolves schema references through
@@ -23,3 +24,7 @@
 The crate shares one lazily initialized set of persisted-record validators.
 HTTP request validators use `registry_for_document` to prepare references
 against the same OpenAPI document and the persisted-state schema documents.
+The Rust values in `src/shared_values.rs` are generated from the Python owner
+[`codex_shared_values.py`](../../apps/server/src/codex_shared_values.py); the
+web client consumes the matching generated TypeScript output. Check generated
+value drift with `pnpm run shared-values:check`.

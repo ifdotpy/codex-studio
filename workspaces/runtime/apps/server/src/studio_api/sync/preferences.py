@@ -7,12 +7,12 @@ import time
 from typing import Literal
 
 from pydantic import Field, StrictBool, StrictInt, StrictStr, ValidationError, field_validator, model_validator
-from studio_api.models import ContractModel, JsonValue, ResponseModel
+from studio_api.models import ContractModel, JsonValue, MAX_SAFE_INTEGER, ResponseModel
 
 
 class PreferenceField(ContractModel):
     value: JsonValue
-    timestamp: int = Field(ge=0, le=9_007_199_254_740_991)
+    timestamp: int = Field(ge=0, le=MAX_SAFE_INTEGER)
     writer: str = Field(min_length=1, max_length=128)
 
 

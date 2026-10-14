@@ -11,12 +11,23 @@ import subprocess
 import threading
 import time
 
+from codex_shared_values import (
+    MODEL_CATALOG_ITEMS_PER_PAGE,
+    MODEL_CATALOG_MAX_FRAME_BYTES,
+    MODEL_CATALOG_MAX_PAGES,
+    MODEL_CATALOG_MAX_RESPONSE_BYTES,
+    MODEL_CATALOG_OPERATION_TIMEOUT_SECONDS,
+)
 
-MAX_FRAME_BYTES = 2 * 1024 * 1024
-MAX_RESPONSE_BYTES = 16 * 1024 * 1024
 
-
-def read_model_catalog(home, *, executable, isolated, current=lambda: True, timeout=30):
+def read_model_catalog(
+    home,
+    *,
+    executable,
+    isolated,
+    current=lambda: True,
+    timeout=MODEL_CATALOG_OPERATION_TIMEOUT_SECONDS,
+):
     """Use native auth only. No thread, turn, command, or approval methods run.
 
     The caller owns one bounded worker. Stderr is drained and discarded, stdout
@@ -177,7 +188,8 @@ def read_model_catalog(home, *, executable, isolated, current=lambda: True, time
                     if stream_name == "stdout":
                         total_bytes += len(data)
                         buffer.extend(data)
-                        if len(buffer) > MAX_FRAME_BYTES or total_bytes > MAX_RESPONSE_BYTES:
+                        if (len(buffer) > MODEL_CATALOG_MAX_FRAME_BYTES or
+                                total_bytes > MODEL_CATALOG_MAX_RESPONSE_BYTES):
                             raise ValueError("Native model catalog response is too large")
                 else:
                     assert selector is not None
@@ -192,7 +204,8 @@ def read_model_catalog(home, *, executable, isolated, current=lambda: True, time
                         if key.data == "stdout":
                             total_bytes += len(data)
                             buffer.extend(data)
-                            if len(buffer) > MAX_FRAME_BYTES or total_bytes > MAX_RESPONSE_BYTES:
+                            if (len(buffer) > MODEL_CATALOG_MAX_FRAME_BYTES or
+                                    total_bytes > MODEL_CATALOG_MAX_RESPONSE_BYTES):
                                 raise ValueError("Native model catalog response is too large")
 
         request("initialize", {"clientInfo": {"name": "codex_studio_catalog", "version": "1.0.0"},
@@ -202,8 +215,16 @@ def read_model_catalog(home, *, executable, isolated, current=lambda: True, time
         first_page = None
         cursor = None
         while True:
-            value = request("model/list", {"limit": 100, "includeHidden": True,
-                                           **({"cursor": cursor} if cursor is not None else {})})
+            if cursor is not None and len(cursors) >= MODEL_CATALOG_MAX_PAGES:
+                raise ValueError("Invalid or repeated model/list cursor")
+            value = request(
+                "model/list",
+                {
+                    "limit": MODEL_CATALOG_ITEMS_PER_PAGE,
+                    "includeHidden": True,
+                    **({"cursor": cursor} if cursor is not None else {}),
+                },
+            )
             if not isinstance(value, dict) or not isinstance(value.get("data"), list):
                 raise ValueError("Invalid model/list response")
             if first_page is None:
@@ -220,7 +241,7 @@ def read_model_catalog(home, *, executable, isolated, current=lambda: True, time
                     raise RuntimeError("Model catalog connection changed")
                 return {**first_page, "data": rows, "nextCursor": None}
             if (not isinstance(cursor, str) or not cursor or cursor in cursors
-                    or len(cursors) >= 100):
+                    or len(cursors) >= MODEL_CATALOG_MAX_PAGES):
                 raise ValueError("Invalid or repeated model/list cursor")
             cursors.add(cursor)
     finally:

@@ -18,14 +18,13 @@ use thiserror::Error;
 use ureq::tls::{RootCerts, TlsConfig, TlsProvider};
 
 use crate::event_write::python_json_compact;
+use crate::multi_server_protocol_generated::MULTI_SERVER_SIGNING_DOMAIN;
+pub use crate::multi_server_transport_limits::{MAX_REQUEST_BYTES, MAX_RESPONSE_BYTES};
 use studio_runtime_store::{RemoteTransportRepository, RuntimeStore, StoreError, sha256_hex};
 
 pub const CLOCK_SKEW_SECONDS: i64 = 300;
-pub const MAX_REQUEST_BYTES: usize = 256 * 1024;
-pub const MAX_RESPONSE_BYTES: usize = 1024 * 1024;
 pub const MAX_IDENTITY_BYTES: usize = 16 * 1024;
 
-const MULTI_SERVER_DOMAIN: &str = "studio-multi-server-v1";
 const FEDERATION_DOMAIN: &str = "studio-federation-v1";
 const FEDERATION_MESSAGE_DOMAIN: &str = "studio-federation-message-v1\n";
 const FEDERATION_RESPONSE_DOMAIN: &str = "studio-federation-response-v1\n";
@@ -296,7 +295,7 @@ pub fn multi_server_signing_bytes(input: MultiServerSigningInput<'_>) -> Vec<u8>
 fn multi_server_signing_bytes_normalized(input: MultiServerSigningInput<'_>) -> Vec<u8> {
     let digest = sha256_hex(input.body);
     format!(
-        "{MULTI_SERVER_DOMAIN}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{digest}",
+        "{MULTI_SERVER_SIGNING_DOMAIN}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{digest}",
         input.method,
         input.target,
         input.server_id,

@@ -26,15 +26,26 @@ import uuid
 
 from codex_multi_server_crypto import CryptoProcess
 from codex_executables import tailscale as resolve_tailscale, command as executable_command
+from codex_multi_server_transport_limits import (
+    MULTI_SERVER_MAX_REQUEST_BYTES,
+    MULTI_SERVER_MAX_REQUEST_LABEL,
+    MULTI_SERVER_MAX_RESPONSE_BYTES,
+    MULTI_SERVER_MAX_RESPONSE_LABEL,
+)
 from codex_remote import RemoteAccess, validate_origin
+from codex_multi_server_protocol import (
+    ACCESS_PROTOCOL_VERSION,
+    MULTI_SERVER_SIGNING_DOMAIN,
+)
 
 if TYPE_CHECKING:
     from codex_server_discovery import ServerDiscovery
 
-PROTOCOL = 1
+PROTOCOL = ACCESS_PROTOCOL_VERSION
 CLOCK_SKEW_SECONDS = 300
 INVITE_SECONDS = 900
-MAX_RESPONSE_BYTES = 1_048_576
+MAX_TAILSCALE_IDENTITY_JSON_BYTES = 1_048_576
+MAX_HELPER_STDOUT_BYTES = MULTI_SERVER_MAX_RESPONSE_BYTES * 2
 MAX_NONCES = 10_000
 IDENTITY_CACHE_SECONDS = 30
 MAX_IDENTITY_CACHE = 256
@@ -118,7 +129,7 @@ def _ed25519_key(value: object) -> bool:
 
 def request_bytes(method: str, target: str, server_id: str, client_id: str,
                   timestamp: str, nonce: str, request_id: str, raw: bytes) -> bytes:
-    return "\n".join(("studio-multi-server-v1", method.upper(), target, server_id,
+    return "\n".join((MULTI_SERVER_SIGNING_DOMAIN, method.upper(), target, server_id,
                       client_id, timestamp, nonce, request_id,
                       hashlib.sha256(raw).hexdigest())).encode("utf-8")
 
@@ -132,7 +143,7 @@ def _tailscale_json(*arguments: str) -> dict[str, Any]:
         raise AccessError(503, "identity_unavailable", "The Tailscale identity is unavailable")
     try:
         result = subprocess.run(executable_command(executable, list(arguments)), capture_output=True, timeout=5, check=True)
-        if len(result.stdout) > MAX_RESPONSE_BYTES:
+        if len(result.stdout) > MAX_TAILSCALE_IDENTITY_JSON_BYTES:
             raise ValueError
         value = json.loads(result.stdout)
         if not isinstance(value, dict):
@@ -193,11 +204,11 @@ def _exchange(url: str, method: str, headers: dict[str, str], raw: bytes, timeou
         process = subprocess.run([node, str(helper)], input=body,
                                  env={**os.environ, "ELECTRON_RUN_AS_NODE": "1"},
                                  capture_output=True, timeout=timeout, check=True)
-        if len(process.stdout) > MAX_RESPONSE_BYTES * 2:
+        if len(process.stdout) > MAX_HELPER_STDOUT_BYTES:
             raise ValueError
         result = json.loads(process.stdout)
         if isinstance(result, dict) and result.get("failure") == "response_size":
-            raise AccessError(502, "response_size", "The server response exceeds 1 MiB. Keep the request ID")
+            raise AccessError(502, "response_size", f"The server response exceeds {MULTI_SERVER_MAX_RESPONSE_LABEL}. Keep the request ID")
         if not isinstance(result, dict) or not isinstance(result.get("status"), int):
             raise ValueError
         return result
@@ -949,8 +960,8 @@ class MultiServerService:
             for name in ("requestId", "request_id"):
                 if name in body and body[name] != request_id:
                     raise AccessError(409, "request_conflict", "The operation ID does not match its signature")
-        if len(raw) > 262_144:
-            raise AccessError(413, "request_size", "The server request exceeds 256 KiB")
+        if len(raw) > MULTI_SERVER_MAX_REQUEST_BYTES:
+            raise AccessError(413, "request_size", f"The server request exceeds {MULTI_SERVER_MAX_REQUEST_LABEL}")
         fingerprint = hashlib.sha256(method.encode() + b"\n" + path.encode() + b"\n" + raw).hexdigest()
         with self._write() as db:
             row = db.execute("SELECT hash,record FROM runtime_access_outbound WHERE server=? AND request_id=?", (server_id, request_id)).fetchone() if journal else None
@@ -974,8 +985,8 @@ class MultiServerService:
             raise AccessError(403, "redirect_refused", "The server redirect was refused")
         try:
             result_bytes = base64.b64decode(response["body"], validate=True)
-            if len(result_bytes) > MAX_RESPONSE_BYTES:
-                raise AccessError(502, "response_size", "The server response exceeds 1 MiB")
+            if len(result_bytes) > MULTI_SERVER_MAX_RESPONSE_BYTES:
+                raise AccessError(502, "response_size", f"The server response exceeds {MULTI_SERVER_MAX_RESPONSE_LABEL}")
             value = json.loads(result_bytes)
             if not isinstance(value, dict):
                 raise ValueError

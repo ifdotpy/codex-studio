@@ -1,0 +1,62 @@
+"""Authoritative cross-language values for generated consumers."""
+
+from typing import Final
+
+PROCESS_SUPERVISOR_PROTOCOL_VERSION = 1
+OPERATIONS_PYTHON_PROTOCOL_VERSION: Final = 4
+
+MAX_USER_ATTACHMENT_BYTES = 20 * 1024 * 1024
+MAX_PROJECT_SECRET_VALUE_BYTES = 16 * 1024
+MAX_PROGRESS_FILE_BYTES = 128 * 1024
+MAX_WORKSPACE_PREVIEW_BYTES = 20 * 1024 * 1024
+TRANSCRIPT_MAX_TOMBSTONES = 512
+MAX_SYNC_RESOURCE_QUERY_BYTES = 65_536
+MAX_SYNC_RESOURCE_COUNT = 256
+SYNC_BATCH_LIMIT = 100
+SYNC_ENTITY_PAGE_LIMIT = 500
+SYNC_STREAM_BYTE_LIMIT = 1_048_576
+SYNC_RESOURCE_HEARTBEAT_SECONDS = 15
+MAX_SUPERVISOR_FRAME_BYTES = 1024 * 1024
+PROGRESS_LAYOUT_FRESH_SECONDS = 90
+PROGRESS_LAYOUT_MAX_CLIENTS = 32
+PROGRESS_LAYOUT_MAX_BYTES = 65_536
+
+# Codex model/list catalog response contract; byte values count encoded UTF-8.
+MODEL_CATALOG_MAX_FRAME_BYTES = 2 * 1024 * 1024
+MODEL_CATALOG_MAX_RESPONSE_BYTES = 16 * 1024 * 1024
+MODEL_CATALOG_MAX_PAGES = 100
+MODEL_CATALOG_ITEMS_PER_PAGE = 100
+MODEL_CATALOG_OPERATION_TIMEOUT_SECONDS = 30
+MODEL_CATALOG_CACHE_TTL_SECONDS = 300
+
+
+def user_attachment_limit_label() -> str:
+    """Return the display label derived from the byte-valued attachment cap."""
+    mib, remainder = divmod(MAX_USER_ATTACHMENT_BYTES, 1024 * 1024)
+    if remainder:
+        return f"{MAX_USER_ATTACHMENT_BYTES} bytes"
+    return f"{mib} MiB"
+
+
+def project_secret_value_limit_label() -> str:
+    """Return the display label derived from the UTF-8 byte-valued secret cap."""
+    kib, remainder = divmod(MAX_PROJECT_SECRET_VALUE_BYTES, 1024)
+    if remainder:
+        return f"{MAX_PROJECT_SECRET_VALUE_BYTES} bytes"
+    return f"{kib} KiB"
+
+
+def progress_file_limit_label() -> str:
+    """Return the display label derived from the progress-file byte cap."""
+    kib, remainder = divmod(MAX_PROGRESS_FILE_BYTES, 1024)
+    if remainder:
+        return f"{MAX_PROGRESS_FILE_BYTES} bytes"
+    return f"{kib} KiB"
+
+
+def workspace_preview_limit_label() -> str:
+    """Return the display label derived from the inline preview byte cap."""
+    mib, remainder = divmod(MAX_WORKSPACE_PREVIEW_BYTES, 1024 * 1024)
+    if remainder:
+        return f"{MAX_WORKSPACE_PREVIEW_BYTES} bytes"
+    return f"{mib} MiB"

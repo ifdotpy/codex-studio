@@ -11,6 +11,7 @@ from typing import Any
 from unittest.mock import patch
 
 import codex_project_secrets as secrets
+from codex_shared_values import MAX_PROJECT_SECRET_VALUE_BYTES
 from codex_layr_migration import project_id
 from codex_linux_vm import LinuxVMError
 
@@ -88,12 +89,17 @@ class CommandTests(unittest.TestCase):
     def test_bad_input_stops_before_the_vm(self) -> None:
         for arguments, stdin in ((['set', '/tmp/project', 'lower'], VALUE), (['set', '/tmp/project'], VALUE),
                                  (['set', '/tmp/project', 'TOKEN'], ''), (['set', '/tmp/project', 'TOKEN'], '\n'),
-                                 (['set', '/tmp/project', 'TOKEN'], 'x' * (16 * 1024 + 1))):
+                                 (['set', '/tmp/project', 'TOKEN'], 'x' * (MAX_PROJECT_SECRET_VALUE_BYTES + 1))):
             with self.subTest(arguments=arguments, size=len(stdin)):
                 code, output, errors, client = self.run_command(arguments, io.StringIO(stdin))
                 self.assertEqual(code, 2)
                 self.assertEqual(client.calls, [])
                 self.assertNotIn(VALUE, output + errors)
+
+    def test_stdin_accepts_exact_utf8_byte_limit(self) -> None:
+        value = 'é' * (MAX_PROJECT_SECRET_VALUE_BYTES // 2)
+        self.assertEqual(len(value.encode('utf-8')), MAX_PROJECT_SECRET_VALUE_BYTES)
+        self.assertEqual(secrets.read_value(io.StringIO(value)), value)
 
     def test_a_refused_name_shows_the_reason_of_the_vm(self) -> None:
         code, output, errors, _client = self.run_command(['set', '/tmp/project', 'PATH'], io.StringIO(VALUE))

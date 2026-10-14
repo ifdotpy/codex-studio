@@ -5,8 +5,8 @@ from typing import Annotated, Literal, TypeAlias
 from pydantic import BeforeValidator, ConfigDict, Field, StrictInt
 
 from studio_api.models import ContractModel, JsonValue, ResponseModel, SafeInt, require_strict_integer
+from codex_multi_server_protocol_generated import AccessProtocolVersion as AccessProtocolVersion
 
-ACCESS_PROTOCOL_VERSION = 1
 # Visible characters, with ASCII spaces only between visible characters.
 SERVER_NAME_PATTERN = r"^[^\s\p{C}](?:[^\s\p{C}]| +[^\s\p{C}])*$"
 
@@ -24,7 +24,7 @@ class ServerIdentityResponse(ServerIdentity, ResponseModel):
 
 
 class AccessInvitation(ContractModel):
-    protocol: Annotated[Literal[1], BeforeValidator(require_strict_integer)]
+    protocol: Annotated[AccessProtocolVersion, BeforeValidator(require_strict_integer)]
     inviteId: str = Field(min_length=1, max_length=128)
     token: str = Field(min_length=1, max_length=128)
     serverId: str = Field(min_length=1, max_length=128)
@@ -79,12 +79,12 @@ class AccessSettings(ContractModel):
 
 
 class DiscoveryIdentity(ServerIdentity, ResponseModel):
-    protocol: Literal[1]
+    protocol: AccessProtocolVersion
     autoPair: bool
 
 
 class AccessSnapshot(ResponseModel):
-    protocol: Literal[1]
+    protocol: AccessProtocolVersion
     identity: ServerIdentity
     clients: list[AccessClient]
     servers: list[DiscoveredServer]
@@ -165,7 +165,7 @@ class UnrevokeServer(ContractModel):
 
 
 class AutoPairRequest(ContractModel):
-    protocol: Annotated[Literal[1], BeforeValidator(require_strict_integer)]
+    protocol: Annotated[AccessProtocolVersion, BeforeValidator(require_strict_integer)]
     serverId: str = Field(min_length=1, max_length=128)
     label: str = Field(min_length=1, max_length=80)
     origin: str = Field(max_length=512)
@@ -177,7 +177,7 @@ ManagementRequest: TypeAlias = Annotated[CreateInvite | RevokeClient | AcceptInv
 
 
 class DevicePairRequest(ContractModel):
-    protocol: Annotated[Literal[1], BeforeValidator(require_strict_integer)]
+    protocol: Annotated[AccessProtocolVersion, BeforeValidator(require_strict_integer)]
     inviteId: str = Field(min_length=1, max_length=128)
     token: str = Field(min_length=1, max_length=128)
     clientId: str = Field(min_length=1, max_length=128)
@@ -189,7 +189,7 @@ class DevicePairRequest(ContractModel):
 
 
 class DevicePairResponse(ResponseModel):
-    protocol: Literal[1]
+    protocol: AccessProtocolVersion
     serverId: str
     clientId: str
     label: str

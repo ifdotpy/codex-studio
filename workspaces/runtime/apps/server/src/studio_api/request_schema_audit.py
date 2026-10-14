@@ -13,6 +13,7 @@ from starlette.routing import BaseRoute
 from pydantic import BaseModel, RootModel, TypeAdapter
 from pydantic.fields import FieldInfo
 
+from studio_api.models import MAX_SAFE_INTEGER
 from studio_api.app import create_app
 from studio_api.context import ApiContext
 from studio_api.schema import openapi_document
@@ -534,11 +535,11 @@ def _unbounded_integer_findings(value: object, location: str = "openapi") -> lis
             if not is_wide_alias and ((
                 isinstance(minimum, (int, float))
                 and not isinstance(minimum, bool)
-                and minimum < -9_007_199_254_740_991
+                and minimum < -MAX_SAFE_INTEGER
             ) or (
                 isinstance(maximum, (int, float))
                 and not isinstance(maximum, bool)
-                and maximum > 9_007_199_254_740_991
+                and maximum > MAX_SAFE_INTEGER
             )):
                 findings.append({"kind": "integer_outside_safe_range", "location": location})
         for key, child in value.items():

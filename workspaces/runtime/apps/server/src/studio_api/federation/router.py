@@ -12,6 +12,7 @@ from starlette.concurrency import run_in_threadpool
 from starlette.responses import Response
 
 from studio_api.models import ErrorResponse
+from codex_federation_limits import FEDERATION_BODY_LIMIT, FEDERATION_PATHS
 from studio_api.federation.models import (
     ApprovePeerRequest,
     CreateInviteResponse,
@@ -50,13 +51,7 @@ class RequestHeaders:
     def get_all(self, name: str, default: list[str] | None = None) -> list[str]:
         return list(self._values.get(name.lower(), default or []))
 
-MAX_BODY_BYTES = 256 * 1024
-FEDERATION_PATHS = (
-    "/api/federation/v1/pair",
-    "/api/federation/v1/status",
-    "/api/federation/v1/message",
-    "/api/federation/v1/pull",
-)
+MAX_BODY_BYTES = FEDERATION_BODY_LIMIT
 SIGNED_REQUEST_OPERATION_MODELS: dict[str, type[BaseModel]] = {}
 NO_GET_PATHS = ("/api/federation", *FEDERATION_PATHS)
 

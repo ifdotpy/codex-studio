@@ -26,10 +26,11 @@ import time
 import uuid
 
 from codex_open_file_limit import raise_open_file_limit
+from codex_shared_values import MAX_SUPERVISOR_FRAME_BYTES, PROCESS_SUPERVISOR_PROTOCOL_VERSION
 
-PROTOCOL = 1
+PROTOCOL = PROCESS_SUPERVISOR_PROTOCOL_VERSION
 MAX_STDERR_EVENT_BYTES = 256 * 1024
-MAX_FRAME_BYTES = 1024 * 1024
+MAX_FRAME_BYTES = MAX_SUPERVISOR_FRAME_BYTES
 HANDLE_LIMIT = 256 * 1024 * 1024
 SOCKET_TIMEOUT = 10
 
@@ -69,9 +70,20 @@ def _connect(path, timeout=SOCKET_TIMEOUT):
     return client
 
 
+def _frame_byte_length(value):
+    return len(value.encode("utf-8") if isinstance(value, str) else value)
+
+
+def _read_frame(reader):
+    line = reader.readline(MAX_FRAME_BYTES + 1)
+    if _frame_byte_length(line) > MAX_FRAME_BYTES:
+        raise ValueError("Supervisor frame exceeds the size limit")
+    return line
+
+
 def _send(sock, value, lock=None):
     data = (json.dumps(value, separators=(",", ":"), ensure_ascii=False) + "\n").encode()
-    if os.name == "nt" and len(data) > MAX_FRAME_BYTES:
+    if len(data) > MAX_FRAME_BYTES:
         raise ValueError("Supervisor frame exceeds the size limit")
     if lock is None:
         sock.sendall(data)
@@ -82,11 +94,9 @@ def _send(sock, value, lock=None):
 
 def _recv(sock, stream):
     while True:
-        line = stream.readline(MAX_FRAME_BYTES + 1) if os.name == "nt" else stream.readline()
+        line = _read_frame(stream)
         if not line:
             raise ConnectionError("Supervisor connection closed")
-        if os.name == "nt" and len(line.encode("utf-8") if isinstance(line, str) else line) > MAX_FRAME_BYTES:
-            raise ValueError("Supervisor frame exceeds the size limit")
         try:
             return json.loads(line)
         except (UnicodeDecodeError, json.JSONDecodeError) as error:
@@ -1082,8 +1092,10 @@ def _serve_connection(server, reader, writer, first_line=None):
     owner = None
     try:
         if first_line is None:
-            first_line = reader.readline(MAX_FRAME_BYTES + 1) if os.name == "nt" else reader.readline()
-        if not first_line or (os.name == "nt" and len(first_line) > MAX_FRAME_BYTES):
+            first_line = _read_frame(reader)
+        elif _frame_byte_length(first_line) > MAX_FRAME_BYTES:
+            raise ValueError("Supervisor frame exceeds the size limit")
+        if not first_line:
             raise ValueError("Supervisor frame exceeds the size limit")
         first = json.loads(first_line)
         if first.get("protocol") != PROTOCOL or first.get("stateDir") != str(server.supervisor.root):
@@ -1100,11 +1112,9 @@ def _serve_connection(server, reader, writer, first_line=None):
         writer.write(b'{"ok":true}\n')
         writer.flush()
         while True:
-            line = reader.readline(MAX_FRAME_BYTES + 1) if os.name == "nt" else reader.readline()
+            line = _read_frame(reader)
             if not line:
                 return
-            if os.name == "nt" and len(line.encode("utf-8") if isinstance(line, str) else line) > MAX_FRAME_BYTES:
-                raise ValueError("Supervisor frame exceeds the size limit")
             try:
                 request = json.loads(line)
                 if request.get("action") == "adminCloseHandle" and not operator:
@@ -1130,7 +1140,7 @@ def _serve_connection(server, reader, writer, first_line=None):
 
 def _write_frame(writer, value):
     data = (json.dumps(value, separators=(",", ":")) + "\n").encode()
-    if os.name == "nt" and len(data) > MAX_FRAME_BYTES:
+    if len(data) > MAX_FRAME_BYTES:
         data = (json.dumps({"requestId": value.get("requestId"),
                             "error": "Supervisor response exceeds the size limit"}) + "\n").encode()
     writer.write(data)

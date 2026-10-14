@@ -36428,6 +36428,8 @@ export type WorkEntityDto = components["schemas"]["WorkEntityDto"];
 export type WorkspaceEntityDto = components["schemas"]["WorkspaceEntityDto"];
 export type SyncEntityPayload = components["schemas"]["SyncEntityPayload"];
 
+export const SYNC_PROTOCOL_VERSION = 3 as const;
+export const SYNC_ENTITY_SCOPE = "state:entities:v1" as const;
 export const TOKEN_RATE_MAX_ENTRIES = 4096 as const;
 export const TOKEN_RATE_MAX_TOTAL_ENTRIES = 8192 as const;
 export const TOKEN_RATE_IDENTIFIER_MAX_CODEPOINTS = 200 as const;

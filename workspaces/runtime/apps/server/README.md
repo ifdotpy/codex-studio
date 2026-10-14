@@ -21,6 +21,13 @@ directory without opening it for writes, run
 This checker validates the account registry and the workspace usage-limit
 projection in `canvas.sqlite3`; it does not compare Rust sync tables.
 
+The per-file user attachment cap, per-secret value byte cap, per-agent
+`PROGRESS.md` byte cap, and inline workspace preview byte cap are owned in
+[codex_shared_values.py](src/codex_shared_values.py). The generator maintains
+Rust attachment/progress/preview values, TypeScript attachment/secret values,
+and VM guest secret values. Regenerate them with
+`pnpm run shared-values:generate`; the server fast tier checks for drift.
+
 ## Navigation
 
 - [`src/`](src/): implementation and flat Python import root; see the

@@ -8,6 +8,7 @@ use axum::extract::State;
 use axum::http::StatusCode;
 use base64::Engine;
 use serde_json::{Value, json};
+use studio_runtime_schema::shared_values::USER_ATTACHMENT_LIMIT_LABEL;
 use studio_runtime_services::payload_store::{self, PayloadStoreError};
 use studio_runtime_services::workspace_files::{self, WorkspaceContext, WorkspaceFilesError};
 use studio_runtime_store::{
@@ -265,10 +266,9 @@ fn file_error(error: WorkspaceFilesError) -> ApiError {
         WorkspaceFilesError::MissingFile => {
             ApiError::new(StatusCode::BAD_REQUEST, "This file does not exist")
         }
-        WorkspaceFilesError::PreviewLimit => ApiError::new(
-            StatusCode::BAD_REQUEST,
-            "This file exceeds the 20 MiB preview limit",
-        ),
+        error @ WorkspaceFilesError::PreviewLimit { .. } => {
+            ApiError::new(StatusCode::BAD_REQUEST, error.to_string())
+        }
         WorkspaceFilesError::MissingPath => ApiError::new(StatusCode::BAD_REQUEST, "Supply a path"),
         WorkspaceFilesError::InvalidPath => ApiError::new(StatusCode::BAD_REQUEST, "Invalid path"),
     }
@@ -288,7 +288,7 @@ fn map_payload_store_error(error: PayloadStoreError) -> ApiError {
         }
         PayloadStoreError::ContentLimit => ApiError::new(
             StatusCode::BAD_REQUEST,
-            "Files must contain 1 byte to 20 MiB",
+            format!("Files must contain 1 byte to {USER_ATTACHMENT_LIMIT_LABEL}"),
         ),
         PayloadStoreError::UploadConflict => ApiError::new(
             StatusCode::BAD_REQUEST,

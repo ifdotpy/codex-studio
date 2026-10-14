@@ -18,6 +18,7 @@ use std::fs::{self, File};
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
+use studio_runtime_schema::shared_values::MAX_SAFE_INTEGER;
 use studio_runtime_store::analytics_capture::{AnalyticsCaptureRepository as Repo, CaptureTable};
 use studio_runtime_store::{AnalyticsRepository, RuntimeStore, sha256_hex};
 use thiserror::Error;
@@ -540,7 +541,7 @@ fn increment(state: &mut Value, key: &str, count: u64) -> Result<(), HistoryErro
     state[key] = json!(
         current
             .checked_add(count)
-            .filter(|n| *n <= 9_007_199_254_740_991)
+            .filter(|n| *n <= MAX_SAFE_INTEGER as u64)
             .ok_or(CaptureError::Invalid("/history/counter"))?
     );
     Ok(())

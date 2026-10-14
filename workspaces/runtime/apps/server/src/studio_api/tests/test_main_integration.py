@@ -10,11 +10,40 @@ from unittest.mock import Mock
 from fastapi.testclient import TestClient
 
 from codex_project_folders import SidebarOrderConflict
+from codex_http_body_limits import request_body_limit
 from studio_api.app import create_app
 from studio_api.context import ApiContext
+from studio_api.generate_federation_limits import OUTPUTS as FEDERATION_LIMIT_OUTPUTS
+from studio_api.generate_http_body_limits import OUTPUT as RUST_BODY_LIMITS_OUTPUT
+from studio_api.generate_http_body_limits import render_rust_http_body_limits
 
 
 class MainIntegrationTests(unittest.TestCase):
+    def test_request_body_limits_match_generated_rust_contract(self) -> None:
+        expected = {
+            "/api/agents": 256 * 1024,
+            "/api/assets": 28 * 1024 * 1024,
+            "/api/projects": 6 * 1024 * 1024,
+            "/api/voice/audio": 6 * 1024 * 1024,
+            "/api/federation/v1/pair": 256 * 1024,
+            "/api/federation/v1/status": 256 * 1024,
+            "/api/federation/v1/message": 256 * 1024,
+            "/api/federation/v1/pull": 256 * 1024,
+            "/api/unmatched": 256 * 1024,
+        }
+        for path, limit in expected.items():
+            with self.subTest(path=path):
+                self.assertEqual(request_body_limit(path), limit)
+        self.assertEqual(
+            RUST_BODY_LIMITS_OUTPUT.read_text(encoding="utf-8"),
+            render_rust_http_body_limits(),
+        )
+        for generated_path, expected_source in FEDERATION_LIMIT_OUTPUTS.items():
+            with self.subTest(generated=generated_path.name):
+                self.assertEqual(
+                    generated_path.read_text(encoding="utf-8"), expected_source
+                )
+
     def setUp(self) -> None:
         self.runtime = SimpleNamespace(
             projects=Mock(), rename=Mock(), queue_action=Mock(), workspace_task_feed=Mock(),

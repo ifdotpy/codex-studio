@@ -8,9 +8,10 @@ from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlencode
 
+from codex_sync_protocol import SYNC_ENTITY_SCOPE
 
 JsonReader = Callable[[str], dict[str, Any]]
-ENTITY_SCOPE = "state:entities:v1"
+ENTITY_SCOPE = SYNC_ENTITY_SCOPE
 ENTITY_PAGE_SIZE = 100
 _STATE_KEYS = {
     "agent": "agents",
@@ -109,7 +110,7 @@ def read_runtime_state(runtime: Any, *, include_work: bool = True, db: Any = Non
             canvas.runtime = runtime
             sync_store = SyncStore(canvas.connect, canvas.transcript, runtime=runtime, canvas=canvas)
             runtime.sync_store = sync_store
-        sync_store.pull("state:entities:v1", fresh=True)
+        sync_store.pull(SYNC_ENTITY_SCOPE, fresh=True)
         with runtime.read_db() as own:
             return read_runtime_state(runtime, include_work=include_work, db=own)
     state: dict[str, Any] = {name: [] for name in _STATE_KEYS.values()}

@@ -41,7 +41,9 @@ systemctl --user status codex-studio-supervisor codex-studio
 curl --fail http://127.0.0.1:4720/api/desktop
 ```
 
-The response must contain `supervisorMode: true` and supervisor `protocol: 1`.
+The response must contain `supervisorMode: true` and the supported process
+supervisor protocol version. Its owner is
+[`codex_shared_values.py`](../workspaces/runtime/apps/server/src/codex_shared_values.py).
 For a planned backend restart, use:
 
 ```sh

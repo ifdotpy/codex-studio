@@ -1,4 +1,8 @@
 import { serveOrigin, type StudioServer } from "./registry";
+import {
+  ACCESS_PROTOCOL_VERSION,
+  MULTI_SERVER_SIGNING_DOMAIN,
+} from "../generated/multiServerProtocol";
 export class PairingNotAppliedError extends Error {
   constructor() {
     super(
@@ -7,7 +11,7 @@ export class PairingNotAppliedError extends Error {
   }
 }
 export type PairInvitation = {
-  protocol: 1;
+  protocol: typeof ACCESS_PROTOCOL_VERSION;
   inviteId: string;
   token: string;
   serverId: string;
@@ -18,7 +22,7 @@ export type PairInvitation = {
   expires: number;
 };
 export type PairReceipt = {
-  protocol: 1;
+  protocol: typeof ACCESS_PROTOCOL_VERSION;
   serverId: string;
   clientId: string;
   label: string;
@@ -36,7 +40,7 @@ export function parseInvitation(code: string, origin: string): PairInvitation {
   ) as PairInvitation;
   if (
     !value ||
-    value.protocol !== 1 ||
+    value.protocol !== ACCESS_PROTOCOL_VERSION ||
     typeof value.inviteId !== "string" ||
     !value.inviteId ||
     typeof value.token !== "string" ||
@@ -61,7 +65,7 @@ export function pairedServer(
   clientId: string,
 ): StudioServer {
   if (
-    receipt.protocol !== 1 ||
+    receipt.protocol !== ACCESS_PROTOCOL_VERSION ||
     receipt.paired !== true ||
     receipt.serverId !== invitation.serverId ||
     receipt.clientId !== clientId ||
@@ -93,7 +97,7 @@ export function signatureInput(
   hash: string,
 ) {
   return [
-    "studio-multi-server-v1",
+    MULTI_SERVER_SIGNING_DOMAIN,
     method.toUpperCase(),
     path,
     serverId,

@@ -13,6 +13,10 @@ use axum::response::{IntoResponse, Response};
 use futures_util::Stream;
 use futures_util::stream;
 use serde_json::{Value, json};
+use studio_runtime_schema::shared_values::{
+    MAX_SYNC_RESOURCE_COUNT, MAX_SYNC_RESOURCE_QUERY_BYTES, SYNC_RESOURCE_HEARTBEAT_SECONDS,
+};
+use studio_runtime_schema::{SYNC_PROTOCOL_VERSION, SYNC_PROTOCOL_VERSION_TEXT};
 use studio_runtime_services::change_notifications::{ChangeSnapshot, MAX_SAFE_REVISION};
 use studio_runtime_services::progress_watch::{ProgressFileWatch, watch_progress_files};
 use studio_runtime_services::resource_notify::{
@@ -54,9 +58,6 @@ pub(crate) async fn notify_resources(
     )?))
 }
 
-const MAX_RESOURCE_QUERY_BYTES: usize = 65_536;
-const MAX_RESOURCE_COUNT: usize = 256;
-const RESOURCE_HEARTBEAT_SECONDS: u64 = 15;
 static STREAM_DEPENDENCIES: &[Dependency] = &[
     Dependency::new("provider-session/app-server"),
     Dependency::new("usage-policy/token-rates"),
@@ -90,15 +91,16 @@ async fn sync_stream(
 ) -> Response {
     let protocol = query.typed_value("protocol").and_then(Value::as_str);
     let header_protocol = headers.get("x-codex-sync-protocol").and_then(Value::as_str);
-    if protocol.is_some_and(|value| value != "3")
-        || header_protocol.is_some_and(|value| value != "3")
-        || (protocol != Some("3") && header_protocol != Some("3"))
+    if protocol.is_some_and(|value| value != SYNC_PROTOCOL_VERSION_TEXT)
+        || header_protocol.is_some_and(|value| value != SYNC_PROTOCOL_VERSION_TEXT)
+        || (protocol != Some(SYNC_PROTOCOL_VERSION_TEXT)
+            && header_protocol != Some(SYNC_PROTOCOL_VERSION_TEXT))
     {
         return (
             StatusCode::UPGRADE_REQUIRED,
             Json(json!({
                 "error": "Unsupported sync protocol version",
-                "supportedVersions": [3],
+                "supportedVersions": [SYNC_PROTOCOL_VERSION],
             })),
         )
             .into_response();
@@ -187,8 +189,8 @@ async fn sync_stream(
         token_rates,
         _progress_watch: progress_watch,
         heartbeat: interval_at(
-            Instant::now() + Duration::from_secs(RESOURCE_HEARTBEAT_SECONDS),
-            Duration::from_secs(RESOURCE_HEARTBEAT_SECONDS),
+            Instant::now() + Duration::from_secs(SYNC_RESOURCE_HEARTBEAT_SECONDS),
+            Duration::from_secs(SYNC_RESOURCE_HEARTBEAT_SECONDS),
         ),
     };
     event_response(stream::unfold(stream_state, next_frame))
@@ -245,13 +247,13 @@ fn parse_resources(query: &QueryParams, state: &HttpState) -> Result<Vec<Value>,
         .typed_value("resources")
         .and_then(Value::as_str)
         .ok_or_else(invalid)?;
-    if raw.len() > MAX_RESOURCE_QUERY_BYTES {
+    if raw.len() > MAX_SYNC_RESOURCE_QUERY_BYTES {
         return Err(invalid());
     }
     let parsed: Value = serde_json::from_str(raw).map_err(|_| invalid())?;
     let values = parsed.as_array().ok_or_else(invalid)?;
     if values.is_empty()
-        || values.len() > MAX_RESOURCE_COUNT
+        || values.len() > MAX_SYNC_RESOURCE_COUNT
         || values
             .iter()
             .any(|resource| !state.validators.validate_component("ResourceRef", resource))
@@ -359,8 +361,10 @@ async fn next_frame(
         }
         if heartbeat {
             let event = json!({
-                "protocol": 3, "workspaceId": state.workspace_id,
-                "epoch": state.epoch, "revision": view.cursor.revision,
+                "protocol": SYNC_PROTOCOL_VERSION,
+                "workspaceId": state.workspace_id,
+                "epoch": state.epoch,
+                "revision": view.cursor.revision,
             });
             return Some((
                 Ok(sse_event("heartbeat", Some(view.cursor.revision), event)),
@@ -408,9 +412,12 @@ fn token_rate_event(workspace_id: &str, snapshot: &ChangeSnapshot, rates: &Token
         "token-rates",
         Some(snapshot.revision),
         json!({
-            "protocol": 3, "workspaceId": workspace_id,
-            "epoch": snapshot.epoch, "revision": snapshot.revision,
-            "rates": rates["rates"], "teams": rates["teams"],
+            "protocol": SYNC_PROTOCOL_VERSION,
+            "workspaceId": workspace_id,
+            "epoch": snapshot.epoch,
+            "revision": snapshot.revision,
+            "rates": rates["rates"],
+            "teams": rates["teams"],
         }),
     )
 }
@@ -440,7 +447,7 @@ fn resource_event(
         })
         .collect::<Vec<_>>();
     json!({
-        "protocol": 3,
+        "protocol": SYNC_PROTOCOL_VERSION,
         "workspaceId": workspace_id,
         "epoch": epoch,
         "revision": revision,
@@ -595,8 +602,8 @@ mod tests {
             token_rates: tokens.subscribe(),
             _progress_watch: None,
             heartbeat: interval_at(
-                Instant::now() + Duration::from_secs(RESOURCE_HEARTBEAT_SECONDS),
-                Duration::from_secs(RESOURCE_HEARTBEAT_SECONDS),
+                Instant::now() + Duration::from_secs(SYNC_RESOURCE_HEARTBEAT_SECONDS),
+                Duration::from_secs(SYNC_RESOURCE_HEARTBEAT_SECONDS),
             ),
         };
         hub.notify_one();
@@ -635,11 +642,11 @@ mod tests {
             token_rates: token_hub.subscribe(),
             _progress_watch: None,
             heartbeat: interval_at(
-                Instant::now() + Duration::from_secs(RESOURCE_HEARTBEAT_SECONDS),
-                Duration::from_secs(RESOURCE_HEARTBEAT_SECONDS),
+                Instant::now() + Duration::from_secs(SYNC_RESOURCE_HEARTBEAT_SECONDS),
+                Duration::from_secs(SYNC_RESOURCE_HEARTBEAT_SECONDS),
             ),
         };
-        for index in 0..=MAX_RESOURCE_COUNT {
+        for index in 0..=MAX_SYNC_RESOURCE_COUNT {
             token_hub.publish(json!({
                 "rates": {"agent": {"turnId":"turn", "active":true, "estimated":false, "rate":index, "outputTokens":index}}, "teams": {}
             })).expect("publish");
@@ -943,8 +950,8 @@ mod tests {
             token_rates: TokenRateHub::new().subscribe(),
             _progress_watch: None,
             heartbeat: interval_at(
-                Instant::now() + Duration::from_secs(RESOURCE_HEARTBEAT_SECONDS),
-                Duration::from_secs(RESOURCE_HEARTBEAT_SECONDS),
+                Instant::now() + Duration::from_secs(SYNC_RESOURCE_HEARTBEAT_SECONDS),
+                Duration::from_secs(SYNC_RESOURCE_HEARTBEAT_SECONDS),
             ),
         };
         let pending = next_frame(state);

@@ -9,6 +9,8 @@ import threading
 import time
 from collections.abc import Callable
 
+from codex_shared_values import MODEL_CATALOG_CACHE_TTL_SECONDS, MODEL_CATALOG_ITEMS_PER_PAGE
+
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -38,7 +40,9 @@ class ModelCatalogCache:
     Expired metadata never admits a model. No runtime or database lock is used.
     """
 
-    def __init__(self, *, ttl=300, wait_seconds=5, clock=time.monotonic):
+    def __init__(
+        self, *, ttl=MODEL_CATALOG_CACHE_TTL_SECONDS, wait_seconds=5, clock=time.monotonic
+    ):
         self.ttl = ttl
         self.wait_seconds = wait_seconds
         self.clock = clock
@@ -144,7 +148,10 @@ class ModelCatalogCache:
                 try:
                     if not current():
                         raise RuntimeError("Model catalog connection changed")
-                    submitted = (submit or server.submit)("model/list", {"limit": 100, **({'cursor': cursor} if cursor is not None else {})})
+                    submitted = (submit or server.submit)("model/list", {
+                        "limit": MODEL_CATALOG_ITEMS_PER_PAGE,
+                        **({'cursor': cursor} if cursor is not None else {}),
+                    })
                 except Exception as error:
                     # Retain a submitted read after an unknown pipe-write outcome.
                     submitted = getattr(error, "submitted", None)

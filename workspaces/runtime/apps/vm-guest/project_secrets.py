@@ -12,10 +12,14 @@ from common import GuestError, atomic_bytes, private_dir, require
 from layr_agents import LAUNCH_ENV_NAMES, PROVIDER_ENV
 from layr_share import project_id
 from project_env import FD_VARIABLE, NAME, read_secrets, secrets_path
+from shared_values_generated import (
+    MAX_PROJECT_SECRET_VALUE_BYTES,
+    PROJECT_SECRET_VALUE_LIMIT_LABEL,
+)
 
 READ_METHODS = {"secrets.list"}
 METHODS = READ_METHODS | {"secrets.set", "secrets.remove"}
-MAX_VALUE_BYTES = 16 * 1024
+MAX_VALUE_BYTES = MAX_PROJECT_SECRET_VALUE_BYTES
 MAX_SECRETS = 64
 MAX_TOTAL_BYTES = 256 * 1024
 # The launch and the providers set these names; Studio and the providers own the prefixes.
@@ -38,7 +42,7 @@ def check_value(value):
         size = len(value.encode("utf-8"))
     except UnicodeEncodeError:
         raise GuestError("invalid_params", "The secret value must be UTF-8 text") from None
-    require(size <= MAX_VALUE_BYTES, "The secret value exceeds 16 KiB")
+    require(size <= MAX_VALUE_BYTES, f"The secret value exceeds {PROJECT_SECRET_VALUE_LIMIT_LABEL}")
     return value
 
 

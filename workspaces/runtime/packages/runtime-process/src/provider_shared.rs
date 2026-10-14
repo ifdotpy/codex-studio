@@ -1,5 +1,6 @@
 //! Pure supervisor-v1 framing and retained-child launch policy shared by both adapters.
 use crate::{BackendIdentity, OperationId, SupervisorAction, SupervisorError, SupervisorHandle};
+use crate::shared_values_generated::PROCESS_SUPERVISOR_PROTOCOL_VERSION;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::collections::BTreeMap;
@@ -98,7 +99,7 @@ pub(crate) fn initialized_operation_id(
 
 pub(crate) fn handshake_request(identity: &BackendIdentity, operator: bool) -> Value {
     let mut handshake = serde_json::json!({
-        "protocol": 1,
+        "protocol": PROCESS_SUPERVISOR_PROTOCOL_VERSION,
         "stateDir": identity.state_dir,
         "backendId": identity.backend_id,
     });
@@ -115,7 +116,7 @@ pub(crate) fn validate_handshake(response: &str) -> Result<(), SupervisorError> 
         Ok(())
     } else {
         Err(SupervisorError::ProtocolMismatch {
-            expected: 1,
+            expected: PROCESS_SUPERVISOR_PROTOCOL_VERSION,
             received: None,
             detail: value
                 .get("error")

@@ -1,7 +1,7 @@
 """Narrow persisted contracts for relocation decisions; unknown fields stay intact."""
 from typing import Annotated, Literal
 
-from studio_api.models import JsonValue
+from studio_api.models import JsonValue, MAX_SAFE_INTEGER
 
 from pydantic import BaseModel, ConfigDict, Field, RootModel, StrictBool, StrictInt, StrictStr
 
@@ -13,7 +13,7 @@ class OpenRecord(BaseModel):
 
 Text = Annotated[StrictStr, Field(max_length=4096)]
 Key = Annotated[StrictStr, Field(min_length=1, max_length=4096)]
-Counter = Annotated[StrictInt, Field(ge=0, le=9007199254740991)]
+Counter = Annotated[StrictInt, Field(ge=0, le=MAX_SAFE_INTEGER)]
 Time = Annotated[float, Field(ge=0, le=253402300799)]
 Phase = Literal["waiting", "exported", "importing", "prepared", "redirected", "complete", "unknown", "failed", "receiving", "native_submitted", "ready", "active"]
 

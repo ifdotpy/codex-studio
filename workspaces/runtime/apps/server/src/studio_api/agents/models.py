@@ -7,6 +7,7 @@ from typing import Annotated, Literal, TypeAlias
 from pydantic import ConfigDict, Field, field_validator, model_validator
 
 from studio_api.models import ContractModel, ContractStrEnum, JsonValue, ResponseModel, SafeInt
+from codex_shared_values import MAX_PROJECT_SECRET_VALUE_BYTES
 from codex_agent_modes import (
     DEFAULT_MAX_TEAM_AGENTS,
     DEFAULT_SUBAGENT_CONCURRENCY,
@@ -463,7 +464,7 @@ class ProjectSecretSetRequest(ProjectSecretRemoveRequest):
     """Set one secret. The VM keeps the value; no response returns it. A repeated requestId
     returns the saved reply and sets nothing."""
 
-    value: str = Field(min_length=1, max_length=16384)
+    value: str = Field(min_length=1, max_length=MAX_PROJECT_SECRET_VALUE_BYTES)
 
 
 class MacSyncResolveRequest(MacSyncProjectRequest):

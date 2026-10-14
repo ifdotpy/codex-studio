@@ -2,9 +2,10 @@
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use studio_runtime_schema::shared_values::MAX_SAFE_INTEGER;
 use tokio::sync::watch;
 
-pub const MAX_SAFE_REVISION: i64 = 9_007_199_254_740_991;
+pub const MAX_SAFE_REVISION: i64 = MAX_SAFE_INTEGER;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ChangeSnapshot {

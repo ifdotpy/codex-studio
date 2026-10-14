@@ -29,7 +29,7 @@
   [design note](../../../../docs/plans/rust-child-priority.md).
 - **Focused check:** `cargo nextest run -p studio-runtime-process`.
 
-## Supervisor v1 contract
+## Process supervisor handshake contract
 
 Source of truth: [`Supervisor.handle`](../../../apps/server/src/codex_process_supervisor.py#L663),
 the connection handshake and frame loop in the same module, and its Python
@@ -38,9 +38,12 @@ The wire uses newline-delimited JSON over a Unix domain socket (Windows named
 pipe in the Python implementation). The supervisor is a separate long-lived
 process managed by [`codex_supervisor_service.py`](../../../apps/server/src/codex_supervisor_service.py#L232),
 so it retains child ownership across backend restarts. The first client frame is
-`{protocol: 1, stateDir, backendId}`; the server replies `{ok: true}`. A wrong
-protocol or state directory is rejected with an `error` frame before requests
-are accepted. Operator CLI connections use `{protocol: 1, stateDir, operator: true}`.
+`{protocol: PROCESS_SUPERVISOR_PROTOCOL_VERSION, stateDir, backendId}`; the
+server replies `{ok: true}`. The version is owned by
+[`codex_shared_values.py`](../../../apps/server/src/codex_shared_values.py) and
+generated for this crate. A wrong protocol or state directory is rejected with
+an `error` frame before requests are accepted. Operator CLI connections use the
+same protocol field with `{stateDir, operator: true}`.
 
 The action DTOs and methods in `lib.rs` cover the complete `Supervisor.handle`
 inventory:

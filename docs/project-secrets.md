@@ -40,7 +40,9 @@ chat, start its agent again.
   `SHELL`, `LANG`, `LAYR_ROOT`, `LAYR_SESSION`, the provider names (`CODEX_HOME`,
   `CLAUDE_CONFIG_DIR`, `STUDIO_CLAUDE_*`), and each name that starts with `STUDIO_`, `LAYR_`,
   `CODEX_` or `CLAUDE_`.
-- A value is UTF-8 text from 1 byte to 16 KiB, without a NUL character.
+- A value is UTF-8 text from 1 byte to 16 KiB, without a NUL character. The
+  byte limit is owned in the server's [shared values](../workspaces/runtime/apps/server/src/codex_shared_values.py)
+  and generated for the VM guest and web UI.
 - A project has at most 64 secrets.
 - The provider process gets the secrets too. A variable such as `ANTHROPIC_API_KEY` or
   `OPENAI_API_KEY` can change how the provider signs in. Use another name for your own code

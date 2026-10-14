@@ -4,8 +4,7 @@ use std::time::Duration;
 use crate::bounded_child::{self, PipeOutput};
 use serde::Deserialize;
 use serde_json::{Value, json};
-
-const MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
+use studio_runtime_schema::shared_values::MAX_SAFE_INTEGER;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct TaskFeedCursor {
@@ -215,10 +214,10 @@ impl TryFrom<serde_json::Number> for CursorNumber {
     fn try_from(value: serde_json::Number) -> Result<Self, Self::Error> {
         if value
             .as_i64()
-            .is_some_and(|integer| integer < 0 || integer as u64 > MAX_SAFE_INTEGER)
+            .is_some_and(|integer| !(0..=MAX_SAFE_INTEGER).contains(&integer))
             || value
                 .as_u64()
-                .is_some_and(|integer| integer > MAX_SAFE_INTEGER)
+                .is_some_and(|integer| integer > MAX_SAFE_INTEGER as u64)
         {
             return Err("integer is outside the safe range");
         }

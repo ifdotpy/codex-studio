@@ -18,6 +18,8 @@ MAX_RESPONSE_RATE_CACHE_ENTRIES = 4096
 # Per-turn identities needed for correcting provider output. This is a separate
 # bound from the cross-turn response-rate cache, despite sharing its current size.
 MAX_TURN_RESPONSE_HISTORY_ENTRIES = 4096
+# Tool-separated generation segments awaiting provider usage reconciliation.
+MAX_PENDING_RESPONSE_DURATION_ENTRIES = 1024
 TOKEN_RATE_EXPIRY_SECONDS = 90
 TOKEN_RATE_PUBLICATION_DELAY_SECONDS = .05
 TOKEN_RATE_PUBLICATION_RETRY_SECONDS = 1.0
@@ -72,7 +74,8 @@ class TurnRate:
         self.tools = set()
         self.text_samples = deque()
         self.text_window_tokens = 0.0
-        self.response_durations = deque(maxlen=1024)
+        self.response_durations = deque(maxlen=MAX_PENDING_RESPONSE_DURATION_ENTRIES)
+        self.response_duration_pending_tokens = 0.0
         self.generation_response_id = None
 
     def text(self, text, now):
@@ -94,13 +97,30 @@ class TurnRate:
         if not self.tools and self.generation_started is not None:
             self.generation_elapsed += max(0.0, now - self.generation_started)
             # Native usage can arrive after this tool, or after later responses.
-            self.response_durations.append((self.generation_elapsed, self.pending))
+            self._append_response_duration(self.generation_elapsed, self.pending)
             self.generation_elapsed = 0.0
             self.generation_started = None
             self.pending = 0.0
             self.text_samples.clear()
             self.text_window_tokens = 0.0
         self.tools.add(item_id)
+
+    def _append_response_duration(self, duration, pending):
+        if len(self.response_durations) == MAX_PENDING_RESPONSE_DURATION_ENTRIES:
+            _, evicted_pending = self.response_durations[0]
+            self.response_duration_pending_tokens -= evicted_pending
+        self.response_durations.append((duration, pending))
+        self.response_duration_pending_tokens += pending
+
+    def _consume_response_duration(self):
+        _, pending = self.response_durations.popleft()
+        self.response_duration_pending_tokens -= pending
+        if not self.response_durations:
+            self.response_duration_pending_tokens = 0.0
+
+    def _clear_response_durations(self):
+        self.response_durations.clear()
+        self.response_duration_pending_tokens = 0.0
 
     def finish_tool(self, item_id, now):
         if item_id not in self.tools:
@@ -159,7 +179,7 @@ class TurnRate:
         if identity is not None:
             self.messages[identity] = (output, duration, self.rate)
         if queued:
-            self.response_durations.popleft()
+            self._consume_response_duration()
         if queued or prior:
             if self.pending:
                 self.rate, self.estimated = current_estimate
@@ -198,11 +218,12 @@ class TurnRate:
         return {'turnId': self.turn, 'active': True, 'estimated': self.estimated,
                 'rate': self.rate,
                 'outputTokens': round(self.actual + self.pending +
-                                      sum(pending for _, pending in self.response_durations), 2)}
+                                      self.response_duration_pending_tokens, 2)}
 
     def finish(self, now):
         self.last = {**self.snapshot(now), 'active': False}
         self.active = False
+        self._clear_response_durations()
 
 
 class TokenRates:

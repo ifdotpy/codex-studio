@@ -9,11 +9,13 @@ from urllib.error import HTTPError
 from urllib.parse import urlsplit
 from urllib.request import ProxyHandler, Request, build_opener, urlopen
 
+from codex_sync_protocol import SYNC_ENTITY_SCOPE
+
 
 SESSION_ENDPOINT = "/api/session"
 DESKTOP_ENDPOINT = "/api/desktop"
 ENTITY_PULL_ENDPOINT = "/api/sync/pull"
-ENTITY_SCOPE = "state:entities:v1"
+ENTITY_SCOPE = SYNC_ENTITY_SCOPE
 ENTITY_PAGE_SIZE = 500
 ENTITY_PULL_MAX_PAGES = 100
 _DIRECT_OPENER = build_opener(ProxyHandler({}))
