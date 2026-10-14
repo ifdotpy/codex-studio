@@ -43,7 +43,7 @@ def make_runtime(state_dir, client):
             CREATE TABLE runtime_event_meta(id TEXT PRIMARY KEY,record TEXT NOT NULL);
         """)
     actor = {"id": "lead", "rootId": "lead", "epoch": 0, "autoWake": True,
-             "deletedAt": None, "accountKey": "default", "status": "running"}
+             "deletedAt": None, "accountKey": "default", "status": "running", "inFlight": True}
     runtime = Runtime.__new__(Runtime)
     runtime._linux_vm_client = client
     runtime.lock = threading.RLock()
@@ -67,13 +67,10 @@ def make_runtime(state_dir, client):
     runtime.records = lambda _db, _kind: [{"id": "lead", "isLead": True,
         "layrProjectId": "p1", "layrLine": "main", "status": "running", "created": 1}]
     runtime.workspace_blockers = lambda _db, _actor: []
-
-    def enqueue(db, _actor, kind, text, key):
-        db.execute("INSERT INTO runtime_events VALUES (?,?,?,?,?,?,?,?,?)",
-                   (key, "lead", kind, text, "pending", 1.0, 0, None, None))
-        return key
-
-    runtime.enqueue = enqueue
+    runtime._stage_event_resources = lambda *_args, **_kwargs: None
+    runtime.rule_event = lambda *_args, **_kwargs: None
+    runtime.changed = threading.Event()
+    runtime.closed = True
     return runtime, path
 
 
