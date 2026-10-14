@@ -667,7 +667,7 @@ async fn finalize_accepted_archive(
                 }
                 tx.execute(
                     "UPDATE runtime_operation_receipts SET result=?1 WHERE id=?2",
-                    [attempt_receipt.to_string(), attempt_receipt_id.as_str()],
+                    [attempt_receipt.to_string(), attempt_receipt_id],
                 )?;
             }
             let mut event_inserted = false;
