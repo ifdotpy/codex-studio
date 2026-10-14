@@ -223,10 +223,24 @@ class SystemReadsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
     def test_saved_local_server_id_uses_local_browse(self):
         self.backend.stop()
         identity_dir = self.backend.state / "multi-server"
-        identity_dir.mkdir(exist_ok=True)
-        (identity_dir / "identity.json").write_text(
-            '{"serverId":"local-server-contract"}', encoding="utf-8"
-        )
+        identity_dir.mkdir(mode=0o700, exist_ok=True)
+        identity_dir.chmod(0o700)
+        identity_path = identity_dir / "identity.json"
+        identity_path.write_text(json.dumps({
+            "serverId": "local-server-contract",
+            "label": "Contract server",
+            "privateKey": (
+                "-----BEGIN PRIVATE KEY-----\n"
+                "MC4CAQAwBQYDK2VwBCIEIE61KAT30Wa88aoE0mzaDqoSoQ4P7lPOk8hmxPsDG1FZ\n"
+                "-----END PRIVATE KEY-----\n"
+            ),
+            "publicKey": (
+                "-----BEGIN PUBLIC KEY-----\n"
+                "MCowBQYDK2VwAyEABPuG6SKDgrZWlm/D+iwjQAXlsZ2T/8cOLGt/g1IayQ0=\n"
+                "-----END PUBLIC KEY-----\n"
+            ),
+        }), encoding="utf-8")
+        identity_path.chmod(0o600)
         self.backend.start()
         response = self.backend.request(
             "GET", "/api/directories?" + urlencode({
