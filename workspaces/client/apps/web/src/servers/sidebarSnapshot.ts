@@ -35,8 +35,24 @@ function pick<T extends object, K extends keyof T>(
   return result;
 }
 
+// The chats of the sidebar, each in its project. A VM chat runs in its layr line inside the
+// VM (cwd), and its project on this Mac is hostProjectPath; the server lists that project.
+const projectViews = new WeakMap<Agent, Agent>();
+export function sidebarProjectChat(agent: Agent): Agent {
+  if (
+    agent.executionMode !== "vm" ||
+    !agent.hostProjectPath ||
+    agent.cwd === agent.hostProjectPath
+  )
+    return agent;
+  let view = projectViews.get(agent);
+  if (!view)
+    projectViews.set(agent, (view = { ...agent, cwd: agent.hostProjectPath }));
+  return view;
+}
+
 export function sidebarAgent(agent: Agent): Agent {
-  return pick(agent, [
+  return pick(sidebarProjectChat(agent), [
     "id",
     "name",
     "tail",

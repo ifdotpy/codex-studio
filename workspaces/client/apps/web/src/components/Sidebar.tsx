@@ -87,6 +87,7 @@ import {
   useServerAliases,
 } from "../servers/serverAliases";
 import { serverViewId } from "../servers/environment";
+import { sidebarProjectChat } from "../servers/sidebarSnapshot";
 import { ChatServerLine, keepCompactChat } from "../servers/ProjectChatRows";
 import {
   countProjectChats,
@@ -428,8 +429,12 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
     });
   }, [p.data.threads]);
   const catalogSelector = useMemo(createSidebarCatalogSelector, []);
+  const projectThreads = useMemo(
+    () => p.data.threads.map(sidebarProjectChat),
+    [p.data.threads],
+  );
   const catalog = catalogSelector(
-    p.data.threads,
+    projectThreads,
     overrides,
     peerTeams,
     sorting.order,
