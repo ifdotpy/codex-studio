@@ -592,7 +592,7 @@ fn send_remote_routing_refusals_match_python_and_write_nothing() {
             "remote to user",
             "user".to_owned(),
             json!({"remoteOrigin":"source-server"}),
-            "user-messages/agent-admission",
+            "Only the lead can contact the user. Send your message to your lead.",
         ),
         (
             "remote to remote target",

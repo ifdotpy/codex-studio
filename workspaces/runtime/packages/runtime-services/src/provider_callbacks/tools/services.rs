@@ -52,6 +52,16 @@ impl crate::managed_host_tools::SendPort for ProductionPorts {
             .ok_or(crate::managed_host_tools::Error::Invalid(
                 "Supply agent_id for orchestration_send",
             ))?;
+        let sender = snapshot.actor();
+        if target == "user"
+            && !(sender["isLead"] == true
+                && sender["rootId"] == sender["id"]
+                && sender["parentId"].is_null())
+        {
+            return Err(crate::managed_host_tools::Error::Invalid(
+                "Only the lead can contact the user. Send your message to your lead.",
+            ));
+        }
         if is_descendant(tx, snapshot.context().agent.as_str(), target)? {
             let text = args["text"]
                 .as_str()
