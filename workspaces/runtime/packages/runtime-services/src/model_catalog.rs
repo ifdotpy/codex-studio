@@ -168,6 +168,25 @@ impl ModelCatalogService {
 
         let now = Instant::now();
         let cache_key = (account_key.to_owned(), home.to_owned(), provider.to_owned());
+        // Own task-slot registration before marking the cache pending. If this
+        // future is cancelled while waiting for the registry, no orphaned
+        // pending entry can suppress future refresh attempts.
+        let mut tasks = self.0.tasks.lock().await;
+        if *self.0.stop.subscribe().borrow() {
+            return CatalogRead::Unavailable;
+        }
+        let mut index = 0;
+        while index < tasks.len() {
+            if tasks[index].is_finished() {
+                if let Err(error) = (&mut tasks[index]).await {
+                    *self.0.cleanup_error.lock().expect("catalog cleanup report") =
+                        Some(error.to_string());
+                }
+                drop(tasks.remove(index));
+            } else {
+                index += 1;
+            }
+        }
         let (generation, stale, permit) = {
             let Ok(mut cache) = self.0.cache.lock() else {
                 return CatalogRead::Unavailable;
@@ -218,22 +237,6 @@ impl ModelCatalogService {
         let stop = self.0.stop.clone();
         let account = account_key.to_owned();
         let home = home.to_owned();
-        let mut tasks = self.0.tasks.lock().await;
-        if *self.0.stop.subscribe().borrow() {
-            return CatalogRead::Unavailable;
-        }
-        let mut index = 0;
-        while index < tasks.len() {
-            if tasks[index].is_finished() {
-                if let Err(error) = (&mut tasks[index]).await {
-                    *self.0.cleanup_error.lock().expect("catalog cleanup report") =
-                        Some(error.to_string());
-                }
-                drop(tasks.remove(index));
-            } else {
-                index += 1;
-            }
-        }
         let cleanup_error = self.0.cleanup_error.clone();
         let stderr_log = self.0.stderr_log.clone();
         #[cfg(test)]
@@ -676,6 +679,31 @@ pub(crate) mod tests {
             .await
             .expect_err("cleanup failure remains observable");
         assert!(error.to_string().contains("12345"));
+    }
+
+    #[tokio::test]
+    async fn cancelled_read_waiting_for_task_registry_does_not_reserve_cache_entry() {
+        let service = ModelCatalogService::new(None);
+        let task_guard = service.0.tasks.lock().await;
+        {
+            let read = service.read("account", "/home", "codex", false);
+            tokio::pin!(read);
+            tokio::select! {
+                biased;
+                result = &mut read => panic!("read passed the held task registry: {result:?}"),
+                () = tokio::task::yield_now() => {},
+            }
+        }
+        drop(task_guard);
+
+        assert!(
+            !service
+                .0
+                .cache
+                .lock()
+                .expect("catalog cache")
+                .contains_key(&("account".to_owned(), "/home".to_owned(), "codex".to_owned(),))
+        );
     }
 
     #[tokio::test]
