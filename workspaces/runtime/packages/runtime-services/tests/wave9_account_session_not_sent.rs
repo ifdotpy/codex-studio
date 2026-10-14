@@ -340,6 +340,7 @@ fn generic_provider_requests_reject_foreign_and_unknown_receipts() {
             operation: "fixture:generic-request".into(),
             actor: None,
             expected_scope: Some(expected_scope),
+            deleted_actor_session: None,
             method: Method::AccountLoginStart,
             params: json!({"type":"chatgptDeviceCode"}),
             deadline: std::time::Instant::now() + std::time::Duration::from_secs(1),
