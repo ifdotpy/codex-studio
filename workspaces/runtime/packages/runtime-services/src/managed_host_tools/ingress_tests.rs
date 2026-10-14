@@ -10,8 +10,8 @@ use crate::managed_host_tools::{
 use crate::provider_callbacks::{
     CallbackContext, CallbackDecision, CallbackError, dispatch_with_managed_tools,
 };
-use rusqlite::{Transaction, params};
 use rusqlite::types::ValueRef;
+use rusqlite::{Transaction, params};
 use serde_json::{Value, json};
 use std::{
     path::PathBuf,
@@ -349,7 +349,9 @@ fn application_table_snapshot(store: &RuntimeStore) -> Vec<(String, Vec<String>)
             ""
         };
         let mut statement = connection
-            .prepare(&format!("SELECT * FROM \"{quoted}\"{receipt_filter} ORDER BY {ordering}"))
+            .prepare(&format!(
+                "SELECT * FROM \"{quoted}\"{receipt_filter} ORDER BY {ordering}"
+            ))
             .unwrap();
         let rows = statement
             .query_map([], |row| {
@@ -394,7 +396,9 @@ fn managed_snapshot(store: &RuntimeStore, tables: &Value) -> Value {
             ""
         };
         let mut statement = connection
-            .prepare(&format!("SELECT * FROM \"{quoted}\"{projection_filter} ORDER BY {ordering}"))
+            .prepare(&format!(
+                "SELECT * FROM \"{quoted}\"{projection_filter} ORDER BY {ordering}"
+            ))
             .unwrap();
         let rows = statement
             .query_map([], |row| {
@@ -426,6 +430,42 @@ fn managed_snapshot(store: &RuntimeStore, tables: &Value) -> Value {
         snapshot.insert(name.clone(), json!(rows));
     }
     Value::Object(snapshot)
+}
+
+fn dispatch_python_case(
+    store: &RuntimeStore,
+    oracle: &Value,
+    expected: &Value,
+    args: Option<Value>,
+) -> Result<CallbackDecision, CallbackError> {
+    let actor = oracle["agents"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|actor| actor["id"] == expected["actor"])
+        .unwrap();
+    let context = CallbackContext {
+        agent: actor["id"].as_str().unwrap().to_owned(),
+        account: "default".into(),
+        connection: "connection".into(),
+        generation: 7,
+        epoch: actor["epoch"].as_u64().unwrap(),
+        thread: actor["threadId"].as_str().unwrap().to_owned(),
+        turn: actor["turnId"].as_str().unwrap().to_owned(),
+    };
+    let frame = call(
+        &context,
+        expected["callId"].as_str().unwrap(),
+        expected["tool"].as_str().unwrap(),
+        args.unwrap_or_else(|| expected["arguments"].clone()),
+    );
+    let ports = crate::provider_callbacks::managed_tool_ports(
+        store,
+        &context,
+        &frame,
+        std::sync::Arc::new(tokio::sync::Notify::new()),
+    )?;
+    dispatch_with_managed_tools(store, &context, &frame, 20.0, &ports)
 }
 
 #[test]
@@ -482,8 +522,8 @@ fn named_refusals_leave_all_application_tables_unchanged() {
         let rpc = format!("refusal-{index}");
         let frame = call(&context, &rpc, tool, args);
         let wake = std::sync::Arc::new(tokio::sync::Notify::new());
-        let ports = crate::provider_callbacks::managed_tool_ports(&store, &context, &frame, wake)
-            .unwrap();
+        let ports =
+            crate::provider_callbacks::managed_tool_ports(&store, &context, &frame, wake).unwrap();
         let decision = dispatch_with_managed_tools(&store, &context, &frame, 20.0, &ports).unwrap();
         assert!(
             format!("{decision:?}").contains(dependency),
@@ -525,13 +565,9 @@ fn managed_tools_match_python_rows_events_and_sync_projection() {
             expected["tool"].as_str().unwrap(),
             expected["arguments"].clone(),
         );
-        let ports = crate::provider_callbacks::managed_tool_ports(
-            &store,
-            &context,
-            &frame,
-            wake.clone(),
-        )
-        .unwrap();
+        let ports =
+            crate::provider_callbacks::managed_tool_ports(&store, &context, &frame, wake.clone())
+                .unwrap();
         let decision = dispatch_with_managed_tools(&store, &context, &frame, 20.0, &ports).unwrap();
         let CallbackDecision::Answer(reply) = decision else {
             panic!("managed callback must answer: {}", expected["tool"])
@@ -540,8 +576,7 @@ fn managed_tools_match_python_rows_events_and_sync_projection() {
             panic!("managed callback result expected")
         };
         assert_eq!(
-            actual["success"],
-            expected["result"]["success"],
+            actual["success"], expected["result"]["success"],
             "success for {}",
             expected["tool"]
         );
@@ -556,8 +591,13 @@ fn managed_tools_match_python_rows_events_and_sync_projection() {
                 "tool value for {}",
                 expected["tool"]
             );
-        } else if expected["tool"] != "orchestration_send" || expected["result"]["success"] == true {
-            assert_eq!(actual_text, expected_text, "tool refusal for {}", expected["tool"]);
+        } else if expected["tool"] != "orchestration_send" || expected["result"]["success"] == true
+        {
+            assert_eq!(
+                actual_text, expected_text,
+                "tool refusal for {}",
+                expected["tool"]
+            );
         }
         let actual_rows = managed_snapshot(&store, &expected["rows"]);
         let differences = expected["rows"]
@@ -603,6 +643,165 @@ fn managed_tools_match_python_rows_events_and_sync_projection() {
             .collect::<Vec<_>>();
         assert!(differences.is_empty(), "full rows differ: {differences:?}");
     }
+}
+
+#[test]
+fn managed_durable_writes_rollback_replay_once_and_reject_changed_content() {
+    let oracle = &template().value;
+    let cases = oracle["managedToolCases"].as_array().unwrap();
+    let matrix = [
+        (0, "runtime_events", "INSERT"),
+        (0, "runtime_event_meta", "INSERT"),
+        (1, "runtime_rooms", "INSERT"),
+        (1, "runtime_chat_messages", "INSERT"),
+        (5, "runtime_complaints", "INSERT"),
+        (5, "runtime_events", "INSERT"),
+        (6, "runtime_complaints", "UPDATE"),
+        (7, "runtime_complaints", "UPDATE"),
+        (7, "runtime_events", "UPDATE"),
+        (7, "runtime_events", "INSERT"),
+    ];
+    for (case_index, table, operation) in matrix {
+        for timing in ["BEFORE", "AFTER"] {
+            let (_root, store, _) = fixture();
+            for previous in &cases[..case_index] {
+                assert!(matches!(
+                    dispatch_python_case(&store, oracle, previous, None).unwrap(),
+                    CallbackDecision::Answer(_)
+                ));
+            }
+            let trigger = format!("p05_fail_{case_index}_{timing}_{operation}");
+            store
+                .transaction_with::<_, StoreError>(|tx| {
+                    tx.execute_batch(&format!(
+                        "CREATE TRIGGER {trigger} {timing} {operation} ON {table} BEGIN SELECT RAISE(ABORT,'injected {table} {timing} {operation}'); END"
+                    ))?;
+                    Ok(())
+                })
+                .unwrap();
+            let before = application_table_snapshot(&store);
+            let expected = &cases[case_index];
+            let first_attempt = dispatch_python_case(&store, oracle, expected, None);
+            let saved_failure = match first_attempt {
+                Err(_) => None,
+                Ok(CallbackDecision::Answer(reply)) => {
+                    assert!(
+                        matches!(&reply.body, ResponseBody::Result(result) if result["success"] == false),
+                        "{} {timing} {operation} on {table} unexpectedly succeeded",
+                        expected["tool"]
+                    );
+                    Some(reply.body)
+                }
+                Ok(other) => panic!("unexpected failure decision: {other:?}"),
+            };
+            store
+                .transaction_with::<_, StoreError>(|tx| {
+                    tx.execute_batch(&format!("DROP TRIGGER {trigger}"))?;
+                    Ok(())
+                })
+                .unwrap();
+            assert_eq!(
+                before,
+                application_table_snapshot(&store),
+                "partial write: {table}"
+            );
+            let first = match dispatch_python_case(&store, oracle, expected, None).unwrap() {
+                CallbackDecision::Answer(reply) => reply,
+                _ => panic!("retry must answer"),
+            };
+            if let Some(saved) = saved_failure {
+                assert_eq!(first.body, saved, "failed reply is durable for {table}");
+                assert_eq!(
+                    before,
+                    application_table_snapshot(&store),
+                    "failed operation wrote: {table}"
+                );
+            }
+            let committed = application_table_snapshot(&store);
+            let replay = dispatch_python_case(&store, oracle, expected, None).unwrap();
+            let CallbackDecision::Answer(replay) = replay else {
+                panic!("replay must return saved answer")
+            };
+            assert_eq!(first.body, replay.body, "saved answer for {table}");
+            assert_eq!(
+                committed,
+                application_table_snapshot(&store),
+                "duplicate effect: {table}"
+            );
+            let mut changed = expected["arguments"].clone();
+            if let Some(text) = changed["text"].as_str() {
+                changed["text"] = json!(format!("{text} changed"));
+            } else if let Some(id) = changed["monitor_id"].as_str() {
+                changed["monitor_id"] = json!(format!("{id}-changed"));
+            } else {
+                changed["action"] = json!("changed");
+            }
+            assert!(dispatch_python_case(&store, oracle, expected, Some(changed)).is_err());
+            assert_eq!(
+                committed,
+                application_table_snapshot(&store),
+                "changed identity wrote: {table}"
+            );
+        }
+    }
+}
+
+#[test]
+fn startup_reconciles_reserved_callback_once() {
+    let (root, store, _) = fixture();
+    let oracle = &template().value;
+    let expected = &oracle["managedToolCases"][0];
+    store
+        .transaction_with::<_, StoreError>(|tx| {
+            tx.execute_batch("CREATE TRIGGER p05_crash_after_reservation BEFORE INSERT ON runtime_tool_results BEGIN SELECT RAISE(ABORT,'crash after reservation'); END")?;
+            Ok(())
+        })
+        .unwrap();
+    assert!(dispatch_python_case(&store, oracle, expected, None).is_err());
+    store
+        .transaction_with::<_, StoreError>(|tx| {
+            tx.execute_batch("DROP TRIGGER p05_crash_after_reservation")?;
+            Ok(())
+        })
+        .unwrap();
+    let queued: i64 = store
+        .read()
+        .unwrap()
+        .query_row(
+            "SELECT count(*) FROM runtime_tool_requests WHERE json_extract(record,'$.tool')='orchestration_send' AND json_extract(record,'$.stage')='queued'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(queued, 1, "the admission transaction survives the crash");
+    drop(store);
+
+    // Reopen the real store and invoke the callback owner's startup recovery.
+    let restarted = RuntimeStore::open(Some(root.path())).unwrap();
+    assert_eq!(
+        crate::provider_callbacks::recover_connection(&restarted, "default", "connection", 30.0)
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        crate::provider_callbacks::recover_connection(&restarted, "default", "connection", 31.0)
+            .unwrap(),
+        0,
+        "a second startup pass must not reconcile the same reservation twice"
+    );
+    let (stage, outcome): (String, String) = restarted
+        .read()
+        .unwrap()
+        .query_row(
+            "SELECT json_extract(record,'$.stage'),json_extract(record,'$.outcome') FROM runtime_tool_requests WHERE id LIKE '%:send:%'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        (stage.as_str(), outcome.as_str()),
+        ("cancelled", "not_applied")
+    );
 }
 
 #[test]
