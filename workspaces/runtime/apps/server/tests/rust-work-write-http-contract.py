@@ -879,6 +879,8 @@ class WorkWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             self.backend, self.agent_id, accept, guest=expected_guest)
         actual_accept = self.post(accept)
         self.assertEqual(actual_accept.status, 200, actual_accept.body[:1000])
+        self.assertEqual(set(actual_accept.json()), set(expected_accept),
+                         f"accept result fields differ: actual={sorted(actual_accept.json())}, expected={sorted(expected_accept)}")
         actual_state = snapshot(self.backend.state)
         with closing(fixture_connection(self.backend.state / "canvas.sqlite3")) as database:
             intent = json.loads(database.execute(
