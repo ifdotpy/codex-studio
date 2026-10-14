@@ -88,6 +88,17 @@ async fn read_account_session_catalog(
     }
     let mut shutdown = stop.subscribe();
     let mut rows = Vec::new();
+    // A refresh is a new durable provider read. Page retries within this refresh
+    // keep their identity; a later refresh must not replay an expired receipt.
+    static REFRESH_SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    let refresh_id = format!(
+        "{}-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|_| ())?
+            .as_nanos(),
+        REFRESH_SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    );
     let mut first_page = None;
     let mut cursor: Option<String> = None;
     let mut seen_cursors = std::collections::HashSet::new();
@@ -105,7 +116,7 @@ async fn read_account_session_catalog(
         let account_clone = account.clone();
         let current_scope = session.current_scope(&account).ok_or(())?;
         let operation = format!(
-            "model-list:{account}:{page_index}:{}",
+            "model-list:{account}:{refresh_id}:{page_index}:{}",
             cursor.as_deref().unwrap_or("first")
         );
         let request = tokio::task::spawn_blocking(move || {
@@ -858,6 +869,7 @@ pub(crate) mod tests {
     struct AccountSessionPages {
         pages: StdMutex<Vec<Value>>,
         params: StdMutex<Vec<Value>>,
+        operations: StdMutex<Vec<String>>,
     }
     impl crate::account_session_runtime::AccountSessionPort for AccountSessionPages {
         fn current_scope(
@@ -882,6 +894,10 @@ pub(crate) mod tests {
                 ProviderResponse, RequestCertainty, SessionReceipt,
             };
             self.params.lock().expect("params").push(request.params);
+            self.operations
+                .lock()
+                .expect("operations")
+                .push(request.operation.clone());
             if self.pages.lock().expect("pages").is_empty() {
                 return Err(
                     crate::account_session_runtime::AccountSessionError::InvalidResponse(
@@ -915,6 +931,7 @@ pub(crate) mod tests {
                 json!({"data":[{"model":"two"}],"nextCursor":null}),
             ]),
             params: StdMutex::new(Vec::new()),
+            operations: StdMutex::new(Vec::new()),
         });
         let result = read_account_session_catalog(
             session.clone(),
@@ -938,6 +955,36 @@ pub(crate) mod tests {
                 json!({"limit":MODEL_CATALOG_ITEMS_PER_PAGE}),
                 json!({"limit":MODEL_CATALOG_ITEMS_PER_PAGE,"cursor":"next"}),
             ]
+        );
+    }
+
+    #[tokio::test]
+    async fn each_catalog_refresh_has_a_fresh_durable_operation_identity() {
+        let session = Arc::new(AccountSessionPages {
+            pages: StdMutex::new(vec![
+                json!({"data":[{"model":"one"}]}),
+                json!({"data":[{"model":"one"}]}),
+            ]),
+            params: StdMutex::new(Vec::new()),
+            operations: StdMutex::new(Vec::new()),
+        });
+        for _ in 0..2 {
+            read_account_session_catalog(
+                session.clone(),
+                "account".into(),
+                "claude".into(),
+                Shutdown::default(),
+            )
+            .await
+            .expect("catalog refresh");
+        }
+        let operations = session.operations.lock().expect("operations");
+        assert_eq!(operations.len(), 2);
+        assert_ne!(operations[0], operations[1]);
+        assert!(
+            operations
+                .iter()
+                .all(|operation| operation.starts_with("model-list:account:"))
         );
     }
 

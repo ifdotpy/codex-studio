@@ -12,7 +12,11 @@ use studio_runtime_services::{
     account_transfer_driver,
 };
 
-const TRANSFER: &[Dependency] = &[Dependency::new("store-bootstrap/account-transfer-schema")];
+const TRANSFER: &[Dependency] = &[
+    Dependency::new("account-transfer/provider-history-executor"),
+    Dependency::new("account-transfer/destination-settings"),
+    Dependency::new("store-bootstrap/account-transfer-schema"),
+];
 const SELECTION: &[Dependency] = &[
     Dependency::new("account-driver/unavailable"),
     Dependency::new("account-transfer/usage-resume-cancellation"),
@@ -200,7 +204,9 @@ fn error(error: TransferError) -> ApiError {
 inventory::submit! {
     crate::routes::manifest::RouteModuleRegistration {
         name: "account_transfer", routes: Some(routes), dependencies: &[
-            "account-driver/unavailable", "account-transfer/usage-resume-cancellation", "store-bootstrap/account-transfer-schema",
+            "account-driver/unavailable", "account-transfer/usage-resume-cancellation",
+            "account-transfer/provider-history-executor", "account-transfer/destination-settings",
+            "store-bootstrap/account-transfer-schema",
         ],
     }
 }

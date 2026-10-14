@@ -165,6 +165,7 @@ pub struct AccountTransferExecutor<'a> {
     pub store: &'a RuntimeStore,
     pub session: Arc<dyn AccountSessionPort>,
     pub catalog: &'a ModelCatalogService,
+    pub preparation: &'a crate::account_worker::preparation::PreparationResources,
     pub now: f64,
 }
 
@@ -449,23 +450,19 @@ fn destination_settings(
             .find(|model| model.model == name || model.resolved_model.as_deref() == Some(name))
     });
     let chosen = if changed || current.is_none() {
-        visible
-            .iter()
-            .find(|model| model.is_default)
-            .or_else(|| {
-                let fallback = if target_provider == "claude" {
-                    "default"
-                } else {
-                    crate::agents_create::DEFAULT_LEAD_MODEL
-                };
-                visible.iter().find(|model| model.model == fallback)
-            })
-            .or_else(|| visible.first())
+        visible.iter().find(|model| model.is_default).or_else(|| {
+            let fallback = if target_provider == "claude" {
+                "default"
+            } else {
+                crate::agents_create::DEFAULT_LEAD_MODEL
+            };
+            visible.iter().find(|model| model.model == fallback)
+        })
     } else {
         current
     };
-    let model = chosen.ok_or(TransferError::Requires(
-        "account-transfer/destination-settings",
+    let model = chosen.ok_or(TransferError::Refused(
+        "The destination account has no available default model",
     ))?;
     let mut selected_model = model.model.clone();
     if !changed && model.resolved_model.as_deref() == agent["model"].as_str() {
@@ -781,11 +778,37 @@ impl TransferExecutor for AccountTransferExecutor<'_> {
                     })?);
             }
         }
-        let mut params = json!({"cwd":agent.get("cwd").and_then(Value::as_str).unwrap_or("."),
-            "model":settings["model"],"approvalPolicy":agent.get("approvalPolicy").cloned().unwrap_or(json!("on-request")),
-            "sandbox":agent.get("sandbox").cloned().unwrap_or(json!("workspace-write")),
-            "dynamicTools":[]});
-        params["effort"] = settings["nativeEffort"].clone();
+        let scope = self
+            .session
+            .current_scope(target_account)
+            .ok_or(TransferError::Requires("provider-session/account-worker"))?;
+        let prepared = crate::account_worker::preparation::prepare_native_thread(
+            self.store,
+            self.preparation,
+            agent_id,
+            &format!("account-transfer:{transfer_id}:{agent_id}"),
+            scope.generation,
+        )
+        .map_err(|_| TransferError::Refused("Destination thread preparation failed"))?;
+        let mut params = prepared.params;
+        params["model"] = settings["model"].clone();
+        if let Some(config) = params.get_mut("config").and_then(Value::as_object_mut) {
+            if settings.get("nativeEffort").is_some_and(Value::is_string) {
+                config.insert(
+                    "model_reasoning_effort".into(),
+                    settings["nativeEffort"].clone(),
+                );
+            }
+            config.insert(
+                "features.fast_mode".into(),
+                json!(settings["fastMode"] == true),
+            );
+        }
+        params["serviceTier"] = json!(if settings["fastMode"] == true {
+            "priority"
+        } else {
+            "default"
+        });
         if let Some(text) = history_text {
             params["developerInstructions"] = json!(text);
         }
@@ -801,6 +824,9 @@ impl TransferExecutor for AccountTransferExecutor<'_> {
             TransferMethod::Start
         };
         if method == TransferMethod::Fork {
+            if let Some(object) = params.as_object_mut() {
+                drop(object.remove("dynamicTools"));
+            }
             params["threadId"] = json!(source_thread);
             params["excludeTurns"] = json!(true);
             params["deferGoalContinuation"] = json!(true);
@@ -905,6 +931,7 @@ pub fn before_start(
     store: &RuntimeStore,
     session: Option<Arc<dyn AccountSessionPort>>,
     catalog: &ModelCatalogService,
+    preparation: &crate::account_worker::preparation::PreparationResources,
     agent_id: &str,
     now: f64,
 ) -> Result<Value, TransferError> {
@@ -926,6 +953,7 @@ pub fn before_start(
             store,
             session,
             catalog,
+            preparation,
             now,
         };
         let result = driver::execute_member(store, &executor, operation, agent_id, now)?;
@@ -941,4 +969,44 @@ pub fn before_start(
     )?
     .ok_or(TransferError::Refused("Unknown transfer member"))?
     .value())
+}
+
+#[cfg(test)]
+mod destination_settings_tests {
+    use super::*;
+
+    #[test]
+    fn missing_default_and_fallback_model_refuses_instead_of_selecting_first() {
+        let catalog = CatalogObservation {
+            identity: CatalogIdentity {
+                account_key: "target".into(),
+                home: "/tmp/target".into(),
+                provider: "codex".into(),
+                generation: 1,
+            },
+            expires_at: Instant::now() + Duration::from_secs(30),
+            models: vec![ModelCapabilities {
+                model: "visible-but-not-default".into(),
+                resolved_model: None,
+                is_default: false,
+                hidden: false,
+                access_programs: None,
+                supported_efforts: vec!["medium".into()],
+                default_effort: Some("medium".into()),
+                priority: false,
+            }],
+        };
+        let result = destination_settings(
+            &json!({"model":"source-model"}),
+            "claude",
+            "codex",
+            &catalog,
+        );
+        assert!(matches!(
+            result,
+            Err(TransferError::Refused(
+                "The destination account has no available default model"
+            ))
+        ));
+    }
 }

@@ -67,6 +67,19 @@ class AccountTransferHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         self.assertEqual(result.status,200,result.body)
         self.assertEqual(result.json()['id'],self.operations['replay'])
         self.assertEqual(self.stored('replay'),before)
+    def test_new_request_adopts_descendants_created_during_active_transfer(self):
+        with sqlite3.connect(self.backend.state/'canvas.sqlite3') as db:
+            db.execute('INSERT INTO runtime_agents(id,record) VALUES(?,?)',('late',json.dumps(dict(
+                id='late',rootId='replay',epoch=1,status='idle',name='Late member',isLead=False,
+                autoWake=False,accountKey='default',provider='codex',model='gpt-6-astra',cwd=str(self.backend.cwd)))))
+        request_id=str(uuid.uuid4())
+        result=self.post(dict(request_id=request_id,id='replay',account_key='default',scope='team'))
+        self.assertEqual(result.status,200,result.body)
+        self.assertEqual(result.json()['members']['late']['phase'],'completed')
+        with sqlite3.connect(self.backend.state/'canvas.sqlite3') as db:
+            operation=json.loads(db.execute('SELECT record FROM runtime_account_transfers WHERE id=?',
+                (self.operations['replay'],)).fetchone()[0])
+            self.assertEqual(operation['requests'][request_id],dict(leadId='replay',targetAccountKey='default',scope='team'))
         conflict=self.post(dict(request_id=self.operations['replay'],id='replay',account_key='default',scope='subagents'))
         self.assertEqual(conflict.status,400,conflict.body)
         self.assertEqual(self.stored('replay'),before)
