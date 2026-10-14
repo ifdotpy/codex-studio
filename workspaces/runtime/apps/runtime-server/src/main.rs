@@ -15,11 +15,14 @@ mod runtime_shutdown;
 use std::collections::BTreeMap;
 use std::env;
 use std::fs::File;
+use std::future::Future;
 use std::io::Read;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::sync::mpsc::{self, Receiver, Sender};
+use std::time::Duration;
 
 use axum::Extension;
 use studio_runtime_http::{HttpState, VaultJobOwner, router};
@@ -30,6 +33,9 @@ use tokio::net::TcpListener;
 use tokio::sync::watch;
 
 const DEFAULT_PORT: u16 = 4620;
+const SERVER_SHUTDOWN_GRACE: Duration = Duration::from_secs(20);
+const SHUTDOWN_JOIN_GRACE: Duration = Duration::from_secs(5);
+const EXIT_ON_STDIN_CLOSE_ENV: &str = "CODEX_AGENTS_SERVER_EXIT_ON_STDIN_CLOSE";
 
 fn main() {
     std::panic::set_hook(Box::new(|panic| {
@@ -45,10 +51,82 @@ fn main() {
             std::process::exit(1);
         }
     };
-    if let Err(error) = runtime.block_on(run()) {
+    let (shutdown_requested, shutdown_finished) = match start_shutdown_watchdog() {
+        Ok(watchdog) => watchdog,
+        Err(error) => {
+            eprintln!("runtime server could not start shutdown watchdog: {error}");
+            std::process::exit(1);
+        }
+    };
+    let result = runtime.block_on(run(shutdown_requested));
+    // A spawn_blocking closure cannot be cancelled once it is running. Detach
+    // any remainder after the owned shutdown steps have reached their bounds;
+    // process exit below prevents those detached threads from delaying exit.
+    eprintln!("runtime server stopping without waiting for uncancellable blocking-pool work");
+    runtime.shutdown_timeout(Duration::ZERO);
+    let _finished = shutdown_finished.send(());
+    if let Err(error) = result {
         eprintln!("{}", error_exit_log(&error.to_string()));
         std::process::exit(1);
     }
+    std::process::exit(0);
+}
+
+fn start_shutdown_watchdog() -> std::io::Result<(Sender<()>, Sender<()>)> {
+    let (requested_tx, requested_rx) = mpsc::channel();
+    let (finished_tx, finished_rx) = mpsc::channel();
+    std::thread::Builder::new()
+        .name("runtime-shutdown-watchdog".into())
+        .spawn(move || shutdown_watchdog(requested_rx, finished_rx))?;
+    Ok((requested_tx, finished_tx))
+}
+
+fn shutdown_watchdog(requested: Receiver<()>, finished: Receiver<()>) {
+    if requested.recv().is_err() {
+        return;
+    }
+    if finished.recv_timeout(SERVER_SHUTDOWN_GRACE).is_err() {
+        eprintln!(
+            "runtime server exiting because shutdown exceeded its grace; last step: {}",
+            shutdown_progress_label()
+        );
+        std::process::exit(1);
+    }
+}
+
+static SHUTDOWN_PROGRESS: std::sync::OnceLock<Mutex<&'static str>> = std::sync::OnceLock::new();
+
+fn shutdown_progress_label() -> &'static str {
+    SHUTDOWN_PROGRESS
+        .get_or_init(|| Mutex::new("HTTP graceful drain"))
+        .lock()
+        .map(|phase| *phase)
+        .unwrap_or("unknown shutdown step")
+}
+
+async fn shutdown_join<T>(
+    phase: &'static str,
+    future: impl Future<Output = T>,
+) -> Result<T, Box<dyn std::error::Error>> {
+    if let Ok(mut progress) = SHUTDOWN_PROGRESS
+        .get_or_init(|| Mutex::new("HTTP graceful drain"))
+        .lock()
+    {
+        *progress = phase;
+    }
+    eprintln!("runtime server shutdown step started: {phase}");
+    tokio::time::timeout(SHUTDOWN_JOIN_GRACE, future)
+        .await
+        .map_err(|_| {
+            std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                format!(
+                    "runtime server shutdown step exceeded its {:.0}s bound: {phase}",
+                    SHUTDOWN_JOIN_GRACE.as_secs_f64()
+                ),
+            )
+            .into()
+        })
 }
 
 fn runtime_initialization_exit_log(reason: &str) -> String {
@@ -63,7 +141,7 @@ fn panic_exit_log(reason: &str) -> String {
     format!("runtime server exiting after panic: {reason}")
 }
 
-async fn run() -> Result<(), Box<dyn std::error::Error>> {
+async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::Error>> {
     studio_runtime_process::child_priority::ChildPriority::from_environment();
     studio_runtime_services::diagnostics::mark_startup_memory(
         studio_runtime_services::diagnostics::StartupMemoryMark::ProcessStarted,
@@ -481,6 +559,9 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     .with_graceful_shutdown(async move {
         let reason = shutdown_signal().await;
         eprintln!("{}", shutdown_exit_log(reason));
+        if let Err(error) = shutdown_requested.send(()) {
+            eprintln!("runtime server shutdown watchdog could not start: {error}");
+        }
         shutdown_monitor_task.send_replace(true);
         #[cfg(unix)]
         stop_runtime.cancel();
@@ -489,22 +570,31 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     .await;
     monitor_shutdown.send_replace(true);
     federation_cancelled.store(true, std::sync::atomic::Ordering::Release);
-    let vault_jobs_cleanup = vault_job_owner.shutdown().await;
-    federation_task.await?;
-    if let Some(task) = orchestration_task {
-        task.await?;
-    }
-    monitor_task.await??;
+    let vault_jobs_cleanup = shutdown_join("vault job owner", vault_job_owner.shutdown()).await?;
     vault_jobs_cleanup?;
+    shutdown_join("federation delivery task", federation_task).await??;
+    if let Some(task) = orchestration_task {
+        shutdown_join("orchestration driver task", task).await??;
+    }
+    let monitor_result = shutdown_join("monitor runtime task", monitor_task).await?;
+    monitor_result.map_err(std::io::Error::other)??;
     #[cfg(unix)]
     {
-        let terminal_cleanup = shutdown_io_runtime(Arc::clone(&io_runtime)).await;
-        let runtime_cleanup = runtime_shutdown::close(runtime, &state).await;
+        let terminal_cleanup = shutdown_join(
+            "terminal IO runtime",
+            shutdown_io_runtime(Arc::clone(&io_runtime)),
+        )
+        .await?;
         terminal_cleanup?;
+        let runtime_cleanup = shutdown_join(
+            "host workers and retained services",
+            runtime_shutdown::close(runtime, &state),
+        )
+        .await?;
         runtime_cleanup?;
     }
     #[cfg(not(unix))]
-    state.shutdown_services().await?;
+    shutdown_join("retained services", state.shutdown_services()).await??;
     result?;
     Ok(())
 }
@@ -627,16 +717,29 @@ fn parse_port(mut args: impl Iterator<Item = String>) -> Result<u16, Box<dyn std
 enum ShutdownReason {
     CtrlC,
     Sigterm,
+    StdinClosed,
 }
 
 fn shutdown_exit_log(reason: ShutdownReason) -> &'static str {
     match reason {
         ShutdownReason::CtrlC => "runtime server shutdown requested by Ctrl-C",
         ShutdownReason::Sigterm => "runtime server shutdown requested by SIGTERM",
+        ShutdownReason::StdinClosed => "runtime server shutdown requested because stdin closed",
+    }
+}
+
+async fn wait_for_stdin_close() {
+    let mut stdin = tokio::io::stdin();
+    let mut sink = tokio::io::sink();
+    if let Err(error) = tokio::io::copy(&mut stdin, &mut sink).await {
+        eprintln!("runtime server stdin close monitor ended with an error: {error}");
     }
 }
 
 async fn shutdown_signal() -> ShutdownReason {
+    let watch_stdin_close = env::var_os(EXIT_ON_STDIN_CLOSE_ENV).is_some();
+    let stdin_closed = wait_for_stdin_close();
+    tokio::pin!(stdin_closed);
     #[cfg(unix)]
     {
         match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
@@ -645,23 +748,30 @@ async fn shutdown_signal() -> ShutdownReason {
                     if let Err(error) = result { eprintln!("failed to listen for Ctrl-C: {error}"); }
                     ShutdownReason::CtrlC
                 }
-                _ = terminate.recv() => ShutdownReason::Sigterm
+                _ = terminate.recv() => ShutdownReason::Sigterm,
+                _ = &mut stdin_closed, if watch_stdin_close => ShutdownReason::StdinClosed
             },
             Err(error) => {
                 eprintln!("failed to listen for SIGTERM: {error}");
-                if let Err(error) = tokio::signal::ctrl_c().await {
-                    eprintln!("failed to listen for Ctrl-C: {error}");
+                tokio::select! {
+                    result = tokio::signal::ctrl_c() => {
+                        if let Err(error) = result { eprintln!("failed to listen for Ctrl-C: {error}"); }
+                        ShutdownReason::CtrlC
+                    }
+                    _ = &mut stdin_closed, if watch_stdin_close => ShutdownReason::StdinClosed
                 }
-                ShutdownReason::CtrlC
             }
         }
     }
     #[cfg(not(unix))]
     {
-        if let Err(error) = tokio::signal::ctrl_c().await {
-            eprintln!("failed to listen for Ctrl-C: {error}");
+        tokio::select! {
+            result = tokio::signal::ctrl_c() => {
+                if let Err(error) = result { eprintln!("failed to listen for Ctrl-C: {error}"); }
+                ShutdownReason::CtrlC
+            }
+            _ = &mut stdin_closed, if watch_stdin_close => ShutdownReason::StdinClosed
         }
-        ShutdownReason::CtrlC
     }
 }
 
@@ -669,7 +779,7 @@ async fn shutdown_signal() -> ShutdownReason {
 mod exit_logging_tests {
     use super::{
         ShutdownReason, error_exit_log, panic_exit_log, runtime_initialization_exit_log,
-        shutdown_exit_log,
+        shutdown_exit_log, shutdown_join,
     };
 
     #[test]
@@ -681,6 +791,10 @@ mod exit_logging_tests {
         assert_eq!(
             shutdown_exit_log(ShutdownReason::Sigterm),
             "runtime server shutdown requested by SIGTERM"
+        );
+        assert_eq!(
+            shutdown_exit_log(ShutdownReason::StdinClosed),
+            "runtime server shutdown requested because stdin closed"
         );
     }
 
@@ -698,5 +812,14 @@ mod exit_logging_tests {
             panic_exit_log("projection invariant failed"),
             "runtime server exiting after panic: projection invariant failed"
         );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn shutdown_join_detaches_a_stuck_task_with_its_name() {
+        let task = tokio::spawn(std::future::pending::<()>());
+        let error = shutdown_join("active account worker", task)
+            .await
+            .expect_err("shutdown joins must have a finite bound");
+        assert!(error.to_string().contains("active account worker"));
     }
 }

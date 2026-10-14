@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import atexit
 from dataclasses import dataclass
 import json
 import os
@@ -45,6 +46,8 @@ STATE_BOOTSTRAP_TIMEOUT_SECONDS = HANG_GUARD_SECONDS
 BACKEND_READY_POLL_SECONDS = 0.1
 STOP_TIMEOUT_SECONDS = 4.0
 FORCED_STOP_TIMEOUT_SECONDS = 2.0
+OWNED_PROCESS_CLEANUP_TIMEOUT_SECONDS = 25.0
+SERVER_EXIT_ON_STDIN_CLOSE_ENV = "CODEX_AGENTS_SERVER_EXIT_ON_STDIN_CLOSE"
 PIPE_READER_DRAIN_TIMEOUT_SECONDS = 2.0
 PROVIDER_SELECTION_ENVIRONMENT = frozenset({
     "CODEX_BIN",
@@ -63,6 +66,86 @@ PROVIDER_CREDENTIAL_ENVIRONMENT = frozenset({
     "CLAUDE_CODE_OAUTH_ACCESS_TOKEN",
     "CLAUDE_CODE_OAUTH_REFRESH_TOKEN",
 })
+
+_OWNED_PROCESSES: set[subprocess.Popen[Any]] = set()
+_OWNED_PROCESSES_LOCK = threading.Lock()
+_RUNNER_SIGNAL_HANDLERS_INSTALLED = False
+_PREVIOUS_RUNNER_SIGNAL_HANDLERS: dict[int, Any] = {}
+
+
+def _kill_owned_process_groups() -> None:
+    """Stop every harness child even when normal unittest cleanup is skipped."""
+    with _OWNED_PROCESSES_LOCK:
+        processes = tuple(_OWNED_PROCESSES)
+    for process in processes:
+        if os.name == "nt":
+            if process.poll() is None:
+                try:
+                    process.terminate()
+                except OSError:
+                    pass
+        else:
+            try:
+                os.killpg(process.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+    for process in processes:
+        try:
+            process.wait(timeout=OWNED_PROCESS_CLEANUP_TIMEOUT_SECONDS)
+        except subprocess.TimeoutExpired:
+            if os.name == "nt":
+                try:
+                    process.kill()
+                except OSError:
+                    pass
+            else:
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+            try:
+                process.wait(timeout=FORCED_STOP_TIMEOUT_SECONDS)
+            except subprocess.TimeoutExpired:
+                pass
+        if os.name != "nt":
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+
+
+def _runner_interrupted(signum: int, frame: Any) -> None:
+    _kill_owned_process_groups()
+    previous = _PREVIOUS_RUNNER_SIGNAL_HANDLERS.get(signum, signal.SIG_DFL)
+    if signum == signal.SIGINT and previous is signal.default_int_handler:
+        raise KeyboardInterrupt
+    if previous is signal.SIG_IGN:
+        return
+    if callable(previous):
+        previous(signum, frame)
+        return
+    signal.signal(signum, signal.SIG_DFL)
+    os.kill(os.getpid(), signum)
+
+
+def _register_owned_process(process: subprocess.Popen[Any]) -> None:
+    global _RUNNER_SIGNAL_HANDLERS_INSTALLED
+    with _OWNED_PROCESSES_LOCK:
+        _OWNED_PROCESSES.add(process)
+    if _RUNNER_SIGNAL_HANDLERS_INSTALLED or threading.current_thread() is not threading.main_thread():
+        return
+    for signum in (signal.SIGINT, signal.SIGTERM):
+        _PREVIOUS_RUNNER_SIGNAL_HANDLERS[signum] = signal.getsignal(signum)
+        signal.signal(signum, _runner_interrupted)
+    _RUNNER_SIGNAL_HANDLERS_INSTALLED = True
+
+
+def _unregister_owned_process(process: subprocess.Popen[Any]) -> None:
+    with _OWNED_PROCESSES_LOCK:
+        _OWNED_PROCESSES.discard(process)
+
+
+atexit.register(_kill_owned_process_groups)
 
 # Dispatcher- and scheduler-owned fields that can change between an HTTP
 # response and the test's post-request read. Values are paths within each row's
@@ -352,6 +435,7 @@ class BackendProcess:
         self.stop_phases: list[dict[str, float]] = []
         self.cleanup_seconds: float | None = None
         self._provider_start_log: Path | None = None
+        self._provider_pid_log: Path | None = None
         self._provider_hold_method: str | None = None
         self._provider_hold_occurrence = 1
         self.lead_id = ""
@@ -436,6 +520,7 @@ class BackendProcess:
             # Keep Unix socket paths below sockaddr_un limits while isolating
             # each Rust backend's disposable VM endpoint outside its state tree.
             values["CODEX_LINUX_VM_STATE_DIR"] = str(self.vm_state)
+            values[SERVER_EXIT_ON_STDIN_CLOSE_ENV] = "1"
         # Match Python provider tests by default. Discovery tests can opt out to
         # exercise the no-Claude path without exposing a host executable.
         if self._claude_bin is not None:
@@ -479,6 +564,8 @@ class BackendProcess:
             environment["PROVIDER_REPLAY_RELEASE"] = str(self.root / "provider-release")
             environment["PROVIDER_REPLAY_GATE_PHASE"] = str(self.root / "provider-gate-phase")
             environment["PROVIDER_REPLAY_GATE_RELEASE"] = str(self.root / "provider-gate-release")
+            if self._provider_pid_log is not None:
+                environment["PROVIDER_REPLAY_PID_LOG"] = str(self._provider_pid_log)
             environment["PROVIDER_REPLAY_WAIT_GUARD_SECONDS"] = str(
                 HTTP_WAIT_GUARD_SECONDS
             )
@@ -508,6 +595,7 @@ class BackendProcess:
                 stderr=subprocess.STDOUT,
                 start_new_session=(os.name != "nt"),
             )
+            _register_owned_process(self._supervisor_process)
             try:
                 wait_for_condition(
                     lambda: (self.state / "supervisor.sock").exists(),
@@ -536,8 +624,10 @@ class BackendProcess:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
+            stdin=subprocess.PIPE if os.environ.get("STUDIO_HTTP_BACKEND_COMMAND") else None,
             start_new_session=(os.name != "nt"),
         )
+        _register_owned_process(self._process)
         assert self._process.stdout is not None
         assert self._process.stderr is not None
         self._reader = threading.Thread(
@@ -717,6 +807,7 @@ class BackendProcess:
             text=True,
             start_new_session=(os.name != "nt"),
         )
+        _register_owned_process(process)
         bootstrap_stdout = process.stdout
         assert bootstrap_stdout is not None
 
@@ -800,6 +891,7 @@ class BackendProcess:
                     f"{output_tail_text()}"
                 )
             bootstrap_stdout.close()
+            _unregister_owned_process(process)
 
     def _raise_backend_not_ready(self, reason: str, exit_status: int | None) -> None:
         status_detail: str
@@ -939,7 +1031,9 @@ class BackendProcess:
         replies = (PROVIDER_FIXTURES / "codex-rpc-replies.json").resolve(strict=True)
         self._codex_log = self.root / "codex-frames.jsonl"
         self._provider_start_log = self.root / "codex-starts.txt"
+        self._provider_pid_log = self.root / "provider-pids.txt"
         provider_start_log = str(self._provider_start_log)
+        provider_pid_log = str(self._provider_pid_log)
         (self.root / "provider-release").touch()
         executable = self.root / "bin" / "codex"
         executable.parent.mkdir(parents=True, exist_ok=True)
@@ -968,6 +1062,8 @@ class BackendProcess:
             "elif sys.argv[1:2] == ['app-server']:\n"
             f"    with open({provider_start_log!r}, 'a', encoding='utf-8') as stream:\n"
             "        stream.write(str(time.monotonic()) + '\\n')\n"
+            f"    with open({provider_pid_log!r}, 'a', encoding='ascii') as stream:\n"
+            "        stream.write(str(os.getpid()) + '\\n')\n"
             "    os.execv(sys.executable, [sys.executable, replay, fixture, replies])\n"
             "else:\n"
             "    raise SystemExit('unsupported fake Codex command')\n",
@@ -1108,6 +1204,8 @@ class BackendProcess:
         finally:
             group_cleanup_started = time.monotonic()
             self.origin = None
+            if process.stdin is not None:
+                process.stdin.close()
             if os.name != "nt":
                 try:
                     os.killpg(process.pid, signal.SIGKILL)
@@ -1129,6 +1227,7 @@ class BackendProcess:
                 "groupAndPipeCleanupSeconds": round(time.monotonic() - group_cleanup_started, 4),
                 "totalStopSeconds": round(time.monotonic() - stop_started, 4),
             })
+            _unregister_owned_process(process)
             if stuck_readers:
                 raise RuntimeError(
                     f"Backend {', '.join(stuck_readers)} pipe reader did not reach EOF "
@@ -1157,6 +1256,7 @@ class BackendProcess:
                         f"state={self.state}; supervisor log tail:\n"
                         f"{self._supervisor_log_tail()}"
                     ) from error
+            _unregister_owned_process(supervisor)
         if self._supervisor_log is not None:
             self._supervisor_log.close()
             self._supervisor_log = None

@@ -2,9 +2,11 @@
 
 import os
 from pathlib import Path
+import signal
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from unittest import mock
 
@@ -15,6 +17,54 @@ import http_backend_harness
 
 
 class BackendEnvironmentTests(unittest.TestCase):
+    def test_rust_stdin_close_opt_in_matches_harness_environment_contract(self) -> None:
+        source = Path(__file__).parents[3] / "runtime-server" / "src" / "main.rs"
+        text = source.read_text(encoding="utf-8")
+        self.assertIn(
+            f'const EXIT_ON_STDIN_CLOSE_ENV: &str = "{http_backend_harness.SERVER_EXIT_ON_STDIN_CLOSE_ENV}";',
+            text,
+        )
+
+    @unittest.skipIf(os.name == "nt", "process-group cleanup is POSIX-specific")
+    def test_runner_sigterm_reaps_an_owned_server_process_group(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="http-backend-interrupt-") as temporary:
+            root = Path(temporary)
+            pid_file = root / "child.pid"
+            runner_code = f"""
+import signal, subprocess, sys
+from pathlib import Path
+sys.path.insert(0, {str(Path(http_backend_harness.__file__).parent)!r})
+import http_backend_harness as harness
+child = subprocess.Popen(
+    [sys.executable, '-c', 'import time; time.sleep(60)'], start_new_session=True,
+)
+harness._register_owned_process(child)
+Path({str(pid_file)!r}).write_text(str(child.pid), encoding='ascii')
+signal.pause()
+"""
+            runner = subprocess.Popen(
+                [sys.executable, "-c", runner_code],
+                cwd=root,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                text=True,
+                start_new_session=True,
+            )
+            try:
+                deadline = time.monotonic() + 5
+                while not pid_file.exists() and runner.poll() is None and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                self.assertTrue(pid_file.exists(), "runner started its owned server process")
+                child_pid = int(pid_file.read_text(encoding="ascii"))
+                runner.send_signal(signal.SIGTERM)
+                self.assertEqual(runner.wait(timeout=5), -signal.SIGTERM)
+                with self.assertRaises(ProcessLookupError):
+                    os.kill(child_pid, 0)
+            finally:
+                if runner.poll() is None:
+                    os.killpg(runner.pid, signal.SIGKILL)
+                    runner.wait(timeout=5)
+
     def test_not_ready_waits_for_child_exit_before_reporting_status(self) -> None:
         with tempfile.TemporaryDirectory(prefix="http-backend-exit-") as temporary:
             backend = http_backend_harness.BackendProcess(
