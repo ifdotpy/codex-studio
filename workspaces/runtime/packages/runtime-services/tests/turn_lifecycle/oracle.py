@@ -42,6 +42,12 @@ import threading
 import shutil
 import tempfile
 from unittest.mock import patch
+
+# The recovery exclusion differential has a small scripted-provider flow. Keep
+# the original worker primitives available so that fixture can opt in locally
+# while the rest of this oracle continues to suppress background work.
+ORIGINAL_EXECUTOR_SUBMIT = concurrent.futures.ThreadPoolExecutor.submit
+ORIGINAL_THREAD_START = threading.Thread.start
 sys.path.insert(0, str(SERVER / "src"))
 from codex_runtime import Runtime
 import codex_runtime
@@ -558,8 +564,12 @@ def main():
                 break
             module_name = command.get("module", command.get("case", {}).get("module"))
             if module_name is not None:
-                assert module_name == "notification_dispatch", "unknown oracle module"
-                import notification_dispatch as module
+                assert module_name in {"notification_dispatch", "recovery_exclusion"}, "unknown oracle module"
+                sys.path.insert(0, str(pathlib.Path(__file__).parent))
+                if module_name == "notification_dispatch":
+                    import notification_dispatch as module
+                else:
+                    import recovery_exclusion as module
             else:
                 module = sys.modules[__name__]
             try:

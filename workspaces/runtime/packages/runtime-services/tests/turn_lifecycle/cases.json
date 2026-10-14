@@ -654,26 +654,6 @@
         "deviation": "durable_reconciliation_hold"
       },
       {
-        "path": "/runtime_agents/0/record/startAttempt",
-        "python": null,
-        "pythonPresent": false,
-        "rust": {
-          "accountKey": "default",
-          "activeAtReservation": false,
-          "connectionId": null,
-          "created": "<time>",
-          "epoch": 0,
-          "events": ["event"],
-          "id": "attempt",
-          "nativeOperationId": "turn:agent:event:attempt:attempt",
-          "submitted": true,
-          "supervisorIdentity": null,
-          "threadId": "thread"
-        },
-        "rustPresent": true,
-        "deviation": "durable_reconciliation_hold"
-      },
-      {
         "path": "/runtime_agents/0/record/startOutcomeHold",
         "python": null,
         "pythonPresent": false,
@@ -776,14 +756,6 @@
         "deviation": "durable_reconciliation_hold"
       },
       {
-        "path": "/sync_entities/0/payload/value/startAttempt",
-        "python": null,
-        "pythonPresent": false,
-        "rust": {},
-        "rustPresent": true,
-        "deviation": "durable_reconciliation_hold"
-      },
-      {
         "path": "/sync_entities/0/payload/value/status",
         "python": "queued",
         "pythonPresent": true,
@@ -876,28 +848,6 @@
         "deviation": "durable_reconciliation_hold"
       },
       {
-        "path": "/runtime_agents/0/record/startAttempt",
-        "python": null,
-        "pythonPresent": false,
-        "rust": {
-          "accountKey": "default",
-          "activeAtReservation": false,
-          "connectionGeneration": 1,
-          "connectionId": null,
-          "created": "<time>",
-          "epoch": 0,
-          "events": ["event"],
-          "id": "attempt",
-          "nativeOperationId": "turn:agent:event:attempt:attempt",
-          "requestTicket": "ticket",
-          "submitted": true,
-          "supervisorIdentity": null,
-          "threadId": "thread"
-        },
-        "rustPresent": true,
-        "deviation": "durable_reconciliation_hold"
-      },
-      {
         "path": "/runtime_execution_runs/0/record/disconnectRecovery",
         "python": null,
         "pythonPresent": false,
@@ -961,14 +911,6 @@
           "threadId": "thread",
           "turnId": null
         },
-        "rustPresent": true,
-        "deviation": "durable_reconciliation_hold"
-      },
-      {
-        "path": "/sync_entities/0/payload/value/startAttempt",
-        "python": null,
-        "pythonPresent": false,
-        "rust": {},
         "rustPresent": true,
         "deviation": "durable_reconciliation_hold"
       }

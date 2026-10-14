@@ -19,7 +19,7 @@
   },
   "durable_reconciliation_hold": {
     "approvedClass": "b",
-    "reason": "Legacy unknown or paused recovery and generation change retain a named durable hold until native history reconciliation is wired.",
+    "reason": "Legacy unknown or paused recovery and generation change retain a named durable hold until native history reconciliation is wired. Users see the agent interrupted and held until explicit recovery; Python's automatic history check is the later port.",
     "entrypoints": [],
     "fields": [
       "/runtime_agents/*/record/autoWake",

@@ -1,8 +1,8 @@
 //! Durable claim and settlement operations owned by the account turn worker.
 
-use serde_json::Value;
+use serde_json::{Value, json};
 use studio_runtime_store::{
-    AgentId, AgentRepository, AgentStatus, ExecutionHistoryRepository, RuntimeStore,
+    AgentId, AgentRecord, AgentRepository, AgentStatus, ExecutionHistoryRepository, RuntimeStore,
     SchedulerRepository, StoreError, TurnAttemptIdentity,
 };
 use thiserror::Error;
@@ -80,11 +80,188 @@ pub(crate) fn lifecycle_transaction_with<T, E: From<StoreError>>(
 
 /// Run once during scheduler startup to release only persisted claims proven unsubmitted.
 pub fn recover_on_startup(store: &RuntimeStore) -> Result<usize, SchedulerError> {
+    let account_registry = std::fs::read(store.root().join("accounts/registry.json"))
+        .ok()
+        .and_then(|bytes| crate::account_policy::decode_registry(&bytes).ok())
+        .map(|(value, _)| value);
     Ok(lifecycle_transaction(store, |transaction| {
         let unsubmitted = SchedulerRepository::recover_unsubmitted(transaction)?;
         let submitted = SchedulerRepository::recover_submitted(transaction)?;
+        clear_startup_agent_state(transaction, account_registry.as_ref())?;
         Ok(unsubmitted + submitted)
     })?)
+}
+
+/// Mirror Python's final per-agent startup cleanup after both recovery scans.
+fn clear_startup_agent_state(
+    transaction: &rusqlite::Transaction<'_>,
+    account_registry: Option<&Value>,
+) -> Result<(), StoreError> {
+    let mut statement = transaction.prepare(
+        "SELECT id,record FROM runtime_agents \
+         WHERE COALESCE(json_extract(record,'$.remoteWorker'),0)=0 \
+           AND COALESCE(json_extract(record,'$.remoteAnchor'),0)=0 ORDER BY id",
+    )?;
+    let records = statement
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    drop(statement);
+
+    for (id, raw) in records {
+        let mut agent: Value =
+            serde_json::from_str(&raw).map_err(|_| StoreError::InvalidSyncObject {
+                scope: "runtime_agents".into(),
+                id: id.clone(),
+            })?;
+        let in_flight_changed = agent.get("inFlight") != Some(&Value::Bool(false));
+        agent["inFlight"] = json!(false);
+        let keep_attempt = preparation_eligible(&agent)
+            || retained_auth_wait(transaction, &agent, account_registry)?;
+        let removed_attempt = if keep_attempt {
+            false
+        } else {
+            agent
+                .as_object_mut()
+                .is_some_and(|record| record.remove("startAttempt").is_some())
+        };
+        // Match Runtime.__init__: every local row is put after cleanup. Publish only
+        // when this Rust pass changed a durable field.
+        if in_flight_changed || removed_attempt {
+            AgentRepository::put(transaction, &AgentRecord::from_value(agent.clone())?)?;
+            crate::agents_create::publish_agent(transaction, &agent)?;
+        }
+    }
+    Ok(())
+}
+
+/// Keep a failed, safe-to-retry preparation attempt for Python parity.
+fn preparation_eligible(agent: &Value) -> bool {
+    let attempt = agent.get("startAttempt").unwrap_or(&Value::Null);
+    let error = agent.get("error").and_then(Value::as_str);
+    let busy_claude = agent.get("provider").and_then(Value::as_str) == Some("claude")
+        && crate::event_write::truthy(agent.get("threadId"))
+        && error
+            .and_then(|value| serde_json::from_str::<Value>(value).ok())
+            .is_some_and(|value| {
+                value == json!({"code":-32000,"message":"Claude is still working"})
+            });
+    let allowed_error = error.is_some_and(|value| {
+        busy_claude
+            || matches!(
+                value,
+                "AF_UNIX path too long"
+                    | "[Errno 2] No such file or directory"
+                    | "Cannot verify the existing supervisor child; native outcome remains unknown"
+                    | "Supervisor native launch settings changed; existing work was preserved"
+                    | "Supervisor open failed: Supervisor handle exists with an incompatible or stopped child"
+            )
+    });
+    agent.get("status").and_then(Value::as_str) == Some("failed")
+        && agent.get("autoWake") == Some(&Value::Bool(true))
+        && !crate::event_write::truthy(agent.get("inFlight"))
+        && !crate::event_write::truthy(agent.get("turnId"))
+        && !crate::event_write::truthy(agent.get("deletedAt"))
+        && !crate::event_write::truthy(agent.get("nativeFailureHold"))
+        && !crate::event_write::truthy(agent.get("accountTransferId"))
+        && !crate::event_write::truthy(agent.get("workspaceOperation"))
+        && !crate::continuation::native_thread_blocked(agent)
+        && allowed_error
+        && crate::event_write::truthy(attempt.get("id"))
+        && attempt.get("submitted") == Some(&Value::Bool(false))
+        && attempt.get("epoch") == agent.get("epoch")
+        && attempt.get("accountKey").unwrap_or(&json!("default"))
+            == agent.get("accountKey").unwrap_or(&json!("default"))
+        && crate::event_write::truthy(attempt.get("events"))
+        && !crate::event_write::truthy(attempt.get("action"))
+        && !crate::event_write::truthy(attempt.get("activeAtReservation"))
+        && !crate::event_write::truthy(attempt.get("turnId"))
+        && !crate::event_write::truthy(attempt.get("observedTurnId"))
+}
+
+/// Retain only the durable auth-probe receipt validated by the existing policy.
+fn retained_auth_wait(
+    transaction: &rusqlite::Transaction<'_>,
+    agent: &Value,
+    account_registry: Option<&Value>,
+) -> Result<bool, StoreError> {
+    let attempt_id = agent
+        .pointer("/startAttempt/id")
+        .and_then(Value::as_str)
+        .filter(|id| !id.is_empty());
+    let Some(attempt_id) = attempt_id else {
+        return Ok(false);
+    };
+    let agent_id = agent
+        .get("id")
+        .and_then(Value::as_str)
+        .ok_or(StoreError::RecordContract("agent id"))?;
+    let receipt_id = format!("claude-auth-probe:{attempt_id}");
+    let exists: bool = transaction.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='runtime_usage_resumes')",
+        [],
+        |row| row.get(0),
+    )?;
+    if !exists {
+        return Ok(false);
+    }
+    let settings = preparation_settings(agent);
+    let account_key = agent
+        .get("accountKey")
+        .and_then(Value::as_str)
+        .unwrap_or("default");
+    let receipt_exists: bool = transaction.query_row(
+        "SELECT EXISTS(SELECT 1 FROM runtime_usage_resumes WHERE id=?1 AND agent=?2)",
+        rusqlite::params![receipt_id, agent_id],
+        |row| row.get(0),
+    )?;
+    if !receipt_exists {
+        return Ok(false);
+    }
+    let Some(current_account) = account_registry
+        .and_then(|registry| registry.get("accounts"))
+        .and_then(|accounts| accounts.get(account_key))
+    else {
+        return Ok(false);
+    };
+    let current_pin = crate::claude_auth_wait::account_pin(current_account);
+    let raw = studio_runtime_store::ContinuationRepository::snapshot(
+        transaction,
+        agent_id,
+        studio_runtime_store::ContinuationTable::Usage,
+        Some(&receipt_id),
+    )?;
+    let Ok(snapshot) = crate::continuation::Snapshot::from_records(raw) else {
+        return Ok(false);
+    };
+    Ok(crate::claude_auth_wait::retained(
+        &snapshot,
+        &settings,
+        &current_pin,
+    ))
+}
+
+/// Match Runtime.preparation_settings when validating a retained auth wait receipt.
+fn preparation_settings(agent: &Value) -> Value {
+    let mut settings = serde_json::Map::new();
+    for key in [
+        "model",
+        "effort",
+        "nativeEffort",
+        "fastMode",
+        "yoloMode",
+        "profileInstructions",
+        "role",
+    ] {
+        settings.insert(key.into(), agent.get(key).cloned().unwrap_or(Value::Null));
+    }
+    for key in ["daybreakEnabled", "cyberAccessProgram"] {
+        if let Some(value) = agent.get(key) {
+            settings.insert(key.into(), value.clone());
+        }
+    }
+    Value::Object(settings)
 }
 
 pub fn settle_started_provider(
