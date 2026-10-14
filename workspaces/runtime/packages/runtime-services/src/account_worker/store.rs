@@ -669,6 +669,23 @@ pub(super) fn journal(
                     thread,
                     turn,
                 )?;
+                let attempt = match attempt {
+                    Some(attempt) => Some(attempt),
+                    None if method == "turn/completed" => {
+                        crate::context_repair::source_terminal_attempt(
+                            tx,
+                            account,
+                            entry.generation.0,
+                            params,
+                        )
+                        .map_err(|_| studio_runtime_store::StoreError::InvalidSyncObject {
+                            scope: "runtime_context_terminal_receipts".into(),
+                            id: thread.to_owned(),
+                        })?
+                        .map(|identity| (identity, true))
+                    }
+                    None => None,
+                };
                 if let Some((identity, bound)) = attempt {
                     match method {
                         "turn/started" => {
