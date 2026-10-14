@@ -13,7 +13,7 @@ from urllib.parse import parse_qs, urlsplit
 from codex_sqlite_traces import _frames
 from codex_private_paths import ensure_private_dir, protect_temp_file
 from codex_lock_metrics import FixedSampleRing, percentile_summary
-from studio_api.sync.protocol import SYNC_ENTITY_SCOPE
+from codex_sync_protocol import SYNC_ENTITY_SCOPE
 
 SLOW_MS = 1000
 ACTIVE_LIMIT = 128

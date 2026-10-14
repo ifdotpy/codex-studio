@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlencode
 
-from studio_api.sync.protocol import SYNC_ENTITY_SCOPE
+from codex_sync_protocol import SYNC_ENTITY_SCOPE
 
 JsonReader = Callable[[str], dict[str, Any]]
 ENTITY_SCOPE = SYNC_ENTITY_SCOPE

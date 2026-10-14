@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import cast
 
 from studio_api.models import JsonValue
-from studio_api.sync.protocol import SYNC_ENTITY_SCOPE, SYNC_PROTOCOL_VERSION
+from codex_sync_protocol import SYNC_ENTITY_SCOPE, SYNC_PROTOCOL_VERSION
 from studio_api.sync.resources.models import MAX_TOKEN_RATE_TOTAL_ENTRIES
 from studio_api.schema import (
     bound_integer_schemas,

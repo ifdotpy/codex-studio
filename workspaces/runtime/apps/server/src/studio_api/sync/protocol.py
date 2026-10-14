@@ -1,6 +1,5 @@
-"""Shared version for the sync document and typed resource protocols."""
+"""Compatibility re-exports for sync document and resource protocols."""
 
-from typing import Final
+from codex_sync_protocol import SYNC_ENTITY_SCOPE, SYNC_PROTOCOL_VERSION
 
-SYNC_PROTOCOL_VERSION: Final = 3
-SYNC_ENTITY_SCOPE: Final = "state:entities:v1"
+__all__ = ["SYNC_ENTITY_SCOPE", "SYNC_PROTOCOL_VERSION"]

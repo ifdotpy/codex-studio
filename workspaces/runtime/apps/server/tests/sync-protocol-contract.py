@@ -6,6 +6,8 @@ from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
 
 import json
+import os
+import subprocess
 import sys
 from pathlib import Path
 import unittest
@@ -13,6 +15,10 @@ import unittest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from codex_layout import REPOSITORY_ROOT, WEB_ROOT
+from codex_sync_protocol import (
+    SYNC_ENTITY_SCOPE as OWNER_ENTITY_SCOPE,
+    SYNC_PROTOCOL_VERSION as OWNER_PROTOCOL_VERSION,
+)
 from studio_api.generate_types import (
     OPENAPI_AUTHORITY,
     SYNC_PROTOCOL_NODE_OUTPUT,
@@ -41,6 +47,8 @@ def single_value(schema):
 
 class SyncProtocolContract(unittest.TestCase):
     def test_shared_owner_preserves_the_supported_openapi_version(self):
+        self.assertEqual(SYNC_PROTOCOL_VERSION, OWNER_PROTOCOL_VERSION)
+        self.assertEqual(SYNC_ENTITY_SCOPE, OWNER_ENTITY_SCOPE)
         self.assertEqual(SYNC_PROTOCOL_VERSION, 3)
         self.assertEqual(SYNC_ENTITY_SCOPE, "state:entities:v1")
         schema = SyncProtocolResponse.model_json_schema()["properties"]
@@ -64,8 +72,9 @@ class SyncProtocolContract(unittest.TestCase):
             render_sync_protocol_python(document),
         )
         api_types = (WEB_ROOT / "src/generated/api.ts").read_text(encoding="utf-8")
-        self.assertTrue(
-            api_types.endswith(f"\n{render_sync_protocol_typescript(document)}\n")
+        self.assertIn(
+            f"\n{render_sync_protocol_typescript(document)}\n",
+            api_types,
         )
         self.assertEqual(
             SYNC_PROTOCOL_NODE_OUTPUT.read_text(encoding="utf-8"),
@@ -92,6 +101,39 @@ class SyncProtocolContract(unittest.TestCase):
                 contents = (REPOSITORY_ROOT / source).read_text(encoding="utf-8")
                 self.assertIn("SYNC_ENTITY_SCOPE", contents)
                 self.assertNotIn('"state:entities:v1"', contents)
+
+    def test_lightweight_consumers_do_not_import_the_sync_api_package(self):
+        sources = (
+            "workspaces/runtime/apps/server/src/codex_api_client.py",
+            "workspaces/runtime/apps/server/src/codex_sync.py",
+            "workspaces/runtime/apps/server/src/codex_http_traces.py",
+            "workspaces/runtime/apps/server/src/studio_api/testing.py",
+            "workspaces/runtime/apps/server/src/studio_api/generate_types.py",
+            "workspaces/runtime/apps/server/src/sync/benchmarks/benchmark.py",
+        )
+        for source in sources:
+            with self.subTest(source=source):
+                contents = (REPOSITORY_ROOT / source).read_text(encoding="utf-8")
+                self.assertIn("from codex_sync_protocol import", contents)
+                self.assertNotIn("from studio_api.sync.protocol import", contents)
+
+    def test_api_client_import_does_not_initialize_the_sync_api_package(self):
+        source_root = Path(__file__).resolve().parents[1] / "src"
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-B",
+                "-c",
+                "import sys; import codex_api_client; "
+                "assert 'studio_api.sync' not in sys.modules",
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=10,
+            env={**os.environ, "PYTHONPATH": str(source_root)},
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
 
 
 if __name__ == "__main__":

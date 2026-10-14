@@ -13,7 +13,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from codex_sync import SyncStore
 from codex_sync_entities import ensure_tables, put
-from studio_api.sync.protocol import SYNC_ENTITY_SCOPE
+from codex_sync_protocol import SYNC_ENTITY_SCOPE
 
 
 def percentile(values, percent):

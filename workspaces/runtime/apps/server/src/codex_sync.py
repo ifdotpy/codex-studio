@@ -10,7 +10,7 @@ from contextlib import contextmanager
 from typing import Any, Callable, ContextManager, Iterator
 from codex_records import JsonObject
 from codex_shared_values import SYNC_BATCH_LIMIT, SYNC_ENTITY_PAGE_LIMIT, TRANSCRIPT_MAX_TOMBSTONES
-from studio_api.sync.protocol import SYNC_ENTITY_SCOPE
+from codex_sync_protocol import SYNC_ENTITY_SCOPE
 from codex_startup_memory import mark as startup_memory_mark
 from codex_sqlite import scope as sqlite_scope
 

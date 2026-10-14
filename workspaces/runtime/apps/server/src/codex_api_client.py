@@ -9,7 +9,7 @@ from urllib.error import HTTPError
 from urllib.parse import urlsplit
 from urllib.request import ProxyHandler, Request, build_opener, urlopen
 
-from studio_api.sync.protocol import SYNC_ENTITY_SCOPE
+from codex_sync_protocol import SYNC_ENTITY_SCOPE
 
 
 SESSION_ENDPOINT = "/api/session"
