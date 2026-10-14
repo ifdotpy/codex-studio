@@ -381,6 +381,72 @@ async fn retained_unknown_receipt_stays_unknown_after_reconnect_without_sending(
     second_worker.shutdown().await.unwrap();
 }
 
+#[tokio::test(start_paused = true)]
+async fn crash_before_checkpoint_replays_unknown_without_resending_durable_reply() {
+    let state = State::new().await;
+    let mut peer = Peer::new();
+    let mut worker = peer.worker(state.bridge.clone()).await;
+    let port = worker.retained_session();
+    let call = request(&state, &port, "crash-before-checkpoint");
+    let sender = port.clone();
+    let task_call = call.clone();
+    let task = tokio::spawn(async move { sender.request(task_call).await });
+    let _original_wire = peer.write("thread/read").await;
+
+    // Model a crash after the provider result's journal transaction committed,
+    // but before the generation checkpoint could include that cursor.
+    let operation = call.operation.clone();
+    let key = format!(
+        "retained:default:{}",
+        studio_runtime_store::sha256_hex(operation.as_bytes())
+    );
+    let saved_result = serde_json::to_value(RequestResult::Reply(
+        json!({"thread":{"id":"fake-thread-0"}}),
+    ))
+    .unwrap();
+    state
+        .bridge
+        .run(move |store| {
+            store.transaction_with::<_, StoreError>(|tx| {
+                tx.execute(
+                    "INSERT INTO runtime_operation_receipts(id,signature,result) VALUES(?1,'result',?2)",
+                    rusqlite::params![
+                        format!("account-worker:{key}:result"),
+                        json!({"result":saved_result,"cursor":2}).to_string()
+                    ],
+                )?;
+                tx.execute(
+                    "INSERT INTO runtime_operation_receipts(id,signature,result) VALUES(?1,'settled',?2)",
+                    rusqlite::params![
+                        "account-worker:journal:default:1:2:settled",
+                        json!({"cursor":2,"digest":"fixture","ready":true,"committed":true}).to_string()
+                    ],
+                )?;
+                Ok(())
+            })?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    worker.shutdown().await.unwrap();
+    task.abort();
+    let _ignored = task.await;
+
+    let mut replacement_peer = Peer::new();
+    let mut replacement = replacement_peer.worker(state.bridge.clone()).await;
+    let replayed = replacement
+        .retained_session()
+        .request(call)
+        .await
+        .expect("saved retained request is replayed");
+    assert_eq!(replayed.result, RequestResult::Unknown);
+    assert!(
+        replacement_peer.writes.try_recv().is_err(),
+        "a beyond-checkpoint result must not cause a second provider send"
+    );
+    replacement.shutdown().await.unwrap();
+}
+
 #[tokio::test]
 async fn retained_request_rejects_a_stale_expected_connection_before_dispatch() {
     let state = State::new().await;

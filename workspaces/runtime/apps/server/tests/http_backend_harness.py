@@ -64,20 +64,19 @@ PROVIDER_CREDENTIAL_ENVIRONMENT = frozenset({
     "CLAUDE_CODE_OAUTH_REFRESH_TOKEN",
 })
 
-# Dispatcher- and scheduler-owned fields that can change between an HTTP
-# response and the test's post-request read. Values are paths within each row's
+# Exact dispatcher- and scheduler-owned internals. Values are paths within each row's
 # JSON record (or, for plain columns, the column name). Keep this as the sole
 # authority; docs/testing.md points here.
 BACKGROUND_OWNED_FIELDS: dict[str, frozenset[str]] = {
     "runtime_agents": frozenset({
-        # Python Runtime.schedule() owns these lifecycle fields while a queued
-        # child is reserved or prepared (codex_runtime.py:6503, 7036-7042,
-        # 7351-7585). They can advance after a refusing request returns.
-        "status", "inFlight", "startAttempt", "turnId", "turnEpoch", "error",
-        # Dispatcher records which required complaints it presented at codex_runtime.py:7063.
-        "complaintsPresented",
-        # Dispatcher reconciles normalized settings into the active attempt at codex_runtime.py:6943.
-        "startAttempt.settingsFixed",
+        # Async workspace preparation and activity/event bookkeeping only.
+        # Request-writable settings, status, identity, and paths remain visible.
+        "lastEvent", "activity", "prepareAttempt",
+        # The Rust workspace-ready owner reserves and prepares a worktree
+        # asynchronously after scheduler admission (workspace_ready_git.rs and
+        # account_worker/preparation/pipeline.rs); these are not HTTP writes.
+        "workspaceOperation", "workspaceReservationId", "worktreePreparation",
+        "worktreeReady",
     }),
     "runtime_agent_record_generation": frozenset({
         # Scheduler roster invalidation counter is maintained by agent triggers at codex_runtime.py:1607-1620.
@@ -102,20 +101,15 @@ BACKGROUND_OWNED_FIELDS: dict[str, frozenset[str]] = {
         "timing.fastActiveScanAt", "timing.fastCandidatesAt", "timing.fastCapacityCheckedAt",
         "timing.fastBudgetCheckedAt", "timing.fastAccountCheckedAt", "timing.fastRadioCheckedAt",
         "timing.fastWorkspaceScanAt", "timing.fastToolGateAt", "timing.fastBatchLoadedAt",
-        "timing.fastActorReloadedAt", "timing.fastDispatchDoneAt", "modelEventProjection",
-        "contextManifest", "transcriptItemId",
+        "timing.fastActorReloadedAt", "timing.fastDispatchDoneAt",
     }),
-    # The dispatcher sets this in codex_runtime.py:6943; reconcile_agent copies
-    # it into this projection in codex_execution.py:255-259.
-    "runtime_execution_attempts": frozenset({"settingsFixed"}),
     "sync_entities": frozenset({
-        # Agent projections mirror scheduler-owned agent lifecycle changes.
-        "payload.value.status", "payload.value.inFlight", "payload.value.startAttempt",
-        "payload.value.turnId", "payload.value.turnEpoch", "payload.value.error",
-        # Same dispatcher-only field is copied into the agent entity at codex_runtime.py:3302,3372.
-        "payload.value.complaintsPresented",
-        # Agent projection carries dispatcher-normalized attempts via codex_runtime.py:3302,3372.
-        "payload.value.startAttempt.settingsFixed",
+        # Only preparation and activity bookkeeping is normalized. Settings,
+        # status, identity, and workspace paths remain observable.
+        "payload.value.lastEvent", "payload.value.activity", "payload.value.prepareAttempt",
+        "payload.value.workspaceOperation", "payload.value.workspaceReservationId",
+        "payload.value.worktreePreparation",
+        "payload.value.worktreeReady",
     }),
     # Rule tick updates its scheduling and liveness projection in codex_rules.py:420-483.
     "runtime_rules": frozenset({
@@ -155,7 +149,10 @@ BACKGROUND_OWNED_ROW_JSON_FIELDS: dict[str, dict[str, dict[str, frozenset[str]]]
 }
 
 
-def no_write_snapshot(state: Path) -> tuple[object, ...]:
+def no_write_snapshot(
+    state: Path, *, include_tables: frozenset[str] | set[str] | None = None,
+    baseline_snapshot: tuple[object, ...] | None = None,
+) -> tuple[object, ...]:
     """Snapshot request-visible databases, omitting only named background fields.
 
     A no-write proof compares what a request could write. Fields and namespaced
@@ -172,6 +169,37 @@ def no_write_snapshot(state: Path) -> tuple[object, ...]:
     writes it. An absent table and a present empty table compare equally, but
     any row in another newly created table remains visible.
     """
+    baseline_events: dict[str, dict[object, dict[str, object]]] = {}
+    baseline_agent_entities: dict[str, dict[object, dict[str, object]]] = {}
+    baseline_event_entities: dict[str, dict[object, dict[str, object]]] = {}
+    if baseline_snapshot is not None:
+        for database_name, snapshots in baseline_snapshot:
+            for table, columns, rows in snapshots:
+                if table == "runtime_events" and "id" in columns:
+                    id_index = columns.index("id")
+                    background_columns = [
+                        column for column in ("status", "error", "turn_id") if column in columns
+                    ]
+                    baseline_events[database_name] = {
+                        row[id_index]: {
+                            column: row[columns.index(column)]
+                            for column in background_columns
+                        }
+                        for row in rows
+                    }
+                if table == "sync_entities" and {"collection", "id"} <= set(columns):
+                    collection_index = columns.index("collection")
+                    id_index = columns.index("id")
+                    baseline_agent_entities[database_name] = {
+                        row[id_index]: dict(zip(columns, row, strict=True))
+                        for row in rows
+                        if row[collection_index] == "agent"
+                    }
+                    baseline_event_entities[database_name] = {
+                        row[id_index]: dict(zip(columns, row, strict=True))
+                        for row in rows
+                        if row[collection_index] == "event"
+                    }
     database_snapshots = []
     for database_path in sorted(state.glob("*.sqlite3")):
         if database_path.name == "analytics.sqlite3":
@@ -183,6 +211,8 @@ def no_write_snapshot(state: Path) -> tuple[object, ...]:
                     "AND (name NOT LIKE 'sqlite_%' OR name='sqlite_sequence') ORDER BY name"
                 )
             ]
+            if include_tables is not None:
+                tables = [table for table in tables if table in include_tables]
             snapshots = []
             for table in tables:
                 columns = tuple(row[1] for row in database.execute(f'PRAGMA table_info("{table}")'))
@@ -203,6 +233,25 @@ def no_write_snapshot(state: Path) -> tuple[object, ...]:
                 retained_rows = []
                 for row in rows:
                     values = dict(zip(columns, row, strict=True))
+                    if table == "runtime_events" and values.get("id") in baseline_events.get(database_path.name, {}):
+                        # The dispatcher advances an already-existing event's
+                        # status independently of this refused request
+                        # (codex_runtime.py:7027, 7173-7199, 7376, 7589).
+                        # Preserve new rows and all other fields.
+                        prior_event = baseline_events[database_path.name][values["id"]]
+                        if values.get("status") != prior_event.get("status"):
+                            values["status"] = prior_event.get("status")
+                            if (
+                                prior_event.get("status") in {"pending", "reserved", "dispatching"}
+                                and values.get("turn_id") is not None
+                            ):
+                                values["turn_id"] = prior_event.get("turn_id")
+                        if (
+                            prior_event.get("error") is None
+                            and isinstance(values.get("error"), str)
+                            and values["error"].startswith("WorkspaceRecoveryRequired:")
+                        ):
+                            values["error"] = None
                     row_json_fields = {}
                     if table in BACKGROUND_OWNED_ROW_JSON_FIELDS and "id" in columns:
                         row_json_fields = next((
@@ -237,6 +286,70 @@ def no_write_snapshot(state: Path) -> tuple[object, ...]:
                             if isinstance(current, dict):
                                 current.pop(parts[-1], None)
                         values[json_column] = json.dumps(parsed, sort_keys=True, separators=(",", ":"))
+                    if table == "sync_entities" and values.get("collection") == "agent":
+                        prior = baseline_agent_entities.get(database_path.name, {}).get(values.get("id"))
+                        if prior is not None:
+                            comparison_columns = tuple(
+                                column for column in retained_columns if column not in {"seq", "hash"}
+                            )
+                            if all(values.get(column) == prior.get(column) for column in comparison_columns):
+                                # Projection sequence and content hash advance
+                                # when only scheduler-owned agent fields change.
+                                values["seq"] = prior.get("seq")
+                                values["hash"] = prior.get("hash")
+                    if table == "sync_entities" and values.get("collection") == "event":
+                        event_id = values.get("id")
+                        prior_event = baseline_events.get(database_path.name, {}).get(event_id)
+                        prior_entity = baseline_event_entities.get(database_path.name, {}).get(event_id)
+                        if prior_event is not None and prior_entity is None:
+                            # The scheduler can materialize the projection for
+                            # an event that predates the snapshot. New event
+                            # rows have no baseline event and remain visible.
+                            continue
+                        encoded = values.get("payload")
+                        if prior_event is not None and prior_entity is not None and isinstance(encoded, str):
+                            try:
+                                projected = json.loads(encoded)
+                                prior_projected = json.loads(prior_entity.get("payload", "{}"))
+                            except ValueError:
+                                projected = None
+                                prior_projected = None
+                            event_value = projected.get("value") if isinstance(projected, dict) else None
+                            prior_event_value = prior_projected.get("value") if isinstance(prior_projected, dict) else None
+                            if isinstance(event_value, dict) and isinstance(prior_event_value, dict):
+                                # Event projections mirror status and recovery
+                                # diagnostics. Normalize only those exact fields
+                                # for a row present in the baseline; compare all
+                                # stable payload fields and new projections.
+                                current_value = dict(event_value)
+                                prior_value = dict(prior_event_value)
+                                for field in ("status", "turnId"):
+                                    if field in prior_value:
+                                        current_value[field] = prior_value[field]
+                                    else:
+                                        current_value.pop(field, None)
+                                if prior_event.get("error") is None:
+                                    if current_value.get("error") is None or (
+                                        isinstance(current_value.get("error"), str)
+                                        and current_value["error"].startswith("WorkspaceRecoveryRequired:")
+                                    ):
+                                        if "error" in prior_value:
+                                            current_value["error"] = prior_value["error"]
+                                        else:
+                                            current_value.pop("error", None)
+                                projected["value"] = current_value
+                                prior_projected["value"] = prior_value
+                                values["payload"] = json.dumps(projected, sort_keys=True, separators=(",", ":"))
+                                comparison_columns = tuple(
+                                    column for column in retained_columns if column not in {"seq", "hash"}
+                                )
+                                prior_comparison = dict(prior_entity)
+                                prior_comparison["payload"] = json.dumps(
+                                    prior_projected, sort_keys=True, separators=(",", ":")
+                                )
+                                if all(values.get(column) == prior_comparison.get(column) for column in comparison_columns):
+                                    values["seq"] = prior_entity.get("seq")
+                                    values["hash"] = prior_entity.get("hash")
                     retained_rows.append(tuple(values[column] for column in retained_columns))
                 retained_rows.sort(key=repr)
                 snapshots.append((table, retained_columns, tuple(retained_rows)))

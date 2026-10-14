@@ -2,6 +2,7 @@ mod account_login;
 mod account_transfer;
 mod agent_management;
 pub use agent_management::NativeContextRepairPort;
+pub use agents_create::managed_creation_environment;
 mod agents_create;
 mod branches;
 pub(crate) mod browser;

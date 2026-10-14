@@ -19,22 +19,27 @@ pub(crate) struct ProductionPorts {
     admission: crate::message_admission::PreparedAdmission,
     event_wake: std::sync::Arc<tokio::sync::Notify>,
     monitor_dispatch_wake: std::sync::Arc<tokio::sync::Notify>,
+    runtime_ports: super::ManagedToolRuntimePorts,
+}
+
+pub(crate) struct ProductionPortsConfig {
+    pub(crate) context: CallbackContext,
+    pub(crate) room_directory: Option<crate::sync_entity_context::RoomDirectory>,
+    pub(crate) admission: crate::message_admission::PreparedAdmission,
+    pub(crate) event_wake: std::sync::Arc<tokio::sync::Notify>,
+    pub(crate) monitor_dispatch_wake: std::sync::Arc<tokio::sync::Notify>,
+    pub(crate) runtime_ports: super::ManagedToolRuntimePorts,
 }
 
 impl ProductionPorts {
-    pub(crate) fn new(
-        context: CallbackContext,
-        room_directory: Option<crate::sync_entity_context::RoomDirectory>,
-        admission: crate::message_admission::PreparedAdmission,
-        event_wake: std::sync::Arc<tokio::sync::Notify>,
-        monitor_dispatch_wake: std::sync::Arc<tokio::sync::Notify>,
-    ) -> Self {
+    pub(crate) fn new(config: ProductionPortsConfig) -> Self {
         Self {
-            context,
-            room_directory,
-            admission,
-            event_wake,
-            monitor_dispatch_wake,
+            context: config.context,
+            room_directory: config.room_directory,
+            admission: config.admission,
+            event_wake: config.event_wake,
+            monitor_dispatch_wake: config.monitor_dispatch_wake,
+            runtime_ports: config.runtime_ports,
         }
     }
 }
@@ -197,6 +202,22 @@ impl crate::managed_host_tools::ChildCreationPort for ProductionPorts {
 }
 
 impl crate::managed_host_tools::InterruptPort for ProductionPorts {
+    fn resolve_target(
+        &self,
+        tx: &Transaction<'_>,
+        _: &crate::managed_host_tools::Actor,
+        supplied: &str,
+    ) -> Result<String, crate::managed_host_tools::Error> {
+        let snapshot = super::super::storage::snapshot(tx, &self.context)
+            .map_err(|_| crate::managed_host_tools::Error::Stale)?;
+        messages::resolve_agent(tx, &snapshot, supplied).map_err(|error| match error {
+            CallbackError::Store(error) => crate::managed_host_tools::Error::Store(error),
+            CallbackError::Stored(_) => crate::managed_host_tools::Error::Stale,
+            CallbackError::Invalid(message) => crate::managed_host_tools::Error::Invalid(message),
+            _ => crate::managed_host_tools::Error::Invalid("Unknown managed agent"),
+        })
+    }
+
     fn interrupt_in_transaction(
         &self,
         _: &Transaction<'_>,
@@ -462,6 +483,30 @@ impl crate::native_review::ReviewCreator for UnavailableReviewCreator {
     }
 }
 impl crate::managed_host_tools::PostCommitPort for ProductionPorts {
+    fn dispatch_managed(
+        &self,
+        store: &studio_runtime_store::RuntimeStore,
+        actor: &crate::managed_host_tools::Actor,
+        tool: &str,
+        args: &Value,
+        request_id: &str,
+        now: f64,
+    ) -> Result<
+        Option<crate::managed_host_tools::DispatchedOperation>,
+        crate::managed_host_tools::Error,
+    > {
+        super::runtime_dispatch::dispatch(super::runtime_dispatch::DispatchRequest {
+            store,
+            actor,
+            context: &self.context,
+            tool,
+            args,
+            request_id,
+            now,
+            ports: &self.runtime_ports,
+        })
+    }
+
     fn release(
         &self,
         signals: &[crate::managed_host_tools::WakeSignal],
@@ -477,6 +522,32 @@ impl crate::managed_host_tools::PostCommitPort for ProductionPorts {
         }
         Ok(())
     }
+}
+
+pub(super) fn resolve_interrupt_target(
+    store: &studio_runtime_store::RuntimeStore,
+    context: &CallbackContext,
+    supplied: &str,
+) -> Result<String, crate::managed_host_tools::Error> {
+    store.transaction_with(|tx| {
+        let snapshot = super::super::storage::snapshot(tx, context)
+            .map_err(|_| crate::managed_host_tools::Error::Stale)?;
+        let target =
+            messages::resolve_agent(tx, &snapshot, supplied).map_err(|error| match error {
+                CallbackError::Store(error) => crate::managed_host_tools::Error::Store(error),
+                CallbackError::Stored(_) => crate::managed_host_tools::Error::Stale,
+                CallbackError::Invalid(message) => {
+                    crate::managed_host_tools::Error::Invalid(message)
+                }
+                _ => crate::managed_host_tools::Error::Invalid("Unknown managed agent"),
+            })?;
+        if !is_descendant(tx, &context.agent, &target)? {
+            return Err(crate::managed_host_tools::Error::Invalid(
+                "You can interrupt only your descendants",
+            ));
+        }
+        Ok(target)
+    })
 }
 
 impl From<event_write::EventWriteError> for CallbackError {
@@ -699,7 +770,7 @@ pub(super) fn execute(
     })
 }
 
-fn managed_error(error: crate::managed_host_tools::Error) -> CallbackError {
+pub(super) fn managed_error(error: crate::managed_host_tools::Error) -> CallbackError {
     use crate::managed_host_tools::Error as E;
     match error {
         E::Invalid(message) => CallbackError::Invalid(message),

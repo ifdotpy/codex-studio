@@ -33,6 +33,11 @@ struct EntityDelta {
     tombstone_floor: i64,
 }
 
+/// A stored idempotent receipt must be returned without unrelated post-cursor
+/// entity changes from concurrent background work.
+#[derive(Clone, Copy)]
+pub(crate) struct SkipMutationSyncEnvelope;
+
 /// Sample the entity cursor before dispatch and attach the subsequent range after dispatch.
 pub(crate) async fn envelope(
     State(state): State<HttpState>,
@@ -68,6 +73,13 @@ async fn envelope_response(
     store: Option<std::sync::Arc<RuntimeStore>>,
     cursor: Option<EntityCursor>,
 ) -> Response {
+    if response
+        .extensions()
+        .get::<SkipMutationSyncEnvelope>()
+        .is_some()
+    {
+        return response;
+    }
     if response.status() >= StatusCode::BAD_REQUEST || !response_is_unencoded_json(&response) {
         return response;
     }

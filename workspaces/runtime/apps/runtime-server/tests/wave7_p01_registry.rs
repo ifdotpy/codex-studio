@@ -588,7 +588,8 @@ fn scripted_with_resume_recording(
 ) -> (Arc<Scripted>, mpsc::UnboundedReceiver<(String, Value)>) {
     scripted_with_policy(unknown_writes, record_resumes, false)
 }
-fn scripted_with_unknown_first_launch() -> (Arc<Scripted>, mpsc::UnboundedReceiver<(String, Value)>) {
+fn scripted_with_unknown_first_launch() -> (Arc<Scripted>, mpsc::UnboundedReceiver<(String, Value)>)
+{
     scripted_with_policy(true, false, true)
 }
 fn scripted_with_policy(
@@ -799,6 +800,7 @@ async fn concurrent_ensure_session_starts_one_cold_account_worker() {
         Arc::new(Notify::new()),
         broker.clone(),
         test_registry_config(),
+        None,
     )
     .await
     .unwrap();

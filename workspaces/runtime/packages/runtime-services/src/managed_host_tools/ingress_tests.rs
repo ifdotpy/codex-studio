@@ -8,7 +8,8 @@ use crate::managed_host_tools::{
     PostCommitPort, ReviewPort, SearchPort, SendPort, StatusPort, WakeSignal, WatchMonitorPort,
 };
 use crate::provider_callbacks::{
-    CallbackContext, CallbackDecision, CallbackError, dispatch_with_managed_tools,
+    CallbackContext, CallbackDecision, CallbackError, ManagedToolPortsConfig,
+    ManagedToolRuntimePorts, dispatch_with_managed_tools,
 };
 use rusqlite::types::ValueRef;
 use rusqlite::{Transaction, params};
@@ -17,7 +18,7 @@ use std::{
     path::PathBuf,
     process::Command,
     sync::{
-        OnceLock,
+        Arc, Mutex, OnceLock,
         atomic::{AtomicBool, AtomicUsize, Ordering},
     },
 };
@@ -85,12 +86,21 @@ fn fixture() -> (tempfile::TempDir, RuntimeStore, CallbackContext) {
     (directory, store, context)
 }
 
+fn fixture_arc() -> (tempfile::TempDir, Arc<RuntimeStore>, CallbackContext) {
+    let (root, store, context) = fixture();
+    drop(store);
+    let store = Arc::new(RuntimeStore::open(Some(root.path())).unwrap());
+    (root, store, context)
+}
+
 #[derive(Default)]
 struct PortBundle {
     staged: AtomicUsize,
     released: AtomicUsize,
     skip_release: AtomicBool,
-    fail_reply_save: AtomicBool,
+    fail_release: AtomicBool,
+    dispatch_status: AtomicBool,
+    dispatched: AtomicUsize,
 }
 
 impl PortBundle {
@@ -197,9 +207,6 @@ impl StatusPort for PortBundle {
         args: &Value,
     ) -> Result<OperationResult, Error> {
         let result = self.stage(tx, "status", "status", args.clone())?;
-        if self.fail_reply_save.load(Ordering::SeqCst) {
-            tx.execute_batch("DROP TABLE runtime_tool_results")?;
-        }
         Ok(result)
     }
 }
@@ -277,11 +284,647 @@ impl ReviewPort for PortBundle {
 }
 
 impl PostCommitPort for PortBundle {
+    fn dispatch_managed(
+        &self,
+        _: &RuntimeStore,
+        _: &Actor,
+        tool: &str,
+        _: &Value,
+        _: &str,
+        _: f64,
+    ) -> Result<Option<crate::managed_host_tools::DispatchedOperation>, Error> {
+        if tool != "orchestration_status" || !self.dispatch_status.load(Ordering::SeqCst) {
+            return Ok(None);
+        }
+        self.dispatched.fetch_add(1, Ordering::SeqCst);
+        Ok(Some(crate::managed_host_tools::DispatchedOperation {
+            result: OperationResult {
+                value: json!({"status":"dispatched"}),
+                signals: vec![WakeSignal::new("event-driver/test-dispatch")],
+            },
+            certainty: crate::managed_host_tools::DeliveryCertainty::Written,
+            applied: Some(true),
+        }))
+    }
+
     fn release(&self, signals: &[WakeSignal]) -> Result<(), Error> {
+        if self.fail_release.load(Ordering::SeqCst) {
+            return Err(Error::Unavailable("test/post-commit-dispatch"));
+        }
         if !self.skip_release.load(Ordering::SeqCst) {
             self.released.fetch_add(signals.len(), Ordering::SeqCst);
         }
         Ok(())
+    }
+}
+
+#[test]
+fn post_commit_dispatch_saves_receipt_before_reply_and_replay_does_not_dispatch_again() {
+    let (_root, store, context) = fixture();
+    let ports = PortBundle::default();
+    ports.dispatch_status.store(true, Ordering::SeqCst);
+    ports.fail_release.store(true, Ordering::SeqCst);
+    let frame = call(
+        &context,
+        "post-commit-status",
+        "orchestration_status",
+        json!({}),
+    );
+    assert!(dispatch_with_managed_tools(&store, &context, &frame, 20.0, &ports).is_err());
+    assert_eq!(ports.dispatched.load(Ordering::SeqCst), 1);
+    let connection = store.read().unwrap();
+    let receipt = studio_runtime_store::system_reads::all(&connection, "runtime_tool_requests")
+        .unwrap()
+        .into_iter()
+        .find(|row| row["callId"] == "post-commit-status")
+        .unwrap();
+    assert_eq!(receipt["deliveryCertainty"], "written");
+
+    ports.fail_release.store(false, Ordering::SeqCst);
+    let replay = dispatch_with_managed_tools(&store, &context, &frame, 21.0, &ports).unwrap();
+    assert!(matches!(replay, CallbackDecision::Answer(_)));
+    assert_eq!(ports.dispatched.load(Ordering::SeqCst), 1);
+}
+
+struct ScriptedMonitorPort {
+    certainty: crate::managed_host_tools::DeliveryCertainty,
+    calls: AtomicUsize,
+    tickets: Mutex<Vec<String>>,
+    store: Option<Arc<RuntimeStore>>,
+}
+
+impl crate::provider_callbacks::MonitorInputPort for ScriptedMonitorPort {
+    fn input(
+        &self,
+        request: crate::provider_callbacks::MonitorInputRequest<'_>,
+    ) -> Result<Value, Error> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        self.tickets.lock().unwrap().push(request.ticket.to_owned());
+        match self.certainty {
+            crate::managed_host_tools::DeliveryCertainty::Written => {
+                Ok(json!({"ticket":request.ticket}))
+            }
+            crate::managed_host_tools::DeliveryCertainty::NotSent => {
+                Err(Error::Unavailable("test/input-not-sent"))
+            }
+            crate::managed_host_tools::DeliveryCertainty::Unknown => {
+                self.store
+                    .as_ref()
+                    .expect("unknown delivery fixture stores its receipt")
+                    .transaction_with(|tx| {
+                        let mut record = studio_runtime_store::system_reads::get(
+                            tx,
+                            "runtime_monitors",
+                            request.monitor_id,
+                        )?
+                        .ok_or(Error::Invalid("Unknown test monitor"))?;
+                        record["inputAttempt"] = json!({"id":request.ticket,"status":"pending"});
+                        tx.execute(
+                            "UPDATE runtime_monitors SET record=?1 WHERE id=?2",
+                            rusqlite::params![record.to_string(), request.monitor_id],
+                        )?;
+                        Ok::<_, Error>(())
+                    })?;
+                Err(Error::Unavailable("test/input-unknown"))
+            }
+        }
+    }
+}
+
+impl crate::provider_callbacks::MonitorCancelPort for ScriptedMonitorPort {
+    fn cancel_monitor(&self, _: &str, _: &str, _: f64) -> Result<Value, Error> {
+        Ok(Value::Null)
+    }
+}
+
+struct ScriptedRetainedMonitorPort {
+    certainty: crate::managed_host_tools::DeliveryCertainty,
+    calls: AtomicUsize,
+    tickets: Mutex<Vec<String>>,
+}
+
+impl crate::monitor_driver::MonitorNative for ScriptedRetainedMonitorPort {
+    fn submit(
+        &self,
+        _operation: &crate::monitor_policy::Operation,
+        effect: &crate::monitor_policy::Effect,
+    ) -> crate::monitor_driver::Submission {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        if let crate::monitor_policy::Effect::Native { identity, .. } = effect {
+            self.tickets.lock().unwrap().push(identity.clone());
+        }
+        match self.certainty {
+            crate::managed_host_tools::DeliveryCertainty::Written => {
+                crate::monitor_driver::Submission::Written
+            }
+            crate::managed_host_tools::DeliveryCertainty::NotSent => {
+                crate::monitor_driver::Submission::NotSent {
+                    reason: crate::monitor_driver::NotSentReason::Transient,
+                    error: "test transport did not send".into(),
+                }
+            }
+            crate::managed_host_tools::DeliveryCertainty::Unknown => {
+                crate::monitor_driver::Submission::Unknown
+            }
+        }
+    }
+}
+
+impl crate::rules_tick::RuleMonitor for ScriptedRetainedMonitorPort {
+    fn available(&self) -> bool {
+        false
+    }
+    fn launch(
+        &self,
+        _check: &crate::rules_engine::RuleCheck,
+    ) -> crate::rules_tick::CheckSubmission {
+        crate::rules_tick::CheckSubmission::Unknown
+    }
+    fn cancel(&self, _monitor_id: &str) -> Result<(), crate::rules_tick::RulesTickError> {
+        Err(crate::rules_tick::RulesTickError::MonitorUnavailable)
+    }
+}
+
+impl crate::monitor_runtime_wiring::MonitorPort for ScriptedRetainedMonitorPort {
+    fn next(
+        &self,
+    ) -> Result<Option<crate::monitor_runtime_wiring::Delivery>, crate::monitor_policy::MonitorError>
+    {
+        Ok(None)
+    }
+    fn acknowledge(
+        &self,
+        _delivery: &crate::monitor_runtime_wiring::Delivery,
+    ) -> Result<(), crate::monitor_policy::MonitorError> {
+        Ok(())
+    }
+    fn reattach(
+        &self,
+        _snapshot: &crate::monitor_policy::MonitorSnapshot,
+    ) -> Result<Option<crate::monitor_policy::ReattachProof>, crate::monitor_policy::MonitorError>
+    {
+        Ok(None)
+    }
+    fn probe(
+        &self,
+        _id: &str,
+        _generation: i64,
+        _command: &str,
+    ) -> Result<(), crate::monitor_policy::MonitorError> {
+        Ok(())
+    }
+    fn input_reply(
+        &self,
+        _operation: &crate::monitor_policy::Operation,
+        ticket: &str,
+    ) -> crate::monitor_runtime_wiring::InputReply {
+        crate::monitor_runtime_wiring::InputReply::Acknowledged(json!({"ticket":ticket}))
+    }
+}
+
+struct NoopLifecyclePorts;
+
+impl crate::agent_lifecycle_runtime::LifecyclePorts for NoopLifecyclePorts {
+    fn stage(
+        &self,
+        _tx: &Transaction<'_>,
+        _effect: &crate::agent_lifecycle_runtime::LifecycleEffect,
+    ) -> Result<(), crate::agent_management::ManagementError> {
+        Ok(())
+    }
+    fn committed(&self) -> Result<(), crate::agent_management::ManagementError> {
+        Ok(())
+    }
+}
+
+fn real_monitor_runtime_ports(
+    store: Arc<RuntimeStore>,
+    fake: Arc<ScriptedRetainedMonitorPort>,
+) -> ManagedToolRuntimePorts {
+    let monitor: Arc<dyn crate::monitor_runtime_wiring::MonitorPort> = fake;
+    let runtime = Arc::new(crate::monitor_runtime_wiring::MonitorRuntime::new(
+        store,
+        monitor,
+        Arc::new(tokio::sync::Notify::new()),
+    ));
+    crate::provider_callbacks::ManagedToolRuntime::new(runtime, Arc::new(NoopLifecyclePorts))
+        .ports()
+}
+
+fn production_managed_ports(
+    store: &Arc<RuntimeStore>,
+    context: &CallbackContext,
+    frame: &Frame,
+    monitor: Arc<ScriptedRetainedMonitorPort>,
+) -> impl crate::managed_host_tools::Ports {
+    crate::provider_callbacks::managed_tool_ports_with_runtime(
+        store.as_ref(),
+        context,
+        frame,
+        ManagedToolPortsConfig {
+            wake: Arc::new(tokio::sync::Notify::new()),
+            monitor_dispatch_wake: Arc::new(tokio::sync::Notify::new()),
+            runtime_ports: real_monitor_runtime_ports(Arc::clone(store), monitor),
+        },
+    )
+    .unwrap()
+}
+
+#[test]
+fn production_monitor_adapter_authorizes_before_callback_writes_and_preserves_receipts() {
+    for certainty in [
+        crate::managed_host_tools::DeliveryCertainty::Written,
+        crate::managed_host_tools::DeliveryCertainty::NotSent,
+        crate::managed_host_tools::DeliveryCertainty::Unknown,
+    ] {
+        let (_root, store, context) = fixture_arc();
+        let fake = Arc::new(ScriptedRetainedMonitorPort {
+            certainty,
+            calls: AtomicUsize::new(0),
+            tickets: Mutex::new(Vec::new()),
+        });
+        let frame = call(
+            &context,
+            "production-monitor-input",
+            "orchestration_monitor_input",
+            json!({"monitor_id":managed_monitor_id(),"text":"hello"}),
+        );
+        activate_fixture_monitor(&store, &context, &managed_monitor_id());
+        let ports = production_managed_ports(&store, &context, &frame, fake.clone());
+        let first = dispatch_with_managed_tools(&store, &context, &frame, 20.0, &ports).unwrap();
+        dispatch_with_managed_tools(&store, &context, &frame, 21.0, &ports).unwrap();
+        assert_eq!(
+            fake.calls.load(Ordering::SeqCst),
+            1,
+            "first reply: {first:?}"
+        );
+        let tickets = fake.tickets.lock().unwrap();
+        assert_eq!(tickets.len(), 1, "same native ticket must not be resent");
+        assert!(tickets[0].contains("production-monitor-input"));
+        let row = studio_runtime_store::system_reads::all(
+            &store.read().unwrap(),
+            "runtime_tool_requests",
+        )
+        .unwrap()
+        .into_iter()
+        .find(|row| row["callId"] == "production-monitor-input")
+        .unwrap();
+        let expected = match certainty {
+            crate::managed_host_tools::DeliveryCertainty::Written => "written",
+            crate::managed_host_tools::DeliveryCertainty::NotSent => "not_sent",
+            crate::managed_host_tools::DeliveryCertainty::Unknown => "unknown",
+        };
+        assert_eq!(row["deliveryCertainty"], expected);
+    }
+
+    // A live but non-owning agent cannot reserve a callback claim or result.
+    let (_root, store, _lead_context) = fixture_arc();
+    let worker = &template().value["agents"][1];
+    let worker_context = CallbackContext {
+        agent: worker["id"].as_str().unwrap().to_owned(),
+        account: "default".into(),
+        connection: "connection".into(),
+        generation: 7,
+        epoch: worker["epoch"].as_u64().unwrap(),
+        thread: worker["threadId"].as_str().unwrap().to_owned(),
+        turn: worker["turnId"].as_str().unwrap().to_owned(),
+    };
+    let fake = Arc::new(ScriptedRetainedMonitorPort {
+        certainty: crate::managed_host_tools::DeliveryCertainty::Written,
+        calls: AtomicUsize::new(0),
+        tickets: Mutex::new(Vec::new()),
+    });
+    let frame = call(
+        &worker_context,
+        "production-foreign-monitor-input",
+        "orchestration_monitor_input",
+        json!({"monitor_id":managed_monitor_id(),"text":"no"}),
+    );
+    let ports = production_managed_ports(&store, &worker_context, &frame, fake.clone());
+    let before = callback_intent_snapshot(&store);
+    let decision = dispatch_with_managed_tools(&store, &worker_context, &frame, 20.0, &ports);
+    assert!(decision.is_err(), "non-owner monitor input must be refused");
+    assert_eq!(fake.calls.load(Ordering::SeqCst), 0);
+    assert_eq!(callback_intent_snapshot(&store), before);
+
+    // A stale authenticated epoch is refused before tool request/result/alias writes.
+    let (_root, store, mut stale_context) = fixture_arc();
+    stale_context.epoch += 1;
+    let fake = Arc::new(ScriptedRetainedMonitorPort {
+        certainty: crate::managed_host_tools::DeliveryCertainty::Written,
+        calls: AtomicUsize::new(0),
+        tickets: Mutex::new(Vec::new()),
+    });
+    let frame = call(
+        &stale_context,
+        "production-stale-monitor-input",
+        "orchestration_monitor_input",
+        json!({"monitor_id":managed_monitor_id(),"text":"no"}),
+    );
+    let ports = production_managed_ports(&store, &stale_context, &frame, fake.clone());
+    let before = callback_intent_snapshot(&store);
+    let decision = dispatch_with_managed_tools(&store, &stale_context, &frame, 20.0, &ports);
+    assert!(decision.is_err(), "stale monitor input must be refused");
+    assert_eq!(fake.calls.load(Ordering::SeqCst), 0);
+    assert_eq!(callback_intent_snapshot(&store), before);
+}
+
+struct EligibleAccountRead;
+
+impl crate::provider_callbacks::ManagedCreationAccountRead for EligibleAccountRead {
+    fn worker_accounts(
+        &self,
+    ) -> Result<
+        crate::provider_callbacks::ManagedCreationAccountListing,
+        crate::provider_callbacks::ManagedCreationAccountError,
+    > {
+        Ok(crate::provider_callbacks::ManagedCreationAccountListing {
+            default_account_key: None,
+            accounts: vec![crate::provider_callbacks::ManagedCreationAccountCandidate {
+                account_key: "primary".into(),
+                identity: crate::provider_callbacks::ManagedAccountIdentity {
+                    provider: Some("codex".into()),
+                    home: None,
+                    account_id: None,
+                    email: None,
+                },
+                ready: true,
+                can_attempt_native_proof: false,
+                disconnected: false,
+                deleted: false,
+                duplicate: false,
+            }],
+        })
+    }
+
+    fn resolve_identity(
+        &self,
+        _account_key: &str,
+        _parent_account_key: &str,
+    ) -> Result<
+        crate::provider_callbacks::ManagedAccountIdentity,
+        crate::provider_callbacks::ManagedCreationAccountError,
+    > {
+        unreachable!("implicit account selection uses the listed identity")
+    }
+}
+
+#[test]
+fn unavailable_provider_model_list_refuses_without_callback_writes() {
+    let (_root, store, _context) = fixture();
+    let before = callback_intent_snapshot(&store);
+    let mut unavailable =
+        |_: &str, _: &crate::provider_callbacks::ManagedAccountIdentity, _: &str| {
+            Err(
+                crate::managed_child_create::ManagedCreationEnvironmentError::Unavailable(
+                    "provider-session/model-list",
+                ),
+            )
+        };
+    let result = crate::provider_callbacks::select_worker_account(
+        crate::provider_callbacks::WorkerAccountSelection {
+            accounts: &EligibleAccountRead,
+            parent_account_key: "primary",
+            requested_account_key: None,
+            default_account_key: None,
+            model: "gpt-5",
+            excluded_account_keys: &[],
+            project_account_keys: None,
+            model_available: &mut unavailable,
+        },
+    );
+    assert!(matches!(
+        result,
+        Err(
+            crate::managed_child_create::ManagedCreationEnvironmentError::Unavailable(
+                "provider-session/model-list",
+            )
+        )
+    ));
+    assert_eq!(callback_intent_snapshot(&store), before);
+}
+
+fn callback_intent_snapshot(store: &RuntimeStore) -> Value {
+    let connection = store.read().unwrap();
+    json!({
+        "requests": connection.prepare("SELECT id,record FROM runtime_tool_requests ORDER BY id").unwrap()
+            .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))).unwrap()
+            .collect::<Result<Vec<_>, _>>().unwrap(),
+        "results": connection.prepare("SELECT id,result FROM runtime_tool_results ORDER BY id").unwrap()
+            .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))).unwrap()
+            .collect::<Result<Vec<_>, _>>().unwrap(),
+        "aliases": connection.prepare("SELECT agent,alias,request FROM runtime_tool_request_aliases ORDER BY agent,alias,request").unwrap()
+            .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?))).unwrap()
+            .collect::<Result<Vec<_>, _>>().unwrap(),
+    })
+}
+
+fn managed_ports(
+    monitor_input: Option<Arc<dyn crate::provider_callbacks::MonitorInputPort>>,
+    monitor_cancel: Option<Arc<dyn crate::provider_callbacks::MonitorCancelPort>>,
+) -> ManagedToolPortsConfig {
+    ManagedToolPortsConfig {
+        wake: Arc::new(tokio::sync::Notify::new()),
+        monitor_dispatch_wake: Arc::new(tokio::sync::Notify::new()),
+        runtime_ports: ManagedToolRuntimePorts {
+            status_watch: None,
+            child_creation: None,
+            monitor_create: None,
+            interrupt: None,
+            monitor_input,
+            monitor_cancel,
+        },
+    }
+}
+
+fn managed_monitor_id() -> String {
+    template().value["managedToolCases"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|case| case["tool"] == "orchestration_context")
+        .unwrap()["arguments"]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned()
+}
+
+fn activate_fixture_monitor(store: &RuntimeStore, context: &CallbackContext, id: &str) {
+    store
+        .transaction_with::<_, StoreError>(|tx| {
+            let mut record = studio_runtime_store::system_reads::get(tx, "runtime_monitors", id)?
+                .ok_or(StoreError::RecordContract("missing fixture monitor"))?;
+            record["status"] = json!("running");
+            record["epoch"] = json!(context.epoch);
+            record["interactive"] = json!(true);
+            record["operation"] = json!({
+                "agent":context.agent,
+                "epoch":context.epoch,
+                "accountKey":context.account,
+                "connectionId":context.connection
+            });
+            tx.execute(
+                "UPDATE runtime_monitors SET record=?1 WHERE id=?2",
+                rusqlite::params![record.to_string(), id],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+}
+
+#[test]
+fn managed_monitor_input_checks_owner_and_preserves_delivery_receipts_on_replay() {
+    for certainty in [
+        crate::managed_host_tools::DeliveryCertainty::Written,
+        crate::managed_host_tools::DeliveryCertainty::NotSent,
+        crate::managed_host_tools::DeliveryCertainty::Unknown,
+    ] {
+        let (_root, store, context) = fixture_arc();
+        let fake = Arc::new(ScriptedMonitorPort {
+            certainty,
+            calls: AtomicUsize::new(0),
+            tickets: Mutex::new(Vec::new()),
+            store: Some(Arc::clone(&store)),
+        });
+        let frame = call(
+            &context,
+            "stable-monitor-input",
+            "orchestration_monitor_input",
+            json!({"monitor_id":managed_monitor_id(),"text":"hello"}),
+        );
+        let ports = crate::provider_callbacks::managed_tool_ports_with_runtime(
+            &store,
+            &context,
+            &frame,
+            managed_ports(Some(fake.clone()), Some(fake.clone())),
+        )
+        .unwrap();
+        dispatch_with_managed_tools(&store, &context, &frame, 20.0, &ports).unwrap();
+        dispatch_with_managed_tools(&store, &context, &frame, 21.0, &ports).unwrap();
+        assert_eq!(fake.calls.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            *fake.tickets.lock().unwrap(),
+            ["thread-0:stable-monitor-input"]
+        );
+        let row = studio_runtime_store::system_reads::all(
+            &store.read().unwrap(),
+            "runtime_tool_requests",
+        )
+        .unwrap()
+        .into_iter()
+        .find(|row| row["callId"] == "stable-monitor-input")
+        .unwrap();
+        let expected = match certainty {
+            crate::managed_host_tools::DeliveryCertainty::Written => "written",
+            crate::managed_host_tools::DeliveryCertainty::NotSent => "not_sent",
+            crate::managed_host_tools::DeliveryCertainty::Unknown => "unknown",
+        };
+        assert_eq!(row["deliveryCertainty"], expected);
+    }
+
+    let (_root, store, _lead_context) = fixture();
+    let worker = &template().value["agents"][1];
+    let worker_context = CallbackContext {
+        agent: worker["id"].as_str().unwrap().to_owned(),
+        account: "default".into(),
+        connection: "connection".into(),
+        generation: 7,
+        epoch: worker["epoch"].as_u64().unwrap(),
+        thread: worker["threadId"].as_str().unwrap().to_owned(),
+        turn: worker["turnId"].as_str().unwrap().to_owned(),
+    };
+    let fake = Arc::new(ScriptedMonitorPort {
+        certainty: crate::managed_host_tools::DeliveryCertainty::Written,
+        calls: AtomicUsize::new(0),
+        tickets: Mutex::new(Vec::new()),
+        store: None,
+    });
+    let before = application_table_snapshot(&store);
+    let frame = call(
+        &worker_context,
+        "foreign-monitor-input",
+        "orchestration_monitor_input",
+        json!({"monitor_id":managed_monitor_id(),"text":"no"}),
+    );
+    let ports = crate::provider_callbacks::managed_tool_ports_with_runtime(
+        &store,
+        &worker_context,
+        &frame,
+        managed_ports(Some(fake.clone()), Some(fake.clone())),
+    )
+    .unwrap();
+    assert!(dispatch_with_managed_tools(&store, &worker_context, &frame, 20.0, &ports).is_err());
+    assert_eq!(
+        fake.calls.load(Ordering::SeqCst),
+        0,
+        "foreign input reached runtime"
+    );
+    let after = application_table_snapshot(&store);
+    let before_monitor = before
+        .iter()
+        .find(|row| row.0 == "runtime_monitors")
+        .unwrap();
+    let after_monitor = after
+        .iter()
+        .find(|row| row.0 == "runtime_monitors")
+        .unwrap();
+    assert_eq!(
+        before_monitor, after_monitor,
+        "foreign input changed monitor state"
+    );
+}
+
+#[test]
+fn each_missing_managed_runtime_port_refuses_without_domain_writes() {
+    let cases = [
+        (
+            "orchestration_status",
+            json!({}),
+            "model-directory/status-and-dispatch-capacity",
+        ),
+        (
+            "orchestration_spawn",
+            json!({"agents":[{"name":"W","prompt":"p"}]}),
+            "agent-create/managed-environment",
+        ),
+        (
+            "orchestration_interrupt",
+            json!({"agent_id":"worker"}),
+            "agent-lifecycle/production-ports",
+        ),
+        (
+            "orchestration_monitor",
+            json!({"command":"true"}),
+            "workspace-state/monitor-admission",
+        ),
+        (
+            "orchestration_monitor_input",
+            json!({"monitor_id":managed_monitor_id(),"text":"x"}),
+            "monitor-runtime/managed-input",
+        ),
+        (
+            "orchestration_watch",
+            json!({"action":"pause","id":"rule"}),
+            "monitor-runtime/rule-cancel",
+        ),
+    ];
+    for (index, (tool, args, refusal)) in cases.into_iter().enumerate() {
+        let (_root, store, context) = fixture();
+        let before = application_table_snapshot(&store);
+        let frame = call(&context, &format!("missing-port-{index}"), tool, args);
+        let ports = crate::provider_callbacks::managed_tool_ports_with_runtime(
+            &store,
+            &context,
+            &frame,
+            managed_ports(None, None),
+        )
+        .unwrap();
+        let decision = dispatch_with_managed_tools(&store, &context, &frame, 20.0, &ports).unwrap();
+        assert!(
+            format!("{decision:?}").contains(refusal),
+            "{tool}: {decision:?}"
+        );
+        assert_eq!(application_table_snapshot(&store), before, "{tool}");
     }
 }
 
@@ -513,19 +1156,34 @@ fn named_refusals_leave_all_application_tables_unchanged() {
             "agent-lifecycle/production-ports",
         ),
         (
+            "orchestration_status",
+            json!({}),
+            "model-directory/status-and-dispatch-capacity",
+        ),
+        (
+            "orchestration_watch",
+            json!({"action":"list"}),
+            "model-directory/status-and-dispatch-capacity",
+        ),
+        (
+            "orchestration_monitor",
+            json!({"command":"true"}),
+            "workspace-state/monitor-admission",
+        ),
+        (
             "orchestration_monitor_input",
-            json!({"monitor_id":"missing-monitor","text":"input"}),
+            json!({"monitor_id":managed_monitor_id(),"text":"input"}),
             "monitor-runtime/managed-input",
         ),
         (
             "orchestration_spawn",
             json!({"agents":[{"name":"Worker","prompt":"Task"}]}),
-            "provider-session/model-list",
+            "agent-create/managed-environment",
         ),
         (
             "orchestration_review",
             json!({"target":{"type":"uncommittedChanges"}}),
-            "provider-session/model-list",
+            "agent-create/managed-environment",
         ),
         (
             "orchestration_context",
@@ -559,6 +1217,7 @@ fn named_refusals_leave_all_application_tables_unchanged() {
 #[test]
 fn managed_monitor_create_persists_one_start_intent_and_replays_exactly() {
     let (_root, store, context) = fixture();
+    let store = Arc::new(store);
     let frame = call(
         &context,
         "managed-monitor-create",
@@ -566,8 +1225,31 @@ fn managed_monitor_create_persists_one_start_intent_and_replays_exactly() {
         json!({"command":"printf managed-monitor","wake_on":"exit"}),
     );
     let wake = std::sync::Arc::new(tokio::sync::Notify::new());
-    let ports =
-        crate::provider_callbacks::managed_tool_ports(&store, &context, &frame, wake).unwrap();
+    let monitor_port: Arc<dyn crate::monitor_runtime_wiring::MonitorPort> =
+        Arc::new(ScriptedRetainedMonitorPort {
+            certainty: crate::managed_host_tools::DeliveryCertainty::Written,
+            calls: AtomicUsize::new(0),
+            tickets: Mutex::new(Vec::new()),
+        });
+    let monitor = Arc::new(crate::monitor_runtime_wiring::MonitorRuntime::new(
+        Arc::clone(&store),
+        monitor_port,
+        Arc::new(tokio::sync::Notify::new()),
+    ));
+    let runtime = crate::provider_callbacks::ManagedToolRuntime::with_creation(
+        monitor,
+        Arc::new(NoopLifecyclePorts),
+        Arc::new(CreationEnvironment),
+    );
+    let ports = crate::provider_callbacks::managed_tool_ports_with_bundle(
+        &store,
+        &context,
+        &frame,
+        wake,
+        Arc::new(tokio::sync::Notify::new()),
+        Some(&runtime),
+    )
+    .unwrap();
     let count_before: i64 = store
         .read()
         .unwrap()
@@ -575,7 +1257,6 @@ fn managed_monitor_create_persists_one_start_intent_and_replays_exactly() {
             row.get(0)
         })
         .unwrap();
-
     let first = dispatch_with_managed_tools(&store, &context, &frame, 20.0, &ports).unwrap();
     assert!(matches!(first, CallbackDecision::Answer(_)));
     let count: i64 = store
@@ -598,11 +1279,48 @@ fn managed_monitor_create_persists_one_start_intent_and_replays_exactly() {
             .unwrap(),
     )
     .unwrap();
+    assert!(matches!(
+        saved["status"].as_str(),
+        Some("starting" | "approval")
+    ));
     assert!(
-        matches!(saved["status"].as_str(), Some("starting" | "approval")),
-        "unexpected monitor status: {}",
-        saved["status"]
+        saved["requestId"]
+            .as_str()
+            .is_some_and(|id| id.ends_with(":managed-monitor-create"))
     );
+
+    let actor_record = {
+        let read = store.read().unwrap();
+        studio_runtime_store::AgentRepository::get(
+            &read,
+            &studio_runtime_store::AgentId::from(context.agent.as_str()),
+        )
+        .unwrap()
+        .unwrap()
+    };
+    let actor = Actor::from_record(
+        &actor_record.value(),
+        &context.agent,
+        u64::try_from(actor_record.epoch).unwrap(),
+    )
+    .unwrap();
+    let arguments = match &frame {
+        Frame::Request(request) => request.params.as_ref().unwrap()["arguments"].clone(),
+        _ => unreachable!(),
+    };
+    let monitor_create = runtime.ports().monitor_create.unwrap();
+    FAIL_MANAGED_WORKSPACE_PREPARATION.with(|fail| fail.set(true));
+    let adapter_replay = crate::provider_callbacks::tools::MonitorCreatePort::create(
+        monitor_create.as_ref(),
+        &store,
+        &actor,
+        &arguments,
+        saved["requestId"].as_str().unwrap(),
+        21.0,
+    )
+    .unwrap();
+    FAIL_MANAGED_WORKSPACE_PREPARATION.with(|fail| fail.set(false));
+    assert_eq!(adapter_replay, saved);
 
     let replay = dispatch_with_managed_tools(&store, &context, &frame, 21.0, &ports).unwrap();
     assert!(matches!(replay, CallbackDecision::Answer(_)));
@@ -614,6 +1332,20 @@ fn managed_monitor_create_persists_one_start_intent_and_replays_exactly() {
         })
         .unwrap();
     assert_eq!(replayed_count, count_before + 1);
+    let replayed: Value = serde_json::from_str(
+        &store
+            .read()
+            .unwrap()
+            .query_row(
+                "SELECT record FROM runtime_monitors WHERE id=?1",
+                [saved["id"].as_str().unwrap()],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(replayed, saved);
+    assert_eq!(replay, first);
 }
 
 #[test]
@@ -1070,6 +1802,7 @@ fn startup_reconciles_reserved_callback_once() {
         .unwrap()
         .query_row(
             "SELECT count(*) FROM runtime_tool_requests WHERE json_extract(record,'$.callId')='managed-0' AND json_extract(record,'$.tool')='orchestration_send' AND json_extract(record,'$.stage')='running' AND json_extract(record,'$.outcome')='pending'",
+
             [],
             |row| row.get(0),
         )
@@ -1144,10 +1877,10 @@ fn every_managed_tool_runs_through_provider_callback_dispatch() {
 }
 
 #[test]
-fn failed_final_transaction_rolls_back_intent_and_does_not_release() {
+fn post_commit_failure_replays_saved_result_before_callback_reply() {
     let (_root, store, context) = fixture();
     let ports = PortBundle::default();
-    ports.fail_reply_save.store(true, Ordering::SeqCst);
+    ports.fail_release.store(true, Ordering::SeqCst);
     let frame = call(
         &context,
         "rollback-status",
@@ -1157,7 +1890,13 @@ fn failed_final_transaction_rolls_back_intent_and_does_not_release() {
     assert!(dispatch_with_managed_tools(&store, &context, &frame, 20.0, &ports).is_err());
     assert_eq!(ports.staged.load(Ordering::SeqCst), 1);
     assert_eq!(ports.released.load(Ordering::SeqCst), 0);
-    assert_eq!(intent_count(&store, "status"), 0);
+    assert_eq!(intent_count(&store, "status"), 1);
+
+    ports.fail_release.store(false, Ordering::SeqCst);
+    let replay = dispatch_with_managed_tools(&store, &context, &frame, 21.0, &ports).unwrap();
+    assert!(matches!(replay, CallbackDecision::Answer(_)));
+    assert_eq!(ports.staged.load(Ordering::SeqCst), 1);
+    assert_eq!(intent_count(&store, "status"), 1);
 }
 
 #[test]
@@ -1340,6 +2079,9 @@ impl crate::monitor_runtime::WorkspaceAdmission for AllowWorkspace {
 }
 
 struct CreationEnvironment;
+thread_local! {
+    static FAIL_MANAGED_WORKSPACE_PREPARATION: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
 impl crate::managed_child_create::ManagedCreationEnvironment for CreationEnvironment {
     fn select_worker_account(
         &self,
@@ -1349,11 +2091,18 @@ impl crate::managed_child_create::ManagedCreationEnvironment for CreationEnviron
         model: &str,
         excluded_account_keys: &[String],
         project_account_keys: Option<&[String]>,
-    ) -> Result<(String, crate::host_worker_create::AccountIdentity), Error> {
+    ) -> Result<
+        (String, crate::host_worker_create::AccountIdentity),
+        crate::managed_child_create::ManagedCreationEnvironmentError,
+    > {
         if requested_account_key
             .is_some_and(|key| default_account_key.is_some_and(|default| default != key))
         {
-            return Err(Error::Invalid("Worker account differs from team defaults"));
+            return Err(
+                crate::managed_child_create::ManagedCreationEnvironmentError::Invalid(
+                    "Worker account differs from team defaults",
+                ),
+            );
         }
         let key = requested_account_key
             .or(default_account_key)
@@ -1369,7 +2118,11 @@ impl crate::managed_child_create::ManagedCreationEnvironment for CreationEnviron
                 !keys.is_empty() && !keys.iter().any(|candidate| candidate == key)
             })
         {
-            return Err(Error::Invalid("Select a worker account of this project"));
+            return Err(
+                crate::managed_child_create::ManagedCreationEnvironmentError::Invalid(
+                    "Select a worker account of this project",
+                ),
+            );
         }
         let provider = if model.starts_with("claude-")
             || ["default", "sonnet", "opus", "haiku"].contains(&model)
@@ -1391,12 +2144,33 @@ impl crate::managed_child_create::ManagedCreationEnvironment for CreationEnviron
     fn catalog(&self) -> &dyn crate::host_worker_create::CreationCatalog {
         &Self
     }
+    fn validate_worker_choice(
+        &self,
+        _: &RuntimeStore,
+        _: &str,
+        _: &crate::host_worker_create::AccountIdentity,
+        _: &str,
+        _: &str,
+    ) -> Result<(), crate::managed_child_create::ManagedCreationEnvironmentError> {
+        Ok(())
+    }
     fn prepare_workspace(
         &self,
-        _: &Actor,
+        _: &RuntimeStore,
+        _: &studio_runtime_store::AgentRecord,
         _: &Value,
         _: &str,
-    ) -> Result<Box<dyn crate::monitor_runtime::WorkspaceAdmission + Send + Sync>, Error> {
+    ) -> Result<
+        Box<dyn crate::monitor_runtime::WorkspaceAdmission + Send + Sync>,
+        crate::managed_child_create::ManagedCreationEnvironmentError,
+    > {
+        if FAIL_MANAGED_WORKSPACE_PREPARATION.with(std::cell::Cell::get) {
+            return Err(
+                crate::managed_child_create::ManagedCreationEnvironmentError::Unavailable(
+                    "workspace-state/host-preparation",
+                ),
+            );
+        }
         Ok(Box::new(AllowWorkspace))
     }
 }
@@ -1487,7 +2261,9 @@ fn dispatcher_service_bundle_calls_spawn_and_review_entry_points() {
     let home = std::path::PathBuf::from(std::env::var_os("HOME").expect("test HOME"));
     std::fs::create_dir_all(&home).unwrap();
     let tilde_target = home.join("review-target");
-    let _ = std::fs::remove_file(&tilde_target);
+    if std::fs::symlink_metadata(&tilde_target).is_ok() {
+        std::fs::remove_file(&tilde_target).expect("remove stale review target link");
+    }
     #[cfg(unix)]
     std::os::unix::fs::symlink(&review_target, &tilde_target).unwrap();
     let review_cwd = "~/review-target".to_owned();
@@ -1504,7 +2280,7 @@ fn dispatcher_service_bundle_calls_spawn_and_review_entry_points() {
     python.env("HOME", &home);
     python
         .arg(&oracle)
-        .arg(&review_target.ancestors().nth(4).unwrap())
+        .arg(review_target.ancestors().nth(4).unwrap())
         .arg(&review_cwd);
     let output = prepared_python::output_with_timeout(
         &mut python,
