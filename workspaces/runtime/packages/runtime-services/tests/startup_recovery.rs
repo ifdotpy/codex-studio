@@ -246,7 +246,7 @@ fn startup_write_failure_rolls_back_all_rows_and_next_start_converges() {
 }
 
 #[test]
-fn reserved_batch_events_remain_owned_by_the_scheduler_scan() {
+fn reserved_batch_events_are_recovered_by_the_scheduler_scan() {
     let root = fixtures::tempdir();
     let cases = fixtures::corpus(root.path());
     let case = running(&cases);
@@ -274,6 +274,104 @@ fn reserved_batch_events_remain_owned_by_the_scheduler_scan() {
         .expect("event")
         .expect("reserved event")
         .status,
-        "reserved"
+        "pending"
     );
+}
+
+#[test]
+fn startup_rule_linked_monitor_is_lost_without_a_monitor_exit_event() {
+    let root = fixtures::tempdir();
+    let cases = fixtures::corpus(root.path());
+    let mut case = running(&cases);
+    case["before"]["ruleId"] = json!("rule-1");
+    let id = case["before"]["id"]
+        .as_str()
+        .expect("monitor id")
+        .to_owned();
+    let store = fixtures::store(root.path(), "rule-monitor-startup");
+    fixtures::seed(&store, &case);
+
+    monitor_runtime::recover_on_startup(&store, 2000.0).expect("recover rule monitor");
+
+    let connection = store.read().expect("read recovered rule monitor");
+    assert_eq!(
+        MonitorsRepository::get(&connection, &id)
+            .expect("read rule monitor")
+            .expect("rule monitor exists")
+            .value()["status"],
+        "lost"
+    );
+    assert!(
+        QueueEventRepository::get(&connection, &QueueEventId::from(format!("monitor:{id}")))
+            .expect("read rule monitor exit")
+            .is_none()
+    );
+}
+
+#[test]
+fn startup_remote_owned_monitor_is_recovered_without_aborting() {
+    let root = fixtures::tempdir();
+    let cases = fixtures::corpus(root.path());
+    let mut case = running(&cases);
+    case["actor"]["remoteWorker"] = json!(true);
+    let id = case["before"]["id"]
+        .as_str()
+        .expect("monitor id")
+        .to_owned();
+    let store = fixtures::store(root.path(), "remote-monitor-startup");
+    fixtures::seed(&store, &case);
+
+    monitor_runtime::recover_on_startup(&store, 2000.0).expect("recover remote monitor");
+
+    let connection = store.read().expect("read recovered remote monitor");
+    assert_eq!(
+        MonitorsRepository::get(&connection, &id)
+            .expect("read remote monitor")
+            .expect("remote monitor exists")
+            .value()["status"],
+        "lost"
+    );
+    assert!(
+        QueueEventRepository::get(&connection, &QueueEventId::from(format!("monitor:{id}")))
+            .expect("read remote monitor exit")
+            .is_some()
+    );
+}
+
+#[test]
+fn startup_event_ownership_uses_exact_scheduler_batch_and_submitted_attempts_are_uncertain() {
+    let root = fixtures::tempdir();
+    let cases = fixtures::corpus(root.path());
+    let case = running(&cases);
+    for (name, events, submitted) in [
+        ("partial", json!(["partial-event", "missing-event"]), false),
+        ("submitted", json!(["submitted-event"]), true),
+    ] {
+        let store = fixtures::store(root.path(), name);
+        fixtures::seed(&store, &case);
+        store.transaction(|tx| {
+            AgentRepository::put(tx, &AgentRecord::from_value(json!({
+                "id":"claimed-agent","rootId":"claimed-agent","epoch":0,
+                "status":"starting","autoWake":true,"inFlight":true,
+                "startAttempt":{"id":"attempt","epoch":0,"submitted":submitted,"events":events}
+            }))?)?;
+            add_event(tx, if submitted {"submitted-event"} else {"partial-event"}, "claimed-agent", "reserved", 0);
+            Ok(())
+        }).expect("seed reservation");
+        monitor_runtime::recover_on_startup(&store, 2000.0).expect("recover startup events");
+        let connection = store.read().expect("read uncertain event");
+        let event_id = if submitted {
+            "submitted-event"
+        } else {
+            "partial-event"
+        };
+        assert_eq!(
+            QueueEventRepository::get(&connection, &QueueEventId::from(event_id))
+                .expect("read recovered event")
+                .expect("recovered event exists")
+                .status,
+            "uncertain",
+            "{name}"
+        );
+    }
 }

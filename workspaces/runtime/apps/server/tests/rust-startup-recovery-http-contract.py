@@ -17,6 +17,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from runtime_test_environment import runtime_environment
 from http_backend_harness import TimedHTTPContractTest, start_contract_backend
 
+EXPECTED = Path(__file__).resolve().parents[1] / "tests" / "startup-recovery-http-expected.json"
+
 
 def seed_records(backend) -> None:
     source = Path(__file__).resolve().parents[1] / "src"
@@ -97,26 +99,39 @@ class StartupRecoveryHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         )
         self.assertEqual(pull.status, 200, pull.body[:1000])
         documents = json.loads(pull.body)["documents"]
-        request = next(
-            (document for document in documents
-             if document.get("id") == f"entity:request:monitor-approval:{monitor_id}"),
-            None,
-        )
-        self.assertTrue(
-            request is None or request.get("_deleted"),
-            "stale monitor approval remains visible",
-        )
-        monitor = next(
-            (json.loads(document["payload"])["value"] for document in documents
-             if document.get("id") == f"entity:monitor:{monitor_id}"),
-            None,
-        )
-        self.assertIsNotNone(
-            monitor,
-            f"monitor sync projection is absent from {[doc.get('id') for doc in documents]}",
-        )
-        self.assertEqual(monitor["status"], "lost")
-        self.assertEqual(monitor["error"], "Server restarted. Command outcome unknown; not rerun.")
+        request_entities = []
+        monitor_entities = []
+        monitor_list = []
+        for document in documents:
+            identifier = document.get("id", "")
+            if not identifier.startswith(("entity:request:", "entity:monitor:")):
+                continue
+            payload = json.loads(document["payload"])
+            value = payload.get("value", {})
+            normalized = {
+                "deleted": bool(document.get("_deleted")),
+                "method": value.get("method"),
+                "status": value.get("status"),
+            }
+            if identifier.startswith("entity:request:"):
+                request_entities.append(normalized)
+            else:
+                monitor_entities.append(normalized)
+                monitor_list.append({"status": value.get("status"), "error": value.get("error")})
+        normalized = {
+            "pendingRequests": [{"status": retained[0]["status"],
+                                 "title": retained[0]["questions"][0]["question"]}],
+            "monitors": sorted(monitor_list, key=lambda item: (item["status"] or "", item["error"] or "")),
+            "syncEntities": {
+                "requests": sorted(request_entities, key=lambda item: (item["method"] or "", item["status"] or "", item["deleted"])),
+                "monitors": sorted(monitor_entities, key=lambda item: (item["status"] or "", item["deleted"])),
+            },
+        }
+        if os.environ.get("STARTUP_HTTP_WRITE_EXPECTATION") == "1":
+            EXPECTED.write_text(json.dumps(normalized, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        self.assertTrue(EXPECTED.exists(), "committed Python-generated HTTP expectation is missing")
+        expected = json.loads(EXPECTED.read_text(encoding="utf-8"))
+        self.assertEqual(normalized, expected)
 
 
 if __name__ == "__main__":

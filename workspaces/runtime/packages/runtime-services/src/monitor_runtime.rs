@@ -66,14 +66,46 @@ pub fn recover_on_startup(store: &RuntimeStore, now: f64) -> Result<StartupRecov
 }
 
 fn recover_requests(tx: &Transaction<'_>) -> Result<usize, MonitorError> {
-    let agents = Table::<AgentRecord>::new(tx).list()?;
-    let agents = agents
-        .into_iter()
-        .map(|agent| (agent.id.0.clone(), agent.value().clone()))
-        .collect::<std::collections::BTreeMap<_, _>>();
+    let mut agent_statement = tx
+        .prepare("SELECT id,record FROM runtime_agents ORDER BY id")
+        .map_err(studio_runtime_store::StoreError::from)?;
+    let agent_rows = agent_statement
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
+        .map_err(studio_runtime_store::StoreError::from)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(studio_runtime_store::StoreError::from)?;
+    drop(agent_statement);
+    let mut agents = std::collections::BTreeMap::new();
+    for (id, raw) in agent_rows {
+        match serde_json::from_str::<Value>(&raw) {
+            Ok(agent) if agent.is_object() => {
+                agents.insert(id, agent);
+            }
+            _ => eprintln!("startup request recovery skipped owner row id={id}: invalid record"),
+        }
+    }
+    let mut request_statement = tx
+        .prepare("SELECT id,record FROM runtime_requests ORDER BY id")
+        .map_err(studio_runtime_store::StoreError::from)?;
+    let request_rows = request_statement
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
+        .map_err(studio_runtime_store::StoreError::from)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(studio_runtime_store::StoreError::from)?;
+    drop(request_statement);
     let mut count = 0;
-    for request in Table::<RequestRecord>::new(tx).list()? {
-        let mut value = request.value().clone();
+    for (id, raw) in request_rows {
+        let mut value = match serde_json::from_str::<Value>(&raw) {
+            Ok(value) if value.is_object() => value,
+            _ => {
+                eprintln!("startup request recovery skipped row id={id}: invalid record");
+                continue;
+            }
+        };
         match value.get("status").and_then(Value::as_str) {
             Some("answering") => {
                 value["status"] = json!("uncertain");
@@ -84,18 +116,41 @@ fn recover_requests(tx: &Transaction<'_>) -> Result<usize, MonitorError> {
             }
             _ => continue,
         }
-        let request =
-            RequestRecord::from_value(value).map_err(studio_runtime_store::StoreError::from)?;
-        Table::<RequestRecord>::new(tx).put(&request)?;
-        let view = crate::sync_views::project_persisted_record("request", request.value())
-            .ok_or_else(|| MonitorError::Refused("Invalid request projection"))?;
-        SyncDocumentsRepository::put_entity(
-            tx,
-            "request",
-            request.id(),
-            view,
-            request.value()["status"] != "pending",
-        )?;
+        let request = match RequestRecord::from_value(value) {
+            Ok(request) => request,
+            Err(error) => {
+                eprintln!("startup request recovery skipped row id={id}: {error}");
+                continue;
+            }
+        };
+        tx.execute_batch("SAVEPOINT startup_request_recovery_row")
+            .map_err(studio_runtime_store::StoreError::from)?;
+        let apply = (|| {
+            Table::<RequestRecord>::new(tx).put(&request)?;
+            let view = crate::sync_views::project_persisted_record("request", request.value())
+                .ok_or(MonitorError::Refused("Invalid request projection"))?;
+            SyncDocumentsRepository::put_entity(
+                tx,
+                "request",
+                request.id(),
+                view,
+                request.value()["status"] != "pending",
+            )?;
+            Ok::<(), MonitorError>(())
+        })();
+        if let Err(error) = apply {
+            tx.execute_batch(
+                "ROLLBACK TO startup_request_recovery_row; RELEASE startup_request_recovery_row",
+            )
+            .map_err(studio_runtime_store::StoreError::from)?;
+            if startup_store_failure(&error) {
+                return Err(error);
+            }
+            eprintln!("startup request recovery skipped row id={id}: {error}");
+            continue;
+        }
+        tx.execute_batch("RELEASE startup_request_recovery_row")
+            .map_err(studio_runtime_store::StoreError::from)?;
         count += 1;
     }
     Ok(count)
@@ -175,6 +230,11 @@ fn recover_active_monitors(tx: &Transaction<'_>, now: f64) -> Result<usize, Moni
                         exit_event(tx, &actor, &decision.record, *wake, now)?;
                     }
                 }
+                tx.execute(
+                    "UPDATE runtime_events SET status='stored_only' WHERE id=?1 AND status='pending'",
+                    [format!("monitor:{id}")],
+                )
+                .map_err(studio_runtime_store::StoreError::from)?;
                 MonitorSnapshot::checked(
                     decision.record.clone(),
                     serde_json::to_value(&actor).map_err(studio_runtime_store::StoreError::from)?,

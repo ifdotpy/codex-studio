@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import copy
 import os
 from pathlib import Path
 import runpy
@@ -108,6 +109,12 @@ if sys.argv[1] == "seed":
         runtime.monitor(lead["id"], {"command": "printf running"}, key="running-monitor", approved=True)
         if not ScriptedProvider.command_started.wait(WAIT_SECONDS):
             raise RuntimeError("scripted provider did not persist a running monitor")
+        with runtime.lock, runtime.db() as db:
+            active = next(m for m in runtime.records(db, "monitors")
+                          if m.get("status") == "running" and m.get("command") == "printf running")
+            rule_monitor = copy.deepcopy(active)
+            rule_monitor.update(id="rule-linked-monitor", ruleId="rule-1")
+            runtime.put(db, "monitors", rule_monitor)
     # Simulate process loss with the exact submitted monitor still in running state.
     os._exit(0)
 
