@@ -818,6 +818,15 @@ mod vault_maintenance_tests {
         store
             .transaction(|transaction| ProjectsRepository::put_project(transaction, &project))
             .expect("project source is stored");
+        store
+            .transaction(|transaction| {
+                transaction.execute(
+                    "DELETE FROM sync_entity_meta WHERE key='seeded'",
+                    [],
+                )?;
+                Ok(())
+            })
+            .expect("force entity projections through maintenance path");
         let validators = crate::validation::Registry::compile(&[(
             "GET".to_owned(),
             "/api/sync/pull".to_owned(),
@@ -838,7 +847,10 @@ mod vault_maintenance_tests {
             interleavings += 1;
             if interleavings == 1 {
                 let mut updated = project.clone();
-                updated["name"] = json!("changed during filesystem preparation");
+                updated["path"] = json!(format!(
+                    "{}/changed-during-filesystem-preparation",
+                    project["path"].as_str().expect("project path is a string")
+                ));
                 store
                     .transaction(|transaction| {
                         ProjectsRepository::put_project(transaction, &updated)
@@ -873,7 +885,10 @@ mod vault_maintenance_tests {
         let mut before_recheck = || {
             interleavings += 1;
             let mut updated = project.clone();
-            updated["name"] = json!(format!("concurrent update {interleavings}"));
+            updated["path"] = json!(format!(
+                "{}/concurrent-{interleavings}",
+                project["path"].as_str().expect("project path is a string")
+            ));
             store
                 .transaction(|transaction| ProjectsRepository::put_project(transaction, &updated))
                 .expect("injected project update commits");
