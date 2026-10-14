@@ -3,6 +3,11 @@
 //! Native command intents are committed by P15 before this adapter calls the
 //! broker. The broker owns request receipts; this layer maps their certainty and
 //! result into P15 receipts and never retries `Unknown`.
+//! The output/recovery path follows codex_runtime.py:3882-3928 (reattach via
+//! operationStatus keyed by `monitor:<id>`), 7985-7987 (outputDelta dispatch),
+//! and 10347-10442 (stall probes and exit notices). Command argv follows
+//! codex_shell.py:41-91; monitor-specific settings follow codex_runtime.py:5710-5745
+//! and its liveness preparation at 10391-10415.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -32,7 +37,7 @@ const DEFAULT_MONITOR_TIMEOUT_MS: u64 = 3_600_000;
 const MONITOR_TIMEOUT_GRACE_MS: u64 = 60_000;
 const MAX_MONITOR_TIMEOUT_WITH_GRACE_MS: u64 = 86_460_000;
 
-/// Port of `codex_shell.monitor_command`: command/exec applies account shell
+/// Port of `codex_shell.monitor_command` (codex_shell.py:41-91): command/exec applies account shell
 /// environment policy but accepts argv and does not perform the native exec
 /// shell startup. Apply Codex's login/rc startup inside the command sandbox.
 fn monitor_command(command: &str, config: &Value, guest: bool) -> Result<Vec<String>, String> {
@@ -225,6 +230,7 @@ impl RetainedMonitorPort {
                 agent: operation.agent.clone(),
                 epoch: operation.epoch,
             }),
+            deleted_actor_session: None,
             expected_scope: Some(scope),
             method,
             params,
@@ -1201,6 +1207,7 @@ fn provider_request(
                 agent: operation.agent.clone(),
                 epoch: operation.epoch,
             }),
+            deleted_actor_session: None,
             expected_scope: Some(scope),
             method,
             params,
