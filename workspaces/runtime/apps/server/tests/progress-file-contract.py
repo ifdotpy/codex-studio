@@ -25,7 +25,14 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(SERVER_SOURCE_ROOT))
 from codex_panel import PanelMixin
-from codex_progress import MAX_PROGRESS_BYTES, progress_context, progress_path, provision_progress, read_progress
+from codex_progress import (
+    MAX_PROGRESS_BYTES,
+    PROGRESS_FILE_LIMIT_LABEL,
+    progress_context,
+    progress_path,
+    provision_progress,
+    read_progress,
+)
 from codex_work import WorkMixin
 
 
@@ -133,7 +140,7 @@ class ProgressContract(unittest.TestCase):
         path = provision_progress(self.root, "first")
         path.write_bytes(b"x" * MAX_PROGRESS_BYTES)
         self.assertEqual(len(self.runtime.get_panel("first")["markdown"]), MAX_PROGRESS_BYTES)
-        for content, reason in ((b"x" * (MAX_PROGRESS_BYTES + 1), "128 KiB"), (b"\xff", "UTF-8")):
+        for content, reason in ((b"x" * (MAX_PROGRESS_BYTES + 1), PROGRESS_FILE_LIMIT_LABEL), (b"\xff", "UTF-8")):
             path.write_bytes(content)
             result = self.runtime.get_panel("first")
             self.assertIn(reason, result["error"])
@@ -232,6 +239,7 @@ class ProgressContract(unittest.TestCase):
         context = progress_context(self.root, "first")
         self.assertIn(str(progress_path(self.root, "first")), context)
         self.assertIn("ordinary file tools", context)
+        self.assertIn(f"Keep it at most {PROGRESS_FILE_LIMIT_LABEL}", context)
         self.assertEqual(self.runtime.get_panel("first")["markdown"], "new markdown")
 
 

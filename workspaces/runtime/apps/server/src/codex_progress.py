@@ -7,8 +7,10 @@ import re
 import stat
 
 from codex_private_paths import protect, protect_temp_file, verify_handle_within_directory
+from codex_shared_values import MAX_PROGRESS_FILE_BYTES, progress_file_limit_label
 
-MAX_PROGRESS_BYTES = 128 * 1024
+MAX_PROGRESS_BYTES = MAX_PROGRESS_FILE_BYTES
+PROGRESS_FILE_LIMIT_LABEL = progress_file_limit_label()
 _AGENT_ID = re.compile(r"[A-Za-z0-9_-]{1,200}\Z")
 
 
@@ -94,7 +96,7 @@ def progress_context(state_dir, agent_id):
     path = progress_path(state_dir, agent_id)
     return (
         f"Your progress file is {path}. Read and edit this plain UTF-8 Markdown file with ordinary file tools. "
-        "Studio displays it above this chat's composer. Keep it at most 128 KiB. "
+        f"Studio displays it above this chat's composer. Keep it at most {PROGRESS_FILE_LIMIT_LABEL}. "
         "Use it for the current status, results, and blockers. Update it when these facts change. "
         "An empty or missing file clears the display. This file belongs to this agent, even when agents share a working directory. "
         "It persists across restarts. It does not run scripts, read command output, or wake the model. "
@@ -138,11 +140,11 @@ def read_progress(state_dir: str | os.PathLike[str], agent_id: str) -> dict[str,
                 if not stat.S_ISREG(before.st_mode):
                     raise ValueError("PROGRESS.md must be a regular file")
                 if before.st_size > MAX_PROGRESS_BYTES:
-                    raise ValueError("PROGRESS.md exceeds the 128 KiB limit")
+                    raise ValueError(f"PROGRESS.md exceeds the {PROGRESS_FILE_LIMIT_LABEL} limit")
                 content = stream.read(MAX_PROGRESS_BYTES + 1)
                 after = os.fstat(stream.fileno())
                 if len(content) > MAX_PROGRESS_BYTES:
-                    raise ValueError("PROGRESS.md exceeds the 128 KiB limit")
+                    raise ValueError(f"PROGRESS.md exceeds the {PROGRESS_FILE_LIMIT_LABEL} limit")
                 if _revision(before) != _revision(after):
                     raise ValueError("PROGRESS.md changed during the read. Studio will retry")
                 markdown = content.decode("utf-8")

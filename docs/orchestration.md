@@ -218,7 +218,8 @@ The file remains outside Git. Agents that share a working directory have separat
 files. A project's own `PROGRESS.md` does not control this display.
 
 Agents read and edit the file with ordinary file tools. Content must be UTF-8
-Markdown and at most 128 KiB. The display has a maximum height of 150px.
+Markdown and no larger than the server-owned [progress byte limit](../workspaces/runtime/apps/server/src/codex_shared_values.py).
+The display has a maximum height of 150px.
 Its current width, font and available height determine fit. Studio uses passive
 Markdown and checks the complete rendered revision before display. Overflow or
 unsupported content produces a compact notice with access to the original file.

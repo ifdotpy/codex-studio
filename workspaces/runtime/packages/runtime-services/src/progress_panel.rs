@@ -6,9 +6,10 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::{Map, Value, json};
+use studio_runtime_schema::shared_values::{MAX_PROGRESS_FILE_BYTES, PROGRESS_FILE_LIMIT_LABEL};
 use thiserror::Error;
 
-const MAX_PROGRESS_BYTES: usize = 128 * 1024;
+const MAX_PROGRESS_BYTES: usize = MAX_PROGRESS_FILE_BYTES;
 const MAX_LAYOUT_BYTES: usize = 64 * 1024;
 const MAX_CLIENTS: usize = 32;
 const FRESH_SECONDS: f64 = 90.0;
@@ -21,8 +22,8 @@ const LAYOUT_FILE: &str = "PROGRESS.layout.json";
 pub enum ProgressPanelError {
     #[error("Invalid agent identity for PROGRESS.md")]
     InvalidAgent,
-    #[error("PROGRESS.md exceeds the 128 KiB limit")]
-    ProgressTooLarge,
+    #[error("PROGRESS.md exceeds the {0} limit")]
+    ProgressTooLarge(&'static str),
     #[error("PROGRESS.md must contain valid UTF-8 text")]
     ProgressUtf8,
     #[error("PROGRESS.md changed during the read. Studio will retry")]
@@ -124,10 +125,9 @@ pub fn read_progress(state_dir: &Path, agent: &str) -> Result<Value, ProgressPan
             panel["exists"] = Value::Bool(true);
         }
         Ok(None) => {}
-        Err(ProgressPanelError::ProgressTooLarge) => {
+        Err(error @ ProgressPanelError::ProgressTooLarge(_)) => {
             panel["exists"] = Value::Bool(true);
-            panel["error"] =
-                json!("Cannot read PROGRESS.md: PROGRESS.md exceeds the 128 KiB limit");
+            panel["error"] = json!(format!("Cannot read PROGRESS.md: {error}"));
         }
         Err(ProgressPanelError::ProgressUtf8) => {
             panel["exists"] = Value::Bool(true);
@@ -175,7 +175,9 @@ fn read_file(path: &Path) -> Result<Option<(String, String, f64)>, ProgressPanel
         return Err(std::io::Error::other("PROGRESS.md must be a regular file").into());
     }
     if metadata.len() > MAX_PROGRESS_BYTES as u64 {
-        return Err(ProgressPanelError::ProgressTooLarge);
+        return Err(ProgressPanelError::ProgressTooLarge(
+            PROGRESS_FILE_LIMIT_LABEL,
+        ));
     }
     let mut file = match OpenOptions::new().read(true).open(path) {
         Ok(file) => file,
@@ -197,7 +199,9 @@ fn read_file(path: &Path) -> Result<Option<(String, String, f64)>, ProgressPanel
         .read_to_end(&mut bytes)?;
     let after = file.metadata()?;
     if bytes.len() > MAX_PROGRESS_BYTES {
-        return Err(ProgressPanelError::ProgressTooLarge);
+        return Err(ProgressPanelError::ProgressTooLarge(
+            PROGRESS_FILE_LIMIT_LABEL,
+        ));
     }
     let first_revision = revision(&before)?;
     let final_revision = revision(&after)?;
@@ -737,7 +741,10 @@ fn atomic_replace(
 
 #[cfg(test)]
 mod tests {
-    use super::{ProgressPanelError, atomic_replace, read_progress, record_layout};
+    use super::{
+        MAX_PROGRESS_BYTES, PROGRESS_FILE_LIMIT_LABEL, ProgressPanelError, atomic_replace,
+        read_progress, record_layout,
+    };
     use serde_json::{Value, json};
     use std::fs;
     use std::path::Path;
@@ -777,10 +784,15 @@ mod tests {
         assert!(panel["exists"].as_bool().unwrap_or(false));
         assert!(panel["revision"].as_str().is_some());
 
-        let bytes = vec![b'x'; 128 * 1024 + 1];
+        let bytes = vec![b'x'; MAX_PROGRESS_BYTES + 1];
         fs::write(&path, &bytes).expect("large content writes");
         let panel = read_progress(root.path(), "agent-a").expect("large file returns panel error");
-        assert!(panel["error"].as_str().is_some());
+        assert_eq!(
+            panel["error"],
+            format!(
+                "Cannot read PROGRESS.md: PROGRESS.md exceeds the {PROGRESS_FILE_LIMIT_LABEL} limit"
+            )
+        );
         assert!(panel["exists"].as_bool().unwrap_or(false));
         assert_eq!(fs::read(&path).expect("large file retained"), bytes);
 

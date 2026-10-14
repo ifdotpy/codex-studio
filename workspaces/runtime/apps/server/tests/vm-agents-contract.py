@@ -27,7 +27,8 @@ spec = importlib.util.spec_from_file_location('vm_fixture', Path(__file__).with_
 fixture = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(fixture)
 from codex_layout import REPOSITORY_ROOT
-from codex_vm_agents import flush_turns, prepare, spawn_spec, workspace_mode
+from codex_shared_values import progress_file_limit_label
+from codex_vm_agents import flush_turns, prepare, progress_context, spawn_spec, workspace_mode
 import codex_linux_vm_share as share
 from codex_linux_vm import LinuxVMError
 
@@ -131,6 +132,14 @@ class Guest(fixture.NativeGuest):
 
 
 class VmAgents(unittest.TestCase):
+    def test_vm_progress_prompt_uses_the_shared_file_byte_limit(self):
+        context = progress_context(None, {
+            "executionMode": "vm",
+            "id": "agent-a",
+            "layrHome": "/home/studio",
+        })
+        self.assertIn(f"Keep it at most {progress_file_limit_label()}", context)
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix='vm-agents-')
         self.root = Path(self.temp.name).resolve()

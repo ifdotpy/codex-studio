@@ -391,10 +391,13 @@ def dispose(runtime: Any, agent: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def progress_context(runtime: Any, agent: Mapping[str, Any]) -> str:
+    from codex_shared_values import progress_file_limit_label
+
     if is_vm(agent):
         path = Path(str(agent.get("layrHome", "/home/studio"))) / ".studio/progress" / agent["id"] / "PROGRESS.md"
         return (f"Your progress file is {path}. Read and edit this UTF-8 Markdown file with ordinary file tools. "
-                "Studio displays it above the composer. Keep it at most 128 KiB. Update it when the status changes.")
+                f"Studio displays it above the composer. Keep it at most {progress_file_limit_label()}. "
+                "Update it when the status changes.")
     from codex_progress import progress_context as native_context
     return str(native_context(runtime.root, agent["id"]))
 
