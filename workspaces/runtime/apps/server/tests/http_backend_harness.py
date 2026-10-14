@@ -353,10 +353,12 @@ class BackendProcess:
             values["CODEX_AGENTS_SUPERVISOR_MODE"] = "1"
             values["CODEX_AGENTS_BACKEND_ID"] = "provider-fixture-backend"
         # Keep the equipped interpreter when this factory is called from system Python.
-        if not os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"):
-            values["CODEX_AGENTS_PYTHON"] = os.environ.get(
-                "STUDIO_HTTP_BACKEND_PYTHON", os.environ.get("CODEX_AGENTS_PYTHON", sys.executable)
-            )
+        # A Rust backend command still needs this selection for its Python bootstrap.
+        configured_python = os.environ.get("STUDIO_HTTP_BACKEND_PYTHON")
+        if configured_python is None and not os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"):
+            configured_python = os.environ.get("CODEX_AGENTS_PYTHON", sys.executable)
+        if configured_python is not None:
+            values["CODEX_AGENTS_PYTHON"] = configured_python
         executable = getattr(self, "_provider_executable", None)
         # Never expose caller-installed provider candidates to the test backend.
         # Native discovery honors this explicit test pin before PATH or its
