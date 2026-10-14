@@ -203,9 +203,13 @@ class QuestionsWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         )
         if not os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"):
             self.skipTest("provider answer delivery is implemented by the Python backend")
+        from http_runtime_conformance_ledger import rust_operation_manifest
+
+        answer_dependencies = rust_operation_manifest()[("POST", "/api/answer")]["dependencies"]
+        answer_refusal = f"Not implemented: requires {', '.join(answer_dependencies)}"
         self._unchanged_error(
             "/api/answer", {"id": "questions-write-native", "decision": "cancel"},
-            501, "Not implemented: requires provider-session/question-answer",
+            501, answer_refusal,
         )
         self._unchanged_error(
             "/api/questions/delete", {"id": "questions-write-native"},
