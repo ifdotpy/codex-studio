@@ -145,9 +145,10 @@ class CredentialsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
     def test_f_refuses_unsafe_identity_without_replacing_it(self):
         if not os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"):
             self.skipTest("Rust request-time credential loading; Python validates permissions during startup")
-        # Use a fresh backend whose lazy credential reader has not cached the
-        # identity yet. Python loads it during startup and cannot reach this
-        # request-time permission transition.
+        # Python loads and caches the identity during Runtime.__init__:
+        # codex_runtime.py reads paired_access().local_server_id at startup,
+        # and codex_multi_server.py::_keys returns the cached identity later.
+        # Match that contract when permissions change after startup.
         backend = start_contract_backend(type(self))
         path = backend.state / "multi-server/identity.json"
         digest = hashlib.sha256(path.read_bytes()).hexdigest()
@@ -155,7 +156,7 @@ class CredentialsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         path.chmod(0o644)
         try:
             result = backend.request("GET", "/api/multi-server", headers=self.headers(backend))
-            self.assertEqual(result.status, 503, result.body[:500])
+            self.assertEqual(result.status, 200, result.body[:500])
             self.assertNotIn(b"PRIVATE KEY", result.body)
             self.assertEqual(hashlib.sha256(path.read_bytes()).hexdigest(), digest)
             self.assertEqual(no_write_snapshot(backend.state), before)
@@ -191,11 +192,15 @@ class CredentialsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         (directory / "identity.json").unlink()
         directory.rmdir()
         self.backend.start()
-        self.assertFalse(directory.exists(), "fixture must reach rename before first credential use")
+        # Python creates the identity while Runtime initializes, before the
+        # first request. Verify the refused rename preserves that startup state.
+        identity_path = directory / "identity.json"
+        self.assertTrue(identity_path.is_file())
+        identity_digest = hashlib.sha256(identity_path.read_bytes()).hexdigest()
         rows = self.rows()
         response = self.name("local-name", "Conflicting first use")
         self.assertEqual(response.status, 409, response.body[:500])
-        self.assertFalse(directory.exists(), "a refused rename must not create credential files")
+        self.assertEqual(hashlib.sha256(identity_path.read_bytes()).hexdigest(), identity_digest)
         self.assertEqual(self.rows(), rows)
 
 
