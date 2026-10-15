@@ -24,6 +24,9 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(SERVER_SOURCE_ROOT))
 from codex_costs import (
+    CLAUDE_COST_HISTORY_DAYS,
+    CLAUDE_COST_REFRESH_INTERVAL_SECONDS,
+    COST_REPORT_HISTORY_DAYS,
     COST_REFRESH_INTERVAL_SECONDS,
     COST_SCAN_OUTPUT_LIMIT_BYTES,
     COST_SCAN_TIMEOUT_SECONDS,
@@ -87,11 +90,32 @@ class CostsTests(unittest.TestCase):
             REPOSITORY_ROOT
             / "workspaces/runtime/packages/runtime-services/src/usage.rs"
         ).read_text()
+        swift_source = (
+            SERVER_SOURCE_ROOT / "cost-scanner/main.swift"
+        ).read_text()
+        build_source = (
+            SERVER_SOURCE_ROOT / "cost-scanner/build.py"
+        ).read_text()
         bounds = {
             "COST_REFRESH_SECONDS": (
                 COST_REFRESH_INTERVAL_SECONDS,
                 "120.0",
                 120,
+            ),
+            "CLAUDE_COST_REFRESH_SECONDS": (
+                CLAUDE_COST_REFRESH_INTERVAL_SECONDS,
+                "300.0",
+                300,
+            ),
+            "CLAUDE_COST_HISTORY_DAYS": (
+                CLAUDE_COST_HISTORY_DAYS,
+                "30",
+                30,
+            ),
+            "COST_REPORT_HISTORY_DAYS": (
+                COST_REPORT_HISTORY_DAYS,
+                "30",
+                30,
             ),
             "COST_SCAN_TIMEOUT_SECONDS": (
                 COST_SCAN_TIMEOUT_SECONDS,
@@ -108,6 +132,21 @@ class CostsTests(unittest.TestCase):
                 "32 * 1024 * 1024",
                 32 * 1024 * 1024,
             ),
+            "COST_SCANNER_BUILD_STDERR_LIMIT_BYTES": (
+                None,
+                "64 * 1024",
+                64 * 1024,
+            ),
+            "COST_SCAN_LOCK_RETRY_INTERVAL_MILLISECONDS": (
+                None,
+                "50",
+                50,
+            ),
+            "COST_COMMAND_POLL_INTERVAL_MILLISECONDS": (
+                None,
+                "10",
+                10,
+            ),
         }
         for name, (python_value, rust_value, expected) in bounds.items():
             match = re.search(
@@ -115,8 +154,32 @@ class CostsTests(unittest.TestCase):
             )
             with self.subTest(name=name):
                 self.assertIsNotNone(match, f"Rust constant {name} is missing")
-                self.assertEqual(python_value, expected)
+                if python_value is not None:
+                    self.assertEqual(python_value, expected)
                 self.assertEqual(match.group(1).strip(), rust_value)
+        swift_days = re.search(
+            r"private\s+let\s+costReportHistoryDays\s*=\s*(\d+)", swift_source
+        )
+        self.assertIsNotNone(swift_days, "Swift scanner history bound is missing")
+        self.assertEqual(int(swift_days.group(1)), COST_REPORT_HISTORY_DAYS)
+        for name, expected in {
+            "PROCESS_TERMINATION_GRACE_SECONDS": 5,
+            "SCANNER_COMPILER_TIMEOUT_SECONDS": 110,
+        }.items():
+            match = re.search(rf"^{name}\s*=\s*(\d+)\s*$", build_source, re.M)
+            with self.subTest(build_bound=name):
+                self.assertIsNotNone(match, f"{name} must own its named seconds bound")
+                self.assertEqual(int(match.group(1)), expected)
+        compiler_timeout = re.search(
+            r"^SCANNER_COMPILER_TIMEOUT_SECONDS\s*=\s*(\d+)\s*$",
+            build_source,
+            re.M,
+        )
+        self.assertLess(
+            int(compiler_timeout.group(1)),
+            COST_SCANNER_BUILD_TIMEOUT_SECONDS,
+            "The scanner compiler timeout must remain inside the outer build timeout",
+        )
 
     def test_estimate_is_not_bill_and_does_not_add_token_categories(self):
         row = report()

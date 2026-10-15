@@ -12,16 +12,25 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime};
 use thiserror::Error;
 
+// Python owns the shared cost values in codex_costs.py:27-33: refresh
+// intervals, history windows, the scanner/build timeouts, and report bytes.
+// costs-contract.py checks the Rust and Swift consumers against those owners.
 const COST_REFRESH_SECONDS: f64 = 120.0;
 const CLAUDE_COST_REFRESH_SECONDS: f64 = 300.0;
-const COST_SCAN_HISTORY_DAYS: i64 = 30;
+const CLAUDE_COST_HISTORY_DAYS: i64 = 30;
+const COST_REPORT_HISTORY_DAYS: i64 = 30;
 const COST_SCAN_OUTPUT_LIMIT_BYTES: usize = 32 * 1024 * 1024;
+// Rust-only capture bound for the build helper's diagnostic pipes. Python's
+// helper publishes only the final 4000 diagnostic characters (build.py:122-123).
+const COST_SCANNER_BUILD_STDERR_LIMIT_BYTES: usize = 64 * 1024;
 const COST_SCANNER_BUILD_TIMEOUT_SECONDS: Duration = Duration::from_secs(120);
 const COST_SCANNER_BUILD_SCRIPT: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../apps/server/src/cost-scanner/build.py"
 );
 const COST_SCAN_TIMEOUT_SECONDS: Duration = Duration::from_secs(900);
+const COST_SCAN_LOCK_RETRY_INTERVAL_MILLISECONDS: u64 = 50;
+const COST_COMMAND_POLL_INTERVAL_MILLISECONDS: u64 = 10;
 static CODEX_SCAN_LOCK: Mutex<()> = Mutex::new(());
 
 #[derive(Debug, Error, Eq, PartialEq)]
@@ -55,7 +64,10 @@ pub enum UsageError {
 /// Read an account's last locally scanned cost snapshot.
 ///
 /// The response reports stale caches as stale and never invokes a scanner,
-/// provider session, or billing endpoint.
+/// provider session, or billing endpoint. Python's reader interval/timeout and
+/// CODEX_HOME cache scope are in codex_costs.py:165-199; stale refresh
+/// scheduling is at :201-232. Account home resolution and account-scoped
+/// cache/environment construction are at :352-391.
 pub fn account_cost_snapshot(
     state_dir: &Path,
     account_key: &str,
@@ -136,7 +148,9 @@ pub fn account_cost_snapshot(
 
 /// Refresh local Codex session logs into the same scoped cache used by Python.
 /// Called only from the measured blocking pool; GET handlers return their cache
-/// before scheduling this work. Python owner: codex_costs.py:153-306, 313-385.
+/// before scheduling this work. Python's lock wait/busy result is at
+/// codex_costs.py:234-242; scanner process timeout and 32 MiB report limit are
+/// at :260-271; cache persistence is at :308-317.
 pub fn refresh_account_costs(
     state_dir: &Path,
     account_key: &str,
@@ -447,7 +461,7 @@ fn scan_claude_sessions(config: &Path, state_dir: &Path, now: f64) -> Result<Val
                 .to_string()
         });
         let is_today = day.as_deref() == Some(today.as_str());
-        let is_month = now - row.at <= COST_SCAN_HISTORY_DAYS as f64 * 86_400.0;
+        let is_month = now - row.at <= CLAUDE_COST_HISTORY_DAYS as f64 * 86_400.0;
         if !is_today && !is_month {
             continue;
         }
@@ -500,7 +514,11 @@ fn scan_claude_sessions(config: &Path, state_dir: &Path, now: f64) -> Result<Val
 
 /// Match the Python scanner runner: build the vendored scanner, then run it
 /// against only this Codex profile and normalize its aggregate report.
-/// Python owners: codex_costs.py:49-120, 313-385, 391-478.
+/// Python owners: builder invocation and 120-second timeout are in
+/// codex_costs.py:342-350; resolved account home, isolated cache and CODEX_HOME
+/// are at :352-391; CodexBar normalization is at :61-132. The helper's
+/// 110-second compiler timeout, 5-second termination grace and atomic
+/// executable publication are in cost-scanner/build.py:17-19,76-125.
 fn scan_codex_sessions(
     home: &Path,
     state_dir: &Path,
@@ -519,7 +537,7 @@ fn scan_codex_sessions(
         build,
         COST_SCANNER_BUILD_TIMEOUT_SECONDS,
         COST_SCAN_OUTPUT_LIMIT_BYTES,
-        Some(64 * 1024),
+        Some(COST_SCANNER_BUILD_STDERR_LIMIT_BYTES),
     )
     .map_err(|_| UsageError::ScannerPrepare)?;
     if !build_output.status.success() {
@@ -551,6 +569,8 @@ fn scan_codex_sessions(
     normalize_codex_costs(&payload)
 }
 
+/// Python waits up to the scan timeout for its shared scan lock and only then
+/// raises the busy result (codex_costs.py:239-242); preserve that wait here.
 fn acquire_codex_scan_lock() -> Result<MutexGuard<'static, ()>, UsageError> {
     acquire_codex_scan_lock_for(COST_SCAN_TIMEOUT_SECONDS)
 }
@@ -562,7 +582,9 @@ fn acquire_codex_scan_lock_for(timeout: Duration) -> Result<MutexGuard<'static, 
             Ok(guard) => return Ok(guard),
             Err(TryLockError::Poisoned(error)) => return Ok(error.into_inner()),
             Err(TryLockError::WouldBlock) if Instant::now() < deadline => {
-                thread::sleep(Duration::from_millis(50));
+                thread::sleep(Duration::from_millis(
+                    COST_SCAN_LOCK_RETRY_INTERVAL_MILLISECONDS,
+                ));
             }
             Err(TryLockError::WouldBlock) => return Err(UsageError::ScannerBusy),
         }
@@ -674,7 +696,8 @@ fn run_cost_command(
         match child.try_wait() {
             Ok(Some(status)) => break status,
             Ok(None) if Instant::now() < deadline => thread::sleep(
-                Duration::from_millis(10).min(deadline.saturating_duration_since(Instant::now())),
+                Duration::from_millis(COST_COMMAND_POLL_INTERVAL_MILLISECONDS)
+                    .min(deadline.saturating_duration_since(Instant::now())),
             ),
             Ok(None) => {
                 terminate_cost_child(&mut *child);
@@ -842,7 +865,7 @@ fn normalize_codex_costs(payload: &Value) -> Result<Value, UsageError> {
         "sourceDay":source_day,
         "coverage":if partial {"partial"} else if !coverage.is_empty() {"reported"} else {"unverified"},
         "unknownModels":unknown,
-        "historyDays":row.get("historyDays").cloned().unwrap_or(json!(30)),
+        "historyDays":row.get("historyDays").cloned().unwrap_or(json!(COST_REPORT_HISTORY_DAYS)),
         "note":"API-rate estimate, not your ChatGPT bill. Base rates apply when the scanner cannot resolve a published context tier."
     }))
 }

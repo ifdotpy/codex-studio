@@ -21,9 +21,13 @@ from codex_pricing import PricingCatalog, price_usage
 from codex_claude_costs import parse_claude_usage
 
 
-# Canonical Python scanner limits; duration values are seconds and the output
-# limit is bytes. runtime-services/src/usage.rs checks these values for parity.
+# Canonical cost bounds: durations are seconds, output limit is bytes, and
+# history windows are days. The Rust and Swift consumers are parity-checked by
+# tests/costs-contract.py.
 COST_REFRESH_INTERVAL_SECONDS = 120
+CLAUDE_COST_REFRESH_INTERVAL_SECONDS = 300
+CLAUDE_COST_HISTORY_DAYS = 30
+COST_REPORT_HISTORY_DAYS = 30
 COST_SCAN_TIMEOUT_SECONDS = 900
 COST_SCANNER_BUILD_TIMEOUT_SECONDS = 120
 COST_SCAN_OUTPUT_LIMIT_BYTES = 32 * 1024 * 1024
@@ -123,7 +127,7 @@ def normalize(payload):
         "sourceDay": source_day(row),
         "coverage": status,
         "unknownModels": sorted(unknown),
-        "historyDays": row.get("historyDays", 30),
+        "historyDays": row.get("historyDays", COST_REPORT_HISTORY_DAYS),
         "note": "API-rate estimate, not your ChatGPT bill. Base rates apply when the scanner cannot resolve a published context tier.",
     }
 
@@ -421,7 +425,7 @@ class ClaudeCostReader:
         start_refresh = False
         with self.lock:
             now = self.clock()
-            if now - self.checked >= 300 and not self.refreshing:
+            if now - self.checked >= CLAUDE_COST_REFRESH_INTERVAL_SECONDS and not self.refreshing:
                 self.refreshing = True
                 self.checked = now
                 start_refresh = True
@@ -468,7 +472,7 @@ class ClaudeCostReader:
             priced_any = {"today": False, "month": False}
             for row in unique.values():
                 period = ("today" if row["at"] >= day_start else
-                          "month" if row["at"] >= now - 30 * 86400 else None)
+                          "month" if row["at"] >= now - CLAUDE_COST_HISTORY_DAYS * 86400 else None)
                 if not period:
                     continue
                 usage = row["usage"]

@@ -15,6 +15,8 @@ import tempfile
 
 
 BUILD_FORMAT_VERSION = "1"
+PROCESS_TERMINATION_GRACE_SECONDS = 5
+SCANNER_COMPILER_TIMEOUT_SECONDS = 110
 ROOT = Path(__file__).resolve().parent
 VENDOR = ROOT / "vendor" / "CodexBarCore"
 
@@ -75,7 +77,7 @@ def stop_process_group(process):
     except ProcessLookupError:
         return
     try:
-        process.wait(timeout=5)
+        process.wait(timeout=PROCESS_TERMINATION_GRACE_SECONDS)
     except subprocess.TimeoutExpired:
         try:
             os.killpg(process.pid, signal.SIGKILL)
@@ -110,7 +112,7 @@ def compile_binary(output, files, swiftc):
         env={key: value for key, value in os.environ.items() if key != "SDKROOT"},
     )
     try:
-        stdout, stderr = process.communicate(timeout=110)
+        stdout, stderr = process.communicate(timeout=SCANNER_COMPILER_TIMEOUT_SECONDS)
     except subprocess.TimeoutExpired:
         stop_process_group(process)
         temporary.unlink(missing_ok=True)

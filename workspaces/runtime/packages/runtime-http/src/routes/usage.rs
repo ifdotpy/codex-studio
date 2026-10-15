@@ -15,7 +15,6 @@ use crate::router::HttpState;
 
 const RESET_REDEMPTION: [Dependency; 1] =
     [Dependency::new("account-driver/reset-credit-redemption")];
-const COSTS_DEPENDENCIES: [Dependency; 1] = [Dependency::new("costs/local-scanner")];
 const CAPACITY_DEPENDENCIES: [Dependency; 3] = [
     Dependency::new("event-driver/queue-mutations"),
     Dependency::new("store-bootstrap/capacity-retry-schema"),
@@ -28,11 +27,7 @@ const USAGE_RESUME_DEPENDENCIES: [Dependency; 2] = [
 
 pub(crate) fn routes() -> RouteGroup {
     RouteGroup::new(vec![
-        get(
-            "/api/costs",
-            OperationStatus::partial(&COSTS_DEPENDENCIES),
-            costs,
-        ),
+        get("/api/costs", OperationStatus::Implemented, costs),
         post(
             "/api/limits/reset",
             OperationStatus::partial(&RESET_REDEMPTION),
@@ -76,13 +71,56 @@ async fn costs(
         .map_err(|_| ApiError::internal())?
         .as_secs_f64();
     let state_dir = std::path::PathBuf::from(state.state_dir);
-    let result = studio_runtime_process::blocking_pool::spawn_blocking(
+    let refresh_state_dir = state_dir.clone();
+    let refresh_account = account.clone();
+    let refresh_key = account_key.clone();
+    let notification_key = refresh_key.clone();
+    let notifications = state.resource_notifications.clone();
+    let mut result = studio_runtime_process::blocking_pool::spawn_blocking(
         "runtime-http/routes/usage",
         move || usage::account_cost_snapshot(&state_dir, &account_key, &account, now),
     )
     .await
     .map_err(|_| ApiError::internal())?
     .map_err(cost_error)?;
+    let refresh_due = result.get("_refreshDue").and_then(Value::as_bool) == Some(true);
+    if let Some(object) = result.as_object_mut() {
+        object.remove("_refreshDue");
+    }
+    if refresh_due && result.get("refreshing").and_then(Value::as_bool) != Some(true) {
+        if let Some(object) = result.as_object_mut() {
+            object.insert("refreshing".to_owned(), Value::Bool(true));
+        }
+        tokio::spawn(async move {
+            let outcome = studio_runtime_process::blocking_pool::spawn_blocking(
+                "runtime-http/routes/usage",
+                move || {
+                    usage::refresh_account_costs(
+                        &refresh_state_dir,
+                        &refresh_key,
+                        &refresh_account,
+                        now,
+                    )
+                },
+            )
+            .await;
+            let completed = outcome.is_ok();
+            match outcome {
+                Ok(Ok(())) | Ok(Err(UsageError::Scan)) => {}
+                Ok(Err(error)) => eprintln!("Local cost refresh failed: {error}"),
+                Err(error) => eprintln!("Local cost refresh task failed: {error}"),
+            }
+            if completed {
+                let request = serde_json::json!({
+                    "requestId": format!("local-costs:{}:{now}", notification_key),
+                    "resources": [{"kind":"costs"}],
+                });
+                if let Err(error) = notifications.publish_once(&request) {
+                    eprintln!("Could not publish local cost refresh: {error}");
+                }
+            }
+        });
+    }
     Ok(Json(super::generated_json::<
         crate::generated::AccountCostResponse,
     >(result)?))
@@ -244,7 +282,6 @@ inventory::submit! {
         routes: Some(routes),
         dependencies: &[
             "account-driver/reset-credit-redemption",
-            "costs/local-scanner",
             "event-driver/queue-mutations",
             "store-bootstrap/capacity-retry-schema",
             "store-bootstrap/usage-resume-schema",
