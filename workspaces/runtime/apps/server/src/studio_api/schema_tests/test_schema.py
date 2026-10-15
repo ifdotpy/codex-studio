@@ -721,6 +721,38 @@ class SchemaContractTests(unittest.TestCase):
         loosenings, _ = constraint_changes(old, new)
         self.assertEqual(loosenings, [])
 
+    def test_constraint_diff_treats_single_schema_as_tighter_than_union(self) -> None:
+        old: dict[str, dict[str, JsonValue]] = {
+            "/value": {
+                "@schemaPresent": True,
+                "@anyOf": ['{"type":"integer"}', '{"type":"string"}'],
+            }
+        }
+        new: dict[str, dict[str, JsonValue]] = {
+            "/value": {"@schemaPresent": True, "type": "string"}
+        }
+        loosenings, tightenings = constraint_changes(old, new)
+        self.assertEqual(loosenings, [])
+        self.assertEqual(
+            [(item["pointer"], item["constraint"]) for item in tightenings],
+            [("/value", "@anyOf"), ("/value", "type")],
+        )
+
+    def test_constraint_diff_treats_removed_union_without_replacement_as_looser(self) -> None:
+        old: dict[str, dict[str, JsonValue]] = {
+            "/value": {
+                "@schemaPresent": True,
+                "@anyOf": ['{"type":"integer"}', '{"type":"string"}'],
+            }
+        }
+        new: dict[str, dict[str, JsonValue]] = {"/value": {"@schemaPresent": True}}
+        loosenings, tightenings = constraint_changes(old, new)
+        self.assertEqual(tightenings, [])
+        self.assertEqual(
+            [(item["pointer"], item["constraint"]) for item in loosenings],
+            [("/value", "@anyOf")],
+        )
+
     def test_constraint_diff_ignores_unreachable_components(self) -> None:
         baseline_doc: dict[str, JsonValue] = {
             "paths": {

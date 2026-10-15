@@ -29467,6 +29467,7 @@
             "type": "string"
           },
           "text": {
+            "maxLength": 32000,
             "title": "Text",
             "type": "string"
           }
