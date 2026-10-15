@@ -190,7 +190,6 @@ fn check_system_tables(connection: &Connection) -> StoreResult<Vec<StateCheckTab
         ("runtime_tool_request_aliases", "request"),
         ("runtime_tool_requests", "record"),
         ("runtime_tool_results", "result"),
-        ("sync_entities", "payload"),
     ] {
         let mut report = StateCheckTable {
             table,
@@ -202,11 +201,6 @@ fn check_system_tables(connection: &Connection) -> StoreResult<Vec<StateCheckTab
             reports.push(report);
             continue;
         }
-        let condition = if table == "sync_entities" {
-            " WHERE deleted=0 AND collection IN ('agent','project','room','request','complaint')"
-        } else {
-            ""
-        };
         let query = if table == "runtime_chat_messages" {
             "SELECT id,deliveries,seq,room,sender,text,created FROM runtime_chat_messages"
                 .to_owned()
@@ -216,7 +210,7 @@ fn check_system_tables(connection: &Connection) -> StoreResult<Vec<StateCheckTab
         } else if table == "runtime_tool_request_aliases" {
             "SELECT alias,json_object('agent',agent,'alias',alias,'request',request) FROM runtime_tool_request_aliases".to_owned()
         } else {
-            format!("SELECT id,{column} FROM {table}{condition}")
+            format!("SELECT id,{column} FROM {table}")
         };
         let mut statement = connection.prepare(&query)?;
         let mut rows = statement.query([])?;
@@ -266,5 +260,160 @@ fn check_system_tables(connection: &Connection) -> StoreResult<Vec<StateCheckTab
             .collect();
         reports.push(report);
     }
+    reports.push(check_sync_entities(connection)?);
     Ok(reports)
+}
+
+fn check_sync_entities(connection: &Connection) -> StoreResult<StateCheckTable> {
+    let table = "sync_entities";
+    let mut report = StateCheckTable {
+        table,
+        row_count: 0,
+        rejected_count: 0,
+        failures: Vec::new(),
+    };
+    if !crate::system_reads::exists(connection, table)? {
+        return Ok(report);
+    }
+    let mut statement =
+        connection.prepare("SELECT collection,id,payload,deleted FROM sync_entities")?;
+    let mut rows = statement.query([])?;
+    let mut failures = BTreeMap::new();
+    while let Some(row) = rows.next()? {
+        report.row_count += 1;
+        let (collection, id, raw, deleted) = match (
+            row.get::<_, String>(0),
+            row.get::<_, String>(1),
+            row.get::<_, String>(2),
+            row.get::<_, i64>(3),
+        ) {
+            (Ok(collection), Ok(id), Ok(raw), Ok(deleted @ 0..=1)) => {
+                (collection, id, raw, deleted == 1)
+            }
+            _ => {
+                record_failure(&mut failures, &mut report.rejected_count, "", "storageType");
+                continue;
+            }
+        };
+        let mut payload = match serde_json::from_str::<Value>(&raw) {
+            Ok(value) => value,
+            Err(_) => {
+                record_failure(&mut failures, &mut report.rejected_count, "", "json");
+                continue;
+            }
+        };
+        match studio_runtime_schema::normalize_sync_entity_payload(
+            &collection,
+            &id,
+            deleted,
+            &mut payload,
+        )
+        .map_err(crate::StoreError::SchemaValidation)?
+        {
+            Some((pointer, keyword)) => {
+                record_failure(
+                    &mut failures,
+                    &mut report.rejected_count,
+                    &pointer,
+                    &keyword,
+                );
+            }
+            None => {}
+        }
+    }
+    report.failures = failures
+        .into_iter()
+        .map(|((pointer, keyword), count)| StateCheckFailure {
+            pointer,
+            keyword,
+            count,
+        })
+        .collect();
+    Ok(report)
+}
+
+#[cfg(test)]
+mod tests {
+    use rusqlite::Connection;
+    use serde_json::json;
+
+    use super::check_sync_entities;
+
+    #[test]
+    fn sync_state_check_validates_unfiltered_rows_and_tombstones() {
+        let connection = Connection::open_in_memory().expect("in-memory database opens");
+        connection
+            .execute_batch(
+                "CREATE TABLE sync_entities (
+                    collection TEXT NOT NULL,
+                    id TEXT NOT NULL,
+                    payload TEXT NOT NULL,
+                    deleted INTEGER NOT NULL
+                );",
+            )
+            .expect("sync table creates");
+        let rows = [
+            (
+                "task",
+                "task-1",
+                json!({
+                    "collection":"task",
+                    "id":"task-1",
+                    "value":{"id":"task-1","legacyField":true}
+                }),
+                0,
+            ),
+            (
+                "task",
+                "task-invalid",
+                json!({
+                    "collection":"task",
+                    "id":"task-invalid",
+                    "value":{"id":17}
+                }),
+                0,
+            ),
+            (
+                "room",
+                "room-deleted",
+                json!({
+                    "collection":"room",
+                    "id":"room-deleted",
+                    "value":{"id":17,"oldField":true}
+                }),
+                1,
+            ),
+            (
+                "unknown",
+                "unknown-1",
+                json!({
+                    "collection":"unknown",
+                    "id":"unknown-1",
+                    "value":{"id":"unknown-1"}
+                }),
+                0,
+            ),
+        ];
+        for (collection, id, payload, deleted) in rows {
+            connection
+                .execute(
+                    "INSERT INTO sync_entities(collection,id,payload,deleted) VALUES (?1,?2,?3,?4)",
+                    (collection, id, payload.to_string(), deleted),
+                )
+                .expect("sync fixture row inserts");
+        }
+
+        let report = check_sync_entities(&connection).expect("sync entities validate");
+        assert_eq!(report.row_count, 4);
+        assert_eq!(report.rejected_count, 2);
+        assert!(report.failures.iter().any(|failure| {
+            failure.pointer == "/collection" && failure.keyword == "unknownCollection"
+        }));
+        assert!(
+            report
+                .failures
+                .iter()
+                .any(|failure| failure.keyword != "unknownCollection")
+        );
+    }
 }

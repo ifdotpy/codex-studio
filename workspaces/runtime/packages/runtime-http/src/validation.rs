@@ -8,9 +8,7 @@ use std::fmt;
 use std::sync::Arc;
 
 use axum::body::Bytes;
-use jsonschema::{
-    Draft, Registry as SchemaRegistry, ValidationError, Validator, error::ValidationErrorKind,
-};
+use jsonschema::{Draft, Registry as SchemaRegistry, Validator};
 use serde_json::{Map, Value, json};
 use studio_runtime_schema::shared_values::MAX_SAFE_INTEGER;
 
@@ -394,21 +392,10 @@ impl Registry {
         false
     }
 
+    #[cfg(test)]
     pub(crate) fn strip_stored_extra_fields(&self, schema: &str, value: &mut Value) {
-        let Some(validator) = self.stored_schemas.get(schema) else {
-            return;
-        };
-        let paths = validator
-            .iter_errors(value)
-            .flat_map(|error| extra_field_errors(&error))
-            .collect::<Vec<_>>();
-        for (pointer, keys) in paths {
-            let Some(target) = value.pointer_mut(&pointer).and_then(Value::as_object_mut) else {
-                continue;
-            };
-            for key in keys {
-                drop(target.remove(&key));
-            }
+        if let Some(validator) = self.stored_schemas.get(schema) {
+            studio_runtime_schema::strip_extra_fields_with_validator(validator, value);
         }
     }
 
@@ -436,58 +423,6 @@ impl Registry {
     pub(crate) fn validated_stored(&self, schema: &str, raw: &str) -> Option<Value> {
         let value = serde_json::from_str(raw).ok()?;
         self.validate_stored(schema, &value).then_some(value)
-    }
-}
-
-fn extra_field_errors(error: &ValidationError<'_>) -> Vec<(String, Vec<String>)> {
-    match error.kind() {
-        ValidationErrorKind::AdditionalProperties { unexpected } => {
-            vec![(
-                error.instance_path().as_str().to_owned(),
-                unexpected.clone(),
-            )]
-        }
-        ValidationErrorKind::AnyOf { context } => context
-            .iter()
-            .map(|branch| extra_only_branch(branch))
-            .filter(|(other_errors, _)| *other_errors == 0)
-            .min_by_key(|(_, fields)| fields.len())
-            .map_or_else(Vec::new, |(_, fields)| fields),
-        ValidationErrorKind::OneOfNotValid { context } => {
-            let mut branches = context
-                .iter()
-                .map(|branch| extra_only_branch(branch))
-                .filter(|(other_errors, _)| *other_errors == 0);
-            let selected = branches.next();
-            if branches.next().is_none() {
-                selected.map_or_else(Vec::new, |(_, fields)| fields)
-            } else {
-                Vec::new()
-            }
-        }
-        ValidationErrorKind::OneOfMultipleValid { .. } => Vec::new(),
-        _ => Vec::new(),
-    }
-}
-
-fn extra_only_branch(branch: &[ValidationError<'_>]) -> (usize, Vec<(String, Vec<String>)>) {
-    (
-        branch.iter().map(non_extra_error_count).sum(),
-        branch.iter().flat_map(extra_field_errors).collect(),
-    )
-}
-
-fn non_extra_error_count(error: &ValidationError<'_>) -> usize {
-    match error.kind() {
-        ValidationErrorKind::AdditionalProperties { .. } => 0,
-        ValidationErrorKind::AnyOf { context }
-        | ValidationErrorKind::OneOfNotValid { context }
-        | ValidationErrorKind::OneOfMultipleValid { context } => context
-            .iter()
-            .map(|branch| branch.iter().map(non_extra_error_count).sum::<usize>())
-            .min()
-            .unwrap_or(1),
-        _ => 1,
     }
 }
 

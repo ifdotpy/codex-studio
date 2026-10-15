@@ -698,31 +698,16 @@ fn pull_entities(
             let Ok(mut payload) = serde_json::from_str::<Value>(raw) else {
                 continue;
             };
-            let Some(schema) = entity_payload_schema(&row.collection) else {
+            if !matches!(
+                studio_runtime_schema::normalize_sync_entity_payload(
+                    &row.collection,
+                    &row.id,
+                    row.deleted,
+                    &mut payload,
+                ),
+                Ok(None)
+            ) {
                 continue;
-            };
-            if !readable_entity_envelope(&payload, &row.collection, &row.id) {
-                continue;
-            }
-            if row.deleted {
-                if let Some(object) = payload.as_object_mut() {
-                    object.retain(|key, _| matches!(key.as_str(), "collection" | "id" | "value"));
-                    object.insert("value".to_owned(), json!({}));
-                }
-                if !validate_entity_envelope(&payload, &row.collection, &row.id, true, validators) {
-                    continue;
-                }
-            } else {
-                if let Some(object) = payload.as_object_mut() {
-                    object.retain(|key, _| matches!(key.as_str(), "collection" | "id" | "value"));
-                } else {
-                    continue;
-                }
-                validators.strip_stored_extra_fields(schema, &mut payload);
-                if !validate_entity_envelope(&payload, &row.collection, &row.id, false, validators)
-                {
-                    continue;
-                }
             }
             let Ok(payload) = serde_json::to_string(&payload) else {
                 continue;
@@ -792,6 +777,20 @@ fn validate_generated<T: serde::Serialize>(
     serde_json::to_value(response).is_ok_and(|value| validators.validate_stored(schema, &value))
 }
 
+fn validate_entity_envelope(
+    payload: &Value,
+    collection: &str,
+    id: &str,
+    deleted: bool,
+    _validators: &crate::validation::Registry,
+) -> bool {
+    let mut payload = payload.clone();
+    matches!(
+        studio_runtime_schema::normalize_sync_entity_payload(collection, id, deleted, &mut payload,),
+        Ok(None)
+    )
+}
+
 fn map_sync_store_error(error: StoreError) -> ApiError {
     match error {
         StoreError::InvalidSyncObject { scope, id } => ApiError::invalid_stored(&scope, &id),
@@ -807,63 +806,6 @@ fn draft_validation_error(index: usize, document: &str, field: &str) -> ApiError
         Value::String(document.to_owned()),
         Value::String(field.to_owned()),
     ])
-}
-
-fn validate_entity_envelope(
-    payload: &Value,
-    collection: &str,
-    id: &str,
-    deleted: bool,
-    validators: &crate::validation::Registry,
-) -> bool {
-    let Some(object) = payload.as_object() else {
-        return false;
-    };
-    if object.len() != 3
-        || object.get("collection").and_then(Value::as_str) != Some(collection)
-        || object.get("id").and_then(Value::as_str) != Some(id)
-        || !object.get("value").is_some_and(Value::is_object)
-    {
-        return false;
-    }
-    if deleted {
-        return object
-            .get("value")
-            .and_then(Value::as_object)
-            .filter(|value| value.is_empty())
-            .is_some();
-    }
-    validators.validate_stored("SyncEntityPayload", payload)
-}
-
-fn readable_entity_envelope(payload: &Value, collection: &str, id: &str) -> bool {
-    let Some(object) = payload.as_object() else {
-        return false;
-    };
-    object.get("collection").and_then(Value::as_str) == Some(collection)
-        && object.get("id").and_then(Value::as_str) == Some(id)
-        && object.get("value").is_some_and(Value::is_object)
-}
-
-fn entity_payload_schema(collection: &str) -> Option<&'static str> {
-    Some(match collection {
-        "agent" => "SyncAgentEntityPayload",
-        "room" => "SyncRoomEntityPayload",
-        "task" => "SyncTaskEntityPayload",
-        "monitor" => "SyncMonitorEntityPayload",
-        "complaint" => "SyncComplaintEntityPayload",
-        "request" => "SyncRequestEntityPayload",
-        "rule" => "SyncRuleEntityPayload",
-        "project" => "SyncProjectEntityPayload",
-        "peerTeam" => "SyncPeerTeamEntityPayload",
-        "chat" => "SyncChatEntityPayload",
-        "edge" => "SyncEdgeEntityPayload",
-        "event" => "SyncEventEntityPayload",
-        "work" => "SyncWorkEntityPayload",
-        "workspace" => "SyncWorkspaceEntityPayload",
-        "uiPreferences" => "SyncUiPreferencesEntityPayload",
-        _ => return None,
-    })
 }
 
 fn invalid_entity(collection: &str, id: &str) -> StoreError {
