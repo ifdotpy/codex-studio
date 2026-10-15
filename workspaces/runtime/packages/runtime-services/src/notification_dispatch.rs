@@ -641,7 +641,10 @@ pub fn dispatch_notification_with_effects(
     });
     result.map(|outcome| NotificationDispatchResult {
         outcome,
-        stream_update: (next_streams != *streams).then_some(next_streams),
+        // The cloned buffer is a shallow transactional snapshot. Any mutated
+        // entries have detached; a fresh receipt can safely return it without
+        // comparing every retained stream tree to find changed entries.
+        stream_update: fresh.then_some(next_streams),
         post_commit,
     })
 }
