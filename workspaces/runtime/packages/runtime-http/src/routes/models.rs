@@ -431,8 +431,7 @@ mod tests {
             json!({
                 "method":"GET",
                 "path":"/api/models",
-                "status":"implemented",
-                "dependencies":[]
+                "status":"implemented"
             })
         );
     }

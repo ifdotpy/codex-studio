@@ -1032,8 +1032,16 @@ mod tests {
         for (path, valid_json, limit) in cases {
             let (state, _directory) = state();
             let app = router(state).expect("router starts");
-            let at_limit_status = if path == "/api/assets" {
+            let at_limit_status = if path == "/api/agents" {
+                // Python's Runtime.create rejects a missing lead cwd with 400
+                // (codex_runtime.py:4963-4964), even at the accepted byte limit.
                 StatusCode::BAD_REQUEST
+            } else if path == "/api/assets" {
+                StatusCode::BAD_REQUEST
+            } else if path == "/api/projects" {
+                // Python rejects this unpaired server with 403 (accounts/router.py:413-420;
+                // codex_project_locations.py:153-154).
+                StatusCode::FORBIDDEN
             } else if path == "/api/voice/audio" {
                 // This route is implemented; the boundary-only fixture has no store.
                 StatusCode::INTERNAL_SERVER_ERROR
