@@ -353,12 +353,23 @@ mod peer_location_tests {
     fn peer_location_reads_return_only_bounded_metadata_and_matches() {
         let root = tempfile::tempdir().expect("temporary project root");
         let repo = root.path().join("repo");
-        std::fs::create_dir_all(repo.join(".git")).expect("fake git metadata");
-        std::fs::write(
-            repo.join(".git/config"),
-            "[remote \"origin\"]\n\turl = https://example.invalid/team/repo.git\n",
-        )
-        .expect("fake origin");
+        std::fs::create_dir_all(&repo).expect("temporary repository directory");
+        let initialized = std::process::Command::new("git")
+            .args(["init", "--quiet"])
+            .current_dir(&repo)
+            .status()
+            .expect("initialize local Git fixture");
+        assert!(initialized.success(), "initialize local Git fixture");
+        let configured = std::process::Command::new("git")
+            .args([
+                "config",
+                "remote.origin.url",
+                "https://example.invalid/team/repo.git",
+            ])
+            .current_dir(&repo)
+            .status()
+            .expect("configure local Git fixture origin");
+        assert!(configured.success(), "configure local Git fixture origin");
         let store_dir = tempfile::tempdir().expect("temporary store root");
         let store = RuntimeStore::open(Some(store_dir.path())).expect("open isolated store");
         let info = peer_location_info(repo.to_str().expect("UTF-8 temp path"))
