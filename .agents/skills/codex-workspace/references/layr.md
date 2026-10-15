@@ -48,3 +48,16 @@ A disconnect does not prove that the operation failed.
 
 Existing sessions keep their saved tools and role guidance.
 This guidance applies only to new layr sessions.
+
+## Vault backups
+
+A vault push saves the VM main state. It does not include the separate Mac source folder.
+For a full Mac backup, import the approved files into btrfs before the vault push.
+Use the source manifest to check both the saved state and restored cloud files.
+
+Use a layr-desk writer with multipart support for objects above S3's single-request limit.
+Update the vault stack from that release before the first multipart push.
+Keep conditional object creation enabled. Multipart setup and upload parts need the
+`s3:ObjectCreationOperation` policy exception, but completion must require `If-None-Match`.
+The writer still holds a complete file and its encoded forms in memory.
+Size the temporary VM for the largest file, then remove its resources after verified restoration.
