@@ -552,6 +552,18 @@ class SqliteActiveScan(ContractModel):
     truncated: bool
 
 
+class WalCheckpoint(ContractModel):
+    walSizeBytes: SafeInt
+    busy: SafeInt
+    logFrames: SafeInt
+    checkpointedFrames: SafeInt
+
+
+class WalTelemetry(ContractModel):
+    canvas: WalCheckpoint | None
+    analytics: WalCheckpoint | None
+
+
 class SqliteContention(ContractModel):
     transaction: SqliteMetric | None = None
     writeWait: SqliteMetric | None = None
@@ -559,6 +571,7 @@ class SqliteContention(ContractModel):
     activeTransactions: list[SqliteActiveTransaction]
     activeTransactionScan: SqliteActiveScan
     slowTransactions: SqliteHistory
+    walTelemetry: WalTelemetry | None = None
 
 
 class NativeCodexAccount(ContractModel):

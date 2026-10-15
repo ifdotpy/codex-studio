@@ -35,7 +35,8 @@ pub use http::{http_request_metrics, record_http_request};
 pub use locks::{record_store_writer_transaction, runtime_lock_operations, runtime_lock_samples};
 pub use sqlite::{
     DatabaseKind, SqliteStatement, TransactionOutcome, TransactionTrace, begin_sqlite_transaction,
-    finish_sqlite_transaction, record_sqlite_profile, sqlite_contention, sqlite_history,
+    finish_sqlite_transaction, record_sqlite_profile, record_wal_checkpoint, sqlite_contention,
+    sqlite_history,
 };
 pub use startup::{StartupMemoryMark, mark_startup_memory, startup_memory_marks};
 pub use store::{durable_input_pending, execution_ledger, migration_status};
@@ -57,6 +58,26 @@ pub fn observe_store_event(event: studio_runtime_store::StoreDiagnosticsEvent) {
                 studio_runtime_store::StoreDatabaseKind::Other => DatabaseKind::Other,
             };
             record_sqlite_profile(database, elapsed);
+        }
+        studio_runtime_store::StoreDiagnosticsEvent::WalCheckpoint {
+            database,
+            wal_size_bytes,
+            busy,
+            log_frames,
+            checkpointed_frames,
+        } => {
+            let database = match database {
+                studio_runtime_store::StoreDatabaseKind::Canvas => DatabaseKind::Canvas,
+                studio_runtime_store::StoreDatabaseKind::Analytics => DatabaseKind::Analytics,
+                studio_runtime_store::StoreDatabaseKind::Other => DatabaseKind::Other,
+            };
+            record_wal_checkpoint(
+                database,
+                wal_size_bytes,
+                busy,
+                log_frames,
+                checkpointed_frames,
+            );
         }
     }
 }

@@ -110,6 +110,13 @@ pub enum StoreDiagnosticsEvent {
         database: StoreDatabaseKind,
         elapsed: Duration,
     },
+    WalCheckpoint {
+        database: StoreDatabaseKind,
+        wal_size_bytes: u64,
+        busy: i64,
+        log_frames: i64,
+        checkpointed_frames: i64,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -334,6 +341,7 @@ impl RuntimeStore {
         store.transaction(|transaction| {
             CheckpointsRepository::recover_captures(transaction, recovery_time)
         })?;
+        store.checkpoint_wal_passive()?;
         Ok(store)
     }
 
@@ -417,6 +425,56 @@ impl RuntimeStore {
         if let Ok(mut reader) = self.version_reader.lock() {
             install_profile(&mut reader);
         }
+        if callback.is_some() {
+            let _ = self.checkpoint_wal_passive();
+        }
+    }
+
+    /// Checkpoint both WAL files without waiting on active readers or truncating them.
+    pub fn checkpoint_wal_passive(&self) -> StoreResult<()> {
+        let writer = self.writer.lock().map_err(|_| StoreError::WriterPoisoned)?;
+        self.checkpoint_connection(
+            &writer,
+            StoreDatabaseKind::Canvas,
+            &self.root.join("canvas.sqlite3-wal"),
+        )?;
+        drop(writer);
+
+        let analytics = self.analytics.lock().map_err(|_| StoreError::WriterPoisoned)?;
+        self.checkpoint_connection(
+            &analytics,
+            StoreDatabaseKind::Analytics,
+            &self.root.join("analytics.sqlite3-wal"),
+        )?;
+        Ok(())
+    }
+
+    fn checkpoint_connection(
+        &self,
+        connection: &Connection,
+        database: StoreDatabaseKind,
+        wal_path: &Path,
+    ) -> StoreResult<()> {
+        let (busy, log_frames, checkpointed_frames) = connection.query_row(
+            "PRAGMA wal_checkpoint(PASSIVE)",
+            [],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, i64>(2)?,
+                ))
+            },
+        )?;
+        let wal_size_bytes = std::fs::metadata(wal_path).map_or(0, |metadata| metadata.len());
+        emit_diagnostic(StoreDiagnosticsEvent::WalCheckpoint {
+            database,
+            wal_size_bytes,
+            busy,
+            log_frames,
+            checkpointed_frames,
+        });
+        Ok(())
     }
 
     fn notify_commit(&self) {
@@ -615,6 +673,7 @@ impl RuntimeStore {
             .last_entity_projection_state
             .lock()
             .map_err(|_| StoreError::WriterPoisoned)? = Some((generation, vault_signature));
+        self.checkpoint_wal_passive()?;
         Ok(())
     }
 
