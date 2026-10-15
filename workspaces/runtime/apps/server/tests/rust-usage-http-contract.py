@@ -5,8 +5,9 @@ from __future__ import annotations
 
 from test_isolation import isolate_supervisor_environment
 
-import json
+import base64
 import hashlib
+import json
 import os
 import sqlite3
 import sys
@@ -26,7 +27,10 @@ class UsageHTTPContract(TimedHTTPContractTest, unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.rust_backend = bool(os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"))
-        cls.backend = start_contract_backend(cls)
+        cls.backend = start_contract_backend(
+            cls,
+            hold_provider_method="thread/resume" if not cls.rust_backend else None,
+        )
         cls.backend.stop()
         from codex_runtime import Runtime
 
@@ -84,6 +88,15 @@ class UsageHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             runtime.close()
         home = cls.backend.codex_home.resolve()
         account_id = "usage-contract-account"
+        claims = base64.urlsafe_b64encode(json.dumps({
+            "https://api.openai.com/auth": {"chatgpt_account_id": account_id},
+        }).encode()).rstrip(b"=").decode()
+        (home / "auth.json").write_text(json.dumps({
+            "tokens": {
+                "account_id": account_id,
+                "access_token": f"e30.{claims}.fixture-signature",
+            },
+        }), encoding="utf-8")
         registry = cls.backend.state / "accounts" / "registry.json"
         registry.parent.mkdir(parents=True, exist_ok=True)
         registry.write_text(json.dumps({
@@ -92,7 +105,6 @@ class UsageHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             "accounts": {"default": {
                 "id": "default", "home": str(home), "label": "Contract account",
                 "source": "Local profile", "accountId": account_id, "status": "ready",
-                "disconnected": True,
             }},
             "logins": {}, "deleteReceipts": {},
         }), encoding="utf-8")
@@ -222,6 +234,8 @@ class UsageHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         self.assertEqual(after, before)
 
     def test_retry_and_enable_use_the_durable_continuation_path(self) -> None:
+        if not self.rust_backend:
+            self.addCleanup(self.backend.release_provider_gate)
         with sqlite3.connect(f"file:{self.backend.state / 'canvas.sqlite3'}?mode=ro", uri=True) as db:
             request_count = db.execute("SELECT count(*) FROM runtime_requests").fetchone()[0]
             plan = db.execute(
@@ -242,6 +256,11 @@ class UsageHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         )
         self.assertEqual(retry.status, 200, (retry.body[:1000], self.backend.stderr))
         self.assertIn(retry.json()["status"], {"starting", "scheduled"})
+        if not self.rust_backend:
+            self.backend.wait_until(
+                self.backend.provider_gate_started,
+                "capacity retry reaches the fake provider thread/resume call",
+            )
         resume = self.backend.request(
             "POST", "/api/usage-resume",
             body={"id": self.enable_id, "resume_id": self.enable_resume, "enabled": True},
@@ -253,9 +272,19 @@ class UsageHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             capacity = json.loads(db.execute("SELECT record FROM runtime_capacity_retries WHERE id=?", (self.retry_retry,)).fetchone()[0])
             usage = json.loads(db.execute("SELECT record FROM runtime_usage_resumes WHERE id=?", (self.enable_resume,)).fetchone()[0])
             agent = json.loads(db.execute("SELECT record FROM runtime_agents WHERE id=?", (self.enable_id,)).fetchone()[0])
-        self.assertIn(capacity["status"], {"starting", "scheduled"})
+            retry_agent = json.loads(db.execute("SELECT record FROM runtime_agents WHERE id=?", (self.retry_id,)).fetchone()[0])
+        self.assertEqual(capacity["status"], "starting", capacity)
+        self.assertEqual(retry_agent["startAttempt"]["action"], "capacity")
+        self.assertEqual(retry_agent["startAttempt"]["capacityRetryId"], self.retry_retry)
+        self.assertFalse(retry_agent["startAttempt"]["submitted"])
         self.assertEqual(usage["status"], "scheduled")
         self.assertTrue(agent["usageResumeEnabled"])
+        if not self.rust_backend:
+            self.assertIn(
+                "thread/resume",
+                [frame.get("method") for frame in self.backend.received_provider_frames()],
+            )
+            self.backend.release_provider_gate()
 
 
 if __name__ == "__main__":
