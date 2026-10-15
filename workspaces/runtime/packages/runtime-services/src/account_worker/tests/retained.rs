@@ -268,10 +268,9 @@ async fn retained_written_receipt_replays_after_reconnect_without_sending() {
     let mut second_peer = Peer::identity("default", 2, None);
     let mut second_worker = second_peer.worker(state.bridge.clone()).await;
     let second_port = second_worker.retained_session();
-    let mut replay = request(&state, &second_port, "branch:fixture:fork");
-    assert_eq!(replay.scope.generation, 2);
-    replay.method = Method::ThreadRead;
-    replay.params = original.params.clone();
+    // Replay the original scope to prove the replacement worker consults the
+    // durable operation instead of fabricating a connection identity.
+    let replay = original.clone();
     let receipt = second_port.request(replay.clone()).await.unwrap();
     assert_eq!(
         receipt.result,
@@ -369,7 +368,7 @@ async fn retained_unknown_receipt_stays_unknown_after_reconnect_without_sending(
     let mut second_peer = Peer::identity("default", 2, None);
     let mut second_worker = second_peer.worker(state.bridge.clone()).await;
     let second_port = second_worker.retained_session();
-    let replay = request(&state, &second_port, "branch:unknown:fork");
+    let replay = original.clone();
     assert_eq!(
         second_port.request(replay).await.unwrap().result,
         RequestResult::Unknown,
@@ -435,10 +434,8 @@ async fn crash_before_checkpoint_replays_unknown_without_resending_durable_reply
     let mut replacement_peer = Peer::new();
     let mut replacement = replacement_peer.worker(state.bridge.clone()).await;
     let replacement_port = replacement.retained_session();
-    let mut replay_call = call;
-    replay_call.scope = replacement_port.scope().clone();
     let replayed = replacement_port
-        .request(replay_call)
+        .request(call)
         .await
         .expect("saved retained request is replayed");
     assert_eq!(replayed.result, RequestResult::Unknown);
@@ -834,14 +831,14 @@ async fn retained_lost_waiter_preserves_unknown_until_exact_late_reply() {
     worker.shutdown().await.unwrap();
 }
 #[tokio::test(start_paused = true)]
-async fn retained_scope_epoch_and_expired_queue_refuse_before_write() {
+async fn retained_stale_scope_settles_unknown_and_epoch_expiry_refuses_before_write() {
     let state = State::new().await;
     let peer = Peer::new();
     let mut worker = peer.worker(state.bridge.clone()).await;
     let port = worker.retained_session();
     let mut call = request(&state, &port, "scope");
     call.scope.generation += 1;
-    assert_eq!(port.request(call).await.unwrap_err(), PortError::Identity);
+    assert_eq!(port.request(call).await.unwrap_err(), PortError::Unknown);
     let mut call = request(&state, &port, "epoch");
     call.actor.as_mut().expect("actor-bound request").epoch += 1;
     assert_eq!(port.request(call).await.unwrap_err(), PortError::Identity);
@@ -849,6 +846,32 @@ async fn retained_scope_epoch_and_expired_queue_refuse_before_write() {
     call.deadline = tokio::time::Instant::now().into_std();
     assert_eq!(port.request(call).await.unwrap_err(), PortError::NotSent);
     worker.shutdown().await.unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn stale_retained_request_after_restart_settles_unknown_without_resend() {
+    let state = State::new().await;
+    let mut old_peer = Peer::new();
+    let mut old_worker = old_peer.worker(state.bridge.clone()).await;
+    let old_port = old_worker.retained_session();
+    let stale_request = request(&state, &old_port, "restart-without-submission");
+    old_worker.shutdown().await.unwrap();
+
+    let mut replacement_peer = Peer::new();
+    let mut replacement_worker = replacement_peer.worker(state.bridge.clone()).await;
+    let replacement_port = replacement_worker.retained_session();
+    assert_ne!(stale_request.scope, *replacement_port.scope());
+
+    assert_eq!(
+        replacement_port.request(stale_request).await.unwrap_err(),
+        PortError::Unknown,
+        "a request bound to a vanished connection is settled as uncertain"
+    );
+    assert!(
+        replacement_peer.writes.try_recv().is_err(),
+        "the replacement connection must not resend a stale request"
+    );
+    replacement_worker.shutdown().await.unwrap();
 }
 
 #[tokio::test(start_paused = true)]
@@ -1400,10 +1423,8 @@ async fn retained_reply_failure_cannot_publish_a_positive_receipt() {
     let peer = Peer::new();
     let mut replacement = peer.worker(state.bridge.clone()).await;
     let replacement_port = replacement.retained_session();
-    let mut replay_call = call;
-    replay_call.scope = replacement_port.scope().clone();
     assert_eq!(
-        replacement_port.request(replay_call).await.unwrap().result,
+        replacement_port.request(call).await.unwrap().result,
         RequestResult::Unknown
     );
     replacement.shutdown().await.unwrap();

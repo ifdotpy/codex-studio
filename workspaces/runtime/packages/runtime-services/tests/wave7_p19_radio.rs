@@ -2,7 +2,12 @@
 mod python_support;
 use rusqlite::types::Value as SqlValue;
 use serde_json::{Value, json};
-use std::{fs, path::Path, process::Command};
+use std::{
+    fs,
+    path::Path,
+    process::Command,
+    sync::{Mutex, OnceLock},
+};
 use studio_runtime_services::{
     host_project_runtime::PreparedHost,
     projects::ProjectsError,
@@ -41,24 +46,57 @@ impl RadioIngress for Ingress {
         Ok(())
     }
 }
-fn corpus(root: &Path) -> Vec<Value> {
-    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let mut command = Command::new(python_support::prepared_python(
-        &manifest.join("../../apps/server/src"),
-    ));
-    command
-        .arg(manifest.join("tests/wave7_p19/oracle.py"))
-        .arg(root);
-    if std::env::var("STUDIO_RUNTIME_CORPUS_FULL").as_deref() == Ok("1") {
-        command.arg("--full");
+struct RadioCorpus {
+    databases: Vec<(String, Vec<u8>)>,
+    cases: Vec<Value>,
+}
+static CREATE_CASE_LOCK: Mutex<()> = Mutex::new(());
+
+fn corpus() -> &'static RadioCorpus {
+    static CORPUS: OnceLock<RadioCorpus> = OnceLock::new();
+    CORPUS.get_or_init(|| {
+        // Every test consumes the same input-independent cases. Generate once
+        // so parallel tests don't launch identical SQLite-heavy Python oracles.
+        let template = tempfile::tempdir().expect("template");
+        let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let script = manifest.join("tests/wave7_p19/oracle.py");
+        let mut command = Command::new(python_support::prepared_python(
+            &manifest.join("../../apps/server/src"),
+        ));
+        command.arg(&script).arg(template.path());
+        if std::env::var("STUDIO_RUNTIME_CORPUS_FULL").as_deref() == Ok("1") {
+            command.arg("--full");
+        }
+        let output = python_support::output_with_timeout(
+            &mut command,
+            &script,
+            python_support::PYTHON_ORACLE_TIMEOUT,
+        )
+        .unwrap_or_else(|error| panic!("could not run P19 Python oracle: {error}"));
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let databases = ["canvas.sqlite3", "analytics.sqlite3"]
+            .into_iter()
+            .map(|name| {
+                (
+                    name.to_owned(),
+                    fs::read(template.path().join(name)).expect("template database"),
+                )
+            })
+            .collect();
+        RadioCorpus {
+            databases,
+            cases: serde_json::from_slice(&output.stdout).expect("corpus JSON"),
+        }
+    })
+}
+fn copy_template(corpus: &RadioCorpus, root: &Path) {
+    for (name, contents) in &corpus.databases {
+        fs::write(root.join(name), contents).expect("copy template database");
     }
-    let output = command.output().expect("oracle starts");
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    serde_json::from_slice(&output.stdout).expect("corpus JSON")
 }
 fn seed(store: &RuntimeStore, snapshot: &Value) {
     let identity = store.root().join("multi-server");
@@ -245,6 +283,9 @@ fn run(store: &RuntimeStore, case: &Value) -> Result<Value, ProjectsError> {
             &[json!({"id":"default","status":"ready","canAttemptNativeProof":true})],
         ),
         "create" => {
+            // The shared Python fixture names one filesystem path. Keep its
+            // create/remove lifetime atomic across parallel corpus consumers.
+            let _guard = CREATE_CASE_LOCK.lock().expect("create fixture lock");
             let path = case["body"]["path"].as_str().expect("project path");
             fs::create_dir_all(path).expect("project directory");
             let values: [Value; 2] = serde_json::from_value(case["drafts"].clone()).expect("Python drafts");
@@ -290,47 +331,46 @@ fn run(store: &RuntimeStore, case: &Value) -> Result<Value, ProjectsError> {
 }
 #[test]
 fn python_written_radio_corpus_and_restart_replay() {
-    let template = tempfile::tempdir().expect("template");
-    let cases = corpus(template.path());
-    for case in &cases {
+    let corpus = corpus();
+    for original_case in &corpus.cases {
         let root = tempfile::tempdir().expect("case");
-        for db in ["canvas.sqlite3", "analytics.sqlite3"] {
-            fs::copy(template.path().join(db), root.path().join(db)).expect("copy");
-        }
+        copy_template(corpus, root.path());
         let store = RuntimeStore::open(Some(root.path())).expect("open");
-        seed(&store, &case["before"]);
-        let result = run(&store, case);
+        seed(&store, &original_case["before"]);
+        let result = run(&store, original_case);
         assert_eq!(
             result.is_err(),
-            case["error"] == true,
+            original_case["error"] == true,
             "{}: {result:?}",
-            case["name"]
+            original_case["name"]
         );
-        if case["error"] == true {
+        if original_case["error"] == true {
             continue;
         }
-        let mut actual = state(&store, &case["before"]);
-        let mut expected = case["after"].clone();
+        let mut actual = state(&store, &original_case["before"]);
+        let mut expected = original_case["after"].clone();
         normalize(&mut actual);
         normalize(&mut expected);
-        assert_eq!(actual, expected, "{}", case["name"]);
+        assert_eq!(actual, expected, "{}", original_case["name"]);
         let mut actual = result.expect("success");
-        let mut expected = case["result"].clone();
+        let mut expected = original_case["result"].clone();
         normalize(&mut actual);
         normalize(&mut expected);
-        assert_eq!(actual, expected, "{} result", case["name"]);
+        assert_eq!(actual, expected, "{} result", original_case["name"]);
         drop(store);
         let restarted = RuntimeStore::open(Some(root.path())).expect("restart");
-        if !["tick", "bind", "project-binding"].contains(&case["mode"].as_str().expect("mode")) {
-            let before = state(&restarted, &case["before"]);
-            run(&restarted, case).expect("replay");
+        if !["tick", "bind", "project-binding"]
+            .contains(&original_case["mode"].as_str().expect("mode"))
+        {
+            let before = state(&restarted, &original_case["before"]);
+            run(&restarted, original_case).expect("replay");
             assert_eq!(
-                state(&restarted, &case["before"]),
+                state(&restarted, &original_case["before"]),
                 before,
                 "{} replay",
-                case["name"]
+                original_case["name"]
             );
-            let mut changed = case.clone();
+            let mut changed = original_case.clone();
             if changed["mode"] == "convert" {
                 changed["body"]["target"] = json!("b");
             } else if changed["mode"] == "project" {
@@ -355,7 +395,7 @@ fn python_written_radio_corpus_and_restart_replay() {
             assert!(
                 run(&restarted, &changed).is_err(),
                 "changed identity must fail: {}",
-                case["name"]
+                original_case["name"]
             );
             assert_eq!(
                 database_rows(&restarted),
@@ -368,8 +408,7 @@ fn python_written_radio_corpus_and_restart_replay() {
 
 #[test]
 fn failpoints_rollback_floor_binding_answer_and_receipt_then_restart() {
-    let template = tempfile::tempdir().expect("template");
-    let cases = corpus(template.path());
+    let corpus = corpus();
     for (name, tables) in [
         (
             "create",
@@ -418,24 +457,26 @@ fn failpoints_rollback_floor_binding_answer_and_receipt_then_restart() {
             ],
         ),
     ] {
-        let case = cases.iter().find(|c| c["name"] == name).expect("case");
+        let original_case = corpus
+            .cases
+            .iter()
+            .find(|c| c["name"] == name)
+            .expect("case");
         for table in tables {
             for boundary in ["BEFORE", "AFTER"] {
                 let root = tempfile::tempdir().expect("case");
-                for db in ["canvas.sqlite3", "analytics.sqlite3"] {
-                    fs::copy(template.path().join(db), root.path().join(db)).expect("copy");
-                }
+                copy_template(corpus, root.path());
                 let store = RuntimeStore::open(Some(root.path())).expect("open");
-                seed(&store, &case["before"]);
-                let before = state(&store, &case["before"]);
+                seed(&store, &original_case["before"]);
+                let before = state(&store, &original_case["before"]);
                 let all_before = database_rows(&store);
                 store.transaction(|db| {db.execute_batch(&format!("CREATE TRIGGER p19_fail_insert {boundary} INSERT ON {table} BEGIN SELECT RAISE(ABORT,'P19 failpoint'); END; CREATE TRIGGER p19_fail_update {boundary} UPDATE ON {table} BEGIN SELECT RAISE(ABORT,'P19 failpoint'); END;"))?;Ok(())}).expect("failpoint");
                 assert!(
-                    run(&store, case).is_err(),
+                    run(&store, original_case).is_err(),
                     "{name} {boundary} {table} reached"
                 );
                 assert_eq!(
-                    state(&store, &case["before"]),
+                    state(&store, &original_case["before"]),
                     before,
                     "{name} {boundary} {table} rollback"
                 );
@@ -443,7 +484,7 @@ fn failpoints_rollback_floor_binding_answer_and_receipt_then_restart() {
                 drop(store);
                 let store = RuntimeStore::open(Some(root.path())).expect("restart");
                 assert_eq!(
-                    state(&store, &case["before"]),
+                    state(&store, &original_case["before"]),
                     before,
                     "restart before retry"
                 );
@@ -455,13 +496,13 @@ fn failpoints_rollback_floor_binding_answer_and_receipt_then_restart() {
                         Ok(())
                     })
                     .expect("remove failpoint");
-                run(&store, case).expect("retry after rollback");
-                let committed = state(&store, &case["before"]);
+                run(&store, original_case).expect("retry after rollback");
+                let committed = state(&store, &original_case["before"]);
                 drop(store);
                 let store = RuntimeStore::open(Some(root.path())).expect("restart after commit");
-                run(&store, case).expect("retry after lost response");
+                run(&store, original_case).expect("retry after lost response");
                 assert_eq!(
-                    state(&store, &case["before"]),
+                    state(&store, &original_case["before"]),
                     committed,
                     "{name} no duplicate after commit"
                 );
@@ -502,16 +543,14 @@ fn database_rows(store: &RuntimeStore) -> Vec<(String, Vec<Vec<SqlValue>>)> {
 
 #[test]
 fn answered_question_releases_one_continuation_and_malformed_rows_write_nothing() {
-    let template = tempfile::tempdir().expect("template");
-    let cases = corpus(template.path());
-    let case = cases
+    let corpus = corpus();
+    let case = corpus
+        .cases
         .iter()
         .find(|c| c["name"] == "answer")
         .expect("answer");
     let root = tempfile::tempdir().expect("state");
-    for db in ["canvas.sqlite3", "analytics.sqlite3"] {
-        fs::copy(template.path().join(db), root.path().join(db)).expect("copy");
-    }
+    copy_template(corpus, root.path());
     let store = RuntimeStore::open(Some(root.path())).expect("open");
     seed(&store, &case["before"]);
     assert!(radio_runtime::holds_floor(&store.read().expect("read"), "a").expect("floor"));
@@ -561,16 +600,14 @@ fn answered_question_releases_one_continuation_and_malformed_rows_write_nothing(
 
 #[test]
 fn pending_interrupt_recovers_before_claim_and_unknown_is_never_resent() {
-    let template = tempfile::tempdir().expect("template");
-    let cases = corpus(template.path());
-    let case = cases
+    let corpus = corpus();
+    let case = corpus
+        .cases
         .iter()
         .find(|case| case["name"] == "interrupt")
         .expect("interrupt");
     let root = tempfile::tempdir().expect("state");
-    for db in ["canvas.sqlite3", "analytics.sqlite3"] {
-        fs::copy(template.path().join(db), root.path().join(db)).expect("copy");
-    }
+    copy_template(corpus, root.path());
     let store = RuntimeStore::open(Some(root.path())).expect("open");
     seed(&store, &case["before"]);
     let prepared = PreparedHost::load(&store).expect("prepare");
@@ -610,9 +647,7 @@ fn pending_interrupt_recovers_before_claim_and_unknown_is_never_resent() {
     // Simulate a crash after the durable claim commits but before transport
     // dispatch: recovery observes Unknown and the transport receives nothing.
     let crash_root = tempfile::tempdir().expect("crash state");
-    for db in ["canvas.sqlite3", "analytics.sqlite3"] {
-        fs::copy(template.path().join(db), crash_root.path().join(db)).expect("copy");
-    }
+    copy_template(corpus, crash_root.path());
     let crash_store = RuntimeStore::open(Some(crash_root.path())).expect("open crash state");
     seed(&crash_store, &case["before"]);
     let crash_prepared = PreparedHost::load(&crash_store).expect("prepare");
@@ -676,15 +711,14 @@ impl InterruptTransport for TransportDouble {
 
 #[test]
 fn prepared_host_fences_source_rows_changed_before_the_writer() {
-    let template = tempfile::tempdir().expect("template");
-    let case = corpus(template.path())
-        .into_iter()
+    let corpus = corpus();
+    let case = corpus
+        .cases
+        .iter()
         .find(|case| case["name"] == "open")
         .expect("open fixture");
     let root = tempfile::tempdir().expect("state");
-    for db in ["canvas.sqlite3", "analytics.sqlite3"] {
-        fs::copy(template.path().join(db), root.path().join(db)).expect("copy");
-    }
+    copy_template(corpus, root.path());
     let store = RuntimeStore::open(Some(root.path())).expect("open");
     seed(&store, &case["before"]);
     let prepared = PreparedHost::load(&store).expect("prepare");

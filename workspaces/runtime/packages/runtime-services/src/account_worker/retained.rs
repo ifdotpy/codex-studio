@@ -106,7 +106,7 @@ impl RetainedSessionPort {
             .map_err(|_| PortError::Unknown)?
     }
     pub async fn request(&self, request: SessionRequest) -> Result<SessionReceipt, PortError> {
-        if request.scope != self.scope || !self.is_live() {
+        if request.scope.account != self.scope.account || !self.is_live() {
             return Err(PortError::Identity);
         }
         validate(&request)?;
