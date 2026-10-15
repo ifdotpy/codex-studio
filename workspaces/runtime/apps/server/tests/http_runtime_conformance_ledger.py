@@ -782,7 +782,13 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
         "primary": {"body": {"id": "77777777-7777-4777-8777-777777777777", "cwd": "$projectPath", "workspaceMode": "worktree"}, "replace_body": True, "expected": "2xx"},
     },
     ("POST", "/api/voice/approval_speech"): {
-        "primary": {"body": {"agent": "$agent", "request_id": "$approvalRequest"}, "replace_body": True, "expected": "2xx"},
+        "primary": {
+            "body": {"agent": "$agent", "request_id": "$approvalRequest"},
+            "replace_body": True,
+            "fixture_mutations": {"create_voice_approval_request": True},
+            "restore": ["voice_approval_request"],
+            "expected": "2xx",
+        },
     },
     ("POST", "/api/voice/approvals"): {"primary": {"body": {"agent": "$agent"}, "expected": "2xx"}},
     ("POST", "/api/voice/record"): {
@@ -1307,11 +1313,6 @@ try:
             "method": "agent/asyncQuestion", "status": "pending", "createdAt": 1.0,
             "params": {{"questions": [{{"id": "value", "question": "Value?"}}]}},
         }}, sync_rooms=False)
-        runtime.put(db, "requests", {{
-            "id": "ledger-probe-monitor-approval", "agent": {agent_id!r}, "epoch": 0,
-            "method": "monitor/approve", "status": "pending", "createdAt": 1.0,
-            "params": {{"monitorId": "ledger-probe-monitor", "command": "echo ledger", "cwd": os.environ["CODEX_CANVAS_CWD"]}},
-        }}, sync_rooms=False)
         runtime.put(db, "complaints", {{
             "id": {complaint_id!r}, "leadId": {agent_id!r}, "author": "user",
             "text": "HTTP ledger probe complaint", "version": 1, "status": "open",
@@ -1462,7 +1463,7 @@ finally:
         "voiceRecord": f"{prefix}probe-voice-record",
         "voiceEndedSession": f"{prefix}probe-voice-ended",
         "voiceActiveSession": f"{prefix}probe-voice-active",
-        "approvalRequest": f"{prefix}probe-monitor-approval",
+        "approvalRequest": "created-by-voice-approval-probe-fixture",
         "schemaHash": backend.schema_hash,
         "analyticsAgent": analytics_probe_agent_identifier(backend),
         "chat": chat_id,
@@ -1654,6 +1655,8 @@ def probe_fixture_state(
         raise ValueError("active rule-check mutations must declare restoration")
     if ("activate_native_command" in mutations) != ("active_command_record" in restore):
         raise ValueError("active command mutations must declare task record restoration")
+    if ("create_voice_approval_request" in mutations) != ("voice_approval_request" in restore):
+        raise ValueError("voice approval mutations must declare request restoration")
 
     agent_record: dict[str, Any] | None = None
     identity_file: tuple[Path, bytes, int] | None = None
@@ -1662,6 +1665,7 @@ def probe_fixture_state(
     workspace_monitors: dict[str, str] | None = None
     rule_monitor: tuple[str, str] | None = None
     active_command_record: tuple[str, str] | None = None
+    voice_approval_request: tuple[str, str, str, str] | None = None
     try:
         if {"agent_execution_mode", "agent_name"} & mutations.keys():
             with sqlite3.connect(backend.state / "canvas.sqlite3") as connection:
@@ -1765,6 +1769,59 @@ def probe_fixture_state(
                         "UPDATE runtime_monitors SET record=? WHERE id=?",
                         (json.dumps(changed), monitor_id),
                     )
+        if mutations.get("create_voice_approval_request"):
+            monitor_id = identifiers["monitor"]
+            request_id = f"ledger-voice-approval-{uuid.uuid4().hex}"
+            with closing(sqlite3.connect(backend.state / "canvas.sqlite3")) as connection, connection:
+                row = connection.execute(
+                    "SELECT record FROM runtime_monitors WHERE id=?", (monitor_id,),
+                ).fetchone()
+                if row is None:
+                    raise RuntimeError("seeded voice approval monitor is missing")
+                monitor_record = row[0]
+                monitor = dict(json.loads(row[0]))
+                agent_row = connection.execute(
+                    "SELECT record FROM runtime_agents WHERE id=?", (identifiers["agent"],),
+                ).fetchone()
+                if agent_row is None:
+                    raise RuntimeError("seeded voice approval agent is missing")
+                agent = json.loads(agent_row[0])
+                created_at = time.time()
+                monitor.update({
+                    "agent": agent["id"],
+                    "epoch": agent["epoch"],
+                    "turnId": agent.get("turnId"),
+                    "requestId": request_id,
+                    "cwd": agent["cwd"],
+                    "status": "approval",
+                    "created": created_at,
+                    "activityAt": created_at,
+                })
+                request = {
+                    "id": request_id,
+                    "agent": agent["id"],
+                    "epoch": agent["epoch"],
+                    "method": "monitor/approve",
+                    "status": "pending",
+                    "createdAt": time.time(),
+                    "params": {
+                        "monitorId": monitor_id,
+                        "command": monitor["command"],
+                        "cwd": monitor["cwd"],
+                    },
+                }
+                connection.execute(
+                    "UPDATE runtime_monitors SET record=? WHERE id=?",
+                    (json.dumps(monitor), monitor_id),
+                )
+                connection.execute(
+                    "INSERT INTO runtime_requests(id,record) VALUES (?,?)",
+                    (request_id, json.dumps(request)),
+                )
+            voice_approval_request = (
+                monitor_id, request_id, identifiers["approvalRequest"], monitor_record,
+            )
+            identifiers["approvalRequest"] = request_id
         yield
     finally:
         try:
@@ -1821,6 +1878,17 @@ def probe_fixture_state(
                                 "UPDATE runtime_tasks SET record=? WHERE id=?",
                                 (raw, command_id),
                             )
+                if voice_approval_request is not None:
+                    monitor_id, request_id, previous_approval_request, monitor_record = voice_approval_request
+                    with closing(sqlite3.connect(backend.state / "canvas.sqlite3")) as connection, connection:
+                        connection.execute(
+                            "DELETE FROM runtime_requests WHERE id=?", (request_id,),
+                        )
+                        connection.execute(
+                            "UPDATE runtime_monitors SET record=? WHERE id=?",
+                            (monitor_record, monitor_id),
+                        )
+                    identifiers["approvalRequest"] = previous_approval_request
 
 
 def probe_operations(
@@ -2007,6 +2075,19 @@ def probe_operations(
                         sqlite_snapshot(backend.state / "canvas.sqlite3")
                         if probe_case.get("assert_no_write") else nullcontext(None)
                     ) as database_before:
+                        if probe_case.get("fixture_mutations", {}).get(
+                            "create_voice_approval_request"
+                        ):
+                            path, body, header_overrides = valid_probe(
+                                method, template, identifiers, probe_case
+                            )
+                            headers = {
+                                "X-Canvas-Token": token,
+                                "X-Studio-API-Schema": backend.schema_hash,
+                                **header_overrides,
+                            }
+                            if method in JSON_METHODS or method == "DELETE":
+                                headers["X-Canvas-Workspace"] = backend.identity["workspaceId"]
                         if method == "GET" and template == "/api/sync/stream":
                             request = urllib.request.Request(backend.origin + path, headers=headers)
                             try:

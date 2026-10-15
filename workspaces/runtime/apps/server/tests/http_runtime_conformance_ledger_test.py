@@ -1100,6 +1100,52 @@ Server suites: 0 passed, 1 failed, 0 skipped (opt-in), 0 skipped (environment), 
                 ).fetchone()[0])
             self.assertEqual(restored_task["status"], "completed")
 
+    def test_voice_approval_probe_creates_and_restores_fresh_pending_request(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="ledger-voice-approval-") as scratch:
+            state = Path(scratch)
+            monitor = {"id": "approval-monitor", "agent": "lead-agent", "epoch": 7,
+                       "status": "completed", "command": "echo ledger probe",
+                       "cwd": "/fixture/project"}
+            original_monitor_record = json.dumps(monitor)
+            with closing(sqlite3.connect(state / "canvas.sqlite3")) as db, db:
+                db.executescript("""
+                    CREATE TABLE runtime_monitors(id TEXT PRIMARY KEY, record TEXT NOT NULL);
+                    CREATE TABLE runtime_agents(id TEXT PRIMARY KEY, record TEXT NOT NULL);
+                    CREATE TABLE runtime_requests(id TEXT PRIMARY KEY, record TEXT NOT NULL);
+                """)
+                db.execute("INSERT INTO runtime_monitors VALUES (?, ?)", (monitor["id"], original_monitor_record))
+                db.execute("INSERT INTO runtime_agents VALUES (?, ?)", (monitor["agent"], json.dumps({
+                    **{key: monitor[key] for key in ("id", "epoch", "cwd")}, "turnId": "turn-7",
+                })))
+            identifiers = {"agent": monitor["agent"], "monitor": monitor["id"],
+                           "approvalRequest": "pre-start-placeholder"}
+            case = ledger.PROBE_CASES[("POST", "/api/voice/approval_speech")]["primary"]
+
+            with self.assertRaisesRegex(RuntimeError, "probe failed"):
+                with ledger.probe_fixture_state(SimpleNamespace(state=state), identifiers, case):
+                    self.assertNotEqual(identifiers["approvalRequest"], "pre-start-placeholder")
+                    with closing(sqlite3.connect(state / "canvas.sqlite3")) as db, db:
+                        request = json.loads(db.execute(
+                            "SELECT record FROM runtime_requests WHERE id=?",
+                            (identifiers["approvalRequest"],),
+                        ).fetchone()[0])
+                        prepared = json.loads(db.execute(
+                            "SELECT record FROM runtime_monitors WHERE id=?",
+                            (monitor["id"],),
+                        ).fetchone()[0])
+                    self.assertEqual((request["status"], request["method"], request["epoch"]),
+                                     ("pending", "monitor/approve", 7))
+                    self.assertEqual(request["params"]["monitorId"], prepared["id"])
+                    self.assertEqual(prepared["status"], "approval")
+                    raise RuntimeError("probe failed")
+
+            self.assertEqual(identifiers["approvalRequest"], "pre-start-placeholder")
+            with closing(sqlite3.connect(state / "canvas.sqlite3")) as db:
+                self.assertIsNone(db.execute("SELECT 1 FROM runtime_requests").fetchone())
+                self.assertEqual(db.execute(
+                    "SELECT record FROM runtime_monitors WHERE id=?", (monitor["id"],),
+                ).fetchone()[0], original_monitor_record)
+
     def test_session_cost_fixture_restores_cache_and_temporary_pricing_catalog(self) -> None:
         with tempfile.TemporaryDirectory(prefix="ledger-pricing-restore-") as scratch:
             state = Path(scratch)
