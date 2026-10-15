@@ -14,6 +14,7 @@ use uuid::Uuid;
 
 const RESET_OPERATION_PREFIX: &str = "limit-reset:";
 const RESET_REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
+const INITIAL_TRANSPORT_ATTEMPTS: u64 = 0;
 static RESET_REQUEST_LOCK: Mutex<()> = Mutex::new(());
 
 #[derive(Debug, Error)]
@@ -37,6 +38,8 @@ struct Attempt {
     account_key: String,
     credit_id: String,
     idempotency_key: String,
+    #[serde(default = "initial_transport_attempts")]
+    transport_attempts: u64,
     status: String,
     #[serde(default)]
     certainty: Option<String>,
@@ -46,6 +49,10 @@ struct Attempt {
     created: Option<f64>,
     #[serde(default)]
     updated: Option<f64>,
+}
+
+fn initial_transport_attempts() -> u64 {
+    INITIAL_TRANSPORT_ATTEMPTS
 }
 
 fn now() -> Result<f64, ResetError> {
@@ -239,8 +246,8 @@ fn response(attempt: &Attempt, limits: Value) -> Value {
     })
 }
 
-/// Persist the provider identity before dispatch. Retries of pending or uncertain attempts
-/// reuse that identity; the provider's idempotency key makes repeating the call safe.
+/// Persist the provider charge identity before dispatch. Retries of pending or uncertain
+/// attempts retain that key while advancing the durable retained-worker transport sequence.
 pub fn consume_reset(
     store: &RuntimeStore,
     session: &dyn AccountSessionPort,
@@ -295,6 +302,7 @@ pub fn consume_reset(
                 account_key: account_key.to_owned(),
                 credit_id: credit.clone(),
                 idempotency_key: Uuid::new_v4().to_string(),
+                transport_attempts: INITIAL_TRANSPORT_ATTEMPTS,
                 status: "pending".to_owned(),
                 certainty: None,
                 outcome: None,
@@ -320,7 +328,21 @@ pub fn consume_reset(
             return Err(ResetError::Provider(error.to_string()));
         }
     };
-    let operation = format!("{RESET_OPERATION_PREFIX}{}", attempt.idempotency_key);
+    // The provider key identifies the charge. The persisted sequence identifies
+    // each retained-worker try so a lost response can be recovered through the
+    // provider's idempotent replay instead of the worker's permanent Unknown.
+    attempt.transport_attempts =
+        attempt
+            .transport_attempts
+            .checked_add(1)
+            .ok_or(ResetError::Invalid(
+                "The reset transport attempt limit was reached",
+            ))?;
+    save_attempt(store, &attempt, &request_id)?;
+    let operation = format!(
+        "{RESET_OPERATION_PREFIX}{}:{}",
+        attempt.idempotency_key, attempt.transport_attempts
+    );
     let receipt = session.provider_request(ProviderRequest {
         account: account_key.to_owned(),
         operation: operation.clone(),
@@ -528,7 +550,7 @@ mod tests {
     }
 
     #[test]
-    fn not_sent_retry_preserves_attempt_and_provider_idempotency_identity() {
+    fn not_sent_retry_changes_transport_identity_and_preserves_charge_identity() {
         let (_root, store) = store();
         let provider = FakeProvider::new([Reply::NotSent, Reply::Outcome("reset")]);
         let request_id = "11000000-0000-4000-8000-000000000001";
@@ -540,13 +562,27 @@ mod tests {
         assert_eq!(second["outcome"], "reset");
         assert_eq!(second["request_id"], request_id);
         assert_eq!(calls.len(), 2);
-        assert_eq!(calls[0], calls[1]);
+        assert_eq!(
+            calls[0].0,
+            format!(
+                "{RESET_OPERATION_PREFIX}{}:1",
+                calls[0].1["idempotencyKey"].as_str().unwrap()
+            )
+        );
+        assert_eq!(
+            calls[1].0,
+            format!(
+                "{RESET_OPERATION_PREFIX}{}:2",
+                calls[1].1["idempotencyKey"].as_str().unwrap()
+            )
+        );
+        assert_eq!(calls[0].1, calls[1].1);
         assert_eq!(calls[0].1["creditId"], "credit-A");
         assert_eq!(calls[0].1["idempotencyKey"], calls[1].1["idempotencyKey"]);
     }
 
     #[test]
-    fn unknown_retry_reuses_the_same_provider_idempotency_key() {
+    fn unknown_retry_uses_new_transport_identity_and_same_provider_key() {
         let (_root, store) = store();
         let provider = FakeProvider::new([Reply::Unknown, Reply::Outcome("reset")]);
         let request_id = "11000000-0000-4000-8000-000000000002";
@@ -557,7 +593,9 @@ mod tests {
         assert_eq!(retry["outcome"], "reset");
         let calls = provider.requests.lock().unwrap();
         assert_eq!(calls.len(), 2);
-        assert_eq!(calls[0], calls[1]);
+        assert_eq!(calls[0].0.split(':').next_back(), Some("1"));
+        assert_eq!(calls[1].0.split(':').next_back(), Some("2"));
+        assert_eq!(calls[0].1, calls[1].1);
         assert_eq!(calls[0].1["idempotencyKey"], calls[1].1["idempotencyKey"]);
     }
 
@@ -595,12 +633,14 @@ mod tests {
         assert_eq!(provider.max_in_flight.load(Ordering::SeqCst), 1);
         let calls = provider.requests.lock().unwrap();
         assert_eq!(calls.len(), 2);
-        assert_eq!(calls[0], calls[1]);
+        assert_eq!(calls[0].0.split(':').next_back(), Some("1"));
+        assert_eq!(calls[1].0.split(':').next_back(), Some("2"));
+        assert_eq!(calls[0].1, calls[1].1);
         assert_eq!(calls[0].1["idempotencyKey"], calls[1].1["idempotencyKey"]);
     }
 
     #[test]
-    fn recovered_pending_attempt_reuses_its_durable_key() {
+    fn recovered_pending_attempt_advances_persisted_transport_sequence() {
         let (_root, store) = store();
         let request_id = "11000000-0000-4000-8000-000000000014";
         let stored_key = "11000000-0000-4000-8000-000000000015";
@@ -610,6 +650,8 @@ mod tests {
             account_key: "default".into(),
             credit_id: "credit-A".into(),
             idempotency_key: stored_key.into(),
+            // The prior process committed attempt one, then stopped before dispatch.
+            transport_attempts: 1,
             status: "pending".into(),
             certainty: None,
             outcome: None,
@@ -626,7 +668,10 @@ mod tests {
         let calls = provider.requests.lock().unwrap();
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].1["idempotencyKey"], stored_key);
-        assert_eq!(calls[0].0, format!("{RESET_OPERATION_PREFIX}{stored_key}"));
+        assert_eq!(
+            calls[0].0,
+            format!("{RESET_OPERATION_PREFIX}{stored_key}:2")
+        );
     }
 
     #[test]

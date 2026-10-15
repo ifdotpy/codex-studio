@@ -1,4 +1,8 @@
 use super::*;
+use crate::account_session_runtime::{
+    AccountSessionError, AccountSessionPort, ProviderRequest, ProviderResponse, RequestCertainty,
+    SessionReceipt,
+};
 use crate::account_worker::retained::{
     PortError, RequestActor, RequestResult, RetainedSessionPort, SessionRequest,
 };
@@ -8,6 +12,90 @@ use crate::{
     recovery_policy::RecoverySnapshot,
     recovery_store::CompletionWriter,
 };
+use std::sync::{Arc, Mutex};
+
+struct ResetBrokerSession {
+    port: RetainedSessionPort,
+    runtime: tokio::runtime::Handle,
+    requests: Arc<Mutex<Vec<(String, Value)>>>,
+    lose_response: Arc<tokio::sync::Notify>,
+}
+
+impl AccountSessionPort for ResetBrokerSession {
+    fn ensure_session(&self, account: &str) -> Result<ConnectionScope, AccountSessionError> {
+        (self.port.scope().account == account)
+            .then(|| self.port.scope().clone())
+            .ok_or(AccountSessionError::Unknown)
+    }
+
+    fn read_limits(&self, account: &str) -> Result<Value, AccountSessionError> {
+        if account != "default" {
+            return Err(AccountSessionError::Unknown);
+        }
+        Ok(json!({
+            "accountKey":"default",
+            "data":{"accountId":"account-A","rateLimitResetCredits":{"credits":[{
+                "id":"credit-A","status":"available","resetType":"codexRateLimits"
+            }]}}
+        }))
+    }
+
+    fn provider_request(
+        &self,
+        request: ProviderRequest,
+    ) -> Result<SessionReceipt, AccountSessionError> {
+        self.requests
+            .lock()
+            .unwrap()
+            .push((request.operation.clone(), request.params.clone()));
+        let call = SessionRequest {
+            scope: self.port.scope().clone(),
+            expected_scope: request.expected_scope,
+            operation: request.operation,
+            actor: None,
+            transfer: None,
+            deleted_actor_session: None,
+            method: request.method,
+            params: request.params,
+            deadline: request.deadline,
+        };
+        let lose_response = self.lose_response.clone();
+        let receipt = self
+            .runtime
+            .block_on(async {
+                tokio::select! {
+                    result = self.port.request(call) => result,
+                    _ = lose_response.notified() => Err(PortError::Unknown),
+                }
+            })
+            .map_err(|error| match error {
+                PortError::Unknown => AccountSessionError::Unknown,
+                _ => AccountSessionError::Refused("Retained reset request was refused"),
+            })?;
+        let (certainty, result) = match receipt.result {
+            RequestResult::Reply(value) => (
+                RequestCertainty::Written,
+                Some(ProviderResponse::Reply(value)),
+            ),
+            RequestResult::Rejected(value) => (
+                RequestCertainty::Written,
+                Some(ProviderResponse::Rejected(value)),
+            ),
+            RequestResult::NotSent => (RequestCertainty::NotSent, None),
+            RequestResult::Unknown => return Err(AccountSessionError::Unknown),
+        };
+        Ok(SessionReceipt {
+            scope: receipt.scope,
+            operation: receipt.operation,
+            ticket: Some(receipt.ticket),
+            certainty,
+            result,
+            not_sent_reason: None,
+            replayed: receipt.replayed,
+        })
+    }
+}
+
 fn request(state: &State, port: &RetainedSessionPort, operation: &str) -> SessionRequest {
     SessionRequest {
         scope: port.scope().clone(),
@@ -23,6 +111,162 @@ fn request(state: &State, port: &RetainedSessionPort, operation: &str) -> Sessio
         params: json!({"threadId":"fake-thread-0","includeTurns":false}),
         deadline: (tokio::time::Instant::now() + std::time::Duration::from_secs(60)).into_std(),
     }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn reset_service_recovers_lost_response_through_retained_worker_once() {
+    let broker_state = tempfile::tempdir().unwrap();
+    let broker_root = broker_state.path().to_path_buf();
+    let broker_store = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-services/account_worker/tests/retained/reset",
+        move || studio_runtime_store::RuntimeStore::open(Some(&broker_root)),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let bridge = StoreBridge::new(Arc::new(broker_store)).await.unwrap();
+    let mut peer = Peer::new();
+    let mut worker = peer.worker(bridge).await;
+    let port = worker.retained_session();
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let lose_response = Arc::new(tokio::sync::Notify::new());
+    let session = Arc::new(ResetBrokerSession {
+        port: port.clone(),
+        runtime: tokio::runtime::Handle::current(),
+        requests: requests.clone(),
+        lose_response: lose_response.clone(),
+    });
+    let request_id = "11000000-0000-4000-8000-000000000020";
+    let body = json!({
+        "account_key":"default",
+        "account_id":"account-A",
+        "credit_id":"credit-A",
+        "request_id":request_id
+    });
+
+    // Keep the reset record store separate from the worker fixture's runtime
+    // lock, then reopen it below to model the service process restarting.
+    let reset_state = tempfile::tempdir().unwrap();
+    let reset_root = reset_state.path().to_path_buf();
+    let reset_store = studio_runtime_store::RuntimeStore::open(Some(&reset_root)).unwrap();
+    let first_session = session.clone();
+    let first_body = body.clone();
+    let mut first = tokio::task::spawn_blocking(move || {
+        crate::limit_reset::consume_reset(&reset_store, first_session.as_ref(), &first_body)
+    });
+    let first_wire = tokio::select! {
+        wire = peer.writes.recv() => wire.expect("retained worker keeps provider transport open"),
+        result = worker.completion() => panic!("retained worker exited before reset dispatch: {result:?}"),
+        result = &mut first => panic!("reset service ended before retained dispatch: {result:?}"),
+    };
+    assert_eq!(
+        first_wire.value["method"],
+        "account/rateLimitResetCredit/consume"
+    );
+    let charge_key = first_wire.value["params"]["idempotencyKey"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let mut charges = std::collections::HashSet::new();
+    assert!(charges.insert(charge_key.clone()));
+    // The fake provider has charged the key and confirms the write, but its
+    // response is lost before the reset service can observe it.
+    assert!(
+        first_wire
+            .receipt
+            .send(CommandReceipt::Written {
+                remote_id: None,
+                duplicate: false,
+            })
+            .is_ok()
+    );
+    lose_response.notify_one();
+    let uncertain = first.await.unwrap().unwrap();
+    assert_eq!(uncertain["outcome"], "uncertain");
+
+    // Opening the durable service store again models recovery after a process restart.
+    let reset_store = studio_runtime_store::RuntimeStore::open(Some(&reset_root)).unwrap();
+    let retry_session = session.clone();
+    let retry_body = body.clone();
+    let retry = tokio::task::spawn_blocking(move || {
+        crate::limit_reset::consume_reset(&reset_store, retry_session.as_ref(), &retry_body)
+            .unwrap()
+    });
+    let retry_wire = peer.next_write().await;
+    assert_eq!(
+        retry_wire.value["method"],
+        "account/rateLimitResetCredit/consume"
+    );
+    assert_eq!(
+        retry_wire.value["params"]["idempotencyKey"], charge_key,
+        "the provider charge identity survives restart"
+    );
+    let new_charge = charges.insert(
+        retry_wire.value["params"]["idempotencyKey"]
+            .as_str()
+            .unwrap()
+            .to_owned(),
+    );
+    assert!(
+        !new_charge,
+        "the fake provider sees a replay of the same charge key"
+    );
+    assert!(
+        retry_wire
+            .receipt
+            .send(CommandReceipt::Written {
+                remote_id: None,
+                duplicate: false,
+            })
+            .is_ok()
+    );
+    peer.reply(&retry_wire.value, json!({"outcome":"alreadyRedeemed"}))
+        .await;
+    let recovered = retry.await.unwrap();
+    assert_eq!(recovered["outcome"], "alreadyRedeemed");
+    assert_eq!(charges.len(), 1, "exactly one fake provider charge");
+
+    let recorded = requests.lock().unwrap().clone();
+    assert_eq!(recorded.len(), 2);
+    assert_eq!(recorded[0].1, recorded[1].1);
+    assert_eq!(recorded[0].0, format!("limit-reset:{charge_key}:1"));
+    assert_eq!(recorded[1].0, format!("limit-reset:{charge_key}:2"));
+
+    // The first broker operation remains Unknown. Recovery used a fresh transport
+    // identity, and replaying or rebinding either identity cannot send another write.
+    let old = SessionRequest {
+        scope: port.scope().clone(),
+        expected_scope: None,
+        operation: recorded[0].0.clone(),
+        actor: None,
+        transfer: None,
+        deleted_actor_session: None,
+        method: Method::AccountRateLimitResetCreditConsume,
+        params: recorded[0].1.clone(),
+        deadline: (tokio::time::Instant::now() + std::time::Duration::from_secs(60)).into_std(),
+    };
+    assert_eq!(
+        port.request(old.clone()).await.unwrap().result,
+        RequestResult::Unknown
+    );
+    let mut changed_key = old.clone();
+    changed_key.params["idempotencyKey"] = json!("11000000-0000-4000-8000-000000000021");
+    assert_eq!(
+        port.request(changed_key).await.unwrap_err(),
+        PortError::Invalid
+    );
+    let mut changed_body = SessionRequest {
+        operation: recorded[1].0.clone(),
+        params: recorded[1].1.clone(),
+        ..old
+    };
+    changed_body.params["creditId"] = json!("credit-B");
+    assert_eq!(
+        port.request(changed_body).await.unwrap_err(),
+        PortError::Identity
+    );
+    assert!(peer.writes.try_recv().is_err());
+    worker.shutdown().await.unwrap();
 }
 
 async fn recovered_publications(state: &State) -> Vec<(String, String)> {

@@ -499,9 +499,17 @@ pub(super) fn valid_actorless_request_shape(
         // The limits snapshot is a read issued by AccountSessionRuntime.
         Method::AccountRateLimitsRead => params.is_empty() && operation.starts_with("limits-read:"),
         // Reset-credit consumption is the only actorless account write. Bind it
-        // to the durable operation identity and exact Python request shape.
+        // to the durable charge identity, distinct transport sequence, and exact
+        // provider request shape.
         Method::AccountRateLimitResetCreditConsume => {
-            let idempotency_key = operation.strip_prefix("limit-reset:");
+            let (idempotency_key, transport_attempt) = match operation.strip_prefix("limit-reset:")
+            {
+                Some(identity) => match identity.split_once(':') {
+                    Some((key, attempt)) => (key, Some(attempt)),
+                    None => (identity, None),
+                },
+                None => ("", None),
+            };
             only(&["creditId", "idempotencyKey"], &[])
                 && params
                     .get("creditId")
@@ -511,8 +519,10 @@ pub(super) fn valid_actorless_request_shape(
                     .get("idempotencyKey")
                     .and_then(Value::as_str)
                     .is_some_and(|value| !value.is_empty() && value.len() <= 1024)
-                && idempotency_key.is_some_and(|key| uuid::Uuid::parse_str(key).is_ok())
-                && params.get("idempotencyKey").and_then(Value::as_str) == idempotency_key
+                && uuid::Uuid::parse_str(idempotency_key).is_ok()
+                && transport_attempt
+                    .is_none_or(|attempt| attempt.parse::<u64>().is_ok_and(|attempt| attempt > 0))
+                && params.get("idempotencyKey").and_then(Value::as_str) == Some(idempotency_key)
         }
         _ => false,
     }
@@ -838,15 +848,42 @@ mod validation_tests {
         assert!(
             validate(&request(
                 Method::AccountRateLimitResetCreditConsume,
-                &format!("limit-reset:{key}"),
+                &format!("limit-reset:{key}:1"),
                 params.clone(),
             ))
             .is_ok()
         );
+        assert!(
+            validate(&request(
+                Method::AccountRateLimitResetCreditConsume,
+                &format!("limit-reset:{key}"),
+                params.clone(),
+            ))
+            .is_ok(),
+            "persisted legacy receipts remain valid"
+        );
+        for (operation, params) in [
+            (format!("limit-reset:{key}:0"), params.clone()),
+            (format!("limit-reset:{key}:first"), params.clone()),
+            ("limit-reset:other:2".into(), params.clone()),
+            (
+                format!("limit-reset:{key}:2"),
+                json!({"creditId":"credit-A","idempotencyKey":"11000000-0000-4000-8000-000000000002"}),
+            ),
+        ] {
+            assert_eq!(
+                validate(&request(
+                    Method::AccountRateLimitResetCreditConsume,
+                    &operation,
+                    params,
+                )),
+                Err(PortError::Invalid)
+            );
+        }
         assert_eq!(
             validate(&request(
                 Method::AccountRateLimitResetCreditConsume,
-                "limit-reset:other",
+                "limit-reset:other:1",
                 params,
             )),
             Err(PortError::Invalid)
