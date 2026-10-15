@@ -8,7 +8,7 @@ import { updateLocalDraft } from "../sync/localDraft";
 import { onResume } from "../sync/resume";
 import type { paths } from "../generated/api";
 import { queueMutationMessageId } from "./queueMutationIdentity";
-import { watchResourceReads } from "./watchResourceReads";
+import { useServerResourceReads } from "../servers/ServerServicesContext";
 import { createQueueResourceRefresh } from "./queueResourceRefresh";
 import { retryableReadError } from "../sync/readRetry";
 
@@ -81,6 +81,7 @@ export function useMessageQueue(p: {
   edited?: (id: string, text: string) => void;
   refresh: () => Promise<void>;
 }) {
+  const watchResourceReads = useServerResourceReads();
   const { get, syncPost } = useServerApi();
 
   const key = `studio-queue-change:${p.scope}:${p.id}`;
@@ -156,7 +157,7 @@ export function useMessageQueue(p: {
       if (resourceRefresh.current?.gate === gate)
         resourceRefresh.current = null;
     };
-  }, [key, reload, p.enabled, p.id]);
+  }, [key, reload, p.enabled, p.id, watchResourceReads]);
 
   const clearRequest = async (request: QueueMutation) => {
     const next = await updateLocalDraft<unknown>(key, null, (current) =>

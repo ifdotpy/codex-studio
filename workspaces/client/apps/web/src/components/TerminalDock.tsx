@@ -16,7 +16,7 @@ import { errorText, type GetResult, type PostBody } from "../api";
 import type { Agent, Snapshot } from "../types";
 import "./terminal-dock.css";
 import { copyText } from "../clipboard/clipboard";
-import { watchResourceReads } from "./watchResourceReads";
+import { useServerResourceReads } from "../servers/ServerServicesContext";
 import {
   isClassicServerView,
   isServerView,
@@ -47,6 +47,7 @@ export default function TerminalDock({
   agent?: Agent;
   notify: (message: string) => void;
 }) {
+  const watchResourceReads = useServerResourceReads();
   const { get, post, save, saved } = useServerApi();
 
   const [opened, setOpened] = useState(() =>
@@ -102,7 +103,7 @@ export default function TerminalDock({
       active = false;
       stop();
     };
-  }, [load]);
+  }, [load, watchResourceReads]);
   useEffect(() => {
     if (!opened) setEndTarget(null);
     const update = () =>
@@ -535,6 +536,7 @@ function ShellView({
   shell: Shell;
   notify: (message: string) => void;
 }) {
+  const watchResourceReads = useServerResourceReads();
   const { get, post, syncPost } = useServerApi();
 
   const host = useRef<HTMLDivElement>(null);
@@ -776,7 +778,7 @@ function ShellView({
       instance?.dispose();
       terminal.current = null;
     };
-  }, [shell.id, retry]);
+  }, [shell.id, retry, watchResourceReads]);
   return (
     <div className="terminal-shell-view">
       {truncated && (

@@ -1,3 +1,4 @@
+import { watchResourceReads } from "../components/watchResourceReads";
 import { createAccountLimitsCache } from "../usage/accountUsage";
 import { createBrowserDrafts } from "../sync/drafts";
 import { createDraftJournal } from "../sync/draftJournal";
@@ -131,6 +132,11 @@ export function createServerServices(server: StudioServer) {
   return {
     owner: transport.owner,
     accountLimits,
+    watchResourceReads: ((refs, read, failed, options) =>
+      watchResourceReads(refs, read, failed, {
+        ...options,
+        events: synchronization().resources,
+      })) satisfies typeof watchResourceReads,
     activity,
     sequences,
     transcripts,

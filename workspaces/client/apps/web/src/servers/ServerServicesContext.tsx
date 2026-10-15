@@ -1,3 +1,4 @@
+import { watchResourceReads } from "../components/watchResourceReads";
 import * as defaultAccountLimits from "../usage/accountUsage";
 import * as defaultActivity from "./activity";
 import { useSyncedDrafts } from "../sync/drafts";
@@ -58,3 +59,6 @@ export const useServerActivityScope = () =>
 
 export const useServerAccountLimits = () =>
   useServerServices()?.accountLimits ?? defaultAccountLimits;
+
+export const useServerResourceReads = () =>
+  useServerServices()?.watchResourceReads ?? watchResourceReads;

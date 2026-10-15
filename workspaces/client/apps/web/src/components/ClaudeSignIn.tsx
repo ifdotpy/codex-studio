@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { errorText, type PostResult } from "../api";
 import { copyText } from "../clipboard/clipboard";
 import type { Account } from "./Accounts";
-import { watchResourceReads } from "./watchResourceReads";
+import { useServerResourceReads } from "../servers/ServerServicesContext";
 
 type Receipt = PostResult<"/api/accounts/claude/login">;
 type LoginAction = "start" | "code" | "cancel";
@@ -41,6 +41,7 @@ export default function ClaudeSignIn({
   onReady: () => unknown;
   serverLabel?: string;
 }) {
+  const watchResourceReads = useServerResourceReads();
   const { clearStableRequestId, get, post, save, saved, stableRequestId } =
     useServerApi();
 
@@ -95,7 +96,7 @@ export default function ClaudeSignIn({
       live = false;
       watch();
     };
-  }, [requestId, receipt?.status]);
+  }, [requestId, receipt?.status, watchResourceReads]);
   const run = async (action: LoginAction) => {
     if (lock.current) return;
     lock.current = true;

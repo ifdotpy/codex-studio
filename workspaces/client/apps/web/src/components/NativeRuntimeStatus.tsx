@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import { type GetResult, errorText } from "../api";
 import type { Account } from "./Accounts";
 import ProviderUpdateNotices from "./ProviderUpdateNotices";
-import { watchResourceReads } from "./watchResourceReads";
+import { useServerResourceReads } from "../servers/ServerServicesContext";
 import "./native-runtime-status.css";
 
 type DesktopStatus = GetResult<"/api/desktop">;
@@ -33,6 +33,7 @@ export default function NativeRuntimeStatus({
   opened: boolean;
   accounts: Account[];
 }) {
+  const watchResourceReads = useServerResourceReads();
   const { get } = useServerApi();
 
   const [data, setData] = useState<RuntimeStatus | null>(null);
@@ -76,7 +77,7 @@ export default function NativeRuntimeStatus({
       controller.abort();
       stop();
     };
-  }, [opened]);
+  }, [opened, watchResourceReads]);
 
   if (!opened) return null;
   const entries = Object.entries(data?.accounts || {});

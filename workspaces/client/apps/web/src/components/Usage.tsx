@@ -11,7 +11,7 @@ import { peekSessionCost, storeSessionCost } from "../usage/sessionCostCache";
 import { useRecoveredLimit } from "./useRecoveredLimit";
 import { limitRecovery } from "../usage/limitRecovery";
 import LimitRecoveryNotice from "./LimitRecoveryNotice";
-import { watchResourceReads } from "./watchResourceReads";
+import { useServerResourceReads } from "../servers/ServerServicesContext";
 export { limitRecovery } from "../usage/limitRecovery";
 import "./Usage.css";
 import TokenRate from "./TokenRate";
@@ -187,6 +187,7 @@ export default function Usage({
   limitsLoading?: boolean;
   accounts?: UsageAccount[];
 }) {
+  const watchResourceReads = useServerResourceReads();
   const { get, post } = useServerApi();
 
   const [localOpened, setLocalOpened] = useState(false);
@@ -390,7 +391,7 @@ export default function Usage({
       active = false;
       stop();
     };
-  }, [agent.id, costScope, rootId, stateDir]);
+  }, [agent.id, costScope, rootId, stateDir, watchResourceReads]);
   useEffect(() => {
     let active = true;
     const load = async () => {
@@ -425,7 +426,7 @@ export default function Usage({
       active = false;
       stop();
     };
-  }, [accountKey]);
+  }, [accountKey, watchResourceReads]);
   const [now, setNow] = useState(() => Date.now() / 1000);
   useEffect(() => {
     const timer = window.setInterval(() => setNow(Date.now() / 1000), 30000);

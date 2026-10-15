@@ -10,7 +10,7 @@ import {
   latestMessageReceipt,
   type MessageReceipt,
 } from "../sync/messageReceipts";
-import { watchResourceReads } from "./watchResourceReads";
+import { useServerResourceReads } from "../servers/ServerServicesContext";
 
 export function useMessageReceipts(
   room: string | null,
@@ -18,6 +18,7 @@ export function useMessageReceipts(
   workspaceId: string | undefined,
   ids: string[],
 ) {
+  const watchResourceReads = useServerResourceReads();
   const { get } = useServerApi();
   const { reconcileOutboxReceipts } = useServerOutbox();
 
@@ -85,7 +86,7 @@ export function useMessageReceipts(
       active = false;
       stop();
     };
-  }, [room, scope, workspaceId, requestedKey]);
+  }, [room, scope, workspaceId, requestedKey, watchResourceReads]);
   return state.scope === scope
     ? state.receipts
     : new Map<string, MessageReceipt>();

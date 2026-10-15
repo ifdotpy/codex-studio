@@ -1,10 +1,11 @@
 import { useServerApi } from "../servers/ServerServicesContext";
 import { useEffect, useState } from "react";
 import "../api";
-import { watchResourceReads } from "./watchResourceReads";
+import { useServerResourceReads } from "../servers/ServerServicesContext";
 import "./supervisor-recovery-notice.css";
 
 export default function SupervisorRecoveryNotice() {
+  const watchResourceReads = useServerResourceReads();
   const { get } = useServerApi();
 
   const [notice, setNotice] = useState<string | null>(null);
@@ -29,7 +30,7 @@ export default function SupervisorRecoveryNotice() {
       controller.abort();
       stop();
     };
-  }, []);
+  }, [watchResourceReads]);
 
   if (!notice) return null;
   return (

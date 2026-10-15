@@ -3,7 +3,7 @@ import { Button, Group, Modal, Stack, TextInput } from "@mantine/core";
 import { useEffect, useRef, useState } from "react";
 import { errorText, save, saved, type PostResult } from "../api";
 import { copyText } from "../clipboard/clipboard";
-import { watchResourceReads } from "./watchResourceReads";
+import { useServerResourceReads } from "../servers/ServerServicesContext";
 
 type Receipt = PostResult<"/api/accounts/claude/login">;
 type SavedFlow = {
@@ -88,6 +88,7 @@ export default function ClaudeAddSignIn({
   onClose: () => void;
   onReady: () => unknown;
 }) {
+  const watchResourceReads = useServerResourceReads();
   const { get, post, save, saved } = useServerApi();
 
   const storageKey = `claude-add-sign-in:${scope}`;
@@ -224,7 +225,14 @@ export default function ClaudeAddSignIn({
       stop();
       clearInterval(timer);
     };
-  }, [busy, flow?.unknownSince, onReady, receipt?.status, requestId]);
+  }, [
+    busy,
+    flow?.unknownSince,
+    onReady,
+    receipt?.status,
+    requestId,
+    watchResourceReads,
+  ]);
   useEffect(() => {
     if (!flow?.unknownSince || !requestId || receipt) return;
     const remaining =

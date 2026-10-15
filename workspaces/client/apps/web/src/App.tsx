@@ -1,5 +1,6 @@
 import {
   useServerApi,
+  useServerResources,
   useServerAccountLimits,
   useServerOutbox,
   useServerActivityScope,
@@ -190,7 +191,7 @@ import SubagentConcurrencyControl from "./components/agents/SubagentConcurrencyC
 import Conversation from "./components/Conversation";
 const SelectedConversation = memo(Conversation);
 import type { UsageAccount } from "./components/Usage";
-import { watchResourceReads } from "./components/watchResourceReads";
+import { useServerResourceReads } from "./servers/ServerServicesContext";
 import {
   limitsBaselineReader,
   type LimitsBaselineHydration,
@@ -220,7 +221,6 @@ import {
   TeamModels,
 } from "./components/agents/WorkerOverview";
 import { activeTask, backgroundTasks } from "./components/backgroundTaskModel";
-import { watchResourceChanges } from "./sync/resourceEvents";
 const ClaudeSettings = lazy(() =>
   import("./components/ClaudeSettings").then((module) => ({
     default: module.ClaudeSettings,
@@ -232,6 +232,8 @@ const BackgroundTasks = lazy(
   () => import("./components/shell/BackgroundTasks"),
 );
 export default function App() {
+  const { watchResourceChanges } = useServerResources();
+  const watchResourceReads = useServerResourceReads();
   const {
     configureLimitsCache,
     cachedLimitsByAccount,
@@ -1293,7 +1295,7 @@ export default function App() {
       };
       limitsWatchers.current.set(key, stop);
     }
-  }, [data?.stateDir, accountKey, usageAccountKeys]);
+  }, [data?.stateDir, accountKey, usageAccountKeys, watchResourceReads]);
   useEffect(() => {
     // Keep each account's latest snapshot for immediate return navigation.
     const incoming = { ...data?.runtime?.rateLimitsByAccount };

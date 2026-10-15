@@ -8,7 +8,7 @@ import { AudioLines, X } from "lucide-react";
 import { errorText, type PostResult } from "../api";
 import type { ResourceConnectionState } from "../sync/client";
 import "./realtime-voice.css";
-import { watchResourceReads } from "./watchResourceReads";
+import { useServerResourceReads } from "../servers/ServerServicesContext";
 import { watchVoiceTransport } from "./voiceTransport";
 
 type VoiceRecords = PostResult<"/api/voice/records">;
@@ -44,6 +44,7 @@ function NativeVoice({
   agentId: string;
   notify: (text: string) => void;
 }) {
+  const watchResourceReads = useServerResourceReads();
   const { post } = useServerApi();
 
   const [opened, setOpened] = useState(false);
@@ -211,7 +212,7 @@ function NativeVoice({
       stopConnection();
       stop();
     };
-  }, [agentId, watchVoice]);
+  }, [agentId, watchVoice, watchResourceReads]);
   const connectionChanged = (current: Peer, state: string) => {
     current.connectionState = state;
     if (current.closed) return;
