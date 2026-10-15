@@ -1237,7 +1237,9 @@ fn apply_turn_permissions(
         params["sandboxPolicy"] = policy.clone();
         return Ok(());
     }
-    let sandbox = actor.get("sandbox").filter(|value| python_truthy(value));
+    let sandbox = actor
+        .get("sandbox")
+        .filter(|value| studio_runtime_store::truthy(Some(value)));
     if sandbox.is_none() {
         return Err("Thread sandbox is unknown; refusing liveness command".into());
     }
@@ -1247,15 +1249,4 @@ fn apply_turn_permissions(
         params["sandboxPolicy"] = sandbox.cloned().unwrap_or(Value::Null);
     }
     Ok(())
-}
-
-fn python_truthy(value: &Value) -> bool {
-    match value {
-        Value::Null => false,
-        Value::Bool(value) => *value,
-        Value::Number(value) => value.as_f64().is_some_and(|value| value != 0.0),
-        Value::String(value) => !value.is_empty(),
-        Value::Array(value) => !value.is_empty(),
-        Value::Object(value) => !value.is_empty(),
-    }
 }

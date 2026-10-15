@@ -298,19 +298,21 @@ impl Snapshot {
                         continue;
                     }
                     let member = &mut op["members"][id];
-                    if flag(member, "lazy") && !truthy(agents[id].get("lazyAccountTransfer")) {
+                    if flag(member, "lazy")
+                        && !studio_runtime_store::truthy(agents[id].get("lazyAccountTransfer"))
+                    {
                         return Err(TransferError::Requires(SETTINGS_REQUIRED));
                     }
                     member["phase"] = json!(if flag(member, "lazy") {
                         "lazy"
-                    } else if truthy(member.get("result")) {
+                    } else if studio_runtime_store::truthy(member.get("result")) {
                         "ready"
                     } else {
                         "waiting"
                     });
                     member["error"] = Value::Null;
                     member["nextCheck"] = json!(0);
-                    if truthy(member.get("interruptSubmittedAt")) {
+                    if studio_runtime_store::truthy(member.get("interruptSubmittedAt")) {
                         remove(
                             member,
                             &[
@@ -331,7 +333,8 @@ impl Snapshot {
                         && phase != Phase::Lazy
                         && !(phase == Phase::Blocked
                             && flag(m, "archiveInvalidated")
-                            && (!truthy(m.get("submittedAt")) || truthy(m.get("result"))))
+                            && (!studio_runtime_store::truthy(m.get("submittedAt"))
+                                || studio_runtime_store::truthy(m.get("result"))))
                     {
                         return Err(TransferError::Refused(
                             "A native history move has started. Resolve its receipt before cancelling.",
@@ -340,7 +343,8 @@ impl Snapshot {
                 }
                 if self.order.iter().any(|id| {
                     let m = &op["members"][id];
-                    truthy(m.get("interruptSubmittedAt")) && m["interruptOutcome"] != "acknowledged"
+                    studio_runtime_store::truthy(m.get("interruptSubmittedAt"))
+                        && m["interruptOutcome"] != "acknowledged"
                 }) {
                     return Err(TransferError::Refused(
                         "Retry the unresolved turn interruption before cancelling this transfer",
@@ -383,7 +387,7 @@ impl Snapshot {
                         }
                         remove(a, &["lazyAccountTransfer"])?;
                     }
-                    if truthy(m.get("interruptReason"))
+                    if studio_runtime_store::truthy(m.get("interruptReason"))
                         && flag(m, "continueAfterTransfer")
                         && flag(a, "autoWake")
                     {
@@ -415,9 +419,9 @@ impl Snapshot {
         if !self.pending()
             || !matches!(self.phase(agent)?, Phase::Waiting | Phase::Lazy)
             || a["accountTransferId"] != self.identity.id
-            || truthy(a.get("deletedAt"))
-            || truthy(member.get("result"))
-            || truthy(member.get("submittedAt"))
+            || studio_runtime_store::truthy(a.get("deletedAt"))
+            || studio_runtime_store::truthy(member.get("result"))
+            || studio_runtime_store::truthy(member.get("submittedAt"))
             || flag(member, "archiveInvalidated")
             || flag(a, "inFlight")
             || matches!(
@@ -869,8 +873,8 @@ impl Snapshot {
         let m = &self.operation["members"][id];
         if !self.pending()
             || self.phase(id)? != Phase::Reading
-            || truthy(m.get("submittedAt"))
-            || truthy(m.get("result"))
+            || studio_runtime_store::truthy(m.get("submittedAt"))
+            || studio_runtime_store::truthy(m.get("result"))
             || m.get("transportTicket").is_some()
         {
             return Err(TransferError::Refused(
@@ -978,7 +982,7 @@ impl Snapshot {
         if self.identity.id != ticket.operation
             || self.identity.target_account_key != ticket.account
             || a["epoch"].as_i64() != Some(ticket.epoch)
-            || truthy(a.get("deletedAt"))
+            || studio_runtime_store::truthy(a.get("deletedAt"))
             || a.get("accountKey")
                 .and_then(Value::as_str)
                 .unwrap_or("default")
@@ -1004,8 +1008,8 @@ pub fn before_start(agent: &Value) -> Result<(), TransferError> {
     validate("PersistedAgentRecord", "transfer agent", agent)?;
     if agent.get("accountTransfer").is_some_and(|v| {
         !v.is_null() && !matches!(v["status"].as_str(), Some("completed" | "cancelled"))
-    }) || truthy(agent.get("accountTransferId"))
-        || truthy(agent.get("lazyAccountTransfer"))
+    }) || studio_runtime_store::truthy(agent.get("accountTransferId"))
+        || studio_runtime_store::truthy(agent.get("lazyAccountTransfer"))
         || agent
             .get("emptyTransferRecovery")
             .is_some_and(|r| !r.is_null() && r["phase"] != "completed")
@@ -1016,9 +1020,6 @@ pub fn before_start(agent: &Value) -> Result<(), TransferError> {
 }
 fn flag(value: &Value, key: &str) -> bool {
     value.get(key) == Some(&Value::Bool(true))
-}
-fn truthy(value: Option<&Value>) -> bool {
-    crate::event_write::truthy(value)
 }
 pub(crate) fn remove(value: &mut Value, keys: &[&str]) -> Result<(), TransferError> {
     let object = value
@@ -1129,8 +1130,11 @@ impl Decision {
             .find_map(|id| {
                 let m = &self.operation["members"][id];
                 m.get("error")
-                    .filter(|v| truthy(Some(v)))
-                    .or_else(|| m.get("waiting").filter(|v| truthy(Some(v))))
+                    .filter(|v| studio_runtime_store::truthy(Some(v)))
+                    .or_else(|| {
+                        m.get("waiting")
+                            .filter(|v| studio_runtime_store::truthy(Some(v)))
+                    })
                     .cloned()
             })
             .unwrap_or(Value::Null);
@@ -1271,7 +1275,7 @@ fn progress(op: &Value, order: &[String], public: bool) -> Result<Value, Transfe
         retry |= phase == Phase::Blocked && !flag(m, "archiveInvalidated");
         for (include, reason, destination, provider) in [
             (
-                truthy(m.get("interruptReason")),
+                studio_runtime_store::truthy(m.get("interruptReason")),
                 "interruptReason",
                 &mut interrupted,
                 false,
@@ -1341,7 +1345,7 @@ fn validate_source_for_submission(member: &Value, agent: &Value) -> Result<(), T
             agent["status"].as_str(),
             Some("running" | "starting" | "approval")
         )
-        || truthy(agent.get("workspaceOperation"))
+        || studio_runtime_store::truthy(agent.get("workspaceOperation"))
     {
         return Err(TransferError::Refused(
             "Waiting for the current turn or workspace operation",

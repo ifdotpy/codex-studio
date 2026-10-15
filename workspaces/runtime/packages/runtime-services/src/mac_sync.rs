@@ -732,10 +732,7 @@ fn save_json(path: &Path, value: &Value) -> Result<(), MacSyncError> {
     fs::rename(temp, path).map_err(MacSyncError::Io)
 }
 fn hex_sha(bytes: &[u8]) -> String {
-    Sha256::digest(bytes)
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect()
+    data_encoding::HEXLOWER.encode(&Sha256::digest(bytes))
 }
 fn now_seconds() -> f64 {
     SystemTime::now()

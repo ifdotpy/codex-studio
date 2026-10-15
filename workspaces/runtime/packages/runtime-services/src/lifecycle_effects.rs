@@ -183,13 +183,12 @@ impl ProductionLifecyclePorts {
         let is_review = before.get("nativeReview").and_then(Value::as_bool) == Some(true)
             && attempt.get("action").and_then(Value::as_str) == Some("review")
             && attempt.get("submitted").and_then(Value::as_bool) == Some(true)
-            && truthy(before.get("inFlight"))
+            && studio_runtime_store::truthy(before.get("inFlight"))
             && attempt.get("threadId").and_then(Value::as_str) == Some(thread)
             && before.get("turnId").is_none_or(Value::is_null);
-        let current_turn = before
-            .get("turnId")
-            .and_then(Value::as_str)
-            .filter(|turn| !turn.is_empty() && truthy(before.get("inFlight")));
+        let current_turn = before.get("turnId").and_then(Value::as_str).filter(|turn| {
+            !turn.is_empty() && studio_runtime_store::truthy(before.get("inFlight"))
+        });
         let Some(turn) = current_turn.or_else(|| is_review.then_some("")) else {
             // Python only interrupts an active native turn (or its special
             // submitted review). Preparation and idle stops need no provider IO.
@@ -633,7 +632,7 @@ fn release_work(tx: &Transaction<'_>, effect: &LifecycleEffect) -> Result<(), Ma
         let eligible = value
             .get("parentId")
             .is_some_and(|parent| !parent.is_null())
-            && (truthy(value.get("deletedAt"))
+            && (studio_runtime_store::truthy(value.get("deletedAt"))
                 || value.get("status").and_then(Value::as_str) == Some("failed"));
         if eligible && owners.contains(id) {
             agents.push(
@@ -658,8 +657,8 @@ fn notify_parent_with_id(
     let agent = effect.stopped();
     if agent.get("isLead").and_then(Value::as_bool) == Some(true)
         || agent.get("parentId").and_then(Value::as_str).is_none()
-        || truthy(agent.get("deletedAt"))
-        || truthy(agent.get("agentArchive"))
+        || studio_runtime_store::truthy(agent.get("deletedAt"))
+        || studio_runtime_store::truthy(agent.get("agentArchive"))
     {
         return Ok(());
     }
@@ -807,9 +806,9 @@ fn image_workspace_summary(agent: &Value) -> Value {
         .get("workspaceMode")
         .and_then(Value::as_str)
         .or_else(|| {
-            if truthy(agent.get("imageWorkspace")) {
+            if studio_runtime_store::truthy(agent.get("imageWorkspace")) {
                 Some("image")
-            } else if truthy(agent.get("worktree")) {
+            } else if studio_runtime_store::truthy(agent.get("worktree")) {
                 Some("worktree")
             } else {
                 Some("shared")
@@ -817,12 +816,12 @@ fn image_workspace_summary(agent: &Value) -> Value {
         })
         .unwrap_or("shared");
     let mut result = json!({"mode":mode,"path":agent.get("cwd").cloned().unwrap_or(Value::Null)});
-    let image = truthy(agent.get("imageWorkspace"));
+    let image = studio_runtime_store::truthy(agent.get("imageWorkspace"));
     let fallback = phase.and_then(Value::as_str) == Some("fallback");
     if !image && !fallback && mode != "image" {
         return result;
     }
-    let ready = truthy(agent.get("imageWorkspaceReady"));
+    let ready = studio_runtime_store::truthy(agent.get("imageWorkspaceReady"));
     let state = agent
         .get("imageWorkspaceBaseState")
         .filter(|value| !value.is_null())
@@ -859,7 +858,7 @@ fn finalize_deleted(tx: &Transaction<'_>, id: &str) -> Result<(), ManagementErro
     let Some(mut agent) = AgentRepository::get(tx, &AgentId::from(id))? else {
         return Ok(());
     };
-    if !truthy(agent.extra.get("deletedAt")) {
+    if !studio_runtime_store::truthy(agent.extra.get("deletedAt")) {
         return Ok(());
     }
     let agent_value =
@@ -873,7 +872,7 @@ fn finalize_deleted(tx: &Transaction<'_>, id: &str) -> Result<(), ManagementErro
     agent.extra.insert("activity".to_owned(), Value::Null);
     agent.extra.insert("activeTools".to_owned(), json!([]));
     if let Some(attempt) = agent.extra.get_mut("startAttempt")
-        && truthy(attempt.get("activeAtReservation"))
+        && studio_runtime_store::truthy(attempt.get("activeAtReservation"))
     {
         attempt["activeAtReservation"] = json!(false);
     }
@@ -882,10 +881,10 @@ fn finalize_deleted(tx: &Transaction<'_>, id: &str) -> Result<(), ManagementErro
 }
 
 fn needs_deleted_settlement(agent: &Value) -> bool {
-    truthy(agent.get("deletedAt"))
-        && (truthy(agent.get("inFlight"))
-            || truthy(agent.get("turnId"))
-            || truthy(agent.pointer("/startAttempt/activeAtReservation"))
+    studio_runtime_store::truthy(agent.get("deletedAt"))
+        && (studio_runtime_store::truthy(agent.get("inFlight"))
+            || studio_runtime_store::truthy(agent.get("turnId"))
+            || studio_runtime_store::truthy(agent.pointer("/startAttempt/activeAtReservation"))
             || agent
                 .get("status")
                 .and_then(Value::as_str)
@@ -902,17 +901,6 @@ fn required_str<'a>(
         .and_then(Value::as_str)
         .filter(|value| !value.is_empty())
         .ok_or(ManagementError::Invalid(error))
-}
-
-fn truthy(value: Option<&Value>) -> bool {
-    match value {
-        Some(Value::Null) | None => false,
-        Some(Value::Bool(value)) => *value,
-        Some(Value::Number(value)) => value.as_f64().is_some_and(|number| number != 0.0),
-        Some(Value::String(value)) => !value.is_empty(),
-        Some(Value::Array(value)) => !value.is_empty(),
-        Some(Value::Object(value)) => !value.is_empty(),
-    }
 }
 
 #[cfg(test)]

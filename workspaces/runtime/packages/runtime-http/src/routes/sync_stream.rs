@@ -216,8 +216,12 @@ async fn active_panel_agents(
             for id in agents {
                 let agent = AgentRepository::get(&connection, &AgentId::from(id.as_str()))
                     .map_err(|_| ApiError::internal())?;
-                if agent.is_some_and(|agent| !agent.extra.get("deletedAt").is_some_and(json_truthy))
-                {
+                if agent.is_some_and(|agent| {
+                    !agent
+                        .extra
+                        .get("deletedAt")
+                        .is_some_and(studio_runtime_store::truthy)
+                }) {
                     active.push(id);
                 }
             }
@@ -226,17 +230,6 @@ async fn active_panel_agents(
     )
     .await
     .map_err(|_| ApiError::internal())?
-}
-
-fn json_truthy(value: &Value) -> bool {
-    match value {
-        Value::Null => false,
-        Value::Bool(value) => *value,
-        Value::Number(value) => value.as_f64().is_some_and(|value| value != 0.0),
-        Value::String(value) => !value.is_empty(),
-        Value::Array(value) => !value.is_empty(),
-        Value::Object(value) => !value.is_empty(),
-    }
 }
 
 fn parse_resources(query: &QueryParams, state: &HttpState) -> Result<Vec<Value>, ApiError> {

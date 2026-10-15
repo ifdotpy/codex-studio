@@ -211,7 +211,10 @@ fn validate_agent(store: &RuntimeStore, agent_id: &str) -> Result<WorkspaceConte
         .map_err(map_store_error)?
         .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "Unknown managed agent"))?;
     let record = agent.value();
-    if record.get("deletedAt").is_some_and(json_truthy) {
+    if record
+        .get("deletedAt")
+        .is_some_and(studio_runtime_store::truthy)
+    {
         return Err(ApiError::new(
             StatusCode::BAD_REQUEST,
             "This agent was deleted",
@@ -240,17 +243,6 @@ fn ensure_local_workspace(
 
 fn string_query<'a>(query: &'a QueryParams, name: &str) -> Option<&'a str> {
     query.typed_value(name).and_then(Value::as_str)
-}
-
-fn json_truthy(value: &Value) -> bool {
-    match value {
-        Value::Null => false,
-        Value::Bool(value) => *value,
-        Value::Number(value) => value.as_f64().is_some_and(|number| number != 0.0),
-        Value::String(value) => !value.is_empty(),
-        Value::Array(values) => !values.is_empty(),
-        Value::Object(values) => !values.is_empty(),
-    }
 }
 
 fn invalid_stored(object: &str, id: &str) -> ApiError {

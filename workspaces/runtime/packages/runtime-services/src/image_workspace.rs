@@ -38,7 +38,7 @@ struct BuildWorkers {
 
 static BASE_BUILD_WORKERS: OnceLock<BuildWorkers> = OnceLock::new();
 
-#[allow(dead_code)]
+#[cfg(test)]
 pub(crate) fn fsevents_history_lost(events: &[(u64, u32)]) -> bool {
     events
         .iter()

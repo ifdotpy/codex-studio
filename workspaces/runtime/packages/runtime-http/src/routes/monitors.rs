@@ -60,7 +60,10 @@ async fn log(
                 .map_err(store_read_error)?
                 .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "Unknown agent"))?;
             let agent_value = agent.value();
-            if agent_value.get("deletedAt").is_some_and(is_truthy) {
+            if agent_value
+                .get("deletedAt")
+                .is_some_and(studio_runtime_store::truthy)
+            {
                 return Err(ApiError::new(
                     StatusCode::BAD_REQUEST,
                     "This agent was deleted",
@@ -292,17 +295,6 @@ fn store_read_error(error: StoreError) -> ApiError {
             )
         }
         _ => ApiError::internal(),
-    }
-}
-
-fn is_truthy(value: &Value) -> bool {
-    match value {
-        Value::Null => false,
-        Value::Bool(value) => *value,
-        Value::Number(value) => value.as_f64().is_some_and(|value| value != 0.0),
-        Value::String(value) => !value.is_empty(),
-        Value::Array(value) => !value.is_empty(),
-        Value::Object(value) => !value.is_empty(),
     }
 }
 

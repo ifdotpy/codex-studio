@@ -733,10 +733,7 @@ fn is_terminal_monitor(monitor: &MonitorRecord) -> bool {
 fn digest(value: &Value) -> Result<String, StatusError> {
     let encoded = serde_json::to_vec(value)?;
     let hash = Sha256::digest(encoded);
-    Ok(hash[..12]
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect())
+    Ok(data_encoding::HEXLOWER.encode(&hash[..12]))
 }
 
 fn encode_cursor(offset: usize, revision: &str) -> String {
@@ -785,10 +782,7 @@ fn rules_request_signature(
         "epoch": actor_epoch,
         "data": data,
     }))?;
-    Ok(Sha256::digest(content)
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect())
+    Ok(data_encoding::HEXLOWER.encode(&Sha256::digest(content)))
 }
 
 fn read_rules_receipt(

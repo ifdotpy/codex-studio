@@ -643,10 +643,7 @@ fn sync_directory(path: &Path) -> Result<(), std::io::Error> {
 }
 
 fn hash_hex(bytes: &[u8]) -> String {
-    Sha256::digest(bytes)
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect()
+    data_encoding::HEXLOWER.encode(&Sha256::digest(bytes))
 }
 
 #[cfg(test)]
