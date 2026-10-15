@@ -32,9 +32,10 @@ installed profile has been migrated.
 The renderer loads preferences before importing application modules. Its Storage
 adapter commits through Rust and keeps pending request IDs in a WebView recovery
 journal. Restart replays those exact requests before reading the SQLite snapshot;
-closing waits for acknowledgement. The shell derives each server view's storage
-namespace from its live frame. This imports existing native WebView preferences,
-not the installed Electron profile. Most hidden checks use ephemeral WebView
+closing waits for acknowledgement. The combined shell gives each server an immutable
+owner and storage namespace. Native bootstrap imports explicitly mapped source
+profiles into the shared renderer before application modules load. Conflicting
+preferences or databases stop the import without choosing one source over another. Most hidden checks use ephemeral WebView
 stores. Separate persistent checks write a Blob in profile A, verify that profile
 B cannot read it, and reopen A to verify the exact bytes.
 
@@ -47,7 +48,7 @@ before changing that path. An ephemeral test profile does not retain WebKit data
 
 Local file open, reveal and preview requests use the Rust file resolver. The
 host discards renderer permits and obtains a single-use permit from a recent
-native input event on the UI thread. Remote frames cannot resolve files through
+native input event on the UI thread. Remote server services cannot resolve files through
 the local backend. Hidden checks verify rejection without native input; they do
 not open Finder or validate a physical click.
 
@@ -57,12 +58,13 @@ runs after pending requests stop, including malformed IPC, and revokes microphon
 grants and reservations. The Tauri renderer uses native microphone capture,
 Speech transcription and WebRTC voice. Existing recordings stay in browser
 storage. The shell binds audio permits, uploads, subscriptions and sessions to
-their originating server frame. Closing a frame releases its operations.
+their originating server services. Pending operations retain that owner when the
+user opens a different chat.
 Tests cover isolated PCM, WAV uploads, cancellation and peer lifecycle. They do
 not establish that a real microphone or external voice service works on this Mac.
 
 The host also exposes folder and file pickers, Finder reveal, file saving,
-notifications, and sign-in links. A remote sign-in must match its server frame.
+notifications, and sign-in links. A remote sign-in must match its explicit server owner.
 The host waits for the local backend to confirm the redirect port before opening
 the browser. Vault paper keys open only in the person's Terminal through the
 bundled vault tool; their output is not captured by Studio. Hidden checks reject
