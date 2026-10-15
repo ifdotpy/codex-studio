@@ -12,7 +12,6 @@ import {
 import { ChevronDown } from "lucide-react";
 import {
   useCallback,
-  useContext,
   useEffect,
   useLayoutEffect,
   useRef,
@@ -23,7 +22,7 @@ import { ApiError, errorText, type PostBody } from "../../api";
 import { busy, type Agent, type Json, type JsonValue } from "../../types";
 import {
   isDaybreakAlias,
-  ModelCatalogReader,
+  useModelCatalogReader,
   readWorkerModels,
   supportsDaybreakMode,
   useWorkerModels,
@@ -468,7 +467,7 @@ function ScopedExecutionSettings({
     crossProvider && (opened || !!settingsRow),
     true,
   );
-  const catalogReader = useContext(ModelCatalogReader);
+  const catalogReader = useModelCatalogReader();
   const existingElsewhere = (team || []).filter(
     (member) =>
       member.rootId === agent.id &&

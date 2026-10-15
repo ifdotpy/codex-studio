@@ -1,3 +1,6 @@
+import { useServerServices } from "../servers/ServerServicesContext";
+import { createServerServices } from "../servers/serverServices";
+import { watchResourceReads } from "./watchResourceReads";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@mantine/core";
 import { errorText, type GetResult } from "../api";
@@ -23,9 +26,23 @@ const serverIdentity = (server?: StudioServer) =>
   JSON.stringify([server?.id, server?.origin, server?.credentialId]);
 
 export default function NewChatModelSettings(props: Props) {
-  const serverKey = serverIdentity(props.server);
-  const server = useRef(props.server);
-  server.current = props.server;
+  const inherited = useServerServices();
+  const owner = props.server ?? inherited?.owner;
+  const serverKey = serverIdentity(owner);
+  const services = useMemo(() => {
+    if (!owner) return undefined;
+    return inherited && serverIdentity(inherited.owner) === serverKey
+      ? inherited
+      : createServerServices(owner);
+  }, [serverKey, inherited]);
+  useEffect(
+    () => () => {
+      if (services && services !== inherited) services.close();
+    },
+    [services, inherited],
+  );
+  const server = useRef(owner);
+  server.current = owner;
   const reader = useMemo(() => {
     // Several pickers read the same catalog. One read per query keeps the slow server and
     // the browser's few connections for each server free for other requests.
@@ -33,14 +50,24 @@ export default function NewChatModelSettings(props: Props) {
     type Catalog = ReturnType<typeof readNewChatResource<"/api/models">>;
     const reads = new Map<string, Catalog>();
     return {
-      scope: serverResourceScope(server.current),
+      cacheOwner: services,
+      scope: services
+        ? JSON.stringify([
+            services.owner.id,
+            services.owner.origin,
+            services.owner.credentialId,
+          ])
+        : serverResourceScope(server.current),
+      watchResourceReads: services?.watchResourceReads ?? watchResourceReads,
       read: (options: Options) => {
         const key = JSON.stringify(options?.query ?? {});
         let shared = reads.get(key);
         if (!shared) {
-          shared = readNewChatResource(server.current, "/api/models", {
-            query: options?.query,
-          });
+          shared = services
+            ? services.api.get("/api/models", { query: options?.query })
+            : readNewChatResource(server.current, "/api/models", {
+                query: options?.query,
+              });
           reads.set(key, shared);
           void shared.catch(() => {}).finally(() => reads.delete(key));
         }
@@ -54,10 +81,10 @@ export default function NewChatModelSettings(props: Props) {
         }) as Catalog;
       },
     };
-  }, [serverKey]);
+  }, [serverKey, services]);
   return (
     <ModelCatalogReader.Provider value={reader}>
-      <ModelDraft {...props} />
+      <ModelDraft {...props} server={owner} />
     </ModelCatalogReader.Provider>
   );
 }
