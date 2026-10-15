@@ -1,3 +1,7 @@
+import {
+  useServerApi,
+  useServerOutbox,
+} from "../servers/ServerServicesContext";
 import { useServerActivity } from "../servers/activity";
 import { chatWaitState } from "./chat-status/chatStatusModel";
 import { serviceTimeText } from "../local-time";
@@ -38,7 +42,7 @@ import {
   useState,
   useSyncExternalStore,
 } from "react";
-import { get, post, errorText } from "../api";
+import { errorText } from "../api";
 import SafetyBuffering from "./conversation/transcript/SafetyBuffering";
 import { currentCapacityRetry } from "../capacityRetry";
 import {
@@ -49,7 +53,7 @@ import {
 import { useMessages, transcriptMessages } from "../hooks";
 import DraftVersions from "./DraftVersions";
 import type { DraftVersion } from "../sync/drafts";
-import { changeOutbox, type OutgoingMessage } from "../sync/send";
+import { type OutgoingMessage } from "../sync/send";
 import { useDisplayPhase } from "./useDisplayPhase";
 import {
   outgoingTranscript,
@@ -252,6 +256,9 @@ export default function Conversation(p: {
   reloadLimits: () => void;
   onPhase: (id: string | null, label: string) => void;
 }) {
+  const { get, post } = useServerApi();
+  const { changeOutbox } = useServerOutbox();
+
   reportPromptComposerRender("conversation");
   const limitsData = isJsonObject(p.limits?.data) ? p.limits.data : undefined;
   const rateLimits = isJsonObject(limitsData?.rateLimits)

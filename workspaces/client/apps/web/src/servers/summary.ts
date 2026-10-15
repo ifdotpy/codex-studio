@@ -1,3 +1,6 @@
+import { createServerTransport } from "./serverTransport";
+import { hasNativeClient } from "../native/client";
+import { nativeFetch } from "../native/http";
 import {
   API_SCHEMA_HASH,
   API_SCHEMA_HASH_HEADER,
@@ -59,8 +62,12 @@ export async function fetchServerSummary(
   } else
     response =
       server.id === "local"
-        ? await fetch(request)
-        : await serverCredentialAdapter().fetch(server, request);
+        ? hasNativeClient()
+          ? await nativeFetch(request, server.origin)
+          : await fetch(request)
+        : await createServerTransport(server, (owner, request) =>
+            serverCredentialAdapter().fetch(owner, request),
+          ).fetch(request);
   if (!response.ok) throw new Error("The server summary is unavailable.");
   if (response.headers.get(API_SCHEMA_HASH_HEADER) !== API_SCHEMA_HASH)
     throw new SchemaMismatchError();

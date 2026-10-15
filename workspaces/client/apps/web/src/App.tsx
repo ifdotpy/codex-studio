@@ -1,3 +1,10 @@
+import {
+  useServerApi,
+  useServerOutbox,
+  useServerActivityScope,
+} from "./servers/ServerServicesContext";
+import { canRevealPath, revealPath } from "./native/fileDialogs";
+import { onDesktopNavigate } from "./native/notifications";
 import { writePreferenceEdit } from "./sync/uiPreferenceStore";
 import { createUiPreferenceBridge } from "./sync/uiPreferenceBridge";
 import type { UiPreferenceProjection } from "./sync/entityProjection";
@@ -7,11 +14,7 @@ import StudioSettingsTabs, {
   type StudioSettingsTab,
 } from "./components/StudioSettingsTabs";
 import { useServerSettings } from "./servers/ServerSettingsContext";
-import {
-  useServerActivity,
-  serverActivityActive,
-  subscribeServerActivity,
-} from "./servers/activity";
+import "./servers/activity";
 import ServerAccessSettings from "./servers/ServerAccessSettings";
 import { useServerFrame } from "./servers/frameBridge";
 import {
@@ -101,21 +104,7 @@ import {
   Suspense,
   type ReactNode,
 } from "react";
-import {
-  get,
-  post,
-  ApiError,
-  errorText,
-  save,
-  saved,
-  type PostBody,
-  isApiSchemaMismatch,
-  onApiSchemaMismatch,
-  schemaUpdateFailedAfterReload,
-  updateRendererAndReload,
-  automaticallyUpdateRenderer,
-  untilAnswered,
-} from "./api";
+import { ApiError, errorText, type PostBody, untilAnswered } from "./api";
 import {
   useSnapshot,
   useChatSnapshot,
@@ -136,14 +125,8 @@ import {
   applyStudioPreferences,
   type StudioPreferences,
 } from "./studioPreferences";
-import {
-  acknowledgeOutbox,
-  editOutboxDisplay,
-  durableSend,
-  useOutbox,
-  type OutgoingMessage,
-} from "./sync/send";
-import { useSyncedDrafts } from "./sync/drafts";
+import { type OutgoingMessage } from "./sync/send";
+import { useServerDrafts as useSyncedDrafts } from "./servers/ServerServicesContext";
 import { reportPromptComposerRender } from "./components/prompt-composer/renderProbe";
 import {
   busy,
@@ -252,6 +235,22 @@ const BackgroundTasks = lazy(
   () => import("./components/shell/BackgroundTasks"),
 );
 export default function App() {
+  const { useServerActivity, serverActivityActive, subscribeServerActivity } =
+    useServerActivityScope();
+  const { acknowledgeOutbox, editOutboxDisplay, durableSend, useOutbox } =
+    useServerOutbox();
+  const {
+    get,
+    post,
+    save,
+    saved,
+    isApiSchemaMismatch,
+    onApiSchemaMismatch,
+    schemaUpdateFailedAfterReload,
+    updateRendererAndReload,
+    automaticallyUpdateRenderer,
+  } = useServerApi();
+
   reportPromptComposerRender("app");
   const [schemaMismatch, setSchemaMismatch] = useState(false);
   const [schemaMismatchNeedsRebuild, setSchemaMismatchNeedsRebuild] =
@@ -961,7 +960,7 @@ export default function App() {
     }) => {
       setNavigationTarget({ ...target, requestId: crypto.randomUUID() });
     };
-    const unsubscribe = window.codexDesktop?.onNavigate?.(navigate);
+    const unsubscribe = onDesktopNavigate(navigate);
     const onNavigate = (event: Event) =>
       navigate((event as CustomEvent<Parameters<typeof navigate>[0]>).detail);
     window.addEventListener("studio-navigate", onNavigate);
@@ -1976,11 +1975,9 @@ export default function App() {
         body: (
           <ProjectFolderDialog
             agent={agent}
-            canReveal={!!window.codexDesktop && !isRemoteServerView}
+            canReveal={canRevealPath() && !isRemoteServerView}
             onReveal={(path) =>
-              void window.codexDesktop
-                ?.revealPath(path)
-                .catch((error) => notify(errorText(error)))
+              void revealPath(path).catch((error) => notify(errorText(error)))
             }
           />
         ),

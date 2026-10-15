@@ -1,3 +1,4 @@
+import { useServerApi } from "../servers/ServerServicesContext";
 import { accountCanStart } from "../accountName";
 import { createPortal } from "react-dom";
 import { serverLocalStorage as localStorage } from "../servers/storage";
@@ -10,7 +11,7 @@ import {
   TextInput,
   SegmentedControl,
 } from "@mantine/core";
-import { errorText, post, saved, type PostBody, type PostResult } from "../api";
+import { errorText, type PostBody, type PostResult } from "../api";
 import { busy, type Agent } from "../types";
 import { useWorkerModels } from "./agents/WorkerModelPicker";
 import AccountSignInNotice from "./AccountSignInNotice";
@@ -87,6 +88,8 @@ export function ClaudeSettings({
   account?: Account;
   onSignIn?: (accountKey: string) => void;
 }) {
+  const { post, saved } = useServerApi();
+
   const permissionsTarget = permissionsTargetId
     ? document.getElementById(permissionsTargetId)
     : null;

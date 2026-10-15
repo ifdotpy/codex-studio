@@ -1,6 +1,7 @@
+import { useServerApi } from "../servers/ServerServicesContext";
 import { Button, Select, Textarea } from "@mantine/core";
 import { useRef, useState } from "react";
-import { ApiError, errorText, post, save, saved, type PostBody } from "../api";
+import { ApiError, errorText, type PostBody } from "../api";
 import { useMessages } from "../hooks";
 import type { Room, Snapshot } from "../types";
 import AgentAvatar from "./agents/AgentAvatar";
@@ -47,6 +48,8 @@ export default function RadioChat({
   refresh: () => Promise<void>;
   notify: (message: string) => void;
 }) {
+  const { post, save, saved } = useServerApi();
+
   const draft = usePromptDraft(room.id, getDraft, subscribeDraft);
   const radio = room.radio!;
   const key = `studio-radio-command:${data.stateDir}:${room.id}`;

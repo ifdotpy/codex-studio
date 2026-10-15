@@ -72,3 +72,34 @@ describe("openSignInPage", () => {
     expect(open).not.toHaveBeenCalled();
   });
 });
+
+it("passes a native sign-in forward as one request without opening early or retrying", async () => {
+  vi.stubGlobal("window", {});
+  const invoke = vi.fn(async () => {
+    throw new Error("Port is occupied");
+  });
+  vi.stubGlobal("__TAURI__", { core: { invoke } });
+  const forward = {
+    server: "remote",
+    bridgeId: "a".repeat(32),
+    host: "127.0.0.1" as const,
+    port: 49152,
+    path: "/callback",
+    expiresAt: 1900000000,
+    token: "token",
+  };
+  expect(canForwardSignIn()).toBe(true);
+  await expect(openSignInPage(LINK, forward)).rejects.toThrow(
+    "Port is occupied",
+  );
+  expect(invoke).toHaveBeenCalledOnce();
+  expect(invoke.mock.calls[0]).toEqual([
+    "client_request",
+    {
+      request: expect.objectContaining({
+        method: "desktop.openSignIn",
+        params: { value: { url: LINK, forward } },
+      }),
+    },
+  ]);
+});

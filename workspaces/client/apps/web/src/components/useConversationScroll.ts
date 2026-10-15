@@ -1,10 +1,11 @@
+import { useServerApi } from "../servers/ServerServicesContext";
 import {
   useCallback,
   useLayoutEffect,
   useRef,
   useSyncExternalStore,
 } from "react";
-import { saved, save } from "../api";
+import "../api";
 
 type Position = { top: number; following: boolean; distance: number };
 
@@ -18,6 +19,8 @@ export function useFollowState(
 // One owner for scroll anchoring. Browser anchoring and React effects must not
 // both compensate for the same composer resize or streamed paragraph.
 export function useConversationScroll(id: string, ready: boolean) {
+  const { saved, save } = useServerApi();
+
   const scroll = useRef<HTMLDivElement>(null);
   const content = useRef<HTMLDivElement>(null);
   const following = useRef(true);

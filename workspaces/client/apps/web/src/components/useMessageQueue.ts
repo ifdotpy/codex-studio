@@ -1,7 +1,8 @@
+import { useServerApi } from "../servers/ServerServicesContext";
 import { serverStorageEventKey } from "../servers/storage";
 import { serverLocalStorage as localStorage } from "../servers/storage";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { get, syncPost, ApiError, errorText } from "../api";
+import { ApiError, errorText } from "../api";
 import type { QueueItemDto, QueueView } from "../api";
 import { updateLocalDraft } from "../sync/localDraft";
 import { onResume } from "../sync/resume";
@@ -80,6 +81,8 @@ export function useMessageQueue(p: {
   edited?: (id: string, text: string) => void;
   refresh: () => Promise<void>;
 }) {
+  const { get, syncPost } = useServerApi();
+
   const key = `studio-queue-change:${p.scope}:${p.id}`;
   const currentKey = useRef(key);
   currentKey.current = key;

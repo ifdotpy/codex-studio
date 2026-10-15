@@ -1571,7 +1571,7 @@ print(api_schema_hash(openapi_document()))
         self.assertEqual(response.headers["referrer-policy"], "no-referrer")
         self.assertEqual(
             response.headers["content-security-policy"],
-            "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
+            "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; "
             "connect-src 'self' https://api.openai.com https://*.ts.net:*; "
             "img-src 'self' data: blob: https: http:; "
             "media-src 'self' blob: data:; frame-src 'self' blob: http://*.localhost:*; "

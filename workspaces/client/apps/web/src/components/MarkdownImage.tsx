@@ -1,6 +1,7 @@
+import { useServerApi } from "../servers/ServerServicesContext";
 import { useEffect, useMemo, useState } from "react";
 import PreviewModal from "./PreviewModal";
-import { get, errorText } from "../api";
+import { errorText } from "../api";
 import FilePreview, { type PreviewTarget } from "./FilePreview";
 import ImageViewer from "./ImageViewer";
 import { relativeToDocument, safeSvg } from "./filePreviewFormats";
@@ -20,6 +21,8 @@ export default function MarkdownImage({
   basePath?: string;
   localPath?: string;
 }) {
+  const { get } = useServerApi();
+
   const [loaded, setLoaded] = useState("");
   const [error, setError] = useState("");
   const [remoteAllowed, setRemoteAllowed] = useState(false);

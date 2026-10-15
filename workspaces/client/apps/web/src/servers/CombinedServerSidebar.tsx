@@ -1,3 +1,4 @@
+import type { createSidebarRpcClient } from "./sidebarRpc";
 import { useMemo, useRef, useState } from "react";
 import Sidebar from "../components/Sidebar";
 import { ApiError, errorText, type PostBody } from "../api";
@@ -7,7 +8,6 @@ import type {
 } from "../components/sidebar/services";
 import type { MergedSidebar } from "./mergedSidebar";
 import { createMergedSidebarServices, sidebarOwner } from "./sidebarServices";
-import type { createSidebarRpcClient } from "./sidebarRpc";
 import type { ServerCommand, ServerNavigation } from "./navigation";
 import { createSidebarVisualSession } from "./sidebarVisualSession";
 
@@ -15,6 +15,7 @@ export default function CombinedServerSidebar({
   model,
   backends,
   online,
+  refreshOwner,
   rpc,
   aliases,
   current,
@@ -33,6 +34,7 @@ export default function CombinedServerSidebar({
   model: MergedSidebar;
   backends: ReadonlyMap<string, SidebarBackend>;
   online: (owner: string) => boolean;
+  refreshOwner: (owner: string) => Promise<ServerNavigation>;
   rpc: ReturnType<typeof createSidebarRpcClient>;
   aliases: Record<string, string>;
   current: string;
@@ -80,9 +82,7 @@ export default function CombinedServerSidebar({
       model.sources
         .filter((source) => online(source.id))
         .map(async (source) => {
-          const value = (await rpc.request(source.id, {
-            action: "refresh",
-          })) as ServerNavigation;
+          const value = await refreshOwner(source.id);
           applyNavigation(source.id, value);
         }),
     );

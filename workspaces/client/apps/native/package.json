@@ -1,0 +1,18 @@
+{
+  "name": "studio-native-client",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "tauri dev",
+    "build": "tauri build",
+    "ios:init": "tauri ios init",
+    "ios:build": "tauri ios build",
+    "android:init": "tauri android init",
+    "android:build": "tauri android build",
+    "package": "node package.mjs",
+    "check:package": "node check-package.mjs"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "2.12.2"
+  }
+}

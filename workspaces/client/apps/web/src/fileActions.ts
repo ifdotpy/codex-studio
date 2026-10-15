@@ -1,4 +1,7 @@
+import { saveNativeFile } from "./native/saveFile";
 import type { DesktopBridge } from "./desktop";
+import { hasNativeClient, nativeRequest } from "./native/client";
+import { isRemoteServerView } from "./servers/environment";
 
 export interface FileTarget {
   agent?: string;
@@ -12,12 +15,15 @@ export interface SaveFile {
 }
 
 export function canUseNativeFiles(): boolean {
-  return typeof window.codexDesktop?.fileAction === "function";
+  return (
+    typeof window.codexDesktop?.fileAction === "function" ||
+    (hasNativeClient() && !isRemoteServerView)
+  );
 }
 
 function fileAction(action: "open" | "reveal" | "preview", target: FileTarget) {
   const native = window.codexDesktop?.fileAction;
-  if (!native) return Promise.resolve(false);
+  if (!canUseNativeFiles()) return Promise.resolve(false);
   // Omit view-only fields such as line numbers from the native identity.
   const identity = Object.fromEntries(
     ["agent", "path", "asset"].flatMap((key) => {
@@ -25,7 +31,10 @@ function fileAction(action: "open" | "reveal" | "preview", target: FileTarget) {
       return value === undefined ? [] : [[key, value]];
     }),
   );
-  return native({ action, target: identity });
+  if (native) return native({ action, target: identity });
+  return nativeRequest<boolean>("desktop.fileAction", {
+    value: { action, target: identity },
+  });
 }
 
 export const openFile = (target: FileTarget) => fileAction("open", target);
@@ -49,6 +58,7 @@ export async function saveFile(value: SaveFile): Promise<boolean> {
   const native: DesktopBridge["saveFile"] = window.codexDesktop?.saveFile;
   // Call the bridge before an await, while the initiating gesture is available.
   if (native) return native({ name, data });
+  if (hasNativeClient()) return saveNativeFile(name, data);
   const file = new File([data], name, {
     type: value.mime || "application/octet-stream",
   });

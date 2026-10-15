@@ -12,6 +12,7 @@ const repositoryRoot = path.resolve(root, "../../../..");
 const packageOutput = path.resolve(
   process.env.CODEX_DESKTOP_PACKAGE_OUT || path.join(root, "dist"),
 );
+const resourcesOnly = process.argv.includes("--resources-only");
 const uiOnly =
   process.argv.includes("--ui-only") ||
   process.env.CODEX_DESKTOP_UI_ONLY === "1";
@@ -270,59 +271,72 @@ try {
       branch: git("rev-parse", "--abbrev-ref", "HEAD"),
     }),
   );
-  const output = await packager({
-    dir: root,
-    name: "Codex Studio",
-    executableName: "Codex Studio",
-    icon: path.join(root, "assets/codex-studio.icns"),
-    appBundleId: "local.codex.agents",
-    appCategoryType: "public.app-category.developer-tools",
-    platform: "darwin",
-    arch: "arm64",
-    electronVersion: "44.2.0",
-    out: packageOutput,
-    overwrite: true,
-    asar: true,
-    prune: true,
-    extraResource: [
-      resources,
-      speech,
-      buildStamp,
-      ...(uiOnly
-        ? []
-        : [
-            linuxVM,
-            fsEvents,
-            path.join(root, "recover_backend.py"),
-            path.join(root, "install_update.py"),
-          ]),
-    ],
-    extendInfo: {
-      NSMicrophoneUsageDescription:
-        "Record dictation that you can review and convert to text.",
-      NSSpeechRecognitionUsageDescription:
-        "Convert your saved dictation to text on this computer.",
-    },
-    ignore: [
-      /^\/assets($|\/)/,
-      /^\/dist($|\/)/,
-      /^\/node_modules($|\/)/,
-      /^\/test\.mjs$/,
-      /^\/multi-server-memory\.mjs$/,
-      /^\/(?:backend-test|recovery-test|recovery-renderer-test|renderer-recovery-test|window-state-test|package-test|install-update-test)\.(?:mjs|cjs|py)$/,
-      /^\/recover_backend\.py$/,
-      /^\/install_update\.py$/,
-      /^\/__pycache__($|\/)/,
-      /^\/package\.mjs$/,
-      /^\/README\.md$/,
-    ],
-  });
-  for (const directory of output) {
-    const application = path.join(directory, "Codex Studio.app");
-    setBundleDisplayName(application, "LAYR Studio");
-    signApplication(application, identity);
+  const extraResources = [
+    resources,
+    speech,
+    buildStamp,
+    ...(uiOnly
+      ? []
+      : [
+          linuxVM,
+          fsEvents,
+          path.join(root, "recover_backend.py"),
+          path.join(root, "install_update.py"),
+        ]),
+  ];
+  if (resourcesOnly) {
+    await mkdir(packageOutput, { recursive: true });
+    for (const source of extraResources) {
+      await cp(source, path.join(packageOutput, path.basename(source)), {
+        recursive: true,
+        errorOnExist: true,
+        force: false,
+      });
+    }
+    console.log(packageOutput);
+  } else {
+    const output = await packager({
+      dir: root,
+      name: "Codex Studio",
+      executableName: "Codex Studio",
+      icon: path.join(root, "assets/codex-studio.icns"),
+      appBundleId: "local.codex.agents",
+      appCategoryType: "public.app-category.developer-tools",
+      platform: "darwin",
+      arch: "arm64",
+      electronVersion: "44.2.0",
+      out: packageOutput,
+      overwrite: true,
+      asar: true,
+      prune: true,
+      extraResource: extraResources,
+      extendInfo: {
+        NSMicrophoneUsageDescription:
+          "Record dictation that you can review and convert to text.",
+        NSSpeechRecognitionUsageDescription:
+          "Convert your saved dictation to text on this computer.",
+      },
+      ignore: [
+        /^\/assets($|\/)/,
+        /^\/dist($|\/)/,
+        /^\/node_modules($|\/)/,
+        /^\/test\.mjs$/,
+        /^\/multi-server-memory\.mjs$/,
+        /^\/(?:backend-test|recovery-test|recovery-renderer-test|renderer-recovery-test|window-state-test|package-test|install-update-test)\.(?:mjs|cjs|py)$/,
+        /^\/recover_backend\.py$/,
+        /^\/install_update\.py$/,
+        /^\/__pycache__($|\/)/,
+        /^\/package\.mjs$/,
+        /^\/README\.md$/,
+      ],
+    });
+    for (const directory of output) {
+      const application = path.join(directory, "Codex Studio.app");
+      setBundleDisplayName(application, "LAYR Studio");
+      signApplication(application, identity);
+    }
+    console.log(output.join("\n"));
   }
-  console.log(output.join("\n"));
 } finally {
   await rm(stage, { recursive: true, force: true });
 }

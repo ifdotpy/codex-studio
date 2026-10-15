@@ -1,7 +1,8 @@
+import { useServerApi } from "../servers/ServerServicesContext";
 import { ActionIcon, Button, Menu } from "@mantine/core";
 import { MoreHorizontal } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import { errorText, get } from "../api";
+import { errorText } from "../api";
 import {
   saveProjectLocation,
   ProjectReceiptRefused,
@@ -27,6 +28,8 @@ export default function ProjectLocationsSettings({
   initialServer?: string;
   saved: () => Promise<void>;
 }) {
+  const { get } = useServerApi();
+
   const [adding, setAdding] = useState(!!initialServer);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);

@@ -1,3 +1,4 @@
+import { hasNativeClient } from "../native/client";
 import { apiOrigin, serverFetch } from "./transport";
 import { serverViewId, isolatedServerView } from "./environment";
 
@@ -104,7 +105,8 @@ export class SignedEventSource
   }
 }
 export function openServerEvents(url: string): ServerEventSource {
-  return serverViewId && (serverViewId !== "local" || isolatedServerView)
+  return hasNativeClient() ||
+    (serverViewId && (serverViewId !== "local" || isolatedServerView))
     ? new SignedEventSource(url)
     : new EventSource(url);
 }

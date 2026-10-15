@@ -500,3 +500,20 @@ it("clears the completed-update marker when service-worker update fails", async 
   await expect(api.updateRendererAndReload()).rejects.toThrow("offline");
   expect(storage.has("studio-api-schema-update-attempted")).toBe(false);
 });
+
+it("reloads the packaged native renderer without requiring a browser service worker", async () => {
+  const { reload } = stubRendererUpdate();
+  delete window.codexDesktop;
+  vi.stubGlobal("__TAURI__", { core: { invoke: vi.fn() } });
+  const getRegistration = vi.fn(async () => undefined);
+  vi.stubGlobal("navigator", {
+    onLine: true,
+    serviceWorker: { getRegistration },
+  });
+  const api = await import("./api");
+  expect(await api.updateRendererAndReload()).toBe(true);
+  expect(reload).toHaveBeenCalledOnce();
+  expect(getRegistration).not.toHaveBeenCalled();
+  expect(await api.updateRendererAndReload("1", () => false)).toBe(false);
+  expect(reload).toHaveBeenCalledOnce();
+});

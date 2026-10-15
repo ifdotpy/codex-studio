@@ -1,6 +1,7 @@
+import { useServerApi } from "../servers/ServerServicesContext";
 import { Button, Group, Modal, Stack, TextInput } from "@mantine/core";
 import { useEffect, useRef, useState } from "react";
-import { errorText, get, post, save, saved, type PostResult } from "../api";
+import { errorText, save, saved, type PostResult } from "../api";
 import { copyText } from "../clipboard/clipboard";
 import { watchResourceReads } from "./watchResourceReads";
 
@@ -87,6 +88,8 @@ export default function ClaudeAddSignIn({
   onClose: () => void;
   onReady: () => unknown;
 }) {
+  const { get, post, save, saved } = useServerApi();
+
   const storageKey = `claude-add-sign-in:${scope}`;
   const [flow, setFlow] = useState<SavedFlow | null>(() =>
     readSavedFlow(storageKey),

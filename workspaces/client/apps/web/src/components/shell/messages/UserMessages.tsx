@@ -1,6 +1,7 @@
+import { useServerApi } from "../../../servers/ServerServicesContext";
 import { Button, Textarea } from "@mantine/core";
 import { useEffect, useMemo, useState } from "react";
-import { get, post, ApiError, errorText, save, saved } from "../../../api";
+import { ApiError, errorText } from "../../../api";
 import type { Complaint, Snapshot } from "../../../types";
 import type { paths } from "../../../generated/api";
 import "./complaint-book.css";
@@ -43,6 +44,8 @@ function MessageResponse({
   notify: (s: string) => void;
   onResponse: (c: ComplaintDetailResponse) => void;
 }) {
+  const { get, post, save, saved } = useServerApi();
+
   const draftKey = JSON.stringify([pendingKey, detail.id]);
   const storageKey = `studio-reply-draft:${draftKey}`;
   const draft =
@@ -198,6 +201,8 @@ export default function UserMessages({
   refresh: () => Promise<void>;
   notify: (s: string) => void;
 }) {
+  const { saved } = useServerApi();
+
   const pendingKey = `studio-message-responses:${data.stateDir}`;
   const responseRequests = useMemo(
     () =>
@@ -254,6 +259,8 @@ function UserMessage({
   refresh: () => Promise<void>;
   notify: (s: string) => void;
 }) {
+  const { get } = useServerApi();
+
   const confirmedKey = JSON.stringify([data.stateDir, message.id]);
   const [detail, setDetail] = useState<
     ComplaintSummary | ComplaintDetailResponse

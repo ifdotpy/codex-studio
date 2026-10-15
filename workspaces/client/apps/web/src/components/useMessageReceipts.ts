@@ -1,6 +1,10 @@
+import {
+  useServerApi,
+  useServerOutbox,
+} from "../servers/ServerServicesContext";
 import { useEffect, useRef, useState } from "react";
-import { get } from "../api";
-import { reconcileOutboxReceipts } from "../sync/send";
+import "../api";
+import "../sync/send";
 import {
   checkedMessageReceipts,
   latestMessageReceipt,
@@ -14,6 +18,9 @@ export function useMessageReceipts(
   workspaceId: string | undefined,
   ids: string[],
 ) {
+  const { get } = useServerApi();
+  const { reconcileOutboxReceipts } = useServerOutbox();
+
   const requested = useRef(ids);
   requested.current = ids;
   const requestedKey = JSON.stringify(ids);

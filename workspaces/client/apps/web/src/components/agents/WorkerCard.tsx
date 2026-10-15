@@ -1,3 +1,4 @@
+import { useServerApi } from "../../servers/ServerServicesContext";
 import { useSyncedVisualState } from "../../sync/useSyncedVisualState";
 import {
   ActionIcon,
@@ -17,7 +18,7 @@ import {
 import { memo, useContext, useMemo } from "react";
 import { useCommittedCallback } from "../../hooks";
 import { reportPromptComposerRender } from "../prompt-composer/renderProbe";
-import { save, saved } from "../../api";
+import "../../api";
 import { nativeErrorView } from "../../nativeErrors";
 import { setupModelName } from "./AgentSetupPicker";
 import { TeamModelCatalog } from "./WorkerOverview";
@@ -48,6 +49,8 @@ function WorkerExcerpt({
   truncated?: boolean;
   open: () => void;
 }) {
+  const { save, saved } = useServerApi();
+
   const storageKey = "codex-worker-disclosures";
   const key = `${agentId}:${label}`;
   const [disclosures] = useSyncedVisualState<Record<string, boolean>>(

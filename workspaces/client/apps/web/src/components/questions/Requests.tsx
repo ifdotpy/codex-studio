@@ -1,9 +1,10 @@
+import { useServerApi } from "../../servers/ServerServicesContext";
 import MessageDate from "../conversation/transcript/MessageDate";
 import ErrorDescription from "../ErrorDescription";
 import { Button } from "@mantine/core";
 import { MessageCircleQuestion, ShieldQuestion } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import { post as apiPost, errorText, saved } from "../../api";
+import { errorText } from "../../api";
 import { writeLocalDraft } from "../../sync/localDraft";
 import type { components } from "../../generated/api";
 import type { Json, JsonValue, Agent } from "../../types";
@@ -153,6 +154,8 @@ function AnswerForm({
   close: () => void;
   notify: Props["notify"];
 }) {
+  const { saved } = useServerApi();
+
   const [values, setValues] = useState<AnswerValues>(
     () =>
       answerDrafts.get(draftKey) ||
@@ -291,6 +294,8 @@ function RequestCard({
   notify,
   scope,
 }: Omit<Props, "requests" | "allRequests"> & { request: RequestDto }) {
+  const { post: apiPost } = useServerApi();
+
   const draftKey = answerKey(scope, r);
   const owner = agents.find((a) => a.id === r.agent);
   const params = objectValue(r.params);

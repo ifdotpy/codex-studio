@@ -1,5 +1,6 @@
+import { useServerApi } from "../servers/ServerServicesContext";
 import { useEffect, useSyncExternalStore } from "react";
-import { ApiError, get } from "../api";
+import { ApiError } from "../api";
 import { watchResourceReads } from "../components/watchResourceReads";
 import {
   accountLimits,
@@ -13,6 +14,8 @@ export function useAccountLimits(
   accountId?: string | null,
   enabled = true,
 ) {
+  const { get } = useServerApi();
+
   const snapshot = useSyncExternalStore(
     subscribeLimitsCache,
     () => cachedAccountLimits(accountKey, accountId),

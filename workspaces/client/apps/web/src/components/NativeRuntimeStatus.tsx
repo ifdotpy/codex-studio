@@ -1,6 +1,7 @@
+import { useServerApi } from "../servers/ServerServicesContext";
 import { localDateTime } from "../local-time";
 import { useEffect, useState } from "react";
-import { get, type GetResult, errorText } from "../api";
+import { type GetResult, errorText } from "../api";
 import type { Account } from "./Accounts";
 import ProviderUpdateNotices from "./ProviderUpdateNotices";
 import { watchResourceReads } from "./watchResourceReads";
@@ -32,6 +33,8 @@ export default function NativeRuntimeStatus({
   opened: boolean;
   accounts: Account[];
 }) {
+  const { get } = useServerApi();
+
   const [data, setData] = useState<RuntimeStatus | null>(null);
   const [providers, setProviders] = useState<ProviderVersions>({
     checkedAt: null,

@@ -1,3 +1,4 @@
+import { useServerApi } from "../servers/ServerServicesContext";
 import { accountDisplayName, accountCanStart } from "../accountName";
 import { ProviderMark, remainingLimit } from "./AccountTiles";
 import { ActionButton } from "./ui/primitives";
@@ -38,7 +39,7 @@ import {
   type SetStateAction,
   type ReactNode,
 } from "react";
-import { errorText, get, post, type GetResult } from "../api";
+import { errorText, type GetResult } from "../api";
 import type { Agent } from "../types";
 import "./accounts.css";
 import AccountSignIn from "./AccountSignIn";
@@ -60,6 +61,8 @@ import {
 export type AccountsState = GetResult<"/api/accounts">;
 export type Account = AccountsState["accounts"][number];
 export function useAccounts(stateDir?: string) {
+  const { get } = useServerApi();
+
   const [data, setAccountsData] = useState<AccountsState>({
     accounts: [],
     archivedAccounts: [],
@@ -122,6 +125,8 @@ function AccountNameEditor({
   onSaved: (data: AccountsState) => void;
   disabled: boolean;
 }) {
+  const { post } = useServerApi();
+
   const [editing, setEditing] = useState(false);
   const [name, setName] = useState(account.label);
   const [busy, setBusy] = useState(false);
@@ -630,6 +635,8 @@ export default function Accounts({
   onExternalCommandHandled?: () => void;
   dialogsOnly?: boolean;
 }) {
+  const { post } = useServerApi();
+
   const [opened, setOpened] = useState(false);
   const [openActionMenuAccountId, setOpenActionMenuAccountId] = useState<
     string | null

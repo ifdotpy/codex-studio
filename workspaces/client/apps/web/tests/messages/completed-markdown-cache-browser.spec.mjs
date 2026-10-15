@@ -144,6 +144,7 @@ createRoot(document.getElementById('root')).render(<Harness/>);`;
       { timeout: 60000 },
     );
     const cold = await page.evaluate(() => ({ ...counters }));
+    assert.equal(cold.parse, 150);
     await page.evaluate(() => window.hide());
     await page.evaluate(() => window.chat(true));
     await page.evaluate(() => window.show());
@@ -153,6 +154,9 @@ createRoot(document.getElementById('root')).render(<Harness/>);`;
       Object.keys(counters).forEach((key) => (counters[key] = 0)),
     );
     await page.evaluate(() => window.show());
+    await page.waitForFunction(
+      () => document.querySelectorAll("article a").length === 150 * 24,
+    );
     const remount = await page.evaluate(() => ({ ...counters }));
     if (baseline) {
       assert.equal(remount.lex, 150);

@@ -1,3 +1,11 @@
+import { createSidebarRpcClient } from "./sidebarRpc";
+import { createServerServices, type ServerServices } from "./serverServices";
+import { frameMessageOrigin } from "./frameOrigin";
+import {
+  hasDesktopNotifications,
+  notifyDesktop,
+  onDesktopNavigate,
+} from "../native/notifications";
 import { orderPreferenceServers } from "./preferenceServerOrder";
 import { writePreferenceEdit } from "../sync/uiPreferenceStore";
 import { useUiPreferenceSync } from "./useUiPreferenceSync";
@@ -39,8 +47,7 @@ import {
   selectCombinedSidebar,
   createSidebarSourceStore,
 } from "./mergedSidebar";
-import { createSidebarRpcClient } from "./sidebarRpc";
-import { frameSidebarBackend } from "./frameSidebarBackend";
+import { serverSidebarBackend } from "./serverSidebarBackend";
 import ProjectServerCards from "../components/ProjectServerCards";
 import { projectServerChoices, type LocationProject } from "./projectLocations";
 import { projectChatCommand } from "./projectChatCommand";
@@ -254,13 +261,13 @@ export default function MultiServerApp() {
     });
   };
   const targetOrigin = (id: string) =>
-    new URL(frames.current.get(id)?.src || location.href).origin;
+    frameMessageOrigin(frames.current.get(id)?.src || location.href);
   useEffect(() => bindShellTransport(frames.current), []);
   const publishPreferences = (value: unknown) => {
     for (const [id, frame] of frames.current)
       frame.contentWindow?.postMessage(
         { kind: "studio-server-preferences", serverId: id, preferences: value },
-        new URL(frame.src).origin,
+        frameMessageOrigin(frame.src),
       );
   };
   const select = useCallback((id: string) => {
@@ -316,14 +323,12 @@ export default function MultiServerApp() {
         const server =
           readServers().find((row) => row.id === id) || localServer();
         const title = `${server.label}: ${alert.title}`.slice(0, 160);
-        if (window.codexDesktop)
-          void window.codexDesktop
-            .notify({
-              title,
-              body: alert.body,
-              target: { ...alert.target, serverId: id },
-            })
-            .catch(() => {});
+        if (hasDesktopNotifications())
+          void notifyDesktop({
+            title,
+            body: alert.body,
+            target: { ...alert.target, serverId: id },
+          }).catch(() => {});
         else if (
           "Notification" in window &&
           Notification.permission === "granted"
@@ -390,18 +395,58 @@ export default function MultiServerApp() {
       statusRef.current[owner] === "live",
     [],
   );
+  const serviceInstances = useRef(new Map<string, ServerServices>());
+  const services = useMemo(
+    () =>
+      new Map(
+        servers.map((server) => {
+          const previous = serviceInstances.current.get(server.id);
+          const instance =
+            previous &&
+            previous.owner.origin === server.origin &&
+            previous.owner.credentialId === server.credentialId
+              ? previous
+              : createServerServices(server);
+          return [server.id, instance] as const;
+        }),
+      ),
+    [servers],
+  );
+  useEffect(() => {
+    for (const [id, instance] of serviceInstances.current) {
+      if (services.get(id) !== instance) instance.close();
+    }
+    serviceInstances.current = services;
+  }, [services]);
+  useEffect(
+    () => () => {
+      for (const instance of serviceInstances.current.values())
+        instance.close();
+      serviceInstances.current.clear();
+    },
+    [],
+  );
   const sidebarBackends = useMemo(
     () =>
       new Map(
-        servers.map((server) => [
-          server.id,
-          frameSidebarBackend(server.id, sidebarRpc, () =>
-            sidebarOnline(server.id),
-          ),
+        [...services].map(([id, service]) => [
+          id,
+          serverSidebarBackend(service, () => sidebarOnline(id)),
         ]),
       ),
-    [servers, sidebarRpc, sidebarOnline],
+    [services, sidebarOnline],
   );
+  const refreshSidebarOwner = async (owner: string) => {
+    const service = serviceInstances.current.get(owner);
+    if (!service) throw new Error("The sidebar server is no longer paired.");
+    const value = await fetchServerSummary(
+      service.owner,
+      new AbortController().signal,
+    );
+    if (serviceInstances.current.get(owner) !== service)
+      throw new Error("The sidebar server connection changed.");
+    return { ...value, opened: navigationRef.current[owner]?.opened || null };
+  };
   const mergedSelector = useMemo(() => createMergedSidebarSelector(), []);
   const mergedSidebar = useMemo(
     () =>
@@ -863,7 +908,7 @@ export default function MultiServerApp() {
   }, [toggleSidebar]);
   useEffect(
     () =>
-      window.codexDesktop?.onNavigate((target) => {
+      onDesktopNavigate((target) => {
         if (!target.serverId) return;
         send(target.serverId, { action: "notifications", ...target });
       }),
@@ -1083,6 +1128,7 @@ export default function MultiServerApp() {
               model={mergedSidebar}
               backends={sidebarBackends}
               online={sidebarOnline}
+              refreshOwner={refreshSidebarOwner}
               rpc={sidebarRpc}
               aliases={sidebarAliases}
               current={current}

@@ -1,7 +1,8 @@
+import { useServerApi } from "../../../servers/ServerServicesContext";
 import { useEffect, useRef, useState } from "react";
 import { ActionIcon, Popover } from "@mantine/core";
 import { Copy, Info, X } from "lucide-react";
-import { get, type GetOptions, type GetResult } from "../../../api";
+import { type GetOptions, type GetResult } from "../../../api";
 import { localDateTime } from "../../../local-time";
 import { peekSessionCost } from "../../../usage/sessionCostCache";
 import type { Message } from "../../../types";
@@ -38,6 +39,8 @@ export default function MessageInfo({
   accounts,
   onCopy,
 }: MessageInfoProps) {
+  const { get } = useServerApi();
+
   const [open, setOpen] = useState(false);
   const [metadata, setMetadata] = useState<Metadata | null>(null);
   const [loading, setLoading] = useState(false);

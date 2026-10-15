@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-client-request"
+description = "Enables the client_request command without any pre-configured scope."
+commands.allow = ["client_request"]
+
+[[permission]]
+identifier = "deny-client-request"
+description = "Denies the client_request command without any pre-configured scope."
+commands.deny = ["client_request"]

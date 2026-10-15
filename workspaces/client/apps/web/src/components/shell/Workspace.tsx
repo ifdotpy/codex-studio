@@ -1,3 +1,4 @@
+import { useServerApi } from "../../servers/ServerServicesContext";
 import { SearchContent } from "./SearchOverlay";
 import { EmptyState, PanelHeader } from "../ui/primitives";
 import { localDateTime } from "../../local-time";
@@ -33,7 +34,6 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
-  post,
   errorText,
   type ApiPostPath,
   type GetResult,
@@ -137,6 +137,8 @@ function Status({ value }: { value: string }) {
 }
 
 export function Workspace(props: Props) {
+  const { post } = useServerApi();
+
   const [section, setSection] = useState(props.initialSection || "messages"),
     [agentId, setAgentId] = useState(props.agent?.id || ""),
     [revision, setRevision] = useState(0),

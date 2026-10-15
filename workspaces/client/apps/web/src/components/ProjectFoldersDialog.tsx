@@ -1,6 +1,7 @@
+import { useServerApi } from "../servers/ServerServicesContext";
 import { Tabs } from "@mantine/core";
 import { useEffect, useState } from "react";
-import { errorText, get } from "../api";
+import { errorText } from "../api";
 import {
   readProjectServers,
   type LocationProject,
@@ -17,6 +18,8 @@ export default function ProjectFoldersDialog({
   initialServer?: string;
   saved: () => Promise<void>;
 }) {
+  const { get } = useServerApi();
+
   const [project, setProject] = useState(initial);
   const [servers, setServers] = useState<ProjectServerChoice[]>([]);
   const [error, setError] = useState("");

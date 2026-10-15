@@ -1,6 +1,7 @@
+import { useServerApi } from "../servers/ServerServicesContext";
 import { useEffect, useMemo, useState } from "react";
 import { Button, Checkbox, Switch, Textarea, TextInput } from "@mantine/core";
-import { errorText, post, type PostBody, type PostResult } from "../api";
+import { errorText, type PostBody, type PostResult } from "../api";
 import type { Agent } from "../types";
 
 type FederationResponse = PostResult<"/api/federation">;
@@ -38,6 +39,8 @@ export function FederationSettings({
   refresh: () => Promise<void>;
   notify: (message: string) => void;
 }) {
+  const { post } = useServerApi();
+
   const [state, setState] = useState<FederationSnapshot | null>(null);
   const [inviteText, setInviteText] = useState("");
   const [serverLabel, setServerLabel] = useState("Studio server");

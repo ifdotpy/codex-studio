@@ -1,0 +1,24 @@
+[package]
+name = "studio-native-client"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[features]
+native-check = []
+
+[lib]
+name = "studio_native_client"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "=2.7.2", features = [] }
+
+[dependencies]
+tauri = { version = "=2.12.3", features = [] }
+studio-client-core = { path = "../../../packages/client-core" }
+libc.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+tokio.workspace = true

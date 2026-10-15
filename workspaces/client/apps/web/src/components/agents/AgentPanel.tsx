@@ -1,3 +1,4 @@
+import { useServerResources } from "../../servers/ServerServicesContext";
 import { useSyncedVisualState } from "../../sync/useSyncedVisualState";
 import { serverLocalStorage as localStorage } from "../../servers/storage";
 import {
@@ -10,11 +11,7 @@ import {
 } from "react";
 import { Button } from "@mantine/core";
 import { NetworkTimeoutError } from "../../api";
-import {
-  watchResourceChanges,
-  watchResourceConnection,
-  type ResourceConnectionState,
-} from "../../sync/client";
+import { type ResourceConnectionState } from "../../sync/client";
 import ErrorDescription from "../ErrorDescription";
 import FilePreview, { type PreviewTarget } from "../FilePreview";
 import PreviewModal from "../PreviewModal";
@@ -44,6 +41,9 @@ export default function AgentPanel({
   agentId: string;
   stateDir?: string;
 }) {
+  const { watchResourceChanges, watchResourceConnection } =
+    useServerResources();
+
   const scope = progressScope(stateDir, agentId);
   const [state, setState] = useState<ProgressState | null>(() => {
     const cached = peekProgress(stateDir, agentId);

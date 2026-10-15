@@ -1,9 +1,11 @@
+import { hasNativeClient, nativeRequest } from "../../native/client";
+import { openNativeLink } from "../../native/externalLinks";
 import type { SignInForward } from "../../desktop";
 
 /** True when this window can hold the redirect port of a sign-in that another server
  * approved: the desktop asks this Mac's Studio server to hold it. */
 export function canForwardSignIn(): boolean {
-  return window.codexDesktop?.signInForward === true;
+  return window.codexDesktop?.signInForward === true || hasNativeClient();
 }
 
 /** Open a sign-in link that the person approved in a request card
@@ -19,6 +21,12 @@ export async function openSignInPage(
     throw new Error("Only HTTP and HTTPS links are supported.");
   const desktop = window.codexDesktop;
   if (forward) {
+    if (hasNativeClient() && !desktop) {
+      await nativeRequest("desktop.openSignIn", {
+        value: { url: parsed.href, forward },
+      });
+      return;
+    }
     if (!desktop?.openSignIn || !canForwardSignIn())
       throw new Error(
         "Update LAYR Studio on this Mac to sign in to a command on another computer.",
@@ -27,6 +35,7 @@ export async function openSignInPage(
   }
   if (desktop?.openSignIn) return desktop.openSignIn(parsed.href);
   if (desktop) return desktop.openExternal(parsed.href);
+  if (hasNativeClient()) return openNativeLink(parsed.href, true);
   // "noopener" makes window.open return null, so detach the opener instead.
   const opened = window.open(parsed.href, "_blank");
   if (!opened)

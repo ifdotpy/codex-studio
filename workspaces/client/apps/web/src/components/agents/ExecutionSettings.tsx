@@ -1,3 +1,4 @@
+import { useServerApi } from "../../servers/ServerServicesContext";
 import { accountCanStart } from "../../accountName";
 import {
   Button,
@@ -18,14 +19,7 @@ import {
   useState,
 } from "react";
 import { createPortal } from "react-dom";
-import {
-  post,
-  ApiError,
-  errorText,
-  save,
-  saved,
-  type PostBody,
-} from "../../api";
+import { ApiError, errorText, type PostBody } from "../../api";
 import { busy, type Agent, type Json, type JsonValue } from "../../types";
 import {
   isDaybreakAlias,
@@ -288,6 +282,8 @@ function ScopedExecutionSettings({
   opened: boolean;
   setOpened: (opened: boolean) => void;
 }) {
+  const { post, save, saved } = useServerApi();
+
   const [permissionsTarget, setPermissionsTarget] =
     useState<HTMLElement | null>(null);
   useLayoutEffect(() => {

@@ -12,9 +12,30 @@ the web build.
   and desktop tests; see its [developer guide](apps/desktop/README.md) and
   [`package.json`](apps/desktop/package.json).
 
-There are no client packages yet. The desktop app assembles the web build and
-runtime; the web app depends on the server's HTTP contract and must not access
-SQLite or provider credentials directly.
+## Rust client migration
+
+The target is Tauri + Rust on desktop and PWA + WebAssembly on mobile.
+Mobile Tauri builds are experimental and are not a release target for now.
+The Electron app remains the installed shell until the desktop migration is
+verified and released.
+
+- `apps/native`: Tauri desktop host and its hidden WebView integration checks.
+- `packages/client-domain`: shared Rust rules, Markdown trees and protocol types.
+- `packages/client-core`: native storage, transport and operating-system adapters.
+- `packages/client-wasm`: browser bindings for shared rules. Markdown currently
+  uses this module in the PWA; browser persistence and network adapters remain.
+
+Install `wasm32-unknown-unknown` with rustup and wasm-bindgen-cli 0.2.129 with
+`cargo install wasm-bindgen-cli --version 0.2.129 --locked`. The web build generates
+bindings from the locked Rust workspace. Generated bindings are not committed.
+`pnpm --filter codex-agents-web run test:wasm` compares the compiled WASM parser
+with the native parser, including Unicode, links, rich fences and unsafe markup.
+The hashed WASM asset is included in the service worker's initial offline cache.
+
+The web app uses the server HTTP contract and must not access server SQLite or
+provider credentials directly. Local client data belongs to the platform's
+storage adapter. `TODO(attar-sync)` marks local operations to make synchronous
+when the Attar host can acknowledge the durable commit synchronously.
 
 For one hypothesis, use `just test codex-agents-web <file-path-substring>`;
 add `--name <pattern>` to select a named Vitest case within that file. For a

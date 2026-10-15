@@ -1,3 +1,4 @@
+import { useServerApi } from "../servers/ServerServicesContext";
 import { localDateTime, localTime } from "../local-time";
 import { accountLimits } from "../usage/accountUsage";
 import { weeklyRunway } from "../usage/weeklyRunway";
@@ -5,7 +6,7 @@ import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { Button, Popover, Progress, Tabs, Tooltip } from "@mantine/core";
 import { ChevronUp, ExternalLink, Gauge, RefreshCw } from "lucide-react";
 import type { Agent, Json, JsonValue } from "../types";
-import { errorText, get, post, type GetResult } from "../api";
+import { errorText, type GetResult } from "../api";
 import { peekSessionCost, storeSessionCost } from "../usage/sessionCostCache";
 import { useRecoveredLimit } from "./useRecoveredLimit";
 import { limitRecovery } from "../usage/limitRecovery";
@@ -186,6 +187,8 @@ export default function Usage({
   limitsLoading?: boolean;
   accounts?: UsageAccount[];
 }) {
+  const { get, post } = useServerApi();
+
   const [localOpened, setLocalOpened] = useState(false);
   const limitsOpened = opened ?? localOpened;
   const changeOpened = (value: boolean) => {

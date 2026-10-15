@@ -1,7 +1,8 @@
+import { useServerApi } from "../../servers/ServerServicesContext";
 import { Checkbox, Stack, Text } from "@mantine/core";
 import { useState } from "react";
 import { accountDisplayName } from "../../accountName";
-import { errorText, post } from "../../api";
+import { errorText } from "../../api";
 import type { Agent } from "../../types";
 import { ProviderMark } from "../AccountTiles";
 import type { AccountsState } from "../Accounts";
@@ -17,6 +18,8 @@ export function AccountExclusionsControl({
   refresh: () => Promise<void>;
   onError: (message: string) => void;
 }) {
+  const { post } = useServerApi();
+
   const [saving, setSaving] = useState(false);
   const excluded = new Set(lead.excludedAccountKeys || []);
   if (!lead.isLead || !accounts.accounts.length) return null;

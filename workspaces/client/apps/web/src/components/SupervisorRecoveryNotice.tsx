@@ -1,9 +1,12 @@
+import { useServerApi } from "../servers/ServerServicesContext";
 import { useEffect, useState } from "react";
-import { get } from "../api";
+import "../api";
 import { watchResourceReads } from "./watchResourceReads";
 import "./supervisor-recovery-notice.css";
 
 export default function SupervisorRecoveryNotice() {
+  const { get } = useServerApi();
+
   const [notice, setNotice] = useState<string | null>(null);
 
   useEffect(() => {

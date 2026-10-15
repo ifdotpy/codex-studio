@@ -1,3 +1,7 @@
+import {
+  hasDesktopNotifications,
+  notifyDesktop,
+} from "../native/notifications";
 import { isServerView } from "../servers/environment";
 import { useEffect, useRef } from "react";
 import { alertsSince, desktopAlerts } from "../desktop/desktopAlerts";
@@ -50,8 +54,8 @@ export function useDesktopNotifications(
       )
         continue;
       const { id, ...notification } = alert;
-      if (window.codexDesktop) {
-        void window.codexDesktop.notify(notification).catch((error) => {
+      if (hasDesktopNotifications()) {
+        void notifyDesktop(notification).catch((error) => {
           const message =
             error instanceof Error ? error.message : String(error);
           const denied =

@@ -1,8 +1,9 @@
+import { useServerApi } from "../servers/ServerServicesContext";
 import { accountCanStart } from "../accountName";
 import { ProviderMark, setupAccountName } from "./AccountTiles";
 import { Button, NativeSelect, Popover, TextInput } from "@mantine/core";
 import { useEffect, useRef, useState } from "react";
-import { ApiError, errorText, post, save, saved, type PostBody } from "../api";
+import { ApiError, errorText, type PostBody } from "../api";
 import type { Snapshot } from "../types";
 import type { AccountsState } from "./Accounts";
 import { useWorkerModels } from "./agents/WorkerModelPicker";
@@ -190,6 +191,8 @@ export default function SharedChatCreate({
   refresh: () => Promise<void>;
   created: (id: string) => void;
 }) {
+  const { post, save, saved } = useServerApi();
+
   const key = sharedCreationKey(data.stateDir);
   const [attempt, setAttempt] = useState<Creation | null>(() =>
     saved(key, null),

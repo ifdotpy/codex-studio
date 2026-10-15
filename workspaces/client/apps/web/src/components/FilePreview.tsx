@@ -1,6 +1,7 @@
+import { useServerApi } from "../servers/ServerServicesContext";
 import { Button, Loader } from "@mantine/core";
 import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
-import { get } from "../api";
+import "../api";
 import {
   canUseNativeFiles,
   openFile,
@@ -39,6 +40,8 @@ export default function FilePreview({
   target: PreviewTarget | null;
   onClose: () => void;
 }) {
+  const { get } = useServerApi();
+
   const key = JSON.stringify([target?.agent, target?.path, target?.asset]);
   const [loaded, setLoaded] = useState<LoadedFile | null>(null);
   const file = loaded?.key === key ? loaded : null;

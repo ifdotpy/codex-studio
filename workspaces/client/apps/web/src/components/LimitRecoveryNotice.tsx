@@ -1,9 +1,10 @@
+import { useServerApi } from "../servers/ServerServicesContext";
 import { localDateTime } from "../local-time";
 import { useState } from "react";
 import { Button } from "@mantine/core";
 import type { LimitRecovery } from "../usage/limitRecovery";
 import { copyText } from "../clipboard/clipboard";
-import { errorText, post, type PostResult } from "../api";
+import { errorText, type PostResult } from "../api";
 import type { Agent } from "../types";
 
 export default function LimitRecoveryNotice({
@@ -17,6 +18,8 @@ export default function LimitRecoveryNotice({
   usageResume?: Agent["usageResume"];
   inline?: boolean;
 }) {
+  const { post } = useServerApi();
+
   const [copyStatus, setCopyStatus] = useState("");
   const [confirmed, setConfirmed] =
     useState<PostResult<"/api/usage-resume"> | null>(null);

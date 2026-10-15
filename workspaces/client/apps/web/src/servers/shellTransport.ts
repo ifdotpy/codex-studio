@@ -1,3 +1,12 @@
+import { frameMessageOrigin } from "./frameOrigin";
+import {
+  hasNativeClient,
+  nativeRequest,
+  listenNativeEvents,
+} from "../native/client";
+import { bindNativeFrames } from "../native/frame";
+import { nativeFetch } from "../native/http";
+import { bindNativeCloseFrames } from "../native/close";
 import type { DesktopBridge } from "../desktop";
 import type { CredentialRequest, StreamChunk } from "./desktopCredentials";
 import { serverParentOrigin, serverViewId } from "./environment";
@@ -6,6 +15,12 @@ import { serverCredentialAdapter } from "./transport";
 // The shell derives an owner from the live window and its exact origin. A view
 // can request only its own transport. No key enters a server view.
 export function bindShellTransport(frames: Map<string, HTMLIFrameElement>) {
+  const unbindClose = hasNativeClient()
+    ? bindNativeCloseFrames(frames)
+    : () => {};
+  const unbindNative = hasNativeClient()
+    ? bindNativeFrames(frames, nativeRequest, listenNativeEvents)
+    : () => {};
   const active = new Map<
     string,
     { controller: AbortController; frame: HTMLIFrameElement }
@@ -16,7 +31,7 @@ export function bindShellTransport(frames: Map<string, HTMLIFrameElement>) {
       ([, frame]) =>
         frame.contentWindow === event.source &&
         frame.isConnected &&
-        new URL(frame.src).origin === event.origin,
+        frameMessageOrigin(frame.src) === event.origin,
     );
     if (!frameEntry) return;
     const [owner, frame] = frameEntry;
@@ -78,7 +93,9 @@ export function bindShellTransport(frames: Map<string, HTMLIFrameElement>) {
       });
       const response =
         owner === "local"
-          ? await fetch(request)
+          ? hasNativeClient()
+            ? await nativeFetch(request, server.origin)
+            : await fetch(request)
           : await serverCredentialAdapter().fetch(server, request);
       const metadata = {
         status: response.status,
@@ -146,6 +163,8 @@ export function bindShellTransport(frames: Map<string, HTMLIFrameElement>) {
   removed.observe(document.body, { childList: true, subtree: true });
   window.addEventListener("message", listener);
   return () => {
+    unbindClose();
+    unbindNative();
     window.removeEventListener("message", listener);
     removed.disconnect();
     for (const stream of active.values()) stream.controller.abort();

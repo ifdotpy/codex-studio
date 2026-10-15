@@ -1,8 +1,9 @@
+import { useServerApi, useServerResources } from "./ServerServicesContext";
 import {
   parseStudioPreferences,
   studioPreferencesStorageKey,
 } from "../studioPreferences";
-import { get, errorText } from "../api";
+import { errorText } from "../api";
 import { executeSidebarRequest, serializeSidebarError } from "./sidebarRpc";
 import { desktopAlerts } from "../desktop/desktopAlerts";
 import { useEffect, useRef } from "react";
@@ -15,7 +16,7 @@ import {
   type ServerCommand,
 } from "./navigation";
 import type { Snapshot } from "../types";
-import { watchResourceConnection } from "../sync/resourceEvents";
+import "../sync/resourceEvents";
 import { preferenceEvent } from "../sync/uiPreferenceMerge";
 import { serverStorageEventKey } from "./storage";
 export function useServerFrame(
@@ -27,6 +28,9 @@ export function useServerFrame(
   accounts: ServerAccount[],
   creating = false,
 ) {
+  const { get } = useServerApi();
+  const { watchResourceConnection } = useServerResources();
+
   const handler = useRef(run);
   handler.current = run;
   const latest = useRef({ data, opened, error, unread, creating });

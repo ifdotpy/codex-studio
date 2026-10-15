@@ -9,6 +9,7 @@ vi.mock("react", async (importOriginal) => ({
   ...(await importOriginal<typeof import("react")>()),
   useEffect: (effect: () => void | (() => void)) => hooks.effects.push(effect),
   useRef: (current: unknown) => ({ current }),
+  useContext: () => null,
 }));
 vi.mock("./environment", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./environment")>()),

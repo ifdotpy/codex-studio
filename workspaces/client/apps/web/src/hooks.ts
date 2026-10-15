@@ -1,3 +1,9 @@
+import {
+  useServerApi,
+  useServerSync,
+  useServerResources,
+  useServerTranscripts,
+} from "./servers/ServerServicesContext";
 import { retainTranscriptItems } from "./conversation/transcriptIdentity";
 import {
   boundTranscriptPage,
@@ -13,28 +19,13 @@ import {
   useRef,
   useState,
 } from "react";
-import {
-  syncGet,
-  ApiError,
-  errorText,
-  refreshSession,
-  saved,
-  save,
-  type PostResult,
-} from "./api";
-import {
-  refreshProjection,
-  subscribeStateProjection,
-  subscribeTranscriptProjection,
-  watchResourceConnection,
-  syncDatabase,
-  watchResourceChanges,
-} from "./sync/client";
+import { ApiError, errorText, type PostResult } from "./api";
+import "./sync/client";
 import {
   isProjectionDatabaseClosedError,
   PROJECTION_DATABASE_RELOAD_MESSAGE,
 } from "./sync/entityCacheStorage";
-import { peekTranscript, subscribeTranscript } from "./sync/transcriptCache";
+import "./sync/transcriptCache";
 import { onResume } from "./sync/resume";
 import { agentChatMessages } from "./hooks/agentChatMessages";
 import { drainRoomUpdates } from "./hooks/roomUpdates";
@@ -92,6 +83,11 @@ export function useChatSnapshot(
 export function useSnapshot(
   acceptUiPreferences?: (preferences: UiPreferenceProjection) => void,
 ) {
+  const { refreshSession, saved, save } = useServerApi();
+  const { refreshProjection, subscribeStateProjection, syncDatabase } =
+    useServerSync();
+  const { watchResourceConnection } = useServerResources();
+
   const onUiPreferences = useCommittedCallback(
     acceptUiPreferences ?? (() => {}),
   );
@@ -448,6 +444,11 @@ export function useMessages(
   workspace = "",
   syncWorkspaceId = "",
 ) {
+  const { syncGet } = useServerApi();
+  const { subscribeTranscriptProjection } = useServerSync();
+  const { watchResourceChanges } = useServerResources();
+  const { peekTranscript, subscribeTranscript } = useServerTranscripts();
+
   const scope = JSON.stringify([workspace, syncWorkspaceId, kind, managed, id]);
   const history = useRef(
     new Map<

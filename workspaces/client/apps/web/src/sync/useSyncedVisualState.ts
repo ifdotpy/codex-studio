@@ -1,8 +1,11 @@
+import { useServerApi } from "../servers/ServerServicesContext";
 import { useEffect, useState } from "react";
-import { saved } from "../api";
+import "../api";
 import { preferenceEvent } from "./uiPreferenceMerge";
 /** Local cache supplies the first render; entity delivery updates later renders. */
 export function useSyncedVisualState<T>(key: string, fallback: T) {
+  const { saved } = useServerApi();
+
   const [value, setValue] = useState<T>(() => saved(key, fallback));
   useEffect(() => {
     const update = (event?: Event) => {

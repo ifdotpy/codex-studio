@@ -1,3 +1,4 @@
+import { useServerApi } from "../../servers/ServerServicesContext";
 import { localDateTime } from "../../local-time";
 import ErrorDescription from "../ErrorDescription";
 import { displayError } from "../../errorPresentation";
@@ -29,8 +30,6 @@ import {
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import {
-  get,
-  post,
   apiDownload,
   errorText,
   type ApiPostPath,
@@ -440,6 +439,8 @@ function TaskDetail({
   refresh: () => Promise<void>;
   notify: (s: string) => void;
 }) {
+  const { get, post } = useServerApi();
+
   const [detail, setDetail] = useState<TaskDetailResponse | null>(null),
     [loadError, setLoadError] = useState("");
   useEffect(() => {

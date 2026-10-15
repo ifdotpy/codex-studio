@@ -1,7 +1,8 @@
+import { useServerApi } from "./ServerServicesContext";
 import { orderPreferenceServers } from "./preferenceServerOrder";
 import { legacyPreferenceSeed } from "./legacyPreferenceSeed";
 import { useEffect, useRef } from "react";
-import { fetchApiRequest } from "../api";
+import "../api";
 import { connectUiPreferences } from "../sync/uiPreferenceConnection";
 import { createPreferenceSyncConnectionManager } from "./preferenceSyncConnectionManager";
 import {
@@ -30,6 +31,8 @@ export function useUiPreferenceSync(
   servers: StudioServer[],
   lastSeenByServer: Record<string, number | undefined> = {},
 ) {
+  const { fetchApiRequest } = useServerApi();
+
   const ownership = JSON.stringify(
     servers.map(({ id, origin, credentialId }) => [id, origin, credentialId]),
   );

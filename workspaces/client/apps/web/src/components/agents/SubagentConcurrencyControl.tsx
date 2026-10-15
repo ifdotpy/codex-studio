@@ -1,7 +1,8 @@
+import { useServerApi } from "../../servers/ServerServicesContext";
 import { SegmentedControl } from "@mantine/core";
 import { serverLocalStorage as localStorage } from "../../servers/storage";
 import { useEffect, useRef, useState } from "react";
-import { post, ApiError, errorText, type PostBody } from "../../api";
+import { ApiError, errorText, type PostBody } from "../../api";
 import {
   DEFAULT_SUBAGENT_CONCURRENCY,
   MAX_SUBAGENT_CONCURRENCY,
@@ -110,6 +111,8 @@ function ScopedConcurrencyControl({
   storageKey,
   refresh,
 }: Props & { storageKey: string }) {
+  const { post } = useServerApi();
+
   const snapshot = stateOf(lead);
   const supported = snapshot !== undefined;
   const [initial, setInitial] = useState(() => {

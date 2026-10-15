@@ -1,5 +1,6 @@
+import { useServerApi } from "../servers/ServerServicesContext";
 import { useEffect, useRef, useState, type SetStateAction } from "react";
-import { saved, errorText } from "../api";
+import { errorText } from "../api";
 import { attachmentCancelled } from "../sync/uploads";
 import { updateLocalDraft } from "../sync/localDraft";
 import type { Attachment } from "./ComposerAttachments";
@@ -16,6 +17,8 @@ export function useAttachmentDrafts(
   key: string,
   notify: (message: string) => void,
 ) {
+  const { saved } = useServerApi();
+
   const scopes = useRef(new Map<string, Attachments>());
   const [, render] = useState(0);
   if (!scopes.current.has(key))

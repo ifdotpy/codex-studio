@@ -1,3 +1,4 @@
+import { useServerApi } from "../servers/ServerServicesContext";
 import { serverLocalStorage as localStorage } from "../servers/storage";
 import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import {
@@ -176,6 +177,8 @@ export default function MessageQueue(props: Props) {
 }
 
 function ScopedMessageQueue(p: Props) {
+  const { saved } = useServerApi();
+
   const storageKey = `codex-queue-edit:${encodeURIComponent(p.scope)}:`;
   const [writer] = useState(() => crypto.randomUUID());
   const [recovery] = useState(() => readDrafts(storageKey));

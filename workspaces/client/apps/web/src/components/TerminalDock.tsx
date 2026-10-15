@@ -1,3 +1,4 @@
+import { useServerApi } from "../servers/ServerServicesContext";
 import { Button, TextInput } from "@mantine/core";
 import {
   ChevronDown,
@@ -11,16 +12,7 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { Terminal } from "@xterm/xterm";
-import {
-  get,
-  post,
-  syncPost,
-  errorText,
-  save,
-  saved,
-  type GetResult,
-  type PostBody,
-} from "../api";
+import { errorText, type GetResult, type PostBody } from "../api";
 import type { Agent, Snapshot } from "../types";
 import "./terminal-dock.css";
 import { copyText } from "../clipboard/clipboard";
@@ -55,6 +47,8 @@ export default function TerminalDock({
   agent?: Agent;
   notify: (message: string) => void;
 }) {
+  const { get, post, save, saved } = useServerApi();
+
   const [opened, setOpened] = useState(() =>
     saved("codex.terminal.open", false),
   );
@@ -541,6 +535,8 @@ function ShellView({
   shell: Shell;
   notify: (message: string) => void;
 }) {
+  const { get, post, syncPost } = useServerApi();
+
   const host = useRef<HTMLDivElement>(null);
   const terminal = useRef<Terminal | null>(null);
   const [failure, setFailure] = useState("");

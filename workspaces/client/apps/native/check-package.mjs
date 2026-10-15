@@ -1,0 +1,76 @@
+import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
+import { access, readFile } from "node:fs/promises";
+import path from "node:path";
+
+const application = process.argv[2];
+if (!application) throw new Error("Supply the packaged .app path.");
+const bundle = path.resolve(application);
+const resources = path.join(bundle, "Contents/Resources");
+const workspace = path.join(resources, "workspace");
+const plist = (key) =>
+  execFileSync(
+    "plutil",
+    [
+      "-extract",
+      key,
+      "raw",
+      "-o",
+      "-",
+      path.join(bundle, "Contents/Info.plist"),
+    ],
+    { encoding: "utf8" },
+  ).trim();
+assert.equal(plist("CFBundleIdentifier"), "local.codex.agents");
+for (const key of [
+  "NSMicrophoneUsageDescription",
+  "NSSpeechRecognitionUsageDescription",
+])
+  assert.ok(plist(key).length > 0, `Missing privacy description: ${key}`);
+const executable = plist("CFBundleExecutable");
+assert.equal(path.basename(executable), executable);
+await access(path.join(bundle, "Contents/MacOS", executable));
+for (const file of [
+  "workspace/scripts/codex-canvas",
+  "workspace/scripts/codex_process_supervisor.py",
+  "workspace/bin/studio_operations_native.abi3.so",
+  "workspace/web/dist/index.html",
+  "workspace/requirements.txt",
+  "helpers/studio-speech",
+  "studio-fs-events",
+  "studio-linux-vm",
+  "recover_backend.py",
+  "install_update.py",
+])
+  await access(path.join(resources, file));
+const stamp = JSON.parse(
+  await readFile(path.join(resources, "studio-build.json"), "utf8"),
+);
+assert.match(stamp.commit, /^[a-f0-9]{40}$/);
+assert.ok(Number.isFinite(stamp.builtAt) && stamp.builtAt > 0);
+execFileSync("codesign", ["--verify", "--deep", "--strict", bundle], {
+  stdio: "inherit",
+});
+if (!process.env.CODEX_AGENTS_PYTHON)
+  throw new Error(
+    "Set CODEX_AGENTS_PYTHON to the prepared runtime interpreter.",
+  );
+execFileSync(
+  process.env.CODEX_AGENTS_PYTHON,
+  [
+    "-B",
+    "-c",
+    "import sys; sys.path.insert(0, sys.argv[1]); import codex_operations_adapter; import fastapi, httpx, pydantic, uvicorn",
+    path.join(workspace, "scripts"),
+  ],
+  { stdio: "inherit" },
+);
+console.log(
+  JSON.stringify({
+    result: "PASS",
+    bundle,
+    executable,
+    commit: stamp.commit,
+    checks: "bundle resources, native Python adapter import, code signature",
+  }),
+);
