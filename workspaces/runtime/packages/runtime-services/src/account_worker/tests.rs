@@ -1343,10 +1343,12 @@ async fn scenario_restart_after_submitted_before_written_recovers_unknown_withou
                 },
                 "default",
                 &request,
-                None,
-                prepared.submission.as_ref(),
-                Some(&prepared.guard),
-                "test-connection",
+                store::SubmissionEvidence {
+                    turn: None,
+                    submission: prepared.submission.as_ref(),
+                    guard: Some(&prepared.guard),
+                    connection_id: "test-connection",
+                },
             )?);
             Ok(request.ticket.id)
         })
@@ -3422,13 +3424,16 @@ async fn vm_actor_turn_uses_guest_session_and_settles_complete_turn() {
     tokio::time::timeout(std::time::Duration::from_secs(10), async {
         loop {
             let changed = guest.changed.notified();
-            let state = guest.state.lock().unwrap();
-            let has_turn = state
-                .writes
-                .iter()
-                .any(|write| write["method"] == "turn/start");
-            let completed = state.acknowledged >= 3;
-            drop(state);
+            let (has_turn, completed) = {
+                let state = guest.state.lock().unwrap();
+                (
+                    state
+                        .writes
+                        .iter()
+                        .any(|write| write["method"] == "turn/start"),
+                    state.acknowledged >= 3,
+                )
+            };
             if has_turn && completed {
                 break;
             }
@@ -3438,22 +3443,23 @@ async fn vm_actor_turn_uses_guest_session_and_settles_complete_turn() {
     .await
     .expect("guest turn starts and completion evidence is acknowledged");
 
-    let guest_state = guest.state.lock().unwrap();
-    assert_eq!(guest_state.starts, 1);
-    assert!(
-        guest_state
-            .writes
-            .iter()
-            .any(|write| write["method"] == "thread/start")
-    );
-    assert!(
-        guest_state
-            .writes
-            .iter()
-            .any(|write| write["method"] == "turn/start")
-    );
-    assert_eq!(guest_state.acknowledged, 3);
-    drop(guest_state);
+    {
+        let guest_state = guest.state.lock().unwrap();
+        assert_eq!(guest_state.starts, 1);
+        assert!(
+            guest_state
+                .writes
+                .iter()
+                .any(|write| write["method"] == "thread/start")
+        );
+        assert!(
+            guest_state
+                .writes
+                .iter()
+                .any(|write| write["method"] == "turn/start")
+        );
+        assert_eq!(guest_state.acknowledged, 3);
+    }
     assert_eq!(state.event_status("input").await, "delivered");
     worker.shutdown().await.unwrap();
     let guest_state = guest.state.lock().unwrap();
@@ -3518,9 +3524,10 @@ async fn vm_session_identity_refusal_holds_one_actor_and_keeps_sibling_usable() 
     tokio::time::timeout(std::time::Duration::from_secs(10), async {
         loop {
             let changed = guest.changed.notified();
-            let guest_state = guest.state.lock().unwrap();
-            let complete = guest_state.starts == 1 && guest_state.acknowledged >= 3;
-            drop(guest_state);
+            let complete = {
+                let guest_state = guest.state.lock().unwrap();
+                guest_state.starts == 1 && guest_state.acknowledged >= 3
+            };
             if complete {
                 break;
             }
@@ -3567,14 +3574,15 @@ async fn vm_session_identity_refusal_holds_one_actor_and_keeps_sibling_usable() 
     let sibling_progress = tokio::time::timeout(std::time::Duration::from_secs(10), async {
         loop {
             let changed = guest.changed.notified();
-            let guest_state = guest.state.lock().unwrap();
-            let sibling_complete = guest_state.starts == 2
-                && guest_state.acknowledged >= 3
-                && guest_state
-                    .writes
-                    .iter()
-                    .any(|write| write["method"] == "turn/start");
-            drop(guest_state);
+            let sibling_complete = {
+                let guest_state = guest.state.lock().unwrap();
+                guest_state.starts == 2
+                    && guest_state.acknowledged >= 3
+                    && guest_state
+                        .writes
+                        .iter()
+                        .any(|write| write["method"] == "turn/start")
+            };
             if sibling_complete {
                 break;
             }
@@ -3681,13 +3689,14 @@ async fn vm_adapter_exit_recovers_only_its_actor_and_keeps_sibling_usable() {
     tokio::time::timeout(std::time::Duration::from_secs(10), async {
         loop {
             let changed = guest.changed.notified();
-            let guest_state = guest.state.lock().unwrap();
-            let ready = guest_state.primary_poll_ready
-                && guest_state
-                    .turn_start_handles
-                    .iter()
-                    .any(|handle| handle == &primary_handle);
-            drop(guest_state);
+            let ready = {
+                let guest_state = guest.state.lock().unwrap();
+                guest_state.primary_poll_ready
+                    && guest_state
+                        .turn_start_handles
+                        .iter()
+                        .any(|handle| handle == &primary_handle)
+            };
             if ready {
                 break;
             }
@@ -3708,9 +3717,10 @@ async fn vm_adapter_exit_recovers_only_its_actor_and_keeps_sibling_usable() {
     tokio::time::timeout(std::time::Duration::from_secs(10), async {
         loop {
             let changed = guest.changed.notified();
-            let guest_state = guest.state.lock().unwrap();
-            let exited = !guest_state.exit_primary_on_next;
-            drop(guest_state);
+            let exited = {
+                let guest_state = guest.state.lock().unwrap();
+                !guest_state.exit_primary_on_next
+            };
             if exited {
                 break;
             }
@@ -3732,16 +3742,17 @@ async fn vm_adapter_exit_recovers_only_its_actor_and_keeps_sibling_usable() {
     let sibling_progress = tokio::time::timeout(std::time::Duration::from_secs(10), async {
         loop {
             let changed = guest.changed.notified();
-            let guest_state = guest.state.lock().unwrap();
-            let sibling_completed = guest_state
-                .turn_start_handles
-                .iter()
-                .any(|handle| handle == &sibling_handle)
-                && guest_state
-                    .acknowledged_by_handle
+            let sibling_completed = {
+                let guest_state = guest.state.lock().unwrap();
+                guest_state
+                    .turn_start_handles
                     .iter()
-                    .any(|(handle, sequence)| handle == &sibling_handle && *sequence >= 3);
-            drop(guest_state);
+                    .any(|handle| handle == &sibling_handle)
+                    && guest_state
+                        .acknowledged_by_handle
+                        .iter()
+                        .any(|(handle, sequence)| handle == &sibling_handle && *sequence >= 3)
+            };
             if sibling_completed {
                 break;
             }
@@ -4079,7 +4090,7 @@ fn vm_journal_cannot_settle_a_sibling_actors_attempt() {
         studio_runtime_store::AgentStatus::Interrupted
     );
     assert_eq!(retired.extra["inFlight"], false);
-    assert!(retired.extra.get("disconnectRecovery").is_some());
+    assert!(retired.extra.contains_key("disconnectRecovery"));
     assert_eq!(surviving.status, studio_runtime_store::AgentStatus::Running);
     assert_eq!(surviving.extra["inFlight"], true);
     assert!(!store::disconnect_vm_actor(&store, "vm-completed", 8, "default", 31).unwrap());
@@ -4132,10 +4143,10 @@ async fn retained_vm_notification_is_epoch_fenced_and_committed_before_delivery(
     tokio::time::timeout(std::time::Duration::from_secs(10), async {
         loop {
             let changed = guest.changed.notified();
-            let guest_state = guest.state.lock().unwrap();
-            let started = guest_state.starts == 1;
-            let acknowledged = guest_state.acknowledged >= 3;
-            drop(guest_state);
+            let (started, acknowledged) = {
+                let guest_state = guest.state.lock().unwrap();
+                (guest_state.starts == 1, guest_state.acknowledged >= 3)
+            };
             if started && acknowledged {
                 break;
             }
@@ -4390,13 +4401,14 @@ async fn retained_unknown_replay_precedes_changed_vm_session_fence() {
     tokio::time::timeout(std::time::Duration::from_secs(10), async {
         loop {
             let changed = guest.changed.notified();
-            let guest_state = guest.state.lock().unwrap();
-            let ready_for_request = guest_state.starts == 1
-                && guest_state
-                    .writes
-                    .iter()
-                    .any(|write| write["method"] == "turn/start");
-            drop(guest_state);
+            let ready_for_request = {
+                let guest_state = guest.state.lock().unwrap();
+                guest_state.starts == 1
+                    && guest_state
+                        .writes
+                        .iter()
+                        .any(|write| write["method"] == "turn/start")
+            };
             if ready_for_request {
                 break;
             }
@@ -4656,15 +4668,16 @@ async fn vm_worker_restart_reconciles_uncertain_provider_start_without_resending
         serde_json::from_str::<Value>(&receipt.result).unwrap()["phase"],
         "reserved"
     );
-    let guest_state = guest.state.lock().unwrap();
-    assert_eq!(guest_state.starts, 1);
-    assert!(
-        !guest_state
-            .writes
-            .iter()
-            .any(|write| write["method"] == "turn/start")
-    );
-    drop(guest_state);
+    {
+        let guest_state = guest.state.lock().unwrap();
+        assert_eq!(guest_state.starts, 1);
+        assert!(
+            !guest_state
+                .writes
+                .iter()
+                .any(|write| write["method"] == "turn/start")
+        );
+    }
     let _first_shutdown = first_worker.shutdown().await;
 
     let second_peer = Peer::new();
@@ -4679,13 +4692,16 @@ async fn vm_worker_restart_reconciles_uncertain_provider_start_without_resending
     tokio::time::timeout(std::time::Duration::from_secs(10), async {
         loop {
             let changed = guest.changed.notified();
-            let state = guest.state.lock().unwrap();
-            let has_turn = state
-                .writes
-                .iter()
-                .any(|write| write["method"] == "turn/start");
-            let completed = state.acknowledged >= 3;
-            drop(state);
+            let (has_turn, completed) = {
+                let state = guest.state.lock().unwrap();
+                (
+                    state
+                        .writes
+                        .iter()
+                        .any(|write| write["method"] == "turn/start"),
+                    state.acknowledged >= 3,
+                )
+            };
             if has_turn && completed {
                 break;
             }
@@ -4694,16 +4710,17 @@ async fn vm_worker_restart_reconciles_uncertain_provider_start_without_resending
     })
     .await
     .expect("recovered guest session completes the queued actor turn");
-    let guest_state = guest.state.lock().unwrap();
-    assert_eq!(guest_state.starts, 1, "provider.start must never be resent");
-    assert!(guest_state.calls.contains(&"provider.rpc".to_owned()));
-    assert!(
-        guest_state
-            .writes
-            .iter()
-            .any(|write| write["method"] == "turn/start")
-    );
-    drop(guest_state);
+    {
+        let guest_state = guest.state.lock().unwrap();
+        assert_eq!(guest_state.starts, 1, "provider.start must never be resent");
+        assert!(guest_state.calls.contains(&"provider.rpc".to_owned()));
+        assert!(
+            guest_state
+                .writes
+                .iter()
+                .any(|write| write["method"] == "turn/start")
+        );
+    }
     assert_eq!(state.event_status("input").await, "delivered");
     second_worker.shutdown().await.unwrap();
 }
@@ -4914,8 +4931,18 @@ async fn preparation_commit_rechecks_workspace_settings_and_input() {
             };
             let context = Pending { thread: prepared.thread, compiled: prepared.compiled,
                 intent: prepared.intent, method: "turn/start".into(), operation: operation.clone() };
-            assert!(!store::submitted(store, &context, "default", &request, None,
-                prepared.submission.as_ref(), Some(&prepared.guard), "test-connection")?, "{mutation}");
+            assert!(!store::submitted(
+                store,
+                &context,
+                "default",
+                &request,
+                store::SubmissionEvidence {
+                    turn: None,
+                    submission: prepared.submission.as_ref(),
+                    guard: Some(&prepared.guard),
+                    connection_id: "test-connection",
+                },
+            )?, "{mutation}");
             scheduler::lifecycle_transaction_with(store, |tx| {
                 assert!(store::receipt(tx, &operation, "submitted")?.is_none());
                 let row = AgentRepository::get(tx, &AgentId::from(agent.as_str()))?.unwrap().value();

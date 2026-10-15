@@ -206,10 +206,12 @@ pub(super) async fn scenario_late_context_change_refuses_submission() {
                 &context,
                 "default",
                 &request,
-                None,
-                prepared.submission.as_ref(),
-                Some(&prepared.guard),
-                "test-connection",
+                store::SubmissionEvidence {
+                    turn: None,
+                    submission: prepared.submission.as_ref(),
+                    guard: Some(&prepared.guard),
+                    connection_id: "test-connection",
+                },
             )?);
             Ok(())
         })
@@ -338,10 +340,12 @@ pub(super) async fn scenario_sibling_completion_does_not_refuse_non_lead() {
                 &context,
                 "default",
                 &request,
-                None,
-                prepared.submission.as_ref(),
-                Some(&prepared.guard),
-                "test-connection",
+                store::SubmissionEvidence {
+                    turn: None,
+                    submission: prepared.submission.as_ref(),
+                    guard: Some(&prepared.guard),
+                    connection_id: "test-connection",
+                },
             )?);
             Ok(())
         })

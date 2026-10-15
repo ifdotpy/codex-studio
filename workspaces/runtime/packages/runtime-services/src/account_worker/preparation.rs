@@ -212,10 +212,12 @@ impl PreparedTurn {
             &pending,
             &prepared.intent.account_key,
             &request,
-            None,
-            prepared.submission.as_ref(),
-            Some(&prepared.guard),
-            &prepared.connection_id,
+            store::SubmissionEvidence {
+                turn: None,
+                submission: prepared.submission.as_ref(),
+                guard: Some(&prepared.guard),
+                connection_id: &prepared.connection_id,
+            },
         )
     }
 }

@@ -12,6 +12,13 @@ pub(super) const MAX_PENDING_PUBLICATION_RECEIPTS: usize = 256;
 pub(super) const MAX_COALESCED_TOKEN_RATE_EFFECTS: usize = 64;
 const MAX_COALESCED_TOKEN_RATE_BYTES: usize = 256 * 1024;
 
+pub(super) struct SubmissionEvidence<'a> {
+    pub turn: Option<&'a str>,
+    pub submission: Option<&'a PreparedSubmission>,
+    pub guard: Option<&'a preparation::CommitGuard>,
+    pub connection_id: &'a str,
+}
+
 fn invalid(id: &str) -> WorkerError {
     StoreError::InvalidSyncObject {
         scope: "account_worker".into(),
@@ -537,7 +544,7 @@ pub(super) fn hold_invalid_agent_record(
                 && pointer == expected_pointer
                 && reason == expected_reason => {}
             Err(StoreError::InvalidSyncObjectField { .. }) => return Ok(()),
-            Err(error) => return Err(error.into()),
+            Err(error) => return Err(error),
         }
         let parsed: Value =
             serde_json::from_str(&raw).map_err(|_| StoreError::InvalidSyncObject {
@@ -590,11 +597,14 @@ pub(super) fn submitted(
     context: &Pending,
     account: &str,
     request: &RecoveredRequest,
-    turn: Option<&str>,
-    submission: Option<&PreparedSubmission>,
-    guard: Option<&preparation::CommitGuard>,
-    connection_id: &str,
+    evidence: SubmissionEvidence<'_>,
 ) -> Result<bool, WorkerError> {
+    let SubmissionEvidence {
+        turn,
+        submission,
+        guard,
+        connection_id,
+    } = evidence;
     let connection_id = connection_id.to_owned();
     let result = scheduler::lifecycle_transaction_with(store, |tx| {
         if receipt(tx, &context.operation, "submitted")?.is_some() {
@@ -911,14 +921,7 @@ pub(super) fn journal_batch(
     entries: Vec<JournalEntry>,
     claude_account_pin: &Value,
     expected_vm_actor: Option<(&str, i64)>,
-) -> Result<
-    Option<(
-        NotificationStreamBuffer,
-        Vec<(JournalEntry, Option<Effect>)>,
-        Vec<JournalEntry>,
-    )>,
-    WorkerError,
-> {
+) -> Result<JournalBatchResult, WorkerError> {
     if entries.is_empty() {
         return Ok(Some((streams.clone(), Vec::new(), Vec::new())));
     }
@@ -955,9 +958,11 @@ pub(super) fn journal_batch(
         while let Some(entry) = entries.next() {
             match journal_one(
                 tx,
-                account,
-                journal_scope,
-                expected_vm_actor,
+                JournalIdentity {
+                    account,
+                    journal_scope,
+                    expected_vm_actor,
+                },
                 &publication,
                 &next,
                 &entry,
@@ -985,15 +990,18 @@ pub(super) fn journal_batch(
 
 fn journal_one(
     tx: &rusqlite::Transaction<'_>,
-    account: &str,
-    journal_scope: &str,
-    expected_vm_actor: Option<(&str, i64)>,
+    identity: JournalIdentity<'_>,
     publication: &crate::notification_dispatch::PublicationContext,
     streams: &NotificationStreamBuffer,
     entry: &JournalEntry,
     claude_account_pin: &Value,
     limits_observation: Option<&crate::usage_resume::LimitsObservation>,
 ) -> Result<Option<(NotificationStreamBuffer, Option<Effect>, bool)>, WorkerError> {
+    let JournalIdentity {
+        account,
+        journal_scope,
+        expected_vm_actor,
+    } = identity;
     let operation = format!(
         "journal:{journal_scope}:{}:{}",
         entry.generation.0, entry.cursor.0
@@ -1044,25 +1052,24 @@ fn journal_one(
             )),
             _ => None,
         };
-        if let Some(("command/exec/outputDelta", params)) = notice {
-            if let Some(process_id) = params
+        if let Some(("command/exec/outputDelta", params)) = notice
+            && let Some(process_id) = params
                 .get("processId")
                 .and_then(Value::as_str)
                 .filter(|id| !id.is_empty())
-            {
-                crate::monitor_event_queue::enqueue_output_with_scope_in_transaction(
-                    tx,
-                    process_id,
-                    crate::monitor_event_queue::JournalEventScope {
-                        account,
-                        cursor_scope: journal_scope,
-                        generation: entry.generation.0,
-                        cursor: entry.cursor.0,
-                        expected_agent: expected_vm_actor.map(|(actor, _)| actor),
-                    },
-                    params,
-                )?;
-            }
+        {
+            crate::monitor_event_queue::enqueue_output_with_scope_in_transaction(
+                tx,
+                process_id,
+                crate::monitor_event_queue::JournalEventScope {
+                    account,
+                    cursor_scope: journal_scope,
+                    generation: entry.generation.0,
+                    cursor: entry.cursor.0,
+                    expected_agent: expected_vm_actor.map(|(actor, _)| actor),
+                },
+                params,
+            )?;
         }
         if let Some((method, params)) = notice
             && let Some(thread) = params["threadId"].as_str()
@@ -1145,7 +1152,7 @@ fn journal_one(
                         next = flush_notification_streams(
                             tx,
                             &identity.agent_id,
-                            &publication,
+                            publication,
                             streams,
                             now(),
                         )?
@@ -1228,7 +1235,7 @@ fn journal_one(
                         let dispatched = dispatch_notification_with_effects(
                             tx,
                             &identity.agent_id,
-                            &publication,
+                            publication,
                             streams,
                             &ProviderDeliveryIdentity {
                                 provider_handle: ProviderHandle::for_account(journal_scope)
@@ -1247,7 +1254,7 @@ fn journal_one(
                             let flushed = flush_notification_streams(
                                 tx,
                                 &identity.agent_id,
-                                &publication,
+                                publication,
                                 &staged,
                                 now(),
                             )?;
@@ -1661,6 +1668,17 @@ fn settle_callback_in_transaction(
 // Python codex_streaming.FLUSH_SECONDS is .75. The additional byte threshold
 // bounds a durable batch when producers outpace that timer; answers are uncut.
 pub(super) const STREAM_FLUSH_BYTES: usize = 64 * 1024;
+type JournalBatchResult = Option<(
+    NotificationStreamBuffer,
+    Vec<(JournalEntry, Option<Effect>)>,
+    Vec<JournalEntry>,
+)>;
+#[derive(Clone, Copy)]
+struct JournalIdentity<'a> {
+    account: &'a str,
+    journal_scope: &'a str,
+    expected_vm_actor: Option<(&'a str, i64)>,
+}
 pub(crate) fn persist_publication_batch(
     tx: &studio_runtime_store::Transaction<'_>,
     account: &str,

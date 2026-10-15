@@ -607,7 +607,7 @@ async fn retained_unknown_receipt_stays_unknown_after_reconnect_without_sending(
     let task = tokio::spawn(async move { sender.request(pending).await });
     let _wire = first_peer.write("thread/read").await;
     first_worker.shutdown().await.unwrap();
-    let _ = task.await;
+    let _request_result = task.await;
 
     let mut second_peer = Peer::identity("default", 2, None);
     let mut second_worker = second_peer.worker(state.bridge.clone()).await;
@@ -1095,7 +1095,7 @@ async fn retained_stale_scope_settles_unknown_and_epoch_expiry_refuses_before_wr
 #[tokio::test(start_paused = true)]
 async fn stale_retained_request_after_restart_settles_unknown_without_resend() {
     let state = State::new().await;
-    let mut old_peer = Peer::new();
+    let old_peer = Peer::new();
     let mut old_worker = old_peer.worker(state.bridge.clone()).await;
     let old_port = old_worker.retained_session();
     let stale_request = request(&state, &old_port, "restart-without-submission");

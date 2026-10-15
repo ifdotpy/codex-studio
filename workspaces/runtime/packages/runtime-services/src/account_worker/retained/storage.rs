@@ -379,68 +379,6 @@ fn same_replay_identity(prior: &Call, current: &Call) -> bool {
     prior == *current
 }
 
-#[cfg(test)]
-mod replay_identity_tests {
-    use super::*;
-
-    fn call() -> Call {
-        Call {
-            scope: ConnectionScope {
-                account: "default".into(),
-                connection: "old-connection".into(),
-                generation: 4,
-            },
-            operation: "operation-1".into(),
-            actor: Some(RequestActor {
-                agent: "agent-1".into(),
-                epoch: 7,
-            }),
-            transfer: None,
-            deleted_actor_session: None,
-            method: "thread/read".into(),
-            params: json!({"threadId":"thread-1","includeTurns":false}),
-        }
-    }
-
-    #[test]
-    fn replay_identity_normalizes_only_connection_generation() {
-        let prior = call();
-        let mut reconnected = prior.clone();
-        reconnected.scope.connection = "new-connection".into();
-        reconnected.scope.generation = 5;
-        assert!(same_replay_identity(&prior, &reconnected));
-
-        let mut changed = prior.clone();
-        changed.scope.account = "other-account".into();
-        assert!(!same_replay_identity(&prior, &changed));
-        let mut changed = prior.clone();
-        changed.operation.push_str(":other");
-        assert!(!same_replay_identity(&prior, &changed));
-        let mut changed = prior.clone();
-        changed.actor = Some(RequestActor {
-            agent: "agent-1".into(),
-            epoch: 8,
-        });
-        assert!(!same_replay_identity(&prior, &changed));
-        let mut changed = prior.clone();
-        changed.transfer = Some(TransferAuthorization {
-            transfer_id: "transfer-1".into(),
-            member: "member-1".into(),
-            source_account: "default".into(),
-            thread_id: "thread-1".into(),
-        });
-        assert!(!same_replay_identity(&prior, &changed));
-        let mut changed = prior.clone();
-        changed.deleted_actor_session = Some("voice-session-1".into());
-        assert!(!same_replay_identity(&prior, &changed));
-        let mut changed = prior.clone();
-        changed.method = "thread/turns/list".into();
-        assert!(!same_replay_identity(&prior, &changed));
-        let mut changed = prior;
-        changed.params["threadId"] = json!("thread-2");
-        assert!(!same_replay_identity(&call(), &changed));
-    }
-}
 pub(super) fn submitted(
     s: &RuntimeStore,
     call: &Call,
@@ -525,4 +463,67 @@ pub(in crate::account_worker) fn recover(
         }
         Ok(result)
     })
+}
+
+#[cfg(test)]
+mod replay_identity_tests {
+    use super::*;
+
+    fn call() -> Call {
+        Call {
+            scope: ConnectionScope {
+                account: "default".into(),
+                connection: "old-connection".into(),
+                generation: 4,
+            },
+            operation: "operation-1".into(),
+            actor: Some(RequestActor {
+                agent: "agent-1".into(),
+                epoch: 7,
+            }),
+            transfer: None,
+            deleted_actor_session: None,
+            method: "thread/read".into(),
+            params: json!({"threadId":"thread-1","includeTurns":false}),
+        }
+    }
+
+    #[test]
+    fn replay_identity_normalizes_only_connection_generation() {
+        let prior = call();
+        let mut reconnected = prior.clone();
+        reconnected.scope.connection = "new-connection".into();
+        reconnected.scope.generation = 5;
+        assert!(same_replay_identity(&prior, &reconnected));
+
+        let mut changed = prior.clone();
+        changed.scope.account = "other-account".into();
+        assert!(!same_replay_identity(&prior, &changed));
+        let mut changed = prior.clone();
+        changed.operation.push_str(":other");
+        assert!(!same_replay_identity(&prior, &changed));
+        let mut changed = prior.clone();
+        changed.actor = Some(RequestActor {
+            agent: "agent-1".into(),
+            epoch: 8,
+        });
+        assert!(!same_replay_identity(&prior, &changed));
+        let mut changed = prior.clone();
+        changed.transfer = Some(TransferAuthorization {
+            transfer_id: "transfer-1".into(),
+            member: "member-1".into(),
+            source_account: "default".into(),
+            thread_id: "thread-1".into(),
+        });
+        assert!(!same_replay_identity(&prior, &changed));
+        let mut changed = prior.clone();
+        changed.deleted_actor_session = Some("voice-session-1".into());
+        assert!(!same_replay_identity(&prior, &changed));
+        let mut changed = prior.clone();
+        changed.method = "thread/turns/list".into();
+        assert!(!same_replay_identity(&prior, &changed));
+        let mut changed = prior;
+        changed.params["threadId"] = json!("thread-2");
+        assert!(!same_replay_identity(&call(), &changed));
+    }
 }

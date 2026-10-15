@@ -368,12 +368,14 @@ impl AccountHandle {
         agent_id: String,
         thread_id: String,
         turn_id: String,
-    ) -> Result<(), mpsc::error::TrySendError<AccountCommand>> {
-        self.commands.try_send(AccountCommand::RadioInterrupt {
-            agent_id,
-            thread_id,
-            turn_id,
-        })
+    ) -> Result<(), Box<mpsc::error::TrySendError<AccountCommand>>> {
+        self.commands
+            .try_send(AccountCommand::RadioInterrupt {
+                agent_id,
+                thread_id,
+                turn_id,
+            })
+            .map_err(Box::new)
     }
     pub fn radio_interrupt_sender(&self) -> mpsc::Sender<AccountCommand> {
         self.commands.clone()
@@ -385,8 +387,8 @@ impl AccountHandle {
     pub fn try_send(
         &self,
         command: AccountCommand,
-    ) -> Result<(), mpsc::error::TrySendError<AccountCommand>> {
-        self.commands.try_send(command)
+    ) -> Result<(), Box<mpsc::error::TrySendError<AccountCommand>>> {
+        self.commands.try_send(command).map_err(Box::new)
     }
     pub fn cancel(&self) {
         self.stop.cancel();
@@ -603,7 +605,12 @@ pub async fn start_account_worker_with_publication_sink(
             },
         };
         drop(lease);
-        let _ = finished_tx.send(true);
+        match finished_tx.send(true) {
+            Ok(()) => {}
+            Err(_no_receivers) => {
+                // The JoinHandle remains the completion owner when all watch receivers drop.
+            }
+        }
         result
     });
     Ok(AccountHandle {
@@ -655,6 +662,17 @@ enum Effect {
     },
     Wake(String, i64),
 }
+type ManagedCallbackResult = (
+    studio_runtime_process::EventCursor,
+    Option<String>,
+    Option<i64>,
+    Option<Frame>,
+);
+type CallbackCursor = (
+    studio_runtime_process::EventCursor,
+    Option<String>,
+    Option<i64>,
+);
 struct Worker {
     retained_requests: BTreeMap<RequestId, retained::PendingRequest>,
     retained_frames: BTreeMap<String, retained_frame::PendingFrame>,
@@ -694,25 +712,13 @@ struct Worker {
     publication_sink: Arc<dyn crate::notification_runtime_effects::NotificationPostCommitSink>,
     publication_retry_at: Option<tokio::time::Instant>,
     closing: bool,
-    callbacks: BTreeMap<
-        String,
-        (
-            studio_runtime_process::EventCursor,
-            Option<String>,
-            Option<i64>,
-        ),
-    >,
+    callbacks: BTreeMap<String, CallbackCursor>,
     managed_callback_cursors: BTreeSet<(Option<String>, Option<i64>, u64)>,
     restart_recovery_started: bool,
     restart_recovery: Option<JoinHandle<()>>,
     connection_recovery: tokio::task::JoinSet<()>,
     connection_recovery_active: bool,
-    managed_callbacks: JoinSet<(
-        studio_runtime_process::EventCursor,
-        Option<String>,
-        Option<i64>,
-        Option<Frame>,
-    )>,
+    managed_callbacks: JoinSet<ManagedCallbackResult>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1597,10 +1603,12 @@ impl Worker {
                     &save_context,
                     &account,
                     &recovery,
-                    interrupt_turn.as_ref().map(|(turn, _)| turn.as_str()),
-                    submission.as_ref(),
-                    guard.as_ref(),
-                    &connection_id,
+                    store::SubmissionEvidence {
+                        turn: interrupt_turn.as_ref().map(|(turn, _)| turn.as_str()),
+                        submission: submission.as_ref(),
+                        guard: guard.as_ref(),
+                        connection_id: &connection_id,
+                    },
                 )
             })
             .await?;
@@ -2104,8 +2112,10 @@ impl Worker {
         }
         let mut ready = VecDeque::from([event]);
         while let Some(event) = ready.pop_front() {
-            if event.outcomes.is_empty() && event.journal.is_some() {
-                let mut entries = vec![event.journal.expect("checked journal")];
+            if event.outcomes.is_empty()
+                && let Some(journal) = event.journal
+            {
+                let mut entries = vec![journal];
                 while entries.len() < JOURNAL_BATCH_MAX_EVENTS {
                     if !self.queued_commands.is_empty() {
                         break;
@@ -2279,7 +2289,7 @@ impl Worker {
                 _ => None,
             };
             let pending = ticket.and_then(|t| self.pending.get(&t.id)).cloned();
-            if let Some(actor) = actor_id.as_deref() {
+            if let Some(actor) = actor_id {
                 match (ticket, pending.as_ref()) {
                     (Some(_), Some(pending))
                         if pending.intent.agent_id == actor
@@ -2528,15 +2538,15 @@ impl Worker {
         self.schedule_publication_drain();
         self.drain_publications().await?;
         let committed_any = !committed.is_empty();
-        for (_index, (entry, effect)) in committed.into_iter().enumerate() {
+        for (index, (entry, effect)) in committed.into_iter().enumerate() {
             #[cfg(test)]
             if self
                 .bridge
                 .faults
                 .fail_journal_ack_at
                 .lock()
-                .unwrap()
-                .take_if(|fail_at| *fail_at == _index)
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .take_if(|fail_at| *fail_at == index)
                 .is_some()
             {
                 return Err(WorkerError::TaskFailed);
@@ -2630,9 +2640,11 @@ impl Worker {
                             callback_actor.as_deref(),
                             &frame,
                             now,
-                            wake,
-                            monitor_dispatch_wake,
-                            managed_tool_runtime,
+                            callback::ManagedResponseDependencies {
+                                wake,
+                                monitor_dispatch_wake,
+                                managed_runtime: managed_tool_runtime,
+                            },
                         )
                     },
                 )
@@ -2694,7 +2706,7 @@ impl Worker {
             let control = match self.control_for_actor(actor_id) {
                 Ok(control) => control,
                 Err(WorkerError::Closed) if actor_id.is_some() => {
-                    if let Some(actor) = actor_id.as_deref() {
+                    if let Some(actor) = actor_id {
                         self.retire_vm_actor(actor);
                     }
                     return Err(self.stale_vm_actor(actor_id));
@@ -2775,10 +2787,12 @@ impl Worker {
                 let _sent = reply.send(Ok(()));
             }
             Ok(false) => {
-                if self.vm_notification_waiters.contains_key(&key) {
-                    let _sent = reply.send(Err(retained::PortError::Capacity));
+                if let std::collections::btree_map::Entry::Vacant(entry) =
+                    self.vm_notification_waiters.entry(key)
+                {
+                    entry.insert(reply);
                 } else {
-                    self.vm_notification_waiters.insert(key, reply);
+                    let _sent = reply.send(Err(retained::PortError::Capacity));
                 }
             }
             Err(_) => {
@@ -2833,12 +2847,11 @@ impl Worker {
                 })
                 .await?
             {
-                if let Some(actor) = actor_id.as_deref() {
-                    if let Some(source) =
+                if let Some(actor) = actor_id
+                    && let Some(source) =
                         actor_epoch.and_then(|epoch| self.current_vm_source(actor, epoch))
-                    {
-                        self.retire_vm_actor_if_current(&source);
-                    }
+                {
+                    self.retire_vm_actor_if_current(&source);
                 }
                 return Err(WorkerError::StaleVmActor);
             }
@@ -2965,12 +2978,11 @@ impl Worker {
                 Err(WorkerError::PreparationRefused(reason))
                     if reason == "account-worker/vm-notification-actor-changed" =>
                 {
-                    if let Some(actor) = actor_id.as_deref() {
-                        if let Some(source) =
+                    if let Some(actor) = actor_id
+                        && let Some(source) =
                             actor_epoch.and_then(|epoch| self.current_vm_source(actor, epoch))
-                        {
-                            self.retire_vm_actor_if_current(&source);
-                        }
+                    {
+                        self.retire_vm_actor_if_current(&source);
                     }
                     return Err(WorkerError::StaleVmActor);
                 }
@@ -3176,7 +3188,7 @@ fn invalid_agent_record_error(error: &WorkerError) -> bool {
     invalid_agent_record_details(error).is_some()
 }
 fn invalid_agent_record_details(error: &WorkerError) -> Option<(&str, &str, &str)> {
-    let invalid = match error {
+    match error {
         WorkerError::Store(StoreError::InvalidSyncObjectField {
             scope,
             id,
@@ -3192,8 +3204,7 @@ fn invalid_agent_record_details(error: &WorkerError) -> Option<(&str, &str, &str
             },
         )) if scope == "runtime_agents" => Some((id.as_str(), pointer.as_str(), reason.as_str())),
         _ => None,
-    };
-    invalid
+    }
 }
 fn definite_rejection(error: &WorkerError) -> bool {
     matches!(

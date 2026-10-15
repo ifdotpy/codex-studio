@@ -994,10 +994,17 @@ impl AccountSessionPort for AccountSessionRuntime {
         let pending = Arc::clone(&self.pending_limit_refreshes);
         self.runtime.spawn(async move {
             let refresh_account = account.clone();
-            let _ = tokio::task::spawn_blocking(move || {
+            match tokio::task::spawn_blocking(move || {
                 AccountSessionPort::read_limits(&runtime, &refresh_account)
             })
-            .await;
+            .await
+            {
+                Ok(Ok(_)) => {}
+                Ok(Err(_)) | Err(_) => {
+                    // A refresh is best-effort; this request keeps its existing
+                    // cached limits and the next read may retry after pending clears.
+                }
+            }
             if let Ok(mut pending) = pending.lock() {
                 pending.remove(&account);
             }
@@ -1447,6 +1454,7 @@ mod historical_receipt_tests {
 
 #[cfg(test)]
 mod persistence_tests {
+    #![allow(clippy::unwrap_used)]
     use super::{AccountSessionError, persist_limits};
     use serde_json::{Value, json};
     use std::{collections::BTreeMap, sync::Mutex};

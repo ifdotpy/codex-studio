@@ -9,6 +9,11 @@ pub enum CallbackDecision {
     Answer(ResponseBody),
     Unsupported,
 }
+pub(super) struct ManagedResponseDependencies {
+    pub wake: Arc<Notify>,
+    pub monitor_dispatch_wake: Arc<Notify>,
+    pub managed_runtime: Option<Arc<crate::provider_callbacks::ManagedToolRuntime>>,
+}
 pub fn dispatch(_request: &Frame) -> CallbackDecision {
     CallbackDecision::Unsupported
 }
@@ -112,9 +117,7 @@ pub(super) fn managed_response(
     emitting_actor: Option<&str>,
     frame: &Frame,
     now: f64,
-    wake: std::sync::Arc<Notify>,
-    monitor_dispatch_wake: std::sync::Arc<Notify>,
-    managed_runtime: Option<std::sync::Arc<crate::provider_callbacks::ManagedToolRuntime>>,
+    dependencies: ManagedResponseDependencies,
 ) -> Option<Frame> {
     let Frame::Request(request) = frame else {
         return None;
@@ -149,9 +152,9 @@ pub(super) fn managed_response(
             store,
             &context,
             frame,
-            wake,
-            monitor_dispatch_wake,
-            managed_runtime.as_deref(),
+            dependencies.wake,
+            dependencies.monitor_dispatch_wake,
+            dependencies.managed_runtime.as_deref(),
         )
         .and_then(|ports| {
             crate::provider_callbacks::dispatch_with_managed_tools(
