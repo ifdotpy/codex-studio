@@ -18,17 +18,11 @@ use crate::router::HttpState;
 use crate::validation::Registry;
 
 use super::extractors::QueryParams;
-use super::manifest::{Dependency, OperationStatus, RouteGroup, dependency_unavailable, get};
-
-const CHANGES_DEPENDENCIES: [Dependency; 1] = [Dependency::new("workspace-state/image-execution")];
+use super::manifest::{OperationStatus, RouteGroup, get};
 
 pub(crate) fn routes() -> RouteGroup {
     RouteGroup::new(vec![
-        get(
-            "/api/changes",
-            OperationStatus::partial(&CHANGES_DEPENDENCIES),
-            changes,
-        ),
+        get("/api/changes", OperationStatus::Implemented, changes),
         get("/api/task", OperationStatus::Implemented, task_detail),
         get("/api/workspace", OperationStatus::Implemented, workspace),
         get(
@@ -49,6 +43,12 @@ async fn changes(
     let value = studio_runtime_process::blocking_pool::spawn_blocking(
         "runtime-http/routes/workspace_views",
         move || {
+            if scope.as_deref().is_some_and(|scope| scope != "chat") {
+                return Err(ApiError::new(
+                    StatusCode::BAD_REQUEST,
+                    "Unknown changes scope",
+                ));
+            }
             let mut connection = store.read().map_err(|_| ApiError::internal())?;
             let transaction = connection.transaction().map_err(|_| ApiError::internal())?;
             let actor_id = agent.as_deref().ok_or_else(invalid_request)?;
@@ -59,18 +59,19 @@ async fn changes(
             if deleted(&actor) {
                 return Err(invalid_request());
             }
+            if actor.get("imageWorkspace").and_then(Value::as_bool) == Some(true)
+                && scope.as_deref() != Some("chat")
+            {
+                let reason = "Studio Git tools are unavailable for image workspaces";
+                let value = json!({"files":[],"patch":"","git":false,"error":reason});
+                transaction.commit().map_err(|_| ApiError::internal())?;
+                return Ok(value);
+            }
             let result = if scope.as_deref() == Some("chat") {
                 reported_changes(&transaction, actor_id)?
             } else {
                 let context = WorkspaceContext::from_agent(&actor, actor_id)
                     .map_err(|_| invalid_stored("runtime_agents", actor_id))?;
-                if context.execution_backed {
-                    return Err(dependency_error(
-                        "GET",
-                        "/api/changes",
-                        &CHANGES_DEPENDENCIES,
-                    ));
-                }
                 git_changes(&context.cwd)?
             };
             transaction.commit().map_err(|_| ApiError::internal())?;
@@ -638,9 +639,6 @@ fn invalid_cursor(parameter: &str) -> ApiError {
     ApiError::validation(vec![json!("query"), json!(parameter)])
 }
 
-fn dependency_error(method: &str, path: &str, dependencies: &[Dependency]) -> ApiError {
-    dependency_unavailable(method, path, dependencies).unwrap_or_else(|_| ApiError::internal())
-}
 inventory::submit! {
     crate::routes::manifest::RouteModuleRegistration {
         name: "workspace_views",
@@ -649,7 +647,6 @@ inventory::submit! {
             "coordination-policy/inbox",
             "work-policy/views",
             "workspace-state/git-changes",
-            "workspace-state/image-execution",
             "workspace-state/snapshot",
         ],
     }

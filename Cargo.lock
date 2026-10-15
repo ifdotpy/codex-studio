@@ -2213,6 +2213,8 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "base64",
+ "data-encoding",
+ "flate2",
  "form_urlencoded",
  "futures-util",
  "http-range-header",

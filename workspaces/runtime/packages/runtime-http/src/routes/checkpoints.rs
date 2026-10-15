@@ -1,7 +1,7 @@
 //! Capture and preview local Git checkpoints; provider-dependent effects stay gated.
 
 use super::extractors::ApiJson;
-use super::manifest::{Dependency, OperationStatus, RouteGroup, post};
+use super::manifest::{OperationStatus, RouteGroup, post};
 use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
@@ -19,19 +19,13 @@ use crate::error::ApiError;
 use crate::router::HttpState;
 
 const THREAD_FORK_DEPENDENCY: &str = "provider-session/thread-fork";
-const IMAGE_EXECUTION_DEPENDENCY: &str = "workspace-state/image-execution";
-const IMAGE_DEPENDENCIES: [Dependency; 1] = [Dependency::new(IMAGE_EXECUTION_DEPENDENCY)];
 
 pub(crate) fn routes() -> RouteGroup {
     RouteGroup::new(vec![
-        post(
-            "/api/checkpoint",
-            OperationStatus::partial(&IMAGE_DEPENDENCIES),
-            capture,
-        ),
+        post("/api/checkpoint", OperationStatus::Implemented, capture),
         post(
             "/api/checkpoint/preview",
-            OperationStatus::partial(&IMAGE_DEPENDENCIES),
+            OperationStatus::Implemented,
             preview,
         ),
         post(
@@ -744,6 +738,10 @@ fn map_error(error: CheckpointsError) -> ApiError {
             StatusCode::BAD_REQUEST,
             "Studio Git checkpoints are unavailable for image workspaces",
         ),
+        CheckpointsError::GitToolsUnavailable => ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "Studio Git tools are unavailable for image workspaces",
+        ),
         CheckpointsError::ActivityChanged => ApiError::new(
             StatusCode::BAD_REQUEST,
             "Workspace activity changed before checkpoint capture",
@@ -792,7 +790,6 @@ inventory::submit! {
         name: "checkpoints",
         routes: Some(routes),
         dependencies: &[
-        "workspace-state/image-execution",
         "provider-session/thread-fork",
         ],
     }

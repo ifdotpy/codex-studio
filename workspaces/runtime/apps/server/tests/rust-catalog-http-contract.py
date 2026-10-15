@@ -356,7 +356,7 @@ class RustCatalogHttpContract(unittest.TestCase):
         assert_status(capabilities, 200)
         self.assertTrue(capabilities.json()["errors"])
 
-    def test_finder_view_uses_host_record_and_refuses_vm_dependency(self) -> None:
+    def test_finder_view_uses_host_record_and_projects_vm_status(self) -> None:
         host = self.backend.request(
             "GET", "/api/agents/finder-view?agent=catalog-http-agent",
         )
@@ -367,16 +367,10 @@ class RustCatalogHttpContract(unittest.TestCase):
         vm = self.backend.request(
             "GET", "/api/agents/finder-view?agent=catalog-http-vm-agent",
         )
-        if self.rust_backend:
-            assert_status(vm, 501)
-            self.assertEqual(vm.json(), {
-                "error": "Not implemented: requires vm-agents/finder-view",
-            })
-        else:
-            assert_status(vm, 200)
-            self.assertEqual(vm.json(), {
-                "kind": "vm", "state": "unmounted", "path": None, "error": None,
-            })
+        assert_status(vm, 200)
+        self.assertEqual(vm.json(), {
+            "kind": "vm", "state": "unmounted", "path": None, "error": None,
+        })
 
     def test_native_command_input_queues_a_durable_message_without_request_id(self) -> None:
         before = self.backend.received_provider_frames()

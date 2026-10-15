@@ -388,7 +388,7 @@ pub(super) fn dispatch(request: DispatchRequest<'_>) -> Result<Option<Dispatched
             } else {
                 port.review(store, actor, args, request_id, now)?
             };
-            written(result.value, result.signals)
+            child_creation_result(result)
         }
         "orchestration_interrupt" => {
             let Some(port) = ports.interrupt.as_ref() else {
@@ -563,11 +563,15 @@ fn not_sent(error: Error) -> DispatchedOperation {
 }
 
 fn unknown_input() -> DispatchedOperation {
+    unknown(
+        json!("Monitor input outcome unknown; do not repeat it"),
+        Vec::new(),
+    )
+}
+
+fn unknown(value: Value, signals: Vec<WakeSignal>) -> DispatchedOperation {
     DispatchedOperation {
-        result: OperationResult {
-            value: json!("Monitor input outcome unknown; do not repeat it"),
-            signals: Vec::new(),
-        },
+        result: OperationResult { value, signals },
         certainty: DeliveryCertainty::Unknown,
         applied: None,
     }
@@ -581,11 +585,30 @@ fn written(value: Value, signals: Vec<WakeSignal>) -> DispatchedOperation {
     }
 }
 
+fn child_creation_result(result: OperationResult) -> DispatchedOperation {
+    if result.value.get("outcome").and_then(Value::as_str) == Some("unknown") {
+        unknown(result.value, result.signals)
+    } else {
+        written(result.value, result.signals)
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{managed_input_receipt, validate_worker_model_choice};
-    use crate::managed_host_tools::DeliveryCertainty;
+    use super::{child_creation_result, managed_input_receipt, validate_worker_model_choice};
+    use crate::managed_host_tools::{DeliveryCertainty, OperationResult};
     use serde_json::json;
+
+    #[test]
+    fn uncertain_guest_save_remains_unknown_at_the_tool_boundary() {
+        let result = child_creation_result(OperationResult {
+            value: json!({"outcome":"unknown","requestId":"review-1"}),
+            signals: Vec::new(),
+        });
+        assert_eq!(result.certainty, DeliveryCertainty::Unknown);
+        assert_eq!(result.applied, None);
+        assert_eq!(result.result.value["outcome"], "unknown");
+    }
 
     #[test]
     fn managed_input_receipts_preserve_written_not_sent_and_unknown() {

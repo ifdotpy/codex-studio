@@ -657,11 +657,7 @@ fn requested_base_is_pinned_and_unsupported_or_restore_refusals_do_not_write() {
         ],
     );
     fixture.patch("workerBaseCommit", json!(base));
-    for (key, value) in [
-        ("workspaceMode", json!("image")),
-        ("executionMode", json!("vm")),
-        ("environment", json!("linux")),
-    ] {
+    for (key, value) in [("workspaceMode", json!("image"))] {
         let original = fixture.actor().get(key).cloned().unwrap_or(Value::Null);
         fixture.patch(key, value);
         let before = snapshot(&fixture.store, &fixture.id).expect("before");
@@ -674,6 +670,24 @@ fn requested_base_is_pinned_and_unsupported_or_restore_refusals_do_not_write() {
             before
         );
         fixture.patch(key, original);
+    }
+    let original_vm_fields = fixture.actor();
+    fixture.patch("executionMode", json!("vm"));
+    fixture.patch("layrReady", json!(true));
+    fixture.patch("layrProjectId", json!("fake-project"));
+    fixture.patch("layrLine", json!("fake-line"));
+    fixture.patch("cwd", json!("/guest/project/lines/fake-line"));
+    assert!(matches!(
+        prepare(&fixture.store, &fixture.id).expect("ready VM workspace"),
+        WorkspaceDecision::Ready { .. }
+    ));
+    fixture.patch("executionMode", json!("native"));
+    fixture.patch("layrReady", json!(false));
+    for key in ["layrProjectId", "layrLine", "cwd"] {
+        fixture.patch(
+            key,
+            original_vm_fields.get(key).cloned().unwrap_or(Value::Null),
+        );
     }
     fixture.store.transaction(|tx| {tx.execute("INSERT INTO runtime_workspace_operations(id,record) VALUES('restore:lost-marker',?1)", [json!({"id":"restore:lost-marker","kind":"restore","agent":fixture.id,"cwd":fixture.actor()["cwd"],"phase":"recovery_required"}).to_string()])?;Ok(())}).expect("orphan restore");
     let before = snapshot(&fixture.store, &fixture.id).expect("before");

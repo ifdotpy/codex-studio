@@ -79,6 +79,35 @@ fn prepare_attempt(
 ) -> Result<WorkspaceDecision, WorkspaceError> {
     let initial = snapshot(store, agent_id)?;
     let actor = actor(&initial)?;
+    // VM paths are guest paths, so they cannot enter Git canonicalization. The
+    // native-action owner binds the line; this token admits only the persisted
+    // ready association and is rechecked when the turn is submitted.
+    if actor.execution_mode.as_deref() == Some("vm") {
+        if actor.deleted_at.is_some() || !actor.auto_wake {
+            return Ok(WorkspaceDecision::Defer { reservation: None });
+        }
+        let value = &initial.agent.record;
+        if value.get("layrReady").and_then(Value::as_bool) != Some(true)
+            || value
+                .get("layrProjectId")
+                .and_then(Value::as_str)
+                .is_none_or(str::is_empty)
+            || value
+                .get("layrLine")
+                .and_then(Value::as_str)
+                .is_none_or(str::is_empty)
+        {
+            return Ok(WorkspaceDecision::Defer { reservation: None });
+        }
+        let cwd = value
+            .get("cwd")
+            .and_then(Value::as_str)
+            .filter(|cwd| !cwd.is_empty())
+            .ok_or(WorkspaceError::InvalidRecord)?;
+        return Ok(WorkspaceDecision::Ready {
+            token: ReadyToken::new(value, PathBuf::from(cwd)),
+        });
+    }
     if actor.image_workspace
         || actor.image_workspace_ready
         || actor.image_workspace_phase.is_some()
@@ -90,6 +119,17 @@ fn prepare_attempt(
         {
             if actor.deleted_at.is_some() || !actor.auto_wake {
                 return Ok(WorkspaceDecision::Defer { reservation: None });
+            }
+            if !actor.image_workspace_ready {
+                return Ok(
+                    if actor.image_workspace_phase.as_deref() == Some("creating") {
+                        WorkspaceDecision::Defer { reservation: None }
+                    } else {
+                        WorkspaceDecision::Refuse(
+                            crate::workspace_ready::WorkspaceRefusal::ImageWorkspaceUnsupported,
+                        )
+                    },
+                );
             }
             let mounted = crate::image_workspace::ensure_mounted(agent_id)
                 .map_err(|_| WorkspaceError::Git)?;

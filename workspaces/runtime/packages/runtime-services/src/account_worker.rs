@@ -1107,9 +1107,10 @@ impl Worker {
                 return Ok(());
             };
             let i = intent.clone();
+            let resources = self.resources.clone();
             let Some(token) = self
                 .prepare("workspace", move |s| {
-                    store::preparation_step(s, &i, || preparation::workspace(s, &i))
+                    store::preparation_step(s, &i, || preparation::workspace(s, &resources, &i))
                 })
                 .await?
             else {

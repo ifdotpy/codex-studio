@@ -649,15 +649,6 @@ pub(crate) fn execute(
         ManagedHostTool::Watch => ports.watch(tx, actor, &call.args, &call.request_id, now)?,
         ManagedHostTool::Monitor => ports.monitor(tx, actor, &call.args, &call.request_id, now)?,
         ManagedHostTool::Review => {
-            if actor
-                .record
-                .extra
-                .get("executionMode")
-                .and_then(Value::as_str)
-                == Some("vm")
-            {
-                return Err(Error::Unavailable("layr-review/worker-driver"));
-            }
             if actor.provider.as_deref().unwrap_or("codex") != "codex" {
                 return Err(Error::Invalid("Native review requires a Codex agent"));
             }

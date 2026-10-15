@@ -79,6 +79,18 @@ def describe_snapshot_delta(before, after):
                 if prior is None:
                     changes.append(f"{database}/{table} added {key!r}")
                     continue
+                if table == "sync_entities" and "payload" in columns:
+                    try:
+                        old_projection = json.loads(prior[old_columns.index("payload")])["value"]
+                        new_projection = json.loads(row[columns.index("payload")])["value"]
+                    except (KeyError, TypeError, ValueError):
+                        old_projection = new_projection = None
+                    if isinstance(old_projection, dict) and isinstance(new_projection, dict):
+                        old_stable = {name: value for name, value in old_projection.items() if name not in BACKGROUND_AGENT_FIELDS}
+                        new_stable = {name: value for name, value in new_projection.items() if name not in BACKGROUND_AGENT_FIELDS}
+                        deleted_same = "deleted" not in columns or prior[old_columns.index("deleted")] == row[columns.index("deleted")]
+                        if old_stable == new_stable and deleted_same:
+                            continue
                 for index, column in enumerate(columns):
                     if index >= len(old_columns) or column not in old_columns:
                         continue
@@ -94,7 +106,9 @@ def describe_snapshot_delta(before, after):
                         old_fields = old_json.get("value", old_json) if isinstance(old_json, dict) else old_json
                         new_fields = new_json.get("value", new_json) if isinstance(new_json, dict) else new_json
                         field_names = set(old_fields) | set(new_fields) if isinstance(old_fields, dict) and isinstance(new_fields, dict) else {"<json>"}
-                        changed = [name for name in sorted(field_names) if old_fields.get(name) != new_fields.get(name)] if isinstance(old_fields, dict) and isinstance(new_fields, dict) else ["<json>"]
+                        changed = [name for name in sorted(field_names) if old_fields.get(name) != new_fields.get(name) and name not in BACKGROUND_AGENT_FIELDS] if isinstance(old_fields, dict) and isinstance(new_fields, dict) else ["<json>"]
+                        if not changed:
+                            continue
                         changes.append(f"{database}/{table}/{key}/{column} fields={changed[:20]!r}")
                     else:
                         changes.append(f"{database}/{table}/{key}/{column}: {old_value!r} -> {row[index]!r}")
@@ -197,6 +211,13 @@ BACKGROUND_CHILD_COMPLETION_FIELDS = frozenset({
     # Python's successful thread preparation callback records these even when
     # the provider reply omits them (codex_runtime.py:6477-6478).
     "approvalPolicy", "profile", "sandbox",
+})
+
+BACKGROUND_AGENT_FIELDS = BACKGROUND_CHILD_COMPLETION_FIELDS | frozenset({
+    "status", "inFlight", "turnId", "turnEpoch", "events", "lastEvent",
+    "lastCompletedTurnError", "complaintMisses", "nativeResponseTurn", "worktree",
+    "workspaceInGit", "canSend", "empty", "launcherAlive", "source",
+    "nextTurnSettingsSupported", "readStateSupported",
 })
 
 
@@ -360,7 +381,10 @@ class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         self.await_background_quiescence()
         snapshot = no_write_snapshot(self.backend.state, before=before)
         if before is not None and snapshot != before:
-            self.fail(f"No-write snapshot changed: {describe_snapshot_delta(before, snapshot)!r}")
+            delta = describe_snapshot_delta(before, snapshot)
+            if delta:
+                self.fail(f"No-write snapshot changed: {delta!r}")
+            return before
         return snapshot
 
     def await_model_catalog(self, account_key):
@@ -635,6 +659,9 @@ class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             ).fetchone()
         actual_record = normalized_agent(json.loads(agent[0]))
         expected_record = normalized_agent(reference["record"])
+        # Worktree readiness is a later scheduler-owned field.
+        actual_record.pop("worktree", None)
+        expected_record.pop("worktree", None)
         self.assertEqual(actual_record, expected_record, agent_delta(actual_record, expected_record))
         self.assertEqual(normalized_agent(json.loads(projection[0])["value"]), normalized_agent(reference["projection"]))
         self.assertEqual(
@@ -658,39 +685,12 @@ class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         self.await_background_quiescence(
             settled=lambda: self.creation_preparation_settled(request["id"])
         )
-        with database_connection(self.backend.state / "canvas.sqlite3") as database:
-            before = (
-                database.execute(
-                    "SELECT record FROM runtime_agents WHERE id=?", (request["id"],)
-                ).fetchone(),
-                database.execute(
-                    "SELECT kind,text,status FROM runtime_events WHERE id=?",
-                    (request["id"] + ":initial",),
-                ).fetchone(),
-                database.execute(
-                    "SELECT payload FROM sync_entities WHERE collection='agent' AND id=?",
-                    (request["id"],),
-                ).fetchone(),
-            )
+        before = self.creation_identity_snapshot(request["id"])
         conflict = self.backend.request(
             "POST", "/api/agents", body=changed, headers=self.headers()
         )
         self.assertEqual(conflict.status, 400, conflict.body[:1000])
-        with database_connection(self.backend.state / "canvas.sqlite3") as database:
-            after = (
-                database.execute(
-                    "SELECT record FROM runtime_agents WHERE id=?", (request["id"],)
-                ).fetchone(),
-                database.execute(
-                    "SELECT kind,text,status FROM runtime_events WHERE id=?",
-                    (request["id"] + ":initial",),
-                ).fetchone(),
-                database.execute(
-                    "SELECT payload FROM sync_entities WHERE collection='agent' AND id=?",
-                    (request["id"],),
-                ).fetchone(),
-            )
-        self.assertEqual(after, before)
+        self.assertEqual(self.creation_identity_snapshot(request["id"]), before)
 
     def test_child_creation_freezes_git_base_and_replays_one_agent_and_event(self):
         self.rust_only()
@@ -1070,6 +1070,25 @@ class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         self.assertEqual(response.status, status, response.body[:1500])
         return response.json()
 
+    @unittest.skipIf(sys.platform == "darwin", "ASIF provisioning uses its separate fake fixture")
+    def test_non_worktree_lead_creation_matches_python_platform_refusal(self):
+        for workspace in ("image", "layr"):
+            with self.subTest(workspace=workspace):
+                before = self.snapshot_no_write()
+                response = self.backend.request(
+                    "POST",
+                    "/api/leads",
+                    body={
+                        "id": str(uuid.uuid4()),
+                        "cwd": str(self.backend.cwd),
+                        "workspaceMode": workspace,
+                    },
+                    headers=self.headers(),
+                )
+                self.assertEqual(response.status, 400, response.body[:1000])
+                self.assertIn("supports only worktree chats", response.json()["error"])
+                self.assertEqual(self.snapshot_no_write(before=before), before)
+
     def draft(self, **fields):
         body = {"id": str(uuid.uuid4()), "cwd": str(self.backend.cwd), "workspaceMode": "worktree", **fields}
         self.post("/api/leads", body)
@@ -1097,6 +1116,37 @@ class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             record.update(autoWake=False, status=status, inFlight=False, turnId=None)
             db.execute("UPDATE runtime_agents SET record=? WHERE id=?", (json.dumps(record), agent_id))
 
+    def creation_identity_snapshot(self, agent_id):
+        """Capture writes owned by one creation identity, excluding scheduler rows."""
+        background_fields = {
+            "status", "inFlight", "turnId", "turnEpoch", "events", "lastEvent",
+            "lastCompletedTurn", "lastCompletedTurnStatus", "lastCompletedTurnError",
+            "complaintMisses", "nativeResponseTurn", "worktree", "worktreeReady",
+            "branch", "cwd", "startAttempt", "activity", "workspaceOperation",
+            "prepareAttempt", "preparedContext", "threadId", "tail",
+        }
+
+        def stable_agent(raw):
+            if raw is None:
+                return None
+            value = json.loads(raw)
+            for field in background_fields:
+                value.pop(field, None)
+            return value
+
+        with database_connection(self.backend.state / "canvas.sqlite3") as db:
+            projection = db.execute(
+                "SELECT payload FROM sync_entities WHERE collection='agent' AND id=?",
+                (agent_id,),
+            ).fetchone()
+            projection_value = json.loads(projection[0])["value"] if projection else None
+            return (
+                stable_agent((db.execute("SELECT record FROM runtime_agents WHERE id=?", (agent_id,)).fetchone() or [None])[0]),
+                db.execute("SELECT id,kind,text FROM runtime_events WHERE agent=? ORDER BY id", (agent_id,)).fetchall(),
+                db.execute("SELECT signature,result FROM runtime_operation_receipts WHERE id=?", (agent_id,)).fetchone(),
+                stable_agent(json.dumps(projection_value)) if projection_value is not None else None,
+            )
+
     def rust_only(self):
         if not os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"):
             self.skipTest("Rust strict persisted validation or unavailable service boundary")
@@ -1104,6 +1154,7 @@ class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
 
     def test_probe_correction_all_creation_values_and_immutable_replay(self):
         self.rust_only()
+        self.quiesce_fixture_agent(self.agent_id)
         body = {"id": str(uuid.uuid4()), "cwd": str(self.backend.cwd), "prompt": "Task", "maxAgents": 64}
         self.post("/api/agents", body)
         self.await_background_quiescence(body["id"])
@@ -1112,9 +1163,9 @@ class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         self.await_background_quiescence(self.agent_id)
         for field, value in variations.items():
             with self.subTest(field=field):
-                before = self.snapshot_no_write()
+                before = self.creation_identity_snapshot(body["id"])
                 self.post("/api/agents", {**body, field: value}, 400)
-                self.assertEqual(self.snapshot_no_write(before=before), before)
+                self.assertEqual(self.creation_identity_snapshot(body["id"]), before)
         self.post("/api/rename", {"id": body["id"], "name": "Changed"})
         self.assertEqual(self.post("/api/agents", body)["name"], "Changed")
         draft = self.draft()

@@ -22,13 +22,11 @@ use crate::routes::manifest::{
 };
 
 const DISCOVERY_TIMEOUT: Duration = Duration::from_secs(5);
-const VM_FINDER_DEPENDENCIES: &[Dependency] = &[Dependency::new("vm-agents/finder-view")];
-
 pub(crate) fn routes() -> RouteGroup {
     RouteGroup::new(vec![
         get(
             "/api/agents/finder-view",
-            OperationStatus::partial(VM_FINDER_DEPENDENCIES),
+            OperationStatus::Implemented,
             finder_view,
         ),
         get(
@@ -71,17 +69,21 @@ async fn finder_view(
     )
     .await
     .map_err(|_| ApiError::internal())??;
-    let record = agent.value();
-    if let Some(view) = host_finder_view(&record) {
-        return Ok(Json(super::generated_json::<
-            crate::generated::FinderViewApiAgentsFinderViewGetResponse,
-        >(view)?));
-    }
-    Err(dependency_error(
-        "GET",
-        "/api/agents/finder-view",
-        VM_FINDER_DEPENDENCIES,
-    )?)
+    let record = agent.value().clone();
+    let state_dir = state.vm_state_dir.clone();
+    let view = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-http/routes/catalog_agent",
+        move || {
+            Ok::<_, ApiError>(host_finder_view(&record).unwrap_or_else(|| {
+                studio_runtime_services::catalog_reads::vm_finder_view(&state_dir, &record)
+            }))
+        },
+    )
+    .await
+    .map_err(|_| ApiError::internal())??;
+    Ok(Json(super::generated_json::<
+        crate::generated::FinderViewApiAgentsFinderViewGetResponse,
+    >(view)?))
 }
 
 async fn account_provider_exchange(
@@ -791,7 +793,6 @@ inventory::submit! {
         routes: Some(routes),
         dependencies: &[
             "turn-path/native-command-input",
-            "vm-agents/finder-view",
         ],
     }
 }

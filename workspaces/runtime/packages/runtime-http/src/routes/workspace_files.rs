@@ -2,7 +2,7 @@
 
 use super::extractors::ApiJson;
 use super::extractors::QueryParams;
-use super::manifest::{Dependency, OperationStatus, RouteGroup, dependency_unavailable, get, post};
+use super::manifest::{OperationStatus, RouteGroup, get, post};
 use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
@@ -18,22 +18,11 @@ use studio_runtime_store::{
 use crate::error::ApiError;
 use crate::router::HttpState;
 
-const IMAGE_EXECUTION_DEPENDENCY: &str = "workspace-state/image-execution";
-const EXECUTION_DEPENDENCIES: [Dependency; 1] = [Dependency::new(IMAGE_EXECUTION_DEPENDENCY)];
-
 pub(crate) fn routes() -> RouteGroup {
     RouteGroup::new(vec![
         post("/api/assets", OperationStatus::Implemented, upload_asset),
-        get(
-            "/api/file-info",
-            OperationStatus::partial(&EXECUTION_DEPENDENCIES),
-            file_info,
-        ),
-        get(
-            "/api/file",
-            OperationStatus::partial(&EXECUTION_DEPENDENCIES),
-            file_content,
-        ),
+        get("/api/file-info", OperationStatus::Implemented, file_info),
+        get("/api/file", OperationStatus::Implemented, file_content),
     ])
 }
 
@@ -153,9 +142,12 @@ fn read_info(
         return Ok(info);
     }
     let context = workspace_context(store, agent_id)?;
-    ensure_local_workspace(&context, "GET", "/api/file-info")?;
     let path = path.ok_or_else(|| file_error(WorkspaceFilesError::MissingPath))?;
-    workspace_files::file_info(path, Some(&context.cwd)).map_err(file_error)
+    if context.image_workspace_ready {
+        workspace_files::image_file_info(path, &context.cwd).map_err(file_error)
+    } else {
+        workspace_files::file_info(path, Some(&context.cwd)).map_err(file_error)
+    }
 }
 
 fn read_content(
@@ -190,9 +182,12 @@ fn read_content(
         return Ok(content);
     }
     let context = workspace_context(store, agent_id)?;
-    ensure_local_workspace(&context, "GET", "/api/file")?;
     let path = path.ok_or_else(|| file_error(WorkspaceFilesError::MissingPath))?;
-    workspace_files::file_content(path, Some(&context.cwd)).map_err(file_error)
+    if context.image_workspace_ready {
+        workspace_files::image_file_content(path, &context.cwd).map_err(file_error)
+    } else {
+        workspace_files::file_content(path, Some(&context.cwd)).map_err(file_error)
+    }
 }
 
 fn workspace_context(
@@ -224,21 +219,6 @@ fn validate_agent(store: &RuntimeStore, agent_id: &str) -> Result<WorkspaceConte
         WorkspaceFilesError::InvalidAgent(id) => invalid_stored("agents", &id),
         other => file_error(other),
     })
-}
-
-fn ensure_local_workspace(
-    context: &WorkspaceContext,
-    method: &str,
-    path: &str,
-) -> Result<(), ApiError> {
-    if context.execution_backed {
-        Err(
-            dependency_unavailable(method, path, &EXECUTION_DEPENDENCIES)
-                .unwrap_or_else(|_| ApiError::internal()),
-        )
-    } else {
-        Ok(())
-    }
 }
 
 fn string_query<'a>(query: &'a QueryParams, name: &str) -> Option<&'a str> {
@@ -328,6 +308,6 @@ inventory::submit! {
     crate::routes::manifest::RouteModuleRegistration {
         name: "workspace_files",
         routes: Some(routes),
-        dependencies: &["workspace-state/image-execution"],
+        dependencies: &[],
     }
 }

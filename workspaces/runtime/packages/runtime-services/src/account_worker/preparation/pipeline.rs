@@ -2,7 +2,7 @@
 use super::*;
 use crate::{submit_gates as gates, thread_prepare as thread, turn_prepare as turn};
 use snapshot::*;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 use studio_runtime_store::Transaction;
 
@@ -362,8 +362,101 @@ fn admit_for_purpose(
 }
 pub(crate) fn workspace(
     store: &RuntimeStore,
+    resources: &PreparationResources,
     intent: &TurnIntent,
 ) -> Result<crate::workspace_ready::ReadyToken, WorkerError> {
+    workspace_with_vm_action(store, resources, intent, false)
+}
+
+fn workspace_with_vm_action(
+    store: &RuntimeStore,
+    resources: &PreparationResources,
+    intent: &TurnIntent,
+    allow_vm_native_action: bool,
+) -> Result<crate::workspace_ready::ReadyToken, WorkerError> {
+    let record = {
+        let read = store.read()?;
+        AgentRepository::get(&read, &AgentId::from(intent.agent_id.as_str()))?
+            .ok_or_else(|| invalid(&intent.agent_id))?
+    };
+    if record.extra.get("executionMode").and_then(Value::as_str) == Some("vm") {
+        if record.extra.get("layrReady").and_then(Value::as_bool) != Some(true) {
+            let start_attempt = record.extra.get("startAttempt").unwrap_or(&Value::Null);
+            let attempt_id = start_attempt
+                .get("id")
+                .and_then(Value::as_str)
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| refusal("workspace-state/vm-start-attempt".into()))?;
+            let action_request_id = start_attempt
+                .get("actionRequestId")
+                .and_then(Value::as_str)
+                .filter(|value| !value.is_empty())
+                .map(str::to_owned)
+                .unwrap_or_else(|| format!("vm-turn-preparation:{attempt_id}"));
+            let epoch = u64::try_from(record.epoch)
+                .map_err(|_| refusal("workspace-state/vm-epoch".into()))?;
+            #[cfg(unix)]
+            let fallback_guest =
+                crate::linux_vm_guest::UnixGuestRpc::for_runtime_state(store.state_dir());
+            #[cfg(unix)]
+            let guest = resources.guest_rpc.as_deref().unwrap_or(&fallback_guest);
+            #[cfg(not(unix))]
+            let guest = resources.guest_rpc.as_deref().ok_or_else(|| {
+                WorkerError::PreparationPending("workspace-readiness/vm-guest-unavailable".into())
+            })?;
+            // Python's `codex_runtime.py:6405-6413` calls VM preparation from
+            // `prepare_locked` before connecting the provider for every VM turn.
+            let prepare = if record.extra.get("isLead").and_then(Value::as_bool) == Some(true) {
+                crate::vm_preparation::prepare_lead
+            } else {
+                crate::vm_preparation::prepare_child
+            };
+            prepare(
+                store,
+                guest,
+                &intent.agent_id,
+                attempt_id,
+                &action_request_id,
+                epoch,
+            )
+            .map_err(|error| match error {
+                error @ (crate::native_actions::NativeError::Unknown
+                | crate::native_actions::NativeError::Unavailable(_)) => {
+                    WorkerError::PreparationPending(format!("workspace-readiness/{error}"))
+                }
+                error => refusal(error.to_string()),
+            })?;
+        }
+        if allow_vm_native_action {
+            let current = {
+                let read = store.read()?;
+                AgentRepository::get(&read, &AgentId::from(intent.agent_id.as_str()))?
+                    .ok_or_else(|| invalid(&intent.agent_id))?
+            };
+            if current.extra.get("layrReady").and_then(Value::as_bool) != Some(true) {
+                return Err(WorkerError::PreparationPending(
+                    "workspace-readiness/vm-guest-not-ready".into(),
+                ));
+            }
+            let host_project = current
+                .extra
+                .get("hostProjectPath")
+                .and_then(Value::as_str)
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| refusal("workspace-readiness/vm-host-project-required".into()))?;
+            return Ok(crate::workspace_ready::ReadyToken::new(
+                &current.value(),
+                PathBuf::from(host_project),
+            ));
+        }
+        // Python prepares a VM before provider connection, but ordinary turn
+        // startup remains pending until the guest-backed turn launcher is selected.
+        return Err(WorkerError::PreparationPending(
+            vm_turn_launcher_refusal(allow_vm_native_action)
+                .expect("native VM actions returned the ready guest token above")
+                .into(),
+        ));
+    }
     // Git provisioning acquires its own short transactions. No store transaction is held here.
     match crate::workspace_ready_git::prepare(store, &intent.agent_id)
         .map_err(|e| refusal(e.to_string()))?
@@ -406,6 +499,24 @@ pub(crate) fn workspace(
         )),
     }
 }
+
+fn vm_turn_launcher_refusal(allow_vm_native_action: bool) -> Option<&'static str> {
+    (!allow_vm_native_action).then_some("provider-session/vm-turn-launcher")
+}
+
+#[cfg(test)]
+mod vm_turn_launcher_gate_tests {
+    use super::vm_turn_launcher_refusal;
+
+    #[test]
+    fn the_turn_launcher_gate_does_not_block_native_action_preparation() {
+        assert_eq!(
+            vm_turn_launcher_refusal(false),
+            Some("provider-session/vm-turn-launcher")
+        );
+        assert_eq!(vm_turn_launcher_refusal(true), None);
+    }
+}
 pub(crate) fn prepare(
     store: &RuntimeStore,
     resources: &PreparationResources,
@@ -431,7 +542,7 @@ pub(crate) fn prepare_with_connection_id(
         ));
     }
     let selection = admit(store, resources, intent)?;
-    let token = workspace(store, intent)?;
+    let token = workspace(store, resources, intent)?;
     prepare_ready(
         store,
         resources,
@@ -588,6 +699,21 @@ fn validate_monitor_actor(record: &Value, epoch: u64) -> Result<(), WorkerError>
         return Err(refusal("monitor-preparation/actor-changed".into()));
     }
     Ok(())
+}
+
+fn execution_cwd(record: &Value, validated_workspace_cwd: &Path) -> Option<String> {
+    if record.get("executionMode").and_then(Value::as_str) == Some("vm") {
+        record.get("cwd").and_then(Value::as_str).map(str::to_owned)
+    } else {
+        Some(validated_workspace_cwd.to_string_lossy().into_owned())
+    }
+}
+
+fn apply_vm_reviewer_permissions(params: &mut serde_json::Map<String, Value>, vm_reviewer: bool) {
+    if vm_reviewer {
+        params.insert("approvalPolicy".into(), json!("never"));
+        params.insert("sandboxPolicy".into(), json!({"type":"readOnly"}));
+    }
 }
 
 fn monitor_command_settings(
@@ -759,7 +885,7 @@ fn prepare_native_snapshot(
     let token = if allow_paused_start {
         None
     } else {
-        Some(workspace(store, &intent)?)
+        Some(workspace_with_vm_action(store, resources, &intent, true)?)
     };
     let restore_cwd = if allow_paused_start {
         let cwd = intent
@@ -952,7 +1078,7 @@ pub(crate) fn prepare_ready(
         None
     };
     let (identity, _) = catalog(resources, intent)?;
-    let (mut snapshot, mut turn_snapshot, events, mut prepared_intent) =
+    let (mut snapshot, mut turn_snapshot, events, mut prepared_intent, vm_reviewer) =
         scheduler::lifecycle_transaction_with(store, |tx| {
             let record = preconditions(tx, intent, &filesystem, prepared_host.as_ref())?;
             let mut frozen = selection
@@ -961,7 +1087,10 @@ pub(crate) fn prepare_ready(
             let cwd = token
                 .validate(tx)?
                 .map_err(|_| refusal("workspace-readiness/token-stale".into()))?;
-            frozen["cwd"] = json!(cwd);
+            let vm_reviewer = frozen["executionMode"] == "vm" && frozen["role"] == "reviewer";
+            if let Some(execution_cwd) = execution_cwd(&frozen, &cwd) {
+                frozen["cwd"] = json!(execution_cwd);
+            }
             if frozen.get("nativeEffort").is_none() {
                 frozen["effort"] = json!(selection.settings.effort);
                 frozen["nativeEffort"] = json!(selection.settings.native_effort);
@@ -980,7 +1109,13 @@ pub(crate) fn prepare_ready(
             prepared_intent.cwd = Some(snapshot.actor.cwd.clone());
             prepared_intent.model = snapshot.settings.model.clone();
             prepared_intent.thread_id = snapshot.actor.thread_id.clone();
-            Ok::<_, WorkerError>((snapshot, turn_snapshot, events, prepared_intent))
+            Ok::<_, WorkerError>((
+                snapshot,
+                turn_snapshot,
+                events,
+                prepared_intent,
+                vm_reviewer,
+            ))
         })?;
     let mut guard = CommitGuard {
         native_params: None,
@@ -1066,6 +1201,7 @@ pub(crate) fn prepare_ready(
         },
     )
     .map_err(|e| refusal(format!("thread-preparation/{e:?}")))?;
+    apply_vm_reviewer_permissions(&mut params, vm_reviewer);
     params.insert("input".into(), json!(compiled.provider_inputs));
     params.insert(
         "clientUserMessageId".into(),
@@ -1541,6 +1677,48 @@ mod daybreak_tests {
             Some(json!({
                 "approvalPolicy":"on-request","sandboxPolicy":{"type":"readOnly"}
             }))
+        );
+
+        let vm_reviewer = monitor_command_settings(
+            &json!({"executionMode":"vm","sandbox":"danger-full-access"}),
+            "/workspace",
+            thread::Role::Reviewer,
+            false,
+            Some(true),
+            None,
+            None,
+        );
+        assert_eq!(
+            vm_reviewer.ok(),
+            Some(json!({
+                "approvalPolicy":"never","sandboxPolicy":{"type":"readOnly"}
+            }))
+        );
+
+        let mut yolo_turn = serde_json::Map::from_iter([
+            ("approvalPolicy".into(), json!("never")),
+            ("sandboxPolicy".into(), json!({"type":"dangerFullAccess"})),
+        ]);
+        apply_vm_reviewer_permissions(&mut yolo_turn, true);
+        assert_eq!(yolo_turn["approvalPolicy"], "never");
+        assert_eq!(yolo_turn["sandboxPolicy"], json!({"type":"readOnly"}));
+    }
+
+    #[test]
+    fn vm_execution_uses_guest_cwd_after_host_workspace_token_validation() {
+        assert_eq!(
+            execution_cwd(
+                &json!({"executionMode":"vm","cwd":"/guest/line"}),
+                &PathBuf::from("/host/project"),
+            ),
+            Some("/guest/line".into())
+        );
+        assert_eq!(
+            execution_cwd(
+                &json!({"cwd":"/old"}),
+                &PathBuf::from("/validated/host/workspace"),
+            ),
+            Some("/validated/host/workspace".into())
         );
     }
 }

@@ -460,7 +460,7 @@ class WorkspaceViewsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         self.assertEqual(reported.json()["files"], [])
         self.assertEqual(conditional.headers.get("etag"), etag)
 
-    def test_changes_reports_git_output_etag_and_image_execution_dependency(self) -> None:
+    def test_changes_reports_git_output_etag_and_image_and_vm_behavior(self) -> None:
         changes = self.backend.request(
             "GET", "/api/changes?" + urlencode({"agent": self.lead_id}),
         )
@@ -482,15 +482,32 @@ class WorkspaceViewsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         self._write_record("runtime_agents", self.lead_id, {**original, "executionMode": "vm"})
         refused_state = self._record("runtime_agents", self.lead_id)
         try:
-            unsupported = self.backend.request(
+            vm_changes = self.backend.request(
                 "GET", "/api/changes?" + urlencode({"agent": self.lead_id}),
             )
-            if self.rust_backend:
-                self.assertEqual(unsupported.status, 501, unsupported.body[:1000])
-                self.assertIn("workspace-state/image-execution", unsupported.json()["error"])
-                self.assertEqual(self._record("runtime_agents", self.lead_id), refused_state)
-            else:
-                self.assertEqual(unsupported.status, 200, unsupported.body[:1000])
+            self.assertEqual(vm_changes.status, 200, vm_changes.body[:1000])
+            self.assertIn("tracked.txt", {file["path"] for file in vm_changes.json()["files"]})
+            self.assertEqual(self._record("runtime_agents", self.lead_id), refused_state)
+
+            image = {**original, "imageWorkspace": True, "workspaceMode": "image"}
+            self._write_record("runtime_agents", self.lead_id, image)
+            image_changes = self.backend.request(
+                "GET", "/api/changes?" + urlencode({"agent": self.lead_id}),
+            )
+            self.assertEqual(image_changes.status, 200, image_changes.body[:1000])
+            self.assertEqual(image_changes.json(), {
+                "files": [], "patch": "", "git": False,
+                "error": "Studio Git tools are unavailable for image workspaces",
+            })
+            chat_changes = self.backend.request(
+                "GET", "/api/changes?" + urlencode({"agent": self.lead_id, "scope": "chat"}),
+            )
+            self.assertEqual(chat_changes.status, 200, chat_changes.body[:1000])
+            self.assertEqual(chat_changes.json()["scope"], "chat")
+            unknown_scope = self.backend.request(
+                "GET", "/api/changes?" + urlencode({"agent": self.lead_id, "scope": "unknown"}),
+            )
+            self.assertEqual(unknown_scope.status, 400, unknown_scope.body[:1000])
         finally:
             self._write_record("runtime_agents", self.lead_id, original)
 

@@ -6,18 +6,20 @@
 //! to finish local writes after restart.
 
 use std::fs::{self, File, OpenOptions};
-use std::io::{Read, Write};
+use std::io::{Cursor, Read, Write};
 use std::path::{Component, Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
-use flate2::{Compression, write::GzEncoder};
 use nix::fcntl::{Flock, FlockArg};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
-use crate::linux_vm_guest::{GuestError, GuestRpc};
+use crate::{
+    linux_vm_guest::{GuestError, GuestRpc},
+    tar_gzip::TarGzipWriter,
+};
 
 const MAX_SYNC_FILE_BYTES: u64 = 256 * 1024 * 1024;
 const HANDOFF_TIMEOUT: Duration = Duration::from_secs(600);
@@ -622,55 +624,22 @@ fn make_archive(
         return Err(MacSyncError::Invalid);
     }
     let raw = File::create(path).map_err(MacSyncError::Io)?;
-    let mut gzip = GzEncoder::new(raw, Compression::default());
-    let mut header = [0u8; 512];
-    put_octal(
-        &mut header[100..108],
-        if kind == "link" { 0o777 } else { mode as u64 },
-    );
-    put_octal(&mut header[108..116], 0);
-    put_octal(&mut header[116..124], 0);
-    put_octal(
-        &mut header[124..136],
-        if kind == "file" {
-            bytes.len() as u64
-        } else {
-            0
-        },
-    );
-    put_octal(&mut header[136..148], 0);
-    header[148..156].fill(b' ');
-    header[156] = if kind == "link" { b'2' } else { b'0' };
+    let mut gzip = TarGzipWriter::new(raw);
     if kind == "link" {
         let target = fs::read_link(original).map_err(MacSyncError::Io)?;
         let target = target.to_string_lossy();
         if target.len() > 100 {
             return Err(MacSyncError::Invalid);
         }
-        header[157..157 + target.len()].copy_from_slice(target.as_bytes());
+        gzip.append_symlink(rel, 0o777, &target)
+            .map_err(MacSyncError::Io)?;
+    } else {
+        let mut input = Cursor::new(bytes);
+        gzip.append_file(rel, mode, bytes.len() as u64, &mut input)
+            .map_err(MacSyncError::Io)?;
     }
-    header[257..263].copy_from_slice(b"ustar\0");
-    header[263..265].copy_from_slice(b"00");
-    header[..file_name.len()].copy_from_slice(file_name.as_bytes());
-    if !parent.is_empty() {
-        header[345..345 + parent.len()].copy_from_slice(parent.as_bytes());
-    }
-    let checksum: u64 = header.iter().map(|byte| *byte as u64).sum();
-    put_octal(&mut header[148..156], checksum);
-    gzip.write_all(&header).map_err(MacSyncError::Io)?;
-    if kind == "file" {
-        gzip.write_all(bytes).map_err(MacSyncError::Io)?;
-        let pad = (512 - bytes.len() % 512) % 512;
-        gzip.write_all(&vec![0; pad]).map_err(MacSyncError::Io)?;
-    }
-    gzip.write_all(&[0; 1024]).map_err(MacSyncError::Io)?;
-    gzip.finish().map_err(MacSyncError::Io)?;
+    let _raw = gzip.finish().map_err(MacSyncError::Io)?;
     Ok(())
-}
-
-fn put_octal(output: &mut [u8], value: u64) {
-    let text = format!("{:0width$o}\0", value, width = output.len() - 1);
-    output.copy_from_slice(text.as_bytes());
 }
 
 fn upload_archive(guest: &dyn GuestRpc, path: &Path, operation: &str) -> Result<(), MacSyncError> {

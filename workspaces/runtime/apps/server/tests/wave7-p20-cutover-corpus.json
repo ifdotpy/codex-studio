@@ -3,36 +3,6 @@
     {
       "closures": [
         {
-          "closes": "first-cutover refusal: image excluded",
-          "kind": "external_or_scope",
-          "owner": "first-cutover refusal: image excluded"
-        }
-      ],
-      "dependency": "workspace-state/image-execution",
-      "operation_count": 5,
-      "operations": [
-        "GET /api/changes",
-        "GET /api/file",
-        "GET /api/file-info",
-        "POST /api/checkpoint",
-        "POST /api/checkpoint/preview"
-      ]
-    },
-    {
-      "closures": [
-        {
-          "closes": "first-cutover refusal: VM workspace excluded",
-          "kind": "external_or_scope",
-          "owner": "first-cutover refusal: VM workspace excluded"
-        }
-      ],
-      "dependency": "workspace-state/vm-workspace",
-      "operation_count": 3,
-      "operations": ["POST /api/action", "POST /api/agents", "POST /api/leads"]
-    },
-    {
-      "closures": [
-        {
           "closes": "origin/feat/wave7-p10-stop-delete",
           "kind": "accepted_branch",
           "owner": "P10"
@@ -225,18 +195,6 @@
       "dependency": "workspace-state/agent-lifecycle",
       "operation_count": 2,
       "operations": ["POST /api/conversation/delete", "POST /api/stop"]
-    },
-    {
-      "closures": [
-        {
-          "closes": "first-cutover refusal: image workspace excluded",
-          "kind": "external_or_scope",
-          "owner": "first-cutover refusal: image workspace excluded"
-        }
-      ],
-      "dependency": "workspace-state/image-workspace",
-      "operation_count": 2,
-      "operations": ["POST /api/agents", "POST /api/leads"]
     },
     {
       "closures": [
@@ -535,18 +493,6 @@
     {
       "closures": [
         {
-          "closes": "first-cutover refusal: VM excluded",
-          "kind": "external_or_scope",
-          "owner": "first-cutover refusal: VM excluded"
-        }
-      ],
-      "dependency": "vm-agents/finder-view",
-      "operation_count": 1,
-      "operations": ["GET /api/agents/finder-view"]
-    },
-    {
-      "closures": [
-        {
           "closes": "origin/feat/wave7-p03-message-ingress",
           "kind": "accepted_branch",
           "owner": "P03"
@@ -558,10 +504,10 @@
     }
   ],
   "counts": {
-    "implemented": 135,
-    "named_dependencies": 40,
+    "implemented": 143,
+    "named_dependencies": 36,
     "not_registered": 0,
-    "partial": 25,
+    "partial": 17,
     "total": 160
   },
   "lifecycle_dependencies": {
@@ -588,9 +534,9 @@
       "status": "implemented"
     },
     {
-      "dependencies": ["vm-agents/finder-view"],
+      "dependencies": [],
       "operation": "GET /api/agents/finder-view",
-      "status": "partial"
+      "status": "implemented"
     },
     {
       "dependencies": [],
@@ -603,9 +549,9 @@
       "status": "implemented"
     },
     {
-      "dependencies": ["workspace-state/image-execution"],
+      "dependencies": [],
       "operation": "GET /api/changes",
-      "status": "partial"
+      "status": "implemented"
     },
     {
       "dependencies": [],
@@ -663,14 +609,14 @@
       "status": "implemented"
     },
     {
-      "dependencies": ["workspace-state/image-execution"],
+      "dependencies": [],
       "operation": "GET /api/file",
-      "status": "partial"
+      "status": "implemented"
     },
     {
-      "dependencies": ["workspace-state/image-execution"],
+      "dependencies": [],
       "operation": "GET /api/file-info",
-      "status": "partial"
+      "status": "implemented"
     },
     {
       "dependencies": [],
@@ -946,17 +892,14 @@
       "status": "implemented"
     },
     {
-      "dependencies": ["workspace-state/vm-workspace"],
+      "dependencies": [],
       "operation": "POST /api/action",
-      "status": "partial"
+      "status": "implemented"
     },
     {
-      "dependencies": [
-        "workspace-state/image-workspace",
-        "workspace-state/vm-workspace"
-      ],
+      "dependencies": [],
       "operation": "POST /api/agents",
-      "status": "partial"
+      "status": "implemented"
     },
     {
       "dependencies": ["account-transfer/usage-resume-cancellation"],
@@ -1012,14 +955,14 @@
       "status": "implemented"
     },
     {
-      "dependencies": ["workspace-state/image-execution"],
+      "dependencies": [],
       "operation": "POST /api/checkpoint",
-      "status": "partial"
+      "status": "implemented"
     },
     {
-      "dependencies": ["workspace-state/image-execution"],
+      "dependencies": [],
       "operation": "POST /api/checkpoint/preview",
-      "status": "partial"
+      "status": "implemented"
     },
     {
       "dependencies": [],
@@ -1113,11 +1056,7 @@
       "status": "implemented"
     },
     {
-      "dependencies": [
-        "cross-server-driver/local-identity",
-        "workspace-state/image-workspace",
-        "workspace-state/vm-workspace"
-      ],
+      "dependencies": ["cross-server-driver/local-identity"],
       "operation": "POST /api/leads",
       "status": "partial"
     },

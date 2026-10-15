@@ -87,6 +87,7 @@ class FilesHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         scratch_root = Path(os.environ["TMPDIR"]) / "files-workspaces"
         scratch_root.mkdir(parents=True, exist_ok=True)
         cls.workspace = Path(tempfile.mkdtemp(prefix="workspace-", dir=scratch_root))
+        (cls.workspace / "image-readable.txt").write_text("image workspace preview", encoding="utf-8")
         cls.addClassCleanup(shutil.rmtree, cls.workspace)
         cls.outside = cls.workspace.parent / f"{cls.workspace.name}-outside.md"
         cls.addClassCleanup(cls.outside.unlink, missing_ok=True)
@@ -427,22 +428,30 @@ class FilesHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         self.assertEqual(response.status, 200, response.body[:1000])
         self.assertFalse(orphan.exists())
 
-    @unittest.skipUnless(os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"), "Rust backend only")
-    def test_execution_backed_workspaces_have_named_501_without_writes(self) -> None:
+    def test_image_workspace_files_are_readable_and_vm_missing_paths_are_reported(self) -> None:
         backend = self.backend
         before = no_write_snapshot(backend.state)
-        for agent_id in ("files-contract-image", "files-contract-vm"):
-            response = backend.request(
-                "GET",
-                "/api/file-info?" + urlencode({"agent": agent_id, "path": "outside.md"}),
-                headers=self._headers(),
-            )
-            self.assertEqual(response.status, 501, response.body[:1000])
-            self.assertEqual(
-                response.json()["error"],
-                "Not implemented: requires workspace-state/image-execution",
-            )
-            self.assertEqual(no_write_snapshot(backend.state), before)
+        info = backend.request(
+            "GET", "/api/file-info?" + urlencode({
+                "agent": "files-contract-image", "path": "image-readable.txt",
+            }), headers=self._headers(),
+        )
+        self.assertEqual(info.status, 200, info.body[:1000])
+        content = backend.request(
+            "GET", "/api/file?" + urlencode({
+                "agent": "files-contract-image", "path": "image-readable.txt",
+            }), headers=self._headers(),
+        )
+        self.assertEqual(content.status, 200, content.body[:1000])
+        self.assertEqual(base64.b64decode(content.json()["base64"]), b"image workspace preview")
+        missing = backend.request(
+            "GET", "/api/file-info?" + urlencode({
+                "agent": "files-contract-vm", "path": "outside.md",
+            }), headers=self._headers(),
+        )
+        self.assertEqual(missing.status, 400, missing.body[:1000])
+        self.assertIn("does not exist", missing.json()["error"])
+        self.assertEqual(no_write_snapshot(backend.state), before)
 
     def test_file_content_preview_limit_is_enforced(self) -> None:
         response = self.backend.request(

@@ -47,6 +47,7 @@ mod terminals;
 mod tool_requests;
 mod transcript;
 mod usage;
+pub(crate) mod vm_native_provider;
 pub(crate) mod voice;
 mod work_items;
 mod work_write;

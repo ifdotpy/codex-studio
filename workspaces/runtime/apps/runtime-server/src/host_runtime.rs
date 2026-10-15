@@ -1061,6 +1061,7 @@ mod voice_composition_tests {
             claude_account_pin: serde_json::Value::Null,
             account_driver: None,
             account_session: None,
+            guest_rpc: None,
         };
         let worker = start_account_worker_with_preparation(
             bridge,

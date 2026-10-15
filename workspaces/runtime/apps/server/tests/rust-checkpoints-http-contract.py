@@ -87,6 +87,10 @@ try:
             agent["nativeNameSynced"] = native_name_identity(agent)
             runtime.put(db, "agents", agent, sync_rooms=False)
     checkpoint = runtime.capture_checkpoint({AGENT_ID!r}, "Python fixture")
+    image_checkpoint = {{**checkpoint, "id": "image-preview-checkpoint",
+                        "agent": {IMAGE_AGENT_ID!r}, "rootId": "checkpoints-contract-image"}}
+    with runtime.lock, runtime.db() as db:
+        runtime.put(db, "checkpoints", image_checkpoint, sync_rooms=False)
     print(checkpoint["id"])
 finally:
     runtime.close()
@@ -717,6 +721,20 @@ class CheckpointsHTTPContract(unittest.TestCase):
         self.assertEqual(response.status, 400, response.body[:1000])
         self.assertEqual(
             response.json()["error"], "Studio Git checkpoints are unavailable for image workspaces"
+        )
+        self.assertEqual(
+            (no_write_snapshot(self.backend.state), checkpoint_refs(self.workspace)), before
+        )
+
+        preview = self.backend.request(
+            "POST", "/api/checkpoint/preview",
+            body={"agent": IMAGE_AGENT_ID, "checkpoint": "image-preview-checkpoint"},
+            headers=self.headers(),
+        )
+        self.assertEqual(preview.status, 400, preview.body[:1000])
+        self.assertEqual(
+            preview.json()["error"],
+            "Studio Git tools are unavailable for image workspaces",
         )
         self.assertEqual(
             (no_write_snapshot(self.backend.state), checkpoint_refs(self.workspace)), before

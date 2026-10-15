@@ -5,6 +5,7 @@ use super::*;
 use crate::event_write::{AnnotationWrite, annotate};
 use std::{path::PathBuf, process::Command};
 use studio_runtime_process::{EventCursor, ProviderLaunchSpec, provider_seam::*};
+use studio_runtime_store::AgentRecord;
 use tokio::sync::oneshot;
 
 const FIXTURE_LOCK_HANG_GUARD: std::time::Duration = std::time::Duration::from_secs(300);
@@ -1716,7 +1717,7 @@ async fn shutdown_releases_account_while_bridge_permit_is_blocked() {
     let peer = Peer::new();
     let mut replacement = peer.worker(state.bridge.clone()).await;
     replacement.shutdown().await.unwrap();
-    assert_eq!(state.event_status("input").await, "pending");
+    assert_eq!(state.event_status("input").await, "reserved");
 }
 
 #[tokio::test(start_paused = true)]
@@ -2587,15 +2588,128 @@ async fn scenario_workspace_refusal_retains_queue() {
     state.wake(&worker).await;
     worker_barrier(&worker).await;
     let record = state.record().await;
-    assert_eq!(record["status"], "failed");
-    assert_eq!(record["error"], "VmWorkspaceUnsupported");
-    assert_eq!(state.event_status("input").await, "pending");
+    assert_ne!(record["status"], "failed");
+    assert!(record["error"].is_null());
+    assert_eq!(state.event_status("input").await, "reserved");
     assert!(peer.writes.try_recv().is_err());
     worker.shutdown().await.unwrap();
 }
 #[tokio::test(start_paused = true)]
 async fn workspace_refusal_retains_queue() {
     scenario_workspace_refusal_retains_queue().await;
+}
+
+struct TurnStartGuest {
+    calls: std::sync::Mutex<Vec<String>>,
+    project_id: std::sync::Mutex<Option<String>>,
+}
+
+impl crate::linux_vm_guest::GuestRpc for TurnStartGuest {
+    fn stream(
+        &self,
+        method: &str,
+        params: &Value,
+        _request_id: Option<&str>,
+        _timeout: std::time::Duration,
+        _on_frame: &mut dyn FnMut(
+            Value,
+        )
+            -> std::result::Result<(), crate::linux_vm_guest::GuestError>,
+    ) -> std::result::Result<Value, crate::linux_vm_guest::GuestError> {
+        self.calls.lock().unwrap().push(method.to_owned());
+        let project_id = params["projectId"].as_str().unwrap_or("existing-project");
+        match method {
+            "project.ensure" => Ok(json!({"projectId":project_id,"stateId":"existing-state"})),
+            "line.bind" => {
+                *self.project_id.lock().unwrap() = Some(project_id.to_owned());
+                Ok(json!({
+                    "cwd":"/home/studio/project", "projectId":project_id,
+                    "line":"main", "owner":"guest-owner", "home":"/home/studio",
+                    "stateId":"bound-state"
+                }))
+            }
+            "health" => Ok(json!({"ok":true})),
+            "agent.context" => Ok(json!({
+                "projectId":self.project_id.lock().unwrap().clone().unwrap(),
+                "line":"main"
+            })),
+            _ => Err(crate::linux_vm_guest::GuestError::InvalidRequest),
+        }
+    }
+}
+
+#[test]
+fn cold_vm_lead_prepares_with_fake_guest_but_does_not_submit_to_host_launcher() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = RuntimeStore::open(Some(directory.path())).unwrap();
+    let source = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../../..")
+        .canonicalize()
+        .unwrap();
+    let agent_id = "turn-start-vm-lead";
+    let attempt_id = "turn-start-attempt";
+    let record = AgentRecord::from_value(json!({
+        "id":agent_id,"rootId":agent_id,"epoch":3,"status":"starting",
+        "provider":"codex","accountKey":"default","autoWake":true,
+        "executionMode":"vm","isLead":true,"workspaceMode":"layr",
+        "environment":"linux","cwd":source,"hostProjectPath":source,
+        "projectId":"existing-project","layrReady":false,
+        "startAttempt":{"id":attempt_id,"epoch":3,"submitted":false}
+    }))
+    .unwrap();
+    store
+        .transaction(|tx| AgentRepository::put(tx, &record))
+        .unwrap();
+    let guest = Arc::new(TurnStartGuest {
+        calls: std::sync::Mutex::new(Vec::new()),
+        project_id: std::sync::Mutex::new(None),
+    });
+    let mut resources = test_resources().unwrap();
+    resources.guest_rpc = Some(guest.clone());
+    let intent = TurnIntent {
+        agent_id: agent_id.into(),
+        epoch: 3,
+        attempt_id: attempt_id.into(),
+        account_key: "default".into(),
+        provider: "codex".into(),
+        thread_id: Some("guest-thread".into()),
+        cwd: Some(source.to_string_lossy().into_owned()),
+        model: Some("fixture-model".into()),
+        events: Vec::new(),
+        radio_authorized: false,
+    };
+
+    let workspace = preparation::workspace(&store, &resources, &intent);
+    assert!(matches!(
+        workspace,
+        Err(WorkerError::PreparationPending(reason))
+            if reason == "provider-session/vm-turn-launcher"
+    ));
+
+    let saved = AgentRepository::get(&store.read().unwrap(), &AgentId::from(agent_id))
+        .unwrap()
+        .unwrap()
+        .value();
+    assert_eq!(saved["layrReady"], true);
+    assert_eq!(saved["cwd"], "/home/studio/project");
+    assert_eq!(
+        saved["startAttempt"]["vmWorkspacePreparation"]["phase"],
+        "completed"
+    );
+    assert_eq!(
+        guest.calls.lock().unwrap().as_slice(),
+        ["project.ensure", "line.bind", "health", "agent.context"]
+    );
+    assert!(matches!(
+        preparation::workspace(&store, &resources, &intent),
+        Err(WorkerError::PreparationPending(reason))
+            if reason == "provider-session/vm-turn-launcher"
+    ));
+    assert_eq!(
+        guest.calls.lock().unwrap().len(),
+        4,
+        "ready VM turns remain queued without retrying guest setup"
+    );
 }
 
 async fn scenario_workspace_pending_reuses_reserved_attempt() {

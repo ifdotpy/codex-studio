@@ -16,6 +16,51 @@ use thiserror::Error;
 const MAX_CHILDREN: usize = 64;
 const MAX_NAME_CHARS: usize = 100;
 const MAX_PROMPT_CHARS: usize = 32_000;
+/// Python's Linux VM review state save timeout, in seconds.
+const VM_REVIEW_STATE_TIMEOUT_SECONDS: u64 = 130;
+
+fn vm_review_guest_ids(
+    request_id: &str,
+) -> Result<(String, String), crate::managed_host_tools::Error> {
+    let digest = studio_runtime_store::sha256_hex(request_id.as_bytes());
+    let guest_request_id = format!("layr-review-state:{digest}");
+    let turn_id = format!("review:{digest}");
+    let limit = crate::linux_vm_guest::GUEST_REQUEST_ID_MAX_CHARS;
+    if guest_request_id.chars().count() > limit || turn_id.chars().count() > limit {
+        return Err(crate::managed_host_tools::Error::Invalid(
+            "The VM review request identity is too long",
+        ));
+    }
+    Ok((guest_request_id, turn_id))
+}
+
+fn validate_vm_parent_workspace(workspace: &str, vm_parent: bool) -> Result<(), Error> {
+    if matches!(workspace, "layr" | "linux") && !vm_parent {
+        return Err(crate::managed_host_tools::Error::Invalid(
+            "A VM workspace requires a VM parent",
+        )
+        .into());
+    }
+    Ok(())
+}
+
+fn validate_image_workspace_platform(workspace: &str, is_macos: bool) -> Result<(), Error> {
+    if workspace == "image" && !is_macos {
+        return Err(Error::Unavailable("workspace-state/image-provisioning"));
+    }
+    Ok(())
+}
+
+fn host_project_cwd<'a>(vm_workspace: bool, root: &'a Value, parent_cwd: &'a str) -> &'a str {
+    if vm_workspace {
+        root.get("hostProjectPath")
+            .or_else(|| root.get("cwd"))
+            .and_then(Value::as_str)
+            .unwrap_or(parent_cwd)
+    } else {
+        parent_cwd
+    }
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ManagedCreationEnvironmentError {
@@ -26,6 +71,32 @@ pub enum ManagedCreationEnvironmentError {
 /// Host account facts and model admission. Production implementations resolve
 /// model settings through the retained `AccountSessionPort` broker.
 pub trait ManagedCreationEnvironment: Send + Sync {
+    /// Whether this environment can provision image workspaces. Kept injectable
+    /// so platform-independent tests can exercise the macOS provisioning path.
+    fn supports_image_workspace(&self) -> bool {
+        cfg!(target_os = "macos")
+    }
+    /// Guest RPC boundary used by VM review state capture. Production uses the
+    /// runtime's Linux VM socket; tests inject a fake guest.
+    fn guest_rpc(
+        &self,
+        store: &RuntimeStore,
+    ) -> Result<std::sync::Arc<dyn crate::linux_vm_guest::GuestRpc>, ManagedCreationEnvironmentError>
+    {
+        #[cfg(unix)]
+        {
+            Ok(std::sync::Arc::new(
+                crate::linux_vm_guest::UnixGuestRpc::for_runtime_state(store.state_dir()),
+            ))
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = store;
+            Err(ManagedCreationEnvironmentError::Unavailable(
+                "linux-vm/guest-rpc",
+            ))
+        }
+    }
     /// Wait for the actor account's model catalog at the callback's async
     /// boundary. Implementations keep this bounded and never run it at worker
     /// startup or inside the synchronous store callback.
@@ -77,6 +148,38 @@ pub trait ManagedCreationEnvironment: Send + Sync {
         Box<dyn crate::monitor_runtime::WorkspaceAdmission + Send + Sync>,
         ManagedCreationEnvironmentError,
     >;
+
+    /// Start image workspace provisioning after child rows commit. Tests override this
+    /// boundary so ordinary workspace tests never create real disk images.
+    fn provision_image_workspace(
+        &self,
+        _store: &RuntimeStore,
+        root: &Path,
+        agent_id: &str,
+    ) -> Result<PathBuf, ManagedCreationEnvironmentError> {
+        #[cfg(target_os = "macos")]
+        {
+            // Complete before returning: the caller releases the queued wake
+            // signals only after this hook and the readiness update commit.
+            let workspace =
+                crate::image_workspace::create_workspace(root, agent_id).map_err(|_| {
+                    ManagedCreationEnvironmentError::Unavailable(
+                        "workspace-state/image-provisioning",
+                    )
+                })?;
+            return workspace
+                .get("path")
+                .and_then(Value::as_str)
+                .map(PathBuf::from)
+                .ok_or(ManagedCreationEnvironmentError::Unavailable(
+                    "workspace-state/image-provisioning",
+                ));
+        }
+        let _ = (root, agent_id);
+        Err(ManagedCreationEnvironmentError::Unavailable(
+            "workspace-state/image-provisioning",
+        ))
+    }
 }
 
 fn expand_review_home(path: &str, home: Option<&str>) -> PathBuf {
@@ -91,6 +194,38 @@ fn expand_review_home(path: &str, home: Option<&str>) -> PathBuf {
         }
     }
     PathBuf::from(path)
+}
+
+fn vm_child_directory(parent: &str, requested: Option<&str>) -> Result<(String, String), Error> {
+    let root = Path::new(parent);
+    let raw = requested.map(Path::new).unwrap_or(root);
+    let joined = if raw.is_absolute() {
+        raw.to_path_buf()
+    } else {
+        root.join(raw)
+    };
+    let mut normalized = PathBuf::new();
+    for component in joined.components() {
+        match component {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                return Err(crate::managed_host_tools::Error::Invalid(
+                    "A worker directory must stay in its parent layr line",
+                )
+                .into());
+            }
+            value => normalized.push(value.as_os_str()),
+        }
+    }
+    let subpath = normalized.strip_prefix(root).map_err(|_| {
+        Error::Managed(crate::managed_host_tools::Error::Invalid(
+            "A worker directory must stay in its parent layr line",
+        ))
+    })?;
+    Ok((
+        normalized.to_string_lossy().into_owned(),
+        subpath.to_string_lossy().into_owned(),
+    ))
 }
 
 #[derive(Debug, Error)]
@@ -116,6 +251,73 @@ impl From<ManagedCreationEnvironmentError> for Error {
     }
 }
 
+#[cfg(test)]
+mod vm_review_identity_tests {
+    use super::{
+        Error, host_project_cwd, validate_image_workspace_platform, validate_vm_parent_workspace,
+        vm_review_guest_ids,
+    };
+    use serde_json::json;
+
+    #[test]
+    fn guest_review_ids_are_bounded_and_match_the_named_python_limit() {
+        let python = include_str!("../../../apps/server/src/codex_linux_vm.py");
+        assert!(python.contains("GUEST_REQUEST_ID_MAX_CHARS = 128"));
+        assert!(python.contains("len(identity) <= GUEST_REQUEST_ID_MAX_CHARS"));
+        let rust_guest = include_str!("linux_vm_guest.rs");
+        assert!(rust_guest.contains("chars().count() > GUEST_REQUEST_ID_MAX_CHARS"));
+        let long = "r".repeat(4096);
+        for supplied in ["short-request", long.as_str()] {
+            let (request_id, turn_id) = vm_review_guest_ids(supplied).unwrap();
+            assert!(
+                request_id.chars().count() <= crate::linux_vm_guest::GUEST_REQUEST_ID_MAX_CHARS
+            );
+            assert!(turn_id.chars().count() <= crate::linux_vm_guest::GUEST_REQUEST_ID_MAX_CHARS);
+            assert!(request_id.starts_with("layr-review-state:"));
+            assert!(turn_id.starts_with("review:"));
+            assert_eq!(
+                (request_id, turn_id),
+                vm_review_guest_ids(supplied).unwrap(),
+                "operation IDs are stable for the same source request"
+            );
+        }
+    }
+
+    #[test]
+    fn native_parent_cannot_create_layr_child_without_panicking() {
+        assert!(matches!(
+            validate_vm_parent_workspace("layr", false),
+            Err(Error::Managed(crate::managed_host_tools::Error::Invalid(
+                "A VM workspace requires a VM parent"
+            )))
+        ));
+        assert!(validate_vm_parent_workspace("layr", true).is_ok());
+    }
+
+    #[test]
+    fn vm_child_rechecks_parent_project_with_host_cwd() {
+        let root = json!({"cwd":"/guest/project","hostProjectPath":"/host/project"});
+        assert_eq!(
+            host_project_cwd(true, &root, "/guest/project"),
+            "/host/project"
+        );
+        assert_eq!(
+            host_project_cwd(false, &root, "/host/project"),
+            "/host/project"
+        );
+    }
+
+    #[test]
+    fn image_child_refuses_on_unsupported_platform_before_creation() {
+        assert!(matches!(
+            validate_image_workspace_platform("image", false),
+            Err(Error::Unavailable("workspace-state/image-provisioning"))
+        ));
+        assert!(validate_image_workspace_platform("image", true).is_ok());
+        assert!(validate_image_workspace_platform("worktree", false).is_ok());
+    }
+}
+
 struct Draft {
     typed: AgentRecord,
     record: Value,
@@ -124,6 +326,7 @@ struct Draft {
     task_id: Option<String>,
     intent: Value,
     worktree: bool,
+    workspace: String,
     worker_base_main_ref: Option<String>,
     worker_base_behind_main: Option<i64>,
     epoch: i64,
@@ -147,14 +350,6 @@ pub(crate) fn spawn_agents(
         return Err(
             crate::managed_host_tools::Error::Invalid("Reviewers cannot create agents").into(),
         );
-    }
-    if actor_record
-        .extra
-        .get("executionMode")
-        .and_then(Value::as_str)
-        == Some("vm")
-    {
-        return Err(Error::Unavailable("layr/worker-creation"));
     }
     if !now.is_finite() || now < 0.0 || request_id.is_empty() {
         return Err(crate::managed_host_tools::Error::Invalid("Invalid spawn identity").into());
@@ -304,10 +499,36 @@ pub(crate) fn spawn_agents(
         {
             return Err(Error::Unavailable("multi-server/worker-call"));
         }
+        let vm_actor = parent_value.get("executionMode").and_then(Value::as_str) == Some("vm");
+        if vm_actor
+            && (spec.get("workspace").is_some_and(|value| value != "layr")
+                || spec
+                    .get("environment")
+                    .is_some_and(|value| value != "linux"))
+        {
+            return Err(crate::managed_host_tools::Error::Invalid(
+                "All agents in a VM chat use layr in the VM",
+            )
+            .into());
+        }
+        if vm_actor && role == "reviewer" {
+            return Err(crate::managed_host_tools::Error::Unavailable(
+                "workspace-state/vm-workspace",
+            )
+            .into());
+        }
+        let vm_directory = if vm_actor {
+            Some(vm_child_directory(
+                parent_cwd,
+                spec.get("cwd").and_then(Value::as_str),
+            )?)
+        } else {
+            None
+        };
         if spec
             .get("cwd")
             .and_then(Value::as_str)
-            .is_some_and(|value| value != parent_cwd)
+            .is_some_and(|value| !vm_actor && value != parent_cwd)
         {
             return Err(Error::Unavailable(
                 "workspace-state/alternate-child-directory",
@@ -323,25 +544,31 @@ pub(crate) fn spawn_agents(
             .get("workspace")
             .and_then(Value::as_str)
             .or_else(|| {
-                if role == "reviewer" {
+                if role == "reviewer" && !vm_actor {
                     Some("shared")
+                } else if vm_actor {
+                    Some("layr")
                 } else {
                     parent_value.get("workspaceMode").and_then(Value::as_str)
                 }
             })
             .unwrap_or("worktree");
+        validate_vm_parent_workspace(workspace, vm_actor)?;
+        // Python resolves image support and starts its base before the writer
+        // (`codex_runtime.py:8895-8915`, `codex_workspace_images.py:834`); refuse
+        // before drafting or committing children when this provider is absent.
+        validate_image_workspace_platform(workspace, environment.supports_image_workspace())?;
         let worktree = match workspace {
             "worktree" => true,
             "shared" => false,
-            "image" => return Err(Error::Unavailable("workspace-state/image-workspace")),
-            "layr" | "linux" => return Err(Error::Unavailable("workspace-state/vm-workspace")),
+            "image" | "layr" | "linux" => false,
             _ => {
                 return Err(
                     crate::managed_host_tools::Error::Invalid("Unknown workspace mode").into(),
                 );
             }
         };
-        if !worktree && spec.get("base_ref").is_some() {
+        if workspace == "shared" && spec.get("base_ref").is_some() {
             return Err(crate::managed_host_tools::Error::Invalid(
                 "base_ref cannot be used with workspace shared",
             )
@@ -450,27 +677,31 @@ pub(crate) fn spawn_agents(
             .and_then(Value::as_bool)
             .or_else(|| defaults.get("daybreakEnabled").and_then(Value::as_bool))
             .unwrap_or(false);
+        let vm_workspace = matches!(workspace, "layr" | "linux");
+        let host_cwd = host_project_cwd(vm_workspace, &root_value, parent_cwd);
         let project = {
             let read = store.read()?;
             let project_id = parent_value
                 .get("projectId")
                 .and_then(Value::as_str)
-                .unwrap_or(parent_cwd);
+                .unwrap_or(host_cwd);
             studio_runtime_store::ProjectsRepository::get(&read, project_id)?
                 .or(studio_runtime_store::ProjectsRepository::get(
-                    &read, parent_cwd,
+                    &read, host_cwd,
                 )?)
                 .map(|(_, project)| project)
         };
         let project_worker_base = if requested_base_ref.is_none() {
-            worker_base_for_directory(store, parent_value.get("projectId"), parent_cwd)?
+            worker_base_for_directory(store, parent_value.get("projectId"), host_cwd)?
         } else {
             None
         };
         let project_worker_base = project_worker_base.as_deref();
         let base_ref_request = requested_base_ref.or(project_worker_base);
-        let (base_ref, base_commit, main_ref, behind_main) = if worktree {
-            crate::host_worker_create::resolve_worker_base(Path::new(parent_cwd), base_ref_request)
+        let (base_ref, base_commit, main_ref, behind_main) = if worktree
+            || (workspace == "image" && base_ref_request.is_some())
+        {
+            crate::host_worker_create::resolve_worker_base(Path::new(host_cwd), base_ref_request)
                 .map_err(map_create_error)?
         } else {
             (String::new(), String::new(), None, None)
@@ -482,7 +713,7 @@ pub(crate) fn spawn_agents(
                 || parent_value.get("imageWorkspaceHasGit").and_then(Value::as_bool).unwrap_or(false)});
         let draft = crate::host_worker_create::prepare_work_item(
             &body,
-            Path::new(parent_cwd),
+            Path::new(host_cwd),
             AgentId::from(id.as_str()),
             actor_record.root_id.clone(),
             actor_record.id.clone(),
@@ -490,6 +721,7 @@ pub(crate) fn spawn_agents(
             &base_commit,
             actor_record.epoch,
             parent_cwd,
+            host_cwd,
             parent_account,
             parent_value.get("projectId"),
             parent_value.get("projectServerId"),
@@ -505,6 +737,23 @@ pub(crate) fn spawn_agents(
         let mut record = crate::host_worker_create::persisted_record(&draft)
             .map_err(map_create_error)?
             .value();
+        if workspace == "image" {
+            crate::agents_create::set_image_workspace_fields(&mut record, parent_cwd);
+            if base_ref_request.is_some() {
+                record["imageWorkspaceBaseRef"] = json!(base_ref);
+                record["workerBaseRef"] = json!(base_ref);
+                record["workerBaseCommit"] = json!(base_commit);
+            }
+        } else if vm_workspace {
+            record["workspaceMode"] = json!("layr");
+            let (child_cwd, subpath) = vm_directory.as_ref().ok_or(Error::Refused)?;
+            crate::agents_create::set_vm_workspace_fields(&mut record, host_cwd);
+            record["cwd"] = json!(child_cwd);
+            record["layrSubpath"] = json!(subpath);
+            if let Some(base_state) = spec.get("base_ref") {
+                record["layrBaseState"] = base_state.clone();
+            }
+        }
         record["provider"] = json!(provider);
         record["workerBaseMainRef"] = json!(main_ref.clone());
         record["workerBaseBehindMain"] = json!(behind_main);
@@ -533,6 +782,7 @@ pub(crate) fn spawn_agents(
                 .map(str::to_owned),
             intent: spec.clone(),
             worktree,
+            workspace: if vm_workspace { "layr" } else { workspace }.to_owned(),
             worker_base_main_ref: main_ref,
             worker_base_behind_main: behind_main,
             epoch: actor_record.epoch,
@@ -541,7 +791,21 @@ pub(crate) fn spawn_agents(
         });
     }
 
-    store.transaction_with_error(|tx| -> Result<crate::managed_host_tools::OperationResult, crate::managed_host_tools::Error> {
+    let image_provisions = drafts
+        .iter()
+        .filter(|draft| draft.workspace == "image")
+        .map(|draft| {
+            (
+                draft.id.clone(),
+                draft.record["imageWorkspaceRepo"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_owned(),
+                draft.record["epoch"].as_i64().unwrap_or_default(),
+            )
+        })
+        .collect::<Vec<_>>();
+    let mut result = store.transaction_with_error(|tx| -> Result<crate::managed_host_tools::OperationResult, crate::managed_host_tools::Error> {
         recheck_actor(tx, actor_record)?;
         let current_root = AgentRepository::get(tx, &actor_record.root_id)?
             .ok_or(crate::managed_host_tools::Error::Stale)?;
@@ -580,6 +844,18 @@ pub(crate) fn spawn_agents(
                     text.push_str(&format!(" This base is {behind} commits behind {}. Check for newer project instructions before starting.", draft.worker_base_main_ref.as_deref().unwrap_or("main")));
                 }
             }
+            if draft.workspace == "image" {
+                if let Some(base_ref) = draft
+                    .record
+                    .get("imageWorkspaceBaseRef")
+                    .and_then(Value::as_str)
+                {
+                    text.push_str(&format!(
+                        "\n\n[Studio requested base] Ref {base_ref} resolves to commit {}. Check out this commit yourself before editing.",
+                        draft.record["workerBaseCommit"].as_str().unwrap_or_default()
+                    ));
+                }
+            }
             if let Some(task) = &draft.task_id {
                 let work = studio_runtime_store::WorkItemsRepository::work_record(tx, task)?
                     .ok_or(crate::managed_host_tools::Error::Invalid("Unknown task_id in this team; no workers were created"))?;
@@ -610,7 +886,57 @@ pub(crate) fn spawn_agents(
             value: json!({"requestId":request_id,"agents":children,"delivery":"Results wake you automatically. Finish your turn while waiting."}),
             signals,
         })
-    }).map_err(Error::from)
+    }).map_err(Error::from)?;
+    for (id, root, epoch) in image_provisions {
+        let cwd = match environment.provision_image_workspace(store, Path::new(&root), &id) {
+            Ok(cwd) => cwd,
+            Err(error) => {
+                let _ = crate::image_workspace::remove_workspace(&id, true);
+                crate::agents_create::persist_image_provision_failure(
+                    store,
+                    &id,
+                    epoch,
+                    &format!("{error:?}"),
+                )
+                .map_err(|_| Error::Unavailable("workspace-state/image-provisioning"))?;
+                return Err(Error::from(error));
+            }
+        };
+        let committed = store
+            .transaction(|tx| {
+                let Some(record) = AgentRepository::get(tx, &AgentId::from(id.as_str()))? else {
+                    return Ok(false);
+                };
+                let mut value = record.into_value();
+                if !crate::agents_create::image_provision_is_current(&value, epoch) {
+                    return Ok(false);
+                }
+                value["cwd"] = json!(cwd);
+                value["imageWorkspaceReady"] = json!(true);
+                value["imageWorkspacePhase"] = json!("ready");
+                let record = AgentRecord::from_value(value)?;
+                let value = record.value();
+                AgentRepository::put(tx, &record)?;
+                crate::agents_create::publish_agent(tx, &value)?;
+                Ok::<_, studio_runtime_store::StoreError>(true)
+            })
+            .map_err(Error::from)?;
+        if !committed {
+            let _ = crate::image_workspace::remove_workspace(&id, true);
+            return Err(crate::managed_host_tools::Error::Stale.into());
+        }
+        if let Some(children) = result.value["agents"].as_array_mut() {
+            for child in children {
+                if child.get("id").and_then(Value::as_str) == Some(id.as_str()) {
+                    child["cwd"] = json!(cwd);
+                    child["imageWorkspaceReady"] = json!(true);
+                    child["imageWorkspacePhase"] = json!("ready");
+                    break;
+                }
+            }
+        }
+    }
+    Ok(result)
 }
 
 fn child_id(request_id: &str, index: usize) -> String {
@@ -985,7 +1311,18 @@ pub(crate) fn request_review(
         .and_then(Value::as_str)
         == Some("vm")
     {
-        return Err(Error::Unavailable("layr-review/worker-driver"));
+        if actor_record.extra.get("isLead").and_then(Value::as_bool) != Some(true) {
+            return Err(crate::managed_host_tools::Error::Invalid(
+                "Only the lead can create a layr reviewer",
+            )
+            .into());
+        }
+        // VM reviewer preparation is not implemented by the production worker path yet.
+        // Refuse before line.save so a request that cannot be fulfilled does not mutate
+        // the lead's guest workspace.
+        return Err(
+            crate::managed_host_tools::Error::Unavailable("workspace-state/vm-workspace").into(),
+        );
     }
     if actor_record
         .extra
@@ -1119,6 +1456,7 @@ pub(crate) fn request_review(
         &base_ref,
         &base_commit,
         actor_record.epoch,
+        parent_cwd,
         parent_cwd,
         &account_key,
         parent_value.get("projectId"),

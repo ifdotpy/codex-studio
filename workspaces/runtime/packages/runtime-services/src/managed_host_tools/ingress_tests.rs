@@ -2097,10 +2097,50 @@ impl crate::monitor_runtime::WorkspaceAdmission for AllowWorkspace {
 }
 
 struct CreationEnvironment;
+struct FakeVmReviewGuest;
+thread_local! {
+    static VM_REVIEW_GUEST_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static IMAGE_PROVISION_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+impl crate::linux_vm_guest::GuestRpc for FakeVmReviewGuest {
+    fn stream(
+        &self,
+        method: &str,
+        params: &Value,
+        request_id: Option<&str>,
+        timeout: std::time::Duration,
+        _on_frame: &mut dyn FnMut(Value) -> Result<(), crate::linux_vm_guest::GuestError>,
+    ) -> Result<Value, crate::linux_vm_guest::GuestError> {
+        VM_REVIEW_GUEST_CALLS.with(|calls| calls.set(calls.get() + 1));
+        assert_eq!(method, "line.save");
+        assert!(params["agentId"].as_str().is_some_and(|id| !id.is_empty()));
+        let turn = params["turnId"].as_str().unwrap();
+        let key = turn.strip_prefix("review:").unwrap();
+        assert_eq!(
+            request_id,
+            Some(format!("layr-review-state:{key}").as_str())
+        );
+        assert_eq!(timeout, std::time::Duration::from_secs(130));
+        Ok(json!({"stateId":"guest-state-17"}))
+    }
+}
 thread_local! {
     static FAIL_MANAGED_WORKSPACE_PREPARATION: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 impl crate::managed_child_create::ManagedCreationEnvironment for CreationEnvironment {
+    fn supports_image_workspace(&self) -> bool {
+        true
+    }
+
+    fn guest_rpc(
+        &self,
+        _: &RuntimeStore,
+    ) -> Result<
+        Arc<dyn crate::linux_vm_guest::GuestRpc>,
+        crate::managed_child_create::ManagedCreationEnvironmentError,
+    > {
+        Ok(Arc::new(FakeVmReviewGuest))
+    }
     fn select_worker_account(
         &self,
         parent_account_key: &str,
@@ -2190,6 +2230,17 @@ impl crate::managed_child_create::ManagedCreationEnvironment for CreationEnviron
             );
         }
         Ok(Box::new(AllowWorkspace))
+    }
+
+    fn provision_image_workspace(
+        &self,
+        _: &RuntimeStore,
+        _: &std::path::Path,
+        _: &str,
+    ) -> Result<std::path::PathBuf, crate::managed_child_create::ManagedCreationEnvironmentError>
+    {
+        IMAGE_PROVISION_CALLS.with(|calls| calls.set(calls.get() + 1));
+        Ok(std::path::PathBuf::from("/fake-image/repo"))
     }
 }
 impl crate::host_worker_create::CreationCatalog for CreationEnvironment {
@@ -2499,6 +2550,58 @@ fn dispatcher_service_bundle_calls_spawn_and_review_entry_points() {
     assert_eq!(before_workspace_refusal, after_workspace_refusal);
     assert_eq!(expected["workspaceRefused"], true);
 
+    let provision_calls_before = IMAGE_PROVISION_CALLS.get();
+    let image_base = crate::managed_child_create::spawn_agents(
+        &store,
+        &actor,
+        &json!({"agents":[{"name":"Image Base","prompt":"Review the requested image base","workspace":"image","base_ref":"HEAD~1"}]}),
+        "dispatcher-image-base-ref",
+        20.5,
+        &CreationEnvironment,
+    )
+    .expect("image base refs resolve to a worker checkout instruction");
+    assert_eq!(IMAGE_PROVISION_CALLS.get(), provision_calls_before + 1);
+    let image_base_id = image_base.value["agents"][0]["id"].as_str().unwrap();
+    let image_base_child = studio_runtime_store::AgentRepository::get(
+        &store.read().unwrap(),
+        &studio_runtime_store::AgentId::from(image_base_id),
+    )
+    .unwrap()
+    .unwrap()
+    .value();
+    assert_eq!(image_base_child["imageWorkspaceReady"], true);
+    assert_eq!(image_base_child["imageWorkspacePhase"], "ready");
+    assert_eq!(image_base_child["cwd"], "/fake-image/repo");
+    assert_eq!(image_base.value["agents"][0]["cwd"], "/fake-image/repo");
+    assert_eq!(image_base.value["agents"][0]["imageWorkspaceReady"], true);
+    let published_image_child: String = store
+        .read()
+        .unwrap()
+        .query_row(
+            "SELECT payload FROM sync_entities WHERE collection='agent' AND id=?1",
+            [image_base_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let published_image_child: Value = serde_json::from_str(&published_image_child).unwrap();
+    assert_eq!(published_image_child["value"]["cwd"], "/fake-image/repo");
+    assert_eq!(published_image_child["value"]["imageWorkspaceReady"], true);
+    assert_eq!(image_base_child["imageWorkspaceBaseRef"], "HEAD~1");
+    assert_eq!(
+        image_base_child["workerBaseCommit"],
+        expected["base"]["baseCommit"]
+    );
+    let image_base_event: String = store
+        .read()
+        .unwrap()
+        .query_row(
+            "SELECT text FROM runtime_events WHERE id=?1",
+            [format!("{image_base_id}:initial")],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(image_base_event.contains("Check out this commit yourself before editing."));
+
     let reviewed = crate::managed_child_create::request_review(
         &store,
         &actor,
@@ -2535,6 +2638,62 @@ fn dispatcher_service_bundle_calls_spawn_and_review_entry_points() {
         "complete review child row"
     );
     drop(read);
+
+    actor_value["executionMode"] = json!("vm");
+    actor_value["workspaceMode"] = json!("layr");
+    actor_value["cwd"] = json!("/home/studio/project");
+    actor_value["hostProjectPath"] = json!(project_path);
+    actor_value["layrReady"] = json!(true);
+    actor_value["layrProjectId"] = json!("project-17");
+    actor_value["layrLine"] = json!("main");
+    actor_value["provider"] = json!("codex");
+    actor_value["isLead"] = json!(true);
+    store
+        .transaction_with::<_, StoreError>(|tx| {
+            let record = studio_runtime_store::AgentRecord::from_value(actor_value.clone())
+                .map_err(|error| StoreError::SchemaMismatch(error.to_string()))?;
+            studio_runtime_store::AgentRepository::put(tx, &record)?;
+            Ok(())
+        })
+        .unwrap();
+    let vm_actor = Actor::from_record(&actor_value, &context.agent, context.epoch).unwrap();
+    VM_REVIEW_GUEST_CALLS.set(0);
+    let before_vm_review: i64 = store
+        .read()
+        .unwrap()
+        .query_row("SELECT count(*) FROM runtime_agents", [], |row| row.get(0))
+        .unwrap();
+    let vm_review_error = crate::managed_child_create::request_review(
+        &store,
+        &vm_actor,
+        &json!({"target":{"type":"uncommittedChanges"}}),
+        "dispatcher-vm-review-api",
+        22.0,
+        &CreationEnvironment,
+    )
+    .expect_err("VM review creation is unavailable until VM workspace preparation exists");
+    assert!(matches!(
+        vm_review_error,
+        crate::managed_child_create::Error::Managed(crate::managed_host_tools::Error::Unavailable(
+            "workspace-state/vm-workspace"
+        ))
+    ));
+    let after_vm_review: i64 = store
+        .read()
+        .unwrap()
+        .query_row("SELECT count(*) FROM runtime_agents", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(
+        before_vm_review, after_vm_review,
+        "no VM reviewer was enqueued"
+    );
+    assert_eq!(VM_REVIEW_GUEST_CALLS.get(), 0, "refusal precedes line.save");
+    let after_uncertain_review: i64 = store
+        .read()
+        .unwrap()
+        .query_row("SELECT count(*) FROM runtime_agents", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(before_vm_review, after_uncertain_review);
     store
         .transaction_with::<_, StoreError>(|tx| {
             let root = studio_runtime_store::AgentRepository::get(

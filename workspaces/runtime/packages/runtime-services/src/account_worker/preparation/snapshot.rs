@@ -23,6 +23,8 @@ pub struct PreparationResources {
     /// The host's registry-backed session surface for preparation calls that
     /// need to coordinate another live account.
     pub account_session: Option<Arc<dyn crate::account_session_runtime::AccountSessionPort>>,
+    /// Fakeable guest RPC for VM workspace preparation in the turn-start path.
+    pub guest_rpc: Option<Arc<dyn crate::linux_vm_guest::GuestRpc>>,
 }
 impl PreparationResources {
     pub fn bundled(
@@ -95,6 +97,7 @@ impl PreparationResources {
             claude_account_pin: Value::Null,
             account_driver: None,
             account_session: None,
+            guest_rpc: None,
         })
     }
 
@@ -152,6 +155,25 @@ impl FilesystemSnapshot {
         for (rows, key) in [(&agents, "cwd"), (&projects, "path")] {
             for raw in rows.values() {
                 let record: Value = serde_json::from_str(raw).map_err(|_| invalid(key))?;
+                if key == "cwd" && record.get("executionMode").and_then(Value::as_str) == Some("vm")
+                {
+                    // VM cwd is guest-owned. Give authorization a stable,
+                    // normalized host-shaped identity without resolving it on
+                    // the host or treating it as a filesystem location.
+                    if let Some(path) = record
+                        .get(key)
+                        .and_then(Value::as_str)
+                        .filter(|p| !p.is_empty())
+                    {
+                        let agent_id = record
+                            .get("id")
+                            .and_then(Value::as_str)
+                            .ok_or_else(|| invalid("vm-agent-id"))?;
+                        let identity = vm_guest_identity(agent_id, path);
+                        resolved_paths.insert(path.to_owned(), identity);
+                    }
+                    continue;
+                }
                 if let Some(path) = record
                     .get(key)
                     .and_then(Value::as_str)
@@ -171,6 +193,39 @@ impl FilesystemSnapshot {
             resolved_paths,
             progress_directory,
         })
+    }
+}
+
+fn vm_guest_identity(agent_id: &str, guest_cwd: &str) -> String {
+    format!(
+        "/__codex_vm__/{agent_id}/{}",
+        studio_runtime_store::sha256_hex(guest_cwd.as_bytes())
+    )
+}
+
+#[cfg(test)]
+mod vm_identity_tests {
+    use super::vm_guest_identity;
+
+    #[test]
+    fn guest_cwd_gets_a_normalized_host_independent_identity() {
+        let identity = vm_guest_identity("agent-1", "/guest/project/lines/main");
+        assert!(identity.starts_with("/__codex_vm__/agent-1/"));
+        let path = std::path::Path::new(&identity);
+        assert!(path.is_absolute());
+        assert!(
+            !path
+                .components()
+                .any(|part| part == std::path::Component::ParentDir)
+        );
+        assert_eq!(
+            identity,
+            vm_guest_identity("agent-1", "/guest/project/lines/main")
+        );
+        assert_ne!(
+            identity,
+            vm_guest_identity("agent-1", "/guest/project/lines/other")
+        );
     }
 }
 pub(super) fn authorize(

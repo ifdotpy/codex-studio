@@ -235,6 +235,7 @@ pub fn prepare_work_item(
     base_commit: &str,
     parent_epoch: i64,
     parent_cwd: &str,
+    parent_project_path: &str,
     parent_account_key: &str,
     parent_project_id: Option<&Value>,
     parent_project_server_id: Option<&Value>,
@@ -354,6 +355,7 @@ pub fn prepare_work_item(
     draft["cyberAccessProgram"] = json!(settings.cyber_access_program);
     draft["_p02CreationIdentity"] = identity_value(account);
     draft["_p02ParentCwd"] = json!(parent_cwd);
+    draft["_p02ParentProjectPath"] = json!(parent_project_path);
     draft["_p02ParentAccountKey"] = json!(parent_account_key);
     draft["_p02ParentProjectId"] = parent_project_id.cloned().unwrap_or(Value::Null);
     draft["_p02ParentProjectServerId"] = parent_project_server_id.cloned().unwrap_or(Value::Null);
@@ -435,13 +437,22 @@ pub fn recheck_worker(
     {
         return Err(CreateError::IdentityChanged);
     }
-    let cwd = frozen_cwd
+    let _guest_cwd = frozen_cwd
         .and_then(Value::as_str)
         .ok_or(CreateError::IdentityChanged)?;
+    let project_path = field(draft, "_p02ParentProjectPath")
+        .and_then(Value::as_str)
+        .ok_or(CreateError::IdentityChanged)?;
+    if field(&parent, "executionMode").and_then(Value::as_str) == Some("vm")
+        && field(&parent, "hostProjectPath").and_then(Value::as_str) != Some(project_path)
+    {
+        return Err(CreateError::IdentityChanged);
+    }
     let frozen_project = field(draft, "_p02ProjectBinding")
         .filter(|value| !value.is_null())
         .cloned();
-    let current_project = ProjectsRepository::get(transaction, cwd)?.map(|(_, value)| value);
+    let current_project =
+        ProjectsRepository::get(transaction, project_path)?.map(|(_, value)| value);
     if current_project != frozen_project {
         return Err(CreateError::IdentityChanged);
     }
@@ -797,6 +808,7 @@ mod tests {
             &"a".repeat(40),
             0,
             &cwd,
+            &cwd,
             "parent-account",
             None,
             None,
@@ -875,6 +887,7 @@ mod tests {
             "",
             0,
             &fixture.cwd,
+            &fixture.cwd,
             "parent-account",
             None,
             None,
@@ -898,6 +911,135 @@ mod tests {
         let tx = fixture.database.transaction().expect("recheck transaction");
         recheck_worker(&tx, &draft, 0, &fixture.account)
             .expect("parent identity is rechecked against the stored parent cwd");
+    }
+
+    #[test]
+    fn vm_worker_rechecks_guest_cwd_and_host_project_path_separately() {
+        let mut fixture = worker_draft_fixture("Implement", "Inspect the project");
+        let host_project = tempdir().expect("host project directory");
+        let host_path = host_project
+            .path()
+            .canonicalize()
+            .expect("canonical host project")
+            .to_string_lossy()
+            .into_owned();
+        let guest_cwd = "/vm/projects/example";
+        let mut parent: Value = fixture
+            .database
+            .query_row(
+                "SELECT record FROM runtime_agents WHERE id=?1",
+                [&fixture.parent_id.0],
+                |row| row.get::<_, String>(0),
+            )
+            .map(|raw| serde_json::from_str(&raw).expect("parent JSON"))
+            .expect("parent row");
+        parent["cwd"] = json!(guest_cwd);
+        parent["hostProjectPath"] = json!(host_path);
+        parent["executionMode"] = json!("vm");
+        fixture
+            .database
+            .execute(
+                "UPDATE runtime_agents SET record=?1 WHERE id=?2",
+                rusqlite::params![parent.to_string(), fixture.parent_id.0],
+            )
+            .expect("store VM parent identity");
+
+        let mut project = ProjectsRepository::get(&fixture.database, &fixture.cwd)
+            .expect("original project lookup")
+            .expect("original project exists")
+            .1;
+        fixture
+            .database
+            .execute("DELETE FROM runtime_projects WHERE id=?1", [&fixture.cwd])
+            .expect("move project fixture");
+        project["id"] = json!(host_path);
+        project["path"] = json!(host_path);
+        fixture
+            .database
+            .execute(
+                "INSERT INTO runtime_projects(id,record) VALUES(?1,?2)",
+                rusqlite::params![host_path, project.to_string()],
+            )
+            .expect("save host-side project identity");
+
+        let body = json!({"account_key":"worker-account","name":"VM worker",
+            "model":"model-one","prompt":"Inspect the project"});
+        let draft = prepare_work_item(
+            &body,
+            Path::new(&host_path),
+            AgentId::from("vm-child"),
+            fixture.parent_id.clone(),
+            fixture.parent_id.clone(),
+            "HEAD",
+            &"a".repeat(40),
+            0,
+            guest_cwd,
+            &host_path,
+            "parent-account",
+            None,
+            None,
+            Some(&project),
+            &fixture.account,
+            &Catalog,
+            "implementer",
+            true,
+            false,
+            false,
+        )
+        .expect("prepare VM worker draft");
+        assert_eq!(
+            field(&draft, "_p02ParentCwd").and_then(Value::as_str),
+            Some(guest_cwd)
+        );
+        assert_eq!(
+            field(&draft, "_p02ParentProjectPath").and_then(Value::as_str),
+            Some(host_path.as_str())
+        );
+        let tx = fixture.database.transaction().expect("recheck transaction");
+        recheck_worker(&tx, &draft, 0, &fixture.account)
+            .expect("guest parent identity and host project binding remain independently stable");
+        drop(tx);
+
+        for (field, changed) in [
+            ("cwd", "/vm/projects/replaced"),
+            ("hostProjectPath", "/host/projects/replaced"),
+        ] {
+            let mut changed_parent: Value = fixture
+                .database
+                .query_row(
+                    "SELECT record FROM runtime_agents WHERE id=?1",
+                    [&fixture.parent_id.0],
+                    |row| row.get::<_, String>(0),
+                )
+                .map(|raw| serde_json::from_str(&raw).expect("parent JSON"))
+                .expect("parent row");
+            changed_parent[field] = json!(changed);
+            fixture
+                .database
+                .execute(
+                    "UPDATE runtime_agents SET record=?1 WHERE id=?2",
+                    rusqlite::params![changed_parent.to_string(), fixture.parent_id.0],
+                )
+                .expect("change parent identity");
+            let tx = fixture.database.transaction().expect("identity recheck");
+            assert!(matches!(
+                recheck_worker(&tx, &draft, 0, &fixture.account),
+                Err(CreateError::IdentityChanged)
+            ));
+            drop(tx);
+            changed_parent[field] = if field == "cwd" {
+                json!(guest_cwd)
+            } else {
+                json!(host_path)
+            };
+            fixture
+                .database
+                .execute(
+                    "UPDATE runtime_agents SET record=?1 WHERE id=?2",
+                    rusqlite::params![changed_parent.to_string(), fixture.parent_id.0],
+                )
+                .expect("restore parent identity");
+        }
     }
 
     #[test]

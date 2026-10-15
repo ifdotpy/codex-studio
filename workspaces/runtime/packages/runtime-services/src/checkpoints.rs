@@ -37,6 +37,8 @@ pub enum CheckpointsError {
     DeletedAgent,
     #[error("Studio Git checkpoints are unavailable for image workspaces")]
     ExecutionWorkspace,
+    #[error("Studio Git tools are unavailable for image workspaces")]
+    GitToolsUnavailable,
     #[error("Workspace activity changed before checkpoint capture")]
     ActivityChanged,
     #[error(
@@ -409,6 +411,10 @@ fn capture_reserved(
 
 pub fn preview(store: &RuntimeStore, context: PreviewContext) -> Result<Value, CheckpointsError> {
     ensure_agent_identity(&context.agent)?;
+    if is_image_workspace(&context.agent) {
+        return Err(CheckpointsError::GitToolsUnavailable);
+    }
+    ensure_agent_available(&context.agent)?;
     let cwd = context
         .agent
         .record

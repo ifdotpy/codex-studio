@@ -27,19 +27,9 @@
     ["/api/leads", { "model": "gpt-6-astra" }, "provider-session/model-list"],
     [
       "/api/leads",
-      { "workspaceMode": "image" },
-      "workspace-state/image-workspace"
-    ],
-    [
-      "/api/leads",
       { "project_id": "project", "project_server_id": "remote" },
       "cross-server-driver/project-binding"
     ],
-    ["/api/agents", { "effort": null }, "provider-session/model-list"],
-    [
-      "/api/agents",
-      { "workspaceMode": "image" },
-      "workspace-state/image-workspace"
-    ]
+    ["/api/agents", { "effort": null }, "provider-session/model-list"]
   ]
 }

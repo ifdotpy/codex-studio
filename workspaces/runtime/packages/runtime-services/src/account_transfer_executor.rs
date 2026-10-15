@@ -1312,6 +1312,7 @@ mod retained_executor_tests {
             claude_account_pin: serde_json::Value::Null,
             account_driver: None,
             account_session: Some(session.clone()),
+            guest_rpc: None,
         };
 
         let result = before_start(

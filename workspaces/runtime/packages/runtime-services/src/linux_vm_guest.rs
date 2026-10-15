@@ -21,7 +21,8 @@ pub const GUEST_EXEC_TIMEOUT_SECONDS: u64 = 9_000;
 /// Maximum time spent establishing a guest socket connection, in seconds.
 pub const GUEST_CONNECT_TIMEOUT_SECONDS: u64 = 15;
 const BUFFER_READ_BYTES: usize = 65_536;
-const REQUEST_ID_MAX_CHARS: usize = 128;
+/// Maximum guest operation identity length, shared with the Python guest client.
+pub const GUEST_REQUEST_ID_MAX_CHARS: usize = 128;
 const DEFAULT_AGENT_MIN_FREE_BYTES: u64 = 5 * 1024 * 1024 * 1024;
 const AGENT_MIN_FREE_BYTES_ENV: &str = "CODEX_WORKSPACE_AGENT_MIN_FREE_BYTES";
 
@@ -486,7 +487,7 @@ fn read_line(
 
 fn request_identity(request_id: Option<&str>) -> Result<String, GuestError> {
     if let Some(identity) = request_id {
-        if identity.is_empty() || identity.chars().count() > REQUEST_ID_MAX_CHARS {
+        if identity.is_empty() || identity.chars().count() > GUEST_REQUEST_ID_MAX_CHARS {
             return Err(GuestError::InvalidRequest);
         }
         return Ok(identity.to_owned());
@@ -499,7 +500,7 @@ fn request_identity(request_id: Option<&str>) -> Result<String, GuestError> {
 fn validate_request(method: &str, identity: &str, timeout: Duration) -> Result<(), GuestError> {
     if method.is_empty()
         || identity.is_empty()
-        || identity.chars().count() > REQUEST_ID_MAX_CHARS
+        || identity.chars().count() > GUEST_REQUEST_ID_MAX_CHARS
         || timeout.is_zero()
     {
         return Err(GuestError::InvalidRequest);
