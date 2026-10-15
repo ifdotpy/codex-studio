@@ -31,11 +31,26 @@ use super::runtime::{
 
 const MAX_TRACKED_VOICE_SESSIONS: usize = 1024;
 const VOICE_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+const RESTARTED_SESSION_ERROR: &str = "Voice connection ended. The transcript is saved.";
 
 type SessionDispatchLocks = HashMap<(String, String), Weak<tokio::sync::Mutex<()>>>;
 static DISPATCH_LOCKS: OnceLock<Mutex<SessionDispatchLocks>> = OnceLock::new();
 type SessionStartCompletions = HashMap<(String, String), Weak<tokio::sync::watch::Sender<bool>>>;
 static START_COMPLETIONS: OnceLock<Mutex<SessionStartCompletions>> = OnceLock::new();
+
+/// A restarted process cannot restore a browser's peer connection or microphone.
+/// Settle accepted sessions before HTTP admission; retain their receipts so an
+/// exact retry returns the terminal result without sending another provider RPC.
+pub fn recover_after_restart(store: &RuntimeStore, now: f64) -> Result<usize, VoiceProviderError> {
+    let changed = store.transaction(|transaction| {
+        Ok(transaction.execute(
+            "UPDATE voice_sessions SET state='lost',ended=?1,error=?2 \
+             WHERE state IS NOT NULL AND ended IS NULL",
+            rusqlite::params![now, RESTARTED_SESSION_ERROR],
+        )?)
+    })?;
+    Ok(changed)
+}
 
 async fn session_dispatch_guard(
     agent_id: &str,
@@ -2804,6 +2819,87 @@ mod tests {
         assert_eq!(calls[0].params["transport"]["type"], "webrtc");
         assert_eq!(calls[0].params["transport"]["sdp"], "v=0\r\n...");
         assert_eq!(calls[0].params["clientManagedHandoffs"], false);
+    }
+
+    #[tokio::test]
+    async fn restart_loses_orphaned_start_before_replay_or_new_admission() {
+        use studio_runtime_store::{AgentRecord, AgentStatus};
+
+        let directory = tempfile::tempdir().expect("voice state directory");
+        let store = RuntimeStore::open(Some(directory.path())).expect("fresh voice store");
+        let mut extra = std::collections::BTreeMap::new();
+        extra.insert("accountKey".into(), json!("default"));
+        extra.insert("threadId".into(), json!("voice-thread"));
+        let agent = AgentRecord {
+            id: AgentId::from("voice-agent"),
+            root_id: AgentId::from("voice-agent"),
+            epoch: 0,
+            status: AgentStatus::Idle,
+            extra,
+        };
+        let old_offer = "v=0\r\nold-offer";
+        store
+            .transaction(|transaction| {
+                AgentRepository::put(transaction, &agent)?;
+                transaction.execute(
+                    "INSERT INTO voice_sessions(id,agent,created,sdp,native_thread,account_key,connection_id,state) \
+                     VALUES('orphan-start','voice-agent',10,?1,'voice-thread','default',NULL,'connecting')",
+                    [old_offer],
+                )?;
+                Ok(())
+            })
+            .expect("persist accepted start before simulated crash");
+        drop(store);
+
+        let store =
+            Arc::new(RuntimeStore::open(Some(directory.path())).expect("reopened voice store"));
+        assert_eq!(
+            recover_after_restart(&store, 20.0).expect("settle persisted peer"),
+            1,
+        );
+        let persisted = VoiceRepository::session(
+            &store.read().expect("read reopened store"),
+            "orphan-start",
+            "voice-agent",
+        )
+        .expect("read recovered session")
+        .expect("recovered session remains addressable");
+        assert_eq!(persisted["state"], "lost");
+        assert_eq!(persisted["ended"], 20.0);
+        assert_eq!(persisted["error"], RESTARTED_SESSION_ERROR);
+
+        let provider = Arc::new(ScriptedProvider {
+            calls: Mutex::new(vec![]),
+        });
+        let replay = start_admitted(
+            Arc::clone(&store),
+            Some(provider.clone()),
+            "voice-agent".into(),
+            "orphan-start".into(),
+            old_offer.into(),
+            21.0,
+        )
+        .await
+        .expect("exact replay returns saved terminal session");
+        assert_eq!(replay["state"], "lost");
+        assert!(provider.calls.lock().expect("provider calls").is_empty());
+
+        let fresh = start_admitted(
+            Arc::clone(&store),
+            Some(provider.clone()),
+            "voice-agent".into(),
+            "fresh-session".into(),
+            "v=0\r\nfresh-offer".into(),
+            22.0,
+        )
+        .await
+        .expect("new identity is admitted after recovered session is terminal");
+        assert_eq!(fresh["state"], "connecting");
+        wait_for_start_setup("voice-agent", "fresh-session").await;
+        let calls = provider.calls.lock().expect("provider calls");
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].method, Method::ThreadRealtimeStart);
+        assert_eq!(calls[0].params["realtimeSessionId"], "fresh-session");
     }
 
     #[tokio::test]

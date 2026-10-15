@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import argparse
 import ast
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 import json
 import os
 from pathlib import Path
@@ -25,6 +25,7 @@ from typing import Any, Iterator
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from server_test_contracts import P20_OPERATION_MANIFEST_ENV
 from runtime_test_environment import runtime_environment
+from codex_python import resolve_python
 
 ROOT = Path(__file__).resolve().parents[5]
 TESTS = ROOT / "workspaces/runtime/apps/server/tests"
@@ -69,6 +70,7 @@ def validate_copy_state_root(
         stat = database.stat()
         if stat.st_nlink > 1:
             raise ValueError(f"copy state database must not have hard links: {name}")
+        _validate_copy_database(database, name)
         copy_database_stats[name] = stat
     known_live_roots = [Path.home() / ".local/state/codex-agents"]
     if live_state_root is not None:
@@ -91,6 +93,54 @@ def validate_copy_state_root(
             f"unexpected entries: {', '.join(unexpected)}"
         )
     return root
+
+
+def _validate_copy_database(database: Path, name: str) -> None:
+    """Check a copied database's SQLite structure without opening it writable."""
+    with database.open("rb") as source:
+        if source.read(16) != b"SQLite format 3\x00":
+            raise ValueError(f"copy state database has an invalid SQLite header: {name}")
+    uri = "file:" + urllib.parse.quote(str(database), safe="/") + "?mode=ro"
+    try:
+        with closing(sqlite3.connect(uri, uri=True)) as connection:
+            if connection.execute("PRAGMA quick_check").fetchone() != ("ok",):
+                raise ValueError(f"copy state database failed SQLite integrity check: {name}")
+            required = {
+                "canvas.sqlite3": {"runtime_agents": {"id", "record"}},
+                "analytics.sqlite3": {"analytics_usage": {"seq", "id", "agent", "record"}},
+            }[name]
+            for table, columns in required.items():
+                rows = connection.execute(f'PRAGMA table_info("{table}")').fetchall()
+                if not columns.issubset({row[1] for row in rows}):
+                    raise ValueError(
+                        f"copy state database has an incompatible schema: {name}/{table}"
+                    )
+    except sqlite3.DatabaseError as error:
+        raise ValueError(f"copy state database is not a valid SQLite database: {name}") from error
+
+
+def copied_agent_witness(root: Path) -> dict[str, str]:
+    """Select a native agent already present in the copy for an HTTP read witness."""
+    uri = "file:" + urllib.parse.quote(str(root / "canvas.sqlite3"), safe="/") + "?mode=ro"
+    with closing(sqlite3.connect(uri, uri=True)) as connection:
+        for identifier, raw in connection.execute(
+            "SELECT id,record FROM runtime_agents ORDER BY id"
+        ):
+            try:
+                record = json.loads(raw)
+            except (TypeError, ValueError):
+                continue
+            if not isinstance(record, dict):
+                continue
+            cwd = record.get("cwd")
+            if (
+                record.get("id") == identifier
+                and isinstance(cwd, str)
+                and cwd
+                and record.get("executionMode", "host") != "vm"
+            ):
+                return {"id": identifier, "cwd": cwd}
+    raise ValueError("copy state database has no pre-existing native agent to verify")
 
 
 def validate_ephemeral_backend_command(command: str) -> list[str]:
@@ -217,10 +267,11 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
     },
     ("GET", "/api/agents/finder-view"): {
         "primary": {
-            "query": {"agent": "$agent"},
-            # Verify an HTTP read of the uniquely namespaced row seeded into
-            # this marked copy; a bare success status is not copy evidence.
-            "functional_witness": "copy-agent-record",
+            "query": {"agent": "$copyWitnessAgent"},
+            # Verify an HTTP read of a row found in the copied DB before any
+            # ledger fixture writes; a status or seeded row is not copy proof.
+            "expected": "2xx",
+            "functional_witness": "copy-existing-agent",
         },
     },
     ("GET", "/api/analytics"): {
@@ -1010,7 +1061,7 @@ def ensure_operation_probe_cases(
             primary["unverified"] = True
 
 
-def seed_python_probe_state(backend: Any) -> dict[str, str]:
+def seed_python_probe_state(backend: Any, python: str) -> dict[str, str]:
     """Seed the disposable backend with records written by the Python runtime."""
     prefix = backend.fixture_namespace or "ledger-"
     agent_id = f"{prefix}probe-agent"
@@ -1232,11 +1283,12 @@ finally:
     runtime.close()
 """
     seed = seed.replace("ledger-", prefix).replace('"default"', repr(backend.account_key))
-    python = os.environ.get("CODEX_AGENTS_PYTHON", sys.executable)
+    environment = runtime_environment(backend)
+    environment["CODEX_AGENTS_PYTHON"] = python
     subprocess.run(
         [python, "-B", "-c", seed],
         cwd=backend.cwd,
-        env=runtime_environment(backend),
+        env=environment,
         check=True,
         timeout=30,
     )
@@ -1534,6 +1586,8 @@ def probe_operations(
     successful_assertions: dict[str, set[str]],
     *,
     state_root: Path | None = None,
+    python: str,
+    copy_witness: dict[str, str] | None = None,
 ) -> list[dict[str, Any]]:
     sys.path.insert(0, str(TESTS))
     from http_backend_harness import BackendProcess, HttpResult
@@ -1545,6 +1599,8 @@ def probe_operations(
         backend = BackendProcess(scratch, claude_bin=None, state_root=state_root)
         try:
             backend.copy_mode = state_root is not None
+            if backend.copy_mode and copy_witness is None:
+                raise RuntimeError("marked-copy probe has no pre-mutation agent witness")
             backend.fixture_namespace = (
                 f"copyprobe-{uuid.uuid4().hex}-" if backend.copy_mode else ""
             )
@@ -1564,8 +1620,8 @@ def probe_operations(
                 str(uuid.uuid4()) if backend.copy_mode else "88888888-8888-4888-8888-888888888880",
             )
             backend.create_codex_replay("restart-mid-turn-supervisor-replay.json")
-            seed_catalog_state(backend)
-            codex_login_id = seed_codex_login(backend)
+            seed_catalog_state(backend, python)
+            codex_login_id = seed_codex_login(backend, python)
             import importlib.util
             analytics_path = TESTS / "rust-analytics-http-contract.py"
             analytics_spec = importlib.util.spec_from_file_location("ledger_analytics_seed", analytics_path)
@@ -1574,9 +1630,12 @@ def probe_operations(
             analytics_module = importlib.util.module_from_spec(analytics_spec)
             analytics_spec.loader.exec_module(analytics_module)
             analytics_module.seed_analytics(backend)
-            identifiers = seed_python_probe_state(backend)
+            identifiers = seed_python_probe_state(backend, python)
             identifiers["codexLogin"] = codex_login_id
             if backend.copy_mode:
+                assert copy_witness is not None
+                identifiers["copyWitnessAgent"] = copy_witness["id"]
+                identifiers["copyWitnessCwd"] = copy_witness["cwd"]
                 identifiers["_fixturePrefix"] = backend.fixture_namespace
                 identifiers["_accountKey"] = backend.account_key
                 identifiers["_literalIds"] = backend.fixture_uuid_values
@@ -1599,6 +1658,15 @@ def probe_operations(
                 ]
                 observations = []
                 for case_name, probe_case in cases:
+                    if (
+                        not backend.copy_mode
+                        and probe_case.get("functional_witness") == "copy-existing-agent"
+                    ):
+                        probe_case = {
+                            **probe_case,
+                            "query": {"agent": "$agent"},
+                        }
+                        probe_case.pop("functional_witness", None)
                     if probe_case.get("refresh_queue"):
                         queue_snapshot = backend.request(
                             "GET",
@@ -1698,8 +1766,11 @@ def probe_operations(
                     except (ValueError, TypeError):
                         response_body = None
                     functional_witness = (
-                        probe_case.get("functional_witness") == "copy-agent-record"
-                        and response_body == {"kind": "native", "path": str(backend.cwd)}
+                        probe_case.get("functional_witness") == "copy-existing-agent"
+                        and response_body == {
+                            "kind": "native",
+                            "path": identifiers.get("copyWitnessCwd"),
+                        }
                     )
                     operation_key = f"{method} {template}"
                     probe_event = {
@@ -1835,7 +1906,7 @@ def copy_probe_disposition(observations: list[dict[str, Any]]) -> str:
     return "unverified"
 
 
-def seed_catalog_state(backend: Any) -> None:
+def seed_catalog_state(backend: Any, python: str) -> None:
     accounts = backend.state / "accounts"
     if accounts.exists():
         raise RuntimeError("ledger fixture refuses to overwrite a copied accounts directory")
@@ -1864,10 +1935,8 @@ def seed_catalog_state(backend: Any) -> None:
         },
         "logins": {},
     }), encoding="utf-8")
-    python = os.environ.get("CODEX_AGENTS_PYTHON")
-    if not python:
-        raise RuntimeError("CODEX_AGENTS_PYTHON must name the isolated Python interpreter")
     environment = runtime_environment(backend)
+    environment["CODEX_AGENTS_PYTHON"] = python
     environment["PYTHONPATH"] = os.pathsep.join(filter(None, (
         str(TESTS), str(ROOT / "workspaces/runtime/apps/server/src"), environment.get("PYTHONPATH", ""),
     )))
@@ -1879,7 +1948,7 @@ def seed_catalog_state(backend: Any) -> None:
     )
 
 
-def seed_codex_login(backend: Any) -> str:
+def seed_codex_login(backend: Any, python: str) -> str:
     """Create the pending local login through AccountStore's Python writer."""
     login_id = backend.fixture_login_id
     account_prefix = backend.fixture_namespace or "ledger-"
@@ -1889,9 +1958,7 @@ def seed_codex_login(backend: Any) -> str:
     source = ROOT / "workspaces/runtime/apps/server/src"
     environment = backend._environment()
     environment["PYTHONPATH"] = os.pathsep.join(filter(None, (str(source), environment.get("PYTHONPATH", ""))))
-    python = os.environ.get("CODEX_AGENTS_PYTHON")
-    if not python:
-        raise RuntimeError("CODEX_AGENTS_PYTHON must name the isolated Python interpreter")
+    environment["CODEX_AGENTS_PYTHON"] = python
     script = f"""
 import sys
 from pathlib import Path
@@ -2311,8 +2378,11 @@ def main() -> int:
             parser.error(str(error))
         command = shlex.join(backend_command)
         os.environ["STUDIO_HTTP_BACKEND_COMMAND"] = command
+    copy_witness = copied_agent_witness(copy_state_root) if copy_state_root is not None else None
 
     environment = os.environ.copy()
+    isolated_python = str(resolve_python(ROOT / "workspaces/runtime/apps/server/src", environment))
+    environment["STUDIO_HTTP_BACKEND_PYTHON"] = isolated_python
     differential = subprocess.run(
         [
             sys.executable,
@@ -2371,7 +2441,12 @@ def main() -> int:
             if event.get("operation") and event.get("assertion") in passing and 200 <= event["status"] < 300:
                 successful_assertions[event["operation"]].add(event["assertion"])
     operations_result = probe_operations(
-        manifest, planned_assertions, successful_assertions, state_root=copy_state_root,
+        manifest,
+        planned_assertions,
+        successful_assertions,
+        state_root=copy_state_root,
+        python=isolated_python,
+        copy_witness=copy_witness,
     )
     operation_tests: dict[str, set[str]] = defaultdict(set)
     failures_without_501: list[str] = []

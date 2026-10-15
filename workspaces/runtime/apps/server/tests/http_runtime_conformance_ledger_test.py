@@ -4,6 +4,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+from contextlib import closing
 from pathlib import Path
 import sqlite3
 import subprocess
@@ -30,6 +31,26 @@ spec.loader.exec_module(ledger)
 
 
 class LedgerTraceContract(unittest.TestCase):
+    def create_marked_copy(self, root: Path, *, with_agent: bool = True) -> Path:
+        root.mkdir(parents=True, exist_ok=True)
+        (root / ledger.COPY_MARKER).write_text(ledger.COPY_MARKER_CONTENT)
+        with closing(sqlite3.connect(root / "canvas.sqlite3")) as connection:
+            connection.execute("CREATE TABLE runtime_agents(id TEXT PRIMARY KEY, record TEXT NOT NULL)")
+            if with_agent:
+                connection.execute(
+                    "INSERT INTO runtime_agents VALUES (?, ?)",
+                    ("stored-agent", json.dumps({
+                        "id": "stored-agent", "cwd": "/copied/project", "executionMode": "host",
+                    })),
+                )
+            connection.commit()
+        with closing(sqlite3.connect(root / "analytics.sqlite3")) as connection:
+            connection.execute(
+                "CREATE TABLE analytics_usage(seq INTEGER PRIMARY KEY, id TEXT, agent TEXT, record TEXT)"
+            )
+            connection.commit()
+        return root
+
     def test_native_p04_http_suite_is_registered_as_python_baseline_only(self) -> None:
         relative = "workspaces/runtime/apps/server/tests/wave7-p04-native-http-contract.py"
         selected = {str(path.relative_to(ROOT)) for path in ledger.consumer_suites()}
@@ -82,10 +103,7 @@ Server suites: 0 passed, 1 failed, 0 skipped (opt-in), 0 skipped (environment), 
         with tempfile.TemporaryDirectory() as scratch:
             root = Path(scratch)
             copy = root / "copy"
-            copy.mkdir()
-            (copy / ledger.COPY_MARKER).write_text(ledger.COPY_MARKER_CONTENT)
-            for name in ("canvas.sqlite3", "analytics.sqlite3"):
-                (copy / name).touch()
+            self.create_marked_copy(copy)
 
             self.assertEqual(ledger.validate_copy_state_root(copy), copy.resolve())
             with self.assertRaisesRegex(ValueError, "live state"):
@@ -108,10 +126,7 @@ Server suites: 0 passed, 1 failed, 0 skipped (opt-in), 0 skipped (environment), 
         with tempfile.TemporaryDirectory() as scratch:
             home = Path(scratch) / "home"
             copy = home / ".local/state/codex-agents/rehearsal"
-            copy.mkdir(parents=True)
-            (copy / ledger.COPY_MARKER).write_text(ledger.COPY_MARKER_CONTENT)
-            for name in ("canvas.sqlite3", "analytics.sqlite3"):
-                (copy / name).touch()
+            self.create_marked_copy(copy)
             with patch.object(Path, "home", return_value=home):
                 with self.assertRaisesRegex(ValueError, "live state"):
                     ledger.validate_copy_state_root(copy)
@@ -124,7 +139,11 @@ Server suites: 0 passed, 1 failed, 0 skipped (opt-in), 0 skipped (environment), 
             (root / ledger.COPY_MARKER).write_text(ledger.COPY_MARKER_CONTENT)
             with self.assertRaisesRegex(ValueError, "canvas.sqlite3"):
                 ledger.validate_copy_state_root(root)
-            (root / "canvas.sqlite3").touch()
+            with closing(sqlite3.connect(root / "canvas.sqlite3")) as connection:
+                connection.execute(
+                    "CREATE TABLE runtime_agents(id TEXT PRIMARY KEY, record TEXT NOT NULL)"
+                )
+                connection.commit()
             with self.assertRaisesRegex(ValueError, "analytics.sqlite3"):
                 ledger.validate_copy_state_root(root)
 
@@ -134,8 +153,14 @@ Server suites: 0 passed, 1 failed, 0 skipped (opt-in), 0 skipped (environment), 
             root.mkdir()
             (root / ledger.COPY_MARKER).write_text(ledger.COPY_MARKER_CONTENT)
             canvas = root / "canvas.sqlite3"
-            canvas.write_bytes(b"copy database bytes")
-            (root / "analytics.sqlite3").write_bytes(b"analytics database bytes")
+            with closing(sqlite3.connect(canvas)) as connection:
+                connection.execute("CREATE TABLE runtime_agents(id TEXT PRIMARY KEY, record TEXT NOT NULL)")
+                connection.execute("INSERT INTO runtime_agents VALUES ('stored-agent', ?)",
+                                   (json.dumps({"id": "stored-agent", "cwd": "/copied/project"}),))
+                connection.commit()
+            with closing(sqlite3.connect(root / "analytics.sqlite3")) as connection:
+                connection.execute("CREATE TABLE analytics_usage(seq INTEGER PRIMARY KEY, id TEXT, agent TEXT, record TEXT)")
+                connection.commit()
             external_link = Path(scratch) / "linked-live-canvas.sqlite3"
             os.link(canvas, external_link)
             original = canvas.read_bytes()
@@ -153,8 +178,14 @@ Server suites: 0 passed, 1 failed, 0 skipped (opt-in), 0 skipped (environment), 
             live.mkdir()
             (root / ledger.COPY_MARKER).write_text(ledger.COPY_MARKER_CONTENT)
             canvas = root / "canvas.sqlite3"
-            canvas.write_bytes(b"copy database bytes")
-            (root / "analytics.sqlite3").write_bytes(b"analytics database bytes")
+            with closing(sqlite3.connect(canvas)) as connection:
+                connection.execute("CREATE TABLE runtime_agents(id TEXT PRIMARY KEY, record TEXT NOT NULL)")
+                connection.execute("INSERT INTO runtime_agents VALUES ('stored-agent', ?)",
+                                   (json.dumps({"id": "stored-agent", "cwd": "/copied/project"}),))
+                connection.commit()
+            with closing(sqlite3.connect(root / "analytics.sqlite3")) as connection:
+                connection.execute("CREATE TABLE analytics_usage(seq INTEGER PRIMARY KEY, id TEXT, agent TEXT, record TEXT)")
+                connection.commit()
             live_canvas = live / "canvas.sqlite3"
             os.link(canvas, live_canvas)
             original_stat = Path.stat
@@ -170,6 +201,53 @@ Server suites: 0 passed, 1 failed, 0 skipped (opt-in), 0 skipped (environment), 
             with patch.object(Path, "stat", report_copy_as_unlinked):
                 with self.assertRaisesRegex(ValueError, "aliases a known live database"):
                     ledger.validate_copy_state_root(root, live_state_root=live)
+
+    def test_copy_state_requires_valid_database_schema_and_a_preexisting_agent(self) -> None:
+        with tempfile.TemporaryDirectory() as scratch:
+            root = Path(scratch) / "copy"
+            root.mkdir()
+            (root / ledger.COPY_MARKER).write_text(ledger.COPY_MARKER_CONTENT)
+            for name in ("canvas.sqlite3", "analytics.sqlite3"):
+                (root / name).touch()
+            with self.assertRaisesRegex(ValueError, "invalid SQLite header"):
+                ledger.validate_copy_state_root(root)
+
+            with closing(sqlite3.connect(root / "canvas.sqlite3")) as connection:
+                connection.execute("CREATE TABLE unrelated(value TEXT)")
+                connection.commit()
+            with self.assertRaisesRegex(ValueError, "incompatible schema"):
+                ledger.validate_copy_state_root(root)
+
+            self.create_marked_copy(root, with_agent=False)
+            before = {
+                name: (root / name).read_bytes()
+                for name in ("canvas.sqlite3", "analytics.sqlite3")
+            }
+            self.assertEqual(ledger.validate_copy_state_root(root), root.resolve())
+            with self.assertRaisesRegex(ValueError, "pre-existing native agent"):
+                ledger.copied_agent_witness(root)
+            self.assertEqual(
+                {name: (root / name).read_bytes() for name in before},
+                before,
+            )
+
+    def test_copy_functional_witness_uses_existing_copy_row_not_seeded_agent(self) -> None:
+        with tempfile.TemporaryDirectory() as scratch:
+            root = Path(scratch) / "copy"
+            self.create_marked_copy(root)
+            before = {
+                name: (root / name).read_bytes()
+                for name in ("canvas.sqlite3", "analytics.sqlite3")
+            }
+            self.assertEqual(ledger.validate_copy_state_root(root), root.resolve())
+            self.assertEqual(
+                ledger.copied_agent_witness(root),
+                {"id": "stored-agent", "cwd": "/copied/project"},
+            )
+            self.assertEqual(
+                {name: (root / name).read_bytes() for name in before},
+                before,
+            )
 
     def test_copy_disposition_requires_an_explicit_functional_witness(self) -> None:
         status_only = [{"expected": "2xx", "expectedMatches": True, "status": 200}]
@@ -286,7 +364,7 @@ Server suites: 0 passed, 1 failed, 0 skipped (opt-in), 0 skipped (environment), 
             "questionDelete", "answerQuestion", "projectPath", "claudeAccount",
             "voiceRecord", "voiceEndedSession", "voiceActiveSession",
             "analyticsAgent", "schemaHash", "approvalRequest", "codexLogin", "activeCommand",
-            "liveTerminal",
+            "liveTerminal", "copyWitnessAgent",
         }
 
         def references(value):
