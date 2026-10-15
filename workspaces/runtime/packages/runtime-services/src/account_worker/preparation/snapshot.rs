@@ -321,7 +321,7 @@ fn guidance_with_python(
             content.trim()
         )
     };
-    let progress = if lead {
+    let progress = if lead && !resources.progress_template.is_empty() {
         let id = record["id"].as_str().ok_or_else(|| invalid("agent/id"))?;
         if id.is_empty()
             || id.len() > 200

@@ -208,6 +208,7 @@ impl VoiceRequestPort for AccountSessionVoicePort {
         deadline: Instant,
     ) -> VoiceFuture<'a, VoiceRequestReceipt> {
         let store = Arc::clone(&self.store);
+        let session = Arc::clone(&self.session);
         let callbacks = Arc::clone(&self.callbacks);
         Box::pin(async move {
             studio_runtime_process::blocking_pool::spawn_blocking(
@@ -230,10 +231,45 @@ impl VoiceRequestPort for AccountSessionVoicePort {
                             certainty: VoiceWriteCertainty::NotSent,
                         };
                     }
+                    let expected_session = ConnectionScope {
+                        account: scope.account_key.clone(),
+                        connection: scope.connection_id.clone(),
+                        generation: scope.generation,
+                    };
+                    if session.current_scope(&scope.account_key).as_ref() != Some(&expected_session)
+                    {
+                        return VoiceRequestReceipt {
+                            certainty: VoiceWriteCertainty::NotSent,
+                        };
+                    }
                     let now = std::time::SystemTime::now()
                         .duration_since(std::time::UNIX_EPOCH)
                         .map_or(0.0, |duration| duration.as_secs_f64());
-                    let certainty = match callbacks.answer(request_id, &reply.result, now) {
+                    let context = match crate::provider_callbacks::pending_native_delete_context(
+                        &store, request_id,
+                    ) {
+                        Ok(Some(context))
+                            if context.agent == scope.agent_id
+                                && context.epoch == scope.epoch as u64
+                                && context.account == scope.account_key
+                                && context.connection == scope.connection_id
+                                && context.generation == scope.generation
+                                && context.thread == scope.thread_id =>
+                        {
+                            context
+                        }
+                        _ => {
+                            return VoiceRequestReceipt {
+                                certainty: VoiceWriteCertainty::NotSent,
+                            };
+                        }
+                    };
+                    let certainty = match callbacks.answer_on_live_session(
+                        request_id,
+                        &reply.result,
+                        now,
+                        &context,
+                    ) {
                         Ok(_) => VoiceWriteCertainty::Written,
                         Err(CallbackError::Unknown | CallbackError::Store(_)) => {
                             VoiceWriteCertainty::Unknown

@@ -864,6 +864,10 @@ struct MockAccountSession {
 }
 
 impl AccountSessionPort for MockAccountSession {
+    fn current_scope(&self, account: &str) -> Option<ConnectionScope> {
+        (self.scope.account == account).then(|| self.scope.clone())
+    }
+
     fn provider_request(
         &self,
         request: ProviderRequest,

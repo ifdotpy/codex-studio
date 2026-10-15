@@ -1317,6 +1317,7 @@
             "input": {
               "account": "default",
               "agent": "agent",
+              "connection": "fixture-connection",
               "epoch": 0,
               "generation": 1,
               "thread": "thread",
@@ -1358,6 +1359,22 @@
           "id": "account-worker:account:default:attempt:turn/start:submitted",
           "signature": "submitted",
           "result": "<validated-account-worker-submission>"
+        },
+        "rustPresent": true,
+        "deviation": "rust_receipts"
+      },
+      {
+        "path": "/runtime_event_meta/0/record/contextManifest",
+        "python": null,
+        "pythonPresent": false,
+        "rust": {
+          "epoch": ["thread", 0],
+          "sequence": 1,
+          "versions": {
+            "agentMode": "cbaab587bdd3e5b2b44c85e8",
+            "progressFile": "12ae32cb1ec02d01eda3581b",
+            "roleSkill": "759db5d8a148549a3fc6b79c"
+          }
         },
         "rustPresent": true,
         "deviation": "rust_receipts"
@@ -4586,6 +4603,7 @@
             "input": {
               "account": "default",
               "agent": "agent",
+              "connection": "fixture-connection",
               "epoch": 0,
               "generation": 1,
               "thread": "thread",
@@ -4627,6 +4645,22 @@
           "id": "account-worker:account:default:attempt:turn/start:submitted",
           "signature": "submitted",
           "result": "<validated-account-worker-submission>"
+        },
+        "rustPresent": true,
+        "deviation": "rust_receipts"
+      },
+      {
+        "path": "/runtime_event_meta/0/record/contextManifest",
+        "python": null,
+        "pythonPresent": false,
+        "rust": {
+          "epoch": ["thread", 0],
+          "sequence": 1,
+          "versions": {
+            "agentMode": "cbaab587bdd3e5b2b44c85e8",
+            "progressFile": "12ae32cb1ec02d01eda3581b",
+            "roleSkill": "759db5d8a148549a3fc6b79c"
+          }
         },
         "rustPresent": true,
         "deviation": "rust_receipts"
@@ -6704,6 +6738,7 @@
             "input": {
               "account": "default",
               "agent": "agent",
+              "connection": "fixture-connection",
               "epoch": 0,
               "generation": 1,
               "thread": "thread",
@@ -6745,6 +6780,22 @@
           "id": "account-worker:account:default:attempt:turn/start:submitted",
           "signature": "submitted",
           "result": "<validated-account-worker-submission>"
+        },
+        "rustPresent": true,
+        "deviation": "rust_receipts"
+      },
+      {
+        "path": "/runtime_event_meta/0/record/contextManifest",
+        "python": null,
+        "pythonPresent": false,
+        "rust": {
+          "epoch": ["thread", 0],
+          "sequence": 1,
+          "versions": {
+            "agentMode": "cbaab587bdd3e5b2b44c85e8",
+            "progressFile": "12ae32cb1ec02d01eda3581b",
+            "roleSkill": "759db5d8a148549a3fc6b79c"
+          }
         },
         "rustPresent": true,
         "deviation": "rust_receipts"
@@ -6799,6 +6850,7 @@
             "input": {
               "account": "default",
               "agent": "agent",
+              "connection": "fixture-connection",
               "epoch": 0,
               "generation": 1,
               "thread": "thread",
@@ -6840,6 +6892,22 @@
           "id": "account-worker:account:default:attempt:turn/start:submitted",
           "signature": "submitted",
           "result": "<validated-account-worker-submission>"
+        },
+        "rustPresent": true,
+        "deviation": "rust_receipts"
+      },
+      {
+        "path": "/runtime_event_meta/0/record/contextManifest",
+        "python": null,
+        "pythonPresent": false,
+        "rust": {
+          "epoch": ["thread", 0],
+          "sequence": 1,
+          "versions": {
+            "agentMode": "cbaab587bdd3e5b2b44c85e8",
+            "progressFile": "12ae32cb1ec02d01eda3581b",
+            "roleSkill": "759db5d8a148549a3fc6b79c"
+          }
         },
         "rustPresent": true,
         "deviation": "rust_receipts"
@@ -6894,6 +6962,7 @@
             "input": {
               "account": "default",
               "agent": "agent",
+              "connection": "fixture-connection",
               "epoch": 0,
               "generation": 1,
               "thread": "thread",
@@ -6935,6 +7004,22 @@
           "id": "account-worker:account:default:attempt:turn/start:submitted",
           "signature": "submitted",
           "result": "<validated-account-worker-submission>"
+        },
+        "rustPresent": true,
+        "deviation": "rust_receipts"
+      },
+      {
+        "path": "/runtime_event_meta/0/record/contextManifest",
+        "python": null,
+        "pythonPresent": false,
+        "rust": {
+          "epoch": ["thread", 0],
+          "sequence": 1,
+          "versions": {
+            "agentMode": "cbaab587bdd3e5b2b44c85e8",
+            "progressFile": "12ae32cb1ec02d01eda3581b",
+            "roleSkill": "759db5d8a148549a3fc6b79c"
+          }
         },
         "rustPresent": true,
         "deviation": "rust_receipts"

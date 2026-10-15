@@ -163,6 +163,8 @@ fn params(state: &Value) -> Value {
 }
 // Python does not persist Rust's request/receipt audit envelopes. Check those
 // exact additional fields and rows, while comparing every Python column/record.
+// The transport connection is nevertheless part of Python's persisted
+// startAttempt identity (codex_runtime.py Runtime.start, lines 7455-7458).
 fn add_receipts(expected: &mut Value, attempts: &[&str], transcript: bool) {
     for row in expected["runtime_execution_attempts"]
         .as_array_mut()
@@ -171,7 +173,8 @@ fn add_receipts(expected: &mut Value, attempts: &[&str], transcript: bool) {
         let id = row["id"].as_str().expect("id");
         if attempts.contains(&id) {
             row["record"]["receipts"] = json!({"submission":{"input":{"agent":"agent","epoch":2,
-                "ticket":format!("request:{id}"),"account":"account","generation":7,"thread":"thread"},"result":true}});
+                "ticket":format!("request:{id}"),"account":"account","connection":"connection",
+                "generation":7,"thread":"thread"},"result":true}});
         }
     }
     if transcript {
@@ -583,7 +586,7 @@ fn submission_write_failpoints_restore_every_row_before_a_safe_retry() {
             "submitted",
             "UPDATE",
             "runtime_agents",
-            "json_extract(NEW.record,'$.startAttempt.submitted')=1 AND json_extract(NEW.record,'$.startAttempt.connectionId') IS NULL",
+            "json_extract(NEW.record,'$.startAttempt.submitted')=1",
         ),
         ("event", "UPDATE", "runtime_events", "1"),
         ("transcript", "INSERT", "runtime_items", "1"),

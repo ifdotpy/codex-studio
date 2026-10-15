@@ -413,6 +413,18 @@ pub(crate) fn prepare(
     method: Method,
     generation: u64,
 ) -> Result<RequestPreparation, WorkerError> {
+    let connection_id = uuid::Uuid::new_v4().to_string();
+    prepare_with_connection_id(store, resources, intent, method, generation, &connection_id)
+}
+
+pub(crate) fn prepare_with_connection_id(
+    store: &RuntimeStore,
+    resources: &PreparationResources,
+    intent: &TurnIntent,
+    method: Method,
+    generation: u64,
+    connection_id: &str,
+) -> Result<RequestPreparation, WorkerError> {
     if matches!(method, Method::ThreadCompactStart | Method::ReviewStart) {
         return Err(refusal(
             "native-action/preparation-requires-action-entry".into(),
@@ -420,14 +432,13 @@ pub(crate) fn prepare(
     }
     let selection = admit(store, resources, intent)?;
     let token = workspace(store, intent)?;
-    let connection_id = uuid::Uuid::new_v4().to_string();
     prepare_ready(
         store,
         resources,
         intent,
         method,
         generation,
-        &connection_id,
+        connection_id,
         selection,
         token,
     )
