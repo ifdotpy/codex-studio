@@ -1253,9 +1253,13 @@ async fn composed_delete_stages_voice_sessions_before_rows_are_removed_and_stops
     tokio::time::timeout(std::time::Duration::from_secs(2), voice.called.notified())
         .await
         .expect("post-commit voice stop dispatched");
-    while voice.completed.load(std::sync::atomic::Ordering::SeqCst) < 16 {
-        voice.completion_changed.notified().await;
-    }
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        while voice.completed.load(std::sync::atomic::Ordering::SeqCst) < 16 {
+            voice.completion_changed.notified().await;
+        }
+    })
+    .await
+    .expect("every dispatched voice request future completed");
     assert_eq!(
         voice.completed.load(std::sync::atomic::Ordering::SeqCst),
         16,
