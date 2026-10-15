@@ -68,7 +68,8 @@ pub fn retry_batch(
         return Ok(None);
     };
     let later = later_user(tx, &rows.agent, &rows.attempt)?;
-    let snapshot = RecoverySnapshot::from_records(
+    let snapshot = recovery_snapshot(
+        agent_id,
         rows.agent,
         rows.attempt.clone(),
         rows.attempt,
@@ -76,8 +77,7 @@ pub fn retry_batch(
         transport,
         runtime_closed,
         false,
-    )
-    .map_err(|_| invalid(agent_id))?;
+    )?;
     Ok(snapshot.retry_batch(later))
 }
 
@@ -99,7 +99,8 @@ pub fn retry_input(
     let (transcript, fulltext) =
         ClaudeRetryRepository::transcript(tx, agent_id, item)?.ok_or_else(|| invalid(agent_id))?;
     let later = later_user(tx, &rows.agent, &rows.attempt)?;
-    let snapshot = RecoverySnapshot::from_records(
+    let snapshot = recovery_snapshot(
+        agent_id,
         rows.agent,
         rows.attempt.clone(),
         rows.attempt,
@@ -107,8 +108,7 @@ pub fn retry_input(
         transport,
         runtime_closed,
         false,
-    )
-    .map_err(|_| invalid(agent_id))?;
+    )?;
     snapshot
         .retry_input(later, &transcript, fulltext.as_deref())
         .map_err(|_| invalid(agent_id))
@@ -126,6 +126,27 @@ fn later_user(tx: &Transaction<'_>, agent: &Value, attempt: &Value) -> StoreResu
         .and_then(Value::as_i64)
         .ok_or_else(|| invalid(id))?;
     ClaudeRetryRepository::later_user(tx, id, epoch, since)
+}
+fn recovery_snapshot(
+    agent_id: &str,
+    agent: Value,
+    attempt: Value,
+    saved: Value,
+    events: Vec<Value>,
+    transport: TransportSnapshot,
+    runtime_closed: bool,
+    turn_has_work: bool,
+) -> StoreResult<RecoverySnapshot> {
+    RecoverySnapshot::from_records(
+        agent,
+        attempt,
+        saved,
+        events,
+        transport,
+        runtime_closed,
+        turn_has_work,
+    )
+    .map_err(|_| invalid(agent_id))
 }
 fn invalid(id: &str) -> StoreError {
     StoreError::InvalidStoredRecord {
@@ -154,7 +175,8 @@ pub fn retire_stopped_retry(
     } else {
         None
     };
-    let snapshot = RecoverySnapshot::from_records(
+    let snapshot = recovery_snapshot(
+        agent_id,
         rows.agent,
         rows.attempt.clone(),
         rows.attempt.clone(),
@@ -162,8 +184,7 @@ pub fn retire_stopped_retry(
         transport,
         runtime_closed,
         false,
-    )
-    .map_err(|_| invalid(agent_id))?;
+    )?;
     let Some(decision) = snapshot.retire_stopped(reservation.as_ref()) else {
         return Ok(false);
     };
