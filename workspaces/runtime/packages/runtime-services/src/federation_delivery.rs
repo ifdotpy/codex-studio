@@ -41,16 +41,20 @@ impl<'a> PassBudget<'a> {
 }
 
 /// Implementations must honor this pass budget, including its cancellation signal.
+pub struct FederationExchange<'a> {
+    pub store: &'a RuntimeStore,
+    pub server_id: &'a str,
+    pub public_key: &'a str,
+    pub url: &'a str,
+    pub headers: &'a [(String, String)],
+    pub body: &'a [u8],
+    pub budget: &'a PassBudget<'a>,
+}
+
 pub trait FederationTransport {
     fn exchange(
         &mut self,
-        store: &RuntimeStore,
-        server_id: &str,
-        public_key: &str,
-        url: &str,
-        headers: &[(String, String)],
-        body: &[u8],
-        budget: &PassBudget<'_>,
+        request: FederationExchange<'_>,
     ) -> transport::RemoteTransportResult<FederationTransportResponse>;
 }
 
@@ -63,30 +67,27 @@ pub struct HttpsFederationTransport;
 impl FederationTransport for HttpsFederationTransport {
     fn exchange(
         &mut self,
-        store: &RuntimeStore,
-        server_id: &str,
-        public_key: &str,
-        url: &str,
-        headers: &[(String, String)],
-        body: &[u8],
-        budget: &PassBudget<'_>,
+        request: FederationExchange<'_>,
     ) -> transport::RemoteTransportResult<FederationTransportResponse> {
-        let headers = headers
+        let headers = request
+            .headers
             .iter()
             .map(|(k, v)| (k.as_str(), v.as_str()))
             .collect::<Vec<_>>();
         let response = transport::exchange_paired_request(
-            store,
-            server_id,
-            public_key,
-            "POST",
-            url,
-            &headers,
-            body,
-            budget.remaining()?,
-            transport::MAX_REQUEST_BYTES,
+            request.store,
+            transport::PairedRequest {
+                server_id: request.server_id,
+                public_key: request.public_key,
+                method: "POST",
+                url: request.url,
+                headers: &headers,
+                body: request.body,
+                timeout: request.budget.remaining()?,
+                response_limit: transport::MAX_REQUEST_BYTES,
+            },
         )?;
-        budget.remaining()?;
+        request.budget.remaining()?;
         if response.status != 200 {
             return Err(transport::RemoteTransportError::InvalidResponse);
         }
@@ -172,12 +173,14 @@ pub fn pair_peer(
     let response = request(
         store,
         transport,
-        &peer,
-        &identity,
-        "/api/federation/v1/pair",
-        body,
-        now as i64,
-        &budget,
+        Request {
+            peer: &peer,
+            identity: &identity,
+            path: "/api/federation/v1/pair",
+            body,
+            now: now as i64,
+            budget: &budget,
+        },
     )?;
     let whois_status = response["whoisStatus"]
         .as_str()
@@ -221,16 +224,28 @@ pub fn pair_peer(
         Ok::<_, Error>(updated)
     })
 }
+struct Request<'a> {
+    peer: &'a core::Peer,
+    identity: &'a RemoteIdentity,
+    path: &'a str,
+    body: Value,
+    now: i64,
+    budget: &'a PassBudget<'a>,
+}
+
 fn request(
     store: &RuntimeStore,
     transport: &mut impl FederationTransport,
-    peer: &core::Peer,
-    identity: &RemoteIdentity,
-    path: &str,
-    body: Value,
-    now: i64,
-    budget: &PassBudget<'_>,
+    request: Request<'_>,
 ) -> Result<Value> {
+    let Request {
+        peer,
+        identity,
+        path,
+        body,
+        now,
+        budget,
+    } = request;
     let body = transport::canonical_json(&body)?.into_bytes();
     let url = format!("{}{path}", peer.origin);
     let headers = transport::federation_signed_headers(
@@ -243,15 +258,15 @@ fn request(
         now,
     )?;
     budget.remaining()?;
-    let response = transport.exchange(
+    let response = transport.exchange(FederationExchange {
         store,
-        &peer.state_id,
-        &peer.public_key,
-        &url,
-        &headers,
-        &body,
+        server_id: &peer.state_id,
+        public_key: &peer.public_key,
+        url: &url,
+        headers: &headers,
+        body: &body,
         budget,
-    )?;
+    })?;
     budget.remaining()?;
     if response.body.len() > transport::MAX_REQUEST_BYTES {
         return Err(Error::Invalid("response.size"));
@@ -330,12 +345,14 @@ pub(crate) fn pump_peer_until(
         let result = request(
             store,
             transport,
-            &peer,
-            &identity,
-            "/api/federation/v1/message",
-            json!({"protocol":PROTOCOL,"envelope":envelope}),
-            now as i64,
-            &budget,
+            Request {
+                peer: &peer,
+                identity: &identity,
+                path: "/api/federation/v1/message",
+                body: json!({"protocol":PROTOCOL,"envelope":envelope}),
+                now: now as i64,
+                budget: &budget,
+            },
         )
         .and_then(|value| {
             core::validate(
@@ -406,12 +423,14 @@ pub(crate) fn pump_peer_until(
     let response = request(
         store,
         transport,
-        &peer,
-        &identity,
-        "/api/federation/v1/pull",
-        json!({"protocol":PROTOCOL,"acks":acks}),
-        now as i64,
-        &budget,
+        Request {
+            peer: &peer,
+            identity: &identity,
+            path: "/api/federation/v1/pull",
+            body: json!({"protocol":PROTOCOL,"acks":acks}),
+            now: now as i64,
+            budget: &budget,
+        },
     )?;
     effects::reconcile(store, peer_id, &peer.public_key, &response, now)?;
     Ok(delivered)
@@ -464,7 +483,7 @@ pub fn user_message(
             ))?;
         Ok::<_, StoreError>(sender.to_owned())
     })?;
-    send_message(store, &sender, room_id, &text, key, now)
+    send_message(store, &sender, room_id, text, key, now)
 }
 
 /// Queue a federation room message in the caller's owning transaction. This is

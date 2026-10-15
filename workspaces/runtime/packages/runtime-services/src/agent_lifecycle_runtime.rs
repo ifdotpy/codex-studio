@@ -157,6 +157,44 @@ fn execute_with_prepared_hook(
     Ok(result)
 }
 
+/// Actor-bound managed interrupt. Authorization against the sender epoch and
+/// descendant tree occurs inside the same transaction that stages the stop.
+pub fn stop_by_agent(
+    store: &RuntimeStore,
+    sender: &str,
+    sender_epoch: i64,
+    target: &str,
+    descendants: bool,
+    now: f64,
+    ports: &dyn LifecyclePorts,
+) -> Result<Value, ManagementError> {
+    execute(
+        store,
+        &Action::Stop {
+            target: target.to_owned(),
+            descendants,
+            reason: None,
+            sender: Some(sender.to_owned()),
+            sender_epoch: Some(sender_epoch),
+        },
+        now,
+        ports,
+    )
+}
+
+/// Reserved worker integration calls this instead of its local epoch mutation.
+/// The caller owns commit and wakes/drains its existing effects only afterward.
+pub fn execute_in_transaction(
+    tx: &Transaction<'_>,
+    action: &Action,
+    now: f64,
+    ports: &dyn LifecyclePorts,
+    rooms: &crate::sync_entity_context::RoomDirectory,
+    vault_snapshot: &crate::sync_policy::ProjectVaultSnapshot,
+) -> Result<Value, ManagementError> {
+    crate::agent_management_store::execute_with_ports(tx, action, now, rooms, vault_snapshot, ports)
+}
+
 #[cfg(test)]
 mod preparation_retry_tests {
     use super::*;
@@ -273,42 +311,4 @@ mod preparation_retry_tests {
         assert_eq!(agent["status"], "paused");
         assert_eq!(agent["epoch"], 1);
     }
-}
-
-/// Actor-bound managed interrupt. Authorization against the sender epoch and
-/// descendant tree occurs inside the same transaction that stages the stop.
-pub fn stop_by_agent(
-    store: &RuntimeStore,
-    sender: &str,
-    sender_epoch: i64,
-    target: &str,
-    descendants: bool,
-    now: f64,
-    ports: &dyn LifecyclePorts,
-) -> Result<Value, ManagementError> {
-    execute(
-        store,
-        &Action::Stop {
-            target: target.to_owned(),
-            descendants,
-            reason: None,
-            sender: Some(sender.to_owned()),
-            sender_epoch: Some(sender_epoch),
-        },
-        now,
-        ports,
-    )
-}
-
-/// Reserved worker integration calls this instead of its local epoch mutation.
-/// The caller owns commit and wakes/drains its existing effects only afterward.
-pub fn execute_in_transaction(
-    tx: &Transaction<'_>,
-    action: &Action,
-    now: f64,
-    ports: &dyn LifecyclePorts,
-    rooms: &crate::sync_entity_context::RoomDirectory,
-    vault_snapshot: &crate::sync_policy::ProjectVaultSnapshot,
-) -> Result<Value, ManagementError> {
-    crate::agent_management_store::execute_with_ports(tx, action, now, rooms, vault_snapshot, ports)
 }

@@ -1,7 +1,7 @@
 //! Safety-retry decision core and durable retained-session executor.
 
 mod executor;
-pub use executor::execute_action;
+pub use executor::{SafetyAction, execute_action};
 
 use serde_json::{Map, Value, json};
 use thiserror::Error;

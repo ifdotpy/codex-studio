@@ -37,6 +37,14 @@ pub struct BrowserAnswerResult {
     pub replayed: bool,
 }
 
+pub struct BrowserAnswerContext<'a, V> {
+    pub local_window: bool,
+    pub guest: &'a dyn crate::linux_vm_guest::GuestRpc,
+    pub local_forwarder: Option<&'a crate::browser::BrowserForwarder>,
+    pub now: f64,
+    pub validate: V,
+}
+
 pub fn is_host_source(store: &RuntimeStore, id: &str) -> Result<bool, BrowserAnswerError> {
     let raw = store.read_transaction_with_error(|tx| QuestionsWriteRepository::request(tx, id))?;
     let Some(raw) = raw else {
@@ -49,16 +57,19 @@ pub fn is_host_source(store: &RuntimeStore, id: &str) -> Result<bool, BrowserAns
 
 /// The guest owns the sign-in request. A stable request ID lets its durable
 /// receipt resolve an unknown transport outcome without delivering twice.
-pub fn answer(
+pub fn answer<V: Fn(&Value) -> bool>(
     store: &RuntimeStore,
     id: &str,
     data: &Value,
-    local_window: bool,
-    guest: &dyn crate::linux_vm_guest::GuestRpc,
-    local_forwarder: Option<&crate::browser::BrowserForwarder>,
-    now: f64,
-    validate: impl Fn(&Value) -> bool,
+    context: BrowserAnswerContext<'_, V>,
 ) -> Result<Option<BrowserAnswerResult>, BrowserAnswerError> {
+    let BrowserAnswerContext {
+        local_window,
+        guest,
+        local_forwarder,
+        now,
+        validate,
+    } = context;
     let Some(record) = store.read_transaction_with_error(|tx| load_optional(tx, id, &validate))?
     else {
         return Ok(None);
@@ -185,14 +196,14 @@ pub fn answer(
         Err(_error) if decision == "decline" => None,
         Err(error) if error.code() == Some("stale") => {
             if let Some((forwarder, handle)) = &local_forward {
-                let _ = handle.block_on(forwarder.close(bridge_id));
+                drop(handle.block_on(forwarder.close(bridge_id)));
             }
             store.transaction_with_error(|tx| expire(tx, id, &validate))?;
             return Err(BrowserAnswerError::Stale);
         }
         Err(error) => {
             if let Some((forwarder, handle)) = &local_forward {
-                let _ = handle.block_on(forwarder.close(bridge_id));
+                drop(handle.block_on(forwarder.close(bridge_id)));
             }
             return Err(BrowserAnswerError::Guest(error));
         }
@@ -392,7 +403,7 @@ fn put(
 
 #[cfg(test)]
 mod tests {
-    use super::answer;
+    use super::{BrowserAnswerContext, answer};
     use crate::linux_vm_guest::{GuestError, GuestRpc};
     use serde_json::{Value, json};
     use std::sync::Mutex;
@@ -466,16 +477,34 @@ mod tests {
             fail_unknown_once: Mutex::new(false),
         };
         let answer_data = json!({"decision":"accept"});
-        let first = answer(&store, &id, &answer_data, true, &guest, None, 10.0, |_| {
-            true
-        })
+        let first = answer(
+            &store,
+            &id,
+            &answer_data,
+            BrowserAnswerContext {
+                local_window: true,
+                guest: &guest,
+                local_forwarder: None,
+                now: 10.0,
+                validate: |_: &serde_json::Value| true,
+            },
+        )
         .expect("guest approval succeeds")
         .expect("browser card is handled");
         assert_eq!(first.response["openUrl"], "https://login.example.test/");
         assert!(!first.replayed);
-        let replay = answer(&store, &id, &answer_data, true, &guest, None, 11.0, |_| {
-            true
-        })
+        let replay = answer(
+            &store,
+            &id,
+            &answer_data,
+            BrowserAnswerContext {
+                local_window: true,
+                guest: &guest,
+                local_forwarder: None,
+                now: 11.0,
+                validate: |_: &serde_json::Value| true,
+            },
+        )
         .expect("answer replay succeeds")
         .expect("browser card is handled");
         assert!(replay.replayed);
@@ -491,9 +520,18 @@ mod tests {
         };
         let answer_data = json!({"decision":"accept"});
         assert!(
-            answer(&store, &id, &answer_data, true, &guest, None, 10.0, |_| {
-                true
-            })
+            answer(
+                &store,
+                &id,
+                &answer_data,
+                BrowserAnswerContext {
+                    local_window: true,
+                    guest: &guest,
+                    local_forwarder: None,
+                    now: 10.0,
+                    validate: |_: &serde_json::Value| true,
+                },
+            )
             .is_err()
         );
         let call_ids = guest.calls.lock().expect("call log").clone();
@@ -509,9 +547,18 @@ mod tests {
         let row: Value = serde_json::from_str(&row).expect("request JSON");
         assert_eq!(row["status"], "pending");
         assert!(row.get("answerSignature").is_none());
-        answer(&store, &id, &answer_data, true, &guest, None, 11.0, |_| {
-            true
-        })
+        answer(
+            &store,
+            &id,
+            &answer_data,
+            BrowserAnswerContext {
+                local_window: true,
+                guest: &guest,
+                local_forwarder: None,
+                now: 11.0,
+                validate: |_: &serde_json::Value| true,
+            },
+        )
         .expect("same guest receipt resolves retry")
         .expect("browser card is handled");
         let call_ids = guest.calls.lock().expect("call log").clone();

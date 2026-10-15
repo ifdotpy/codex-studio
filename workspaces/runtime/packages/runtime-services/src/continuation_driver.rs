@@ -149,13 +149,10 @@ fn apply(
 ) -> Result<()> {
     // Preflight effect support before any write. A rollback is still required on later failures.
     for effect in &d.effects {
-        match effect {
-            Effect::CapacityStart { attempt } => {
-                hooks.fault.at(Boundary::BeforeCapacityAdmission)?;
-                hooks.capacity_admission.check(tx, snapshot, attempt)?;
-                hooks.fault.at(Boundary::AfterCapacityAdmission)?;
-            }
-            _ => {}
+        if let Effect::CapacityStart { attempt } = effect {
+            hooks.fault.at(Boundary::BeforeCapacityAdmission)?;
+            hooks.capacity_admission.check(tx, snapshot, attempt)?;
+            hooks.fault.at(Boundary::AfterCapacityAdmission)?;
         }
     }
     // Validate all resulting stored records with the same constructor used for reads.

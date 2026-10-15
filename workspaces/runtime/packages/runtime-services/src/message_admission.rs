@@ -288,38 +288,6 @@ fn resolve_path(path: &str) -> PathBuf {
     resolved
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use serde_json::json;
-
-    #[test]
-    fn positive_budget_admission_reuses_the_caller_reader_for_history_snapshot() {
-        let directory = tempfile::tempdir().expect("temporary state directory");
-        let project_directory = tempfile::tempdir().expect("temporary project directory");
-        let project = project_directory.path().to_path_buf();
-        let store = RuntimeStore::open(Some(directory.path())).expect("open runtime store");
-        let agent = AgentRecord::from_value(json!({
-            "id":"lead", "rootId":"lead", "epoch":1, "status":"idle",
-            "isLead":true, "autoWake":true, "accountKey":"default",
-            "provider":"codex", "model":"gpt-6-astra", "cwd":project,
-            "threadId":"thread-1", "tokenBudget":100
-        }))
-        .expect("valid lead record");
-        store
-            .transaction_with_error(|tx| {
-                AgentRepository::put(tx, &agent)?;
-                Ok::<_, studio_runtime_store::StoreError>(())
-            })
-            .expect("persist lead record");
-
-        let connection = store.read().expect("hold message admission snapshot");
-        let admission = MessageIngressAdmission::load(&store, &connection, "lead")
-            .expect("positive token budget history loads without nested read");
-        assert!(admission.histories.contains_key("lead"));
-    }
-}
-
 /// Runtime.send stores accepted attachment ID strings verbatim for exact
 /// replay. The shared payload-store owner validates their shape here; turn
 /// preparation loads the referenced asset and applies ownership checks.
@@ -363,4 +331,36 @@ fn other_operation(
         }
     }
     Ok(None)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn positive_budget_admission_reuses_the_caller_reader_for_history_snapshot() {
+        let directory = tempfile::tempdir().expect("temporary state directory");
+        let project_directory = tempfile::tempdir().expect("temporary project directory");
+        let project = project_directory.path().to_path_buf();
+        let store = RuntimeStore::open(Some(directory.path())).expect("open runtime store");
+        let agent = AgentRecord::from_value(json!({
+            "id":"lead", "rootId":"lead", "epoch":1, "status":"idle",
+            "isLead":true, "autoWake":true, "accountKey":"default",
+            "provider":"codex", "model":"gpt-6-astra", "cwd":project,
+            "threadId":"thread-1", "tokenBudget":100
+        }))
+        .expect("valid lead record");
+        store
+            .transaction_with_error(|tx| {
+                AgentRepository::put(tx, &agent)?;
+                Ok::<_, studio_runtime_store::StoreError>(())
+            })
+            .expect("persist lead record");
+
+        let connection = store.read().expect("hold message admission snapshot");
+        let admission = MessageIngressAdmission::load(&store, &connection, "lead")
+            .expect("positive token budget history loads without nested read");
+        assert!(admission.histories.contains_key("lead"));
+    }
 }

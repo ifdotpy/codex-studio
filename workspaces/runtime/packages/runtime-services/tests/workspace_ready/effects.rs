@@ -657,20 +657,19 @@ fn requested_base_is_pinned_and_unsupported_or_restore_refusals_do_not_write() {
         ],
     );
     fixture.patch("workerBaseCommit", json!(base));
-    for (key, value) in [("workspaceMode", json!("image"))] {
-        let original = fixture.actor().get(key).cloned().unwrap_or(Value::Null);
-        fixture.patch(key, value);
-        let before = snapshot(&fixture.store, &fixture.id).expect("before");
-        assert!(matches!(
-            prepare(&fixture.store, &fixture.id).expect("unsupported"),
-            WorkspaceDecision::Refuse(_)
-        ));
-        assert_eq!(
-            snapshot(&fixture.store, &fixture.id).expect("after"),
-            before
-        );
-        fixture.patch(key, original);
-    }
+    let key = "workspaceMode";
+    let original = fixture.actor().get(key).cloned().unwrap_or(Value::Null);
+    fixture.patch(key, json!("image"));
+    let before = snapshot(&fixture.store, &fixture.id).expect("before");
+    assert!(matches!(
+        prepare(&fixture.store, &fixture.id).expect("unsupported"),
+        WorkspaceDecision::Refuse(_)
+    ));
+    assert_eq!(
+        snapshot(&fixture.store, &fixture.id).expect("after"),
+        before
+    );
+    fixture.patch(key, original);
     let original_vm_fields = fixture.actor();
     fixture.patch("executionMode", json!("vm"));
     fixture.patch("layrReady", json!(true));

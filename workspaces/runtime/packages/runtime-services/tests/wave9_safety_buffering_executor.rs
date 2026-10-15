@@ -414,13 +414,15 @@ fn action_runs_python_corpus_stage_path_and_commits_each_intent_before_dispatch(
         &session,
         &test_resources(),
         None,
-        "agent",
-        RequestActor {
-            agent: "agent".into(),
-            epoch: 7,
+        safety_buffering::SafetyAction {
+            agent_id: "agent",
+            actor: RequestActor {
+                agent: "agent".into(),
+                epoch: 7,
+            },
+            turn_id: "turn",
+            choice: "retry",
         },
-        "turn",
-        "retry",
     )
     .expect("safety retry completes");
     assert_eq!(result["stage"], "running");
@@ -532,13 +534,15 @@ fn late_provider_receipt_preserves_concurrent_cancel_and_does_not_advance() {
             retry_session.as_ref(),
             &test_resources(),
             None,
-            "agent",
-            RequestActor {
-                agent: "agent".into(),
-                epoch: 7,
+            safety_buffering::SafetyAction {
+                agent_id: "agent",
+                actor: RequestActor {
+                    agent: "agent".into(),
+                    epoch: 7,
+                },
+                turn_id: "turn",
+                choice: "retry",
             },
-            "turn",
-            "retry",
         )
     });
     entered_rx
@@ -549,13 +553,15 @@ fn late_provider_receipt_preserves_concurrent_cancel_and_does_not_advance() {
         session.as_ref(),
         &test_resources(),
         None,
-        "agent",
-        RequestActor {
-            agent: "agent".into(),
-            epoch: 7,
+        safety_buffering::SafetyAction {
+            agent_id: "agent",
+            actor: RequestActor {
+                agent: "agent".into(),
+                epoch: 7,
+            },
+            turn_id: "turn",
+            choice: "cancel",
         },
-        "turn",
-        "cancel",
     )
     .expect("concurrent cancellation commits");
     assert_eq!(cancelled["stage"], "cancelled");
@@ -619,13 +625,15 @@ fn cancellation_before_intent_persistence_prevents_provider_dispatch() {
             retry_session.as_ref(),
             &test_resources(),
             None,
-            "agent",
-            RequestActor {
-                agent: "agent".into(),
-                epoch: 7,
+            safety_buffering::SafetyAction {
+                agent_id: "agent",
+                actor: RequestActor {
+                    agent: "agent".into(),
+                    epoch: 7,
+                },
+                turn_id: "turn",
+                choice: "retry",
             },
-            "turn",
-            "retry",
         )
     });
     entered_rx
@@ -636,13 +644,15 @@ fn cancellation_before_intent_persistence_prevents_provider_dispatch() {
         session.as_ref(),
         &test_resources(),
         None,
-        "agent",
-        RequestActor {
-            agent: "agent".into(),
-            epoch: 7,
+        safety_buffering::SafetyAction {
+            agent_id: "agent",
+            actor: RequestActor {
+                agent: "agent".into(),
+                epoch: 7,
+            },
+            turn_id: "turn",
+            choice: "cancel",
         },
-        "turn",
-        "cancel",
     )
     .expect("cancel commits");
     assert_eq!(cancelled["stage"], "cancelled");
@@ -688,13 +698,15 @@ fn accepted_start_after_concurrent_stop_stages_interrupt_then_commits_lifecycle(
             retry_session.as_ref(),
             &resources,
             Some(retry_lifecycle.as_ref()),
-            "agent",
-            RequestActor {
-                agent: "agent".into(),
-                epoch: 7,
+            safety_buffering::SafetyAction {
+                agent_id: "agent",
+                actor: RequestActor {
+                    agent: "agent".into(),
+                    epoch: 7,
+                },
+                turn_id: "turn",
+                choice: "retry",
             },
-            "turn",
-            "retry",
         );
         let state = result
             .as_ref()
@@ -773,13 +785,15 @@ fn rejected_safety_start_settles_the_empty_event_attempt() {
             &session,
             &test_resources(),
             None,
-            "agent",
-            RequestActor {
-                agent: "agent".into(),
-                epoch: 7,
+            safety_buffering::SafetyAction {
+                agent_id: "agent",
+                actor: RequestActor {
+                    agent: "agent".into(),
+                    epoch: 7,
+                },
+                turn_id: "turn",
+                choice: "retry",
             },
-            "turn",
-            "retry",
         )
         .is_err()
     );
@@ -836,13 +850,15 @@ fn unknown_at_every_stage_is_durable_and_never_resent_after_restart_or_action_re
             &session,
             &test_resources(),
             None,
-            "agent",
-            RequestActor {
-                agent: "agent".into(),
-                epoch: 7,
+            safety_buffering::SafetyAction {
+                agent_id: "agent",
+                actor: RequestActor {
+                    agent: "agent".into(),
+                    epoch: 7,
+                },
+                turn_id: "turn",
+                choice: "retry",
             },
-            "turn",
-            "retry",
         )
         .expect("unknown outcome is surfaced as receipt");
         assert_eq!(result["stage"], "unknown", "stage {failed_stage}");
@@ -870,13 +886,15 @@ fn unknown_at_every_stage_is_durable_and_never_resent_after_restart_or_action_re
             &restarted_session,
             &test_resources(),
             None,
-            "agent",
-            RequestActor {
-                agent: "agent".into(),
-                epoch: 7,
+            safety_buffering::SafetyAction {
+                agent_id: "agent",
+                actor: RequestActor {
+                    agent: "agent".into(),
+                    epoch: 7,
+                },
+                turn_id: "turn",
+                choice: "retry",
             },
-            "turn",
-            "retry",
         )
         .expect("unknown receipt replays after restart");
         assert_eq!(replay["stage"], "unknown", "stage {failed_stage}");
@@ -917,13 +935,15 @@ fn crash_after_unknown_receipt_before_terminal_stage_never_dispatches_after_rest
             &interrupted,
             &test_resources(),
             None,
-            "agent",
-            RequestActor {
-                agent: "agent".into(),
-                epoch: 7,
+            safety_buffering::SafetyAction {
+                agent_id: "agent",
+                actor: RequestActor {
+                    agent: "agent".into(),
+                    epoch: 7,
+                },
+                turn_id: "turn",
+                choice: "retry",
             },
-            "turn",
-            "retry",
         )
         .is_err()
     );
@@ -973,13 +993,15 @@ fn crash_after_unknown_receipt_before_terminal_stage_never_dispatches_after_rest
         &restarted,
         &test_resources(),
         None,
-        "agent",
-        RequestActor {
-            agent: "agent".into(),
-            epoch: 7,
+        safety_buffering::SafetyAction {
+            agent_id: "agent",
+            actor: RequestActor {
+                agent: "agent".into(),
+                epoch: 7,
+            },
+            turn_id: "turn",
+            choice: "retry",
         },
-        "turn",
-        "retry",
     )
     .expect("unknown recovery is held");
     assert_eq!(result["stage"], "unknown");
@@ -1026,13 +1048,15 @@ fn unknown_receipt_commits_terminal_stage_atomically_and_is_never_resent() {
         &session,
         &test_resources(),
         None,
-        "agent",
-        RequestActor {
-            agent: "agent".into(),
-            epoch: 7,
+        safety_buffering::SafetyAction {
+            agent_id: "agent",
+            actor: RequestActor {
+                agent: "agent".into(),
+                epoch: 7,
+            },
+            turn_id: "turn",
+            choice: "retry",
         },
-        "turn",
-        "retry",
     )
     .expect("Unknown provider receipt is retained");
     assert_eq!(result["stage"], "unknown");
@@ -1073,13 +1097,15 @@ fn unknown_receipt_commits_terminal_stage_atomically_and_is_never_resent() {
         &restarted,
         &test_resources(),
         None,
-        "agent",
-        RequestActor {
-            agent: "agent".into(),
-            epoch: 7,
+        safety_buffering::SafetyAction {
+            agent_id: "agent",
+            actor: RequestActor {
+                agent: "agent".into(),
+                epoch: 7,
+            },
+            turn_id: "turn",
+            choice: "retry",
         },
-        "turn",
-        "retry",
     )
     .expect("terminal Unknown result replays");
     assert_eq!(replay["stage"], "unknown");
@@ -1115,13 +1141,15 @@ fn not_sent_retries_same_operation_id_and_records_each_receipt() {
             &session,
             &test_resources(),
             None,
-            "agent",
-            RequestActor {
-                agent: "agent".into(),
-                epoch: 7,
+            safety_buffering::SafetyAction {
+                agent_id: "agent",
+                actor: RequestActor {
+                    agent: "agent".into(),
+                    epoch: 7,
+                },
+                turn_id: "turn",
+                choice: "retry",
             },
-            "turn",
-            "retry",
         )
         .expect("NotSent retry completes");
         assert_eq!(result["stage"], "running", "failed stage {not_sent_at}");
@@ -1185,13 +1213,15 @@ fn restart_resumes_recorded_intent_with_the_same_operation_id() {
                 &first,
                 &test_resources(),
                 None,
-                "agent",
-                RequestActor {
-                    agent: "agent".into(),
-                    epoch: 7
+                safety_buffering::SafetyAction {
+                    agent_id: "agent",
+                    actor: RequestActor {
+                        agent: "agent".into(),
+                        epoch: 7,
+                    },
+                    turn_id: "turn",
+                    choice: "retry",
                 },
-                "turn",
-                "retry",
             )
             .is_err(),
             "interrupted stage {interrupted_stage}"
@@ -1224,13 +1254,15 @@ fn restart_resumes_recorded_intent_with_the_same_operation_id() {
             &second,
             &test_resources(),
             None,
-            "agent",
-            RequestActor {
-                agent: "agent".into(),
-                epoch: 7,
+            safety_buffering::SafetyAction {
+                agent_id: "agent",
+                actor: RequestActor {
+                    agent: "agent".into(),
+                    epoch: 7,
+                },
+                turn_id: "turn",
+                choice: "retry",
             },
-            "turn",
-            "retry",
         )
         .expect("resume from recorded intent");
         assert_eq!(result["stage"], "running", "stage {interrupted_stage}");
@@ -1272,13 +1304,15 @@ fn restart_applies_persisted_written_receipt_without_redispatch() {
                 &first,
                 &test_resources(),
                 None,
-                "agent",
-                RequestActor {
-                    agent: "agent".into(),
-                    epoch: 7,
+                safety_buffering::SafetyAction {
+                    agent_id: "agent",
+                    actor: RequestActor {
+                        agent: "agent".into(),
+                        epoch: 7,
+                    },
+                    turn_id: "turn",
+                    choice: "retry",
                 },
-                "turn",
-                "retry",
             )
             .is_err(),
             "interrupted stage {interrupted_stage}"
@@ -1351,13 +1385,15 @@ fn restart_applies_persisted_written_receipt_without_redispatch() {
             &second,
             &test_resources(),
             None,
-            "agent",
-            RequestActor {
-                agent: "agent".into(),
-                epoch: 7,
+            safety_buffering::SafetyAction {
+                agent_id: "agent",
+                actor: RequestActor {
+                    agent: "agent".into(),
+                    epoch: 7,
+                },
+                turn_id: "turn",
+                choice: "retry",
             },
-            "turn",
-            "retry",
         )
         .expect("apply the saved receipt and continue");
         assert_eq!(result["stage"], "running", "stage {interrupted_stage}");

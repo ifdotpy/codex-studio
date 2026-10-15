@@ -156,12 +156,14 @@ impl PtyTerminalSession {
                 read_session(
                     LocalPtyHost,
                     reader_session,
-                    reader_id,
-                    callback,
-                    sequence,
-                    sessions_weak,
-                    reader_pending,
-                    reader_done_tx,
+                    ReadSessionContext {
+                        terminal_id: reader_id,
+                        callback,
+                        sequence,
+                        sessions: sessions_weak,
+                        pending_notification: reader_pending,
+                        done: reader_done_tx,
+                    },
                 );
             })
             .map_err(|_| SessionError::Rejected)?;
@@ -392,16 +394,24 @@ impl TerminalSession for PtyTerminalSession {
     }
 }
 
-fn read_session(
-    host: LocalPtyHost,
-    mut session: PtySession,
+struct ReadSessionContext {
     terminal_id: String,
     callback: NotificationCallback,
     sequence: Arc<AtomicU64>,
     sessions: Weak<Mutex<HashMap<String, LiveTerminal>>>,
     pending_notification: Arc<Mutex<Option<TerminalNotification>>>,
     done: mpsc::Sender<()>,
-) {
+}
+
+fn read_session(host: LocalPtyHost, mut session: PtySession, context: ReadSessionContext) {
+    let ReadSessionContext {
+        terminal_id,
+        callback,
+        sequence,
+        sessions,
+        pending_notification,
+        done,
+    } = context;
     let mut buffer = [0; READ_CHUNK];
     loop {
         match host.read(&mut session, &mut buffer) {

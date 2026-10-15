@@ -352,10 +352,10 @@ pub fn stage_capacity_retry(
         agent.remove("pendingSettingsAccountKey");
     }
     let settings = PreparationSettings::from_agent(&snapshot.agent)?.value();
-    if let Some(record) = snapshot.record.as_mut() {
-        if snapshot.agent.get("pendingSettings").is_none() {
-            record["settings"] = settings.clone();
-        }
+    if let Some(record) = snapshot.record.as_mut()
+        && snapshot.agent.get("pendingSettings").is_none()
+    {
+        record["settings"] = settings.clone();
     }
     let exclusion = capacity_exclusion_reason(&snapshot);
     let decision = match exclusion {

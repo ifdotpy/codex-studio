@@ -642,12 +642,14 @@ fn decide_inner(
             stop(
                 snapshot,
                 target,
-                *descendants,
-                false,
-                reason.as_deref(),
-                now,
-                live,
-                None,
+                StopOptions {
+                    descendants: *descendants,
+                    delete: false,
+                    reason: reason.as_deref(),
+                    now,
+                    live,
+                    remote_request: None,
+                },
             )
         }
         Action::RemoteStop {
@@ -682,15 +684,28 @@ fn decide_inner(
             stop(
                 snapshot,
                 target,
-                true,
-                false,
-                Some(reason),
-                now,
-                live,
-                Some((request_id, *control_epoch)),
+                StopOptions {
+                    descendants: true,
+                    delete: false,
+                    reason: Some(reason),
+                    now,
+                    live,
+                    remote_request: Some((request_id, *control_epoch)),
+                },
             )
         }
-        Action::Delete { target } => stop(snapshot, target, true, true, None, now, live, None),
+        Action::Delete { target } => stop(
+            snapshot,
+            target,
+            StopOptions {
+                descendants: true,
+                delete: true,
+                reason: None,
+                now,
+                live,
+                remote_request: None,
+            },
+        ),
         Action::Archive {
             actor,
             epoch,
@@ -724,16 +739,28 @@ fn decide_inner(
     }
 }
 
+struct StopOptions<'a> {
+    descendants: bool,
+    delete: bool,
+    now: f64,
+    live: bool,
+    reason: Option<&'a str>,
+    remote_request: Option<(&'a str, i64)>,
+}
+
 fn stop(
     snapshot: &ManagementSnapshot,
     target: &str,
-    descendants: bool,
-    delete: bool,
-    reason: Option<&str>,
-    now: f64,
-    live: bool,
-    remote_request: Option<(&str, i64)>,
+    options: StopOptions<'_>,
 ) -> Result<Decision, ManagementError> {
+    let StopOptions {
+        descendants,
+        delete,
+        reason,
+        now,
+        live,
+        remote_request,
+    } = options;
     let agents = snapshot.descendants(target, descendants)?;
     let mut required = BTreeMap::new();
     for agent in &agents {

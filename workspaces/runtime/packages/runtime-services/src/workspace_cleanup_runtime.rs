@@ -187,8 +187,8 @@ fn complete_without_effect(
         {
             return Err(WorkspaceCleanupError::Held);
         }
-        if let Some(intent) = current.get(INTENT_FIELD).filter(|intent| !intent.is_null()) {
-            if intent.get("action")
+        if let Some(intent) = current.get(INTENT_FIELD).filter(|intent| !intent.is_null())
+            && (intent.get("action")
                 != Some(&serde_json::to_value(action).map_err(StoreError::from)?)
                 || !matches!(
                     intent.get("phase").and_then(Value::as_str),
@@ -196,10 +196,9 @@ fn complete_without_effect(
                 )
                 || intent
                     .get("identity")
-                    .is_some_and(|identity| *identity != current_identity)
-            {
-                return Err(WorkspaceCleanupError::Held);
-            }
+                    .is_some_and(|identity| *identity != current_identity))
+        {
+            return Err(WorkspaceCleanupError::Held);
         }
         if action == CleanupAction::Archive {
             if current.get("imageWorkspace").and_then(Value::as_bool) == Some(true)
@@ -1018,10 +1017,11 @@ fn check_worktree(identity: &Value) -> Result<(PathBuf, PathBuf, String, String)
         .filter(|field| field.starts_with("worktree "))
     {
         let registered_path = PathBuf::from(field.trim_start_matches("worktree "));
-        if let Ok(registered_path) = registered_path.canonicalize() {
-            if registered_path != root && registered_path.starts_with(&root) {
-                return Err(());
-            }
+        if let Ok(registered_path) = registered_path.canonicalize()
+            && registered_path != root
+            && registered_path.starts_with(&root)
+        {
+            return Err(());
         }
     }
     let status = git_output(
@@ -1327,7 +1327,7 @@ mod tests {
                 "agentArchive":{"cleanupPending":true}}),
         );
         let crash = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let _ = cleanup_agent_workspace_with_ports(
+            let _result = cleanup_agent_workspace_with_ports(
                 &store,
                 "cleanup-agent",
                 CleanupAction::Archive,

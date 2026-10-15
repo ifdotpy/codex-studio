@@ -67,6 +67,7 @@ struct StartReservation {
     account: Option<String>,
     registry: JobRegistry,
 }
+type ReservationResult = Result<(Option<Arc<Mutex<Job>>>, Option<StartReservation>), LoginError>;
 impl JobRegistry {
     fn entry(&self, id: &str) -> Result<Arc<Mutex<Job>>, LoginError> {
         self.0
@@ -101,11 +102,7 @@ impl JobRegistry {
             .map(|(id, job)| (id.clone(), Arc::clone(job)))
             .collect()
     }
-    fn reserve(
-        &self,
-        id: &str,
-        account: Option<String>,
-    ) -> Result<(Option<Arc<Mutex<Job>>>, Option<StartReservation>), LoginError> {
+    fn reserve(&self, id: &str, account: Option<String>) -> ReservationResult {
         let mut state = self
             .0
             .lock()

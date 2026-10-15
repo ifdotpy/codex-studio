@@ -889,14 +889,15 @@ struct PeerTransport<'a> {
 impl delivery::FederationTransport for PeerTransport<'_> {
     fn exchange(
         &mut self,
-        _store: &RuntimeStore,
-        _server_id: &str,
-        _public_key: &str,
-        url: &str,
-        headers: &[(String, String)],
-        body: &[u8],
-        budget: &delivery::PassBudget<'_>,
+        request: delivery::FederationExchange<'_>,
     ) -> transport::RemoteTransportResult<delivery::FederationTransportResponse> {
+        let delivery::FederationExchange {
+            url,
+            headers,
+            body,
+            budget,
+            ..
+        } = request;
         assert!(budget.remaining().expect("active budget") <= Duration::from_secs(8));
         self.deadlines.push(budget.deadline());
         assert!(url.starts_with("https://127.0.0.1/"));
@@ -1146,15 +1147,15 @@ fn bad_federation_response_signature_stays_unknown_and_does_not_learn_route() {
     let client = transport::PeerLinkClient::new(sender.root());
     assert!(
         client
-            .exchange(
-                corpus.peer(),
-                peer["publicKey"].as_str().expect("peer public key"),
-                "GET",
-                "/",
-                &[],
-                &[],
-                Duration::from_millis(10),
-            )
+            .exchange(transport::PeerLinkExchange {
+                server: corpus.peer(),
+                public_key: peer["publicKey"].as_str().expect("peer public key"),
+                method: "GET",
+                path: "/",
+                headers: &[],
+                body: &[],
+                timeout: Duration::from_millis(10),
+            })
             .expect("no route learned from unverified response")
             .is_none()
     );

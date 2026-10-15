@@ -394,7 +394,7 @@ mod tests {
             matching_agents(&exact_file, &directories)
                 .into_iter()
                 .collect::<Vec<_>>(),
-            [agent.clone()]
+            std::slice::from_ref(&agent)
         );
         assert!(matching_agents(&other_file, &directories).is_empty());
         assert_eq!(

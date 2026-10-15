@@ -217,10 +217,12 @@ async fn native_action(
                     port.as_ref(),
                     &resources,
                     lifecycle.as_deref(),
-                    &agent,
-                    actor,
-                    &turn_id,
-                    &safety_action,
+                    studio_runtime_services::safety_buffering::SafetyAction {
+                        agent_id: &agent,
+                        actor,
+                        turn_id: &turn_id,
+                        choice: &safety_action,
+                    },
                 )
                 .map_err(safety_error)
             },

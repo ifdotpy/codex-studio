@@ -67,6 +67,16 @@ pub struct AsyncQuestionAnswerResult {
     pub event_inserted: bool,
 }
 
+pub struct AsyncQuestionAnswerInput<'a, V> {
+    pub id: &'a str,
+    pub data: &'a Value,
+    pub text: &'a str,
+    pub admission: &'a dyn MessageAdmission,
+    pub prepared: &'a PreparedHost,
+    pub now: f64,
+    pub validate: V,
+}
+
 pub fn answer_async_question_in_store(
     store: &RuntimeStore,
     id: &str,
@@ -101,13 +111,15 @@ pub fn answer_async_question_in_store(
     let result = store.transaction_with_error(|transaction| {
         answer_async_question(
             transaction,
-            id,
-            data,
-            &text,
-            &admission,
-            &prepared,
-            now,
-            &validate,
+            AsyncQuestionAnswerInput {
+                id,
+                data,
+                text: &text,
+                admission: &admission,
+                prepared: &prepared,
+                now,
+                validate: &validate,
+            },
         )
     })?;
     Ok(Some(result))
@@ -159,16 +171,19 @@ fn async_answer_text(record: &Value, data: &Value) -> Result<String, QuestionsWr
 /// Atomically admit an async-question follow-up, mirror an active radio answer,
 /// and record the answer receipt. All filesystem and budget history preparation
 /// is owned by the caller and happens before this writer transaction.
-pub fn answer_async_question(
+pub fn answer_async_question<V: Fn(&Value) -> bool>(
     transaction: &Transaction<'_>,
-    id: &str,
-    data: &Value,
-    text: &str,
-    admission: &dyn MessageAdmission,
-    prepared: &PreparedHost,
-    now: f64,
-    validate: impl Fn(&Value) -> bool,
+    input: AsyncQuestionAnswerInput<'_, V>,
 ) -> Result<AsyncQuestionAnswerResult, QuestionsWriteError> {
+    let AsyncQuestionAnswerInput {
+        id,
+        data,
+        text,
+        admission,
+        prepared,
+        now,
+        validate,
+    } = input;
     let mut record = request(transaction, id, &validate)?;
     if record.get("method").and_then(Value::as_str) != Some("agent/asyncQuestion") {
         return Err(QuestionsWriteError::InvalidRequest("Not an async question"));
@@ -219,7 +234,7 @@ pub fn answer_async_question(
         transaction,
         prepared,
         &record,
-        &text,
+        text,
         None,
         now,
     )?;
@@ -232,7 +247,7 @@ pub fn answer_async_question(
             SystemFollowup {
                 recipient_id: agent_id,
                 id: &format!("{id}:answer"),
-                text: &text,
+                text,
                 delivery: "queue",
                 now,
             },
@@ -243,7 +258,7 @@ pub fn answer_async_question(
             transaction,
             prepared,
             &record,
-            &text,
+            text,
             now,
         )?;
         accepted.event_inserted

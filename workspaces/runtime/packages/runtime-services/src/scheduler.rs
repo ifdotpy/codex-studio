@@ -833,7 +833,8 @@ mod invalid_record_recovery_tests {
                 |row| row.get(0),
             )
             .expect("original malformed row remains available for repair");
-        let preserved = serde_json::from_str::<Value>(&raw).unwrap();
+        let preserved =
+            serde_json::from_str::<Value>(&raw).expect("malformed fixture remains valid JSON");
         assert_eq!(preserved["rootId"], 17);
         assert_eq!(preserved["inFlight"], true);
         assert_eq!(preserved["startAttempt"]["submitted"], true);
@@ -845,7 +846,8 @@ mod invalid_record_recovery_tests {
                 |row| row.get(0),
             )
             .expect("healthy neighboring agent remains stored");
-        let healthy = serde_json::from_str::<Value>(&healthy).unwrap();
+        let healthy =
+            serde_json::from_str::<Value>(&healthy).expect("healthy fixture is valid JSON");
         assert_eq!(healthy["inFlight"], true);
         assert_eq!(healthy["startAttempt"]["id"], "live-attempt");
     }

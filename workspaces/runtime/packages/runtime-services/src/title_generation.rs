@@ -547,13 +547,12 @@ async fn generate_inner(
             }
             match result.get("status").and_then(Value::as_str) {
                 Some("applied") => {
-                    if let Some(effect) = read_effect(tx, request_id, agent_id)? {
-                        if effect.record.get("fingerprint").and_then(Value::as_str)
+                    if let Some(effect) = read_effect(tx, request_id, agent_id)?
+                        && (effect.record.get("fingerprint").and_then(Value::as_str)
                             != Some(&fingerprint)
-                            || effect.state != "applied"
-                        {
-                            return Err(TitleError::Conflict);
-                        }
+                            || effect.state != "applied")
+                    {
+                        return Err(TitleError::Conflict);
                     }
                     let title = result
                         .get("name")

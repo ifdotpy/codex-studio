@@ -444,7 +444,7 @@ fn send_followup_inner(
         radio_answer_turn_id,
     } = input;
     let text = crate::event_write::python_strip(text);
-    if text.is_empty() || !message_text_within_limit(&text) {
+    if text.is_empty() || !message_text_within_limit(text) {
         return Err(CoordinationError::InvalidRequest(
             "Message must have text or attachments, at most 32000 characters",
         ));

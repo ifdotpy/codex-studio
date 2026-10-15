@@ -710,14 +710,16 @@ pub fn exchange_multi_server(
         |method, url, headers, body, timeout, limit| {
             let response = exchange_paired_request(
                 store,
-                input.server_id,
-                input.expected_public_key,
-                method,
-                url,
-                headers,
-                body,
-                timeout,
-                limit,
+                PairedRequest {
+                    server_id: input.server_id,
+                    public_key: input.expected_public_key,
+                    method,
+                    url,
+                    headers,
+                    body,
+                    timeout,
+                    response_limit: limit,
+                },
             )?;
             #[cfg(unix)]
             if (200..300).contains(&response.status) {
@@ -1018,38 +1020,65 @@ pub struct HttpResponse {
     pub body: Vec<u8>,
 }
 
+pub struct PairedRequest<'a> {
+    pub server_id: &'a str,
+    pub public_key: &'a str,
+    pub method: &'a str,
+    pub url: &'a str,
+    pub headers: &'a [(&'a str, &'a str)],
+    pub body: &'a [u8],
+    pub timeout: Duration,
+    pub response_limit: usize,
+}
+
+#[cfg(unix)]
+pub(crate) struct PeerLinkExchange<'a> {
+    pub(crate) server: &'a str,
+    pub(crate) public_key: &'a str,
+    pub(crate) method: &'a str,
+    pub(crate) path: &'a str,
+    pub(crate) headers: &'a [(&'a str, &'a str)],
+    pub(crate) body: &'a [u8],
+    pub(crate) timeout: Duration,
+}
+
 /// Send one already-signed paired-server request over the learned QUIC peer
 /// link first, then HTTPS only when the link confirms that it sent nothing.
 /// Both orchestration and the journaled multi-server exchange use this path.
 pub fn exchange_paired_request(
     store: &RuntimeStore,
-    server_id: &str,
-    public_key: &str,
-    method: &str,
-    url: &str,
-    headers: &[(&str, &str)],
-    body: &[u8],
-    timeout: Duration,
-    response_limit: usize,
+    request: PairedRequest<'_>,
 ) -> RemoteTransportResult<HttpResponse> {
-    validate_exchange_arguments(method, url, body, timeout, response_limit)?;
-    let path = canonical_request_target(url)?;
-    #[cfg(unix)]
-    let response = exchange_paired_request_with(
-        &PeerLinkClient::new(store.root()),
-        server_id,
-        public_key,
-        method,
-        &path,
-        headers,
-        body,
-        timeout,
-        response_limit,
-        || SignedHttpClient::exchange(method, url, headers, body, timeout, response_limit),
+    validate_exchange_arguments(
+        request.method,
+        request.url,
+        request.body,
+        request.timeout,
+        request.response_limit,
     )?;
+    let path = canonical_request_target(request.url)?;
+    #[cfg(unix)]
+    let response =
+        exchange_paired_request_with(&PeerLinkClient::new(store.root()), &request, &path, || {
+            SignedHttpClient::exchange(
+                request.method,
+                request.url,
+                request.headers,
+                request.body,
+                request.timeout,
+                request.response_limit,
+            )
+        })?;
     #[cfg(not(unix))]
-    let response = SignedHttpClient::exchange(method, url, headers, body, timeout, response_limit)?;
-    if response.body.len() > response_limit {
+    let response = SignedHttpClient::exchange(
+        request.method,
+        request.url,
+        request.headers,
+        request.body,
+        request.timeout,
+        request.response_limit,
+    )?;
+    if response.body.len() > request.response_limit {
         return Err(RemoteTransportError::ResponseTooLarge);
     }
     Ok(response)
@@ -1058,24 +1087,24 @@ pub fn exchange_paired_request(
 #[cfg(unix)]
 fn exchange_paired_request_with(
     peer_link: &PeerLinkClient,
-    server_id: &str,
-    public_key: &str,
-    method: &str,
+    request: &PairedRequest<'_>,
     path: &str,
-    headers: &[(&str, &str)],
-    body: &[u8],
-    timeout: Duration,
-    response_limit: usize,
     https_fallback: impl FnOnce() -> RemoteTransportResult<HttpResponse>,
 ) -> RemoteTransportResult<HttpResponse> {
-    let response = match peer_link
-        .exchange(server_id, public_key, method, path, headers, body, timeout)
-    {
+    let response = match peer_link.exchange(PeerLinkExchange {
+        server: request.server_id,
+        public_key: request.public_key,
+        method: request.method,
+        path,
+        headers: request.headers,
+        body: request.body,
+        timeout: request.timeout,
+    }) {
         Ok(Some(response)) => response,
         Ok(None) | Err(PeerLinkFailure { sent: false }) => https_fallback()?,
         Err(PeerLinkFailure { sent: true }) => return Err(RemoteTransportError::ExchangeUnknown),
     };
-    if response.body.len() > response_limit {
+    if response.body.len() > request.response_limit {
         return Err(RemoteTransportError::ResponseTooLarge);
     }
     Ok(response)
@@ -1096,6 +1125,11 @@ struct LearnedPeerLink {
     unavailable_until: Option<Instant>,
 }
 
+#[cfg(unix)]
+type LearnedPeerRouteMap = HashMap<String, LearnedPeerLink>;
+#[cfg(unix)]
+type LearnedPeerRouteCache = Mutex<HashMap<PathBuf, Arc<Mutex<LearnedPeerRouteMap>>>>;
+
 /// Local Unix-socket client for the existing `studio-peer-link` QUIC process.
 /// Routes are learned only from paired-server response headers.
 #[cfg(unix)]
@@ -1111,9 +1145,7 @@ impl PeerLinkClient {
     const SOCKET_GRACE: Duration = Duration::from_secs(5);
 
     pub(crate) fn new(state_root: &Path) -> Self {
-        static ROUTES: OnceLock<
-            Mutex<HashMap<PathBuf, Arc<Mutex<HashMap<String, LearnedPeerLink>>>>>,
-        > = OnceLock::new();
+        static ROUTES: OnceLock<LearnedPeerRouteCache> = OnceLock::new();
         let socket = state_root.join("multi-server").join("peer-link.sock");
         let peers = ROUTES
             .get_or_init(|| Mutex::new(HashMap::new()))
@@ -1152,13 +1184,7 @@ impl PeerLinkClient {
 
     pub(crate) fn exchange(
         &self,
-        server: &str,
-        public_key: &str,
-        method: &str,
-        path: &str,
-        headers: &[(&str, &str)],
-        body: &[u8],
-        timeout: Duration,
+        request: PeerLinkExchange<'_>,
     ) -> Result<Option<HttpResponse>, PeerLinkFailure> {
         use std::os::unix::net::UnixStream;
 
@@ -1167,7 +1193,7 @@ impl PeerLinkClient {
                 .peers
                 .lock()
                 .map_err(|_| PeerLinkFailure { sent: false })?;
-            let Some(peer) = peers.get(server) else {
+            let Some(peer) = peers.get(request.server) else {
                 return Ok(None);
             };
             if peer
@@ -1182,7 +1208,7 @@ impl PeerLinkClient {
             Ok(connection) => connection,
             Err(_) => return Ok(None),
         };
-        let socket_timeout = timeout.saturating_add(Self::SOCKET_GRACE);
+        let socket_timeout = request.timeout.saturating_add(Self::SOCKET_GRACE);
         if connection.set_read_timeout(Some(socket_timeout)).is_err()
             || connection.set_write_timeout(Some(socket_timeout)).is_err()
         {
@@ -1190,16 +1216,16 @@ impl PeerLinkClient {
         }
         let head = serde_json::json!({
             "address": address,
-            "publicKey": public_key,
-            "method": method,
-            "path": path,
-            "headers": headers.iter().map(|(name, value)| [*name, *value]).collect::<Vec<_>>(),
-            "bodyLength": body.len(),
-            "timeout": timeout.as_secs_f64(),
+            "publicKey": request.public_key,
+            "method": request.method,
+            "path": request.path,
+            "headers": request.headers.iter().map(|(name, value)| [*name, *value]).collect::<Vec<_>>(),
+            "bodyLength": request.body.len(),
+            "timeout": request.timeout.as_secs_f64(),
         });
         let mut encoded = serde_json::to_vec(&head).map_err(|_| PeerLinkFailure { sent: false })?;
         encoded.push(b'\n');
-        if connection.write_all(&encoded).is_err() || connection.write_all(body).is_err() {
+        if connection.write_all(&encoded).is_err() || connection.write_all(request.body).is_err() {
             // studio-peer-link forwards only a complete local request body.
             return Ok(None);
         }
@@ -1216,12 +1242,11 @@ impl PeerLinkClient {
             .map_err(|_| PeerLinkFailure { sent: true })?;
         if reply.get("failure").is_some() {
             let sent = reply.get("sent") != Some(&Value::Bool(false));
-            if !sent {
-                if let Ok(mut peers) = self.peers.lock() {
-                    if let Some(peer) = peers.get_mut(server) {
-                        peer.unavailable_until = Some(Instant::now() + Self::DOWN_SECONDS);
-                    }
-                }
+            if !sent
+                && let Ok(mut peers) = self.peers.lock()
+                && let Some(peer) = peers.get_mut(request.server)
+            {
+                peer.unavailable_until = Some(Instant::now() + Self::DOWN_SECONDS);
             }
             return Err(PeerLinkFailure { sent });
         }
@@ -2494,14 +2519,17 @@ pub(crate) mod tests {
         let fallback_calls = AtomicUsize::new(0);
         let response = exchange_paired_request_with(
             &shared_client,
-            "peer",
-            "fixture-key",
-            "POST",
+            &super::PairedRequest {
+                server_id: "peer",
+                public_key: "fixture-key",
+                method: "POST",
+                url: "https://peer.example.test/api/test",
+                headers: &headers,
+                body: b"signed-body",
+                timeout,
+                response_limit: 1024,
+            },
             "/api/test",
-            &headers,
-            b"signed-body",
-            timeout,
-            1024,
             || {
                 fallback_calls.fetch_add(1, Ordering::SeqCst);
                 Err(RemoteTransportError::ExchangeUnknown)
@@ -2527,14 +2555,17 @@ pub(crate) mod tests {
         let fallback_calls = AtomicUsize::new(0);
         let response = exchange_paired_request_with(
             &unsent_client,
-            "peer",
-            "fixture-key",
-            "POST",
+            &super::PairedRequest {
+                server_id: "peer",
+                public_key: "fixture-key",
+                method: "POST",
+                url: "https://peer.example.test/api/test",
+                headers: &headers,
+                body: b"signed-body",
+                timeout,
+                response_limit: 1024,
+            },
             "/api/test",
-            &headers,
-            b"signed-body",
-            timeout,
-            1024,
             || {
                 fallback_calls.fetch_add(1, Ordering::SeqCst);
                 Ok(HttpResponse {
@@ -2559,14 +2590,17 @@ pub(crate) mod tests {
         let fallback_calls = AtomicUsize::new(0);
         let error = exchange_paired_request_with(
             &sent_client,
-            "peer",
-            "fixture-key",
-            "POST",
+            &super::PairedRequest {
+                server_id: "peer",
+                public_key: "fixture-key",
+                method: "POST",
+                url: "https://peer.example.test/api/test",
+                headers: &headers,
+                body: b"signed-body",
+                timeout,
+                response_limit: 1024,
+            },
             "/api/test",
-            &headers,
-            b"signed-body",
-            timeout,
-            1024,
             || {
                 fallback_calls.fetch_add(1, Ordering::SeqCst);
                 Ok(HttpResponse {
@@ -2649,15 +2683,15 @@ pub(crate) mod tests {
         client.learn("peer-server", Some("100.80.1.2:4621"));
         let headers = [("X-Studio-Signature", "fixture-signature")];
         let response = client
-            .exchange(
-                "peer-server",
-                "fixture-peer-key",
-                "POST",
-                "/api/servers/orchestration",
-                &headers,
-                br#"{"requestId":"request-1"}"#,
-                Duration::from_secs(2),
-            )
+            .exchange(super::PeerLinkExchange {
+                server: "peer-server",
+                public_key: "fixture-peer-key",
+                method: "POST",
+                path: "/api/servers/orchestration",
+                headers: &headers,
+                body: br#"{"requestId":"request-1"}"#,
+                timeout: Duration::from_secs(2),
+            })
             .expect("local protocol exchange completes")
             .expect("learned route uses the peer link");
         peer.join().expect("fake peer exits");
@@ -2708,29 +2742,29 @@ pub(crate) mod tests {
         client.learn("peer-server", Some("100.80.1.2:4621"));
         let headers = [("X-Studio-Signature", "fixture-signature")];
         assert!(matches!(
-            client.exchange(
-                "peer-server",
-                "fixture-peer-key",
-                "POST",
-                "/api/servers/orchestration",
-                &headers,
-                br#"{"requestId":"request-1"}"#,
-                Duration::from_secs(2),
-            ),
+            client.exchange(super::PeerLinkExchange {
+                server: "peer-server",
+                public_key: "fixture-peer-key",
+                method: "POST",
+                path: "/api/servers/orchestration",
+                headers: &headers,
+                body: br#"{"requestId":"request-1"}"#,
+                timeout: Duration::from_secs(2),
+            }),
             Err(super::PeerLinkFailure { sent: false })
         ));
         peer.join().expect("fake peer exits");
         assert!(
             client
-                .exchange(
-                    "peer-server",
-                    "fixture-peer-key",
-                    "POST",
-                    "/api/servers/orchestration",
-                    &headers,
-                    br#"{"requestId":"request-1"}"#,
-                    Duration::from_secs(2),
-                )
+                .exchange(super::PeerLinkExchange {
+                    server: "peer-server",
+                    public_key: "fixture-peer-key",
+                    method: "POST",
+                    path: "/api/servers/orchestration",
+                    headers: &headers,
+                    body: br#"{"requestId":"request-1"}"#,
+                    timeout: Duration::from_secs(2),
+                })
                 .expect("down route selects HTTPS fallback")
                 .is_none()
         );

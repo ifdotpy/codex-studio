@@ -27,15 +27,13 @@ pub fn execute(store: &RuntimeStore, action: &Action, now: f64) -> Result<Value,
             .get("agent")
             .and_then(|agent| agent.get("id"))
             .and_then(Value::as_str)
-        {
-            if let Some(agent) = studio_runtime_store::AgentRepository::get(
+            && let Some(agent) = studio_runtime_store::AgentRepository::get(
                 &*store.read()?,
                 &studio_runtime_store::AgentId::from(agent_id),
-            )? {
-                if let Some(agent_archive) = agent.value().get("agentArchive") {
-                    result["agent"]["agentArchive"] = agent_archive.clone();
-                }
-            }
+            )?
+            && let Some(agent_archive) = agent.value().get("agentArchive")
+        {
+            result["agent"]["agentArchive"] = agent_archive.clone();
         }
     }
     Ok(result)

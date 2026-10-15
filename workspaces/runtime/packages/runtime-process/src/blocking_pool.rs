@@ -355,19 +355,19 @@ mod tests {
             .enable_all()
             .max_blocking_threads(FIXTURE_BLOCKING_THREADS)
             .build()
-            .unwrap();
+            .expect("fixture runtime builds");
         let (release_tx, release_rx) = mpsc::channel();
         let (entered_tx, entered_rx) = mpsc::channel();
         runtime.block_on(async {
             let first = submit(
                 "fixture/held",
                 move || {
-                    entered_tx.send(()).unwrap();
-                    release_rx.recv().unwrap();
+                    entered_tx.send(()).expect("test receiver is alive");
+                    release_rx.recv().expect("test releases held worker");
                 },
                 true,
             );
-            entered_rx.recv().unwrap();
+            entered_rx.recv().expect("held worker entered");
             let second = submit("fixture/queued", || 17usize, true);
             let aborted = submit("fixture/aborted", || (), true);
             aborted.abort();
@@ -386,9 +386,9 @@ mod tests {
                     .all(|group| group.group != "fixture/queued"),
                 "the queued fixture closure cannot start before the release gate"
             );
-            release_tx.send(()).unwrap();
-            first.await.unwrap();
-            assert_eq!(second.await.unwrap(), 17);
+            release_tx.send(()).expect("held worker is waiting");
+            first.await.expect("held blocking task completes");
+            assert_eq!(second.await.expect("queued task completes"), 17);
             assert!(
                 aborted
                     .await
@@ -405,7 +405,7 @@ mod tests {
             .groups
             .iter()
             .find(|group| group.group == "fixture/queued")
-            .unwrap();
+            .expect("queued fixture metrics are retained");
         assert_eq!(queued.count, 1);
         assert!(queued.queue_wait_max_ms > 0.0);
         assert!(queued.queue_wait_p95_ms > 0.0);

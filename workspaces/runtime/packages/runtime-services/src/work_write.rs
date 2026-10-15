@@ -902,22 +902,17 @@ pub fn prepare_vm_submission(
                 _ if intent.get("requestId").and_then(Value::as_str)
                     == Some(rpc_id.as_str()) =>
                 {
-                    match intent.get("status").and_then(Value::as_str) {
-                    Some("completed") => {
-                        if intent.get("owner").and_then(Value::as_str) == Some(owner_id)
-                            && intent.get("version") == Some(&work["version"])
-                            && intent.get("revision").and_then(Value::as_str)
-                                == Some(revision.as_str())
-                        {
-                            if let Some(evidence) = intent.get("evidence") {
-                                return Ok(VmSubmissionPreparation::Evidence {
-                                    evidence: evidence.clone(),
-                                    request_id: rpc_id.clone(),
-                                });
-                            }
-                        }
-                    }
-                    _ => {}
+                    if intent.get("status").and_then(Value::as_str) == Some("completed")
+                        && intent.get("owner").and_then(Value::as_str) == Some(owner_id)
+                        && intent.get("version") == Some(&work["version"])
+                        && intent.get("revision").and_then(Value::as_str)
+                            == Some(revision.as_str())
+                        && let Some(evidence) = intent.get("evidence")
+                    {
+                        return Ok(VmSubmissionPreparation::Evidence {
+                            evidence: evidence.clone(),
+                            request_id: rpc_id.clone(),
+                        });
                     }
                 }
                 _ => {}
@@ -1112,13 +1107,10 @@ pub fn prepare_vm_accept(
                 )
                 .into());
             }
-            if intent.get("requestId").and_then(Value::as_str) == Some(rpc_id.as_str()) {
-                match intent.get("status").and_then(Value::as_str) {
-                    Some("completed") => {
-                        return Ok(VmAcceptPreparation::Merged(result_id.to_owned()));
-                    }
-                    _ => {}
-                }
+            if intent.get("requestId").and_then(Value::as_str) == Some(rpc_id.as_str())
+                && intent.get("status").and_then(Value::as_str) == Some("completed")
+            {
+                return Ok(VmAcceptPreparation::Merged(result_id.to_owned()));
             }
         }
         let intent = json!({

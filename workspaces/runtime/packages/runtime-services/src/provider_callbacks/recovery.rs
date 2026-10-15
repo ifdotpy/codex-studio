@@ -74,10 +74,10 @@ pub fn prepare_unresolved_context_tool_receipts(
             .transpose()
             .map_err(|error| CallbackError::Stored(error.to_string()))?;
         snapshot.results.insert(id.clone(), cached_raw);
-        if let Some(cached) = cached {
-            if cached["success"].is_boolean() {
-                continue;
-            }
+        if let Some(cached) = cached
+            && cached["success"].is_boolean()
+        {
+            continue;
         }
         let receipt_scope = (
             record["accountKey"].as_str().unwrap_or("default"),
@@ -239,7 +239,7 @@ mod context_tool_receipt_snapshot_tests {
         assert_eq!(
             prepared.unresolved[0]["result"]["text"]
                 .as_str()
-                .unwrap()
+                .expect("fixture result text is a string")
                 .len(),
             70_000
         );

@@ -91,15 +91,19 @@ async fn answer(
                 &browser_store,
                 &browser_id,
                 &browser_data,
-                local_window,
-                guest.as_ref(),
-                forwarder.as_deref(),
-                callback_clock().map_err(|_| {
-                    studio_runtime_services::browser_answer::BrowserAnswerError::Invalid(
-                        "The system clock is unavailable",
-                    )
-                })?,
-                |record| validators.validate_table_record("runtime_requests", record),
+                studio_runtime_services::browser_answer::BrowserAnswerContext {
+                    local_window,
+                    guest: guest.as_ref(),
+                    local_forwarder: forwarder.as_deref(),
+                    now: callback_clock().map_err(|_| {
+                        studio_runtime_services::browser_answer::BrowserAnswerError::Invalid(
+                            "The system clock is unavailable",
+                        )
+                    })?,
+                    validate: |record: &serde_json::Value| {
+                        validators.validate_table_record("runtime_requests", record)
+                    },
+                },
             )
         },
     )

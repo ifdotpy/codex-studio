@@ -342,39 +342,37 @@ fn project_effect(
                     state.timing_valid = true;
                 }
             }
-            "item/agentMessage/delta" | "item/reasoning/textDelta" => {
-                if state.active {
-                    let characters = params["coalescedDeltaCharacters"]
-                        .as_u64()
-                        .map(|count| count as f64)
-                        .or_else(|| {
-                            params["delta"]
-                                .as_str()
-                                .map(|delta| delta.chars().count() as f64)
-                        });
-                    let Some(characters) = characters else {
-                        return;
-                    };
-                    let tokens = characters * TOKEN_ESTIMATE_TOKENS_PER_CHARACTER;
-                    state.pending += tokens;
-                    state.estimated = true;
-                    state.samples.push_back((at, tokens));
-                    while state
-                        .samples
-                        .front()
-                        .is_some_and(|(sample_at, _)| at - sample_at > TOKEN_RATE_WINDOW_SECONDS)
-                    {
-                        state.samples.pop_front();
-                    }
-                    if state.timing_valid
-                        && let Some((first_at, _)) = state.samples.front()
-                    {
-                        let elapsed = (at - first_at).max(1.0);
-                        state.rate = round_rate(
-                            (state.samples.iter().map(|(_, count)| count).sum::<f64>() / elapsed)
-                                .min(MAX_TOKEN_RATE),
-                        );
-                    }
+            "item/agentMessage/delta" | "item/reasoning/textDelta" if state.active => {
+                let characters = params["coalescedDeltaCharacters"]
+                    .as_u64()
+                    .map(|count| count as f64)
+                    .or_else(|| {
+                        params["delta"]
+                            .as_str()
+                            .map(|delta| delta.chars().count() as f64)
+                    });
+                let Some(characters) = characters else {
+                    return;
+                };
+                let tokens = characters * TOKEN_ESTIMATE_TOKENS_PER_CHARACTER;
+                state.pending += tokens;
+                state.estimated = true;
+                state.samples.push_back((at, tokens));
+                while state
+                    .samples
+                    .front()
+                    .is_some_and(|(sample_at, _)| at - sample_at > TOKEN_RATE_WINDOW_SECONDS)
+                {
+                    state.samples.pop_front();
+                }
+                if state.timing_valid
+                    && let Some((first_at, _)) = state.samples.front()
+                {
+                    let elapsed = (at - first_at).max(1.0);
+                    state.rate = round_rate(
+                        (state.samples.iter().map(|(_, count)| count).sum::<f64>() / elapsed)
+                            .min(MAX_TOKEN_RATE),
+                    );
                 }
             }
             _ => {}

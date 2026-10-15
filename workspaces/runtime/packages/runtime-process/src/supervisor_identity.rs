@@ -282,7 +282,7 @@ mod tests {
         fields[19] = "1234";
         let raw = format!("42 (odd ) command) {}", fields.join(" "));
 
-        let stat = ProcStat::parse(&raw).unwrap();
+        let stat = ProcStat::parse(&raw).expect("fixture proc stat is valid");
         assert_eq!(stat.state, 'S');
         assert_eq!(stat.process_group, 22);
         assert_eq!(stat.session, 33);

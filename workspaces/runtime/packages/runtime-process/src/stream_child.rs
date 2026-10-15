@@ -407,13 +407,13 @@ mod tests {
         let mut child = StreamChild::spawn(ChildSpec {
             program: PathBuf::from("/bin/true"),
             args: Vec::new(),
-            cwd: std::env::current_dir().unwrap(),
+            cwd: std::env::current_dir().expect("test working directory is available"),
             environment: BTreeMap::new(),
             timeout: Duration::from_secs(2),
             inherited_lease: None,
         })
         .await
-        .unwrap();
+        .expect("true child starts");
         assert!(matches!(
             child.next_event().await,
             Some(ChildEvent::Exited {
@@ -421,8 +421,11 @@ mod tests {
                 reason: ExitReason::Completed
             })
         ));
-        child.write(Vec::new(), true).await.unwrap();
-        child.close().await.unwrap();
+        child
+            .write(Vec::new(), true)
+            .await
+            .expect("empty stdin closes successfully");
+        child.close().await.expect("child closes successfully");
     }
 
     fn spec(command: &str, root: &std::path::Path) -> ChildSpec {

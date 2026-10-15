@@ -355,6 +355,30 @@ fn accept_peer(
     snapshot(store)
 }
 
+fn local_lead_name(store: &RuntimeStore) -> Result<String, FederationError> {
+    let value = store.read_transaction(|connection| {
+        connection
+            .query_row(
+                "SELECT json_extract(record,'$.name') FROM runtime_agents WHERE json_extract(record,'$.isLead')=1 AND (json_extract(record,'$.deletedAt') IS NULL OR json_extract(record,'$.deletedAt')=0) ORDER BY id LIMIT 1",
+                [],
+                |row| row.get::<_, Option<String>>(0),
+            )
+            .optional()
+            .map(|value| value.flatten())
+            .map_err(StoreError::from)
+    })?;
+    Ok(value
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| "Lead".to_owned()))
+}
+
+fn unix_time() -> Result<f64, FederationError> {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_secs_f64())
+        .map_err(|_| FederationError::Refused("System clock is invalid".to_owned()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::manage_with_origin_and_whoami;
@@ -396,28 +420,4 @@ mod tests {
         assert_eq!(identity["tailscaleUser"], "owner@example.test");
         assert_eq!(identity["tailscaleStatus"], "verified");
     }
-}
-
-fn local_lead_name(store: &RuntimeStore) -> Result<String, FederationError> {
-    let value = store.read_transaction(|connection| {
-        connection
-            .query_row(
-                "SELECT json_extract(record,'$.name') FROM runtime_agents WHERE json_extract(record,'$.isLead')=1 AND (json_extract(record,'$.deletedAt') IS NULL OR json_extract(record,'$.deletedAt')=0) ORDER BY id LIMIT 1",
-                [],
-                |row| row.get::<_, Option<String>>(0),
-            )
-            .optional()
-            .map(|value| value.flatten())
-            .map_err(StoreError::from)
-    })?;
-    Ok(value
-        .filter(|name| !name.is_empty())
-        .unwrap_or_else(|| "Lead".to_owned()))
-}
-
-fn unix_time() -> Result<f64, FederationError> {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|duration| duration.as_secs_f64())
-        .map_err(|_| FederationError::Refused("System clock is invalid".to_owned()))
 }

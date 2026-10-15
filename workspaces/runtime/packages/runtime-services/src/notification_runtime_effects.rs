@@ -407,7 +407,7 @@ mod tests {
         assert!(
             !analytics_agent
                 .as_object()
-                .unwrap()
+                .expect("analytics agent is an object")
                 .contains_key("unrelatedTranscript")
         );
         assert!(

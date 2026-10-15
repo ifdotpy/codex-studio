@@ -12,6 +12,9 @@ use crate::managed_host_tools::{
     Actor, DeliveryCertainty, DispatchedOperation, Error, OperationResult, WakeSignal,
 };
 
+type ModelPrice = (f64, f64);
+type WorkerModelPrices = Option<(Option<ModelPrice>, Option<ModelPrice>)>;
+
 pub struct WorkerAccountSelection<'a> {
     pub accounts: &'a dyn crate::provider_callbacks::ManagedCreationAccountRead,
     pub parent_account_key: &'a str,
@@ -102,7 +105,7 @@ pub fn select_worker_account(
 pub fn validate_worker_model_choice(
     requested: &str,
     default: &str,
-    prices: Option<(Option<(f64, f64)>, Option<(f64, f64)>)>,
+    prices: WorkerModelPrices,
 ) -> Result<(), CreationError> {
     if requested == default {
         return Ok(());

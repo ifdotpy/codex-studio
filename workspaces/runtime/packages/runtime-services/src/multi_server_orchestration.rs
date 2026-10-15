@@ -9,7 +9,7 @@ use studio_runtime_store::RuntimeStore;
 
 use crate::multi_server_auth::{AccessError, digest, refused, schema, stored, text};
 use crate::remote_transport::{
-    MAX_REQUEST_BYTES, MAX_RESPONSE_BYTES, MultiServerRequest, canonical_json,
+    MAX_REQUEST_BYTES, MAX_RESPONSE_BYTES, MultiServerRequest, PairedRequest, canonical_json,
     exchange_paired_request, learn_paired_request_link, load_multi_server_identity,
     multi_server_signed_headers, new_nonce, verify_multi_server_response,
 };
@@ -200,14 +200,16 @@ impl PairedTransport for HttpsPairedTransport {
         }
         let response = exchange_paired_request(
             &self.store,
-            server,
-            &public_key,
-            "POST",
-            &url,
-            &headers,
-            &body,
-            timeout,
-            MAX_RESPONSE_BYTES,
+            PairedRequest {
+                server_id: server,
+                public_key: &public_key,
+                method: "POST",
+                url: &url,
+                headers: &headers,
+                body: &body,
+                timeout,
+                response_limit: MAX_RESPONSE_BYTES,
+            },
         )
         .map_err(|_| {
             refused(

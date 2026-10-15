@@ -27,6 +27,13 @@ use studio_runtime_store::{
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
 const NOT_SENT_RETRIES: usize = 1;
 
+pub struct SafetyAction<'a> {
+    pub agent_id: &'a str,
+    pub actor: RequestActor,
+    pub turn_id: &'a str,
+    pub choice: &'a str,
+}
+
 /// Execute the complete retry action against the agent's retained Codex session.
 /// Every request is journaled in runtime_safety_retries before hand-off.
 pub fn execute_action(
@@ -34,11 +41,14 @@ pub fn execute_action(
     provider: &dyn AccountSessionPort,
     resources: &Arc<PreparationResources>,
     lifecycle: Option<&dyn LifecyclePorts>,
-    agent_id: &str,
-    actor: RequestActor,
-    turn_id: &str,
-    choice: &str,
+    action: SafetyAction<'_>,
 ) -> Result<Value, Error> {
+    let SafetyAction {
+        agent_id,
+        actor,
+        turn_id,
+        choice,
+    } = action;
     if actor.agent != agent_id || turn_id.is_empty() {
         return Err(Error::Inactive);
     }
@@ -892,12 +902,11 @@ fn persist_stage_receipt(
                 current["requestId"] =
                     serde_json::to_value(&ticket.id).map_err(|_| Error::InvalidStoredState)?;
                 current["requestGeneration"] = json!(ticket.generation);
-                if stage == Stage::Start {
-                    if ticket.method != Method::TurnStart
-                        || ticket.generation != receipt.scope.generation
-                    {
-                        return Err(Error::StaleRetry);
-                    }
+                if stage == Stage::Start
+                    && (ticket.method != Method::TurnStart
+                        || ticket.generation != receipt.scope.generation)
+                {
+                    return Err(Error::StaleRetry);
                 }
             }
             if let Some(ProviderResponse::Reply(value)) = receipt.result.as_ref() {
@@ -917,20 +926,20 @@ fn persist_stage_receipt(
             }
             current["updated"] = json!(unix_seconds());
             let mut agent = read_agent(tx, required_str(&current, "agent")?)?;
-            if stage == Stage::Start {
-                if let Some(ticket) = receipt.ticket.as_ref() {
-                    let attempt = agent
-                        .get_mut("startAttempt")
-                        .and_then(Value::as_object_mut)
-                        .ok_or(Error::InvalidStoredState)?;
-                    if attempt.get("id").and_then(Value::as_str)
-                        != current.get("attemptId").and_then(Value::as_str)
-                    {
-                        return Err(Error::StaleRetry);
-                    }
-                    attempt.insert("requestTicket".into(), json!(request_id_string(&ticket.id)));
-                    attempt.insert("connectionGeneration".into(), json!(ticket.generation));
+            if stage == Stage::Start
+                && let Some(ticket) = receipt.ticket.as_ref()
+            {
+                let attempt = agent
+                    .get_mut("startAttempt")
+                    .and_then(Value::as_object_mut)
+                    .ok_or(Error::InvalidStoredState)?;
+                if attempt.get("id").and_then(Value::as_str)
+                    != current.get("attemptId").and_then(Value::as_str)
+                {
+                    return Err(Error::StaleRetry);
                 }
+                attempt.insert("requestTicket".into(), json!(request_id_string(&ticket.id)));
+                attempt.insert("connectionGeneration".into(), json!(ticket.generation));
             }
             save_operation(tx, &mut agent, &current)?;
         } else {

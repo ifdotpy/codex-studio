@@ -301,7 +301,10 @@ pub fn recover_connection(
             (Some("active"), Some("inProgress" | "running")) => {
                 RecoveryAction::AdoptQueuedWait { turn }
             }
-            (Some("idle" | "notLoaded"), Some("completed" | "failed" | "interrupted")) => {
+            (
+                Some(native_state @ ("idle" | "notLoaded")),
+                Some("completed" | "failed" | "interrupted"),
+            ) => {
                 let Some(full_turn) = read.exact_turn(thread, turn_id)? else {
                     return Ok(RecoveryOutcome::Unconfirmed);
                 };
@@ -320,7 +323,7 @@ pub fn recover_connection(
                 }
                 RecoveryAction::Terminal {
                     turn: full_turn,
-                    native_state: second_native.unwrap().into(),
+                    native_state: native_state.into(),
                     mode: CompletionMode::QueuedActiveWait,
                 }
             }
