@@ -285,6 +285,33 @@ async fn recovered_publications(state: &State) -> Vec<(String, String)> {
         .await
         .expect("read recovered publication receipts")
 }
+
+#[derive(Default)]
+struct RecoveredPublicationRecorder(Mutex<Vec<(String, String)>>);
+
+impl crate::notification_runtime_effects::NotificationPostCommitSink
+    for RecoveredPublicationRecorder
+{
+    fn publish(
+        &self,
+        effect: &crate::notification_dispatch::NotificationPostCommit,
+    ) -> Result<(), crate::notification_dispatch::NotificationDispatchError> {
+        match effect {
+            crate::notification_dispatch::NotificationPostCommit::Recovered {
+                identity,
+                observation,
+            } => {
+                self.0
+                    .lock()
+                    .expect("recorded recovered publications")
+                    .push((identity.clone(), observation.method.clone()));
+                Ok(())
+            }
+            _ => Err(crate::notification_dispatch::NotificationDispatchError::InvalidNotification),
+        }
+    }
+}
+
 #[tokio::test(start_paused = true)]
 async fn retained_reply_replays_without_resending_and_rejects_changed_payload() {
     let state = State::new().await;
@@ -1168,11 +1195,47 @@ async fn restart_terminal_commit_before_wake_converges_on_next_worker_start() {
         .expect("terminal item is committed with the settlement");
     assert_eq!(item.record["turnStatus"], "completed");
     let mut peer = Peer::new();
-    let mut worker = peer.worker(state.bridge.clone()).await;
-    let publications = recovered_publications(&state).await;
-    assert_eq!(publications.len(), 2);
-    assert_eq!(publications[0].1, "item/completed");
-    assert_eq!(publications[1].1, "turn/completed");
+    let publications = Arc::new(RecoveredPublicationRecorder::default());
+    let mut worker = peer
+        .open_worker_with_resources_and_sink(
+            state.bridge.clone(),
+            test_resources().unwrap(),
+            publications.clone(),
+        )
+        .await;
+    let mut ready = peer.ready.clone();
+    while !*ready.borrow_and_update() {
+        ready.changed().await.unwrap();
+    }
+    worker_barrier(&worker).await;
+    let recovered = publications
+        .0
+        .lock()
+        .expect("recorded recovered publications")
+        .clone();
+    assert_eq!(
+        recovered,
+        [
+            (
+                "restart:restart-attempt:old-turn:item:answer".into(),
+                "item/completed".into(),
+            ),
+            (
+                "restart:restart-attempt:old-turn:turn".into(),
+                "turn/completed".into(),
+            ),
+        ]
+    );
+    worker_barrier(&worker).await;
+    assert_eq!(
+        publications
+            .0
+            .lock()
+            .expect("recorded recovered publications")
+            .len(),
+        2,
+        "restart recovery publishes each committed notification once"
+    );
     assert!(
         peer.writes.try_recv().is_err(),
         "committed recovery does not resubmit input on restart"

@@ -738,6 +738,8 @@ finally:
     radio.doCleanups()
 "#;
     let mut command = std::process::Command::new(prepared_python::prepared_python(&source));
+    let isolated_environment = prepared_python::IsolatedTestEnvironment::new();
+    isolated_environment.apply(&mut command);
     command
         .arg("-c")
         .arg(script)
