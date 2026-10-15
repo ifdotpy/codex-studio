@@ -528,6 +528,16 @@ impl HttpState {
         lifecycle_ports: Arc<dyn studio_runtime_services::agent_lifecycle_runtime::LifecyclePorts>,
     ) -> Self {
         if let Some(store) = self.store.as_ref() {
+            let accounts = self.account_policy.as_ref().map(|policy| policy.accounts());
+            let default_account = accounts
+                .as_ref()
+                .and_then(|snapshot| snapshot.default_account_key.as_str())
+                .unwrap_or("default")
+                .to_owned();
+            let known_accounts = accounts
+                .as_ref()
+                .map(|snapshot| snapshot.accounts.clone())
+                .unwrap_or_default();
             let driver = Arc::new(
                 studio_runtime_services::multi_server_transport::OrchestrationDriver::new(
                     Arc::clone(store),
@@ -537,8 +547,11 @@ impl HttpState {
                         ),
                     ),
                     Arc::new(
-                        studio_runtime_services::multi_server_transport::RuntimeOrchestrationEffects::with_lifecycle_ports(
+                        studio_runtime_services::multi_server_orchestration::RuntimeOrchestrationEffects::with_project_accounts_and_lifecycle_ports(
                             Arc::clone(store),
+                            Arc::new(studio_runtime_services::browser::BrowserCallbackReceiver::new(Arc::clone(store))),
+                            default_account,
+                            known_accounts,
                             lifecycle_ports,
                         ),
                     ),

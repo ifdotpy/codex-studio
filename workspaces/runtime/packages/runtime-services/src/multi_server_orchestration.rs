@@ -314,6 +314,22 @@ impl RuntimeOrchestrationEffects {
         }
     }
 
+    pub fn with_project_accounts_and_lifecycle_ports(
+        store: Arc<RuntimeStore>,
+        browser_callback: Arc<dyn BrowserCallbackEffect>,
+        default_account: String,
+        known_accounts: Vec<Value>,
+        lifecycle_ports: Arc<dyn crate::agent_lifecycle_runtime::LifecyclePorts>,
+    ) -> Self {
+        Self {
+            store,
+            browser_callback,
+            default_account,
+            known_accounts,
+            lifecycle_ports: Some(lifecycle_ports),
+        }
+    }
+
     fn stop_worker(
         &self,
         principal: &str,

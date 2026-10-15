@@ -600,3 +600,162 @@ async fn signed_remote_event_crosses_http_boundary_and_persists_once() {
         .unwrap();
     assert_eq!(count, 1);
 }
+
+#[tokio::test]
+async fn lifecycle_ports_preserve_configured_accounts_for_inbound_project_add() {
+    use studio_runtime_services::agent_lifecycle_runtime::{LifecycleEffect, LifecyclePorts};
+    use studio_runtime_services::agent_management::ManagementError;
+    use studio_runtime_store::{ProjectsRepository, Transaction};
+
+    struct NoopLifecycle;
+    impl LifecyclePorts for NoopLifecycle {
+        fn stage(&self, _: &Transaction<'_>, _: &LifecycleEffect) -> Result<(), ManagementError> {
+            Ok(())
+        }
+
+        fn committed(&self) -> Result<(), ManagementError> {
+            Ok(())
+        }
+    }
+
+    let caller_root = tempfile::tempdir().expect("caller state root");
+    let caller_store = Arc::new(
+        studio_runtime_store::RuntimeStore::open(Some(caller_root.path()))
+            .expect("caller store opens"),
+    );
+    let caller_credentials =
+        studio_runtime_services::federation_credentials::Credentials::default();
+    let caller_identity = caller_credentials
+        .identity(&caller_store, Some("https://caller.fixture.ts.net"))
+        .expect("caller identity exists");
+    let caller_signing =
+        load_multi_server_identity(caller_root.path()).expect("caller signing identity loads");
+
+    let receiver_root = tempfile::tempdir().expect("receiver state root");
+    let receiver_store = Arc::new(
+        studio_runtime_store::RuntimeStore::open(Some(receiver_root.path()))
+            .expect("receiver store opens"),
+    );
+    let receiver_credentials =
+        Arc::new(studio_runtime_services::federation_credentials::Credentials::default());
+    let origin = "https://receiver.fixture.ts.net";
+    let receiver_identity = receiver_credentials
+        .identity(&receiver_store, Some(origin))
+        .expect("receiver identity exists");
+    receiver_store
+        .transaction(|tx| {
+            tx.execute(
+                "INSERT INTO runtime_access_clients(id,record) VALUES(?1,?2)",
+                rusqlite::params![
+                    caller_identity["serverId"].as_str().expect("caller ID"),
+                    serde_json::json!({
+                        "id":caller_identity["serverId"],
+                        "clientId":caller_identity["serverId"],
+                        "kind":"server",
+                        "status":"paired",
+                        "label":caller_identity["label"],
+                        "created":1,
+                        "publicKey":caller_identity["publicKey"],
+                        "origin":"https://caller.fixture.ts.net",
+                        "tailscaleUser":"owner@example.test"
+                    })
+                    .to_string(),
+                ],
+            )?;
+            Ok(())
+        })
+        .expect("receiver trusts the paired fake server");
+
+    let policy = Arc::new(
+        studio_runtime_services::account_policy::AccountPolicyState::from_startup(
+            Some(br#"{"version":1,"defaultAccountKey":"alternate","accounts":{"alternate":{"id":"alternate","home":"/alternate","label":"Alternate","source":"Codex CLI","status":"signedOut"}},"logins":{}}"#),
+            [],
+        )
+        .expect("configured account snapshot"),
+    );
+    let boundary = MultiServerBoundary::new(receiver_identity.clone(), Arc::new(FixtureOwner))
+        .expect("receiver boundary is ready");
+    let state = HttpState::new(
+        "token".into(),
+        "workspace".into(),
+        None,
+        receiver_root.path().display().to_string(),
+        4000,
+        Some(origin.into()),
+        Some(Arc::clone(&receiver_store)),
+        Some(policy),
+    )
+    .with_credentials(Arc::clone(&receiver_credentials))
+    .with_multi_server_boundary(Arc::new(boundary))
+    .with_tailscale_whoami(Arc::new(|| {
+        Some(serde_json::json!({"user":"owner@example.test"}))
+    }))
+    .with_lifecycle_ports(Arc::new(NoopLifecycle));
+    let app = router(state).expect("receiver router");
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("system clock")
+        .as_secs() as i64;
+    let project_path = receiver_root.path().join("new-remote-project");
+    std::fs::create_dir_all(&project_path).expect("unregistered project directory");
+    let raw = serde_json::to_vec(&serde_json::json!({
+        "action":"add_location",
+        "requestId":"remote-project-add",
+        "payload":{
+            "project":"remote-home-project",
+            "path":project_path.to_string_lossy(),
+            "name":"Remote project"
+        }
+    }))
+    .expect("orchestration body serializes");
+    let url = format!("{origin}/api/servers/orchestration");
+    let signed = MultiServerRequest {
+        server_id: receiver_identity["serverId"].as_str().expect("receiver ID"),
+        method: "POST",
+        url: &url,
+        request_id: "remote-project-add",
+        timestamp: now,
+        nonce: "qrstuvwxyz0123456789abcdefghijk",
+        body: &raw,
+    };
+    let signed_headers = multi_server_signed_headers(&caller_signing, &signed, now)
+        .expect("fake caller signs request");
+    let mut builder = Request::builder()
+        .method("POST")
+        .uri("/api/servers/orchestration")
+        .header("host", "127.0.0.1:4000")
+        .header("x-forwarded-host", "receiver.fixture.ts.net")
+        .header("x-forwarded-proto", "https")
+        .header("x-forwarded-for", "100.64.0.2")
+        .header("tailscale-user-login", "owner@example.test")
+        .header("content-type", "application/json")
+        .header("content-length", raw.len().to_string());
+    for (name, value) in signed_headers {
+        builder = builder.header(name, value);
+    }
+    let mut request = builder
+        .body(Body::from(raw))
+        .expect("signed orchestration request builds");
+    request.extensions_mut().insert(ConnectInfo(
+        "127.0.0.1:4321"
+            .parse::<std::net::SocketAddr>()
+            .expect("loopback peer address"),
+    ));
+    let response = app.oneshot(request).await.expect("project add response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let value: Value = serde_json::from_slice(
+        &to_bytes(response.into_body(), 16 * 1024)
+            .await
+            .expect("project add body"),
+    )
+    .expect("project add JSON");
+    assert_eq!(value["outcome"], "applied");
+    let project_id = value["value"]["projectId"]
+        .as_str()
+        .expect("created project ID");
+    let reader = receiver_store.read().expect("project store read");
+    let (_, project) = ProjectsRepository::get(&reader, project_id)
+        .expect("created project loads")
+        .expect("created project exists");
+    assert_eq!(project["accountKey"], "alternate");
+}

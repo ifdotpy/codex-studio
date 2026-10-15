@@ -1701,6 +1701,7 @@ mod retained_executor_tests {
             claude_account_pin: Value::Null,
             account_driver: None,
             account_session: Some(session.clone()),
+            guest_rpc: None,
         };
         crate::account_transfer_driver::begin_read(&store, transfer_id, "lead", 1.5)
             .expect("the durable member enters Reading before preparation");
@@ -1884,6 +1885,7 @@ mod retained_executor_tests {
             claude_account_pin: Value::Null,
             account_driver: None,
             account_session: Some(recovered_session.clone()),
+            guest_rpc: None,
         };
         let _ = before_start(
             &recovered_store,
