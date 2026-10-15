@@ -707,8 +707,6 @@ pub(crate) fn routes() -> RouteGroup {
     // Account-readiness refusal is kept as a runtime condition, not a missing
     // implementation: Python raises the same ValueError for cross-account
     // children in codex_runtime.py:4928-4930.
-    const RENAME_DEPENDENCIES: [Dependency; 1] =
-        [Dependency::new("provider-session/title-generation")];
     RouteGroup::new(vec![
         post("/api/agents", OperationStatus::Implemented, create_agent),
         post("/api/configure", OperationStatus::Implemented, configure),
@@ -722,11 +720,7 @@ pub(crate) fn routes() -> RouteGroup {
             OperationStatus::Implemented,
             create_lead,
         ),
-        post(
-            "/api/rename",
-            OperationStatus::partial(&RENAME_DEPENDENCIES),
-            rename,
-        ),
+        post("/api/rename", OperationStatus::Implemented, rename),
     ])
 }
 
@@ -1530,21 +1524,12 @@ async fn finish_title_request(
         return;
     }
     let models = match catalog
-        .model_list_port()
-        .list(
-            &account,
-            &provider_name,
-            serde_json::json!({"limit": studio_runtime_schema::shared_values::MODEL_CATALOG_ITEMS_PER_PAGE}),
-        )
+        .wait_for_admission_catalog(&account, &home, &provider_name)
         .await
     {
-        Ok(models) => models,
-        Err(_) => {
-            match catalog.read(&account, &home, &provider_name, false).await {
-                studio_runtime_services::model_catalog::CatalogRead::Ready(_)
-                | studio_runtime_services::model_catalog::CatalogRead::Pending
-                | studio_runtime_services::model_catalog::CatalogRead::Unavailable => {}
-            }
+        studio_runtime_services::model_catalog::AdmissionCatalogRead::Fresh { value, .. } => value,
+        studio_runtime_services::model_catalog::AdmissionCatalogRead::Pending
+        | studio_runtime_services::model_catalog::AdmissionCatalogRead::Unavailable => {
             settle_failure(store, agent_id, request_id).await;
             return;
         }
@@ -1600,6 +1585,226 @@ fn catalog_cwd_for_conversation(
 
 fn existing_conversation_catalog_parent() -> Option<&'static str> {
     None
+}
+
+#[cfg(test)]
+mod title_http_tests {
+    use super::*;
+    use axum::{
+        body::{Body, to_bytes},
+        http::Request,
+    };
+    use serde_json::json;
+    use std::{
+        future::Future,
+        pin::Pin,
+        sync::{Arc, Mutex},
+        time::Duration,
+    };
+    use studio_runtime_providers::{Method, RequestId, RequestTicket};
+    use studio_runtime_services::{
+        account_session_runtime::{
+            AccountSessionError, AccountSessionPort, ConnectionScope, ProviderRequest,
+            ProviderResponse, RequestCertainty, SessionReceipt,
+        },
+        title_generation::{TitleReceipt, TitleRequest, TitleRequestPort, WriteOutcome},
+    };
+    use studio_runtime_store::{AgentRecord, AgentRepository, RuntimeStore};
+    use tokio::sync::{Notify, oneshot};
+    use tower::ServiceExt;
+
+    struct CatalogSession;
+
+    impl AccountSessionPort for CatalogSession {
+        fn current_scope(&self, account: &str) -> Option<ConnectionScope> {
+            Some(ConnectionScope {
+                account: account.to_owned(),
+                connection: "fake-title-catalog".into(),
+                generation: 4,
+            })
+        }
+
+        fn provider_request(
+            &self,
+            request: ProviderRequest,
+        ) -> Result<SessionReceipt, AccountSessionError> {
+            let scope = self
+                .current_scope(&request.account)
+                .expect("fake catalog scope");
+            Ok(SessionReceipt {
+                scope,
+                operation: request.operation,
+                ticket: Some(RequestTicket {
+                    id: RequestId::String("fake-model-list".into()),
+                    generation: 4,
+                    method: Method::ModelList,
+                }),
+                certainty: RequestCertainty::Written,
+                result: Some(ProviderResponse::Reply(json!({
+                    "data":[{"model":"gpt-6-mini"}],
+                    "nextCursor":null
+                }))),
+                not_sent_reason: None,
+                replayed: false,
+            })
+        }
+    }
+
+    struct GeneratedTitle {
+        requested: Mutex<Option<oneshot::Sender<TitleRequest>>>,
+    }
+
+    impl TitleRequestPort for GeneratedTitle {
+        fn request<'a>(
+            &'a self,
+            request: TitleRequest,
+        ) -> Pin<Box<dyn Future<Output = TitleReceipt> + Send + 'a>> {
+            let requested = self.requested.lock().expect("title request sender").take();
+            Box::pin(async move {
+                requested
+                    .expect("HTTP title request is observed")
+                    .send(request.clone())
+                    .expect("test receives title request");
+                TitleReceipt {
+                    request_id: request.request_id,
+                    agent_id: request.agent_id,
+                    epoch: request.epoch,
+                    account_key: request.account_key,
+                    outcome: WriteOutcome::Written,
+                    title: Some("Generated through HTTP".into()),
+                }
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn rename_http_route_uses_injected_title_provider_and_settles() {
+        let directory = tempfile::tempdir().expect("isolated HTTP state");
+        let store =
+            Arc::new(RuntimeStore::open(Some(directory.path())).expect("runtime store opens"));
+        let agent = AgentRecord::from_value(json!({
+            "id":"title-http-agent",
+            "rootId":"title-http-agent",
+            "epoch":1,
+            "status":"idle",
+            "name":"Original conversation name",
+            "provider":"codex",
+            "model":"gpt-6",
+            "prompt":"Start the title fixture",
+            "cwd":"/fixture",
+            "accountKey":"default",
+            "isLead":false,
+            "needsTitle":true,
+            "manualName":false,
+            "autoWake":false
+        }))
+        .expect("valid persisted agent");
+        store
+            .transaction_with(|tx| {
+                AgentRepository::put(tx, &agent)?;
+                tx.execute(
+                    "INSERT INTO runtime_items(id,agent,record,created) VALUES(?1,?2,?3,?4)",
+                    rusqlite::params![
+                        "title-http-item",
+                        "title-http-agent",
+                        json!({"id":"title-http-item","role":"user","title":"You","text":"Plan a dashboard","created":1.0}).to_string(),
+                        1.0,
+                    ],
+                )?;
+                Ok::<_, studio_runtime_store::StoreError>(())
+            })
+            .expect("seed title agent and transcript");
+        let (requested_tx, requested_rx) = oneshot::channel();
+        let mut state = crate::router::HttpState::new(
+            "token".into(),
+            "workspace".into(),
+            None,
+            directory.path().to_string_lossy().into_owned(),
+            4620,
+            None,
+            Some(store.clone()),
+            None,
+        );
+        let catalog = state.model_catalog_handle();
+        catalog.set_account_session(Some(Arc::new(CatalogSession)));
+        catalog.retain_accounts(&[json!({
+            "id":"default", "provider":"codex", "home":"/fixture"
+        })]);
+        state = state.with_title_request_port(Arc::new(GeneratedTitle {
+            requested: Mutex::new(Some(requested_tx)),
+        }));
+        let app = crate::router::router(state).expect("HTTP routes register");
+        let request = Request::builder()
+            .method("POST")
+            .uri("/api/rename")
+            .header("x-canvas-token", "token")
+            .header("host", "127.0.0.1:4620")
+            .header("content-type", "application/json")
+            .header(
+                crate::schema::API_SCHEMA_HASH_HEADER,
+                crate::schema::api_schema_hash(),
+            )
+            .extension(axum::extract::ConnectInfo(std::net::SocketAddr::from((
+                [127, 0, 0, 1],
+                12345,
+            ))))
+            .body(Body::from(
+                json!({
+                    "id":"title-http-agent",
+                    "name":null,
+                    "request_id":"title-http-request"
+                })
+                .to_string(),
+            ))
+            .expect("valid HTTP request");
+        let response = app.oneshot(request).await.expect("HTTP route response");
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        let receipt: Value = serde_json::from_slice(
+            &to_bytes(response.into_body(), 65536)
+                .await
+                .expect("rename response body"),
+        )
+        .expect("rename receipt JSON");
+        assert_eq!(receipt["status"], "pending");
+
+        let provider_request = tokio::time::timeout(Duration::from_secs(5), requested_rx)
+            .await
+            .expect("HTTP finisher reaches title provider")
+            .expect("title provider request delivered");
+        assert_eq!(provider_request.agent_id, "title-http-agent");
+        assert_eq!(provider_request.request_id, "title-http-request");
+        assert_eq!(provider_request.model, "gpt-6-mini");
+
+        let changed = Arc::new(Notify::new());
+        let notify = changed.clone();
+        store.set_commit_notifier(move || notify.notify_one());
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let next = changed.notified();
+                tokio::pin!(next);
+                next.as_mut().enable();
+                let record = store
+                    .read()
+                    .expect("read generated title")
+                    .query_row(
+                        "SELECT record FROM runtime_agents WHERE id='title-http-agent'",
+                        [],
+                        |row| row.get::<_, String>(0),
+                    )
+                    .expect("title agent exists");
+                let record: Value = serde_json::from_str(&record).expect("agent JSON");
+                if record["name"] == "Generated through HTTP"
+                    && record["needsTitle"] == false
+                    && record["manualName"] == true
+                {
+                    break;
+                }
+                next.await;
+            }
+        })
+        .await
+        .expect("HTTP title finisher commits the fake provider result");
+    }
 }
 
 #[cfg(test)]
@@ -1906,7 +2111,6 @@ inventory::submit! {
         name: "agents_create",
         routes: Some(routes),
         dependencies: &[
-            "provider-session/title-generation",
             "account-driver/unavailable",
             "provider-session/model-list",
             "project-driver/folder-selection",

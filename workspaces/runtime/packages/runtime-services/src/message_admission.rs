@@ -320,14 +320,13 @@ mod tests {
     }
 }
 
-/// Runtime.send stores attachment IDs verbatim. Existence, count and ownership
-/// belong to turn_prepare::compile, matching Python message_inputs timing.
-/// Non-ID upload requests still require the separately owned upload adapter.
+/// Runtime.send stores accepted attachment ID strings verbatim for exact
+/// replay. The shared payload-store owner validates their shape here; turn
+/// preparation loads the referenced asset and applies ownership checks.
 pub(crate) fn attachments(assets: &[Value]) -> Result<(), CoordinationError> {
-    if assets.iter().any(|asset| !asset.is_string()) {
-        return Err(CoordinationError::RequiresDependency(
-            "payload-store/uploads",
-        ));
+    for asset in assets {
+        crate::payload_store::asset_reference_id(asset)
+            .map_err(|_| CoordinationError::InvalidRequest("Invalid attachment reference"))?;
     }
     Ok(())
 }

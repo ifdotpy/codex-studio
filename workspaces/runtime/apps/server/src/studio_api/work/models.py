@@ -236,7 +236,7 @@ class MessageBody(ContractModel):
 
 class ManagedMessageBody(MessageBody):
     delivery: Literal["queue", "steer", "after_tool", "after_turn"] = "queue"
-    assets: list[JsonValue] = Field(default_factory=list)
+    assets: list[StrictStr] = Field(default_factory=list)
 
 
 class ChatCreateBody(ContractModel):

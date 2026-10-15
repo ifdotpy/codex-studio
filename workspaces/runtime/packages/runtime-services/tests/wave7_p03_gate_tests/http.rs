@@ -44,7 +44,7 @@ async fn http_accepts_unrelated_operation_started_after_preparation() {
 }
 
 #[tokio::test]
-async fn http_accepts_pending_asset_payload_with_empty_message_text() {
+async fn http_accepts_uploaded_asset_id_with_empty_message_text() {
     use axum::{
         body::{Body, to_bytes},
         http::Request,
@@ -63,6 +63,15 @@ async fn http_accepts_pending_asset_payload_with_empty_message_text() {
         None,
     );
     let app = crate::router::router(state).expect("router");
+    let asset_id = "00000000-0000-4000-8000-000000000003";
+    let asset = studio_runtime_services::payload_store::upload(
+        &fixture.store,
+        "late-operation-recipient",
+        "pending.txt",
+        Some(asset_id),
+        "YWJj",
+    )
+    .expect("upload through the shared payload owner");
     let request = Request::builder()
         .method("POST")
         .uri("/api/messages")
@@ -82,7 +91,7 @@ async fn http_accepts_pending_asset_payload_with_empty_message_text() {
                 "room":"late-operation-recipient",
                 "id":"00000000-0000-4000-8000-000000000002",
                 "text":"",
-                "assets":[{"name":"pending"}]
+                "assets":[asset["id"].clone()]
             })
             .to_string(),
         ))
@@ -93,4 +102,14 @@ async fn http_accepts_pending_asset_payload_with_empty_message_text() {
         serde_json::from_slice(&to_bytes(response.into_body(), 65536).await.expect("body"))
             .expect("receipt");
     assert_eq!(receipt["status"], "queued");
+    let connection = fixture.store.read().expect("message store reader");
+    let raw: String = connection
+        .query_row(
+            "SELECT record FROM runtime_event_meta WHERE id=?1",
+            ["00000000-0000-4000-8000-000000000002"],
+            |row| row.get(0),
+        )
+        .expect("saved attachment metadata");
+    let metadata: serde_json::Value = serde_json::from_str(&raw).expect("metadata JSON");
+    assert_eq!(metadata["assets"], serde_json::json!([asset["id"]]));
 }

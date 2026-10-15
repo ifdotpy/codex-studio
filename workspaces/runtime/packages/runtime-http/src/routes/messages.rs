@@ -12,12 +12,10 @@ use super::manifest::{Dependency, OperationStatus, RouteGroup, get, post};
 use crate::error::ApiError;
 use crate::router::HttpState;
 
-const MESSAGE_SEND_DEPENDENCIES: [Dependency; 5] = [
+const MESSAGE_SEND_DEPENDENCIES: [Dependency; 3] = [
     Dependency::new("capacity-retry/store"),
     Dependency::new("cross-server/remote-events"),
     Dependency::new("federation-driver/rooms"),
-    Dependency::new("payload-store/uploads"),
-    Dependency::new("workspace-policy/message-admission"),
 ];
 
 #[derive(serde::Deserialize)]
@@ -139,50 +137,13 @@ pub(super) async fn post_message(
 ) -> Result<Json<crate::generated::StudioApiWorkModelsMessageReceipt>, ApiError> {
     let store = state.store.ok_or_else(ApiError::internal)?;
     let wake = state.event_wake;
-    let federated_room = store
-        .read_transaction(|connection| {
-            connection
-                .query_row(
-                    "SELECT EXISTS(SELECT 1 FROM runtime_federation_rooms WHERE id=?1)",
-                    [&body.room],
-                    |row| row.get::<_, bool>(0),
-                )
-                .map_err(studio_runtime_store::StoreError::from)
-        })
-        .map_err(|_| ApiError::internal())?;
-    if federated_room {
-        let room = body.room.clone();
-        let id = body.id.clone();
-        let text = body.text.clone();
-        let receipt = studio_runtime_process::blocking_pool::spawn_blocking(
-            "runtime-http/routes/messages/federation",
-            move || {
-                let now = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map_err(|_| ApiError::internal())?
-                    .as_secs_f64();
-                let mut result = studio_runtime_services::federation_delivery::user_message(
-                    &store, &room, &text, &id, now,
-                )
-                .map_err(federation_error)?;
-                result["id"] = Value::String(id);
-                super::generated_json::<crate::generated::StudioApiWorkModelsMessageReceipt>(result)
-            },
-        )
-        .await
-        .map_err(|_| ApiError::internal())??;
-        wake.notify_one();
-        return Ok(Json(receipt));
-    }
+    let message_admission = state.message_admission.clone();
     let orchestration_driver = state.orchestration_driver.clone();
     let assets = body
         .assets
         .unwrap_or_default()
         .into_iter()
-        .map(|value| match value {
-            Some(value) => serde_json::to_value(*value).map_err(|_| ApiError::internal()),
-            None => Ok(Value::Null),
-        })
+        .map(|asset| serde_json::to_value(asset).map_err(|_| ApiError::internal()))
         .collect::<Result<Vec<_>, _>>()?;
     let delivery = body
         .delivery
@@ -194,6 +155,33 @@ pub(super) async fn post_message(
         studio_runtime_process::blocking_pool::spawn_blocking(
             "runtime-http/routes/messages",
             move || {
+                let federated_room = store
+                    .read_transaction(|connection| {
+                        connection
+                            .query_row(
+                                "SELECT EXISTS(SELECT 1 FROM runtime_federation_rooms WHERE id=?1)",
+                                [&body.room],
+                                |row| row.get::<_, bool>(0),
+                            )
+                            .map_err(studio_runtime_store::StoreError::from)
+                    })
+                    .map_err(|_| ApiError::internal())?;
+                if federated_room {
+                    let now = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map_err(|_| ApiError::internal())?
+                        .as_secs_f64();
+                    let mut result = studio_runtime_services::federation_delivery::user_message(
+                        &store, &body.room, &body.text, &body.id, now,
+                    )
+                    .map_err(federation_error)?;
+                    result["id"] = Value::String(body.id.clone());
+                    let receipt = super::generated_json::<
+                        crate::generated::StudioApiWorkModelsMessageReceipt,
+                    >(result)?;
+                    wake.notify_one();
+                    return Ok::<_, ApiError>(receipt);
+                }
                 let connection = store.read().map_err(|_| ApiError::internal())?;
                 let remote_worker: bool = connection.query_row(
                     "SELECT json_type(record,'$.remoteWorker') IS NOT NULL FROM runtime_agents WHERE id=?1",
@@ -202,7 +190,7 @@ pub(super) async fn post_message(
                 ).optional().map_err(|_| ApiError::internal())?.unwrap_or(false);
                 let prepared: Box<
                     dyn studio_runtime_services::message_admission::MessageAdmission + '_,
-                > = if state.message_admission.is_some() {
+                > = if message_admission.is_some() {
                     Box::new(
                         studio_runtime_services::message_admission::PreparedAdmission::load(
                             &connection,
@@ -223,8 +211,7 @@ pub(super) async fn post_message(
                 drop(connection);
                 #[cfg(test)]
                 ingress_tests::support::after_preparation(&body.room);
-                let admission = state
-                    .message_admission
+                let admission = message_admission
                     .as_deref()
                     .unwrap_or(prepared.as_ref());
                 let posted = store
@@ -411,8 +398,6 @@ inventory::submit! {
             "cross-server/remote-events",
             "federation-driver/rooms",
             "event-driver/message-send",
-            "payload-store/uploads",
-            "workspace-policy/message-admission",
         ],
     }
 }

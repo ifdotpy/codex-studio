@@ -202,6 +202,7 @@ fn post_managed_message(
             "Wait for the model change before sending another message",
         ));
     }
+    crate::message_admission::attachments(input.assets)?;
     let signature = crate::event_write::python_json(&json!({
         "agent": input.room,
         "text": text,

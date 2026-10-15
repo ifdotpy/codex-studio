@@ -46,6 +46,15 @@ pub enum PayloadStoreError {
     Entropy,
 }
 
+/// Resolve a message asset ID from stored JSON without admitting non-string
+/// values. The stored request value remains available for exact replay.
+pub fn asset_reference_id(reference: &Value) -> Result<&str, PayloadStoreError> {
+    reference
+        .as_str()
+        .filter(|id| !id.is_empty())
+        .ok_or(PayloadStoreError::InvalidData)
+}
+
 /// Store the decoded bytes first, then insert their record in the same writer
 /// transaction. A crash between those steps leaves an unindexed directory;
 /// the next serialized upload removes unindexed directories before writing.
@@ -296,7 +305,25 @@ mod tests {
 
     use serde_json::json;
 
-    use super::{MAX_UPLOAD_BYTES, atomic_write, valid_asset_record, validate_encoded_length};
+    use super::{
+        MAX_UPLOAD_BYTES, asset_reference_id, atomic_write, valid_asset_record,
+        validate_encoded_length,
+    };
+
+    #[test]
+    fn attachment_references_accept_nonempty_ids_only() {
+        let id = "8f319af0-59e9-4c6a-8ec8-e99c9e354092";
+        assert_eq!(asset_reference_id(&json!(id)).expect("asset id"), id);
+        for invalid in [
+            json!(null),
+            json!(""),
+            json!({"name":"pending"}),
+            json!({"id":id,"name":"asset.txt"}),
+            json!([id]),
+        ] {
+            assert!(asset_reference_id(&invalid).is_err(), "{invalid}");
+        }
+    }
 
     #[test]
     fn atomic_write_handles_payload_name_and_syncs_new_directory_chain() {
