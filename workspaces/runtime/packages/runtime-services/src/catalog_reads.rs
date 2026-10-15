@@ -102,6 +102,68 @@ pub async fn provider_exchange(
         .collect())
 }
 
+/// Read discovery methods through the selected account's already retained
+/// provider session. The account worker owns the durable intent and receipt;
+/// this adapter only accepts a written reply bound to the captured connection.
+pub fn account_session_exchange(
+    session: &dyn crate::account_session_runtime::AccountSessionPort,
+    account: &str,
+    requests: Vec<ProviderRequest>,
+    timeout: Duration,
+) -> Result<Vec<Result<Value, CatalogReadError>>, CatalogReadError> {
+    use crate::account_session_runtime::{
+        ProviderRequest as SessionRequest, ProviderResponse, RequestCertainty,
+    };
+
+    const OPERATION_PREFIX: &str = "catalog-discovery";
+    static REQUEST_SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    let scope = session
+        .current_scope(account)
+        .ok_or(CatalogReadError::ProviderExchangeFailed)?;
+    let deadline = std::time::Instant::now() + timeout;
+    let mut responses = Vec::with_capacity(requests.len());
+    for request in requests {
+        let sequence = REQUEST_SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let operation = format!(
+            "{OPERATION_PREFIX}:{}:{sequence}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_err(|_| CatalogReadError::ProviderExchangeFailed)?
+                .as_nanos()
+        );
+        let method =
+            Method::from_wire(&request.method).ok_or(CatalogReadError::ProviderExchangeFailed)?;
+        let receipt = session
+            .provider_request(SessionRequest {
+                account: account.to_owned(),
+                operation: operation.clone(),
+                actor: None,
+                expected_scope: Some(scope.clone()),
+                deleted_actor_session: None,
+                method,
+                params: request.params,
+                deadline,
+            })
+            .map_err(|_| CatalogReadError::ProviderExchangeFailed)?;
+        if receipt.scope != scope
+            || receipt.operation != operation
+            || receipt.certainty != RequestCertainty::Written
+            || receipt.ticket.as_ref().is_none_or(|ticket| {
+                ticket.method != method || ticket.generation != scope.generation
+            })
+        {
+            return Err(CatalogReadError::ProviderExchangeFailed);
+        }
+        match receipt.result {
+            Some(ProviderResponse::Reply(response)) => responses.push(Ok(response)),
+            Some(ProviderResponse::Rejected(_)) | None => {
+                responses.push(Err(CatalogReadError::ProviderExchangeFailed));
+            }
+        }
+    }
+    Ok(responses)
+}
+
 /// Cancel only after the provider confirms the exact terminal item and process ID.
 pub async fn cancel_terminal(
     executable: Option<&Path>,
@@ -639,9 +701,9 @@ pub fn append_capability_error(result: &mut Value, label: &str, error: &str) {
 #[cfg(test)]
 mod tests {
     use super::{
-        CapabilitiesCache, CapabilityAgentSnapshot, ProviderRequest, apply_capability_result,
-        cancel_terminal_in_session, capabilities_base, host_finder_view, read_requests,
-        skills_for_cwd,
+        CapabilitiesCache, CapabilityAgentSnapshot, ProviderRequest, account_session_exchange,
+        apply_capability_result, cancel_terminal_in_session, capabilities_base, host_finder_view,
+        read_requests, skills_for_cwd,
     };
     use serde_json::{Value, json};
     use std::{
@@ -664,6 +726,66 @@ mod tests {
     struct Script {
         responses: Vec<serde_json::Value>,
         requests: Arc<Mutex<Vec<serde_json::Value>>>,
+    }
+
+    struct RetainedDiscovery {
+        calls: Arc<Mutex<Vec<serde_json::Value>>>,
+    }
+
+    impl crate::account_session_runtime::AccountSessionPort for RetainedDiscovery {
+        fn current_scope(
+            &self,
+            account: &str,
+        ) -> Option<crate::account_session_runtime::ConnectionScope> {
+            Some(crate::account_session_runtime::ConnectionScope {
+                account: account.to_owned(),
+                connection: "fixture".to_owned(),
+                generation: 7,
+            })
+        }
+
+        fn provider_request(
+            &self,
+            request: crate::account_session_runtime::ProviderRequest,
+        ) -> Result<
+            crate::account_session_runtime::SessionReceipt,
+            crate::account_session_runtime::AccountSessionError,
+        > {
+            use crate::account_session_runtime::{
+                ProviderResponse, RequestCertainty, SessionReceipt,
+            };
+            let scope = request
+                .expected_scope
+                .clone()
+                .expect("captured fixture scope");
+            assert!(request.deadline > std::time::Instant::now());
+            let method = request.method;
+            let operation = request.operation.clone();
+            let response = if method == studio_runtime_providers::Method::SkillsList {
+                json!({"data":[{"cwd":"/repo","skills":[]}]})
+            } else {
+                json!({"servers":[],"nextCursor":null})
+            };
+            self.calls.lock().expect("discovery calls").push(json!({
+                "account":request.account,
+                "operation":operation,
+                "method":method.as_str(),
+                "params":request.params,
+            }));
+            Ok(SessionReceipt {
+                scope,
+                operation,
+                ticket: Some(studio_runtime_providers::RequestTicket {
+                    generation: 7,
+                    id: studio_runtime_providers::RequestId::String("fixture".to_owned()),
+                    method,
+                }),
+                certainty: RequestCertainty::Written,
+                result: Some(ProviderResponse::Reply(response)),
+                not_sent_reason: None,
+                replayed: false,
+            })
+        }
     }
 
     impl ProviderTaskFactory for Script {
@@ -929,6 +1051,43 @@ mod tests {
         assert_eq!(calls[2]["params"]["forceReload"], true);
         assert_eq!(calls[3]["method"], "mcpServerStatus/list");
         assert_eq!(calls[3]["params"]["threadId"], "thread");
+    }
+
+    #[test]
+    fn account_session_discovery_uses_bound_written_read_receipts() {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let session = RetainedDiscovery {
+            calls: Arc::clone(&calls),
+        };
+        let responses = account_session_exchange(
+            &session,
+            "claude-account",
+            vec![
+                ProviderRequest {
+                    method: "skills/list".to_owned(),
+                    params: json!({"cwds":["/repo"],"forceReload":false}),
+                },
+                ProviderRequest {
+                    method: "mcpServerStatus/list".to_owned(),
+                    params: json!({"threadId":"thread-1","limit":100}),
+                },
+            ],
+            Duration::from_secs(5),
+        )
+        .expect("written discovery replies");
+        assert_eq!(
+            responses,
+            vec![
+                Ok(json!({"data":[{"cwd":"/repo","skills":[]}]})),
+                Ok(json!({"servers":[],"nextCursor":null})),
+            ]
+        );
+        let calls = calls.lock().expect("discovery calls");
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0]["account"], "claude-account");
+        assert_eq!(calls[0]["method"], "skills/list");
+        assert_eq!(calls[1]["method"], "mcpServerStatus/list");
+        assert_ne!(calls[0]["operation"], calls[1]["operation"]);
     }
 
     #[tokio::test(start_paused = true)]

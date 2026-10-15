@@ -101,9 +101,14 @@ class RustCatalogHttpContract(unittest.TestCase):
                 **agent, "id": "catalog-http-vm-agent", "name": "Catalog VM probe",
                 "executionMode": "vm",
             }
+            unavailable_agent = {
+                **agent, "id": "catalog-http-unavailable-agent",
+                "name": "Catalog unavailable account probe", "accountKey": "missing-session",
+            }
             with runtime.lock, runtime.db() as connection:
                 runtime.put(connection, "agents", agent, sync_rooms=False)
                 runtime.put(connection, "agents", vm_agent, sync_rooms=False)
+                runtime.put(connection, "agents", unavailable_agent, sync_rooms=False)
                 runtime.put(connection, "tasks", {
                     "id": "catalog-http-active-command", "agent": agent["id"],
                     "kind": "command", "status": "running", "processId": "44",
@@ -339,6 +344,20 @@ class RustCatalogHttpContract(unittest.TestCase):
             }],
         )
 
+    def test_missing_provider_session_discovery_is_returned_as_errors(self) -> None:
+        skills = self.backend.request(
+            "GET", "/api/skills?agent=catalog-http-unavailable-agent",
+        )
+        assert_status(skills, 200)
+        self.assertEqual(skills.json()["skills"], [])
+        self.assertTrue(skills.json()["errors"])
+
+        capabilities = self.backend.request(
+            "GET", "/api/capabilities?agent=catalog-http-unavailable-agent",
+        )
+        assert_status(capabilities, 200)
+        self.assertTrue(capabilities.json()["errors"])
+
     def test_finder_view_uses_host_record_and_refuses_vm_dependency(self) -> None:
         host = self.backend.request(
             "GET", "/api/agents/finder-view?agent=catalog-http-agent",
@@ -453,25 +472,14 @@ class RustCatalogHttpContract(unittest.TestCase):
             "location": ["query", "extra"],
         })
 
-    def test_uncached_limits_declares_the_live_provider_dependency(self) -> None:
-        if not os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"):
-            self.skipTest(
-                "Python's uncached limits route starts a provider read; the Rust partial contract is 501"
-            )
+    def test_uncached_limits_reports_runtime_provider_failure_as_a_snapshot(self) -> None:
         result = self.backend.request("GET", "/api/limits?account_key=disconnected")
-        assert_status(result, 501)
-        self.assertEqual(
-            result.json(),
-            {"error": "Not implemented: requires provider-session/account-rate-limits"},
-        )
-        methods = {frame.get("method") for frame in self.backend.received_provider_frames()}
-        self.assertNotIn("account/rateLimits/read", methods)
+        assert_status(result, 200)
+        value = result.json()
+        self.assertEqual(value["accountKey"], "disconnected")
+        self.assertTrue(value.get("data") is not None or value.get("error"))
 
-    def test_models_unknown_account_validation_remains_a_python_only_contract(self) -> None:
-        if os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"):
-            self.skipTest(
-                "Known gap: Rust GET /api/models remains 501 until provider-session/model-list lands"
-            )
+    def test_models_unknown_account_validation_matches_both_backends(self) -> None:
         result = self.backend.request("GET", "/api/models?account_key=not-registered")
         assert_status(result, 400)
         self.assertEqual(result.json(), {"error": "Unknown Codex account"})
