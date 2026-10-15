@@ -698,12 +698,35 @@ impl SchedulerRepository {
         let query = format!(
             "SELECT id,record FROM runtime_agents WHERE COALESCE(json_extract(record,'$.remoteWorker'),0)=0 AND COALESCE(json_extract(record,'$.remoteAnchor'),0)=0 AND ((json_extract(record,'$.startAttempt.submitted')=1 AND COALESCE(json_extract(record,'$.startAttempt.executionOutcome'),'unknown')='unknown') OR (json_extract(record,'$.startAttempt') IS NULL AND (json_extract(record,'$.inFlight')=1 OR json_extract(record,'$.status') IN ('running','starting','approval')))) AND NOT ({COMPLETED_START_SQL})"
         );
-        let records = select_agents(transaction, &query, [])?;
-        for mut agent in records.iter().cloned() {
+        let mut statement = transaction.prepare_cached(&query)?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        drop(statement);
+
+        let mut recovered = 0;
+        for (id, raw) in rows {
+            let mut agent = match decode_agent(&id, &raw) {
+                Ok(agent) => agent,
+                Err(StoreError::InvalidSyncObject { scope, .. }) if scope == "runtime_agents" => {
+                    eprintln!("scheduler startup skipped malformed submitted row id={id}");
+                    continue;
+                }
+                Err(StoreError::InvalidSyncObjectField { scope, .. })
+                    if scope == "runtime_agents" =>
+                {
+                    eprintln!("scheduler startup skipped invalid-field submitted row id={id}");
+                    continue;
+                }
+                Err(error) => return Err(error),
+            };
             clear_hold(&mut agent);
             disconnect_agent(transaction, &mut agent, timestamp(), true, true)?;
+            recovered += 1;
         }
-        Ok(records.len())
+        Ok(recovered)
     }
 
     /// Bind a provider turn to the exact submitted scheduler attempt.

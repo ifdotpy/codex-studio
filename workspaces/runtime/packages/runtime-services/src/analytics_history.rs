@@ -306,15 +306,19 @@ fn read_history_checkpoint(
         let diagnostic = format!(
             "analytics_history/{key} at {pointer}: {reason}; value type {kind}, length {length}"
         );
-        let mut retained = value.clone();
-        remove_json_pointer(&mut retained, &pointer);
-        retained["status"] = json!("invalidRecord");
-        retained["error"] = json!(diagnostic);
-        retained["invalidRecordDiagnostic"] = json!(diagnostic);
-        let replacement = if retained.get("id").and_then(Value::as_str) == Some(key)
-            && CaptureTable::History.validate(&retained).is_ok()
+        let replacement = if let Some(mut retained) = value.as_object().cloned().map(Value::Object)
         {
-            retained
+            remove_json_pointer(&mut retained, &pointer);
+            retained["status"] = json!("invalidRecord");
+            retained["error"] = json!(diagnostic);
+            retained["invalidRecordDiagnostic"] = json!(diagnostic);
+            if retained.get("id").and_then(Value::as_str) == Some(key)
+                && CaptureTable::History.validate(&retained).is_ok()
+            {
+                retained
+            } else {
+                initial_history_checkpoint(key, agent, &diagnostic)
+            }
         } else {
             initial_history_checkpoint(key, agent, &diagnostic)
         };
@@ -1018,5 +1022,35 @@ mod invalid_record_tests {
             .expect("continue importing valid row")
             .expect("valid checkpoint");
         assert_eq!(still_valid, valid);
+    }
+
+    #[test]
+    fn non_object_history_checkpoints_reset_to_initial_values_without_panicking() {
+        let root = tempfile::tempdir().expect("temporary runtime");
+        let store = RuntimeStore::open(Some(root.path())).expect("runtime store");
+        let db = rusqlite::Connection::open(root.path().join("analytics.sqlite3"))
+            .expect("analytics database");
+        let agent = json!({"id":"agent","accountKey":"default","threadId":"thread"});
+
+        for (index, value) in [json!([]), json!(23), json!("x")].into_iter().enumerate() {
+            let key = format!("agent:default:thread-{index}");
+            db.execute(
+                "INSERT INTO analytics_history(id,agent,record) VALUES (?1,?2,?3)",
+                rusqlite::params![key, "agent", value.to_string()],
+            )
+            .expect("seed non-object checkpoint");
+            let replacement = read_history_checkpoint(&store, &key, &agent)
+                .expect("quarantine non-object checkpoint")
+                .expect("initial checkpoint");
+            assert_eq!(replacement["id"], key);
+            assert_eq!(replacement["status"], "invalidRecord");
+            assert_eq!(replacement["offset"], 0);
+            assert_eq!(replacement["importedRecords"], 0);
+            assert!(
+                replacement["invalidRecordDiagnostic"]
+                    .as_str()
+                    .is_some_and(|diagnostic| diagnostic.contains("analytics_history/"))
+            );
+        }
     }
 }

@@ -315,6 +315,57 @@ fn restart_keeps_a_scoped_receipt_without_replaying_events() {
     let counts:(i64,i64)=reader.query_row("SELECT SUM(status='delivered'),SUM(status='pending') FROM runtime_events WHERE agent=?1",[&agent],|r|Ok((r.get(0)?,r.get(1)?))).expect("events");
     assert_eq!(counts, (3, 0));
 }
+
+#[test]
+fn startup_recovers_valid_submitted_agent_while_skipping_malformed_neighbor() {
+    let (_state, store, good_agent, epoch, _) = fixture();
+    let intent = claim_intent(&store, &good_agent, epoch, "good-submitted", 10.0)
+        .expect("claim submitted attempt")
+        .expect("pending input");
+    assert!(
+        mark_submitted_for_provider(&store, &intent, "good-request", 1)
+            .expect("persist submitted attempt")
+    );
+
+    let malformed = json!({
+        "id": "malformed-submitted",
+        "rootId": "malformed-submitted",
+        "epoch": "invalid",
+        "status": "running",
+        "autoWake": true,
+        "inFlight": true,
+        "startAttempt": {"submitted": true, "executionOutcome": "unknown"}
+    });
+    store
+        .transaction(|tx| {
+            tx.execute(
+                "INSERT INTO runtime_agents(id,record) VALUES(?1,?2)",
+                ("malformed-submitted", malformed.to_string()),
+            )?;
+            Ok(())
+        })
+        .expect("seed malformed submitted neighbor");
+
+    assert_eq!(
+        recover_on_startup(&store).expect("recover submitted rows"),
+        1
+    );
+    let reader = store.read().expect("read recovered state");
+    let good = AgentRepository::get(&reader, &AgentId::from(good_agent.as_str()))
+        .expect("read healthy agent")
+        .expect("healthy agent remains");
+    assert_eq!(good.status, AgentStatus::Queued);
+    assert_eq!(good.extra["restartRecovery"]["stage"], "held");
+    let malformed_after: String = reader
+        .query_row(
+            "SELECT record FROM runtime_agents WHERE id='malformed-submitted'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("malformed row remains available for repair");
+    assert_eq!(malformed_after, malformed.to_string());
+}
+
 #[test]
 fn proven_not_submitted_preserves_failed_projection_and_pending_input() {
     let (_state, store, agent, epoch, _) = fixture();
