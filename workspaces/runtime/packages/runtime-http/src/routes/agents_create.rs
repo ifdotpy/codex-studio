@@ -1142,7 +1142,9 @@ async fn conversation(
     };
     let needs_conversation_catalog = conversation_needs_catalog(&value);
     let requested_model = body.model.as_ref().and_then(Option::as_deref);
-    let catalog_account = if needs_conversation_catalog {
+    let needs_settings_conversation_account =
+        conversation_settings_need_conversation_account(&value);
+    let catalog_account = if needs_conversation_catalog || needs_settings_conversation_account {
         Some(
             conversation_catalog_account(
                 &state,
@@ -1169,27 +1171,24 @@ async fn conversation(
         .filter(|entry| !entry.is_null())
     {
         let worker_model = defaults.get("model").and_then(Value::as_str);
-        let worker_account = defaults
-            .get("account_key")
-            .and_then(Value::as_str)
-            .or(catalog_account.as_deref());
+        let worker_account = worker_settings_catalog_account(defaults, catalog_account.as_deref());
         if worker_model.is_some() || worker_account.is_some() {
-            wait_for_agent_catalog(&state, parent_id, worker_account, worker_model, true).await?;
+            wait_for_agent_catalog(
+                &state,
+                parent_id,
+                worker_account.as_deref(),
+                worker_model,
+                true,
+            )
+            .await?;
         }
     }
-    if let Some(model) = value
-        .get("review_defaults")
-        .and_then(|defaults| defaults.get("model"))
-        .and_then(Value::as_str)
-    {
-        wait_for_agent_catalog(
-            &state,
-            parent_id,
-            catalog_account.as_deref(),
-            Some(model),
-            true,
-        )
-        .await?;
+    if let Some(defaults) = value.get("review_defaults") {
+        let review_account = review_settings_catalog_account(defaults, catalog_account.as_deref());
+        let model = defaults.get("model").and_then(Value::as_str);
+        if let (Some(account), Some(model)) = (review_account.as_deref(), model) {
+            wait_for_agent_catalog(&state, parent_id, Some(account), Some(model), true).await?;
+        }
     }
     dispatch::<generated::AgentResponse>(state, move |context| {
         agents_create::conversation(context, request)
@@ -1203,9 +1202,50 @@ fn conversation_needs_catalog(value: &Value) -> bool {
         .any(|field| value.get(*field).is_some())
 }
 
+fn conversation_settings_need_conversation_account(value: &Value) -> bool {
+    let has_review_model = value
+        .get("review_defaults")
+        .and_then(|defaults| defaults.get("model"))
+        .and_then(Value::as_str)
+        .is_some();
+    let has_unpinned_worker_defaults = value
+        .get("worker_defaults")
+        .filter(|defaults| !defaults.is_null())
+        .is_some_and(|defaults| {
+            defaults
+                .get("account_key")
+                .is_none_or(|account| account.is_null())
+        });
+    has_review_model || has_unpinned_worker_defaults
+}
+
+fn worker_settings_catalog_account(
+    defaults: &Value,
+    conversation_account: Option<&str>,
+) -> Option<String> {
+    defaults
+        .get("account_key")
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+        .or_else(|| conversation_account.map(str::to_owned))
+}
+
+fn review_settings_catalog_account(
+    defaults: &Value,
+    conversation_account: Option<&str>,
+) -> Option<String> {
+    defaults
+        .get("model")
+        .and_then(Value::as_str)
+        .and_then(|_| conversation_account.map(str::to_owned))
+}
+
 #[cfg(test)]
 mod conversation_catalog_admission_tests {
-    use super::conversation_needs_catalog;
+    use super::{
+        conversation_needs_catalog, conversation_settings_need_conversation_account,
+        review_settings_catalog_account, worker_settings_catalog_account,
+    };
     use serde_json::json;
 
     #[test]
@@ -1220,6 +1260,55 @@ mod conversation_catalog_admission_tests {
             "review_defaults": {"model": "gpt-6-astra"}
         })));
         assert!(conversation_needs_catalog(&json!({"model": "gpt-6-astra"})));
+    }
+
+    #[test]
+    fn review_defaults_admission_uses_the_conversation_account() {
+        let request = json!({
+            "review_defaults": {"model": "gpt-6-astra", "effort": "medium"}
+        });
+        assert!(conversation_settings_need_conversation_account(&request));
+        assert!(!conversation_needs_catalog(&request));
+        assert_eq!(
+            review_settings_catalog_account(
+                &request["review_defaults"],
+                Some("conversation-account")
+            )
+            .as_deref(),
+            Some("conversation-account")
+        );
+    }
+
+    #[test]
+    fn unpinned_worker_defaults_admission_uses_the_conversation_account() {
+        for account_key in [None, Some(json!(null))] {
+            let mut defaults = json!({"model": null, "effort": null, "fast_mode": false});
+            if let Some(account_key) = account_key {
+                defaults["account_key"] = account_key;
+            }
+            assert!(conversation_settings_need_conversation_account(&json!({
+                "worker_defaults": defaults
+            })));
+            assert_eq!(
+                worker_settings_catalog_account(&defaults, Some("conversation-account")).as_deref(),
+                Some("conversation-account")
+            );
+        }
+        let request = json!({
+            "worker_defaults": {
+                "account_key": "worker-account",
+                "model": "gpt-6-luna"
+            }
+        });
+        assert!(!conversation_settings_need_conversation_account(&request));
+        assert_eq!(
+            worker_settings_catalog_account(
+                &request["worker_defaults"],
+                Some("conversation-account")
+            )
+            .as_deref(),
+            Some("worker-account")
+        );
     }
 }
 
