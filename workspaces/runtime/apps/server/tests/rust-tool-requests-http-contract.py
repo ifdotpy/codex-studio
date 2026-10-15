@@ -127,7 +127,12 @@ def write_receipts(backend, records=(), aliases=(), *, settlement_oracle=False, 
             if service:
                 for record in records:
                     key=identity("project-location",record["agent"],record["id"])
-                    service.queue(database,"remote-fixture","add_location",{"project":"deleted-project","path":"/fixture","signature":"fixture"},key)
+                    request={"action":"add_location","project":"deleted-project","server":"remote-fixture","path":"/fixture"}
+                    signature,_=runtime.operation_receipt(database,key,request)
+                    service.queue(database,"remote-fixture","add_location",{
+                        "project":"deleted-project","name":"Deleted fixture project","path":"/fixture",
+                        "request":request,"signature":signature,
+                    },key)
             if settlement_oracle:
                 database.execute("SAVEPOINT reference_settlement")
                 for record in records:
@@ -463,15 +468,15 @@ class ToolRequestsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         write_receipts(self.backend,[record],location_outbox=True)
         try:
             for action in ("get","list","cancel"):
-                before=database_snapshot(self.backend.state)
                 query={"agent":self.lead_id}
                 if action!="list": query["request_id"]=record["id"]
                 response=self.backend.request("POST" if action=="cancel" else "GET", "/api/tool-requests/cancel" if action=="cancel" else "/api/tool-requests?"+urlencode(query),body=query if action=="cancel" else None,headers=self.headers())
-                self.assertEqual(response.status,501 if self.rust_backend else 200,response.body)
-                if self.rust_backend:
-                    self.assertIn("multi-server/project-location-receipt",response.json()["error"])
-                    self.assertEqual(database_snapshot(self.backend.state),before)
-                elif action!="list": self.assertEqual(response.json()["outcome"],"applied")
+                self.assertEqual(response.status,200,response.body)
+                if action == "list":
+                    recovered=next(row for row in response.json()["requests"] if row["id"]==record["id"])
+                    self.assertEqual(recovered["outcome"],"applied")
+                else:
+                    self.assertEqual(response.json()["outcome"],"applied")
         finally:
             with sqlite3.connect(self.backend.state / "canvas.sqlite3") as db:
                 db.execute("DELETE FROM runtime_tool_requests WHERE id=?",(record["id"],))
@@ -585,13 +590,13 @@ class ToolRequestsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
                 self.assertEqual(actual.get(key),expected.get(key),key)
 
     @unittest.skipUnless(os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"),"named dependency and stored-state refusal")
-    def test_move_dependencies_and_invalid_actors_do_not_write(self):
+    def test_move_receipts_and_invalid_actors_do_not_write(self):
         write_receipts(self.backend,[receipt("move-receipt",self.lead_id,tool="orchestration_move")])
         path=self.backend.state / "canvas.sqlite3"
         with sqlite3.connect(path) as db:
             original=db.execute("SELECT record FROM runtime_agents WHERE id=?",(self.lead_id,)).fetchone()[0]
-        cases=[(original,"move-receipt",501,"multi-server/move-receipt"),
-               (json.dumps({**json.loads(original),"movedFrom":{"serverId":"remote"}}),"missing",501,"multi-server/move-receipt"),
+        cases=[(original,"move-receipt",200,None),
+               (json.dumps({**json.loads(original),"movedFrom":{"serverId":"remote"}}),"missing",200,None),
                ("[]","missing",500,"runtime_agents/"+self.lead_id),
                (json.dumps({**json.loads(original),"id":"mismatched"}),"missing",500,"runtime_agents/"+self.lead_id)]
         try:
@@ -600,7 +605,8 @@ class ToolRequestsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
                 before=database_snapshot(self.backend.state)
                 response=self.backend.request("GET","/api/tool-requests?"+urlencode({"agent":self.lead_id,"request_id":identity}),headers=self.headers())
                 self.assertEqual(response.status,status,response.body)
-                self.assertIn(error,response.json()["error"])
+                if error:
+                    self.assertIn(error,response.json()["error"])
                 self.assertEqual(database_snapshot(self.backend.state),before)
         finally:
             with sqlite3.connect(path) as db:

@@ -763,7 +763,7 @@
           "type": "string"
         },
         "outcome": {
-          "enum": ["unknown", "applied", "not_applied"],
+          "enum": ["pending", "unknown", "applied", "not_applied"],
           "title": "Outcome",
           "type": "string"
         },
@@ -792,7 +792,7 @@
           "type": "string"
         }
       },
-      "required": ["id", "agent", "tool", "epoch", "stage", "outcome"],
+      "required": ["id", "agent", "tool", "stage", "outcome"],
       "title": "ToolRequest",
       "type": "object"
     }
