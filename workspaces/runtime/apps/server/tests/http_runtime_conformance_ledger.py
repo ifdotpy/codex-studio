@@ -21,6 +21,7 @@ from typing import Any, Iterator
 
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from server_test_contracts import P20_OPERATION_MANIFEST_ENV
 from runtime_test_environment import runtime_environment
 
 ROOT = Path(__file__).resolve().parents[5]
@@ -793,6 +794,13 @@ def appendix_http_assertions(
 
 
 def rust_operation_manifest() -> dict[tuple[str, str], dict[str, Any]]:
+    prebuilt_path = os.environ.get(P20_OPERATION_MANIFEST_ENV)
+    if prebuilt_path:
+        try:
+            rows = json.loads(Path(prebuilt_path).read_text(encoding="utf-8"))
+            return {(item["method"], item["path"]): item for item in rows}
+        except (OSError, KeyError, TypeError, json.JSONDecodeError) as error:
+            raise RuntimeError(f"invalid prebuilt Rust route manifest at {prebuilt_path}: {error}") from error
     process = subprocess.run(
         [
             "cargo",
