@@ -27,16 +27,18 @@ _spec.loader.exec_module(_fixture)
 
 class MessageIngressHTTP(TimedHTTPContractTest, unittest.TestCase):
     @classmethod
+    def assert_rust_recipient_held(cls, *, auto_wake):
+        with sqlite3.connect(cls.backend.state / "canvas.sqlite3") as db:
+            record = json.loads(db.execute("SELECT record FROM runtime_agents WHERE id=?", (cls.agent,)).fetchone()[0])
+        state = (record.get("status"), record.get("autoWake"), record.get("inFlight"))
+        expected = ("approval", auto_wake, False)
+        if state != expected:
+            raise AssertionError(f"Rust P03 recipient state must stay held: {state!r}")
+
+    @classmethod
     def setUpClass(cls):
         cls.backend = start_contract_backend(cls, hold_provider_method="thread/start")
-        # Rust startup clears synthetic inFlight claims, and accepted messages
-        # could then be dispatched during whole-store no-write snapshots. Keep
-        # its recipient in the durable approval state; queue_agent explicitly
-        # leaves Approval actors unqueued. Python still uses its provider gate.
-        rust_agent_state = (
-            {"status": "approval"} if os.environ.get("STUDIO_HTTP_BACKEND_COMMAND") else None
-        )
-        cls.agent = _fixture.seed_agent(cls.backend, rust_agent_state)
+        cls.agent = _fixture.seed_agent(cls.backend)
         cls.foreign = _fixture.seed_agent(cls.backend)
         class QuietRuntime(_fixture._fixture.Runtime):
             def schedule(self):
@@ -50,6 +52,14 @@ class MessageIngressHTTP(TimedHTTPContractTest, unittest.TestCase):
         finally:
             runtime.close()
         cls.backend.start()
+        if os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"):
+            # Apply the Rust-only hold after startup recovery and before any
+            # HTTP contract call. Approval keeps accepted messages unqueued.
+            _fixture.update_agent(
+                cls.backend, cls.agent,
+                {"status": "approval", "autoWake": True, "inFlight": False},
+            )
+            cls.assert_rust_recipient_held(auto_wake=True)
         if not os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"):
             response = cls.backend.request("POST", "/api/messages", body={
                 "id": "06060606-0606-0606-0606-060606060606", "room": cls.agent, "text": "Hold provider preparation",
@@ -158,6 +168,7 @@ class MessageIngressHTTP(TimedHTTPContractTest, unittest.TestCase):
     def test_corrupt_replay_and_operation_report_the_stored_row(self):
         body = {"id": "09090909-0909-0909-0909-090909090909", "room": self.agent, "text": "replay"}
         self.assertEqual(self.request("POST", "/api/messages", body).status, 200)
+        self.assert_rust_recipient_held(auto_wake=True)
         with sqlite3.connect(self.backend.state / "canvas.sqlite3") as db:
             from codex_sync_entities import register_functions
             register_functions(db)
