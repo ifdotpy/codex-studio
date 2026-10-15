@@ -66,6 +66,34 @@ class ParsingTests(unittest.TestCase):
         self.assertEqual(actions[1][1], "analytics/rateLimits")
         self.assertNotIn("requestUsage", actions[0][2])
 
+    def test_context_window_persists_only_schema_owned_numbers_or_null(self):
+        context = self.context()
+        rollout_actions({"type": "session_meta", "payload": {
+            "context_window": {"window_id": "fixture-window"}}}, context, "id", 1)
+        self.assertIsNone(context["window"])
+
+        rollout_actions({"type": "session_meta", "payload": {
+            "context_window": 128000}}, context, "id", 2)
+        self.assertEqual(context["window"], 128000)
+
+        rollout_actions({"type": "event_msg", "payload": {
+            "type": "task_started", "turn_id": "next",
+            "model_context_window": {"window_id": "fixture-window"}}}, context, "id", 3)
+        self.assertIsNone(context["window"])
+
+        rollout_actions({"type": "event_msg", "payload": {
+            "type": "task_started", "turn_id": "next", "model_context_window": -1}},
+            context, "id", 4)
+        self.assertIsNone(context["window"])
+
+        notice = rollout_actions({"type": "event_msg", "payload": {
+            "type": "token_count", "info": {
+                "total_token_usage": {"total_tokens": 1},
+                "last_token_usage": {"total_tokens": 1},
+                "model_context_window": {"window_id": "fixture-window"},
+            }}}, context, "id", 5)[0][2]
+        self.assertIsNone(notice["tokenUsage"]["modelContextWindow"])
+
     def test_native_command_duration_and_payload_are_distinct(self):
         record = {"type": "event_msg", "payload": {"type": "item_completed", "thread_id": THREAD,
             "turn_id": "t", "started_at_ms": 1000, "completed_at_ms": 2500, "item": {

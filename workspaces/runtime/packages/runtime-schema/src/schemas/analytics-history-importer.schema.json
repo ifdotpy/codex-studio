@@ -1,0 +1,68 @@
+{
+  "$defs": {
+    "_AnalyticsHistoryImporterCurrent": {
+      "additionalProperties": false,
+      "properties": {
+        "error": {
+          "title": "Error",
+          "type": "null"
+        },
+        "lastError": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Lasterror"
+        },
+        "status": {
+          "const": "current",
+          "title": "Status",
+          "type": "string"
+        },
+        "updated": {
+          "minimum": 0,
+          "title": "Updated",
+          "type": "number"
+        }
+      },
+      "required": ["status", "error", "lastError", "updated"],
+      "title": "_AnalyticsHistoryImporterCurrent",
+      "type": "object"
+    },
+    "_AnalyticsHistoryImporterError": {
+      "additionalProperties": false,
+      "properties": {
+        "error": {
+          "title": "Error",
+          "type": "string"
+        },
+        "status": {
+          "const": "error",
+          "title": "Status",
+          "type": "string"
+        },
+        "updated": {
+          "minimum": 0,
+          "title": "Updated",
+          "type": "number"
+        }
+      },
+      "required": ["status", "error", "updated"],
+      "title": "_AnalyticsHistoryImporterError",
+      "type": "object"
+    }
+  },
+  "anyOf": [
+    {
+      "$ref": "#/$defs/_AnalyticsHistoryImporterError"
+    },
+    {
+      "$ref": "#/$defs/_AnalyticsHistoryImporterCurrent"
+    }
+  ],
+  "title": "AnalyticsHistoryImporterDiagnostic"
+}

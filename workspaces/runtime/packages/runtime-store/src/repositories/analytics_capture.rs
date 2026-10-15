@@ -2,6 +2,7 @@
 use crate::{RuntimeStore, StoreError, StoreResult};
 use rusqlite::{
     Connection, OpenFlags, OptionalExtension, Transaction, TransactionBehavior, params,
+    types::ValueRef,
 };
 use serde_json::Value;
 
@@ -296,56 +297,159 @@ pub fn check_state_readonly(root: &std::path::Path) -> StoreResult<Vec<crate::St
     let mut result = Vec::new();
     for table in [
         CaptureTable::Agents,
-        CaptureTable::History,
         CaptureTable::Items,
         CaptureTable::Turns,
         CaptureTable::Usage,
     ] {
-        let mut report = crate::StateCheckTable {
-            table: table.name(),
-            row_count: 0,
-            rejected_count: 0,
-            failures: Vec::new(),
-        };
-        let exists: bool = db.query_row(
-            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?)",
-            [table.name()],
-            |r| r.get(0),
-        )?;
-        if exists {
-            let mut statement =
-                db.prepare_cached(&format!("SELECT id,record FROM {}", table.name()))?;
-            let mut rows = statement.query([])?;
-            let mut failures = std::collections::BTreeMap::<(String, String), u64>::new();
-            while let Some(row) = rows.next()? {
-                report.row_count += 1;
-                let (id, raw): (String, String) = (row.get(0)?, row.get(1)?);
-                let error = match serde_json::from_str::<Value>(&raw) {
-                    Ok(v) => {
-                        let schema = studio_runtime_schema::first_error(table.schema(), &v)
-                            .map_err(StoreError::SchemaValidation)?;
-                        schema.or_else(|| {
-                            (v["id"].as_str() != Some(id.as_str()))
-                                .then(|| ("/id".into(), "rowKey".into()))
-                        })
-                    }
-                    Err(_) => Some((String::new(), "json".into())),
-                };
-                if let Some(error) = error {
-                    report.rejected_count += 1;
-                    *failures.entry(error).or_default() += 1;
-                }
-            }
-            report.failures = failures
-                .into_iter()
-                .map(|((pointer, keyword), count)| crate::StateCheckFailure {
-                    pointer,
-                    keyword,
-                    count,
-                })
-                .collect();
-        }
-        result.push(report);
+        result.push(check_analytics_table(&db, table)?);
     }
+    let (history, importer) = check_history_rows(&db)?;
+    result.insert(1, history);
+    result.insert(2, importer);
     Ok(result)
+}
+
+fn empty_report(table: &'static str) -> crate::StateCheckTable {
+    crate::StateCheckTable {
+        table,
+        row_count: 0,
+        rejected_count: 0,
+        failures: Vec::new(),
+    }
+}
+
+fn check_analytics_table(
+    db: &Connection,
+    table: CaptureTable,
+) -> StoreResult<crate::StateCheckTable> {
+    let mut report = empty_report(table.name());
+    let exists: bool = db.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?)",
+        [table.name()],
+        |r| r.get(0),
+    )?;
+    if !exists {
+        return Ok(report);
+    }
+    let mut statement = db.prepare_cached(&format!("SELECT id,record FROM {}", table.name()))?;
+    let mut rows = statement.query([])?;
+    let mut failures = std::collections::BTreeMap::<(String, String), u64>::new();
+    while let Some(row) = rows.next()? {
+        report.row_count += 1;
+        let (id, raw): (String, String) = (row.get(0)?, row.get(1)?);
+        let error = match serde_json::from_str::<Value>(&raw) {
+            Ok(v) => {
+                let schema = studio_runtime_schema::first_error(table.schema(), &v)
+                    .map_err(StoreError::SchemaValidation)?;
+                schema.or_else(|| {
+                    (v["id"].as_str() != Some(id.as_str())).then(|| ("/id".into(), "rowKey".into()))
+                })
+            }
+            Err(_) => Some((String::new(), "json".into())),
+        };
+        if let Some(error) = error {
+            record_analytics_failure(&mut report, &mut failures, error);
+        }
+    }
+    finish_analytics_report(&mut report, failures);
+    Ok(report)
+}
+
+fn check_history_rows(
+    db: &Connection,
+) -> StoreResult<(crate::StateCheckTable, crate::StateCheckTable)> {
+    const IMPORTER_ROW_ID: &str = "importer";
+    let mut history = empty_report("analytics_history");
+    let mut importer = empty_report("analytics_history_importer");
+    let exists: bool = db.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='analytics_history')",
+        [],
+        |r| r.get(0),
+    )?;
+    if !exists {
+        return Ok((history, importer));
+    }
+    let mut statement = db.prepare_cached("SELECT id,agent,record FROM analytics_history")?;
+    let mut rows = statement.query([])?;
+    let mut history_failures = std::collections::BTreeMap::<(String, String), u64>::new();
+    let mut importer_failures = std::collections::BTreeMap::<(String, String), u64>::new();
+    while let Some(row) = rows.next()? {
+        let id = row.get_ref(0)?;
+        let is_importer =
+            matches!(id, ValueRef::Text(bytes) if bytes == IMPORTER_ROW_ID.as_bytes());
+        let (report, failures) = if is_importer {
+            (&mut importer, &mut importer_failures)
+        } else {
+            (&mut history, &mut history_failures)
+        };
+        report.row_count += 1;
+
+        let id = match id {
+            ValueRef::Text(bytes) => std::str::from_utf8(bytes).ok(),
+            _ => None,
+        };
+        let agent = match row.get_ref(1)? {
+            ValueRef::Text(bytes) => std::str::from_utf8(bytes).ok(),
+            _ => None,
+        };
+        let raw = match row.get_ref(2)? {
+            ValueRef::Text(bytes) => std::str::from_utf8(bytes).ok(),
+            _ => None,
+        };
+        let (Some(id), Some(agent), Some(raw)) = (id, agent, raw) else {
+            record_analytics_failure(report, failures, (String::new(), "storageType".into()));
+            continue;
+        };
+        if is_importer && !agent.is_empty() {
+            record_analytics_failure(report, failures, ("/agent".into(), "rowKey".into()));
+            continue;
+        }
+        let value = match serde_json::from_str::<Value>(raw) {
+            Ok(value) => value,
+            Err(_) => {
+                record_analytics_failure(report, failures, (String::new(), "json".into()));
+                continue;
+            }
+        };
+        let schema = if is_importer {
+            "AnalyticsHistoryImporterDiagnostic"
+        } else {
+            CaptureTable::History.schema()
+        };
+        let error = studio_runtime_schema::first_error(schema, &value)
+            .map_err(StoreError::SchemaValidation)?
+            .or_else(|| {
+                (!is_importer && value["id"].as_str() != Some(id))
+                    .then(|| ("/id".into(), "rowKey".into()))
+            });
+        if let Some(error) = error {
+            record_analytics_failure(report, failures, error);
+        }
+    }
+    finish_analytics_report(&mut history, history_failures);
+    finish_analytics_report(&mut importer, importer_failures);
+    Ok((history, importer))
+}
+
+fn record_analytics_failure(
+    report: &mut crate::StateCheckTable,
+    failures: &mut std::collections::BTreeMap<(String, String), u64>,
+    error: (String, String),
+) {
+    report.rejected_count += 1;
+    *failures.entry(error).or_default() += 1;
+}
+
+fn finish_analytics_report(
+    report: &mut crate::StateCheckTable,
+    failures: std::collections::BTreeMap<(String, String), u64>,
+) {
+    report.failures = failures
+        .into_iter()
+        .map(|((pointer, keyword), count)| crate::StateCheckFailure {
+            pointer,
+            keyword,
+            count,
+        })
+        .collect();
 }

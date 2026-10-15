@@ -7,6 +7,8 @@ Input records are not modified. Returned payloads may share nested input values.
 import datetime
 import math
 
+from analytics.context_window import canonical_context_window
+
 
 TOKEN_FIELDS = {
     "input_tokens": "inputTokens", "cached_input_tokens": "cachedInputTokens",
@@ -68,7 +70,9 @@ def rollout_actions(record, context, identity, fallback_at):
     time_source = "record" if timestamp(record.get("timestamp"), None) is not None else "fileModifiedEstimate"
     actions = []
     if kind == "session_meta":
-        context["window"] = p.get("context_window", context.get("window"))
+        context["window"] = canonical_context_window(
+            p.get("context_window", context.get("window"))
+        )
     elif kind == "turn_context":
         for src, dest in (("turn_id", "turnId"), ("model", "model"), ("effort", "effort")):
             if p.get(src) is not None:
@@ -112,7 +116,9 @@ def rollout_actions(record, context, identity, fallback_at):
             return [("coverage", "wrongThreadRecord", {}, at)]
         if event == "task_started":
             context["turnId"] = p.get("turn_id")
-            context["window"] = p.get("model_context_window", context.get("window"))
+            context["window"] = canonical_context_window(
+                p.get("model_context_window", context.get("window"))
+            )
             actions.append(("event", "turn/started", {"threadId": context["threadId"],
                 "turnId": p.get("turn_id"), "turn": {"id": p.get("turn_id")}}, at))
         elif event in ("task_complete", "turn_aborted"):
@@ -154,7 +160,9 @@ def rollout_actions(record, context, identity, fallback_at):
                     "responseId": response_id, "usageSource": "tokenCount", "_analyticsUsageKind": "notice",
                     "requestUsageAvailable": context.get("requestUsageAvailable", False),
                     "tokenUsage": {"total": total, "last": last,
-                                   "modelContextWindow": info.get("model_context_window", context.get("window"))},
+                                   "modelContextWindow": canonical_context_window(
+                                       info.get("model_context_window", context.get("window"))
+                                   )},
                 }, at))
             if p.get("rate_limits") is not None:
                 actions.append(("event", "analytics/rateLimits", {"rateLimits": p["rate_limits"]}, at))

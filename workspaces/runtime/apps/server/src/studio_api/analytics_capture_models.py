@@ -1,11 +1,22 @@
 """Narrow, open storage contracts for analytics capture and rollout checkpoints."""
-from typing import Annotated
+from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, StrictStr
+from analytics.context_window import is_context_window
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    RootModel,
+    StrictBool,
+    StrictInt,
+    StrictStr,
+    field_validator,
+)
 from studio_api.models import MAX_SAFE_INTEGER
 
 Nonnegative = Annotated[float, Field(ge=0)]
 Counter = Annotated[StrictInt, Field(ge=0, le=MAX_SAFE_INTEGER)]
+AnalyticsContextWindow = Nonnegative | None
 
 
 class AnalyticsObject(BaseModel):
@@ -90,10 +101,17 @@ class AnalyticsContext(AnalyticsObject):
     turnId: StrictStr | None = None
     model: StrictStr | None = None
     effort: StrictStr | None = None
-    window: Nonnegative | None = None
+    window: AnalyticsContextWindow = None
     allowedSourceThreadIds: list[StrictStr] = Field(default_factory=list, max_length=1024)
     pendingUsage: dict[str, object] | None = None
     noticeAssociation: dict[str, object] | None = None
+
+    @field_validator("window")
+    @classmethod
+    def window_matches_shared_contract(cls, value: float | None) -> float | None:
+        if not is_context_window(value):
+            raise ValueError("window must be a nonnegative number or null")
+        return value
 
 
 class AnalyticsHistory(AnalyticsObject):
@@ -108,6 +126,29 @@ class AnalyticsHistory(AnalyticsObject):
     identity: tuple[Counter, Counter] | None = None
     filesystemIdentity: tuple[Counter, Counter] | None = None
     anchor: Annotated[StrictStr, Field(pattern="^[0-9a-f]{64}$")] | None = None
+
+
+class _AnalyticsHistoryImporterError(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    status: Literal["error"]
+    error: StrictStr
+    updated: Nonnegative
+
+
+class _AnalyticsHistoryImporterCurrent(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    status: Literal["current"]
+    error: None
+    lastError: StrictStr | None
+    updated: Nonnegative
+
+
+class AnalyticsHistoryImporterDiagnostic(
+    RootModel[_AnalyticsHistoryImporterError | _AnalyticsHistoryImporterCurrent]
+):
+    pass
 
 
 class AnalyticsNativeItem(AnalyticsObject):
@@ -136,6 +177,7 @@ ANALYTICS_SCHEMA_MODELS = {
     "analytics-agent.schema.json": AnalyticsAgent,
     "analytics-context.schema.json": AnalyticsContext,
     "analytics-history.schema.json": AnalyticsHistory,
+    "analytics-history-importer.schema.json": AnalyticsHistoryImporterDiagnostic,
     "analytics-item.schema.json": AnalyticsItem,
     "analytics-notice.schema.json": AnalyticsNotice,
     "analytics-turn.schema.json": AnalyticsTurn,

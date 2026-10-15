@@ -73,10 +73,9 @@ impl RolloutContext {
         let mut actions = Vec::new();
         match record["type"].as_str().unwrap_or("") {
             "session_meta" => {
-                self.value["window"] = p
-                    .get("context_window")
-                    .unwrap_or(&self.value["window"])
-                    .clone();
+                if let Some(window) = p.get("context_window") {
+                    self.value["window"] = canonical_context_window(window)?;
+                }
             }
             "turn_context" => {
                 for (src, dst) in [
@@ -157,10 +156,9 @@ impl RolloutContext {
                 match p["type"].as_str().unwrap_or("") {
                     "task_started" => {
                         self.value["turnId"] = p["turn_id"].clone();
-                        self.value["window"] = p
-                            .get("model_context_window")
-                            .unwrap_or(&self.value["window"])
-                            .clone();
+                        if let Some(window) = p.get("model_context_window") {
+                            self.value["window"] = canonical_context_window(window)?;
+                        }
                         actions.push(event("turn/started",json!({"threadId":self.value["threadId"],"turnId":p["turn_id"],"turn":{"id":p["turn_id"]}}),at));
                     }
                     "task_complete" | "turn_aborted" => {
@@ -228,7 +226,11 @@ impl RolloutContext {
                                 self.value["pendingUsage"] = Value::Null;
                                 self.value["noticeAssociation"] = json!({"responseId":response,"turnId":self.value["turnId"],"total":total,"last":last});
                             }
-                            actions.push(event("thread/tokenUsage/updated",json!({"threadId":self.value["threadId"],"turnId":self.value["turnId"],"responseId":response,"usageSource":"tokenCount","_analyticsUsageKind":"notice","requestUsageAvailable":self.value.get("requestUsageAvailable").cloned().unwrap_or(json!(false)),"tokenUsage":{"total":total,"last":last,"modelContextWindow":info.get("model_context_window").unwrap_or(&self.value["window"])}}),at));
+                            let model_context_window = match info.get("model_context_window") {
+                                Some(window) => canonical_context_window(window)?,
+                                None => self.value["window"].clone(),
+                            };
+                            actions.push(event("thread/tokenUsage/updated",json!({"threadId":self.value["threadId"],"turnId":self.value["turnId"],"responseId":response,"usageSource":"tokenCount","_analyticsUsageKind":"notice","requestUsageAvailable":self.value.get("requestUsageAvailable").cloned().unwrap_or(json!(false)),"tokenUsage":{"total":total,"last":last,"modelContextWindow":model_context_window}}),at));
                         }
                         if !p["rate_limits"].is_null() {
                             actions.push(event(
@@ -273,6 +275,20 @@ impl RolloutContext {
             && !self.value["allowedSourceThreadIds"]
                 .as_array()
                 .is_some_and(|ids| ids.contains(&p["thread_id"]))
+    }
+}
+
+fn canonical_context_window(value: &Value) -> Result<Value, CaptureError> {
+    let context = json!({"threadId":"", "window":value});
+    match studio_runtime_schema::first_error("AnalyticsContext", &context)
+        .map_err(studio_runtime_store::StoreError::SchemaValidation)?
+    {
+        None => Ok(value.clone()),
+        Some((pointer, _)) if pointer == "/window" => Ok(Value::Null),
+        Some((pointer, _)) => Err(studio_runtime_store::StoreError::SchemaValidation(format!(
+            "analytics_history/context{pointer}"
+        ))
+        .into()),
     }
 }
 fn event(method: &str, params: Value, at: f64) -> RolloutAction {
@@ -379,4 +395,69 @@ fn normalize_item(v: &Value) -> Result<Value, CaptureError> {
         }
     }
     Ok(result)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::RolloutContext;
+    use serde_json::json;
+
+    #[test]
+    fn context_window_import_accepts_only_schema_owned_number_or_null() {
+        let mut context = RolloutContext::from_record(json!({"threadId":"thread"}))
+            .expect("fixture context is valid");
+        context
+            .actions(
+                &json!({
+                    "type":"session_meta",
+                    "payload":{"context_window":{"window_id":"fixture-window"}}
+                }),
+                "identity",
+                1.0,
+            )
+            .expect("malformed provider window is dropped");
+        assert!(context.record()["window"].is_null());
+
+        context
+            .actions(
+                &json!({"type":"session_meta","payload":{"context_window":128000}}),
+                "identity",
+                2.0,
+            )
+            .expect("numeric provider window is preserved");
+        assert_eq!(context.record()["window"], json!(128000));
+
+        context
+            .actions(
+                &json!({
+                    "type":"event_msg",
+                    "payload":{"type":"task_started","model_context_window":{"window_id":"fixture-window"}}
+                }),
+                "identity",
+                3.0,
+            )
+            .expect("malformed task window is dropped");
+        assert!(context.record()["window"].is_null());
+
+        let actions = context
+            .actions(
+                &json!({
+                    "type":"event_msg",
+                    "payload":{"type":"token_count","info":{
+                        "total_token_usage":{"total_tokens":1},
+                        "last_token_usage":{"total_tokens":1},
+                        "model_context_window":{"window_id":"fixture-window"}
+                    }}
+                }),
+                "identity",
+                4.0,
+            )
+            .expect("malformed token-count window is dropped");
+        match &actions[0] {
+            super::RolloutAction::Event { params, .. } => {
+                assert!(params["tokenUsage"]["modelContextWindow"].is_null());
+            }
+            _ => panic!("token count produces a usage event"),
+        }
+    }
 }

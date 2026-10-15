@@ -313,6 +313,10 @@ const PERSISTED_SCHEMAS: &[(&str, &[u8])] = &[
         include_bytes!("schemas/analytics-history.schema.json"),
     ),
     (
+        "https://codex-studio.invalid/analytics-history-importer.schema.json",
+        include_bytes!("schemas/analytics-history-importer.schema.json"),
+    ),
+    (
         "https://codex-studio.invalid/analytics-item.schema.json",
         include_bytes!("schemas/analytics-item.schema.json"),
     ),
@@ -707,6 +711,10 @@ fn compile_schemas() -> SchemaResult<CompiledSchemas> {
         (
             "AnalyticsHistory",
             "https://codex-studio.invalid/analytics-history.schema.json",
+        ),
+        (
+            "AnalyticsHistoryImporterDiagnostic",
+            "https://codex-studio.invalid/analytics-history-importer.schema.json",
         ),
         (
             "AnalyticsItem",
