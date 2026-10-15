@@ -48265,6 +48265,17 @@
             ],
             "default": null
           },
+          "walTelemetry": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/WalTelemetry"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
           "writeWait": {
             "anyOf": [
               {
@@ -57706,6 +57717,74 @@
         ],
         "title": "VoiceTransport",
         "type": "string"
+      },
+      "WalCheckpoint": {
+        "additionalProperties": false,
+        "properties": {
+          "busy": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "title": "Busy",
+            "type": "integer"
+          },
+          "checkpointedFrames": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "title": "Checkpointedframes",
+            "type": "integer"
+          },
+          "logFrames": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "title": "Logframes",
+            "type": "integer"
+          },
+          "walSizeBytes": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "title": "Walsizebytes",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "walSizeBytes",
+          "busy",
+          "logFrames",
+          "checkpointedFrames"
+        ],
+        "title": "WalCheckpoint",
+        "type": "object"
+      },
+      "WalTelemetry": {
+        "additionalProperties": false,
+        "properties": {
+          "analytics": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/WalCheckpoint"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "canvas": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/WalCheckpoint"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "canvas",
+          "analytics"
+        ],
+        "title": "WalTelemetry",
+        "type": "object"
       },
       "WhoisStatus": {
         "enum": [

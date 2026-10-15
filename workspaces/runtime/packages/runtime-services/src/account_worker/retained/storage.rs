@@ -151,55 +151,56 @@ pub(super) fn authorize(tx: &rusqlite::Transaction<'_>, call: &Call) -> Result<b
     };
     let monitor_matches = if monitor_method {
         if let Some(monitor_id) = monitor_id {
-            let record = tx
+            let monitor = tx
                 .query_row(
-                    "SELECT record FROM runtime_monitors WHERE id=?1",
+                    "SELECT CASE WHEN json_valid(record) THEN json_extract(record,'$.agent') END, \
+                            CASE WHEN json_valid(record) THEN json_extract(record,'$.epoch') END, \
+                            CASE WHEN json_valid(record) THEN COALESCE(json_extract(record,'$.accountKey'),'default') END, \
+                            CASE WHEN json_valid(record) THEN json_extract(record,'$.cwd') END, \
+                            CASE WHEN json_valid(record) THEN json_extract(record,'$.status') END \
+                     FROM runtime_monitors WHERE id=?1",
                     [monitor_id],
-                    |row| row.get::<_, String>(0),
+                    |row| {
+                        Ok((
+                            row.get::<_, Option<String>>(0)?,
+                            row.get::<_, Option<i64>>(1)?,
+                            row.get::<_, Option<String>>(2)?,
+                            row.get::<_, Option<String>>(3)?,
+                            row.get::<_, Option<String>>(4)?,
+                        ))
+                    },
                 )
                 .optional()?;
-            record.is_some_and(|raw| {
-                serde_json::from_str::<Value>(&raw).is_ok_and(|monitor| {
-                    monitor.get("agent").and_then(Value::as_str) == Some(actor.agent.as_str())
-                        && monitor.get("epoch").and_then(Value::as_i64) == Some(actor.epoch)
-                        && monitor
-                            .get("accountKey")
-                            .and_then(Value::as_str)
-                            .unwrap_or("default")
-                            == call.scope.account
-                        && match call.method.as_str() {
-                            "command/exec" => {
-                                let regular = call.operation == format!("monitor:{monitor_id}")
-                                    && process_id == Some(monitor_id)
-                                    && matches!(
-                                        monitor.get("status").and_then(Value::as_str),
-                                        Some("starting" | "running")
-                                    );
-                                let liveness = liveness_generation.is_some_and(|generation| {
-                                    !generation.is_empty()
-                                        && process_id == Some(call.operation.as_str())
-                                        && monitor.get("status").and_then(Value::as_str)
-                                            == Some("running")
-                                });
-                                (regular || liveness)
-                                    && call.params.get("cwd") == monitor.get("cwd")
-                            }
-                            "command/exec/write" | "command/exec/resize" => {
-                                call.operation
-                                    .starts_with(&format!("monitor-input:{monitor_id}:"))
-                                    && call.operation.len()
-                                        > format!("monitor-input:{monitor_id}:").len()
-                                    && monitor.get("status").and_then(Value::as_str)
-                                        == Some("running")
-                            }
-                            "command/exec/terminate" => {
-                                call.operation == format!("monitor-cancel:{monitor_id}")
-                                    && monitor.get("status").and_then(Value::as_str)
-                                        == Some("running")
-                            }
-                            _ => false,
+            monitor.is_some_and(|(agent, epoch, account, cwd, status)| {
+                agent.as_deref() == Some(actor.agent.as_str())
+                    && epoch == Some(actor.epoch)
+                    && account.as_deref().unwrap_or("default") == call.scope.account
+                    && match call.method.as_str() {
+                        "command/exec" => {
+                            let regular = call.operation == format!("monitor:{monitor_id}")
+                                && process_id == Some(monitor_id)
+                                && matches!(status.as_deref(), Some("starting" | "running"));
+                            let liveness = liveness_generation.is_some_and(|generation| {
+                                !generation.is_empty()
+                                    && process_id == Some(call.operation.as_str())
+                                    && status.as_deref() == Some("running")
+                            });
+                            (regular || liveness)
+                                && call.params.get("cwd").and_then(Value::as_str) == cwd.as_deref()
                         }
-                })
+                        "command/exec/write" | "command/exec/resize" => {
+                            call.operation
+                                .starts_with(&format!("monitor-input:{monitor_id}:"))
+                                && call.operation.len()
+                                    > format!("monitor-input:{monitor_id}:").len()
+                                && status.as_deref() == Some("running")
+                        }
+                        "command/exec/terminate" => {
+                            call.operation == format!("monitor-cancel:{monitor_id}")
+                                && status.as_deref() == Some("running")
+                        }
+                        _ => false,
+                    }
             })
         } else {
             false

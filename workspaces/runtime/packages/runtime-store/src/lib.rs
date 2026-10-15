@@ -110,6 +110,13 @@ pub enum StoreDiagnosticsEvent {
         database: StoreDatabaseKind,
         elapsed: Duration,
     },
+    WalCheckpoint {
+        database: StoreDatabaseKind,
+        wal_size_bytes: u64,
+        busy: i64,
+        log_frames: i64,
+        checkpointed_frames: i64,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -242,6 +249,7 @@ pub struct RuntimeStore {
     root: PathBuf,
     _runtime_lock: RuntimeLock,
     writer: Mutex<Connection>,
+    analytics: Mutex<Connection>,
     version_reader: Mutex<Connection>,
     identity_registry_path: PathBuf,
     commit_notifiers: Mutex<CommitNotifiers>,
@@ -273,12 +281,6 @@ impl RuntimeStore {
         let canvas_path = root.join("canvas.sqlite3");
         let analytics_path = root.join("analytics.sqlite3");
         let runtime_lock = RuntimeLock::acquire(&root)?;
-        // Verify once after acquiring the ownership lock. The earlier pre-lock
-        // verification duplicated the complete registered-schema inspection
-        // on every open and raced another writer before the lock was held.
-        if canvas_path.is_file() && analytics_path.is_file() {
-            schema::verify_core(&canvas_path, &analytics_path)?;
-        }
         fresh_state::prepare(&root)?;
         let local_server_id = local_server_id(&root)?;
 
@@ -287,6 +289,8 @@ impl RuntimeStore {
                 return Err(StoreError::MissingDatabase(database.clone()));
             }
         }
+        // Existing paired databases make fresh_state::prepare a no-op; newly
+        // created databases are verified here after their catalog is prepared.
         schema::verify_core(&canvas_path, &analytics_path)?;
         // Keep Rust opens current even when Python has not refreshed this index yet.
         schema::ensure_analytics_limits_index(&analytics_path)?;
@@ -294,6 +298,9 @@ impl RuntimeStore {
         let writer = open_database(&canvas_path, OpenFlags::SQLITE_OPEN_READ_WRITE)?;
         writer.pragma_update(None, "synchronous", "FULL")?;
         schema::register_python_trigger_functions(&writer)?;
+        let mut analytics = open_database(&analytics_path, OpenFlags::SQLITE_OPEN_READ_WRITE)?;
+        analytics.pragma_update(None, "journal_mode", "WAL")?;
+        analytics.pragma_update(None, "synchronous", "FULL")?;
         let version_reader = open_database(&canvas_path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
         version_reader.pragma_update(None, "query_only", "ON")?;
         let identity_registry_path = canvas_path.clone();
@@ -313,6 +320,7 @@ impl RuntimeStore {
             root,
             _runtime_lock: runtime_lock,
             writer: Mutex::new(writer),
+            analytics: Mutex::new(analytics),
             version_reader: Mutex::new(version_reader),
             identity_registry_path,
             commit_notifiers: Mutex::new(CommitNotifiers::default()),
@@ -333,6 +341,7 @@ impl RuntimeStore {
         store.transaction(|transaction| {
             CheckpointsRepository::recover_captures(transaction, recovery_time)
         })?;
+        store.checkpoint_wal_passive()?;
         Ok(store)
     }
 
@@ -416,6 +425,56 @@ impl RuntimeStore {
         if let Ok(mut reader) = self.version_reader.lock() {
             install_profile(&mut reader);
         }
+        if callback.is_some() {
+            let _ = self.checkpoint_wal_passive();
+        }
+    }
+
+    /// Checkpoint both WAL files without waiting on active readers or truncating them.
+    pub fn checkpoint_wal_passive(&self) -> StoreResult<()> {
+        let writer = self.writer.lock().map_err(|_| StoreError::WriterPoisoned)?;
+        self.checkpoint_connection(
+            &writer,
+            StoreDatabaseKind::Canvas,
+            &self.root.join("canvas.sqlite3-wal"),
+        )?;
+        drop(writer);
+
+        let analytics = self.analytics.lock().map_err(|_| StoreError::WriterPoisoned)?;
+        self.checkpoint_connection(
+            &analytics,
+            StoreDatabaseKind::Analytics,
+            &self.root.join("analytics.sqlite3-wal"),
+        )?;
+        Ok(())
+    }
+
+    fn checkpoint_connection(
+        &self,
+        connection: &Connection,
+        database: StoreDatabaseKind,
+        wal_path: &Path,
+    ) -> StoreResult<()> {
+        let (busy, log_frames, checkpointed_frames) = connection.query_row(
+            "PRAGMA wal_checkpoint(PASSIVE)",
+            [],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, i64>(2)?,
+                ))
+            },
+        )?;
+        let wal_size_bytes = std::fs::metadata(wal_path).map_or(0, |metadata| metadata.len());
+        emit_diagnostic(StoreDiagnosticsEvent::WalCheckpoint {
+            database,
+            wal_size_bytes,
+            busy,
+            log_frames,
+            checkpointed_frames,
+        });
+        Ok(())
     }
 
     fn notify_commit(&self) {
@@ -611,6 +670,7 @@ impl RuntimeStore {
             .last_entity_projection_state
             .lock()
             .map_err(|_| StoreError::WriterPoisoned)? = Some((generation, vault_signature));
+        self.checkpoint_wal_passive()?;
         Ok(())
     }
 
@@ -755,6 +815,7 @@ mod diagnostics_hook_tests {
             root: directory.path().to_path_buf(),
             _runtime_lock: RuntimeLock::acquire(directory.path()).expect("runtime lock"),
             writer: Mutex::new(writer),
+            analytics: Mutex::new(Connection::open_in_memory().expect("analytics connection")),
             version_reader: Mutex::new(reader),
             identity_registry_path: directory.path().join("canvas.sqlite3"),
             commit_notifiers: Mutex::new(CommitNotifiers::default()),
@@ -797,6 +858,7 @@ mod commit_notification_tests {
             root: directory.path().to_path_buf(),
             _runtime_lock: RuntimeLock::acquire(directory.path()).expect("runtime lock"),
             writer: Mutex::new(Connection::open_in_memory().expect("writer connection")),
+            analytics: Mutex::new(Connection::open_in_memory().expect("analytics connection")),
             version_reader: Mutex::new(Connection::open_in_memory().expect("reader connection")),
             identity_registry_path: directory.path().join("canvas.sqlite3"),
             commit_notifiers: Mutex::new(CommitNotifiers::default()),

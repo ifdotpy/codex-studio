@@ -63,6 +63,7 @@ struct SqliteState {
     recent: VecDeque<Value>,
     longest: Vec<Value>,
     profile_by_database: BTreeMap<DatabaseKind, (u64, Ring)>,
+    wal_checkpoint_by_database: BTreeMap<DatabaseKind, Value>,
     transaction_count: u64,
     long_transactions: u64,
     write_waits: u64,
@@ -81,6 +82,7 @@ impl Default for SqliteState {
             recent: VecDeque::with_capacity(HISTORY_LIMIT),
             longest: Vec::with_capacity(LONGEST_LIMIT),
             profile_by_database: BTreeMap::new(),
+            wal_checkpoint_by_database: BTreeMap::new(),
             transaction_count: 0,
             long_transactions: 0,
             write_waits: 0,
@@ -153,6 +155,45 @@ pub fn record_sqlite_profile(database: DatabaseKind, elapsed: Duration) {
     let _ = try_with_state(state(), |state| {
         record_sqlite_profile_in_state(state, database, elapsed);
     });
+}
+
+/// Retain the latest bounded WAL size and passive-checkpoint result per file.
+pub fn record_wal_checkpoint(
+    database: DatabaseKind,
+    wal_size_bytes: u64,
+    busy: i64,
+    log_frames: i64,
+    checkpointed_frames: i64,
+) {
+    let _ = try_with_state(state(), |state| {
+        record_wal_checkpoint_in_state(
+            state,
+            database,
+            wal_size_bytes,
+            busy,
+            log_frames,
+            checkpointed_frames,
+        );
+    });
+}
+
+fn record_wal_checkpoint_in_state(
+    state: &mut SqliteState,
+    database: DatabaseKind,
+    wal_size_bytes: u64,
+    busy: i64,
+    log_frames: i64,
+    checkpointed_frames: i64,
+) {
+    state.wal_checkpoint_by_database.insert(
+        database,
+        json!({
+            "walSizeBytes": wal_size_bytes,
+            "busy": busy,
+            "logFrames": log_frames.max(0),
+            "checkpointedFrames": checkpointed_frames.max(0),
+        }),
+    );
 }
 
 fn record_sqlite_profile_in_state(
@@ -268,6 +309,7 @@ pub fn sqlite_contention() -> Value {
         "transaction": null,
         "writeWait": null,
         "lockError": null,
+        "walTelemetry": null,
     });
     let _ = try_with_state(state(), |state| {
         let (_, durations) = state.transaction_durations_ms.snapshot();
@@ -295,6 +337,7 @@ pub fn sqlite_contention() -> Value {
             }
         });
         result["transaction"] = metric;
+        result["walTelemetry"] = wal_telemetry_from_state(state);
         let (_, waits) = state.write_wait_durations_ms.snapshot();
         result["writeWait"] = json!({
             "transactions": 0,
@@ -309,6 +352,13 @@ pub fn sqlite_contention() -> Value {
         });
     });
     result
+}
+
+fn wal_telemetry_from_state(state: &SqliteState) -> Value {
+    json!({
+        "canvas": state.wal_checkpoint_by_database.get(&DatabaseKind::Canvas),
+        "analytics": state.wal_checkpoint_by_database.get(&DatabaseKind::Analytics),
+    })
 }
 
 fn quantile(values: &[u64], percentile: usize) -> Option<f64> {
@@ -360,6 +410,26 @@ mod tests {
         assert!(!text.contains("SELECT"));
         assert!(!text.contains("home"));
         assert_eq!(value["activeTracking"]["limit"], ACTIVE_LIMIT);
+    }
+
+    #[test]
+    fn wal_telemetry_reports_size_and_passive_checkpoint_counts() {
+        let mut state = SqliteState::default();
+        let telemetry = wal_telemetry_from_state(&state);
+        assert!(telemetry["canvas"].is_null());
+
+        record_wal_checkpoint_in_state(
+            &mut state,
+            DatabaseKind::Canvas,
+            4096,
+            0,
+            12,
+            12,
+        );
+        let telemetry = wal_telemetry_from_state(&state);
+        assert_eq!(telemetry["canvas"]["walSizeBytes"], 4096);
+        assert_eq!(telemetry["canvas"]["checkpointedFrames"], 12);
+        assert!(telemetry["analytics"].is_null());
     }
 
     #[cfg(target_os = "linux")]

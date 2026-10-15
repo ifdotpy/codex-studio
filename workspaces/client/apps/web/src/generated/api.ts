@@ -21124,6 +21124,8 @@ export interface components {
       /** @default null */
       transaction?: components["schemas"]["SqliteMetric"] | null;
       /** @default null */
+      walTelemetry?: components["schemas"]["WalTelemetry"] | null;
+      /** @default null */
       writeWait?: components["schemas"]["SqliteMetric"] | null;
     };
     /**
@@ -25136,6 +25138,22 @@ export interface components {
      * @enum {string}
      */
     VoiceTransport: "native";
+    /** WalCheckpoint */
+    WalCheckpoint: {
+      /** Busy */
+      busy: number;
+      /** Checkpointedframes */
+      checkpointedFrames: number;
+      /** Logframes */
+      logFrames: number;
+      /** Walsizebytes */
+      walSizeBytes: number;
+    };
+    /** WalTelemetry */
+    WalTelemetry: {
+      analytics: components["schemas"]["WalCheckpoint"] | null;
+      canvas: components["schemas"]["WalCheckpoint"] | null;
+    };
     /**
      * WhoisStatus
      * @enum {string}
