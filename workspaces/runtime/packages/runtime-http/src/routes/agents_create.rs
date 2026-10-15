@@ -629,6 +629,104 @@ async fn dispatch<T: serde::de::DeserializeOwned + serde::Serialize + Send + 'st
     Ok(result)
 }
 
+async fn preflight_lead_replay<
+    T: serde::de::DeserializeOwned + serde::Serialize + Send + 'static,
+>(
+    state: &HttpState,
+    request: agents_create::Creation,
+) -> Result<Option<Json<T>>, ApiError> {
+    let state = state.clone();
+    let replay = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-http/routes/agents_create/replay",
+        move || {
+            let store = state.store.as_deref().ok_or_else(ApiError::internal)?;
+            let context = Context {
+                store,
+                accounts: state.account_policy.as_deref(),
+                driver: state.account_driver.as_deref(),
+                catalog: None,
+                validate: &|schema, value| match schema {
+                    "PersistedAgentRecord" => state
+                        .validators
+                        .validate_table_record("runtime_agents", value),
+                    _ => state.validators.validate_stored(schema, value),
+                },
+            };
+            agents_create::replay_lead_request(&context, &request).map_err(operation_error)
+        },
+    )
+    .await
+    .map_err(|_| ApiError::internal())??;
+    match replay {
+        Some(value) => Ok(Some(Json(super::generated_json::<T>(value)?))),
+        None => Ok(None),
+    }
+}
+
+async fn lead_catalog_account(
+    state: &HttpState,
+    request: agents_create::Creation,
+) -> Result<String, ApiError> {
+    let state = state.clone();
+    studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-http/routes/agents_create/account",
+        move || {
+            let store = state.store.as_deref().ok_or_else(ApiError::internal)?;
+            let context = Context {
+                store,
+                accounts: state.account_policy.as_deref(),
+                driver: state.account_driver.as_deref(),
+                catalog: None,
+                validate: &|schema, value| match schema {
+                    "PersistedAgentRecord" => state
+                        .validators
+                        .validate_table_record("runtime_agents", value),
+                    _ => state.validators.validate_stored(schema, value),
+                },
+            };
+            agents_create::creation_account_key(&context, &request).map_err(operation_error)
+        },
+    )
+    .await
+    .map_err(|_| ApiError::internal())?
+}
+
+async fn conversation_catalog_account(
+    state: &HttpState,
+    id: String,
+    expected_account: Option<String>,
+    cwd: Option<String>,
+) -> Result<String, ApiError> {
+    let state = state.clone();
+    studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-http/routes/agents_create/conversation-account",
+        move || {
+            let store = state.store.as_deref().ok_or_else(ApiError::internal)?;
+            let context = Context {
+                store,
+                accounts: state.account_policy.as_deref(),
+                driver: state.account_driver.as_deref(),
+                catalog: None,
+                validate: &|schema, value| match schema {
+                    "PersistedAgentRecord" => state
+                        .validators
+                        .validate_table_record("runtime_agents", value),
+                    _ => state.validators.validate_stored(schema, value),
+                },
+            };
+            agents_create::conversation_account_key(
+                &context,
+                &id,
+                expected_account.as_deref(),
+                cwd.as_deref(),
+            )
+            .map_err(operation_error)
+        },
+    )
+    .await
+    .map_err(|_| ApiError::internal())?
+}
+
 async fn create_lead(
     State(state): State<HttpState>,
     ApiJson(body): ApiJson<generated::CreateLeadRequest>,
@@ -647,27 +745,6 @@ async fn create_lead_with_model(
         || body.worker_defaults.is_some()
         || body.review_defaults.is_some();
     let requested_model = body.model.as_ref().and_then(Option::as_deref);
-    let requested_account = body.account_key.as_deref();
-    wait_for_agent_catalog(
-        &state,
-        None,
-        requested_account,
-        requested_model,
-        needs_catalog,
-    )
-    .await?;
-    if let Some(Some(defaults)) = body.worker_defaults.as_ref() {
-        let worker_model = defaults.model.as_deref();
-        let worker_account = defaults.account_key.as_ref().and_then(Option::as_deref);
-        if worker_model.is_some() || worker_account.is_some() {
-            wait_for_agent_catalog(&state, None, worker_account, worker_model, true).await?;
-        }
-    }
-    if let Some(Some(review)) = body.review_defaults.as_ref() {
-        if let Some(model) = review.model.as_deref() {
-            wait_for_agent_catalog(&state, None, requested_account, Some(model), true).await?;
-        }
-    }
     let request = Creation {
         intent: serde_json::to_value(&body).map_err(|_| ApiError::internal())?,
         catalog: body.effort.is_some()
@@ -678,15 +755,51 @@ async fn create_lead_with_model(
         project_binding: body.project_id.flatten().is_some()
             || body.project_server_id.flatten().is_some()
             || body.project_folder.flatten().is_some(),
-        id: body.id.flatten(),
-        cwd: body.cwd,
-        account: body.account_key,
+        id: body.id.clone().flatten(),
+        cwd: body.cwd.clone(),
+        account: body.account_key.clone(),
         workspace: body.workspace_mode.map(|value| value.to_string()),
         yolo: body.yolo_mode,
-        previous: body.previous.flatten(),
+        previous: body.previous.clone().flatten(),
         reuse_empty: body.reuse_empty,
         ..Creation::default()
     };
+    if needs_catalog
+        && let Some(replay) =
+            preflight_lead_replay::<generated::AgentResponse>(&state, request.clone()).await?
+    {
+        return Ok(replay);
+    }
+    let catalog_account = if needs_catalog {
+        Some(lead_catalog_account(&state, request.clone()).await?)
+    } else {
+        None
+    };
+    wait_for_agent_catalog(
+        &state,
+        None,
+        catalog_account.as_deref(),
+        requested_model,
+        needs_catalog,
+    )
+    .await?;
+    if let Some(Some(defaults)) = body.worker_defaults.as_ref() {
+        let worker_model = defaults.model.as_deref();
+        let worker_account = defaults
+            .account_key
+            .as_ref()
+            .and_then(Option::as_deref)
+            .or(catalog_account.as_deref());
+        if worker_model.is_some() || worker_account.is_some() {
+            wait_for_agent_catalog(&state, None, worker_account, worker_model, true).await?;
+        }
+    }
+    if let Some(Some(review)) = body.review_defaults.as_ref() {
+        if let Some(model) = review.model.as_deref() {
+            wait_for_agent_catalog(&state, None, catalog_account.as_deref(), Some(model), true)
+                .await?;
+        }
+    }
     dispatch::<generated::AgentResponse>(state, move |context| {
         agents_create::lead(context, request)
     })
@@ -974,45 +1087,16 @@ async fn conversation(
     }
     let body: generated::ConversationRequest = serde_json::from_value(value.clone())
         .map_err(|_| ApiError::validation(vec![Value::String("body".to_owned())]))?;
-    let needs_catalog = ["model", "effort", "fast_mode", "daybreak_enabled"]
-        .iter()
-        .any(|field| value.get(*field).is_some())
-        || value
-            .get("worker_defaults")
-            .is_some_and(|entry| !entry.is_null())
-        || value
-            .get("review_defaults")
-            .is_some_and(|entry| !entry.is_null());
-    let parent_id = Some(body.id.as_str());
-    let requested_model = body.model.as_ref().and_then(Option::as_deref);
-    wait_for_agent_catalog(&state, parent_id, None, requested_model, needs_catalog).await?;
-    if let Some(defaults) = value
-        .get("worker_defaults")
-        .filter(|entry| !entry.is_null())
-    {
-        let worker_model = defaults.get("model").and_then(Value::as_str);
-        let worker_account = defaults.get("account_key").and_then(Value::as_str);
-        if worker_model.is_some() || worker_account.is_some() {
-            wait_for_agent_catalog(&state, parent_id, worker_account, worker_model, true).await?;
-        }
-    }
-    if let Some(model) = value
-        .get("review_defaults")
-        .and_then(|defaults| defaults.get("model"))
-        .and_then(Value::as_str)
-    {
-        wait_for_agent_catalog(&state, parent_id, None, Some(model), true).await?;
-    }
     let request = agents_create::Conversation {
         non_defaults: body.next_turn.is_some() || body.request_id.is_some(),
         model_present: body.model.is_some(),
         effort_present: body.effort.is_some(),
         fast_mode_present: body.fast_mode.is_some(),
         daybreak_present: body.daybreak_enabled.is_some(),
-        cwd: body.cwd,
+        cwd: body.cwd.clone(),
         yolo_mode: body.yolo_mode,
-        model: body.model.flatten(),
-        effort: body.effort,
+        model: body.model.clone().flatten(),
+        effort: body.effort.clone(),
         fast_mode: body.fast_mode.flatten(),
         daybreak_enabled: body.daybreak_enabled.flatten(),
         next_turn: body.next_turn,
@@ -1049,13 +1133,72 @@ async fn conversation(
             .map(serde_json::to_value)
             .transpose()
             .map_err(|_| ApiError::internal())?,
-        id: body.id,
-        expected_account: body.expected_account_key,
-        excluded: body.excluded_account_keys.map(|mut keys| {
+        id: body.id.clone(),
+        expected_account: body.expected_account_key.clone(),
+        excluded: body.excluded_account_keys.clone().map(|mut keys| {
             keys.sort();
             keys
         }),
     };
+    let needs_catalog = ["model", "effort", "fast_mode", "daybreak_enabled"]
+        .iter()
+        .any(|field| value.get(*field).is_some())
+        || value
+            .get("worker_defaults")
+            .is_some_and(|entry| !entry.is_null())
+        || value
+            .get("review_defaults")
+            .is_some_and(|entry| !entry.is_null());
+    let requested_model = body.model.as_ref().and_then(Option::as_deref);
+    let catalog_account = if needs_catalog {
+        Some(
+            conversation_catalog_account(
+                &state,
+                request.id.clone(),
+                request.expected_account.clone(),
+                request.cwd.clone(),
+            )
+            .await?,
+        )
+    } else {
+        None
+    };
+    let parent_id = Some(body.id.as_str());
+    wait_for_agent_catalog(
+        &state,
+        parent_id,
+        catalog_account.as_deref(),
+        requested_model,
+        needs_catalog,
+    )
+    .await?;
+    if let Some(defaults) = value
+        .get("worker_defaults")
+        .filter(|entry| !entry.is_null())
+    {
+        let worker_model = defaults.get("model").and_then(Value::as_str);
+        let worker_account = defaults
+            .get("account_key")
+            .and_then(Value::as_str)
+            .or(catalog_account.as_deref());
+        if worker_model.is_some() || worker_account.is_some() {
+            wait_for_agent_catalog(&state, parent_id, worker_account, worker_model, true).await?;
+        }
+    }
+    if let Some(model) = value
+        .get("review_defaults")
+        .and_then(|defaults| defaults.get("model"))
+        .and_then(Value::as_str)
+    {
+        wait_for_agent_catalog(
+            &state,
+            parent_id,
+            catalog_account.as_deref(),
+            Some(model),
+            true,
+        )
+        .await?;
+    }
     dispatch::<generated::AgentResponse>(state, move |context| {
         agents_create::conversation(context, request)
     })

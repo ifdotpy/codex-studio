@@ -33,7 +33,7 @@ pub enum OperationError {
     Internal,
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct Creation {
     pub id: Option<String>,
     pub cwd: Option<String>,
@@ -98,6 +98,90 @@ pub(crate) const DEFAULT_LEAD_MODEL: &str = "gpt-6-astra";
 pub fn lead(context: &Context<'_>, request: Creation) -> Result<Value, OperationError> {
     create(context, request, true)
 }
+
+/// Return a durable lead replay without consulting catalog or provider state.
+/// The HTTP admission edge calls this before any catalog wait, matching the
+/// Python `new_lead` replay check at `codex_runtime.py:5067-5131`, which runs
+/// before `self.catalog(...)`.
+pub fn replay_lead_request(
+    context: &Context<'_>,
+    request: &Creation,
+) -> Result<Option<Value>, OperationError> {
+    let Some(id) = request.id.as_deref() else {
+        return Ok(None);
+    };
+    let workspace = request
+        .workspace
+        .as_deref()
+        .unwrap_or(if cfg!(target_os = "macos") {
+            "layr"
+        } else {
+            "worktree"
+        });
+    let cwd = request.cwd.as_deref().map(project_directory).transpose()?;
+    let signature = lead_signature(&request.intent, workspace, cwd.as_deref());
+    let read = context.store.read()?;
+    let validate = |schema: &str, value: &Value| (context.validate)(schema, value);
+    Ok(super::replay_lead(&read, id, &signature, validate)?)
+}
+
+/// Resolve the same project-bound account used by lead creation before the
+/// HTTP edge admits a model catalog request, matching Python's project account
+/// selection at `codex_runtime.py:5067-5131`.
+pub fn creation_account_key(
+    context: &Context<'_>,
+    request: &Creation,
+) -> Result<String, OperationError> {
+    let requested_cwd = request.cwd.as_deref().map(project_directory).transpose()?;
+    let validate = |schema: &str, value: &Value| (context.validate)(schema, value);
+    let read = context.store.read()?;
+    let previous = previous_lead(&read, request.previous.as_deref(), &validate)?;
+    let cwd = requested_cwd.map_or_else(
+        || {
+            previous
+                .as_ref()
+                .and_then(|prior| {
+                    prior
+                        .get("hostProjectPath")
+                        .filter(|value| !value.is_null())
+                        .or_else(|| prior.get("cwd"))
+                        .and_then(Value::as_str)
+                })
+                .map(project_directory)
+                .transpose()
+                .and_then(|cwd| cwd.map_or_else(project_directory_default, Ok))
+        },
+        Ok,
+    )?;
+    account_key(context, request.account.as_deref(), &cwd)
+}
+
+pub fn conversation_account_key(
+    context: &Context<'_>,
+    id: &str,
+    expected_account: Option<&str>,
+    cwd: Option<&str>,
+) -> Result<String, OperationError> {
+    let validate = |schema: &str, value: &Value| (context.validate)(schema, value);
+    let read = context.store.read()?;
+    let initial = load_agent_value(&read, id, &validate)?.ok_or(MutationError::UnknownAgent)?;
+    let old_account = initial
+        .get("accountKey")
+        .and_then(Value::as_str)
+        .unwrap_or("default");
+    if expected_account.is_some_and(|expected| expected != old_account) {
+        return Err(MutationError::Stale.into());
+    }
+    // Python's conversation update uses the requested project account when cwd
+    // changes and otherwise keeps this conversation's account; worker defaults
+    // are resolved separately (`codex_runtime.py:5067-5131`).
+    if let Some(cwd) = cwd {
+        account_key(context, None, &project_directory(cwd)?)
+    } else {
+        Ok(old_account.to_owned())
+    }
+}
+
 pub fn agent(context: &Context<'_>, request: Creation) -> Result<Value, OperationError> {
     create(context, request, false)
 }
@@ -1610,9 +1694,10 @@ fn account_identity_with_status(
         ));
     }
     let string_field = |key: &str| row.get(key).and_then(Value::as_str).map(str::to_owned);
-    let can_attempt_native_proof = row
-        .as_object()
-        .is_some_and(|record| crate::account_policy::can_attempt_native_proof(Some(record)));
+    // AccountDriver snapshots expose the eligibility projection; private
+    // registry fields used to derive it are intentionally not in this row.
+    // This matches `codex_runtime.py:4843-4935`'s account read and gate.
+    let can_attempt_native_proof = can_attempt_native_proof_projection(&row);
     Ok((
         AccountIdentity {
             provider: Some(string_field("provider").unwrap_or_else(|| "codex".to_owned())),
@@ -1623,6 +1708,10 @@ fn account_identity_with_status(
         status,
         can_attempt_native_proof,
     ))
+}
+
+fn can_attempt_native_proof_projection(row: &Value) -> bool {
+    row.get("canAttemptNativeProof").and_then(Value::as_bool) == Some(true)
 }
 
 fn resolve_project_binding(
@@ -1967,6 +2056,107 @@ fn local_server_id(context: &Context<'_>) -> Result<Option<String>, OperationErr
 mod tests {
     use super::*;
     use std::cell::{Cell, RefCell};
+
+    #[test]
+    fn native_proof_admission_uses_the_public_account_projection() {
+        assert!(can_attempt_native_proof_projection(
+            &json!({"id":"claude-account","canAttemptNativeProof":true})
+        ));
+        assert!(!can_attempt_native_proof_projection(
+            &json!({"id":"claude-account","_authErrorKind":"keychain"})
+        ));
+    }
+
+    #[test]
+    fn conversation_catalog_account_is_not_the_child_worker_default() {
+        let root = tempfile::tempdir().expect("temporary state");
+        let schema: Value = serde_json::from_str(include_str!(
+            "../../../../apps/server/tests/fixtures/runtime-state-schema.json"
+        ))
+        .expect("schema");
+        for name in ["canvas.sqlite3", "analytics.sqlite3"] {
+            let connection = Connection::open(root.path().join(name)).expect("database");
+            connection
+                .execute_batch("PRAGMA journal_mode=WAL;")
+                .expect("WAL");
+            let mut entries = schema[name]["sqlite_master"]
+                .as_array()
+                .expect("schema entries")
+                .clone();
+            entries.sort_by_key(|entry| match entry["type"].as_str() {
+                Some("table") => 0,
+                Some("index") => 1,
+                Some("view") => 2,
+                _ => 3,
+            });
+            for entry in entries {
+                let exists: bool = connection
+                    .query_row(
+                        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name=?1)",
+                        [entry["name"].as_str().expect("object name")],
+                        |row| row.get(0),
+                    )
+                    .expect("schema object lookup");
+                if let Some(sql) = entry["sql"].as_str().filter(|_| !exists) {
+                    connection.execute_batch(sql).expect("schema statement");
+                }
+            }
+        }
+        let store = RuntimeStore::open(Some(root.path())).expect("runtime store");
+        let record = json!({
+            "id":"conversation",
+            "accountKey":"conversation-account",
+            "rootId":"conversation",
+            "workerDefaults":{"accountKey":"worker-default-account"}
+        });
+        store
+            .transaction(|tx| {
+                tx.execute(
+                    "INSERT INTO runtime_agents(id,record) VALUES(?1,?2)",
+                    rusqlite::params!["conversation", record.to_string()],
+                )?;
+                Ok(())
+            })
+            .expect("seed conversation");
+        let validate = |_: &str, _: &Value| true;
+        let context = Context {
+            store: &store,
+            accounts: None,
+            driver: None,
+            catalog: None,
+            validate: &validate,
+        };
+        let request = Conversation {
+            id: "conversation".to_owned(),
+            expected_account: None,
+            excluded: None,
+            cwd: None,
+            yolo_mode: None,
+            model: None,
+            model_present: false,
+            effort: None,
+            effort_present: false,
+            fast_mode: None,
+            fast_mode_present: false,
+            daybreak_enabled: None,
+            daybreak_present: false,
+            next_turn: None,
+            request_id: None,
+            mode_settings: false,
+            mode_limit: None,
+            mode_revision: None,
+            mode_request_id: None,
+            worker_settings: false,
+            worker_defaults: None,
+            review_defaults: None,
+            non_defaults: false,
+        };
+        assert_eq!(
+            conversation_account_key(&context, &request.id, None, None)
+                .expect("conversation account"),
+            "conversation-account"
+        );
+    }
 
     #[test]
     fn reviewer_child_defaults_to_shared_workspace() {

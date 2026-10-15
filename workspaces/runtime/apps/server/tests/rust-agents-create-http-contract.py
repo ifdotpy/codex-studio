@@ -1326,6 +1326,36 @@ class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             conversation_created["reviewDefaults"]["model"], "gpt-6-luna"
         )
 
+    def test_lead_replay_precedes_catalog_admission(self):
+        body = {
+            "id": str(uuid.uuid4()),
+            "cwd": str(self.backend.cwd),
+            "workspaceMode": "worktree",
+            "model": "gpt-6-astra",
+        }
+        self.await_model_catalog("default")
+        self.post("/api/leads", body)
+        self.quiesce_fixture_agent(body["id"])
+
+        registry_path = self.backend.state / "accounts/registry.json"
+        original = registry_path.read_bytes()
+        registry = json.loads(original)
+        registry["accounts"]["default"]["disconnected"] = True
+        self.backend.stop()
+        registry_path.write_text(json.dumps(registry))
+        try:
+            self.backend.start()
+            replay = self.backend.request(
+                "POST", "/api/leads", body=body, headers=self.headers()
+            )
+            self.assertEqual(replay.status, 200, replay.body[:1000])
+            self.assertEqual(replay.json()["id"], body["id"])
+            self.assertEqual(self.stored(body["id"])["id"], body["id"])
+        finally:
+            self.backend.stop()
+            registry_path.write_bytes(original)
+            self.backend.start()
+
     def test_profiles_are_loaded_validated_and_resolved_from_fresh_catalog(self):
         self.rust_only()
         body = {"id": str(uuid.uuid4()), "cwd": str(self.backend.cwd), "prompt": "Task", "profile_id": "unknown-profile"}
