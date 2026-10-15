@@ -404,13 +404,14 @@ fn pull_with_maintenance_interleaved(
         }
 
         let project_server_id = store.local_server_id().map_err(map_sync_store_error)?;
-        let rooms = studio_runtime_services::sync_entity_context::RoomDirectory::prepare(&reader)
-            .map_err(map_sync_store_error)?;
+        let rooms =
+            studio_runtime_services::sync_entity_context::RoomDirectory::prepare_for_sync(&reader)
+                .map_err(map_sync_store_error)?;
         drop(reader);
         before_room_recheck();
         let (response, committed_generation) = store
             .transaction_with_commit_generation(|transaction| {
-                if !rooms.matches(transaction)? {
+                if !rooms.matches_for_sync(transaction)? {
                     return Ok(None);
                 }
                 pull_entities(
@@ -460,10 +461,11 @@ fn capture_project_vault_snapshot(
     ApiError,
 > {
     let reader = store.read().map_err(map_sync_store_error)?;
-    let projects =
-        studio_runtime_store::ProjectsRepository::list(&reader).map_err(map_sync_store_error)?;
-    let snapshot =
-        sync_policy::ProjectVaultSnapshot::capture(std::path::Path::new(state_dir), &projects);
+    let snapshot = sync_policy::ProjectVaultSnapshot::capture_for_sync(
+        std::path::Path::new(state_dir),
+        &reader,
+    )
+    .map_err(map_sync_store_error)?;
     Ok((reader, snapshot))
 }
 

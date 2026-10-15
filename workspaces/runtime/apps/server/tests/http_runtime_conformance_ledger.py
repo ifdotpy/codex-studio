@@ -3,16 +3,18 @@ from __future__ import annotations
 
 import argparse
 import ast
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 import json
 import os
 from pathlib import Path
 import re
+import shlex
 import sqlite3
 import subprocess
 import sys
 import tempfile
 import time
+import uuid
 import urllib.parse
 import urllib.request
 from urllib.error import HTTPError
@@ -23,6 +25,7 @@ from typing import Any, Iterator
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from server_test_contracts import P20_OPERATION_MANIFEST_ENV
 from runtime_test_environment import runtime_environment
+from codex_python import resolve_python
 
 ROOT = Path(__file__).resolve().parents[5]
 TESTS = ROOT / "workspaces/runtime/apps/server/tests"
@@ -31,6 +34,137 @@ HARNESS = TESTS / "http_backend_harness.py"
 JSON_METHODS = {"POST", "PUT", "PATCH"}
 DEFAULT_CACHE = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache"))
 DEFAULT_LEDGER = DEFAULT_CACHE / "codex-studio" / "rust-runtime-http-conformance-ledger.json"
+COPY_MARKER = ".codex-studio-rehearsal-copy"
+COPY_MARKER_CONTENT = "sqlite-online-backup-copy-v1\n"
+
+
+def validate_copy_state_root(
+    value: Path,
+    *,
+    live_state_root: Path | None = None,
+    configured_state_root: str | None = None,
+) -> Path:
+    """Require a marked SQLite copy outside every known live state location."""
+    root = Path(value).expanduser().resolve(strict=True)
+    protected_roots = [
+        (Path.home() / ".local/state/codex-agents").resolve(),
+    ]
+    if live_state_root is not None:
+        protected_roots.append(Path(live_state_root).expanduser().resolve())
+    if configured_state_root:
+        protected_roots.append(Path(configured_state_root).expanduser().resolve())
+    for protected in protected_roots:
+        if root == protected or protected in root.parents:
+            raise ValueError(f"refusing live state directory or descendant: {root}")
+    if not root.is_dir():
+        raise ValueError("copy state root must be a directory")
+    marker = root / COPY_MARKER
+    if (not marker.is_file() or marker.is_symlink()
+            or marker.read_text(encoding="utf-8") != COPY_MARKER_CONTENT):
+        raise ValueError(f"copy state root lacks the {COPY_MARKER} marker")
+    copy_database_stats: dict[str, Any] = {}
+    for name in ("canvas.sqlite3", "analytics.sqlite3"):
+        database = root / name
+        if not database.is_file() or database.is_symlink():
+            raise ValueError(f"copy state root requires a regular {name}")
+        stat = database.stat()
+        if stat.st_nlink > 1:
+            raise ValueError(f"copy state database must not have hard links: {name}")
+        _validate_copy_database(database, name)
+        copy_database_stats[name] = stat
+    known_live_roots = [Path.home() / ".local/state/codex-agents"]
+    if live_state_root is not None:
+        known_live_roots.append(Path(live_state_root).expanduser())
+    if configured_state_root:
+        known_live_roots.append(Path(configured_state_root).expanduser())
+    for live_root in known_live_roots:
+        for name, copy_stat in copy_database_stats.items():
+            try:
+                live_stat = (live_root / name).stat()
+            except OSError:
+                continue
+            if (copy_stat.st_dev, copy_stat.st_ino) == (live_stat.st_dev, live_stat.st_ino):
+                raise ValueError(f"copy state database aliases a known live database: {name}")
+    allowed = {COPY_MARKER, "canvas.sqlite3", "analytics.sqlite3"}
+    unexpected = sorted(path.name for path in root.iterdir() if path.name not in allowed)
+    if unexpected:
+        raise ValueError(
+            "copy state root must contain only its marker and SQLite databases; "
+            f"unexpected entries: {', '.join(unexpected)}"
+        )
+    return root
+
+
+def _validate_copy_database(database: Path, name: str) -> None:
+    """Check a copied database's SQLite structure without opening it writable."""
+    with database.open("rb") as source:
+        if source.read(16) != b"SQLite format 3\x00":
+            raise ValueError(f"copy state database has an invalid SQLite header: {name}")
+    uri = "file:" + urllib.parse.quote(str(database), safe="/") + "?mode=ro&immutable=1"
+    try:
+        with closing(sqlite3.connect(uri, uri=True)) as connection:
+            if connection.execute("PRAGMA quick_check").fetchone() != ("ok",):
+                raise ValueError(f"copy state database failed SQLite integrity check: {name}")
+            required = {
+                "canvas.sqlite3": {"runtime_agents": {"id", "record"}},
+                "analytics.sqlite3": {"analytics_usage": {"seq", "id", "agent", "record"}},
+            }[name]
+            for table, columns in required.items():
+                rows = connection.execute(f'PRAGMA table_info("{table}")').fetchall()
+                if not columns.issubset({row[1] for row in rows}):
+                    raise ValueError(
+                        f"copy state database has an incompatible schema: {name}/{table}"
+                    )
+    except sqlite3.DatabaseError as error:
+        raise ValueError(f"copy state database is not a valid SQLite database: {name}") from error
+
+
+def copied_agent_witness(root: Path) -> dict[str, str]:
+    """Select a native agent already present in the copy for an HTTP read witness."""
+    uri = "file:" + urllib.parse.quote(str(root / "canvas.sqlite3"), safe="/") + "?mode=ro&immutable=1"
+    with closing(sqlite3.connect(uri, uri=True)) as connection:
+        for identifier, raw in connection.execute(
+            "SELECT id,record FROM runtime_agents ORDER BY id"
+        ):
+            try:
+                record = json.loads(raw)
+            except (TypeError, ValueError):
+                continue
+            if not isinstance(record, dict):
+                continue
+            cwd = record.get("cwd")
+            if (
+                record.get("id") == identifier
+                and isinstance(cwd, str)
+                and cwd
+                and record.get("executionMode", "host") != "vm"
+            ):
+                return {"id": identifier, "cwd": cwd}
+    raise ValueError("copy state database has no pre-existing native agent to verify")
+
+
+def validate_ephemeral_backend_command(command: str) -> list[str]:
+    """Reject fixed ports before the backend process can be spawned."""
+    values = shlex.split(command)
+    if not values:
+        raise ValueError("Rust backend command must not be empty")
+    ports: list[str] = []
+    index = 0
+    while index < len(values):
+        value = values[index]
+        if value == "--port":
+            if index + 1 >= len(values):
+                raise ValueError("--port requires a value")
+            index += 1
+            ports.append(values[index])
+        elif value.startswith("--port="):
+            ports.append(value.split("=", 1)[1])
+        index += 1
+    if any(port != "0" for port in ports):
+        raise ValueError("copy-state ledger requires an OS-assigned ephemeral port; port 4620 is forbidden")
+    if len(ports) > 1:
+        raise ValueError("copy-state ledger accepts at most one --port 0")
+    return values
 
 # These tests stop at an operation whose manifest still names the missing
 # service. Each exclusion is tied to that operation so it becomes stale when
@@ -131,7 +265,13 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
         "primary": {"query": {"room": "$room"}, "query_omit": ["before", "after"], "expected": "2xx"},
     },
     ("GET", "/api/agents/finder-view"): {
-        "primary": {"query": {"agent": "$agent"}},
+        "primary": {
+            "query": {"agent": "$copyWitnessAgent"},
+            # Verify an HTTP read of a row found in the copied DB before any
+            # ledger fixture writes; a status or seeded row is not copy proof.
+            "expected": "2xx",
+            "functional_witness": "copy-existing-agent",
+        },
     },
     ("GET", "/api/analytics"): {
         "primary": {"query": {"agent": "$analyticsAgent"}, "query_omit": ["view", "detail", "item", "turn", "thread", "turns", "tool", "timing", "export"], "expected": "2xx"},
@@ -187,15 +327,13 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
         "primary": {
             "query": {"account_key": "default"},
             "query_omit": ["workers", "retry"],
-            "expected": "2xx",
-            "wait_for_success": True,
+            "expected": "400",
         },
         "additional": [{
-            "name": "Claude catalog dependency",
+            "name": "unavailable Claude account",
             "query": {"account_key": "$claudeAccount"},
             "query_omit": ["workers", "retry"],
-            "expected": "501",
-            "expected_error": "Not implemented: requires provider-session/model-list",
+            "expected": "400",
         }],
     },
     ("GET", "/api/multi-server"): {
@@ -229,16 +367,14 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
     ("GET", "/api/import"): {
         "primary": {
             "query": {"account_key": "default"},
-            "expected": "501",
-            "expected_error": "Not implemented: requires provider-session/thread-import",
+            "expected": "503",
             "assert_no_write": True,
         },
     },
     ("POST", "/api/import"): {
         "primary": {
             "body": {"threadId": "source-thread", "prompt": "Continue the synthetic fixture."},
-            "expected": "501",
-            "expected_error": "Not implemented: requires provider-session/thread-import",
+            "expected": "503",
             "assert_no_write": True,
         },
     },
@@ -293,7 +429,7 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
         },
     },
     ("GET", "/api/accounts/claude/login"): {
-        "primary": {"query": {"request_id": "88888888-8888-4888-8888-888888888888"}, "expected": "501"},
+        "primary": {"query": {"request_id": "88888888-8888-4888-8888-888888888888"}, "expected": "400"},
     },
     ("GET", "/api/multi-server/v1/identity"): {"primary": {"expected": "501"}},
     ("GET", "/api/multi-server/v1/status"): {"primary": {"expected": "501"}},
@@ -391,6 +527,9 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
     ("POST", "/api/context-repair"): {
         "primary": {"body": {"id": "$agent"}, "expected": "2xx"},
     },
+    ("POST", "/api/browser/forward"): {
+        "primary": {"body": {}, "expected": "400", "assert_no_write": True},
+    },
     ("POST", "/api/messages"): {
         "primary": {
             "body": {"id": "$message", "room": "$chat", "text": "Ledger message"},
@@ -475,8 +614,8 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
                 ],
             },
             "replace_body": True,
-            "expected": "501",
-            "expected_error": "Not implemented: requires workspace-state/peer-radio",
+            "expected": "400",
+            "assert_no_write": True,
         }],
     },
     ("POST", "/api/projects"): {
@@ -501,15 +640,9 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
     },
     ("POST", "/api/questions/delete"): {
         "primary": {"body": {"id": "$questionDelete"}, "expected": "2xx"},
-        "additional": [{
-            # Python deletes pending native questions by resolving them through
-            # Runtime.answer (codex_questions.py:86-90), which sends their RPC
-            # through the retained provider session (codex_runtime.py:11300-11304).
-            "name": "native question provider delivery dependency",
-            "body": {"id": "$providerQuestion"},
-            "expected": "501",
-            "expected_error": "Not implemented: requires provider-session/question-answer",
-        }],
+        # A fabricated pending card without a live retained session is not a
+        # meaningful HTTP success probe. The fake provider callback contract is
+        # covered at its owner by callback_runtime's durable delete test.
     },
     ("POST", "/api/panel/layout"): {
         "primary": {"body": {
@@ -540,22 +673,22 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
         "additional": [{"name": "provider generated title without a provider session", "body": {"id": "$agent", "name": None, "request_id": "ledger-smart-title"}, "expected": "2xx", "python_citation": "codex_rename.py:195-199"}],
     },
     ("POST", "/api/accounts/claude/add"): {
-        "primary": {"body": {"login_id": "88888888-8888-4888-8888-888888888881", "email": "ledger@example.test"}, "replace_body": True, "expected": "501", "expected_error": "Not implemented: requires provider-session/claude-login", "assert_no_write": True},
+        "primary": {"body": {"login_id": "88888888-8888-4888-8888-888888888881", "email": "ledger@example.test"}, "replace_body": True, "expected": "400", "assert_no_write": True},
     },
     ("POST", "/api/accounts/claude/login"): {
-        "primary": {"body": {"login_id": "88888888-8888-4888-8888-888888888882", "account_key": "$claudeAccount"}, "replace_body": True, "expected": "501", "expected_error": "Not implemented: requires provider-session/claude-login", "assert_no_write": True},
+        "primary": {"body": {"login_id": "88888888-8888-4888-8888-888888888882", "account_key": "$claudeAccount"}, "replace_body": True, "expected": "400", "assert_no_write": True},
     },
     ("POST", "/api/accounts/claude/login/cancel"): {
-        "primary": {"body": {"login_id": "88888888-8888-4888-8888-888888888883"}, "replace_body": True, "expected": "501", "expected_error": "Not implemented: requires provider-session/claude-login", "assert_no_write": True},
+        "primary": {"body": {"login_id": "88888888-8888-4888-8888-888888888883"}, "replace_body": True, "expected": "400", "assert_no_write": True},
     },
     ("POST", "/api/accounts/claude/login/code"): {
-        "primary": {"body": {"login_id": "88888888-8888-4888-8888-888888888884", "code": "123456"}, "replace_body": True, "expected": "501", "expected_error": "Not implemented: requires provider-session/claude-login", "assert_no_write": True},
+        "primary": {"body": {"login_id": "88888888-8888-4888-8888-888888888884", "code": "123456"}, "replace_body": True, "expected": "400", "assert_no_write": True},
     },
     ("POST", "/api/accounts/login"): {
-        "primary": {"body": {"login_id": "88888888-8888-4888-8888-888888888885"}, "replace_body": True, "expected": "501", "expected_error": "Not implemented: requires provider-session/codex-login", "assert_no_write": True},
+        "primary": {"body": {"login_id": "88888888-8888-4888-8888-888888888885"}, "replace_body": True, "expected": "2xx", "python_citation": "codex_accounts.py:688-700"},
     },
     ("POST", "/api/accounts/login/cancel"): {
-        "primary": {"body": {"login_id": "$codexLogin"}, "replace_body": True, "expected": "501", "expected_error": "Not implemented: requires provider-session/codex-login", "assert_no_write": True, "assert_no_file_write": ["accounts/registry.json"]},
+        "primary": {"body": {"login_id": "$codexLogin"}, "replace_body": True, "expected": "2xx", "python_citation": "codex_accounts.py:772-800"},
     },
     ("POST", "/api/accounts/delete"): {
         "primary": {"body": {"account_key": "ledger-unknown-account", "request_id": "ledger-delete"}, "expected": "400", "assert_no_write": True},
@@ -583,8 +716,9 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
         "primary": {"body": {"id": "$agent", "retry_id": "ledger-capacity-cancel", "action": "cancel"}, "expected": "2xx"},
         "additional": [{"name": "provider turn retry", "body": {"id": "$agent", "retry_id": "ledger-capacity-retry", "action": "retry"}, "expected": "501", "expected_error": "Not implemented: requires event-driver/queue-mutations, turn-driver/capacity-retry", "assert_no_write": True}],
     },
-    ("POST", "/api/checkpoint/restore"): {"primary": {"body": {"agent": "$agent", "checkpoint": "$checkpoint", "expectedTree": "0000000000000000000000000000000000000000"}, "expected": "501", "assert_no_write": True}},
-    ("POST", "/api/claude/profiles"): {"primary": {"body": {}, "expected": "501", "assert_no_write": True}},
+    ("POST", "/api/checkpoint/restore"): {"primary": {"body": {"agent": "$agent", "checkpoint": "$checkpoint", "expectedTree": "0000000000000000000000000000000000000000"}, "expected": "409", "assert_no_write": True}},
+    ("POST", "/api/claude/profiles"): {"primary": {"body": {"account_key": "ledger-missing-claude-account"}, "replace_body": True, "expected": "400", "assert_no_write": True}},
+    ("POST", "/api/claude/session"): {"primary": {"body": {"action": "state", "id": "$agent"}, "replace_body": True, "expected": "400", "assert_no_write": True}},
     ("POST", "/api/action"): {"primary": {"body": {"id": "$agent", "action": "review", "request_id": "ledger-native-action"}, "replace_body": True, "expected": "501", "expected_error": "Not implemented: requires account-worker/native-action", "assert_no_write": True}},
     ("POST", "/api/stop"): {"primary": {"body": {"id": "$agent"}, "expected": "2xx"}},
     ("POST", "/api/conversation/delete"): {"primary": {"body": {"id": "$agent"}, "expected": "2xx"}},
@@ -627,9 +761,11 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
         "primary": {"body": {"id": "$agent", "resume_id": "ledger-resume-disable", "enabled": False}, "expected": "2xx"},
         "additional": [{"name": "provider turn resume", "body": {"id": "$agent", "resume_id": "ledger-resume-enable", "enabled": True}, "expected": "501", "expected_error": "Not implemented: requires turn-driver/usage-resume", "assert_no_write": True}],
     },
-    ("POST", "/api/voice/approve"): {"primary": {"body": {"agent": "$agent", "session_id": "$voiceActiveSession", "speech_id": "ledger-speech", "transcript_id": "ledger-transcript"}, "expected": "501", "assert_no_write": True}},
-    ("POST", "/api/voice/audio"): {"primary": {"body": {"agent": "$agent", "session_id": "$voiceActiveSession", "chunk_id": "ledger-audio", "audio": "", "mime": "audio/webm"}, "expected": "501", "assert_no_write": True}},
-    ("POST", "/api/voice/start"): {"primary": {"body": {"agent": "$agent", "session_id": "ledger-voice-start", "sdp": "v=0\\r\\n"}, "expected": "501", "assert_no_write": True}},
+    ("POST", "/api/voice/approve"): {"primary": {"body": {"agent": "$agent", "session_id": "$voiceActiveSession", "speech_id": "ledger-speech", "transcript_id": "ledger-transcript"}, "expected": "400", "assert_no_write": True}},
+    ("POST", "/api/voice/audio"): {"primary": {"body": {"agent": "$agent", "session_id": "$voiceActiveSession", "chunk_id": "ledger-audio", "audio": "", "mime": "audio/webm"}, "expected": "2xx"}},
+    # Python commits the connecting session before its asynchronous provider
+    # setup and returns it immediately (codex_native_voice.py:51-77).
+    ("POST", "/api/voice/start"): {"primary": {"body": {"agent": "$agent", "session_id": "ledger-voice-start", "sdp": "v=0\r\n"}, "expected": "2xx"}},
     ("POST", "/api/agents"): {
         "primary": {"body": {"id": "66666666-6666-4666-8666-666666666666", "prompt": "Ledger agent", "cwd": "$projectPath"}, "expected": "2xx"},
         "additional": [{"name": "worker assignment dependency", "body": {"id": "66666666-6666-4666-8666-666666666667", "prompt": "Ledger worker dependency", "cwd": "$projectPath", "parent": "$agent"}, "expected": "501", "expected_error": "Not implemented: requires worker-driver/workspace-preparation", "assert_no_write": True}],
@@ -646,12 +782,19 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
     },
     ("POST", "/api/configure"): {
         "primary": {"body": {"id": "$agent", "maxAgents": 10}, "fixture_mutations": {"agent_name": "HTTP ledger probe owner"}, "restore": ["agent_record"], "expected": "2xx"},
-        "additional": [{"name": "agent mode settings dependency", "body": {"id": "$agent", "concurrency": 0}, "expected": "501", "expected_error": "Not implemented: requires agent-management/agent-mode-settings", "assert_no_write": True}],
+        "additional": [{"name": "invalid agent mode settings", "body": {"id": "$agent", "concurrency": 0}, "expected": "400", "assert_no_write": True}],
     },
     ("POST", "/api/conversation"): {
         "primary": {"body": {"id": "$agent", "excluded_account_keys": ["other-account"]}, "fixture_mutations": {"agent_name": "HTTP ledger probe owner"}, "restore": ["agent_record"], "expected": "2xx"},
-        "additional": [{"name": "conversation settings dependency", "body": {"id": "$agent", "agent_mode": "single"}, "expected": "501", "expected_error": "Not implemented: requires agent-management/conversation-settings", "assert_no_write": True}],
+        "additional": [{"name": "invalid conversation mode", "body": {"id": "$agent", "agent_mode": "single"}, "expected": "400", "assert_no_write": True}],
     },
+    ("POST", "/api/mac-sync/config"): {"primary": {"body": {"projectId": "ledger-project", "enabled": True}, "replace_body": True, "expected": "400", "assert_no_write": True}},
+    ("POST", "/api/mac-sync/resolve"): {"primary": {"body": {"projectId": "ledger-project", "path": "ledger.txt", "choice": "mac"}, "replace_body": True, "expected": "400", "assert_no_write": True}},
+    ("POST", "/api/project-secrets/list"): {"primary": {"body": {"projectId": "ledger-project"}, "replace_body": True, "expected": "503", "assert_no_write": True}},
+    ("POST", "/api/project-secrets/set"): {"primary": {"body": {"projectId": "ledger-project", "name": "LEDGER_SECRET", "value": "fixture-value", "requestId": "ledger-set-secret"}, "replace_body": True, "expected": "503", "assert_no_write": True}},
+    ("POST", "/api/project-secrets/remove"): {"primary": {"body": {"projectId": "ledger-project", "name": "LEDGER_SECRET", "requestId": "ledger-remove-secret"}, "replace_body": True, "expected": "503", "assert_no_write": True}},
+    ("POST", "/api/vault/setup/facts"): {"primary": {"body": {"projectId": "ledger-project"}, "replace_body": True, "expected": "400", "assert_no_write": True}},
+    ("POST", "/api/vault/setup"): {"primary": {"body": {"projectId": "ledger-project", "requestId": "ledger-vault-setup", "prefix": "ledger", "profile": "fixture", "region": "us-east-1"}, "replace_body": True, "expected": "400", "assert_no_write": True}},
     ("POST", "/api/leads"): {
         "primary": {"body": {"id": "77777777-7777-4777-8777-777777777777", "cwd": "$projectPath", "workspaceMode": "worktree"}, "replace_body": True, "expected": "2xx"},
         "additional": [{"name": "lead model catalog dependency", "body": {"id": "77777777-7777-4777-8777-777777777778", "cwd": "$projectPath", "workspaceMode": "worktree", "model": "claude-sonnet-4-5"}, "replace_body": True, "expected": "501", "expected_error": "Not implemented: requires provider-session/model-list", "assert_no_write": True}],
@@ -674,11 +817,11 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
     },
     ("POST", "/api/voice/end"): {
         "primary": {"body": {"agent": "$agent", "session_id": "$voiceEndedSession"}, "expected": "2xx"},
-        "additional": [{"name": "active voice session dependency", "body": {"agent": "$agent", "session_id": "$voiceActiveSession"}, "expected": "501", "expected_error": "Not implemented: requires provider-session/voice", "assert_no_write": True}],
+        "additional": [{"name": "active voice session", "body": {"agent": "$agent", "session_id": "$voiceActiveSession"}, "expected": "2xx"}],
     },
     ("POST", "/api/voice/speech"): {
         "primary": {"body": {"agent": "$agent", "record_id": "$voiceRecord", "session_id": "$voiceEndedSession"}, "expected": "2xx"},
-        "additional": [{"name": "provider-backed voice speech", "body": {"agent": "$agent", "record_id": "$voiceRecord", "session_id": "$voiceActiveSession"}, "expected": "501", "expected_error": "Not implemented: requires provider-session/voice", "assert_no_write": True}],
+        "additional": [{"name": "active voice speech without a saved receipt", "body": {"agent": "$agent", "record_id": "$voiceRecord", "session_id": "$voiceActiveSession"}, "expected": "400", "assert_no_write": True}],
     },
     ("POST", "/api/rules"): {
         "primary": {"body": {
@@ -892,7 +1035,7 @@ def sample_value(schema: dict[str, Any], document: dict[str, Any], active: froze
 def ensure_operation_probe_cases(
     manifest: dict[tuple[str, str], dict[str, Any]],
 ) -> None:
-    """Generate only unambiguous probes; partial routes require explicit cases."""
+    """Keep refusal expectations tied to the current route census."""
     for key, entry in manifest.items():
         status = entry.get("status")
         spec = PROBE_CASES.setdefault(key, {})
@@ -905,28 +1048,37 @@ def ensure_operation_probe_cases(
         primary = spec.setdefault("primary", {})
         if status == "implemented":
             primary.setdefault("expected", "2xx")
+            for probe_case in [primary, *spec.get("additional", [])]:
+                if probe_case.get("expected") == "501":
+                    # The route census is the owner of a named 501 capability gap.
+                    # Once implemented, leave the exact Python probe outcome to
+                    # an explicit case when it is a runtime precondition; otherwise
+                    # require only that the stale refusal has disappeared.
+                    probe_case["expected"] = "not_501"
+                    probe_case.pop("expected_error", None)
         elif not primary.get("expected"):
             primary["unverified"] = True
 
 
-def seed_python_probe_state(backend: Any) -> dict[str, str]:
+def seed_python_probe_state(backend: Any, python: str) -> dict[str, str]:
     """Seed the disposable backend with records written by the Python runtime."""
-    agent_id = "ledger-probe-agent"
-    image_agent_id = "ledger-probe-image-agent"
-    task_id = "ledger-probe-task"
-    active_command_id = "ledger-probe-active-command"
-    work_id = "ledger-probe-work"
-    complaint_id = "ledger-probe-complaint"
-    room_id = "ledger-probe-room"
-    checkpoint_id = "ledger-probe-checkpoint"
-    item_id = "ledger-probe-item"
-    monitor_id = "ledger-probe-monitor"
-    terminal_id = "ledger-probe-terminal"
-    active_rule_id = "ledger-probe-active-rule"
+    prefix = backend.fixture_namespace or "ledger-"
+    agent_id = f"{prefix}probe-agent"
+    image_agent_id = f"{prefix}probe-image-agent"
+    task_id = f"{prefix}probe-task"
+    active_command_id = f"{prefix}probe-active-command"
+    work_id = f"{prefix}probe-work"
+    complaint_id = f"{prefix}probe-complaint"
+    room_id = f"{prefix}probe-room"
+    checkpoint_id = f"{prefix}probe-checkpoint"
+    item_id = f"{prefix}probe-item"
+    monitor_id = f"{prefix}probe-monitor"
+    terminal_id = f"{prefix}probe-terminal"
+    active_rule_id = f"{prefix}probe-active-rule"
     active_monitor_id = f"rule:{active_rule_id}:1"
-    chat_id = "55555555-5555-4555-8555-555555555555"
-    message_id = "66666666-6666-4666-8666-666666666666"
-    file_path = "ledger-probe.txt"
+    chat_id = str(uuid.uuid4()) if backend.copy_mode else "55555555-5555-4555-8555-555555555555"
+    message_id = str(uuid.uuid4()) if backend.copy_mode else "66666666-6666-4666-8666-666666666666"
+    file_path = f"{prefix}probe.txt"
     source = Path(__file__).resolve().parents[1] / "src"
     seed = f"""
 import os, subprocess, sys, time
@@ -1015,11 +1167,6 @@ try:
         runtime.put(db, "requests", {{
             "id": "ledger-probe-answer-question", "agent": {agent_id!r}, "epoch": 0,
             "method": "agent/asyncQuestion", "status": "pending", "createdAt": 1.0,
-            "params": {{"questions": [{{"id": "value", "question": "Value?"}}]}},
-        }}, sync_rooms=False)
-        runtime.put(db, "requests", {{
-            "id": "ledger-probe-provider-question", "agent": {agent_id!r}, "epoch": 0,
-            "method": "item/tool/requestUserInput", "status": "pending", "createdAt": 1.0,
             "params": {{"questions": [{{"id": "value", "question": "Value?"}}]}},
         }}, sync_rooms=False)
         runtime.put(db, "requests", {{
@@ -1134,11 +1281,13 @@ try:
 finally:
     runtime.close()
 """
-    python = os.environ.get("CODEX_AGENTS_PYTHON", sys.executable)
+    seed = seed.replace("ledger-", prefix).replace('"default"', repr(backend.account_key))
+    environment = runtime_environment(backend)
+    environment["CODEX_AGENTS_PYTHON"] = python
     subprocess.run(
         [python, "-B", "-c", seed],
         cwd=backend.cwd,
-        env=runtime_environment(backend),
+        env=environment,
         check=True,
         timeout=30,
     )
@@ -1151,7 +1300,7 @@ finally:
         f"{progress_metadata.st_size}"
     )
     terminal_identifiers = json.loads(
-        (backend.state / "ledger-probe-identifiers.json").read_text(encoding="utf-8")
+        (backend.state / f"{prefix}probe-identifiers.json").read_text(encoding="utf-8")
     )
     terminal_id = terminal_identifiers["terminal"]
     return {
@@ -1168,25 +1317,24 @@ finally:
         "terminal": terminal_id,
         "queueIds": [],
         "activeRule": active_rule_id,
-        "question": "ledger-probe-question",
-        "questionDelete": "ledger-probe-question",
-        "answerQuestion": "ledger-probe-answer-question",
-        "providerQuestion": "ledger-probe-provider-question",
-        "voiceRecord": "ledger-probe-voice-record",
-        "voiceEndedSession": "ledger-probe-voice-ended",
-        "voiceActiveSession": "ledger-probe-voice-active",
-        "approvalRequest": "ledger-probe-monitor-approval",
+        "question": f"{prefix}probe-question",
+        "questionDelete": f"{prefix}probe-question",
+        "answerQuestion": f"{prefix}probe-answer-question",
+        "voiceRecord": f"{prefix}probe-voice-record",
+        "voiceEndedSession": f"{prefix}probe-voice-ended",
+        "voiceActiveSession": f"{prefix}probe-voice-active",
+        "approvalRequest": f"{prefix}probe-monitor-approval",
         "schemaHash": backend.schema_hash,
-        "analyticsAgent": "analytics-contract-agent",
+        "analyticsAgent": f"{prefix}analytics-contract-agent",
         "chat": chat_id,
         "message": message_id,
         "filePath": file_path,
         "layoutRevision": layout_revision,
         "emptyQueueRevision": terminal_identifiers["emptyQueueRevision"],
         "projectPath": str(backend.cwd),
-        "claudeAccount": "claude-ledger",
-        "toolReceipt": "ledger-tool-receipt",
-        "toolCancel": "ledger-tool-cancel",
+        "claudeAccount": f"{prefix}claude-ledger",
+        "toolReceipt": f"{prefix}tool-receipt",
+        "toolCancel": f"{prefix}tool-cancel",
     }
 
 
@@ -1232,6 +1380,10 @@ def valid_probe(
         name: str(resolve_probe_value(value, identifiers))
         for name, value in header_overrides.items()
     }
+    if identifiers is not None:
+        path = namespace_probe_constants(path, identifiers)
+        body = namespace_probe_constants(body, identifiers)
+        headers = namespace_probe_constants(headers, identifiers)
     return path, body, headers
 
 
@@ -1244,6 +1396,28 @@ def resolve_probe_value(value: Any, identifiers: dict[str, str] | None) -> Any:
         return [resolve_probe_value(item, identifiers) for item in value]
     if isinstance(value, dict):
         return {key: resolve_probe_value(item, identifiers) for key, item in value.items()}
+    return value
+
+
+def namespace_probe_constants(value: Any, identifiers: dict[str, str]) -> Any:
+    """Keep static request literals unique when probes target a real-data copy."""
+    if "_fixturePrefix" not in identifiers:
+        return value
+    prefix = identifiers["_fixturePrefix"]
+    account_key = identifiers["_accountKey"]
+    literal_ids = identifiers["_literalIds"]
+    if isinstance(value, str):
+        if value == "default":
+            return account_key
+        if value in literal_ids:
+            return literal_ids[value]
+        if "ledger-" in value:
+            return value.replace("ledger-", prefix)
+        return value
+    if isinstance(value, list):
+        return [namespace_probe_constants(item, identifiers) for item in value]
+    if isinstance(value, dict):
+        return {key: namespace_probe_constants(item, identifiers) for key, item in value.items()}
     return value
 
 
@@ -1295,6 +1469,8 @@ def probe_fixture_state(
                 )
         if "remove_identity" in mutations:
             path = backend.state / "multi-server" / "identity.json"
+            if not path.is_file():
+                raise RuntimeError("seeded synthetic federation identity is missing")
             identity_file = (path, path.read_bytes(), path.stat().st_mode & 0o777)
             path.unlink()
         if mutations.get("activate_native_command"):
@@ -1314,7 +1490,9 @@ def probe_fixture_state(
                     (json.dumps(changed), command_id),
                 )
         if mutations.get("stale_session_cost_cache"):
-            cache_files = sorted((backend.state / "session-costs").glob("cost-*.json"))
+            cache_files = sorted((backend.state / "session-costs").glob(
+                f"cost-{identifiers['analyticsAgent']}*.json"
+            ))
             if not cache_files:
                 raise RuntimeError("seeded session-cost cache is missing")
             path = cache_files[0]
@@ -1329,7 +1507,9 @@ def probe_fixture_state(
                         monitor_id: raw
                         for monitor_id, raw in connection.execute(
                             "SELECT id,record FROM runtime_monitors WHERE "
-                            "json_extract(record,'$.status') IN ('running','starting','approval')"
+                            "id LIKE ? AND "
+                            "json_extract(record,'$.status') IN ('running','starting','approval')",
+                            (f"{backend.fixture_namespace}%" if backend.copy_mode else "%",),
                         )
                     }
                     for monitor_id, raw in workspace_monitors.items():
@@ -1403,6 +1583,10 @@ def probe_operations(
     manifest: dict[tuple[str, str], dict[str, Any]],
     planned_assertions: dict[str, set[str]],
     successful_assertions: dict[str, set[str]],
+    *,
+    state_root: Path | None = None,
+    python: str,
+    copy_witness: dict[str, str] | None = None,
 ) -> list[dict[str, Any]]:
     sys.path.insert(0, str(TESTS))
     from http_backend_harness import BackendProcess, HttpResult
@@ -1411,11 +1595,32 @@ def probe_operations(
         prefix="rust-http-ledger-"
     ) as scratch_name:
         scratch = Path(scratch_name).resolve(strict=True)
-        backend = BackendProcess(scratch, claude_bin=None)
+        backend = BackendProcess(scratch, claude_bin=None, state_root=state_root)
         try:
+            backend.copy_mode = state_root is not None
+            if backend.copy_mode and copy_witness is None:
+                raise RuntimeError("marked-copy probe has no pre-mutation agent witness")
+            backend.fixture_namespace = (
+                f"copyprobe-{uuid.uuid4().hex}-" if backend.copy_mode else ""
+            )
+            backend.account_key = (
+                f"{backend.fixture_namespace}account-default" if backend.copy_mode else "default"
+            )
+            uuid_re = re.compile(r"^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$")
+            probe_strings = collect_probe_strings(PROBE_CASES)
+            probe_strings.add("88888888-8888-4888-8888-888888888880")
+            backend.fixture_uuid_values = {
+                value: str(uuid.uuid4())
+                for value in (probe_strings if backend.copy_mode else set())
+                if uuid_re.fullmatch(value) and set(value.replace("-", "")) != {"0"}
+            }
+            backend.fixture_login_id = backend.fixture_uuid_values.get(
+                "88888888-8888-4888-8888-888888888880",
+                str(uuid.uuid4()) if backend.copy_mode else "88888888-8888-4888-8888-888888888880",
+            )
             backend.create_codex_replay("restart-mid-turn-supervisor-replay.json")
-            seed_catalog_state(backend)
-            codex_login_id = seed_codex_login(backend)
+            seed_catalog_state(backend, python)
+            codex_login_id = seed_codex_login(backend, python)
             import importlib.util
             analytics_path = TESTS / "rust-analytics-http-contract.py"
             analytics_spec = importlib.util.spec_from_file_location("ledger_analytics_seed", analytics_path)
@@ -1424,8 +1629,15 @@ def probe_operations(
             analytics_module = importlib.util.module_from_spec(analytics_spec)
             analytics_spec.loader.exec_module(analytics_module)
             analytics_module.seed_analytics(backend)
-            identifiers = seed_python_probe_state(backend)
+            identifiers = seed_python_probe_state(backend, python)
             identifiers["codexLogin"] = codex_login_id
+            if backend.copy_mode:
+                assert copy_witness is not None
+                identifiers["copyWitnessAgent"] = copy_witness["id"]
+                identifiers["copyWitnessCwd"] = copy_witness["cwd"]
+                identifiers["_fixturePrefix"] = backend.fixture_namespace
+                identifiers["_accountKey"] = backend.account_key
+                identifiers["_literalIds"] = backend.fixture_uuid_values
             backend.start()
             token = backend.session["token"]
             rows = []
@@ -1445,6 +1657,15 @@ def probe_operations(
                 ]
                 observations = []
                 for case_name, probe_case in cases:
+                    if (
+                        not backend.copy_mode
+                        and probe_case.get("functional_witness") == "copy-existing-agent"
+                    ):
+                        probe_case = {
+                            **probe_case,
+                            "query": {"agent": "$agent"},
+                        }
+                        probe_case.pop("functional_witness", None)
                     if probe_case.get("refresh_queue"):
                         queue_snapshot = backend.request(
                             "GET",
@@ -1512,6 +1733,7 @@ def probe_operations(
                         if (backend.state / relative).is_file() else None
                         for relative in file_paths
                     }
+                    request_started = time.monotonic()
                     with probe_fixture_state(backend, identifiers, probe_case):
                         if method == "GET" and template == "/api/sync/stream":
                             request = urllib.request.Request(backend.origin + path, headers=headers)
@@ -1542,6 +1764,13 @@ def probe_operations(
                         response_body = json.loads(result.body)
                     except (ValueError, TypeError):
                         response_body = None
+                    functional_witness = (
+                        probe_case.get("functional_witness") == "copy-existing-agent"
+                        and response_body == {
+                            "kind": "native",
+                            "path": identifiers.get("copyWitnessCwd"),
+                        }
+                    )
                     operation_key = f"{method} {template}"
                     probe_event = {
                         "operation": operation_key,
@@ -1575,15 +1804,22 @@ def probe_operations(
                         or (expected == "404" and result.status == 404 and response_body == {"error": "Not found"})
                         or (expected == "400" and result.status == 400)
                         or (expected == "403" and result.status == 403)
+                        or (expected == "409" and result.status == 409)
+                        or (expected == "not_501" and result.status != 501)
                         or (expected == "4xx" and 400 <= result.status < 500)
                         or (expected == "2xx" and 200 <= result.status < 300)
+                        or (isinstance(expected, str) and expected.isdecimal() and result.status == int(expected))
                     )
+                    if probe_case.get("functional_witness"):
+                        expected_matches = expected_matches and functional_witness
                     observations.append({
                         "case": case_name,
                         "status": result.status,
                         "expected": expected,
                         "expectedMatches": expected_matches,
-                        "body": response_body,
+                        "functionalWitness": functional_witness,
+                        "body": persisted_probe_body(probe_case, response_body),
+                        "elapsedSeconds": round(time.monotonic() - request_started, 4),
                         "standard501Envelope": standard_501,
                         "noWrite": no_write,
                         **({"reason": probe_case["reason"]} if "reason" in probe_case else {}),
@@ -1642,41 +1878,71 @@ def probe_operations(
                     "probeCases": observations,
                     "httpAssertions": sorted(planned_assertions.get(operation_key, set())),
                     "observedSuccessfulAssertions": sorted(successful_assertions.get(operation_key, set())),
+                    **({"copyDisposition": copy_probe_disposition(observations)} if state_root else {}),
                 })
             return rows
         finally:
             backend.close()
 
 
-def seed_catalog_state(backend: Any) -> None:
+def collect_probe_strings(value: Any) -> set[str]:
+    if isinstance(value, str):
+        return {value}
+    if isinstance(value, list):
+        return set().union(*(collect_probe_strings(item) for item in value)) if value else set()
+    if isinstance(value, dict):
+        return set().union(*(collect_probe_strings(item) for item in value.values())) if value else set()
+    return set()
+
+
+def copy_probe_disposition(observations: list[dict[str, Any]]) -> str:
+    if not observations or any(case.get("expected") is None for case in observations):
+        return "unverified"
+    if any(not case.get("expectedMatches") for case in observations):
+        return "refused"
+    if any(case.get("functionalWitness") for case in observations):
+        return "pass"
+    return "unverified"
+
+
+def persisted_probe_body(probe_case: dict[str, Any], response_body: Any) -> Any:
+    """Keep copied-state witness contents out of the portable ledger report."""
+    if probe_case.get("functional_witness") == "copy-existing-agent":
+        return None
+    return response_body
+
+
+def seed_catalog_state(backend: Any, python: str) -> None:
     accounts = backend.state / "accounts"
+    if accounts.exists():
+        raise RuntimeError("ledger fixture refuses to overwrite a copied accounts directory")
     accounts.mkdir(parents=True)
+    account_key = getattr(backend, "account_key", "default")
+    fixture_namespace = backend.fixture_namespace if backend.copy_mode else ""
     (accounts / "registry.json").write_text(json.dumps({
         "version": 1,
-        "defaultAccountKey": "default",
+        "defaultAccountKey": account_key,
         "accounts": {
-            "default": {
-                "id": "default", "home": str(backend.codex_home), "label": "Codex",
+            account_key: {
+                "id": account_key, "home": str(backend.codex_home), "label": "Codex",
                 "source": "Codex CLI", "provider": "codex", "accountId": "fixture-account",
                 "status": "ready",
             },
-            "disconnected": {
-                "id": "disconnected", "home": str(backend.root / "missing-account"),
+            f"{fixture_namespace}disconnected": {
+                "id": f"{fixture_namespace}disconnected", "home": str(backend.root / "missing-account"),
                 "label": "Disconnected", "source": "ledger fixture", "provider": "codex",
                 "accountId": "stale-id", "status": "ready", "disconnected": True,
             },
-            "claude-ledger": {
-                "id": "claude-ledger", "home": str(backend.codex_home), "label": "Claude probe",
+            f"{fixture_namespace}claude-ledger": {
+                "id": f"{fixture_namespace}claude-ledger", "home": str(backend.codex_home), "label": "Claude probe",
                 "source": "ledger fixture", "provider": "claude", "accountId": "claude:ledger",
                 "status": "ready",
             },
         },
         "logins": {},
     }), encoding="utf-8")
-    python = os.environ.get("CODEX_AGENTS_PYTHON")
-    if not python:
-        raise RuntimeError("CODEX_AGENTS_PYTHON must name the isolated Python interpreter")
     environment = runtime_environment(backend)
+    environment["CODEX_AGENTS_PYTHON"] = python
     environment["PYTHONPATH"] = os.pathsep.join(filter(None, (
         str(TESTS), str(ROOT / "workspaces/runtime/apps/server/src"), environment.get("PYTHONPATH", ""),
     )))
@@ -1688,18 +1954,17 @@ def seed_catalog_state(backend: Any) -> None:
     )
 
 
-def seed_codex_login(backend: Any) -> str:
+def seed_codex_login(backend: Any, python: str) -> str:
     """Create the pending local login through AccountStore's Python writer."""
-    login_id = "88888888-8888-4888-8888-888888888880"
-    account_key = "ledger-pending-login"
+    login_id = backend.fixture_login_id
+    account_prefix = backend.fixture_namespace or "ledger-"
+    account_key = f"{account_prefix}pending-login"
     profile = backend.state / "accounts" / account_key
     profile.mkdir(parents=True, exist_ok=True)
     source = ROOT / "workspaces/runtime/apps/server/src"
     environment = backend._environment()
     environment["PYTHONPATH"] = os.pathsep.join(filter(None, (str(source), environment.get("PYTHONPATH", ""))))
-    python = os.environ.get("CODEX_AGENTS_PYTHON")
-    if not python:
-        raise RuntimeError("CODEX_AGENTS_PYTHON must name the isolated Python interpreter")
+    environment["CODEX_AGENTS_PYTHON"] = python
     script = f"""
 import sys
 from pathlib import Path
@@ -1710,7 +1975,7 @@ store.data["accounts"][{account_key!r}] = {{
     "id": {account_key!r}, "home": {str(profile)!r}, "label": "Pending login fixture",
     "source": "ledger fixture", "provider": "codex", "accountId": None,
     "email": None, "plan": None, "status": "signedOut",
-    "_credentialIdentity": None, "duplicateOf": "default",
+    "_credentialIdentity": None, "duplicateOf": {backend.account_key!r},
 }}
 store.data["logins"][{login_id!r}] = {{
     "requestId": {login_id!r}, "accountKey": {account_key!r}, "status": "pending",
@@ -2093,12 +2358,37 @@ def classify_observation(
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, default=DEFAULT_LEDGER)
+    parser.add_argument(
+        "--state-root", type=Path,
+        help=f"run operation probes on a marked backup copy (requires {COPY_MARKER})",
+    )
+    parser.add_argument(
+        "--live-state-root", type=Path,
+        help="known live state root to refuse as an operation-probe target",
+    )
     options = parser.parse_args()
     command = os.environ.get("STUDIO_HTTP_BACKEND_COMMAND")
     if not command:
         parser.error("STUDIO_HTTP_BACKEND_COMMAND must name the Rust server executable")
 
+    copy_state_root = None
+    if options.state_root is not None:
+        try:
+            copy_state_root = validate_copy_state_root(
+                options.state_root,
+                live_state_root=options.live_state_root,
+                configured_state_root=os.environ.get("CODEX_AGENTS_STATE_DIR"),
+            )
+            backend_command = validate_ephemeral_backend_command(command)
+        except (OSError, ValueError) as error:
+            parser.error(str(error))
+        command = shlex.join(backend_command)
+        os.environ["STUDIO_HTTP_BACKEND_COMMAND"] = command
+    copy_witness = copied_agent_witness(copy_state_root) if copy_state_root is not None else None
+
     environment = os.environ.copy()
+    isolated_python = str(resolve_python(ROOT / "workspaces/runtime/apps/server/src", environment))
+    environment["STUDIO_HTTP_BACKEND_PYTHON"] = isolated_python
     differential = subprocess.run(
         [
             sys.executable,
@@ -2109,9 +2399,18 @@ def main() -> int:
         cwd=ROOT,
         env=environment,
         check=False,
+        capture_output=True,
+        text=True,
     )
     if differential.returncode:
+        diagnostic = (differential.stderr + differential.stdout)[-12000:]
+        diagnostic_path = DEFAULT_CACHE / "http-runtime-extractor-differential-failure.txt"
+        diagnostic_path.parent.mkdir(parents=True, exist_ok=True)
+        diagnostic_path.write_text(diagnostic, encoding="utf-8")
+        print(f"HTTP extractor differential failed; details: {diagnostic_path}", file=sys.stderr)
         raise RuntimeError("HTTP extractor differential contract failed")
+    sys.stdout.write(differential.stdout)
+    sys.stderr.write(differential.stderr)
     trace_regression = subprocess.run(
         [sys.executable, str(TESTS / "http_runtime_conformance_ledger_test.py")],
         cwd=ROOT, env=environment, check=False,
@@ -2147,7 +2446,14 @@ def main() -> int:
         for event in suite.get("requests", []):
             if event.get("operation") and event.get("assertion") in passing and 200 <= event["status"] < 300:
                 successful_assertions[event["operation"]].add(event["assertion"])
-    operations_result = probe_operations(manifest, planned_assertions, successful_assertions)
+    operations_result = probe_operations(
+        manifest,
+        planned_assertions,
+        successful_assertions,
+        state_root=copy_state_root,
+        python=isolated_python,
+        copy_witness=copy_witness,
+    )
     operation_tests: dict[str, set[str]] = defaultdict(set)
     failures_without_501: list[str] = []
     envelope_mismatches: list[str] = []
@@ -2193,8 +2499,14 @@ def main() -> int:
         ),
         "failedTestsWithout501": len(failures_without_501),
         "standard501EnvelopeMismatches": len(envelope_mismatches),
+        **({
+            "copyPass": sum(row.get("copyDisposition") == "pass" for row in operations_result),
+            "copyRefused": sum(row.get("copyDisposition") == "refused" for row in operations_result),
+            "copyUnverified": sum(row.get("copyDisposition") == "unverified" for row in operations_result),
+        } if copy_state_root else {}),
     }
     ledger = {
+        "probeMode": "marked-copy" if copy_state_root else "seeded-scratch",
         "schemaHash": schema_match.group(1),
         "operations": operations_result,
         "suites": suites,

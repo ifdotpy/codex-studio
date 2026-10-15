@@ -12293,7 +12293,7 @@ export interface components {
        */
       status?:
         | components["schemas"]["ExecutionStatus"]
-        | ("answered" | "expired" | "lost")
+        | ("answered" | "expired" | "lost" | "approved")
         | null;
       /**
        * Taskid

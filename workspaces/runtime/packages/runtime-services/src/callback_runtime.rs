@@ -278,6 +278,134 @@ mod tests {
     #![allow(clippy::unwrap_used)]
 
     use super::*;
+    struct FakeReplyPort {
+        store: Arc<RuntimeStore>,
+        outcome: ReplyOutcome,
+        delivered: Mutex<Vec<Reply>>,
+    }
+
+    impl CallbackReplyPort for FakeReplyPort {
+        fn has_live_session(&self, _: &CallbackContext) -> bool {
+            true
+        }
+
+        fn deliver(&self, reply: &Reply, _: Duration) -> Result<ReplyReceipt, CallbackError> {
+            let submitted: i64 = self.store.read()?.query_row(
+                "SELECT count(*) FROM runtime_operation_receipts \
+                 WHERE signature='provider-callback' \
+                   AND json_extract(result,'$.delivery')='submitted'",
+                [],
+                |row| row.get(0),
+            )?;
+            assert_eq!(submitted, 1, "durable intent commits before provider I/O");
+            self.delivered.lock().unwrap().push(reply.clone());
+            Ok(ReplyReceipt {
+                identity: reply.identity.clone(),
+                outcome: self.outcome,
+            })
+        }
+    }
+
+    fn pending_native_question() -> (tempfile::TempDir, Arc<RuntimeStore>) {
+        let directory = tempfile::tempdir().unwrap();
+        let store = Arc::new(RuntimeStore::open(Some(directory.path())).unwrap());
+        let actor = json!({
+            "id":"delete-agent", "rootId":"delete-agent", "epoch":0,
+            "status":"running", "autoWake":true, "isLead":true,
+            "accountKey":"default", "threadId":"thread", "turnId":"turn",
+        });
+        let card = json!({
+            "id":"native-question", "agent":"delete-agent", "epoch":0,
+            "method":"item/tool/requestUserInput", "status":"pending",
+            "createdAt":1.0, "accountKey":"default", "connectionId":"connection",
+            "supervisor":{"generation":1}, "rpcId":"rpc-question",
+            "params":{"questions":[{"id":"value","question":"Value?"}],
+                      "threadId":"thread","turnId":"turn"},
+        });
+        store
+            .transaction_with::<_, CallbackError>(|tx| {
+                tx.execute(
+                    "INSERT INTO runtime_agents(id,record) VALUES(?1,?2)",
+                    rusqlite::params!["delete-agent", actor.to_string()],
+                )?;
+                tx.execute(
+                    "INSERT INTO runtime_requests(id,record) VALUES(?1,?2)",
+                    rusqlite::params!["native-question", card.to_string()],
+                )?;
+                Ok(())
+            })
+            .unwrap();
+        (directory, store)
+    }
+
+    #[test]
+    fn deleting_native_question_uses_durable_provider_answer_and_never_resends_unknown() {
+        // Python codex_questions.py:86-90 answers pending native questions on
+        // delete; codex_runtime.py:11300-11304 sends the empty answers object.
+        for (outcome, expected_status) in [
+            (ReplyOutcome::Written, "deleted"),
+            (ReplyOutcome::Unknown, "uncertain"),
+        ] {
+            let (_directory, store) = pending_native_question();
+            let port = Arc::new(FakeReplyPort {
+                store: store.clone(),
+                outcome,
+                delivered: Mutex::new(Vec::new()),
+            });
+            let runtime = CallbackRuntime::new(store.clone(), port.clone());
+            let first = runtime.delete_question("native-question", 10.0);
+            if outcome == ReplyOutcome::Written {
+                assert_eq!(
+                    first.unwrap(),
+                    json!({"id":"native-question","status":"deleted"})
+                );
+            } else {
+                assert!(matches!(first, Err(CallbackError::Unknown)));
+            }
+
+            let delivered = port.delivered.lock().unwrap();
+            assert_eq!(delivered.len(), 1);
+            assert_eq!(
+                delivered[0].body,
+                studio_runtime_providers::ResponseBody::Result(json!({"answers":{}}),)
+            );
+            drop(delivered);
+
+            if outcome == ReplyOutcome::Unknown {
+                assert!(matches!(
+                    runtime.delete_question("native-question", 11.0),
+                    Err(CallbackError::Invalid(
+                        "Question delivery is uncertain; wait for its receipt"
+                    ))
+                ));
+                assert_eq!(port.delivered.lock().unwrap().len(), 1);
+            }
+
+            let request: String = store
+                .read()
+                .unwrap()
+                .query_row(
+                    "SELECT record FROM runtime_requests WHERE id='native-question'",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(
+                serde_json::from_str::<Value>(&request).unwrap()["status"],
+                expected_status
+            );
+            let attempts: i64 = store
+                .read()
+                .unwrap()
+                .query_row(
+                    "SELECT count(*) FROM runtime_operation_receipts WHERE signature='provider-callback'",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(attempts, 1, "the answer intent is durable");
+        }
+    }
 
     #[test]
     fn lifecycle_gate_is_held_during_the_action() {

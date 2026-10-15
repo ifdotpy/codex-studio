@@ -268,6 +268,22 @@ impl RoomDirectory {
             records::all(connection, "runtime_projects")?,
         )
     }
+    /// Build sync context from schema-valid rows, skipping malformed records
+    /// as the Python sync projection owner does.
+    pub fn prepare_for_sync(
+        connection: &Connection,
+    ) -> Result<Self, studio_runtime_store::StoreError> {
+        if !connection.is_autocommit() {
+            return Err(records::invalid(
+                "runtime_projects",
+                "room-path-preparation-in-transaction",
+            ));
+        }
+        Self::resolve(
+            crate::sync_policy::projection_values(connection, "runtime_agents")?,
+            crate::sync_policy::projection_values(connection, "runtime_projects")?,
+        )
+    }
     fn resolve(agents: Vec<Value>, projects: Vec<Value>) -> StoreResult<Self> {
         let mut peers = Vec::new();
         for project in &projects {
@@ -330,6 +346,12 @@ impl RoomDirectory {
             self.agents.as_ref() == &records::all(connection, "runtime_agents")?
                 && self.projects == records::all(connection, "runtime_projects")?,
         )
+    }
+    pub fn matches_for_sync(&self, connection: &Connection) -> StoreResult<bool> {
+        Ok(self.agents.as_ref()
+            == &crate::sync_policy::projection_values(connection, "runtime_agents")?
+            && self.projects
+                == crate::sync_policy::projection_values(connection, "runtime_projects")?)
     }
     pub(crate) fn agents(&self) -> &[Value] {
         &self.agents
@@ -401,6 +423,31 @@ mod room_preparation_tests {
         assert!(
             RoomDirectory::prepare(&tx).is_err(),
             "filesystem preparation inside a transaction must refuse"
+        );
+    }
+
+    #[test]
+    fn sync_context_skips_malformed_persisted_agents_and_projects() {
+        let mut connection = Connection::open_in_memory().expect("database");
+        connection
+            .execute_batch(
+                "CREATE TABLE runtime_agents(id TEXT PRIMARY KEY,record TEXT); \
+                 CREATE TABLE runtime_projects(id TEXT PRIMARY KEY,record TEXT); \
+                 INSERT INTO runtime_agents(id,record) VALUES('broken-agent','{'); \
+                 INSERT INTO runtime_projects(id,record) VALUES('broken-project','{');",
+            )
+            .expect("malformed source fixtures");
+
+        assert!(RoomDirectory::prepare(&connection).is_err());
+        let prepared = RoomDirectory::prepare_for_sync(&connection)
+            .expect("sync context skips malformed source rows");
+        assert!(prepared.agents.is_empty());
+        assert!(prepared.projects.is_empty());
+        let tx = connection.transaction().expect("sync transaction");
+        assert!(
+            prepared
+                .matches_for_sync(&tx)
+                .expect("skip malformed rows on recheck")
         );
     }
 

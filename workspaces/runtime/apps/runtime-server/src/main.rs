@@ -179,6 +179,11 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
     studio_runtime_services::diagnostics::mark_startup_memory(
         studio_runtime_services::diagnostics::StartupMemoryMark::StoreOpened,
     );
+    let voice_recovery_time = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|value| value.as_secs_f64())
+        .unwrap_or_default();
+    studio_runtime_services::voice::provider::recover_after_restart(&store, voice_recovery_time)?;
     studio_runtime_services::maintenance::remove_review_assignments(&store)?;
     let credentials =
         Arc::new(studio_runtime_services::federation_credentials::Credentials::default());

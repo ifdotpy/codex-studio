@@ -25713,7 +25713,8 @@
                 "enum": [
                   "answered",
                   "expired",
-                  "lost"
+                  "lost",
+                  "approved"
                 ],
                 "type": "string"
               },

@@ -31,9 +31,26 @@ use super::runtime::{
 
 const MAX_TRACKED_VOICE_SESSIONS: usize = 1024;
 const VOICE_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+const RESTARTED_SESSION_ERROR: &str = "Voice connection ended. The transcript is saved.";
 
 type SessionDispatchLocks = HashMap<(String, String), Weak<tokio::sync::Mutex<()>>>;
 static DISPATCH_LOCKS: OnceLock<Mutex<SessionDispatchLocks>> = OnceLock::new();
+type SessionStartCompletions = HashMap<(String, String), Weak<tokio::sync::watch::Sender<bool>>>;
+static START_COMPLETIONS: OnceLock<Mutex<SessionStartCompletions>> = OnceLock::new();
+
+/// A restarted process cannot restore a browser's peer connection or microphone.
+/// Settle accepted sessions before HTTP admission; retain their receipts so an
+/// exact retry returns the terminal result without sending another provider RPC.
+pub fn recover_after_restart(store: &RuntimeStore, now: f64) -> Result<usize, VoiceProviderError> {
+    let changed = store.transaction(|transaction| {
+        Ok(transaction.execute(
+            "UPDATE voice_sessions SET state='lost',ended=?1,error=?2 \
+             WHERE state IS NOT NULL AND ended IS NULL",
+            rusqlite::params![now, RESTARTED_SESSION_ERROR],
+        )?)
+    })?;
+    Ok(changed)
+}
 
 async fn session_dispatch_guard(
     agent_id: &str,
@@ -53,6 +70,71 @@ async fn session_dispatch_guard(
         })
     };
     lock.lock_owned().await
+}
+
+fn register_start_completion(
+    agent_id: &str,
+    session_id: &str,
+) -> std::sync::Arc<tokio::sync::watch::Sender<bool>> {
+    let table = START_COMPLETIONS.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut completions = table
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    completions.retain(|_, completion| completion.strong_count() > 0);
+    let (completion, _) = tokio::sync::watch::channel(false);
+    let completion = std::sync::Arc::new(completion);
+    completions.insert(
+        (agent_id.to_owned(), session_id.to_owned()),
+        std::sync::Arc::downgrade(&completion),
+    );
+    completion
+}
+
+fn pending_start_completion(
+    agent_id: &str,
+    session_id: &str,
+) -> Option<std::sync::Arc<tokio::sync::watch::Sender<bool>>> {
+    START_COMPLETIONS.get().and_then(|table| {
+        table
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(&(agent_id.to_owned(), session_id.to_owned()))
+            .and_then(Weak::upgrade)
+    })
+}
+
+fn finish_start_completion(
+    agent_id: &str,
+    session_id: &str,
+    completion: &std::sync::Arc<tokio::sync::watch::Sender<bool>>,
+) {
+    completion.send_replace(true);
+    if let Some(table) = START_COMPLETIONS.get() {
+        let mut completions = table
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let key = (agent_id.to_owned(), session_id.to_owned());
+        if completions
+            .get(&key)
+            .and_then(Weak::upgrade)
+            .is_some_and(|current| std::sync::Arc::ptr_eq(&current, completion))
+        {
+            completions.remove(&key);
+        }
+    }
+}
+
+/// Wait for an admitted start's provider setup and start request to settle.
+/// End uses this barrier to preserve start-before-stop ordering without holding
+/// the per-session dispatch mutex while provider work is in flight.
+pub async fn wait_for_start_setup(agent_id: &str, session_id: &str) {
+    let Some(completion) = pending_start_completion(agent_id, session_id) else {
+        return;
+    };
+    let mut finished = completion.subscribe();
+    if !*finished.borrow() {
+        let _ = finished.changed().await;
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -925,7 +1007,14 @@ pub async fn end(
     session_id: String,
     now: f64,
 ) -> Result<Value, VoiceProviderError> {
-    let _dispatch = session_dispatch_guard(&agent_id, &session_id).await;
+    let dispatch = session_dispatch_guard(&agent_id, &session_id).await;
+    let dispatch = if pending_start_completion(&agent_id, &session_id).is_some() {
+        drop(dispatch);
+        wait_for_start_setup(&agent_id, &session_id).await;
+        session_dispatch_guard(&agent_id, &session_id).await
+    } else {
+        dispatch
+    };
     let store_for_write = store.clone();
     let write_agent = agent_id.clone();
     let write_session = session_id.clone();
@@ -935,6 +1024,9 @@ pub async fn end(
     )
     .await
     .map_err(|_| VoiceProviderError::Operation)??;
+    // The durable Stopping transition serializes duplicate end calls. Keep the
+    // per-session guard out of the provider RPC wait.
+    drop(dispatch);
     let Some(context) = context else {
         return Ok(value);
     };
@@ -2123,6 +2215,20 @@ pub async fn start(
     offer: String,
     now: f64,
 ) -> Result<Value, VoiceProviderError> {
+    start_admitted(store, Some(provider), agent_id, session_id, offer, now).await
+}
+
+/// Admit a start even when provider wiring is unavailable. Python commits and
+/// returns the connecting session before resolving the provider account; a
+/// missing adapter is therefore recorded as asynchronous session failure.
+pub async fn start_admitted(
+    store: std::sync::Arc<RuntimeStore>,
+    provider: Option<std::sync::Arc<dyn VoiceProviderPort>>,
+    agent_id: String,
+    session_id: String,
+    offer: String,
+    now: f64,
+) -> Result<Value, VoiceProviderError> {
     let _dispatch = session_dispatch_guard(&agent_id, &session_id).await;
     let start_request = StartRequest::new(
         AgentId::from(agent_id.as_str()),
@@ -2150,24 +2256,12 @@ pub async fn start(
     }
 
     let (account_key, thread_id, epoch, root_id) = agent_context(&store, &agent_id)?;
-    let context = provider
-        .prepare(&agent_id, &session_id, &account_key, &thread_id, epoch)
-        .await
-        .map_err(certainty_error)?;
-    if context.agent_id != agent_id
-        || context.account_key != account_key
-        || context.thread_id != thread_id
-        || context.epoch != epoch
-        || context.connection_id.is_empty()
-    {
-        return Err(VoiceProviderError::ContextChanged);
-    }
-
     let store_for_write = store.clone();
     let write_agent = agent_id.clone();
     let write_session = session_id.clone();
     let write_offer = offer.clone();
-    let write_context = context.clone();
+    let write_account_key = account_key.clone();
+    let write_thread_id = thread_id.clone();
     let histories =
         studio_runtime_process::blocking_pool::spawn_blocking("runtime-services/voice/provider", {
             let store = store.clone();
@@ -2184,7 +2278,9 @@ pub async fn start(
                 &write_agent,
                 &write_session,
                 &write_offer,
-                &write_context,
+                &write_account_key,
+                &write_thread_id,
+                epoch,
                 &histories,
                 now,
             )
@@ -2194,6 +2290,127 @@ pub async fn start(
     .map_err(|_| VoiceProviderError::Operation)??;
     if let StartDecision::Replay(session) = saved {
         return Ok(session_value(&session));
+    }
+
+    // Match Python's durable acceptance boundary: persist connecting before
+    // provider setup, then resolve the account and send start off the request.
+    let response = load_session(&store, &agent_id, &session_id)?;
+    let start_completion = register_start_completion(&agent_id, &session_id);
+    let completed_agent = agent_id.clone();
+    let completed_session = session_id.clone();
+    drop(_dispatch);
+    tokio::spawn(async move {
+        let _ = complete_start(
+            store,
+            provider,
+            agent_id,
+            session_id,
+            offer,
+            account_key,
+            thread_id,
+            epoch,
+            now,
+        )
+        .await;
+        finish_start_completion(&completed_agent, &completed_session, &start_completion);
+    });
+    Ok(response)
+}
+
+async fn complete_start(
+    store: std::sync::Arc<RuntimeStore>,
+    provider: Option<std::sync::Arc<dyn VoiceProviderPort>>,
+    agent_id: String,
+    session_id: String,
+    offer: String,
+    account_key: String,
+    thread_id: String,
+    epoch: i64,
+    now: f64,
+) -> Result<(), VoiceProviderError> {
+    let Some(provider) = provider else {
+        let store_for_error = store.clone();
+        let id = session_id.clone();
+        studio_runtime_process::blocking_pool::spawn_blocking(
+            "runtime-services/voice/provider",
+            move || set_start_failure(&store_for_error, &id, VoiceWriteCertainty::NotSent, now),
+        )
+        .await
+        .map_err(|_| VoiceProviderError::Operation)??;
+        return Err(VoiceProviderError::Operation);
+    };
+    let context = match provider
+        .prepare(&agent_id, &session_id, &account_key, &thread_id, epoch)
+        .await
+    {
+        Ok(context) => context,
+        Err(certainty) => {
+            let store_for_error = store.clone();
+            let id = session_id.clone();
+            studio_runtime_process::blocking_pool::spawn_blocking(
+                "runtime-services/voice/provider",
+                move || set_start_failure(&store_for_error, &id, certainty, now),
+            )
+            .await
+            .map_err(|_| VoiceProviderError::Operation)??;
+            return Err(certainty_error(certainty));
+        }
+    };
+    if thread_id.is_empty() {
+        let store_for_error = store.clone();
+        let id = session_id.clone();
+        studio_runtime_process::blocking_pool::spawn_blocking(
+            "runtime-services/voice/provider",
+            move || set_start_failure(&store_for_error, &id, VoiceWriteCertainty::NotSent, now),
+        )
+        .await
+        .map_err(|_| VoiceProviderError::Operation)??;
+        return Err(VoiceProviderError::ContextUnavailable);
+    }
+    if context.agent_id != agent_id
+        || context.account_key != account_key
+        || context.thread_id != thread_id
+        || context.epoch != epoch
+        || context.connection_id.is_empty()
+    {
+        let store_for_error = store.clone();
+        let id = session_id.clone();
+        studio_runtime_process::blocking_pool::spawn_blocking(
+            "runtime-services/voice/provider",
+            move || set_start_failure(&store_for_error, &id, VoiceWriteCertainty::NotSent, now),
+        )
+        .await
+        .map_err(|_| VoiceProviderError::Operation)??;
+        return Err(VoiceProviderError::ContextChanged);
+    }
+
+    let store_for_context = store.clone();
+    let context_for_write = context.clone();
+    let agent_for_context = agent_id.clone();
+    let session_for_context = session_id.clone();
+    let attach = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-services/voice/provider",
+        move || {
+            attach_start_context(
+                &store_for_context,
+                &agent_for_context,
+                &session_for_context,
+                &context_for_write,
+            )
+        },
+    )
+    .await
+    .map_err(|_| VoiceProviderError::Operation)?;
+    if let Err(error) = attach {
+        let store_for_error = store.clone();
+        let id = session_id.clone();
+        studio_runtime_process::blocking_pool::spawn_blocking(
+            "runtime-services/voice/provider",
+            move || set_start_failure(&store_for_error, &id, VoiceWriteCertainty::NotSent, now),
+        )
+        .await
+        .map_err(|_| VoiceProviderError::Operation)??;
+        return Err(error);
     }
 
     let call = start_call(context, &session_id, &offer);
@@ -2210,7 +2427,7 @@ pub async fn start(
         .map_err(|_| VoiceProviderError::Operation)??;
         return Err(certainty_error(receipt.certainty));
     }
-    load_session(&store, &agent_id, &session_id)
+    Ok(())
 }
 
 fn agent_context(
@@ -2225,7 +2442,7 @@ fn agent_context(
         .get("threadId")
         .and_then(Value::as_str)
         .filter(|thread| !thread.is_empty())
-        .ok_or(VoiceProviderError::ContextUnavailable)?;
+        .unwrap_or_default();
     let account_key = agent
         .extra
         .get("accountKey")
@@ -2272,7 +2489,9 @@ fn create_session(
     agent_id: &str,
     session_id: &str,
     offer: &str,
-    context: &VoiceProviderContext,
+    account_key: &str,
+    thread_id: &str,
+    epoch: i64,
     histories: &std::collections::BTreeMap<String, crate::budget::HistoryObservation>,
     now: f64,
 ) -> Result<StartDecision, VoiceProviderError> {
@@ -2284,10 +2503,10 @@ fn create_session(
     store.transaction_with_error(|transaction| -> Result<_, VoiceProviderError> {
         let agent = super::checked_agent(transaction, agent_id)
             .map_err(|_| VoiceProviderError::ContextUnavailable)?;
-        let current_thread = agent.extra.get("threadId").and_then(Value::as_str);
+        let current_thread = agent.extra.get("threadId").and_then(Value::as_str).unwrap_or_default();
         let current_account = agent.extra.get("accountKey").and_then(Value::as_str).unwrap_or("default");
-        if agent.epoch != context.epoch || current_thread != Some(context.thread_id.as_str())
-            || current_account != context.account_key {
+        if agent.epoch != epoch || current_thread != thread_id
+            || current_account != account_key {
             return Err(VoiceProviderError::ContextChanged);
         }
         crate::context_repair::assert_available(&agent.value())
@@ -2327,7 +2546,7 @@ fn create_session(
                 transaction.execute(
                     "INSERT INTO voice_sessions(id,agent,created,sdp,native_thread,account_key,connection_id,state) \
                      VALUES(?1,?2,?3,?4,?5,?6,?7,'connecting')",
-                    rusqlite::params![session_id,agent_id,created,offer,context.thread_id,context.account_key,context.connection_id],
+                    rusqlite::params![session_id,agent_id,created,offer,(!thread_id.is_empty()).then_some(thread_id),account_key,None::<String>],
                 )?;
                 let row = load_row(transaction, session_id, agent_id)?
                     .ok_or(policy::VoiceError::InvalidStoredSession)?;
@@ -2341,6 +2560,51 @@ fn create_session(
             }
         }
     })
+}
+
+fn attach_start_context(
+    store: &RuntimeStore,
+    agent_id: &str,
+    session_id: &str,
+    context: &VoiceProviderContext,
+) -> Result<(), VoiceProviderError> {
+    store.transaction_with_error(|transaction| -> Result<_, VoiceProviderError> {
+        let agent = super::checked_agent(transaction, agent_id)
+            .map_err(|_| VoiceProviderError::ContextUnavailable)?;
+        let current_thread = agent
+            .extra
+            .get("threadId")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let current_account = agent
+            .extra
+            .get("accountKey")
+            .and_then(Value::as_str)
+            .unwrap_or("default");
+        if agent.epoch != context.epoch
+            || current_thread != context.thread_id
+            || current_account != context.account_key
+        {
+            return Err(VoiceProviderError::ContextChanged);
+        }
+        let updated = transaction.execute(
+            "UPDATE voice_sessions SET connection_id=?1 \
+             WHERE id=?2 AND agent=?3 AND native_thread=?4 AND account_key=?5 \
+             AND state='connecting' AND ended IS NULL",
+            rusqlite::params![
+                context.connection_id,
+                session_id,
+                agent_id,
+                context.thread_id,
+                context.account_key
+            ],
+        )?;
+        if updated != 1 {
+            return Err(VoiceProviderError::ContextChanged);
+        }
+        Ok(())
+    })?;
+    Ok(())
 }
 
 fn set_start_failure(
@@ -2558,6 +2822,88 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn restart_loses_orphaned_start_before_replay_or_new_admission() {
+        use studio_runtime_store::{AgentRecord, AgentStatus};
+
+        let directory = tempfile::tempdir().expect("voice state directory");
+        let store = RuntimeStore::open(Some(directory.path())).expect("fresh voice store");
+        let mut extra = std::collections::BTreeMap::new();
+        extra.insert("accountKey".into(), json!("default"));
+        extra.insert("threadId".into(), json!("voice-thread"));
+        extra.insert("isLead".into(), json!(true));
+        let agent = AgentRecord {
+            id: AgentId::from("voice-agent"),
+            root_id: AgentId::from("voice-agent"),
+            epoch: 0,
+            status: AgentStatus::Idle,
+            extra,
+        };
+        let old_offer = "v=0\r\nold-offer";
+        store
+            .transaction(|transaction| {
+                AgentRepository::put(transaction, &agent)?;
+                transaction.execute(
+                    "INSERT INTO voice_sessions(id,agent,created,sdp,native_thread,account_key,connection_id,state) \
+                     VALUES('orphan-start','voice-agent',10,?1,'voice-thread','default',NULL,'connecting')",
+                    [old_offer],
+                )?;
+                Ok(())
+            })
+            .expect("persist accepted start before simulated crash");
+        drop(store);
+
+        let store =
+            Arc::new(RuntimeStore::open(Some(directory.path())).expect("reopened voice store"));
+        assert_eq!(
+            recover_after_restart(&store, 20.0).expect("settle persisted peer"),
+            1,
+        );
+        let persisted = VoiceRepository::session(
+            &store.read().expect("read reopened store"),
+            "orphan-start",
+            "voice-agent",
+        )
+        .expect("read recovered session")
+        .expect("recovered session remains addressable");
+        assert_eq!(persisted["state"], "lost");
+        assert_eq!(persisted["ended"], 20.0);
+        assert_eq!(persisted["error"], RESTARTED_SESSION_ERROR);
+
+        let provider = Arc::new(ScriptedProvider {
+            calls: Mutex::new(vec![]),
+        });
+        let replay = start_admitted(
+            Arc::clone(&store),
+            Some(provider.clone()),
+            "voice-agent".into(),
+            "orphan-start".into(),
+            old_offer.into(),
+            21.0,
+        )
+        .await
+        .expect("exact replay returns saved terminal session");
+        assert_eq!(replay["state"], "lost");
+        assert!(provider.calls.lock().expect("provider calls").is_empty());
+
+        let fresh = start_admitted(
+            Arc::clone(&store),
+            Some(provider.clone()),
+            "voice-agent".into(),
+            "fresh-session".into(),
+            "v=0\r\nfresh-offer".into(),
+            22.0,
+        )
+        .await
+        .expect("new identity is admitted after recovered session is terminal");
+        assert_eq!(fresh["state"], "connecting");
+        wait_for_start_setup("voice-agent", "fresh-session").await;
+        let calls = provider.calls.lock().expect("provider calls");
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].method, Method::ThreadRealtimeStart);
+        assert_eq!(calls[0].params["realtimeSessionId"], "fresh-session");
+    }
+
+    #[tokio::test]
     async fn dispatch_guard_serializes_same_session_but_not_other_sessions() {
         let held = session_dispatch_guard("agent", "session-a").await;
         let (same_tx, mut same_rx) = tokio::sync::oneshot::channel();
@@ -2570,13 +2916,10 @@ mod tests {
             let _guard = session_dispatch_guard("agent", "session-b").await;
             other_tx.send(()).expect("other-session receiver remains");
         });
-        tokio::task::yield_now().await;
+        other_rx
+            .await
+            .expect("different-session guard acquisition completes");
         assert!(same_rx.try_recv().is_err(), "same-session work must wait");
-        assert_eq!(
-            other_rx.try_recv(),
-            Ok(()),
-            "different sessions stay independent"
-        );
         drop(held);
         same_rx.await.expect("same-session guard releases");
     }

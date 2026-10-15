@@ -4,6 +4,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+from contextlib import closing
 from pathlib import Path
 import sqlite3
 import subprocess
@@ -30,6 +31,26 @@ spec.loader.exec_module(ledger)
 
 
 class LedgerTraceContract(unittest.TestCase):
+    def create_marked_copy(self, root: Path, *, with_agent: bool = True) -> Path:
+        root.mkdir(parents=True, exist_ok=True)
+        (root / ledger.COPY_MARKER).write_text(ledger.COPY_MARKER_CONTENT)
+        with closing(sqlite3.connect(root / "canvas.sqlite3")) as connection:
+            connection.execute("CREATE TABLE runtime_agents(id TEXT PRIMARY KEY, record TEXT NOT NULL)")
+            if with_agent:
+                connection.execute(
+                    "INSERT INTO runtime_agents VALUES (?, ?)",
+                    ("stored-agent", json.dumps({
+                        "id": "stored-agent", "cwd": "/copied/project", "executionMode": "host",
+                    })),
+                )
+            connection.commit()
+        with closing(sqlite3.connect(root / "analytics.sqlite3")) as connection:
+            connection.execute(
+                "CREATE TABLE analytics_usage(seq INTEGER PRIMARY KEY, id TEXT, agent TEXT, record TEXT)"
+            )
+            connection.commit()
+        return root
+
     def test_native_p04_http_suite_is_registered_as_python_baseline_only(self) -> None:
         relative = "workspaces/runtime/apps/server/tests/wave7-p04-native-http-contract.py"
         selected = {str(path.relative_to(ROOT)) for path in ledger.consumer_suites()}
@@ -77,6 +98,268 @@ Server suites: 0 passed, 1 failed, 0 skipped (opt-in), 0 skipped (environment), 
             self.assertEqual(result["failures"][0]["context"], "__main__.NativeNullHTTP")
             self.assertNotIn("STUDIO_HTTP_BACKEND_COMMAND", run.call_args.kwargs["env"])
             self.assertNotIn("STUDIO_HTTP_LEDGER_TRACE", run.call_args.kwargs["env"])
+
+    def test_copy_state_root_rejects_live_paths_and_requires_marked_database_copy(self) -> None:
+        with tempfile.TemporaryDirectory() as scratch:
+            root = Path(scratch)
+            copy = root / "copy"
+            self.create_marked_copy(copy)
+
+            self.assertEqual(ledger.validate_copy_state_root(copy), copy.resolve())
+            with self.assertRaisesRegex(ValueError, "live state"):
+                ledger.validate_copy_state_root(copy, live_state_root=copy)
+            nested = copy / "nested"
+            nested.mkdir()
+            with self.assertRaisesRegex(ValueError, "live state"):
+                ledger.validate_copy_state_root(nested, live_state_root=copy)
+            with self.assertRaisesRegex(ValueError, "live state"):
+                ledger.validate_copy_state_root(copy, live_state_root=copy)
+            with self.assertRaisesRegex(ValueError, "live state"):
+                ledger.validate_copy_state_root(copy, configured_state_root=str(copy))
+
+            unexpected = copy / "accounts"
+            unexpected.mkdir()
+            with self.assertRaisesRegex(ValueError, "unexpected entries"):
+                ledger.validate_copy_state_root(copy)
+
+    def test_copy_state_root_rejects_home_state_tree(self) -> None:
+        with tempfile.TemporaryDirectory() as scratch:
+            home = Path(scratch) / "home"
+            copy = home / ".local/state/codex-agents/rehearsal"
+            self.create_marked_copy(copy)
+            with patch.object(Path, "home", return_value=home):
+                with self.assertRaisesRegex(ValueError, "live state"):
+                    ledger.validate_copy_state_root(copy)
+
+    def test_copy_state_root_rejects_missing_marker_and_database_files(self) -> None:
+        with tempfile.TemporaryDirectory() as scratch:
+            root = Path(scratch)
+            with self.assertRaisesRegex(ValueError, "marker"):
+                ledger.validate_copy_state_root(root)
+            (root / ledger.COPY_MARKER).write_text(ledger.COPY_MARKER_CONTENT)
+            with self.assertRaisesRegex(ValueError, "canvas.sqlite3"):
+                ledger.validate_copy_state_root(root)
+            with closing(sqlite3.connect(root / "canvas.sqlite3")) as connection:
+                connection.execute(
+                    "CREATE TABLE runtime_agents(id TEXT PRIMARY KEY, record TEXT NOT NULL)"
+                )
+                connection.commit()
+            with self.assertRaisesRegex(ValueError, "analytics.sqlite3"):
+                ledger.validate_copy_state_root(root)
+
+    def test_copy_state_root_rejects_database_hardlinks_before_writing(self) -> None:
+        with tempfile.TemporaryDirectory() as scratch:
+            root = Path(scratch) / "copy"
+            root.mkdir()
+            (root / ledger.COPY_MARKER).write_text(ledger.COPY_MARKER_CONTENT)
+            canvas = root / "canvas.sqlite3"
+            with closing(sqlite3.connect(canvas)) as connection:
+                connection.execute("CREATE TABLE runtime_agents(id TEXT PRIMARY KEY, record TEXT NOT NULL)")
+                connection.execute("INSERT INTO runtime_agents VALUES ('stored-agent', ?)",
+                                   (json.dumps({"id": "stored-agent", "cwd": "/copied/project"}),))
+                connection.commit()
+            with closing(sqlite3.connect(root / "analytics.sqlite3")) as connection:
+                connection.execute("CREATE TABLE analytics_usage(seq INTEGER PRIMARY KEY, id TEXT, agent TEXT, record TEXT)")
+                connection.commit()
+            external_link = Path(scratch) / "linked-live-canvas.sqlite3"
+            os.link(canvas, external_link)
+            original = canvas.read_bytes()
+
+            with self.assertRaisesRegex(ValueError, "hard links"):
+                ledger.validate_copy_state_root(root)
+
+            self.assertEqual(canvas.read_bytes(), original)
+
+    def test_copy_state_root_rejects_a_known_live_database_identity(self) -> None:
+        with tempfile.TemporaryDirectory() as scratch:
+            root = Path(scratch) / "copy"
+            live = Path(scratch) / "known-live"
+            root.mkdir()
+            live.mkdir()
+            (root / ledger.COPY_MARKER).write_text(ledger.COPY_MARKER_CONTENT)
+            canvas = root / "canvas.sqlite3"
+            with closing(sqlite3.connect(canvas)) as connection:
+                connection.execute("CREATE TABLE runtime_agents(id TEXT PRIMARY KEY, record TEXT NOT NULL)")
+                connection.execute("INSERT INTO runtime_agents VALUES ('stored-agent', ?)",
+                                   (json.dumps({"id": "stored-agent", "cwd": "/copied/project"}),))
+                connection.commit()
+            with closing(sqlite3.connect(root / "analytics.sqlite3")) as connection:
+                connection.execute("CREATE TABLE analytics_usage(seq INTEGER PRIMARY KEY, id TEXT, agent TEXT, record TEXT)")
+                connection.commit()
+            live_canvas = live / "canvas.sqlite3"
+            os.link(canvas, live_canvas)
+            original_stat = Path.stat
+
+            def report_copy_as_unlinked(path, *args, **kwargs):
+                stat = original_stat(path, *args, **kwargs)
+                if path == canvas:
+                    values = list(stat)
+                    values[3] = 1
+                    return os.stat_result(values)
+                return stat
+
+            with patch.object(Path, "stat", report_copy_as_unlinked):
+                with self.assertRaisesRegex(ValueError, "aliases a known live database"):
+                    ledger.validate_copy_state_root(root, live_state_root=live)
+
+    def test_copy_state_requires_valid_database_schema_and_a_preexisting_agent(self) -> None:
+        with tempfile.TemporaryDirectory() as scratch:
+            root = Path(scratch) / "copy"
+            root.mkdir()
+            (root / ledger.COPY_MARKER).write_text(ledger.COPY_MARKER_CONTENT)
+            for name in ("canvas.sqlite3", "analytics.sqlite3"):
+                (root / name).touch()
+            with self.assertRaisesRegex(ValueError, "invalid SQLite header"):
+                ledger.validate_copy_state_root(root)
+
+            with closing(sqlite3.connect(root / "canvas.sqlite3")) as connection:
+                connection.execute("CREATE TABLE unrelated(value TEXT)")
+                connection.commit()
+            with self.assertRaisesRegex(ValueError, "incompatible schema"):
+                ledger.validate_copy_state_root(root)
+
+            self.create_marked_copy(root, with_agent=False)
+            before = {
+                name: (root / name).read_bytes()
+                for name in ("canvas.sqlite3", "analytics.sqlite3")
+            }
+            self.assertEqual(ledger.validate_copy_state_root(root), root.resolve())
+            with self.assertRaisesRegex(ValueError, "pre-existing native agent"):
+                ledger.copied_agent_witness(root)
+            self.assertEqual(
+                {name: (root / name).read_bytes() for name in before},
+                before,
+            )
+
+    def test_copy_functional_witness_uses_existing_copy_row_not_seeded_agent(self) -> None:
+        with tempfile.TemporaryDirectory() as scratch:
+            root = Path(scratch) / "copy"
+            self.create_marked_copy(root)
+            before = {
+                name: (root / name).read_bytes()
+                for name in ("canvas.sqlite3", "analytics.sqlite3")
+            }
+            self.assertEqual(ledger.validate_copy_state_root(root), root.resolve())
+            self.assertEqual(
+                ledger.copied_agent_witness(root),
+                {"id": "stored-agent", "cwd": "/copied/project"},
+            )
+            self.assertEqual(
+                {name: (root / name).read_bytes() for name in before},
+                before,
+            )
+
+    def test_wal_backup_validation_and_witness_do_not_create_sidecars(self) -> None:
+        with tempfile.TemporaryDirectory() as scratch:
+            root = Path(scratch) / "copy"
+            self.create_marked_copy(root)
+            source_path = Path(scratch) / "source.sqlite3"
+            with closing(sqlite3.connect(source_path)) as source:
+                source.execute("PRAGMA journal_mode=WAL")
+                source.execute(
+                    "CREATE TABLE runtime_agents(id TEXT PRIMARY KEY, record TEXT NOT NULL)"
+                )
+                source.execute(
+                    "INSERT INTO runtime_agents VALUES (?, ?)",
+                    ("wal-agent", json.dumps({"id": "wal-agent", "cwd": "/wal/copied"})),
+                )
+                source.commit()
+                with closing(sqlite3.connect(root / "canvas.sqlite3")) as copied:
+                    source.backup(copied)
+            before = {
+                path.name: path.read_bytes()
+                for path in root.iterdir()
+                if path.is_file()
+            }
+
+            self.assertEqual(ledger.validate_copy_state_root(root), root.resolve())
+            self.assertEqual(
+                ledger.copied_agent_witness(root),
+                {"id": "wal-agent", "cwd": "/wal/copied"},
+            )
+            after = {
+                path.name: path.read_bytes()
+                for path in root.iterdir()
+                if path.is_file()
+            }
+            self.assertEqual(after, before)
+            self.assertEqual({path.name for path in root.iterdir()}, set(before))
+
+    def test_copy_witness_report_redacts_copied_row_contents(self) -> None:
+        probe_case = {"functional_witness": "copy-existing-agent"}
+        response_body = {
+            "kind": "native",
+            "path": "/private/copied/project",
+            "id": "private-agent-id",
+            "record": "private-row-content",
+        }
+        observation = {
+            "functionalWitness": True,
+            "body": ledger.persisted_probe_body(probe_case, response_body),
+        }
+        report = json.dumps(observation)
+        self.assertTrue(observation["functionalWitness"])
+        self.assertIsNone(observation["body"])
+        for copied_value in (
+            "/private/copied/project",
+            "private-agent-id",
+            "private-row-content",
+        ):
+            self.assertNotIn(copied_value, report)
+
+    def test_other_probe_bodies_remain_available_for_diagnostics(self) -> None:
+        body = {"error": "Not found"}
+        self.assertEqual(ledger.persisted_probe_body({}, body), body)
+
+    def test_copy_disposition_requires_an_explicit_functional_witness(self) -> None:
+        status_only = [{"expected": "2xx", "expectedMatches": True, "status": 200}]
+        self.assertEqual(ledger.copy_probe_disposition(status_only), "unverified")
+        functional = [{
+            "expected": "2xx", "expectedMatches": True, "status": 200,
+            "functionalWitness": True,
+        }]
+        self.assertEqual(ledger.copy_probe_disposition(functional), "pass")
+        functional[0]["expectedMatches"] = False
+        self.assertEqual(ledger.copy_probe_disposition(functional), "refused")
+
+    def test_copy_backend_command_requires_ephemeral_port(self) -> None:
+        self.assertEqual(
+            ledger.validate_ephemeral_backend_command("/tmp/studio-runtime-server --port 0"),
+            ["/tmp/studio-runtime-server", "--port", "0"],
+        )
+        self.assertEqual(
+            ledger.validate_ephemeral_backend_command("/tmp/studio-runtime-server"),
+            ["/tmp/studio-runtime-server"],
+        )
+        for command in (
+            "/tmp/studio-runtime-server --port 4620",
+            "/tmp/studio-runtime-server --port=4620",
+            "/tmp/studio-runtime-server --port 4635",
+            "/tmp/studio-runtime-server --port 0 --port 0",
+        ):
+            with self.subTest(command=command):
+                with self.assertRaises(ValueError):
+                    ledger.validate_ephemeral_backend_command(command)
+
+    def test_copy_probe_constants_are_namespaced_away_from_existing_rows(self) -> None:
+        identifiers = {
+            "_fixturePrefix": "copyprobe-unique-",
+            "_accountKey": "copyprobe-unique-account",
+            "_literalIds": {"60606060-6060-4060-8060-606060606060": "new-request-id"},
+        }
+        value = {
+            "id": "ledger-probe-agent",
+            "account_key": "default",
+            "request_id": "60606060-6060-4060-8060-606060606060",
+        }
+        self.assertEqual(
+            ledger.namespace_probe_constants(value, identifiers),
+            {
+                "id": "copyprobe-unique-probe-agent",
+                "account_key": "copyprobe-unique-account",
+                "request_id": "new-request-id",
+            },
+        )
 
     def test_provider_turn_refusals_are_keyed_to_the_undeclared_dependency(self) -> None:
         boundary = "workspaces/runtime/apps/server/tests/http-boundary-contract.py"
@@ -140,10 +423,10 @@ Server suites: 0 passed, 1 failed, 0 skipped (opt-in), 0 skipped (environment), 
             "agent", "imageAgent", "task", "complaint", "room", "checkpoint", "item",
             "monitor", "terminal", "activeRule", "chat", "message", "filePath",
             "layoutRevision", "emptyQueueRevision", "queueIds", "question", "toolReceipt", "toolCancel",
-            "questionDelete", "providerQuestion", "answerQuestion", "projectPath", "claudeAccount",
+            "questionDelete", "answerQuestion", "projectPath", "claudeAccount",
             "voiceRecord", "voiceEndedSession", "voiceActiveSession",
             "analyticsAgent", "schemaHash", "approvalRequest", "codexLogin", "activeCommand",
-            "liveTerminal",
+            "liveTerminal", "copyWitnessAgent",
         }
 
         def references(value):
@@ -159,7 +442,11 @@ Server suites: 0 passed, 1 failed, 0 skipped (opt-in), 0 skipped (environment), 
             cases = [spec["primary"], *spec.get("additional", [])]
             for probe_case in cases:
                 with self.subTest(operation=operation, case=probe_case.get("name", "primary")):
-                    self.assertIn(probe_case.get("expected", "2xx"), {"2xx", "400", "403", "404", "501"})
+                    expected = probe_case.get("expected", "2xx")
+                    self.assertTrue(
+                        expected in {"2xx", "400", "403", "404", "409", "not_501"}
+                        or (isinstance(expected, str) and expected.isdecimal() and 100 <= int(expected) <= 599)
+                    )
                     self.assertLessEqual(references(probe_case), fixture_keys)
                     if probe_case.get("expected") == "404":
                         self.assertTrue(probe_case.get("reason"))
@@ -177,13 +464,10 @@ Server suites: 0 passed, 1 failed, 0 skipped (opt-in), 0 skipped (environment), 
     def test_new_partial_probes_have_success_and_named_refusal_shapes(self) -> None:
         for operation in (
             ("GET", "/api/changes"),
-            ("GET", "/api/models"),
             ("POST", "/api/federation"),
             ("POST", "/api/messages"),
             ("POST", "/api/multi-server"),
-            ("POST", "/api/peer-teams"),
             ("POST", "/api/projects"),
-            ("POST", "/api/questions/delete"),
         ):
             with self.subTest(operation=operation):
                 spec = ledger.PROBE_CASES[operation]
@@ -198,6 +482,42 @@ Server suites: 0 passed, 1 failed, 0 skipped (opt-in), 0 skipped (environment), 
                 else:
                     self.assertTrue(all(case["expected"] == "501" for case in refusals))
                     self.assertTrue(all(case.get("expected_error") for case in refusals))
+
+    def test_implemented_route_expectations_follow_the_current_manifest(self) -> None:
+        operation = ("POST", "/api/ledger-test")
+        ledger.PROBE_CASES[operation] = {
+            "primary": {"expected": "501", "expected_error": "obsolete refusal"},
+            "additional": [{"expected": "501", "expected_error": "obsolete refusal"}],
+        }
+        try:
+            ledger.ensure_operation_probe_cases({
+                operation: {"status": "implemented", "dependencies": []},
+            })
+            cases = [
+                ledger.PROBE_CASES[operation]["primary"],
+                *ledger.PROBE_CASES[operation]["additional"],
+            ]
+            self.assertTrue(all(case["expected"] == "not_501" for case in cases))
+            self.assertTrue(all("expected_error" not in case for case in cases))
+        finally:
+            ledger.PROBE_CASES.pop(operation, None)
+
+    def test_named_refusal_expectations_remain_owned_by_partial_manifest(self) -> None:
+        operation = ("POST", "/api/ledger-test")
+        ledger.PROBE_CASES[operation] = {
+            "primary": {"expected": "501", "expected_error": "Not implemented: requires test/service"},
+        }
+        try:
+            ledger.ensure_operation_probe_cases({
+                operation: {"status": "partial", "dependencies": ["test/service"]},
+            })
+            self.assertEqual(ledger.PROBE_CASES[operation]["primary"]["expected"], "501")
+            self.assertEqual(
+                ledger.PROBE_CASES[operation]["primary"]["expected_error"],
+                "Not implemented: requires test/service",
+            )
+        finally:
+            ledger.PROBE_CASES.pop(operation, None)
 
     def test_disabled_signed_federation_probes_expect_python_gate_before_headers(self) -> None:
         for path in (
@@ -239,6 +559,11 @@ Server suites: 0 passed, 1 failed, 0 skipped (opt-in), 0 skipped (environment), 
         self.assertEqual(defer_path, "/api/questions/defer")
         self.assertEqual(defer_body["id"], "ledger-probe-question")
         self.assertNotEqual(answer_body["id"], defer_body["id"])
+
+    def test_native_question_delete_uses_provider_callback_owner_witness(self) -> None:
+        probe = ledger.PROBE_CASES[("POST", "/api/questions/delete")]
+        self.assertEqual(probe["primary"]["expected"], "2xx")
+        self.assertNotIn("additional", probe)
 
     def test_native_command_probe_uses_a_distinct_seeded_running_task(self) -> None:
         probe = ledger.PROBE_CASES[("POST", "/api/native-command")]["primary"]
@@ -344,12 +669,12 @@ Server suites: 0 passed, 1 failed, 0 skipped (opt-in), 0 skipped (environment), 
             ("POST", "/api/rules"): ["2xx", "2xx"],
             ("POST", "/api/agents"): ["2xx", "501"],
             ("POST", "/api/leads"): ["2xx", "501"],
-            ("POST", "/api/configure"): ["2xx", "501"],
-            ("POST", "/api/conversation"): ["2xx", "501"],
+            ("POST", "/api/configure"): ["2xx", "400"],
+            ("POST", "/api/conversation"): ["2xx", "400"],
             ("POST", "/api/checkpoint"): ["501", "2xx"],
             ("POST", "/api/checkpoint/preview"): ["2xx"],
-            ("POST", "/api/voice/end"): ["2xx", "501"],
-            ("POST", "/api/voice/speech"): ["2xx", "501"],
+            ("POST", "/api/voice/end"): ["2xx", "2xx"],
+            ("POST", "/api/voice/speech"): ["2xx", "400"],
             ("POST", "/api/voice/submit"): ["2xx", "400"],
         }
         for operation, expected in expected_cases.items():

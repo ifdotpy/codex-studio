@@ -857,7 +857,7 @@ class ExecutionEffect(ContractModel):
     referenceId: str
     attemptId: str | None = None
     requestId: str | None = None
-    status: ExecutionStatus | Literal["answered", "expired", "lost"] | None = None
+    status: ExecutionStatus | Literal["answered", "expired", "lost", "approved"] | None = None
     outcome: str | None = None
     resultReference: str | None = None
     taskId: str | None = None

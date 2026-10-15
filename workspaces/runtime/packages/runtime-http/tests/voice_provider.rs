@@ -466,7 +466,7 @@ async fn voice_monitor_approval_uses_monitor_transaction_and_dispatch_wake() {
 }
 
 #[tokio::test]
-async fn providerless_routes_refuse_all_four_actions_without_writes() {
+async fn providerless_routes_admit_start_and_refuse_other_actions_without_writes() {
     let (_root, store, _port) = fixture();
     let state = HttpState::new(
         "token".into(),
@@ -481,10 +481,6 @@ async fn providerless_routes_refuse_all_four_actions_without_writes() {
     let app = router(state).expect("router");
     let before = voice_row_counts(&store);
     for (path, body) in [
-        (
-            "/api/voice/start",
-            json!({"agent":"voice-start-agent","session_id":"no-port-start","sdp":"v=0\r\n"}),
-        ),
         (
             "/api/voice/speech",
             json!({"agent":"voice-http-agent","session_id":"speech-http","record_id":"speech-record"}),
@@ -505,7 +501,40 @@ async fn providerless_routes_refuse_all_four_actions_without_writes() {
             "{path}: {value}"
         );
     }
-    assert_eq!(voice_row_counts(&store), before);
+    let (status, accepted) = post(
+        &app,
+        "/api/voice/start",
+        json!({"agent":"voice-start-agent","session_id":"no-port-start","sdp":"v=0\r\n"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{accepted}");
+    assert_eq!(accepted["state"], "connecting");
+    studio_runtime_services::voice::provider::wait_for_start_setup(
+        "voice-start-agent",
+        "no-port-start",
+    )
+    .await;
+    let (saved_state, count): (String, i64) = store
+        .read()
+        .expect("read accepted session")
+        .query_row(
+            "SELECT state,(SELECT COUNT(*) FROM voice_sessions WHERE id='no-port-start' AND agent='voice-start-agent') FROM voice_sessions WHERE id='no-port-start' AND agent='voice-start-agent'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .expect("read saved session and count");
+    assert_eq!(saved_state, "failed");
+    assert_eq!(count, 1);
+    let (status, replay) = post(
+        &app,
+        "/api/voice/start",
+        json!({"agent":"voice-start-agent","session_id":"no-port-start","sdp":"v=0\r\n"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{replay}");
+    assert_eq!(replay["state"], "failed");
+    assert_eq!(voice_row_counts(&store)[0], before[0] + 1);
+    assert_eq!(voice_row_counts(&store)[1..], before[1..]);
 }
 
 fn voice_row_counts(store: &RuntimeStore) -> Vec<i64> {

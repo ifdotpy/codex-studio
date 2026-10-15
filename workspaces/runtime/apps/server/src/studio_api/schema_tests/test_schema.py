@@ -525,7 +525,7 @@ class SchemaContractTests(unittest.TestCase):
                 with self.assertRaises(ValidationError):
                     adapter.validate_python(invalid)
 
-    def test_generated_document_only_adds_reviewed_diagnostic_fields(self) -> None:
+    def test_generated_document_only_adds_reviewed_schema_changes(self) -> None:
         baseline_path = Path(__file__).with_name("openapi_constraint_baseline.json")
         manifest = json.loads(baseline_path.read_text(encoding="utf-8"))
         self.assertEqual(manifest["sourceCommit"], "51d376b7")
@@ -544,14 +544,14 @@ class SchemaContractTests(unittest.TestCase):
         self.assertEqual(loosenings, manifest.get("acceptedLoosenings", []))
         self.assertEqual(
             {(item["pointer"], item["constraint"]) for item in loosenings},
-            self._reviewed_diagnostics_additions(),
-            "only reviewed store and blocking-pool telemetry may add response fields",
+            self._reviewed_schema_additions(),
+            "only reviewed diagnostics and execution-effect statuses may loosen the schema",
         )
 
 
     @staticmethod
-    def _reviewed_diagnostics_additions() -> set[tuple[str, str]]:
-        """Allow only fields required by store and blocking-pool latency telemetry.
+    def _reviewed_schema_additions() -> set[tuple[str, str]]:
+        """Allow diagnostics fields and the approved execution-effect status.
 
         The store percentiles are nullable because a cold process has no samples;
         WAL entries are nullable until a checkpoint has observed that database.
@@ -624,6 +624,13 @@ class SchemaContractTests(unittest.TestCase):
                 "@nullable",
                 "@nullableBranch",
             )
+        for pointer in (
+            "/components/schemas/ExecutionEffect/properties/status",
+            "/components/schemas/ExecutionRun/properties/effects/items/properties/status",
+            "/components/schemas/ExecutionLedger/properties/runs/items/properties/effects/items/properties/status",
+            "/components/schemas/DiagnosticsResponse/properties/executions/properties/runs/items/properties/effects/items/properties/status",
+        ):
+            add(pointer, "@anyOf")
         return allowed
     def test_constraint_diff_detects_five_removed_constraints(self) -> None:
         baseline_doc: dict[str, JsonValue] = {

@@ -155,6 +155,9 @@ BACKGROUND_OWNED_FIELDS: dict[str, frozenset[str]] = {
         # Async workspace preparation and activity/event bookkeeping only.
         # Request-writable settings, status, identity, and paths remain visible.
         "lastEvent", "activity", "prepareAttempt",
+        # The VM workspace preparation worker publishes guest readiness after
+        # the agent row is created (codex_vm_agents.py:218-229).
+        "layrReady",
         # Reviewer result archive scheduling/retry fields are advanced by the
         # accepted-archive maintenance owner (Rust work_write.rs; Python
         # codex_agent_management.py:772-833), outside HTTP requests.
@@ -199,6 +202,7 @@ BACKGROUND_OWNED_FIELDS: dict[str, frozenset[str]] = {
         # Only preparation and activity bookkeeping is otherwise normalized.
         "payload.value.lastEvent", "payload.value.activity", "payload.value.prepareAttempt",
         "payload.value.workspaceOperation", "payload.value.workspaceReservationId",
+        "payload.value.layrReady",
         "payload.value.worktreePreparation",
         "payload.value.worktreeReady",
     }),
@@ -556,12 +560,17 @@ class BackendProcess:
         *,
         claude_bin: str | None = "/usr/bin/false",
         initialize_workspace: bool = True,
+        state_root: Path | None = None,
     ):
         self.scratch_root = scratch_root.resolve(strict=True)
         self.root = Path(tempfile.mkdtemp(prefix="http-boundary-", dir=self.scratch_root)).resolve(strict=True)
         if self.scratch_root not in self.root.parents:
             raise RuntimeError("Backend state escaped the runner scratch root")
-        self.state = self._directory("state")
+        self.state = (
+            Path(state_root).resolve(strict=True)
+            if state_root is not None
+            else self._directory("state")
+        )
         self.vm_state = self.scratch_root.parent / f"vm-{self.root.name[-8:]}"
         self.vm_state.mkdir(parents=True, exist_ok=True)
         self.home = self._directory("home")
