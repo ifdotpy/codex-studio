@@ -24,7 +24,9 @@ isolate_supervisor_environment()
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from runtime_test_environment import runtime_environment
-from http_backend_harness import BackendProcess, TimedHTTPContractTest, no_write_snapshot
+from http_backend_harness import (
+    BackendProcess, TimedHTTPContractTest, assert_stored_data_unavailable, no_write_snapshot,
+)
 
 
 def seed_python_workspace(backend, workspace: Path) -> None:
@@ -355,10 +357,7 @@ class FilesHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         before = no_write_snapshot(backend.state)
         try:
             response = backend.request("POST", "/api/assets", body=body, headers=self._headers())
-            self.assertEqual(response.status, 503, response.body[:1000])
-            self.assertEqual(
-                response.json()["error"], f"Invalid stored object runtime_assets/{asset_id}"
-            )
+            assert_stored_data_unavailable(self, response, f"runtime_assets/{asset_id}")
             self.assertEqual(no_write_snapshot(backend.state), before)
         finally:
             with sqlite3.connect(backend.state / "canvas.sqlite3") as database:

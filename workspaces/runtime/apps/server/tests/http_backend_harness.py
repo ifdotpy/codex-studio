@@ -543,6 +543,16 @@ class HttpResult:
         return json.loads(self.body)
 
 
+def assert_stored_data_unavailable(test_case: Any, response: HttpResult, identity: str) -> None:
+    """Check the safe stored-record refusal envelope without pinning wording."""
+    test_case.assertEqual(response.status, 503, response.body[:1000])
+    body = response.json()
+    test_case.assertEqual(set(body), {"error"})
+    test_case.assertIsInstance(body["error"], str)
+    test_case.assertIn(identity, body["error"])
+    test_case.assertIn("unavailable", body["error"])
+
+
 class ProviderSelectionError(RuntimeError):
     """The backend selected a native provider other than the replay fixture."""
 

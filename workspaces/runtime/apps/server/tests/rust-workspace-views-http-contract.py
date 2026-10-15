@@ -17,7 +17,9 @@ import unittest
 SERVER_SRC = Path(__file__).resolve().parents[1] / "src"
 sys.path.insert(0, str(SERVER_SRC))
 
-from http_backend_harness import TimedHTTPContractTest, start_contract_backend
+from http_backend_harness import (
+    TimedHTTPContractTest, assert_stored_data_unavailable, start_contract_backend,
+)
 
 isolate_supervisor_environment()
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -344,10 +346,8 @@ class WorkspaceViewsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
                 "GET", "/api/task?" + urlencode({"id": "workspace-views-other-task"}),
             )
             if self.rust_backend:
-                self.assertEqual(response.status, 503, response.body[:1000])
-                self.assertIn(
-                    f"Invalid stored object runtime_agents row {self.other_id}",
-                    response.json()["error"],
+                assert_stored_data_unavailable(
+                    self, response, f"runtime_agents/{self.other_id}"
                 )
             else:
                 self.assertEqual(response.status, 200, response.body[:1000])
@@ -364,8 +364,7 @@ class WorkspaceViewsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
                 "GET", "/api/workspace/tasks?" + urlencode({"agent": self.lead_id}),
             )
             if self.rust_backend:
-                self.assertEqual(response.status, 503, response.body[:1000])
-                self.assertIn(f"Invalid stored object runtime_tasks row {row_id}", response.json()["error"])
+                assert_stored_data_unavailable(self, response, f"runtime_tasks/{row_id}")
             else:
                 self.assertEqual(response.status, 200, response.body[:1000])
         finally:
@@ -379,8 +378,7 @@ class WorkspaceViewsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             ):
                 response = self.backend.request("GET", path)
                 if self.rust_backend:
-                    self.assertEqual(response.status, 503, response.body[:1000])
-                    self.assertIn(f"Invalid stored object runtime_tasks row {row_id}", response.json()["error"])
+                    assert_stored_data_unavailable(self, response, f"runtime_tasks/{row_id}")
                 else:
                     self.assertEqual(response.status, 200, response.body[:1000])
         finally:

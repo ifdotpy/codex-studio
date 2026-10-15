@@ -19,7 +19,10 @@ isolate_supervisor_environment()
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from runtime_test_environment import runtime_environment
-from http_backend_harness import BackendProcess, TimedHTTPContractTest, start_contract_backend, no_write_snapshot
+from http_backend_harness import (
+    BackendProcess, TimedHTTPContractTest, assert_stored_data_unavailable,
+    start_contract_backend, no_write_snapshot,
+)
 
 
 def seed_state(backend) -> None:
@@ -220,10 +223,7 @@ class MonitorsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             invalid = backend.request(
                 "GET", "/api/monitor/log?id=contract-monitor", headers=self.headers()
             )
-            self.assertEqual(invalid.status, 503, invalid.body[:1000])
-            self.assertEqual(
-                invalid.json(), {"error": "Stored monitor data is unavailable"}
-            )
+            assert_stored_data_unavailable(self, invalid, "monitors/contract-monitor")
         finally:
             with sqlite3.connect(backend.state / "canvas.sqlite3") as database:
                 database.execute(

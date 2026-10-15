@@ -23,6 +23,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from runtime_test_environment import make_runtime
 from http_backend_harness import (
     TimedHTTPContractTest,
+    assert_stored_data_unavailable,
     assert_read_succeeds_unchanged_under_writer,
     start_contract_backend,
 )
@@ -774,8 +775,8 @@ class ToolRequestsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             original=db.execute("SELECT record FROM runtime_agents WHERE id=?",(self.lead_id,)).fetchone()[0]
         cases=[(original,"move-receipt",200,None),
                (json.dumps({**json.loads(original),"movedFrom":{"serverId":"remote"}}),"missing",200,None),
-               ("[]","missing",500,"runtime_agents/"+self.lead_id),
-               (json.dumps({**json.loads(original),"id":"mismatched"}),"missing",500,"runtime_agents/"+self.lead_id)]
+               ("[]","missing",503,"runtime_agents/"+self.lead_id),
+               (json.dumps({**json.loads(original),"id":"mismatched"}),"missing",503,"runtime_agents/"+self.lead_id)]
         try:
             for raw,identity,status,error in cases:
                 with sqlite3.connect(path) as db:db.execute("UPDATE runtime_agents SET record=? WHERE id=?",(raw,self.lead_id))
@@ -783,7 +784,7 @@ class ToolRequestsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
                 response=self.backend.request("GET","/api/tool-requests?"+urlencode({"agent":self.lead_id,"request_id":identity}),headers=self.headers())
                 self.assertEqual(response.status,status,response.body)
                 if error:
-                    self.assertIn(error,response.json()["error"])
+                    assert_stored_data_unavailable(self, response, error)
                 self.assertEqual(database_snapshot(self.backend.state),before)
         finally:
             with sqlite3.connect(path) as db:

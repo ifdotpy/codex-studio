@@ -22,7 +22,9 @@ from test_isolation import isolate_supervisor_environment
 
 isolate_supervisor_environment()
 
-from http_backend_harness import BackendProcess, HTTPTransportError, no_write_snapshot
+from http_backend_harness import (
+    BackendProcess, HTTPTransportError, assert_stored_data_unavailable, no_write_snapshot,
+)
 
 
 AGENT_ID = "checkpoints-contract-agent"
@@ -355,7 +357,7 @@ class CheckpointsHTTPContract(unittest.TestCase):
                     }
                 ),
                 "INSERT INTO runtime_workspace_operations(id,record) VALUES(?,?)",
-                "Invalid stored object runtime_workspace_operations/invalid-operation-owner",
+                "runtime_workspace_operations/invalid-operation-owner",
             ),
             (
                 "runtime_tasks",
@@ -364,7 +366,7 @@ class CheckpointsHTTPContract(unittest.TestCase):
                     {"id": "invalid-task-owner", "status": "running", "agent": 17}
                 ),
                 "INSERT INTO runtime_tasks(id,record) VALUES(?,?)",
-                "Invalid stored object runtime_tasks/invalid-task-owner",
+                "runtime_tasks/invalid-task-owner",
             ),
         )
         for table, row_id, record, insert_sql, expected_error in cases:
@@ -376,8 +378,7 @@ class CheckpointsHTTPContract(unittest.TestCase):
                 response = backend.request(
                     "POST", "/api/checkpoint", body={"agent": AGENT_ID}, headers=self.headers()
                 )
-                self.assertEqual(response.status, 503, response.body[:1000])
-                self.assertEqual(response.json()["error"], expected_error)
+                assert_stored_data_unavailable(self, response, expected_error)
                 self.assertEqual(
                     (no_write_snapshot(backend.state), checkpoint_refs(self.workspace)), before
                 )

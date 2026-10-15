@@ -323,6 +323,14 @@ fn store_api_error(error: StoreError) -> ApiError {
             let object = table.strip_prefix("runtime_").unwrap_or(table);
             ApiError::invalid_stored(object, &id)
         }
+        StoreError::InvalidStoredRecord { object, id } => {
+            let object = object.strip_prefix("runtime_").unwrap_or(object);
+            ApiError::invalid_stored(object, &id)
+        }
+        StoreError::InvalidSyncObject { scope, id }
+        | StoreError::InvalidSyncObjectField { scope, id, .. } => {
+            ApiError::invalid_stored(&scope, &id)
+        }
         _ => ApiError::internal(),
     }
 }

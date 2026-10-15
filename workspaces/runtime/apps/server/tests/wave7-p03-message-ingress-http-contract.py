@@ -14,7 +14,10 @@ from urllib.parse import urlencode
 
 isolate_supervisor_environment()
 
-from http_backend_harness import TimedHTTPContractTest, no_write_snapshot, start_contract_backend
+from http_backend_harness import (
+    TimedHTTPContractTest, assert_stored_data_unavailable, no_write_snapshot,
+    start_contract_backend,
+)
 
 _spec = importlib.util.spec_from_file_location("p03_message_fixture", Path(__file__).with_name("rust-messages-http-contract.py"))
 _fixture = importlib.util.module_from_spec(_spec)
@@ -163,8 +166,7 @@ class MessageIngressHTTP(TimedHTTPContractTest, unittest.TestCase):
             self.backend.state / "canvas.sqlite3", body["id"], self.agent,
         )
         response = self.request("POST", "/api/messages", body)
-        self.assertEqual(response.status, 500, response.body)
-        self.assertEqual(response.json()["error"], "Invalid stored object runtime_events/" + body["id"])
+        assert_stored_data_unavailable(self, response, body["id"])
         self.assertEqual(_fixture.message_write_snapshot(
             self.backend.state / "canvas.sqlite3", body["id"], self.agent,
         ), before)
@@ -181,8 +183,7 @@ class MessageIngressHTTP(TimedHTTPContractTest, unittest.TestCase):
                 self.backend.state / "canvas.sqlite3", operation_message_id, self.agent,
             )
             response = self.request("POST", "/api/messages", {**body, "id": operation_message_id})
-            self.assertEqual(response.status, 500, response.body)
-            self.assertEqual(response.json()["error"], "Invalid stored object runtime_workspace_operations/broken-operation")
+            assert_stored_data_unavailable(self, response, "broken-operation")
             self.assertEqual(_fixture.message_write_snapshot(
                 self.backend.state / "canvas.sqlite3", operation_message_id, self.agent,
             ), before)

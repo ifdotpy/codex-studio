@@ -21,7 +21,10 @@ isolate_supervisor_environment()
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from runtime_test_environment import runtime_environment
-from http_backend_harness import TimedHTTPContractTest, start_contract_backend, no_write_snapshot
+from http_backend_harness import (
+    TimedHTTPContractTest, assert_stored_data_unavailable, start_contract_backend,
+    no_write_snapshot,
+)
 from studio_api.models import MAX_SAFE_INTEGER
 
 
@@ -295,8 +298,7 @@ class RulesHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         before = no_write_snapshot(backend.state)
         try:
             response = backend.request("GET", "/api/rules", headers=self._headers())
-            self.assertEqual(response.status, 503, response.body[:1000])
-            self.assertEqual(response.json()["error"], "Invalid stored object rules/visible")
+            assert_stored_data_unavailable(self, response, "rules/visible")
             self.assertEqual(no_write_snapshot(backend.state), before)
         finally:
             with sqlite3.connect(database_path) as database:
@@ -323,11 +325,7 @@ class RulesHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         before = no_write_snapshot(backend.state)
         try:
             response = backend.request("GET", "/api/rules", headers=self._headers())
-            self.assertEqual(response.status, 503, response.body[:1000])
-            self.assertEqual(
-                response.json()["error"],
-                f"Invalid stored object agents/{agent_id}",
-            )
+            assert_stored_data_unavailable(self, response, f"agents/{agent_id}")
             self.assertEqual(no_write_snapshot(backend.state), before)
         finally:
             with sqlite3.connect(database_path) as database:
