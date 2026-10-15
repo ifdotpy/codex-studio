@@ -29,6 +29,7 @@ HERE = Path(__file__).resolve().parent
 SERVER_SOURCE = HERE.parent / "src"
 REVIEW_CORPUS = json.loads((HERE / "fixtures/rust-agents-create/review-corpus.json").read_text())
 from http_backend_harness import (
+    BackendProcess,
     HTTP_WAIT_GUARD_SECONDS,
     TimedHTTPContractTest,
     start_contract_backend,
@@ -1023,39 +1024,48 @@ class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
     def test_smart_title_returns_pending_then_settles_failure_without_rename(self):
         # Make catalog failure explicit and hold its response until after the
         # HTTP request proves it returned a pending receipt. This keeps the
-        # terminal failure assertion independent of catalog-cache state and
-        # scheduler timing.
-        self.backend.stop()
-        self.backend.hold_provider("model/list")
-        self.backend.create_codex_replay(
+        # terminal failure assertion independent of catalog-cache state.
+        # Keep the replay executable immutable after its native approval: the
+        # account updater hashes the executable and may reserve the app-server
+        # while replacing a live backend's fixture.
+        backend = BackendProcess(Path(os.environ["TMPDIR"]))
+        backend.hold_provider("model/list")
+        backend.create_codex_replay(
             "smart-title-model-list-error.json", fake_version_output="codex-cli 999.0.0",
         )
-        self.backend.start()
-        catalog_response = self.backend.request(
-            "GET", "/api/models?account_key=default", headers=self.headers(),
+        self.addCleanup(backend.close)
+        agent_id = seed_python_agent(backend)
+        backend.start()
+        headers = {
+            "Origin": backend.origin or "",
+            "X-Canvas-Token": backend.session["token"],
+            "X-Studio-API-Schema": backend.schema_hash,
+        }
+        catalog_response = backend.request(
+            "GET", "/api/models?account_key=default", headers=headers,
         )
         self.assertEqual(catalog_response.status, 400, catalog_response.body[:1000])
         self.assertTrue(
             catalog_response.json().get("catalogPending"), catalog_response.body[:1000],
         )
-        self.backend.wait_until(
-            self.backend.provider_gate_started, "smart-title model/list response gate",
+        backend.wait_until(
+            backend.provider_gate_started, "smart-title model/list response gate",
         )
-        before = rename_state(self.backend.state, self.agent_id, "smart-title-id")
-        response = self.backend.request(
+        before = rename_state(backend.state, agent_id, "smart-title-id")
+        response = backend.request(
             "POST",
             "/api/rename",
-            body={"id": self.agent_id, "name": None, "request_id": "smart-title-id"},
-            headers=self.headers(),
+            body={"id": agent_id, "name": None, "request_id": "smart-title-id"},
+            headers=headers,
         )
         self.assertEqual(response.status, 200, response.body[:1000])
         self.assertEqual(response.json()["status"], "pending")
         self.assertEqual(response.json()["request_id"], "smart-title-id")
-        self.backend.release_provider_gate()
+        backend.release_provider_gate()
 
         def failure_settled():
             receipt = rename_state(
-                self.backend.state, self.agent_id, "smart-title-id",
+                backend.state, agent_id, "smart-title-id",
             )["receipt"]
             if receipt is None:
                 return False
@@ -1064,11 +1074,11 @@ class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
                 "failed", "invalid", "not_sent",
             }
 
-        self.backend.wait_until(
+        backend.wait_until(
             failure_settled,
             "smart-title failure receipt",
         )
-        after = rename_state(self.backend.state, self.agent_id, "smart-title-id")
+        after = rename_state(backend.state, agent_id, "smart-title-id")
         self.assertIsNotNone(after["receipt"])
         result = json.loads(after["receipt"][1])
         self.assertIn(result.get("status", result.get("state")), {"failed", "invalid", "not_sent"})
@@ -1076,16 +1086,16 @@ class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         # failure without renaming if generation cannot start: codex_rename.py:128-146,195-207.
         self.assertEqual(after["agent"], before["agent"])
         self.assertEqual(after["projection"], before["projection"])
-        replay = self.backend.request(
+        replay = backend.request(
             "POST",
             "/api/rename",
-            body={"id": self.agent_id, "name": None, "request_id": "smart-title-id"},
-            headers=self.headers(),
+            body={"id": agent_id, "name": None, "request_id": "smart-title-id"},
+            headers=headers,
         )
         self.assertEqual(replay.status, 200, replay.body[:1000])
         self.assertEqual(replay.json()["request_id"], "smart-title-id")
         self.assertEqual(replay.json()["status"], "failed")
-        replayed = rename_state(self.backend.state, self.agent_id, "smart-title-id")
+        replayed = rename_state(backend.state, agent_id, "smart-title-id")
         self.assertEqual(replayed["agent"], before["agent"])
         self.assertEqual(replayed["projection"], before["projection"])
 
