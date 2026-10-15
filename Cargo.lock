@@ -2233,6 +2233,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "tower",
+ "uuid",
 ]
 
 [[package]]

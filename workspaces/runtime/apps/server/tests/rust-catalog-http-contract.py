@@ -71,9 +71,7 @@ class RustCatalogHttpContract(unittest.TestCase):
             raise RuntimeError("The server runner must provide a memory-backed TMPDIR")
         cls.backend = BackendProcess(Path(scratch))
         cls.backend.create_codex_replay("restart-mid-turn-supervisor-replay.json")
-        # The harness installs a replay executable and a disposable auth file.
-        # Keep the account signed out so even startup cannot launch that provider.
-        (cls.backend.codex_home / "auth.json").write_text("{}", encoding="utf-8")
+        # The provider executable and credentials are disposable replay fixtures.
         missing_home = cls.backend.root / "missing-profile"
         malformed_home = cls.backend.root / "malformed-profile"
         malformed_home.mkdir()
@@ -150,7 +148,7 @@ class RustCatalogHttpContract(unittest.TestCase):
             ["default", "disconnected", "duplicate", "malformed"],
         )
         accounts = {account["id"]: account for account in body["accounts"]}
-        self.assertEqual(accounts["default"]["status"], "signedOut")
+        self.assertEqual(accounts["default"]["status"], "ready")
         self.assertEqual(accounts["disconnected"]["status"], "ready")
         self.assertTrue(accounts["disconnected"]["disconnected"])
         self.assertEqual(accounts["disconnected"]["accountId"], "stale-id")
@@ -361,7 +359,7 @@ class RustCatalogHttpContract(unittest.TestCase):
                 "kind": "vm", "state": "unmounted", "path": None, "error": None,
             })
 
-    def test_native_command_input_and_sync_notify_refuse_without_provider_or_writes(self) -> None:
+    def test_native_command_input_queues_a_durable_message_without_request_id(self) -> None:
         before = self.backend.received_provider_frames()
         if not self.rust_backend:
             self.skipTest("Python native-command input uses its existing event driver")
@@ -373,28 +371,23 @@ class RustCatalogHttpContract(unittest.TestCase):
                 "X-Canvas-Token": self.backend.session["token"],
             },
         )
-        assert_status(command, 501)
-        self.assertEqual(command.json(), {
-            "error": "Not implemented: requires turn-path/native-command-input",
-        })
+        assert_status(command, 200)
+        self.assertEqual(command.json()["status"], "queued")
         self.assertEqual(self.backend.received_provider_frames(), before)
         with sqlite3.connect(
             f"file:{self.backend.state / 'canvas.sqlite3'}?mode=ro", uri=True,
         ) as connection:
-            row = connection.execute(
-                "SELECT record FROM runtime_tasks WHERE id=?",
-                ("catalog-http-active-command",),
+            event = connection.execute(
+                "SELECT text FROM runtime_events WHERE agent=? ORDER BY created DESC LIMIT 1",
+                ("catalog-http-agent",),
             ).fetchone()
-        self.assertIsNotNone(row)
-        task = json.loads(row[0])
-        self.assertEqual(task["status"], "running")
-        self.assertEqual(task["processId"], "44")
+        self.assertIsNotNone(event)
+        self.assertIn('native write_stdin tool for session 44', event[0])
+        self.assertIn('exactly this JSON string as chars: "x".', event[0])
 
-    def test_native_command_cancel_refuses_without_input_driver(self) -> None:
+    def test_native_command_cancel_lists_exact_item_before_terminating(self) -> None:
         if not self.rust_backend:
-            self.skipTest(
-                "Python startup recovery marks the seeded command lost before the request"
-            )
+            self.skipTest("Python startup recovery marks the seeded command lost before the request")
         before = self.backend.received_provider_frames()
         response = self.backend.request(
             "POST", "/api/native-command",
@@ -404,22 +397,15 @@ class RustCatalogHttpContract(unittest.TestCase):
                 "X-Canvas-Token": self.backend.session["token"],
             },
         )
-        assert_status(response, 501)
-        self.assertEqual(response.json(), {
-            "error": "Not implemented: requires turn-path/native-command-input",
-        })
-        self.assertEqual(self.backend.received_provider_frames(), before)
-        with sqlite3.connect(
-            f"file:{self.backend.state / 'canvas.sqlite3'}?mode=ro", uri=True,
-        ) as connection:
-            row = connection.execute(
-                "SELECT record FROM runtime_tasks WHERE id=?",
-                ("catalog-http-active-command",),
-            ).fetchone()
-        self.assertIsNotNone(row)
-        task = json.loads(row[0])
-        self.assertEqual(task["status"], "running")
-        self.assertEqual(task["processId"], "44")
+        assert_status(response, 200)
+        self.assertEqual(response.json(), {"terminated": True})
+        frames = self.backend.received_provider_frames()[len(before):]
+        self.assertEqual(
+            [frame.get("method") for frame in frames if frame.get("method") in {
+                "thread/backgroundTerminals/list", "thread/backgroundTerminals/terminate",
+            }],
+            ["thread/backgroundTerminals/list", "thread/backgroundTerminals/terminate"],
+        )
 
     def test_sync_notify_contract(self) -> None:
         notify = self.backend.request(

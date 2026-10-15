@@ -217,6 +217,7 @@ fn validate(request: &SessionRequest) -> Result<(), PortError> {
                 | Method::ThreadTurnsList
                 | Method::ThreadItemsList
                 | Method::ThreadBackgroundTerminalsList
+                | Method::ThreadBackgroundTerminalsTerminate
                 | Method::ThreadStart
                 | Method::TurnStart
                 | Method::ThreadFork
@@ -283,6 +284,10 @@ fn validate(request: &SessionRequest) -> Result<(), PortError> {
                 // codex_context_repair.py, codex_connection_recovery.py, and
                 // codex_turn_recovery.py respectively.
                 || !valid_turn_view))
+        || (request.method == Method::ThreadBackgroundTerminalsList
+            && !valid_background_terminals_list(&request.params))
+        || (request.method == Method::ThreadBackgroundTerminalsTerminate
+            && !valid_background_terminals_terminate(&request.params))
         || (request.method == Method::ThreadSettingsUpdate && !valid_settings_update(request))
         || (request.method == Method::OperationStatus
             && !request
@@ -312,6 +317,38 @@ fn validate(request: &SessionRequest) -> Result<(), PortError> {
         return Err(PortError::Invalid);
     }
     Ok(())
+}
+
+fn valid_background_terminals_list(params: &Value) -> bool {
+    let Some(params) = params.as_object() else {
+        return false;
+    };
+    params
+        .get("threadId")
+        .and_then(Value::as_str)
+        .is_some_and(|id| !id.is_empty())
+        && params.get("limit") == Some(&json!(100))
+        && params
+            .keys()
+            .all(|key| matches!(key.as_str(), "threadId" | "limit" | "cursor"))
+        && params.get("cursor").is_none_or(|cursor| {
+            cursor.is_null() || cursor.as_str().is_some_and(|value| !value.is_empty())
+        })
+}
+
+fn valid_background_terminals_terminate(params: &Value) -> bool {
+    let Some(params) = params.as_object() else {
+        return false;
+    };
+    params.len() == 2
+        && params
+            .get("threadId")
+            .and_then(Value::as_str)
+            .is_some_and(|id| !id.is_empty())
+        && params
+            .get("processId")
+            .and_then(Value::as_str)
+            .is_some_and(|id| !id.is_empty())
 }
 
 fn valid_settings_update(request: &SessionRequest) -> bool {
@@ -671,6 +708,28 @@ mod validation_tests {
             Method::ThreadTurnsList,
             &json!({"threadId":"fixture-thread","limit":10,"sortDirection":"desc","itemsView":"full"})
         ));
+    }
+
+    #[test]
+    fn native_command_terminal_requests_are_actor_bound_and_exact() {
+        let mut request = turns_request("full", 1, true);
+        request.method = Method::ThreadBackgroundTerminalsList;
+        request.params = json!({"threadId":"fixture-thread","limit":100});
+        assert!(validate(&request).is_ok());
+        request.params["unexpected"] = json!(true);
+        assert_eq!(validate(&request), Err(PortError::Invalid));
+
+        request.method = Method::ThreadBackgroundTerminalsTerminate;
+        request.params = json!({"threadId":"fixture-thread","processId":"44"});
+        assert!(validate(&request).is_ok());
+        request.actor = None;
+        assert_eq!(validate(&request), Err(PortError::Invalid));
+        request.actor = Some(RequestActor {
+            agent: "fixture-agent".into(),
+            epoch: 1,
+        });
+        request.params["unexpected"] = json!(true);
+        assert_eq!(validate(&request), Err(PortError::Invalid));
     }
 
     #[test]
