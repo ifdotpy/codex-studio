@@ -836,8 +836,8 @@ fn permanent_cancel_refusal_settles_and_is_not_retried() {
         (
             "cancel-session-missing",
             NotSentReason::SessionMissing,
-            "failed",
-            "failed",
+            "running",
+            "unknown",
         ),
     ] {
         let store = Arc::new(fixtures::store(root.path(), name));

@@ -161,11 +161,7 @@ pub fn cancel(
             Submission::NotSent {
                 reason: NotSentReason::SessionMissing,
                 error,
-            } => (
-                "failed",
-                Some(error.clone()),
-                Some(NotSentReason::SessionMissing),
-            ),
+            } => ("unknown", Some(error.clone()), None),
             Submission::Unknown => (
                 "unknown",
                 Some("Cancel dispatch outcome unknown".into()),
@@ -178,10 +174,7 @@ pub fn cancel(
                 && current.record()["status"] == "running"
                 && current.record()["cancelRequested"] == true
             {
-                let mut decision = if matches!(
-                    retry_reason,
-                    Some(NotSentReason::MonitorMissing | NotSentReason::SessionMissing)
-                ) {
+                let mut decision = if retry_reason == Some(NotSentReason::MonitorMissing) {
                     monitor_policy::finish(&current, Some(&operation), None, error.as_deref(), now)?
                 } else {
                     monitor_policy::Decision {
@@ -190,9 +183,6 @@ pub fn cancel(
                         response: Value::Null,
                     }
                 };
-                if retry_reason == Some(NotSentReason::SessionMissing) {
-                    decision.record["status"] = json!("failed");
-                }
                 let previous_attempts = current
                     .record()
                     .pointer("/cancelDispatch/attempts")
@@ -295,14 +285,19 @@ pub fn reserve_cancel(
         }
     }
     let operation = if decision.effects.contains(&Effect::Terminate) {
-        Some(
-            snapshot
-                .operation()
-                .cloned()
-                .ok_or(MonitorError::Unavailable(
-                    monitor_runtime::SESSION_DEPENDENCY,
-                ))?,
-        )
+        if let Some(operation) = snapshot.operation().cloned() {
+            Some(operation)
+        } else {
+            let error = "Cancel requested. Process termination was not confirmed: monitor operation metadata is unavailable";
+            decision.record["cancelDispatch"] = json!({
+                "status":"unknown",
+                "attempts":snapshot.record().pointer("/cancelDispatch/attempts").and_then(Value::as_u64).unwrap_or(0),
+                "error":error,
+            });
+            decision.record["error"] = json!(error);
+            decision.response["error"] = json!(error);
+            None
+        }
     } else {
         None
     };

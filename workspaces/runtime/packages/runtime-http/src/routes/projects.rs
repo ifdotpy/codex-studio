@@ -208,8 +208,6 @@ fn radio_create_error(error: CreateError) -> ProjectsError {
 const PROJECT_WRITE_DEPENDENCIES: [Dependency; 1] = [Dependency::new(
     "cross-server-driver/project-location-write",
 )];
-const PEER_TEAM_DEPENDENCIES: [Dependency; 1] =
-    [Dependency::new("cross-server-driver/peer-team-transport")];
 pub(crate) fn routes() -> RouteGroup {
     RouteGroup::new(vec![
         get("/api/projects", OperationStatus::Implemented, list_projects),
@@ -223,11 +221,7 @@ pub(crate) fn routes() -> RouteGroup {
             OperationStatus::Implemented,
             project_locations,
         ),
-        post(
-            "/api/peer-teams",
-            OperationStatus::partial(&PEER_TEAM_DEPENDENCIES),
-            peer_teams,
-        ),
+        post("/api/peer-teams", OperationStatus::Implemented, peer_teams),
     ])
 }
 
@@ -1118,7 +1112,6 @@ inventory::submit! {
         routes: Some(routes),
         dependencies: &[
             "cross-server-driver/project-location-write",
-            "cross-server-driver/peer-team-transport",
             "provider-session/model-list",
         ],
     }
@@ -1126,10 +1119,64 @@ inventory::submit! {
 
 #[cfg(test)]
 mod local_registration_tests {
-    use super::local_project_registration;
+    use super::{local_project_registration, remote_project_write};
     use serde_json::json;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
     use studio_runtime_services::account_policy::AccountPolicyState;
+    use studio_runtime_services::{
+        multi_server_auth::AccessError,
+        multi_server_orchestration::{
+            ExchangeOutcome, OrchestrationDriver, OrchestrationEffects, PairedTransport,
+        },
+    };
     use studio_runtime_store::{ProjectsRepository, RuntimeStore};
+
+    struct ProjectPeer(Arc<AtomicUsize>);
+
+    impl PairedTransport for ProjectPeer {
+        fn exchange(
+            &self,
+            _server: &str,
+            envelope: &serde_json::Value,
+            _timeout: std::time::Duration,
+        ) -> Result<serde_json::Value, AccessError> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            let payload = &envelope["payload"];
+            let path = payload["path"].as_str().expect("remote path");
+            Ok(json!({
+                "requestId": envelope["requestId"],
+                "outcome": "applied",
+                "value": {
+                    "serverId": "peer",
+                    "path": path,
+                    "canonicalPath": path,
+                    "projectId": path,
+                    "gitOrigin": null,
+                    "homeProjectId": payload["project"],
+                    "requestId": envelope["requestId"]
+                }
+            }))
+        }
+    }
+
+    struct NoEffects;
+
+    impl OrchestrationEffects for NoEffects {
+        fn supports(&self, _action: &str) -> bool {
+            false
+        }
+
+        fn execute(
+            &self,
+            _principal: &str,
+            _envelope: &serde_json::Value,
+        ) -> Result<ExchangeOutcome, AccessError> {
+            unreachable!("outbound project registration does not execute local effects")
+        }
+    }
 
     #[test]
     fn local_registration_saves_logical_location_and_replays_its_receipt() {
@@ -1179,5 +1226,72 @@ mod local_registration_tests {
         .expect("logical project");
         assert_eq!(logical["locations"].as_array().expect("locations").len(), 1);
         assert_eq!(logical["locations"][0]["serverId"], identity["serverId"]);
+    }
+
+    #[test]
+    fn remote_project_registration_replays_saved_receipts_without_second_send() {
+        let root = tempfile::tempdir().expect("state directory");
+        let store = Arc::new(RuntimeStore::open(Some(root.path())).expect("runtime store"));
+        studio_runtime_services::federation_credentials::Credentials::default()
+            .identity(&store, Some("https://local.fixture.ts.net"))
+            .expect("persisted local identity");
+        store
+            .transaction(|tx| {
+                tx.execute(
+                    "INSERT INTO runtime_access_clients(id,record) VALUES(?1,?2)",
+                    [
+                        "peer",
+                        r#"{"id":"peer","clientId":"local","kind":"server","label":"Peer","created":1,"status":"paired","origin":"https://peer.fixture.ts.net","publicKey":"fixture"}"#,
+                    ],
+                )?;
+                Ok(())
+            })
+            .expect("paired fake server");
+        let calls = Arc::new(AtomicUsize::new(0));
+        let driver = OrchestrationDriver::new(
+            Arc::clone(&store),
+            Arc::new(ProjectPeer(Arc::clone(&calls))),
+            Arc::new(NoEffects),
+        );
+        let policy = AccountPolicyState::from_startup(
+            Some(br#"{"version":1,"defaultAccountKey":"default","accounts":{"default":{"id":"default","home":"/default","label":"Default","source":"Codex CLI","status":"signedOut"}},"logins":{}}"#),
+            [],
+        )
+        .expect("account snapshot");
+        let body = json!({
+            "action":"register",
+            "server":"peer",
+            "path":"/remote/project",
+            "name":"Remote project",
+            "request_id":"remote-registration-1"
+        });
+        let first = remote_project_write(
+            store.as_ref(),
+            &body,
+            "default",
+            &policy.accounts().accounts,
+            &driver,
+            10,
+        )
+        .expect("fake peer registration");
+        let replay = remote_project_write(
+            store.as_ref(),
+            &body,
+            "default",
+            &policy.accounts().accounts,
+            &driver,
+            11,
+        )
+        .expect("saved receipt replay");
+        assert_eq!(first, replay);
+        assert_eq!(first["outcome"], "applied");
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        let connection = store.read().expect("store read");
+        let project = first["projectId"].as_str().expect("project ID");
+        let (_, record) = ProjectsRepository::get(&connection, project)
+            .expect("project read")
+            .expect("logical project");
+        assert_eq!(record["locations"][0]["serverId"], "peer");
+        assert_eq!(record["locations"][0]["path"], "/remote/project");
     }
 }

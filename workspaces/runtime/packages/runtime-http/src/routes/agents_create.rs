@@ -555,8 +555,9 @@ impl RouteCreationCatalog {
 }
 
 pub(crate) fn routes() -> RouteGroup {
-    const LEAD_DEPENDENCIES: [Dependency; 5] = [
+    const LEAD_DEPENDENCIES: [Dependency; 6] = [
         Dependency::new("account-driver/unavailable"),
+        Dependency::new("cross-server-driver/local-identity"),
         Dependency::new("provider-session/model-list"),
         Dependency::new("worker-driver/settings-catalog"),
         Dependency::new("workspace-state/image-workspace"),
@@ -1197,11 +1198,9 @@ fn operation_error(error: OperationError) -> ApiError {
     }
     let implemented_but_unavailable = matches!(
         &error,
-        OperationError::Create(
-            MutationError::CapabilityUnavailable(
-                "provider-session/title-generation" | "account-driver/unavailable"
-            )
-        )
+        OperationError::Create(MutationError::CapabilityUnavailable(
+            "provider-session/title-generation" | "account-driver/unavailable"
+        ))
     );
     if implemented_but_unavailable {
         return ApiError::new(StatusCode::SERVICE_UNAVAILABLE, error.to_string());
@@ -1248,7 +1247,6 @@ inventory::submit! {
         routes: Some(routes),
         dependencies: &[
             "cross-server-driver/local-identity",
-            "cross-server-driver/project-binding",
             "provider-session/title-generation",
             "account-driver/unavailable",
             "provider-session/model-list",

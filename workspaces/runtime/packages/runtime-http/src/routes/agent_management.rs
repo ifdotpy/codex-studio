@@ -28,7 +28,7 @@ const LIFECYCLE: &[Dependency] = &[
     Dependency::new("work-driver/deletion-release"),
     Dependency::new("workspace-state/agent-lifecycle"),
 ];
-const NATIVE: &[Dependency] = &[Dependency::new("cross-server/native-review")];
+const NATIVE: &[Dependency] = &[Dependency::new("workspace-state/vm-workspace")];
 
 pub(crate) fn routes() -> RouteGroup {
     RouteGroup::new(vec![
@@ -394,10 +394,8 @@ impl NativeActionPreparationRun {
         let connection = self.store.read()?;
         let agent = AgentRepository::get(&connection, &AgentId::from(request.agent.as_str()))?
             .ok_or(NativeError::Changed)?;
-        if agent.extra.get("executionMode").and_then(Value::as_str) == Some("vm")
-            || agent.extra.get("remoteOrigin") == Some(&Value::Bool(true))
-        {
-            return Err(NativeError::Unavailable("cross-server/native-review"));
+        if agent.extra.get("executionMode").and_then(Value::as_str) == Some("vm") {
+            return Err(NativeError::Unavailable("workspace-state/vm-workspace"));
         }
         Ok(())
     }
@@ -505,10 +503,8 @@ impl Admission for NativeAdmission<'_> {
             if value.get("provider").and_then(Value::as_str) != Some("codex") {
                 return Err(NativeError::Invalid("review/provider"));
             }
-            if value.get("executionMode").and_then(Value::as_str) == Some("vm")
-                || value.get("remoteOrigin") == Some(&Value::Bool(true))
-            {
-                return Err(NativeError::Unavailable("cross-server/native-review"));
+            if value.get("executionMode").and_then(Value::as_str) == Some("vm") {
+                return Err(NativeError::Unavailable("workspace-state/vm-workspace"));
             }
             if value.get("daybreakEnabled") == Some(&serde_json::json!(true)) {
                 return Err(NativeError::Invalid("review/daybreak"));
@@ -727,7 +723,7 @@ inventory::submit! {
             "agent-management/snapshot-limit", "cross-server/agent-management",
             "event-driver/child-stop-notification", "monitor-driver/agent-stop",
             "account-worker/deleted-settlement", "usage-policy/agent-stop", "voice-driver/agent-stop", "work-driver/deletion-release",
-            "workspace-state/agent-lifecycle", "cross-server/native-review",
+            "workspace-state/agent-lifecycle", "workspace-state/vm-workspace",
         ],
     }
 }
@@ -778,7 +774,7 @@ mod native_review_preflight_tests {
     }
 
     #[test]
-    fn cross_server_review_refuses_before_repair_or_receipt_writes() {
+    fn remote_origin_review_passes_and_vm_review_refuses_before_side_effects() {
         let directory = tempfile::tempdir().expect("isolated store directory");
         let store = Arc::new(RuntimeStore::open(Some(directory.path())).expect("open store"));
         let original = AgentRecord::from_value(json!({
@@ -787,7 +783,7 @@ mod native_review_preflight_tests {
             "epoch":7,
             "status":"running",
             "provider":"codex",
-            "executionMode":"vm",
+            "remoteOrigin":true,
             "threadId":"thread-1",
             "accountKey":"default",
             "startAttempt":{"submitted":true}
@@ -855,7 +851,26 @@ mod native_review_preflight_tests {
 
         assert!(matches!(
             result,
-            Err(NativeError::Unavailable("cross-server/native-review"))
+            Err(NativeError::Unavailable("account-driver/provider-home"))
+        ));
+        assert_eq!(repair.0.load(Ordering::SeqCst), 0);
+        assert_eq!(provider.0.load(Ordering::SeqCst), 0);
+        let mut vm_value = original.value();
+        vm_value["executionMode"] = json!("vm");
+        let vm_agent = AgentRecord::from_value(vm_value).expect("valid VM agent record");
+        store
+            .transaction(|tx| AgentRepository::put(tx, &vm_agent))
+            .expect("save VM agent");
+        let vm_result = native_actions::Preparation::before_reserve(
+            &preparation,
+            store.as_ref(),
+            provider.as_ref(),
+            &request,
+            &scope,
+        );
+        assert!(matches!(
+            vm_result,
+            Err(NativeError::Unavailable("workspace-state/vm-workspace"))
         ));
         assert_eq!(repair.0.load(Ordering::SeqCst), 0);
         assert_eq!(provider.0.load(Ordering::SeqCst), 0);
@@ -871,7 +886,8 @@ mod native_review_preflight_tests {
                 |row| row.get(0),
             )
             .expect("count unchanged receipts");
-        assert_eq!(after_agent, before_agent);
+        assert_eq!(before_agent["remoteOrigin"], true);
+        assert_eq!(after_agent, vm_agent.value());
         assert_eq!(after_receipts, before_receipts);
     }
 }

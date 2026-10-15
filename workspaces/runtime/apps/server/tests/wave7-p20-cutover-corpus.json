@@ -105,6 +105,18 @@
     {
       "closures": [
         {
+          "closes": "first-cutover refusal: VM workspace excluded",
+          "kind": "external_or_scope",
+          "owner": "first-cutover refusal: VM workspace excluded"
+        }
+      ],
+      "dependency": "workspace-state/vm-workspace",
+      "operation_count": 3,
+      "operations": ["POST /api/action", "POST /api/agents", "POST /api/leads"]
+    },
+    {
+      "closures": [
+        {
           "closes": "origin/feat/wave7-p10-stop-delete",
           "kind": "accepted_branch",
           "owner": "P10"
@@ -325,18 +337,6 @@
     {
       "closures": [
         {
-          "closes": "first-cutover refusal: VM workspace excluded",
-          "kind": "external_or_scope",
-          "owner": "first-cutover refusal: VM workspace excluded"
-        }
-      ],
-      "dependency": "workspace-state/vm-workspace",
-      "operation_count": 2,
-      "operations": ["POST /api/agents", "POST /api/leads"]
-    },
-    {
-      "closures": [
-        {
           "closes": "R3",
           "kind": "external_or_scope",
           "owner": "R3"
@@ -424,19 +424,19 @@
     {
       "closures": [
         {
-          "closes": "R1",
-          "kind": "external_or_scope",
-          "owner": "R1"
-        },
-        {
           "closes": "origin/feat/wave7-p19-projects-radio",
           "kind": "accepted_branch",
           "owner": "P19"
+        },
+        {
+          "closes": "R1",
+          "kind": "external_or_scope",
+          "owner": "R1"
         }
       ],
-      "dependency": "cross-server-driver/peer-team-transport",
+      "dependency": "cross-server-driver/local-identity",
       "operation_count": 1,
-      "operations": ["POST /api/peer-teams"]
+      "operations": ["POST /api/leads"]
     },
     {
       "closures": [
@@ -454,30 +454,6 @@
       "dependency": "cross-server-driver/project-location-write",
       "operation_count": 1,
       "operations": ["POST /api/projects"]
-    },
-    {
-      "closures": [
-        {
-          "closes": "origin/feat/wave7-p11-native-actions",
-          "kind": "accepted_branch",
-          "owner": "P11"
-        }
-      ],
-      "dependency": "cross-server/native-review",
-      "operation_count": 1,
-      "operations": ["POST /api/action"]
-    },
-    {
-      "closures": [
-        {
-          "closes": "R1",
-          "kind": "external_or_scope",
-          "owner": "R1"
-        }
-      ],
-      "dependency": "cross-server/remote-events",
-      "operation_count": 1,
-      "operations": ["POST /api/monitor/cancel"]
     },
     {
       "closures": [
@@ -743,10 +719,10 @@
     }
   ],
   "counts": {
-    "implemented": 125,
-    "named_dependencies": 52,
+    "implemented": 127,
+    "named_dependencies": 50,
     "not_registered": 0,
-    "partial": 35,
+    "partial": 33,
     "total": 160
   },
   "lifecycle_dependencies": {
@@ -1131,7 +1107,7 @@
       "status": "implemented"
     },
     {
-      "dependencies": ["cross-server/native-review"],
+      "dependencies": ["workspace-state/vm-workspace"],
       "operation": "POST /api/action",
       "status": "partial"
     },
@@ -1313,6 +1289,7 @@
     {
       "dependencies": [
         "account-driver/unavailable",
+        "cross-server-driver/local-identity",
         "provider-session/model-list",
         "worker-driver/settings-catalog",
         "workspace-state/image-workspace",
@@ -1352,9 +1329,9 @@
       "status": "partial"
     },
     {
-      "dependencies": ["cross-server/remote-events"],
+      "dependencies": [],
       "operation": "POST /api/monitor/cancel",
-      "status": "partial"
+      "status": "implemented"
     },
     {
       "dependencies": [],
@@ -1402,9 +1379,9 @@
       "status": "implemented"
     },
     {
-      "dependencies": ["cross-server-driver/peer-team-transport"],
+      "dependencies": [],
       "operation": "POST /api/peer-teams",
-      "status": "partial"
+      "status": "implemented"
     },
     {
       "dependencies": [],

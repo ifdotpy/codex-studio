@@ -5,9 +5,11 @@ use super::manifest::{Dependency, OperationStatus, RouteGroup, dependency_unavai
 use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
+use rusqlite::OptionalExtension;
 use serde_json::Value;
 use studio_runtime_services::federation_credentials::CredentialError;
 use studio_runtime_services::multi_server::{self, MultiServerError};
+use studio_runtime_services::remote_transport::{self, MultiServerExchangeInput};
 
 use crate::error::ApiError;
 use crate::router::HttpState;
@@ -193,35 +195,29 @@ async fn manage(
                 }
                 if action == "name" {
                     let target = body["serverId"].as_str().unwrap_or_default();
-                    if !credentials
+                    if credentials
                         .is_local_target(&store, target)
                         .map_err(map_credential_error)?
                     {
-                        let paired = store
-                            .read()
-                            .map_err(ApiError::stored)?
-                            .query_row(
-                                "SELECT EXISTS(SELECT 1 FROM runtime_access_clients WHERE id=?1 AND json_extract(record,'$.kind')='server' AND json_extract(record,'$.status')='paired')",
-                                [target],
-                                |row| row.get::<_, bool>(0),
+                        credentials
+                            .rename(
+                                &store,
+                                target,
+                                body["label"].as_str().unwrap_or_default(),
+                                body["requestId"].as_str().unwrap_or_default(),
+                                "local",
                             )
-                            .map_err(|_| ApiError::internal())?;
-                        if !paired {
-                            return Err(ApiError::new(
-                                StatusCode::FORBIDDEN,
-                                "The server is not paired or is revoked",
-                            ));
-                        }
-                    }
-                    credentials
-                        .rename(
+                            .map_err(map_credential_error)?;
+                    } else {
+                        remote_set_server_name(
                             &store,
+                            &credentials,
+                            origin.as_deref(),
                             target,
                             body["label"].as_str().unwrap_or_default(),
                             body["requestId"].as_str().unwrap_or_default(),
-                            "local",
-                        )
-                        .map_err(map_credential_error)?;
+                        )?;
+                    }
                 }
                 let identity = credentials
                     .identity(&store, origin.as_deref())
@@ -245,6 +241,194 @@ async fn manage(
         "/api/multi-server",
         MANAGEMENT_DEPENDENCIES,
     ))
+}
+
+fn remote_set_server_name(
+    store: &studio_runtime_store::RuntimeStore,
+    credentials: &studio_runtime_services::federation_credentials::Credentials,
+    local_origin: Option<&str>,
+    target: &str,
+    label: &str,
+    request_id: &str,
+) -> Result<(), ApiError> {
+    if target.is_empty()
+        || request_id.is_empty()
+        || label.is_empty()
+        || label.chars().count() > 80
+        || label.trim() != label
+        || label.chars().any(|character| {
+            character.is_control() || (character.is_whitespace() && character != ' ')
+        })
+    {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "Invalid server name request",
+        ));
+    }
+    let raw_peer = store
+        .read_transaction(|tx| {
+            tx.query_row(
+                "SELECT record FROM runtime_access_clients WHERE id=?1 AND json_extract(record,'$.kind')='server' AND json_extract(record,'$.status')='paired'",
+                [target],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(Into::into)
+        })
+        .map_err(ApiError::stored)?;
+    let Some(raw_peer) = raw_peer else {
+        return Err(ApiError::new(
+            StatusCode::FORBIDDEN,
+            "The server is not paired or is revoked",
+        ));
+    };
+    let peer: Value = serde_json::from_str(&raw_peer).map_err(|_| {
+        ApiError::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Invalid stored object runtime_access_clients",
+        )
+    })?;
+    let origin = peer["origin"].as_str().unwrap_or_default();
+    let public_key = peer["publicKey"].as_str().unwrap_or_default();
+    if origin.is_empty() || public_key.is_empty() {
+        return Err(ApiError::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Invalid stored object runtime_access_clients",
+        ));
+    }
+    let reserved = store
+        .transaction_with(|tx| {
+            let previous = tx
+                .query_row(
+                    "SELECT server,label FROM runtime_access_name_targets WHERE id=?1",
+                    [request_id],
+                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+                )
+                .optional()?;
+            if previous.is_some_and(|(server, old_label)| server != target || old_label != label) {
+                return Ok::<_, studio_runtime_store::StoreError>(false);
+            }
+            tx.execute(
+                "INSERT OR IGNORE INTO runtime_access_name_targets(id,server,label) VALUES(?1,?2,?3)",
+                rusqlite::params![request_id, target, label],
+            )?;
+            Ok(true)
+        })
+        .map_err(ApiError::stored)?;
+    if !reserved {
+        return Err(ApiError::new(
+            StatusCode::CONFLICT,
+            "The server name request ID has different content",
+        ));
+    }
+    credentials
+        .identity(store, local_origin)
+        .map_err(map_credential_error)?;
+    let identity = remote_transport::load_multi_server_identity(store.root()).map_err(|_| {
+        ApiError::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "The local server identity is unavailable",
+        )
+    })?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|_| ApiError::internal())?
+        .as_secs() as i64;
+    let url = format!("{origin}/api/multi-server/v1/name");
+    let raw = remote_transport::canonical_json(&serde_json::json!({
+        "label": label,
+        "requestId": request_id
+    }))
+    .map_err(|_| ApiError::internal())?
+    .into_bytes();
+    let nonce = remote_transport::new_nonce().map_err(|_| ApiError::internal())?;
+    remote_transport::exchange_multi_server(
+        store,
+        &identity,
+        &MultiServerExchangeInput {
+            server_id: target,
+            method: "POST",
+            url: &url,
+            request_id,
+            timestamp: now,
+            nonce: &nonce,
+            body: &raw,
+            expected_public_key: public_key,
+            timeout: std::time::Duration::from_secs(10),
+        },
+        now,
+    )
+    .map_err(|_| {
+        ApiError::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "The remote name outcome is unknown",
+        )
+    })?;
+
+    let status_url = format!("{origin}/api/multi-server/v1/status");
+    let status_nonce = remote_transport::new_nonce().map_err(|_| ApiError::internal())?;
+    let status_id = format!("status-{}", status_nonce);
+    let status = remote_transport::exchange_multi_server(
+        store,
+        &identity,
+        &MultiServerExchangeInput {
+            server_id: target,
+            method: "GET",
+            url: &status_url,
+            request_id: &status_id,
+            timestamp: now,
+            nonce: &status_nonce,
+            body: &[],
+            expected_public_key: public_key,
+            timeout: std::time::Duration::from_secs(10),
+        },
+        now,
+    )
+    .map_err(|_| {
+        ApiError::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "The remote server identity is unavailable",
+        )
+    })?;
+    let refreshed_label = status["label"].as_str().unwrap_or_default();
+    if status["serverId"] != target
+        || status["publicKey"] != public_key
+        || refreshed_label.is_empty()
+    {
+        return Err(ApiError::new(
+            StatusCode::FORBIDDEN,
+            "The remote server identity does not match",
+        ));
+    }
+    store
+        .transaction_with(|tx| {
+            let raw = tx
+                .query_row(
+                    "SELECT record FROM runtime_access_clients WHERE id=?1",
+                    [target],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()?;
+            let Some(raw) = raw else {
+                return Ok::<_, studio_runtime_store::StoreError>(false);
+            };
+            let mut record: Value = serde_json::from_str(&raw).map_err(|_| {
+                studio_runtime_store::StoreError::SchemaMismatch(
+                    "invalid stored object runtime_access_clients".into(),
+                )
+            })?;
+            if record["status"] != "paired" || record["publicKey"] != public_key {
+                return Ok(false);
+            }
+            record["label"] = Value::String(refreshed_label.to_owned());
+            tx.execute(
+                "UPDATE runtime_access_clients SET record=?1 WHERE id=?2",
+                rusqlite::params![record.to_string(), target],
+            )?;
+            Ok(true)
+        })
+        .map_err(ApiError::stored)?;
+    Ok(())
 }
 
 async fn auto_pair(ApiJson(_body): ApiJson<Value>) -> Result<Json<Value>, ApiError> {
