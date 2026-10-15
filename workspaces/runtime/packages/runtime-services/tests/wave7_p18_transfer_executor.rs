@@ -12,7 +12,7 @@ use std::{
     },
 };
 use studio_runtime_services::{
-    account_session_runtime::ConnectionScope,
+    account_session_runtime::{ConnectionScope, RequestCertainty},
     account_transfer::{Ticket, TransferError},
     account_transfer_driver::{
         self as driver, DispatchOutcome, PreparedTransfer, ProviderReceipt, TransferDispatch,
@@ -111,9 +111,13 @@ impl TransferTransport for Executor<'_> {
         assert_eq!(stored["members"]["lead"]["nativeMethod"], method);
         assert_eq!(stored["members"]["lead"]["nativeParams"], params.clone());
         let lost_response = matches!(self.behavior, Behavior::LostResponse);
-        let certainty = if lost_response { "unknown" } else { "written" };
+        let certainty = if lost_response {
+            RequestCertainty::Unknown
+        } else {
+            RequestCertainty::Written
+        };
         TransferDispatch {
-            receipt: exact_receipt(ticket, scope, certainty),
+            receipt: exact_receipt(ticket, scope, certainty.as_str()),
             result: (!lost_response).then(|| json!({"thread":{"id":"destination-thread"}})),
             certainty,
         }
@@ -208,7 +212,7 @@ fn executor_commits_intent_before_effect_and_never_resends_after_restart() {
                 provider_operation: "exact-native-request",
                 receipt: late.clone(),
                 result: Some(json!({"thread":{"id":"destination-thread"}})),
-                certainty: "written",
+                certainty: RequestCertainty::Written,
             },
             14.0,
         )
@@ -222,7 +226,7 @@ fn executor_commits_intent_before_effect_and_never_resends_after_restart() {
                 provider_operation: "exact-native-request",
                 receipt: late,
                 result: Some(json!({"thread":{"id":"destination-thread"}})),
-                certainty: "written",
+                certainty: RequestCertainty::Written,
             },
             15.0,
         )
@@ -244,7 +248,7 @@ fn executor_commits_intent_before_effect_and_never_resends_after_restart() {
                         provider_operation: "exact-native-request",
                         receipt,
                         result: Some(json!({"thread":{"id":"foreign"}})),
-                        certainty: "written",
+                        certainty: RequestCertainty::Written,
                     },
                     16.0,
                 )

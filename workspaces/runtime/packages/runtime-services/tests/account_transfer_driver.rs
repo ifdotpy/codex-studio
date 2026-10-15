@@ -11,7 +11,7 @@ use std::{
     },
 };
 use studio_runtime_services::{
-    account_session_runtime::ConnectionScope,
+    account_session_runtime::{ConnectionScope, RequestCertainty},
     account_transfer::{Action, Ticket},
     account_transfer_driver::{
         self as driver, DispatchOutcome, ProviderReceipt, TransferDispatch, TransferTransport,
@@ -91,9 +91,9 @@ impl TransferTransport for Native<'_> {
             }),
             result: self.result.clone(),
             certainty: if self.result.is_some() {
-                "written"
+                RequestCertainty::Written
             } else {
-                "unknown"
+                RequestCertainty::Unknown
             },
         }
     }
@@ -159,7 +159,7 @@ fn durable_reservation_precedes_native_and_unknown_is_never_resent() {
             provider_operation: "request-1",
             receipt: json!({"operation":"request-1","scope":scope,"certainty":"written","ticket":{"generation":1,"id":"request-1","method":"thread/fork"}}),
             result: Some(json!({"thread":{"id":"saved-fork"}})),
-            certainty: "written",
+            certainty: RequestCertainty::Written,
         },
         14.0,
     )
@@ -176,7 +176,7 @@ fn durable_reservation_precedes_native_and_unknown_is_never_resent() {
             provider_operation: "request-1",
             receipt: json!({"operation":"request-1","scope":scope,"certainty":"written","ticket":{"generation":1,"id":"request-1","method":"thread/fork"}}),
             result: Some(json!({"thread":{"id":"saved-fork"}})),
-            certainty: "written",
+            certainty: RequestCertainty::Written,
         },
         15.0,
     )

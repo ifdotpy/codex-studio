@@ -125,6 +125,7 @@ pub(super) fn api_error(error: QueueWriteError) -> ApiError {
 #[cfg(test)]
 mod tests {
     use super::api_error;
+    use crate::error::{InternalErrorCause, InternalErrorKind};
     use axum::http::StatusCode;
     use axum::response::IntoResponse;
     use studio_runtime_services::queue_write::QueueWriteError;
@@ -143,7 +144,13 @@ mod tests {
             rusqlite::Error::InvalidQuery,
         )))
         .into_response();
-        assert_eq!(database_failure.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(
+            database_failure
+                .extensions()
+                .get::<InternalErrorCause>()
+                .map(|cause| cause.0),
+            Some(InternalErrorKind::StoreDatabase)
+        );
     }
 }
 

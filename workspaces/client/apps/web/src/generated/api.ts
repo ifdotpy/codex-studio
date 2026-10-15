@@ -13752,7 +13752,7 @@ export interface components {
        * Assets
        * @default []
        */
-      assets?: components["schemas"]["JsonValue"][];
+      assets?: string[];
       /**
        * Delivery
        * @default queue

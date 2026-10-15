@@ -818,25 +818,15 @@ async fn dispatch<T: serde::de::DeserializeOwned + serde::Serialize + Send + 'st
                 }
                 None => agent_management_store::execute(store, &action, now),
             }
-            .map_err(|error| {
-                // Keep lifecycle 500s diagnosable in the server log. The HTTP
-                // response intentionally stays generic for internal failures.
-                eprintln!("agent lifecycle operation failed: {error:?}");
-                match error {
-                    ManagementError::Unavailable(_) => {
-                        ApiError::new(StatusCode::NOT_IMPLEMENTED, error.to_string())
-                    }
-                    ManagementError::Invalid(_) => {
-                        ApiError::new(StatusCode::BAD_REQUEST, error.to_string())
-                    }
-                    ManagementError::Stored { table, id } => {
-                        ApiError::invalid_stored(&table, &id)
-                    }
-                    ManagementError::Store(error) => {
-                        eprintln!("agent lifecycle store operation failed: {error}");
-                        ApiError::stored(error)
-                    }
+            .map_err(|error| match error {
+                ManagementError::Unavailable(_) => {
+                    ApiError::new(StatusCode::NOT_IMPLEMENTED, error.to_string())
                 }
+                ManagementError::Invalid(_) => {
+                    ApiError::new(StatusCode::BAD_REQUEST, error.to_string())
+                }
+                ManagementError::Stored { table, id } => ApiError::invalid_stored(&table, &id),
+                ManagementError::Store(error) => ApiError::stored(error),
             })?;
             super::generated_json::<T>(result).map(Json)
         },

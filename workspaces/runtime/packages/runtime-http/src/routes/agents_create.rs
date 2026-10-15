@@ -1,6 +1,6 @@
 //! Typed HTTP boundary for persisted agent operations.
 use super::extractors::ApiJson;
-use super::manifest::{Dependency, OperationStatus, RouteGroup, post};
+use super::manifest::{OperationStatus, RouteGroup, post};
 use crate::{error::ApiError, generated, router::HttpState};
 use axum::{Json, extract::State, http::StatusCode, response::IntoResponse};
 use serde_json::Value;
@@ -715,11 +715,7 @@ pub(crate) fn routes() -> RouteGroup {
             OperationStatus::Implemented,
             conversation,
         ),
-        post(
-            "/api/leads",
-            OperationStatus::Implemented,
-            create_lead,
-        ),
+        post("/api/leads", OperationStatus::Implemented, create_lead),
         post("/api/rename", OperationStatus::Implemented, rename),
     ])
 }

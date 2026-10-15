@@ -207,7 +207,7 @@ pub(crate) fn error_response(status: StatusCode, message: &str) -> Response {
 
 #[cfg(test)]
 mod tests {
-    use super::ApiError;
+    use super::{ApiError, InternalErrorCause, InternalErrorKind};
     use axum::http::StatusCode;
     use axum::response::IntoResponse;
     use studio_runtime_store::StoreError;
@@ -223,6 +223,12 @@ mod tests {
 
         let database_failure =
             ApiError::stored(StoreError::Sqlite(rusqlite::Error::InvalidQuery)).into_response();
-        assert_eq!(database_failure.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(
+            database_failure
+                .extensions()
+                .get::<InternalErrorCause>()
+                .map(|cause| cause.0),
+            Some(InternalErrorKind::StoreDatabase)
+        );
     }
 }

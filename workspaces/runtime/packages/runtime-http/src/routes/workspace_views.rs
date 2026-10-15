@@ -18,7 +18,7 @@ use crate::router::HttpState;
 use crate::validation::Registry;
 
 use super::extractors::QueryParams;
-use super::manifest::{OperationStatus, RouteGroup, get};
+use super::manifest::{Dependency, OperationStatus, RouteGroup, dependency_unavailable, get};
 
 pub(crate) fn routes() -> RouteGroup {
     RouteGroup::new(vec![
@@ -646,6 +646,7 @@ fn dependency_error(method: &str, path: &str, dependencies: &[Dependency]) -> Ap
 #[cfg(test)]
 mod tests {
     use super::map_store_error;
+    use crate::error::{InternalErrorCause, InternalErrorKind};
     use axum::http::StatusCode;
     use axum::response::IntoResponse;
     use studio_runtime_store::StoreError;
@@ -661,7 +662,13 @@ mod tests {
 
         let database_failure =
             map_store_error(StoreError::Sqlite(rusqlite::Error::InvalidQuery)).into_response();
-        assert_eq!(database_failure.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(
+            database_failure
+                .extensions()
+                .get::<InternalErrorCause>()
+                .map(|cause| cause.0),
+            Some(InternalErrorKind::StoreDatabase)
+        );
     }
 }
 

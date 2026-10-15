@@ -289,6 +289,7 @@ fn store_read_error(error: StoreError) -> ApiError {
 #[cfg(test)]
 mod tests {
     use super::{byte_range, invalid_monitor, store_read_error};
+    use crate::error::{InternalErrorCause, InternalErrorKind};
     use axum::http::StatusCode;
     use axum::response::IntoResponse;
     use studio_runtime_store::StoreError;
@@ -305,11 +306,14 @@ mod tests {
         for response in [invalid_record, invalid_row] {
             assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
         }
+        let database_failure =
+            store_read_error(StoreError::Sqlite(rusqlite::Error::InvalidQuery)).into_response();
         assert_eq!(
-            store_read_error(StoreError::Sqlite(rusqlite::Error::InvalidQuery))
-                .into_response()
-                .status(),
-            StatusCode::INTERNAL_SERVER_ERROR
+            database_failure
+                .extensions()
+                .get::<InternalErrorCause>()
+                .map(|cause| cause.0),
+            Some(InternalErrorKind::StoreDatabase)
         );
     }
 

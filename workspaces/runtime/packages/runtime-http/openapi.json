@@ -29441,7 +29441,7 @@
           "assets": {
             "default": [],
             "items": {
-              "$ref": "#/components/schemas/JsonValue"
+              "type": "string"
             },
             "title": "Assets",
             "type": "array"
