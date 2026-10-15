@@ -7,6 +7,7 @@ import io
 import json
 import os
 import subprocess
+import sys
 from pathlib import Path
 import socket
 import tarfile
@@ -546,6 +547,7 @@ class ProvisionTests(unittest.TestCase):
         with self.assertRaisesRegex(vm.LinuxVMError, 'packageManager must pin pnpm'):
             vm._pnpm_version(root)
 
+    @unittest.skipUnless(sys.platform == "linux", "Guest atomic exchange requires Linux renameat2")
     def test_legacy_bridge_path_is_atomically_replaced_and_kept_for_running_processes(self):
         publish = self.script[self.script.index('publish_bridge() {'):
                               self.script.index('\nmkdir -p /var/lib/codex-studio')]

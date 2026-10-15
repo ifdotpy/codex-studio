@@ -46,13 +46,18 @@ def read_text_if_present(path):
 
 class TerminalsContract(unittest.TestCase):
     def setUp(self):
+        # The generic Runtime fixture selects a replay provider. PTY contracts
+        # require the real executable admitted by the suite runner instead.
+        terminal_codex = os.environ.get("CODEX_BIN")
+        if not terminal_codex:
+            self.skipTest("A runner-admitted Codex executable is required for real PTY checks")
         self.fixture = f.WorkspaceContract()
         self.fixture.setUp()
         self.root = self.fixture.root
         self.runtime = self.fixture.runtime
         self.agent = self.fixture.lead()
         self.manager = TerminalManager(self.fixture.state)
-        self.env = patch.dict("os.environ", {"SHELL": "/bin/sh", "HTTP_PROXY": "http://127.0.0.1:9", "HTTPS_PROXY": "http://127.0.0.1:9", "ALL_PROXY": "http://127.0.0.1:9", "NO_PROXY": "127.0.0.1,localhost"})
+        self.env = patch.dict("os.environ", {"CODEX_BIN": terminal_codex, "CODEX_AGENTS_NATIVE_RUNTIME_PIN": terminal_codex, "SHELL": "/bin/sh", "HTTP_PROXY": "http://127.0.0.1:9", "HTTPS_PROXY": "http://127.0.0.1:9", "ALL_PROXY": "http://127.0.0.1:9", "NO_PROXY": "127.0.0.1,localhost"})
         self.env.start()
 
     def tearDown(self):

@@ -972,6 +972,9 @@ def _suite_environment(root, temp_root, audit_home=False, relative=None):
     if not node:
         node = shutil.which("node", path=safe_path)
     path_entries = [str(Path(sys.executable).parent), os.defpath]
+    if sys.platform == "darwin":
+        # macOS os.defpath omits the system administration tools used by host probes.
+        path_entries.extend(("/usr/sbin", "/sbin"))
     if node:
         environment["CODEX_NODE"] = node
         # JS suites and bridge probes launch "node" by name. Expose only that
