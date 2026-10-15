@@ -1793,6 +1793,7 @@ fn startup_reconciles_reserved_callback_once() {
             Ok(())
         })
         .unwrap();
+    let application_before = application_table_snapshot(&store);
     assert!(dispatch_python_case(&store, oracle, expected, None).is_err());
     store
         .transaction_with::<_, StoreError>(|tx| {
@@ -1811,19 +1812,14 @@ fn startup_reconciles_reserved_callback_once() {
         )
         .unwrap();
     assert_eq!(
-        running_claim, 0,
-        "failed execution transaction rolls the claim back to its durable queued admission"
+        running_claim, 1,
+        "the durable claim survives the failed result transaction"
     );
-    let queued_admission: i64 = store
-        .read()
-        .unwrap()
-        .query_row(
-            "SELECT count(*) FROM runtime_tool_requests WHERE json_extract(record,'$.callId')='managed-0' AND json_extract(record,'$.tool')='orchestration_send' AND json_extract(record,'$.stage')='queued' AND json_extract(record,'$.outcome')='pending'",
-            [],
-            |row| row.get(0),
-        )
-        .unwrap();
-    assert_eq!(queued_admission, 1, "the exact durable admission survives");
+    assert_eq!(
+        application_table_snapshot(&store),
+        application_before,
+        "the failed send transaction wrote no application rows"
+    );
     drop(store);
 
     // Reopen the real store and invoke the callback owner's startup recovery.
@@ -1839,6 +1835,11 @@ fn startup_reconciles_reserved_callback_once() {
         0,
         "a second startup pass must not reconcile the same reservation twice"
     );
+    assert_eq!(
+        application_table_snapshot(&restarted),
+        application_before,
+        "recovery does not resend an uncertain managed operation"
+    );
     let (stage, outcome): (String, String) = restarted
         .read()
         .unwrap()
@@ -1850,7 +1851,7 @@ fn startup_reconciles_reserved_callback_once() {
         .unwrap();
     assert_eq!(
         (stage.as_str(), outcome.as_str()),
-        ("cancelled", "not_applied")
+        ("interrupted", "unknown")
     );
 }
 

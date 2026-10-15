@@ -240,13 +240,23 @@ fn recover_active_monitors(tx: &Transaction<'_>, now: f64) -> Result<usize, Moni
             let remote = event_write::truthy(actor.extra.get("remoteWorker"))
                 || event_write::truthy(actor.extra.get("remoteAnchor"));
             if remote {
-                // Python startup marks remote-owned monitors lost and still
-                // records the owner event locally as stored-only until remote
-                // event delivery is supported.
-                for effect in &decision.effects {
-                    if let Effect::ExitEvent { .. } = effect {
-                        store_remote_startup_exit_event(tx, &actor, &decision.record, now)?;
+                if event_write::truthy(actor.extra.get("remoteAnchor")) {
+                    // Anchors have a cross-server event adapter; preserve that
+                    // delivery while marking the local monitor as lost.
+                    for effect in &decision.effects {
+                        if let Effect::ExitEvent { wake } = effect {
+                            exit_event(tx, &actor, &decision.record, *wake, now)?;
+                        }
                     }
+                    tx.execute(
+                        "UPDATE runtime_events SET status='stored_only' WHERE id=?1 AND status='pending'",
+                        [format!("monitor:{id}")],
+                    )
+                    .map_err(studio_runtime_store::StoreError::from)?;
+                } else {
+                    // Remote workers have no event delivery adapter. Preserve
+                    // the lost result locally without putting it in a queue.
+                    store_remote_exit_event(tx, &actor, &decision.record, now)?;
                 }
                 MonitorSnapshot::checked(
                     decision.record.clone(),
@@ -275,7 +285,7 @@ fn recover_active_monitors(tx: &Transaction<'_>, now: f64) -> Result<usize, Moni
     Ok(recovered)
 }
 
-fn store_remote_startup_exit_event(
+fn store_remote_exit_event(
     tx: &Transaction<'_>,
     actor: &AgentRecord,
     monitor: &Value,
@@ -299,42 +309,13 @@ fn store_remote_startup_exit_event(
         .or_else(|| monitor.pointer("/operation/epoch").and_then(Value::as_i64))
         .unwrap_or(actor.epoch);
 
-    if let Some(existing) = repository::exit_event(tx, &event_id)? {
-        if existing.agent != actor.id || existing.kind != "monitor_exit" || existing.epoch != epoch
-        {
-            return Err(MonitorError::Refused(
-                "Conflicting remote monitor exit event identity",
-            ));
-        }
-        match existing.status.as_str() {
-            "pending" => {
-                repository::replace_pending_exit(tx, &event_id, &text)?;
-                tx.execute(
-                    "UPDATE runtime_events SET status='stored_only',error=NULL WHERE id=?1 AND agent=?2 AND kind='monitor_exit' AND status='pending'",
-                    (&event_id, actor.id.0.as_str()),
-                )
-                .map_err(studio_runtime_store::StoreError::from)?;
-            }
-            "cancelled" => {
-                repository::restore_cancelled_notice(tx, &event_id, &text, false)?;
-                tx.execute(
-                    "UPDATE runtime_events SET status='stored_only',error=NULL WHERE id=?1 AND agent=?2 AND kind='monitor_exit' AND status='cancelled'",
-                    (&event_id, actor.id.0.as_str()),
-                )
-                .map_err(studio_runtime_store::StoreError::from)?;
-            }
-            _ => {}
-        }
-        return Ok(());
-    }
-
     EventWriteRepository::insert_event(
         tx,
         &QueueEvent {
             id: QueueEventId::from(event_id.as_str()),
             agent: actor.id.clone(),
             kind: "monitor_exit".into(),
-            text,
+            text: text.clone(),
             status: "stored_only".into(),
             created: now,
             epoch,
@@ -342,6 +323,13 @@ fn store_remote_startup_exit_event(
             error: None,
         },
     )?;
+    tx.execute(
+        "UPDATE runtime_events SET text=?1,status='stored_only',created=?2,epoch=?3,error=NULL \
+         WHERE id=?4 AND agent=?5 AND kind='monitor_exit' \
+         AND status IN ('pending','cancelled','stored_only')",
+        rusqlite::params![text, now, epoch, event_id, actor.id.0.as_str()],
+    )
+    .map_err(studio_runtime_store::StoreError::from)?;
     Ok(())
 }
 

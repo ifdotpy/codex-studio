@@ -12,6 +12,8 @@ use std::io::Write;
 #[cfg(unix)]
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
+#[cfg(test)]
+use std::sync::Condvar;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -28,7 +30,13 @@ const STATE_SCHEMA: u64 = 2;
 const BASE_BUILD_COOLDOWN: Duration = Duration::from_secs(300);
 const BASE_BUILD_WAIT: Duration = Duration::from_secs(900);
 const BASE_BUILD_POLL: Duration = Duration::from_millis(50);
-static BASE_BUILD_WORKERS: OnceLock<Mutex<BTreeSet<String>>> = OnceLock::new();
+struct BuildWorkers {
+    active: Mutex<BTreeSet<String>>,
+    #[cfg(test)]
+    changed: Condvar,
+}
+
+static BASE_BUILD_WORKERS: OnceLock<BuildWorkers> = OnceLock::new();
 
 #[allow(dead_code)]
 pub(crate) fn fsevents_history_lost(events: &[(u64, u32)]) -> bool {
@@ -37,26 +45,56 @@ pub(crate) fn fsevents_history_lost(events: &[(u64, u32)]) -> bool {
         .any(|(_, flags)| flags & (0x2 | 0x4 | 0x8) != 0)
 }
 
-fn active_build_workers() -> &'static Mutex<BTreeSet<String>> {
-    BASE_BUILD_WORKERS.get_or_init(|| Mutex::new(BTreeSet::new()))
+fn build_workers() -> &'static BuildWorkers {
+    BASE_BUILD_WORKERS.get_or_init(|| BuildWorkers {
+        active: Mutex::new(BTreeSet::new()),
+        #[cfg(test)]
+        changed: Condvar::new(),
+    })
 }
 
 fn reserve_build_worker(key: &str) {
-    if let Ok(mut workers) = active_build_workers().lock() {
+    if let Ok(mut workers) = build_workers().active.lock() {
         workers.insert(key.to_owned());
     }
 }
 
 fn release_build_worker(key: &str) {
-    if let Ok(mut workers) = active_build_workers().lock() {
+    if let Ok(mut workers) = build_workers().active.lock() {
         workers.remove(key);
+        #[cfg(test)]
+        build_workers().changed.notify_all();
     }
 }
 
 fn build_worker_active(key: &str) -> bool {
-    active_build_workers()
+    build_workers()
+        .active
         .lock()
         .is_ok_and(|workers| workers.contains(key))
+}
+
+#[cfg(test)]
+fn wait_for_build_worker(key: &str, timeout: Duration) -> bool {
+    let workers = build_workers();
+    let Ok(mut active) = workers.active.lock() else {
+        return false;
+    };
+    let deadline = std::time::Instant::now() + timeout;
+    while active.contains(key) {
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        if remaining.is_zero() {
+            return false;
+        }
+        let Ok((next, result)) = workers.changed.wait_timeout(active, remaining) else {
+            return false;
+        };
+        active = next;
+        if result.timed_out() && active.contains(key) {
+            return false;
+        }
+    }
+    true
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
@@ -1761,18 +1799,13 @@ mod tests {
     }
 
     fn wait_for_build(manager: &WorkspaceLifecycle<FakeBackend>, root: &Path) -> Value {
-        let deadline = std::time::Instant::now() + Duration::from_secs(5);
-        loop {
-            let status = manager.base_status(root).expect("base state");
-            if status["state"] != "building" {
-                return status;
-            }
-            assert!(
-                std::time::Instant::now() < deadline,
-                "base build completion"
-            );
-            thread::sleep(Duration::from_millis(5));
-        }
+        let key = repo_key(root);
+        assert!(
+            wait_for_build_worker(&key, ASYNC_PROVISION_TIMEOUT),
+            "base build worker completion; status={:?}",
+            manager.base_status(root)
+        );
+        manager.base_status(root).expect("base state")
     }
 
     #[test]

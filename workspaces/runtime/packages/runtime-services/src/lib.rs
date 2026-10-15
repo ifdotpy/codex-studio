@@ -224,6 +224,29 @@ mod registration_tests {
                     .collect::<Vec<_>>()
             })
             .collect::<Vec<_>>();
+        let nested_path_modules = fs::read_dir(&directory)
+            .expect("services source directory is readable")
+            .filter_map(|entry| {
+                let path = entry.ok()?.path();
+                if !path.extension().is_some_and(|extension| extension == "rs")
+                    || path.file_name().is_some_and(|name| name == "lib.rs")
+                {
+                    return None;
+                }
+                fs::read_to_string(path).ok()
+            })
+            .flat_map(|source| {
+                source
+                    .lines()
+                    .filter_map(|line| {
+                        line.trim()
+                            .strip_prefix("#[path = \"")
+                            .and_then(|path| path.strip_suffix("\"]"))
+                            .map(str::to_owned)
+                    })
+                    .collect::<std::collections::HashSet<_>>()
+            })
+            .collect::<std::collections::HashSet<_>>();
         let mut source_modules = fs::read_dir(&directory)
             .expect("services source directory is readable")
             .map(|entry| {
@@ -236,6 +259,9 @@ mod registration_tests {
                     return path.file_name()?.to_str().map(str::to_owned);
                 }
                 if !path.extension().is_some_and(|extension| extension == "rs") {
+                    return None;
+                }
+                if nested_path_modules.contains(path.file_name()?.to_str()?) {
                     return None;
                 }
                 let stem = path.file_stem()?.to_str()?;

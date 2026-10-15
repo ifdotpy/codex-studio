@@ -66,6 +66,11 @@ state, stub provider transport and background workers, and create no load genera
 [preparation corpus](../workspaces/runtime/packages/runtime-services/tests/turn_prepare/README.md)
 uses a minimal host and in-memory SQLite without constructing a Runtime; it checks
 pure context selection, event projection, transcript inputs and acceptance.
+The Python-written notification parity oracle is included in
+`just test-rust-runtime-corpora` and ignored in ordinary runs: its 77-case seed
+phase takes about 112 seconds. The Rust-only P06 notification corpus remains the
+fast-tier runtime-effects witness, including the `command/exec/outputDelta`
+written outcome.
 
 `just test-rust-runtime-corpora-mutations` is a separate manual heavy run. It copies
 the checkout's sources below the external `CARGO_TARGET_DIR`, applies each entry

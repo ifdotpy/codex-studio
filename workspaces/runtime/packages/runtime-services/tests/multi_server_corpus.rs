@@ -464,7 +464,11 @@ fn browser_callback_matches_python_and_replays_without_second_loopback_relay() {
     let listener = TcpListener::bind("127.0.0.1:0").expect("loopback callback fixture");
     let port = listener.local_addr().unwrap().port();
     listener.set_nonblocking(true).expect("nonblocking fixture");
+    let (start_relay_tx, start_relay_rx) = std::sync::mpsc::channel();
     let relay = std::thread::spawn(move || {
+        start_relay_rx
+            .recv()
+            .expect("start callback relay after store setup");
         let deadline = Instant::now() + CALLBACK_FIXTURE_TIMEOUT;
         let mut calls = 0;
         while Instant::now() < deadline {
@@ -518,6 +522,11 @@ fn browser_callback_matches_python_and_replays_without_second_loopback_relay() {
         Arc::new(RuntimeOrchestrationEffects::new(Arc::clone(&store))),
     );
     let envelope = json!({"requestId":"browser-callback:stable-1","action":"browser_callback","payload":{"bridgeId":bridge_id,"token":token,"target":"/callback?code=ok","headers":{"accept":"text/plain"}}});
+    // Start the fixture's short network deadline only after RuntimeStore setup;
+    // cold store initialization is unrelated to callback delivery.
+    start_relay_tx
+        .send(())
+        .expect("start callback relay after store setup");
     let first = driver
         .receive("peer-server", &envelope, 100)
         .expect("valid callback relayed");

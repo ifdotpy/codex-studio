@@ -316,21 +316,32 @@ pub fn dispatch_notification_with_effects(
                 );
             }
             if kind == "provider/generationStarted" {
-                if let Some(agent) =
+                let Some(agent) =
                     NotificationDispatchRepository::agent_record(transaction, agent_id)?
-                {
-                    if agent.get("deletedAt").is_some_and(|value| !value.is_null()) {
-                        return save_outcome(
-                            transaction,
-                            &receipt_id,
-                            &content_signature,
-                            DispatchOutcome::Ignored {
-                                reason: "deleted-agent".to_owned(),
-                            },
-                        );
-                    }
-                    before = Some(agent);
+                else {
+                    // Python applies generationStarted to the account/thread rate
+                    // table and returns when no active rate entry exists. A
+                    // notification can therefore be valid without an agent row,
+                    // but the token-rate service is still required.
+                    effects.generation_started()?;
+                    return save_outcome(
+                        transaction,
+                        &receipt_id,
+                        &content_signature,
+                        DispatchOutcome::Written,
+                    );
+                };
+                if agent.get("deletedAt").is_some_and(|value| !value.is_null()) {
+                    return save_outcome(
+                        transaction,
+                        &receipt_id,
+                        &content_signature,
+                        DispatchOutcome::Ignored {
+                            reason: "deleted-agent".to_owned(),
+                        },
+                    );
                 }
+                before = Some(agent);
                 effects.generation_started()?;
                 return save_outcome(
                     transaction,
