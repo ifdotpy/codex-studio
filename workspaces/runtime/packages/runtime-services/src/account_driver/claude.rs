@@ -105,7 +105,7 @@ impl<R: ProviderAuthReader> AccountDriver<R> {
                 .iter()
                 .any(|(field, expected)| {
                     existing.get(*field).is_some_and(|v| {
-                        python_truthy(v) && v.as_str() != expected.map(String::as_str)
+                        truthy_value(v) && v.as_str() != expected.map(String::as_str)
                     })
                 })
             {
@@ -135,7 +135,7 @@ impl<R: ProviderAuthReader> AccountDriver<R> {
             });
             let same_login = local
                 .get("accountId")
-                .is_none_or(|v| !python_truthy(v) || v.as_str() == metadata.account_id.as_deref());
+                .is_none_or(|v| !truthy_value(v) || v.as_str() == metadata.account_id.as_deref());
             if local.get("provider") == Some(&json!("claude")) && same_paths && same_login {
                 if local_options.is_some_and(|o| !o.is_empty() && o != &options) {
                     return Err(ClaudeAccountError::SettingsChanged);

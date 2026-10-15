@@ -42,7 +42,7 @@ const CHANGED_ERROR: &str =
 const UNVERIFIED_ERROR: &str =
     "Cannot verify this profile's account. Sign in to its original account again.";
 
-fn python_truthy(value: &Value) -> bool {
+fn truthy_value(value: &Value) -> bool {
     studio_runtime_store::truthy(Some(value))
 }
 
@@ -220,7 +220,7 @@ fn codex_metadata_from_value(auth: &Value) -> Result<AuthMetadata, ()> {
     let ready = (account_id.as_ref().is_some_and(|value| !value.is_empty())
         && tokens
             .and_then(|tokens| tokens.get("access_token"))
-            .is_some_and(python_truthy))
+            .is_some_and(truthy_value))
         || api_key.is_some();
     let credential_identity = account_id
         .as_ref()
@@ -732,10 +732,10 @@ impl<R: ProviderAuthReader> AccountDriver<R> {
                 != "codex"
                 || !row
                     .get("accountId")
-                    .is_some_and(python_truthy)
+                    .is_some_and(truthy_value)
                 || row
                     .get("duplicateOf")
-                    .is_some_and(python_truthy)
+                    .is_some_and(truthy_value)
             {
                 return Err(AccountMutationError::Refused(
                     "Select a saved Codex subscription account",
@@ -803,7 +803,7 @@ impl<R: ProviderAuthReader> AccountDriver<R> {
             || (receipt["status"] == "uncertain"
                 && receipt
                     .get("loginId")
-                    .is_some_and(python_truthy))
+                    .is_some_and(truthy_value))
         {
             return Ok(receipt.clone());
         }
@@ -875,7 +875,7 @@ impl<R: ProviderAuthReader> AccountDriver<R> {
         }
         if !receipt
             .get("loginId")
-            .is_some_and(python_truthy)
+            .is_some_and(truthy_value)
         {
             return Err(AccountDriverError::LoginResponseUnknown.into());
         }
@@ -1595,7 +1595,7 @@ impl<R: ProviderAuthReader> AccountDriver<R> {
             }
             if row
                 .get("duplicateOf")
-                .is_some_and(python_truthy)
+                .is_some_and(truthy_value)
             {
                 return Ok(status_from_value(row.get("status")));
             }
@@ -1942,7 +1942,7 @@ fn ready_replacement<'a>(
             && row.get("disconnected") != Some(&Value::Bool(true))
             && !row
                 .get("duplicateOf")
-                .is_some_and(python_truthy))
+                .is_some_and(truthy_value))
         .then_some(key.as_str())
     })
 }
