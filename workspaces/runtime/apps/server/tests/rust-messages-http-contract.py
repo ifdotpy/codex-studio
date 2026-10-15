@@ -21,6 +21,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from runtime_test_environment import make_runtime
 from codex_session_names import identity as native_name_identity
+from entity_test_support import capacity_retry
 
 HERE = Path(__file__).resolve().parent
 SERVER_SOURCE = HERE.parent / "src"
@@ -310,12 +311,10 @@ class MessagesHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             "status": "running",
         })
         cls.capacity_agent_id = seed_agent(cls.backend)
-        retry = {
-            "id": "capacity-retry-message-send",
-            "agent": cls.capacity_agent_id,
-            "status": "scheduled",
-            "dueAt": 9_999_999_999.0,
-        }
+        retry = capacity_retry(
+            due_at=9_999_999_999.0,
+            id="capacity-retry-message-send",
+        )
         update_agent(cls.backend, cls.capacity_agent_id, {
             "capacityRetry": retry,
             "capacityRetryCount": 1,
