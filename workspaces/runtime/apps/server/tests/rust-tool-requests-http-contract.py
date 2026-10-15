@@ -268,25 +268,22 @@ class ToolRequestsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         )
         self.assertEqual(deleted.status, 400, deleted.body[:1000])
 
-    def test_payload_backed_pending_receipt_is_a_narrow_capability_gap_without_writes(self):
+    def test_payload_backed_pending_receipt_is_recovered_on_list(self):
         write_receipts(self.backend, [receipt(
             "pending-payload", self.lead_id, stage="queued", outcome="pending",
             result={"success": True, "contentItems": [
                 {"type": "inputText", "text": "payload-" * 20_000},
             ]},
         )])
-        before = database_snapshot(self.backend.state)
         response = self.backend.request(
             "GET", "/api/tool-requests?" + urlencode({"agent": self.lead_id}),
             headers=self.headers(),
         )
-        if self.rust_backend:
-            self.assertEqual(response.status, 501, response.body[:1000])
-            self.assertIn("payload-store/tool-request-recovery", response.json()["error"])
-        else:
-            self.assertEqual(response.status, 200, response.body[:1000])
-        if self.rust_backend:
-            self.assertEqual(database_snapshot(self.backend.state), before)
+        self.assertEqual(response.status, 200, response.body[:1000])
+        recovered = next(
+            item for item in response.json()["requests"] if item["id"] == "pending-payload"
+        )
+        self.assertNotIn("_payloadBlobs", recovered)
         with sqlite3.connect(self.backend.state / "canvas.sqlite3") as database:
             database.execute("DELETE FROM runtime_tool_requests WHERE id='pending-payload'")
 
@@ -348,16 +345,51 @@ class ToolRequestsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
                 body={"agent":self.lead_id,"request_id":key}
                 url="/api/tool-requests/cancel" if method=="POST" else "/api/tool-requests?"+urlencode(body)
                 response=self.backend.request(method,url,body=body if method=="POST" else None,headers=self.headers())
-                self.assertEqual(response.status,501 if self.rust_backend else 200,response.body[:500])
-                if self.rust_backend:
-                    self.assertIn("payload-store/tool-request-recovery",response.json()["error"])
-                    self.assertEqual(database_snapshot(self.backend.state),before)
-                else:self.assertEqual(response.json()["id"],identity)
+                self.assertEqual(response.status, 200, response.body[:500])
+                self.assertEqual(response.json()["id"], identity)
+                self.assertTrue(response.json()["result"]["contentItems"][0]["text"].startswith("cached-"))
+                self.assertNotIn("_payloadBlobs", response.body.decode())
         finally:
             with sqlite3.connect(self.backend.state / "canvas.sqlite3") as db:
                 db.execute("DELETE FROM runtime_tool_requests WHERE id=?",(identity,))
                 db.execute("DELETE FROM runtime_tool_results WHERE id=?",(identity,))
                 db.execute("DELETE FROM runtime_tool_request_aliases WHERE request=?",(identity,))
+
+    def test_expired_saved_payload_result_is_redacted_after_recovery(self):
+        from codex_payloads import externalize_result, release_db_writer_lock
+        identity = "saved-payload-expired"
+        write_receipts(self.backend, [receipt(
+            identity, self.lead_id, stage="running", outcome="pending", result=None,
+        )])
+        database = sqlite3.connect(self.backend.state / "canvas.sqlite3")
+        try:
+            result = externalize_result(self.backend.state, database, {
+                "success": True,
+                "serverOutputExpiresAt": 1,
+                "contentItems": [{"type": "inputText", "text": "expired payload " * 20_000}],
+            })
+            database.execute(
+                "INSERT INTO runtime_tool_results(id,result) VALUES(?,?)",
+                (identity, json.dumps(result)),
+            )
+            database.commit()
+        finally:
+            release_db_writer_lock(database)
+            database.close()
+        try:
+            for method, path, body in (
+                ("GET", "/api/tool-requests?" + urlencode({"agent": self.lead_id, "request_id": identity}), None),
+                ("POST", "/api/tool-requests/cancel", {"agent": self.lead_id, "request_id": identity}),
+            ):
+                response = self.backend.request(method, path, body=body, headers=self.headers())
+                self.assertEqual(response.status, 200, response.body[:500])
+                text = response.json()["result"]["contentItems"][0]["text"]
+                self.assertTrue(json.loads(text)["expired"])
+                self.assertNotIn("expired payload", response.body.decode())
+        finally:
+            with sqlite3.connect(self.backend.state / "canvas.sqlite3") as db:
+                db.execute("DELETE FROM runtime_tool_requests WHERE id=?", (identity,))
+                db.execute("DELETE FROM runtime_tool_results WHERE id=?", (identity,))
 
     def test_alias_ambiguity_is_preserved_for_get_and_cancel(self):
         write_receipts(
@@ -464,14 +496,16 @@ class ToolRequestsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             self.assertNotIn(b"expired output still visible",response.body)
             self.assertTrue(json.loads(response.json()["result"]["contentItems"][0]["text"])["expired"])
 
-    def test_payload_alias_and_canonical_gate_and_terminal_list_fast_path(self):
+    def test_payload_alias_and_canonical_recovery_and_terminal_list_fast_path(self):
         large={"success":True,"contentItems":[{"type":"inputText","text":"large-"*20000}]}
         write_receipts(self.backend,[receipt("canonical-payload",self.lead_id,result=large)],[(self.lead_id,"payload-alias","canonical-payload")])
-        before=database_snapshot(self.backend.state)
         for identity in ("canonical-payload","payload-alias"):
             response=self.backend.request("GET","/api/tool-requests?"+urlencode({"agent":self.lead_id,"request_id":identity}),headers=self.headers())
-            self.assertEqual(response.status,501 if self.rust_backend else 200,response.body)
-            if self.rust_backend:self.assertIn("payload-store/tool-request-recovery",response.json()["error"])
+            self.assertEqual(response.status, 200, response.body)
+            self.assertEqual(response.json()["id"], "canonical-payload")
+            self.assertTrue(response.json()["result"]["contentItems"][0]["text"].startswith("large-"))
+            self.assertNotIn("_payloadBlobs", response.body.decode())
+        before=database_snapshot(self.backend.state)
         response=self.backend.request("GET","/api/tool-requests?"+urlencode({"agent":self.lead_id,"request_id":""}),headers=self.headers())
         self.assertEqual(response.status,200,response.body)
         self.assertIn("requests",response.json())

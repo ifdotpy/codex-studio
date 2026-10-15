@@ -37,11 +37,27 @@ pub fn execute(
     action: Action<'_>,
     now: f64,
 ) -> Result<Value, ToolRequestError> {
-    if !records::exists(tx, TABLE)? {
-        return Err(ToolRequestError::RequiresDependency(
-            "store-bootstrap/tool-request-schema",
-        ));
-    }
+    execute_with_payload_recovery(tx, actor_id, action, now, false)
+}
+
+/// HTTP caller variant. Payload references are returned for post-transaction
+/// resolution by the route; provider callback callers keep their existing guard.
+pub fn execute_http(
+    tx: &Transaction<'_>,
+    actor_id: &str,
+    action: Action<'_>,
+    now: f64,
+) -> Result<Value, ToolRequestError> {
+    execute_with_payload_recovery(tx, actor_id, action, now, true)
+}
+
+fn execute_with_payload_recovery(
+    tx: &Transaction<'_>,
+    actor_id: &str,
+    action: Action<'_>,
+    now: f64,
+    payload_recovery: bool,
+) -> Result<Value, ToolRequestError> {
     let actor = crate::event_write::checked_agent(tx, actor_id).map_err(|e| match e {
         crate::event_write::EventWriteError::Store(e) => ToolRequestError::Store(e),
         crate::event_write::EventWriteError::InvalidStoredObject { object, id } => {
@@ -58,7 +74,7 @@ pub fn execute(
         })? {
             let (id, raw) = row?;
             let mut record = records::decode(TABLE, &id, &raw)?;
-            refresh(tx, &mut record, &actor, now, false)?;
+            refresh(tx, &mut record, &actor, now, false, payload_recovery)?;
             strip(&mut record, &["result", "signature", "_payloadBlobs"]);
             requests.push(record);
         }
@@ -114,7 +130,7 @@ pub fn execute(
         )
         .map_err(relocation_error)?;
     }
-    refresh(tx, &mut record, &actor, now, true)?;
+    refresh(tx, &mut record, &actor, now, true, payload_recovery)?;
     if cancel && lifecycle::cancel(&mut record)? {
         record["updated"] = json!(now);
         if record["stage"] == "cancelled" {
@@ -144,10 +160,10 @@ pub fn execute(
             record["registryObservedAt"] = json!(now);
         }
     }
-    if let Some(result) = record.get_mut("result") {
+    if !payload_recovery && let Some(result) = record.get_mut("result") {
         expire(result, now);
     }
-    strip(&mut record, &["signature", "_payloadBlobs"]);
+    strip(&mut record, &["signature"]);
     Ok(record)
 }
 
@@ -187,12 +203,13 @@ fn refresh(
     actor: &Value,
     now: f64,
     specific: bool,
+    payload_recovery: bool,
 ) -> Result<(), ToolRequestError> {
     if !specific && terminal(record) {
         populate_spawned_agent_ids(record);
         return Ok(());
     }
-    if truthy(record.get("_payloadBlobs")) {
+    if !payload_recovery && truthy(record.get("_payloadBlobs")) {
         return Err(ToolRequestError::RequiresDependency(PAYLOAD));
     }
     if crate::project_locations::refresh_tool_receipt(tx, record, now).map_err(relocation_error)? {
@@ -203,15 +220,16 @@ fn refresh(
         return Ok(());
     }
     let saved = records::get(tx, "runtime_tool_results", text(record, "id"))?;
-    if saved
-        .as_ref()
-        .is_some_and(|r| truthy(r.get("_payloadBlobs")))
+    if !payload_recovery
+        && saved
+            .as_ref()
+            .is_some_and(|result| truthy(result.get("_payloadBlobs")))
     {
         return Err(ToolRequestError::RequiresDependency(PAYLOAD));
     }
     let Some(result) = saved
         .map(|mut result| {
-            if specific {
+            if specific && !payload_recovery {
                 expire(&mut result, now);
             }
             result
@@ -438,7 +456,7 @@ fn strip(value: &mut Value, keys: &[&str]) {
 fn text<'a>(record: &'a Value, key: &str) -> &'a str {
     record.get(key).and_then(Value::as_str).unwrap_or_default()
 }
-pub(crate) fn expire(result: &mut Value, now: f64) {
+pub fn expire(result: &mut Value, now: f64) {
     if result["serverOutputExpiresAt"]
         .as_f64()
         .is_some_and(|expiry| now >= expiry)
