@@ -1,3 +1,4 @@
+import * as defaultAccountLimits from "../usage/accountUsage";
 import * as defaultActivity from "./activity";
 import { useSyncedDrafts } from "../sync/drafts";
 import * as defaultOutbox from "../sync/send";
@@ -54,3 +55,6 @@ export function useServerDrafts() {
 
 export const useServerActivityScope = () =>
   useServerServices()?.activity ?? defaultActivity;
+
+export const useServerAccountLimits = () =>
+  useServerServices()?.accountLimits ?? defaultAccountLimits;

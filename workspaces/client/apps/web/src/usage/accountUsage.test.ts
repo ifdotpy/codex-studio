@@ -1,6 +1,8 @@
+import { scopedStorage } from "../servers/storage";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   accountLimits,
+  createAccountLimitsCache,
   cacheAccountLimits,
   cachedAccountLimits,
   configureLimitsCache,
@@ -70,4 +72,36 @@ describe("account limits cache", () => {
     expect(cachedAccountLimits("a")?.data).toBeNull();
     expect(accountLimits(value("b"), "a")).toBeNull();
   });
+});
+
+it("isolates overlapping server paths and account keys through delayed writes and reloads", () => {
+  const storage = (owner: string) =>
+    scopedStorage(() => localStorage, `server:${owner}:`);
+  const a = createAccountLimitsCache(storage("a"));
+  const b = createAccountLimitsCache(storage("b"));
+  a.configureLimitsCache("/same/state");
+  b.configureLimitsCache("/same/state");
+  const changedA = vi.fn();
+  const changedB = vi.fn();
+  const stopA = a.subscribeLimitsCache(changedA);
+  const stopB = b.subscribeLimitsCache(changedB);
+  const completeA = () => a.cacheAccountLimits(value("default", 30, 10));
+  b.cacheAccountLimits(value("default", 40, 90));
+  completeA();
+  expect(a.cachedAccountLimits("default")).toEqual(value("default", 30, 10));
+  expect(b.cachedAccountLimits("default")).toEqual(value("default", 40, 90));
+  expect(changedA).toHaveBeenCalledTimes(1);
+  expect(changedB).toHaveBeenCalledTimes(1);
+  const restoredA = createAccountLimitsCache(storage("a"));
+  const restoredB = createAccountLimitsCache(storage("b"));
+  restoredA.configureLimitsCache("/same/state");
+  restoredB.configureLimitsCache("/same/state");
+  expect(restoredA.cachedAccountLimits("default")).toEqual(
+    a.cachedAccountLimits("default"),
+  );
+  expect(restoredB.cachedAccountLimits("default")).toEqual(
+    b.cachedAccountLimits("default"),
+  );
+  stopA();
+  stopB();
 });

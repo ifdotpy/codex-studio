@@ -1,3 +1,4 @@
+import { createAccountLimitsCache } from "../usage/accountUsage";
 import { createBrowserDrafts } from "../sync/drafts";
 import { createDraftJournal } from "../sync/draftJournal";
 import { createDraftStorage } from "../sync/draftStorage";
@@ -30,6 +31,7 @@ export function createServerServices(server: StudioServer) {
     return serverCredentialAdapter().fetch(owner, request);
   });
   const storage = preferenceStorageForServer(transport.owner.id);
+  const accountLimits = createAccountLimitsCache(storage);
   const sequences = createEntitySequenceScope();
   const activity = createServerActivity();
   const api = createApiScope({
@@ -128,6 +130,7 @@ export function createServerServices(server: StudioServer) {
   }
   return {
     owner: transport.owner,
+    accountLimits,
     activity,
     sequences,
     transcripts,

@@ -1,6 +1,6 @@
 import {
-  watchResourceChanges,
-  watchResourceConnection,
+  watchResourceChanges as defaultWatchResourceChanges,
+  watchResourceConnection as defaultWatchResourceConnection,
 } from "../sync/resourceEvents";
 import { onResume } from "../sync/resume";
 import { readRetryDelay, retryableReadError } from "../sync/readRetry";
@@ -24,8 +24,18 @@ export function watchResourceReads(
   resources: ResourceRef | readonly ResourceRef[],
   read: (version?: ResourceVersion) => Promise<void>,
   failed: (error: unknown) => void,
-  options: { waitForBaseline?: boolean } = {},
+  options: {
+    waitForBaseline?: boolean;
+    events?: {
+      watchResourceChanges: typeof defaultWatchResourceChanges;
+      watchResourceConnection: typeof defaultWatchResourceConnection;
+    };
+  } = {},
 ): ResourceReadWatcher {
+  const watchResourceChanges =
+    options.events?.watchResourceChanges ?? defaultWatchResourceChanges;
+  const watchResourceConnection =
+    options.events?.watchResourceConnection ?? defaultWatchResourceConnection;
   const refs = Array.isArray(resources) ? resources : [resources];
   const waitForBaseline = options.waitForBaseline === true;
   let active = true;

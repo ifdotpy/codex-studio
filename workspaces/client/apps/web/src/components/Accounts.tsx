@@ -1,4 +1,7 @@
-import { useServerApi } from "../servers/ServerServicesContext";
+import {
+  useServerApi,
+  useServerResources,
+} from "../servers/ServerServicesContext";
 import { accountDisplayName, accountCanStart } from "../accountName";
 import { ProviderMark, remainingLimit } from "./AccountTiles";
 import { ActionButton } from "./ui/primitives";
@@ -62,6 +65,7 @@ export type AccountsState = GetResult<"/api/accounts">;
 export type Account = AccountsState["accounts"][number];
 export function useAccounts(stateDir?: string) {
   const { get } = useServerApi();
+  const events = useServerResources();
 
   const [data, setAccountsData] = useState<AccountsState>({
     accounts: [],
@@ -94,7 +98,7 @@ export function useAccounts(stateDir?: string) {
         setError(errorText(e));
       return null;
     }
-  }, [stateDir]);
+  }, [stateDir, get]);
   useEffect(() => {
     if (!stateDir) return;
     const stop = watchResourceReads(
@@ -103,13 +107,13 @@ export function useAccounts(stateDir?: string) {
         await refresh();
       },
       (failure) => setError(errorText(failure)),
-      { waitForBaseline: true },
+      { waitForBaseline: true, events },
     );
     return () => {
       latestRead.current++;
       stop();
     };
-  }, [stateDir, refresh]);
+  }, [stateDir, refresh, events]);
   return useMemo(
     () => ({ data, setData, error, refresh, scope: stateDir }),
     [data, setData, error, refresh, stateDir],

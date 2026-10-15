@@ -1,5 +1,6 @@
 import {
   useServerApi,
+  useServerAccountLimits,
   useServerOutbox,
   useServerActivityScope,
 } from "./servers/ServerServicesContext";
@@ -39,10 +40,6 @@ import { useChatPrefetch } from "./hooks/chatPrefetch";
 import { useTeamTokenRateStream } from "./hooks/useTeamTokenRateStream";
 import {
   accountLimits,
-  configureLimitsCache,
-  cachedLimitsByAccount,
-  cacheAccountLimits,
-  subscribeLimitsCache,
   limitsReadSucceeded,
   limitsSnapshotIsFresh,
   shouldReplaceLimitsSnapshot,
@@ -235,6 +232,12 @@ const BackgroundTasks = lazy(
   () => import("./components/shell/BackgroundTasks"),
 );
 export default function App() {
+  const {
+    configureLimitsCache,
+    cachedLimitsByAccount,
+    cacheAccountLimits,
+    subscribeLimitsCache,
+  } = useServerAccountLimits();
   const { useServerActivity, serverActivityActive, subscribeServerActivity } =
     useServerActivityScope();
   const { acknowledgeOutbox, editOutboxDisplay, durableSend, useOutbox } =
@@ -601,7 +604,7 @@ export default function App() {
         typeof update === "function" ? update(cachedLimitsByAccount()) : update;
       for (const snapshot of Object.values(next)) cacheAccountLimits(snapshot);
     },
-    [],
+    [cachedLimitsByAccount, cacheAccountLimits],
   );
   useEffect(() => {
     if (mobileClient || !data?.stateDir) return;

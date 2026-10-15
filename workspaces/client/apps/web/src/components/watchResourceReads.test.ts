@@ -77,6 +77,33 @@ describe("watchResourceReads", () => {
     vi.unstubAllGlobals();
   });
 
+  it("subscribes only to the supplied owner and releases its watchers", async () => {
+    vi.useFakeTimers();
+    const callbacks = new Map<string, (version?: ResourceVersion) => void>();
+    const changed = vi.fn(async () => {});
+    const disconnected = vi.fn();
+    const stop = watchResourceReads(limits, changed, vi.fn(), {
+      waitForBaseline: true,
+      events: {
+        watchResourceChanges: (resource, callback) => {
+          callbacks.set(JSON.stringify(resource), callback);
+          return () => {
+            callbacks.delete(JSON.stringify(resource));
+          };
+        },
+        watchResourceConnection: () => disconnected,
+      },
+    });
+    expect(watchers.size).toBe(0);
+    expect(connectionListeners.size).toBe(0);
+    callbacks.get(JSON.stringify(limits))?.({ epoch: "owner-a", revision: 1 });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(changed).toHaveBeenCalledTimes(1);
+    stop();
+    expect(callbacks.size).toBe(0);
+    expect(disconnected).toHaveBeenCalledTimes(1);
+  });
+
   it("refreshes account limits after their typed resource event", async () => {
     vi.useFakeTimers();
     const displayed: number[] = [];

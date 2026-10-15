@@ -1,13 +1,12 @@
-import { useServerApi } from "../servers/ServerServicesContext";
+import {
+  useServerApi,
+  useServerAccountLimits,
+  useServerResources,
+} from "../servers/ServerServicesContext";
 import { useEffect, useSyncExternalStore } from "react";
 import { ApiError } from "../api";
 import { watchResourceReads } from "../components/watchResourceReads";
-import {
-  accountLimits,
-  cachedAccountLimits,
-  cacheAccountLimits,
-  subscribeLimitsCache,
-} from "./accountUsage";
+import { accountLimits } from "./accountUsage";
 
 export function useAccountLimits(
   accountKey: string,
@@ -15,6 +14,9 @@ export function useAccountLimits(
   enabled = true,
 ) {
   const { get } = useServerApi();
+  const events = useServerResources();
+  const { cachedAccountLimits, cacheAccountLimits, subscribeLimitsCache } =
+    useServerAccountLimits();
 
   const snapshot = useSyncExternalStore(
     subscribeLimitsCache,
@@ -53,11 +55,20 @@ export function useAccountLimits(
             : { accountKey, data: null, error: detail, readError },
         );
       },
+      { events },
     );
     return () => {
       active = false;
       stop();
     };
-  }, [accountKey, accountId, enabled]);
+  }, [
+    accountKey,
+    accountId,
+    enabled,
+    get,
+    events,
+    cachedAccountLimits,
+    cacheAccountLimits,
+  ]);
   return snapshot;
 }
