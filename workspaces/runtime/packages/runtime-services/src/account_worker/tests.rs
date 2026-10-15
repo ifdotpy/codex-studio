@@ -817,7 +817,13 @@ async fn invalid_agent_record_is_held_without_stopping_other_agent_dispatch() {
     let bad_id = "invalid-neighbor".to_owned();
     let good_id = state.agent.clone();
     let good_epoch = state.epoch;
-    state
+    let mut peer = Peer::new();
+    let mut worker = peer.worker(state.bridge.clone()).await;
+    let start = state.start(&mut peer, &worker).await;
+    assert_eq!(start["method"], "turn/start");
+    assert!(start["params"]["input"].to_string().contains("input"));
+    peer.accepted(&start).await;
+    let original_record = state
         .bridge
         .run({
             let bad_id = bad_id.clone();
@@ -837,19 +843,6 @@ async fn invalid_agent_record_is_held_without_stopping_other_agent_dispatch() {
                         tx,
                         &studio_runtime_store::AgentRecord::from_value(invalid)?,
                     )?;
-                    annotate(
-                        tx,
-                        AnnotationWrite {
-                            agent_id: bad_id.clone(),
-                            id: Some("invalid-neighbor-input".into()),
-                            path: "README.md".into(),
-                            line: 1,
-                            text: "invalid neighbor input".into(),
-                            turn_id: None,
-                            signature: "invalid-neighbor-input".into(),
-                        },
-                    )
-                    .map_err(|error| StoreError::SchemaMismatch(error.to_string()))?;
                     annotate(
                         tx,
                         AnnotationWrite {
@@ -874,19 +867,15 @@ async fn invalid_agent_record_is_held_without_stopping_other_agent_dispatch() {
                     )?;
                     Ok::<_, StoreError>(())
                 })?;
-                Ok(())
+                Ok(store.read()?.query_row(
+                    "SELECT record FROM runtime_agents WHERE id=?1",
+                    [&bad_id],
+                    |row| row.get::<_, String>(0),
+                )?)
             }
         })
         .await
-        .expect("seed one malformed and one valid agent");
-    assert_eq!(state.event_status("valid-neighbor-input").await, "pending");
-
-    let mut peer = Peer::new();
-    let mut worker = peer.worker(state.bridge.clone()).await;
-    let start = state.start(&mut peer, &worker).await;
-    assert_eq!(start["method"], "turn/start");
-    assert!(start["params"]["input"].to_string().contains("input"));
-    peer.accepted(&start).await;
+        .expect("seed one malformed agent and a pending valid-agent event");
     worker
         .send(AccountCommand::Wake {
             agent_id: bad_id.clone(),
@@ -902,22 +891,37 @@ async fn invalid_agent_record_is_held_without_stopping_other_agent_dispatch() {
     reached
         .await
         .expect("worker reaches barrier after malformed-agent wake");
-    let held: Value = state
+    let (stored_record, diagnostic) = state
         .bridge
         .run({
             let bad_id = bad_id.clone();
             move |store| {
-                let raw: String = store.read()?.query_row(
+                let db = store.read()?;
+                let raw: String = db.query_row(
                     "SELECT record FROM runtime_agents WHERE id=?1",
                     [&bad_id],
                     |row| row.get(0),
                 )?;
-                Ok(serde_json::from_str(&raw).expect("held record JSON"))
+                let receipt_id = format!(
+                    "{}{bad_id}",
+                    studio_runtime_store::INVALID_AGENT_HOLD_RECEIPT_PREFIX
+                );
+                let diagnostic: String = db.query_row(
+                    "SELECT result FROM runtime_operation_receipts WHERE id=?1",
+                    [receipt_id],
+                    |row| row.get(0),
+                )?;
+                Ok((raw, diagnostic))
             }
         })
         .await
-        .expect("read held agent");
-    let message = held["error"].as_str().expect("visible named error");
+        .expect("read original agent row and separate hold");
+    assert_eq!(
+        stored_record, original_record,
+        "held row bytes remain untouched"
+    );
+    let held: Value = serde_json::from_str(&stored_record).expect("original JSON row");
+    let message = diagnostic.as_str();
     assert!(
         message.contains(&format!("runtime_agents/{bad_id}")),
         "{message}"
@@ -926,24 +930,26 @@ async fn invalid_agent_record_is_held_without_stopping_other_agent_dispatch() {
     assert!(message.contains("type"), "{message}");
     assert!(message.contains("value type number"), "{message}");
     assert!(message.contains("length not applicable"), "{message}");
-    assert_eq!(held["status"], "failed");
-    assert_eq!(held["nativeFailureHold"], true);
-    assert_eq!(held["autoWake"], false);
-    assert!(peer.writes.try_recv().is_err(), "invalid agent has no provider effect");
+    assert_eq!(held["rootId"], 23);
+    assert!(
+        peer.writes.try_recv().is_err(),
+        "invalid agent has no provider effect"
+    );
 
     // Finish the fixture's initial turn and prove the valid neighbor is still
     // dispatched by this same account worker.
-    state.wake(&worker).await;
     peer.completed().await;
+    state.wake(&worker).await;
     let resume = peer.write("thread/resume").await;
     peer.reply(&resume, json!({"thread":{"id":"fake-thread-0"}}))
         .await;
     let next = peer.write("turn/start").await;
-    assert!(next["params"]["input"][0]["text"]
-        .as_str()
-        .unwrap()
-        .contains("valid neighbor input"));
-    assert_eq!(state.event_status("valid-neighbor-input").await, "dispatching");
+    assert!(
+        next["params"]["input"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("valid neighbor input")
+    );
     peer.accepted(&next).await;
 
     worker
@@ -961,7 +967,10 @@ async fn invalid_agent_record_is_held_without_stopping_other_agent_dispatch() {
     reached
         .await
         .expect("worker reaches barrier after malformed-agent wake");
-    assert!(peer.writes.try_recv().is_err(), "invalid agent has no provider effect");
+    assert!(
+        peer.writes.try_recv().is_err(),
+        "invalid agent has no provider effect"
+    );
 
     worker
         .shutdown()

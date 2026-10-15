@@ -528,74 +528,109 @@ with canvas.connect() as db:
                     "DELETE FROM sync_documents WHERE scope='drafts' AND id=?", (invalid_master_id,),
                 )
 
-    @unittest.skipUnless(os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"), "Rust backend only")
-    def test_entity_refusals_roll_back_projection_maintenance(self) -> None:
+    def test_invalid_preference_extra_is_stripped_without_refusing_sync_pull(self) -> None:
         import sqlite3
 
         backend = self.backend
         database_path = backend.state / "canvas.sqlite3"
         headers = self._common_headers()
+        synthetic_preference = False
         with sqlite3.connect(database_path) as database:
-            original_preference = database.execute(
+            row = database.execute(
                 "SELECT payload FROM sync_entities WHERE collection='uiPreferences' AND id='user'"
-            ).fetchone()[0]
-            database.execute(
-                "INSERT INTO runtime_rules(id,record) VALUES('sync-pull-rollback-rule',?)",
-                (json.dumps({"id": "sync-pull-rollback-rule"}),),
-            )
+            ).fetchone()
+            synthetic_preference = row is None
+            original_preference = row[0] if row else None
+            if row is None:
+                database.execute(
+                    "INSERT INTO sync_entities(collection,id,seq,hash,payload,deleted) "
+                    "VALUES('uiPreferences','user',(SELECT COALESCE(MAX(seq),0)+1 FROM sync_entities),?,?,0)",
+                    ("test-fixture", '{"collection":"uiPreferences","id":"user","value":{"fields":{}}}'),
+                )
             database.execute(
                 "UPDATE sync_entities SET payload=? WHERE collection='uiPreferences' AND id='user'",
                 ('{"collection":"uiPreferences","id":"user",'
                  '"value":{"fields":{},"unexpectedSecret":true}}',),
             )
-        before = no_write_snapshot(backend.state)
         try:
             response = backend.request(
                 "GET", "/api/sync/pull?scope=state:entities:v1&after=0&limit=500&fresh=1&reset=1",
                 headers=headers,
             )
-            self.assertEqual(response.status, 500, response.body[:1000])
-            self.assertEqual(
-                response.json()["error"],
-                "Invalid stored sync object uiPreferences/user",
-            )
-            self.assertEqual(no_write_snapshot(backend.state), before)
-            with sqlite3.connect(database_path) as database:
-                self.assertIsNone(database.execute(
-                    "SELECT 1 FROM sync_entities WHERE collection='rule' AND id='sync-pull-rollback-rule'"
-                ).fetchone())
-                database.execute(
-                    "UPDATE sync_entities SET payload=? WHERE collection='uiPreferences' AND id='user'",
-                    (original_preference,),
-                )
-                database.execute("DELETE FROM runtime_rules WHERE id='sync-pull-rollback-rule'")
+            self.assertEqual(response.status, 200, response.body[:1000])
+            documents = {
+                document["id"]: json.loads(document["payload"])
+                for document in response.json()["documents"]
+            }
+            preference = documents["entity:uiPreferences:user"]
+            self.assertNotIn("unexpectedSecret", preference["value"])
+            self.assertIn("fields", preference["value"])
         finally:
             with sqlite3.connect(database_path) as database:
-                database.execute(
-                    "UPDATE sync_entities SET payload=? WHERE collection='uiPreferences' AND id='user'",
-                    (original_preference,),
-                )
-                database.execute("DELETE FROM runtime_rules WHERE id='sync-pull-rollback-rule'")
-                database.execute(
-                    "DELETE FROM sync_entities WHERE collection='rule' AND id='sync-pull-rollback-rule'"
-                )
+                if synthetic_preference:
+                    database.execute(
+                        "DELETE FROM sync_entities WHERE collection='uiPreferences' AND id='user'"
+                    )
+                else:
+                    database.execute(
+                        "UPDATE sync_entities SET payload=? WHERE collection='uiPreferences' AND id='user'",
+                        (original_preference,),
+                    )
 
-        broken_id = "sync-pull-broken-record"
+    def test_unreadable_sync_entity_is_skipped_and_checkpoint_advances(self) -> None:
+        import sqlite3
+
+        backend = self.backend
+        database_path = backend.state / "canvas.sqlite3"
+        headers = self._common_headers()
+        synthetic_preference = False
         with sqlite3.connect(database_path) as database:
-            database.execute("INSERT INTO runtime_rules(id,record) VALUES(?, '[]')", (broken_id,))
-        before_broken = no_write_snapshot(backend.state)
+            row = database.execute(
+                "SELECT payload FROM sync_entities WHERE collection='uiPreferences' AND id='user'"
+            ).fetchone()
+            synthetic_preference = row is None
+            original_preference = row[0] if row else None
+            if row is None:
+                database.execute(
+                    "INSERT INTO sync_entities(collection,id,seq,hash,payload,deleted) "
+                    "VALUES('uiPreferences','user',(SELECT COALESCE(MAX(seq),0)+1 FROM sync_entities),?,?,0)",
+                    ("test-fixture", '{"collection":"uiPreferences","id":"user","value":{"fields":{}}}'),
+                )
+            broken_sequence = database.execute(
+                "SELECT seq FROM sync_entities WHERE collection='uiPreferences' AND id='user'"
+            ).fetchone()[0]
+            database.execute(
+                "UPDATE sync_entities SET payload='[]' WHERE collection='uiPreferences' AND id='user'"
+            )
         try:
             broken = backend.request(
                 "GET", "/api/sync/pull?scope=state:entities:v1&after=0&limit=500&fresh=1&reset=1",
                 headers=headers,
             )
-            self.assertEqual(broken.status, 500, broken.body[:1000])
-            self.assertIn(f"runtime_rules/{broken_id}", broken.json()["error"])
-            self.assertEqual(no_write_snapshot(backend.state), before_broken)
+            self.assertEqual(broken.status, 200, broken.body[:1000])
+            self.assertNotIn(
+                "entity:uiPreferences:user",
+                {document["id"] for document in broken.json()["documents"]},
+            )
+            self.assertGreaterEqual(broken.json()["checkpoint"]["seq"], broken_sequence)
         finally:
             with sqlite3.connect(database_path) as database:
-                database.execute("DELETE FROM runtime_rules WHERE id=?", (broken_id,))
+                if synthetic_preference:
+                    database.execute(
+                        "DELETE FROM sync_entities WHERE collection='uiPreferences' AND id='user'"
+                    )
+                else:
+                    database.execute(
+                        "UPDATE sync_entities SET payload=? WHERE collection='uiPreferences' AND id='user'",
+                        (original_preference,),
+                    )
 
+    def test_invalid_agent_source_projection_is_skipped(self) -> None:
+        import sqlite3
+
+        backend = self.backend
+        database_path = backend.state / "canvas.sqlite3"
+        headers = self._common_headers()
         invalid_projection_id = "sync-pull-invalid-unreturned-agent"
         with sqlite3.connect(database_path) as database:
             database.execute(
@@ -612,11 +647,7 @@ with canvas.connect() as db:
                 "GET", "/api/sync/pull?scope=state:entities:v1&after=0&limit=1",
                 headers=headers,
             )
-            self.assertEqual(invalid_projection.status, 500, invalid_projection.body[:1000])
-            self.assertIn(
-                f"agent/{invalid_projection_id}",
-                invalid_projection.json()["error"],
-            )
+            self.assertEqual(invalid_projection.status, 200, invalid_projection.body[:1000])
             self.assertEqual(no_write_snapshot(backend.state), before_invalid_projection)
             with sqlite3.connect(database_path) as database:
                 self.assertIsNone(database.execute(

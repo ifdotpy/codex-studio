@@ -440,11 +440,9 @@ pub async fn start_account_worker_with_publication_sink(
         {
             Ok(recovered) => break recovered,
             Err(error) if invalid_agent_record_error(&error) => {
-                let WorkerError::Store(StoreError::InvalidSyncObjectField { id, .. }) = &error
-                else {
-                    unreachable!("guard matches InvalidSyncObjectField")
-                };
-                let invalid_id = id.clone();
+                let invalid_id = invalid_agent_record_id(&error)
+                    .expect("guard matches InvalidSyncObjectField")
+                    .to_owned();
                 let diagnostic = error.to_string();
                 bridge
                     .worker_run("hold_invalid_agent", move |store| {
@@ -1058,11 +1056,9 @@ impl Worker {
             {
                 Ok(candidate) => break candidate,
                 Err(error) if invalid_agent_record_error(&error) => {
-                    let WorkerError::Store(StoreError::InvalidSyncObjectField { id, .. }) = &error
-                    else {
-                        unreachable!("guard matches InvalidSyncObjectField")
-                    };
-                    let invalid_id = id.clone();
+                    let invalid_id = invalid_agent_record_id(&error)
+                        .expect("guard matches InvalidSyncObjectField")
+                        .to_owned();
                     let was_requested_agent = invalid_id == agent;
                     let diagnostic = error.to_string();
                     self.db("hold_invalid_agent", move |store| {
@@ -1885,11 +1881,21 @@ impl Worker {
 }
 
 fn invalid_agent_record_error(error: &WorkerError) -> bool {
-    matches!(
-        error,
-        WorkerError::Store(StoreError::InvalidSyncObjectField { scope, .. })
-            if scope == "runtime_agents"
-    )
+    invalid_agent_record_id(error).is_some()
+}
+fn invalid_agent_record_id(error: &WorkerError) -> Option<&str> {
+    let invalid = match error {
+        WorkerError::Store(StoreError::InvalidSyncObjectField { scope, id, .. })
+            if scope == "runtime_agents" =>
+        {
+            Some(id.as_str())
+        }
+        WorkerError::Scheduler(scheduler::SchedulerError::Store(
+            StoreError::InvalidSyncObjectField { scope, id, .. },
+        )) if scope == "runtime_agents" => Some(id.as_str()),
+        _ => None,
+    };
+    invalid
 }
 fn definite_rejection(error: &WorkerError) -> bool {
     matches!(

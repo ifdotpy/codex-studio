@@ -419,30 +419,28 @@ pub(super) fn hold_invalid_agent_record(
     diagnostic: &str,
 ) -> Result<(), WorkerError> {
     store.transaction(|tx| {
-        let raw = tx
-            .query_row(
-                "SELECT record FROM runtime_agents WHERE id=?1",
-                [agent_id],
-                |row| row.get::<_, String>(0),
-            )
-            .optional()?;
-        let Some(raw) = raw else {
+        let exists = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM runtime_agents WHERE id=?1)",
+            [agent_id],
+            |row| row.get::<_, bool>(0),
+        )?;
+        if !exists {
             return Ok(());
-        };
-        let mut value = serde_json::from_str::<Value>(&raw)
-            .ok()
-            .filter(Value::is_object)
-            .unwrap_or_else(|| json!({"id":agent_id,"rootId":agent_id,"epoch":0}));
-        let record = value
-            .as_object_mut()
-            .expect("malformed record fallback is an object");
-        record.insert("status".into(), json!("failed"));
-        record.insert("error".into(), json!(diagnostic));
-        record.insert("nativeFailureHold".into(), json!(true));
-        record.insert("autoWake".into(), json!(false));
+        }
+        // Keep the original runtime_agents bytes untouched. Persist the hold
+        // and safe, value-free diagnostic in the existing receipt table so a
+        // later repair or Python reader can still recover the user's record.
         tx.execute(
-            "UPDATE runtime_agents SET record=?2 WHERE id=?1",
-            rusqlite::params![agent_id, value.to_string()],
+            "INSERT INTO runtime_operation_receipts(id,signature,result) VALUES (?1,?2,?3) \
+             ON CONFLICT(id) DO UPDATE SET signature=excluded.signature,result=excluded.result",
+            rusqlite::params![
+                format!(
+                    "{}{agent_id}",
+                    studio_runtime_store::INVALID_AGENT_HOLD_RECEIPT_PREFIX
+                ),
+                studio_runtime_store::INVALID_AGENT_HOLD_RECEIPT_SIGNATURE,
+                diagnostic
+            ],
         )?;
         Ok(())
     })?;

@@ -1487,13 +1487,33 @@ pub(super) fn account_agents(
     account: &str,
     predicate: &str,
 ) -> StoreResult<Vec<AgentRecord>> {
-    select_agents(
-        connection,
-        &format!(
-            "SELECT id,record FROM runtime_agents WHERE COALESCE(json_extract(record,'$.accountKey'),'default')=?1 AND json_extract(record,'$.deletedAt') IS NULL AND ({predicate})"
-        ),
-        [account],
-    )
+    let sql = format!(
+        "SELECT id,record FROM runtime_agents WHERE COALESCE(json_extract(record,'$.accountKey'),'default')=?1 AND json_extract(record,'$.deletedAt') IS NULL AND ({predicate})"
+    );
+    let mut statement = connection.prepare_cached(&sql)?;
+    let rows = statement
+        .query_map([account], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    drop(statement);
+
+    let mut agents = Vec::with_capacity(rows.len());
+    for (id, raw) in rows {
+        match decode_agent(&id, &raw) {
+            Ok(agent) => agents.push(agent),
+            Err(error) => {
+                let receipt_id = format!("{}{id}", crate::INVALID_AGENT_HOLD_RECEIPT_PREFIX);
+                let held = EventWriteRepository::receipt(connection, &receipt_id)?.is_some_and(
+                    |receipt| receipt.signature == crate::INVALID_AGENT_HOLD_RECEIPT_SIGNATURE,
+                );
+                if !held {
+                    return Err(error);
+                }
+            }
+        }
+    }
+    Ok(agents)
 }
 pub(super) fn select_agents(
     db: &Connection,

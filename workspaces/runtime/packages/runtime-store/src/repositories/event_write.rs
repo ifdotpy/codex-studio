@@ -10,6 +10,10 @@ use crate::records::{
 use crate::schema::{SchemaRequirements, TableRequirement};
 use crate::{AgentRepository, QueueEvent, StoreError, StoreResult};
 
+/// Receipt prefix for per-agent holds on schema-invalid persisted rows.
+pub const INVALID_AGENT_HOLD_RECEIPT_PREFIX: &str = "account-worker:invalid-agent-hold:";
+pub const INVALID_AGENT_HOLD_RECEIPT_SIGNATURE: &str = "invalid-agent-hold-v1";
+
 const TABLES: &[TableRequirement] = &[
     TableRequirement {
         name: "runtime_plans",

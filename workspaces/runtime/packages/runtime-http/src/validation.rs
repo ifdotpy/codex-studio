@@ -8,7 +8,9 @@ use std::fmt;
 use std::sync::Arc;
 
 use axum::body::Bytes;
-use jsonschema::{Draft, Registry as SchemaRegistry, Validator};
+use jsonschema::{
+    Draft, Registry as SchemaRegistry, ValidationError, Validator, error::ValidationErrorKind,
+};
 use serde_json::{Map, Value, json};
 use studio_runtime_schema::shared_values::MAX_SAFE_INTEGER;
 
@@ -143,6 +145,21 @@ impl Registry {
             "RuleEntityDto",
             "RuleRecordResponse",
             "SyncEntityPayload",
+            "SyncAgentEntityPayload",
+            "SyncRoomEntityPayload",
+            "SyncTaskEntityPayload",
+            "SyncMonitorEntityPayload",
+            "SyncComplaintEntityPayload",
+            "SyncRequestEntityPayload",
+            "SyncRuleEntityPayload",
+            "SyncProjectEntityPayload",
+            "SyncPeerTeamEntityPayload",
+            "SyncChatEntityPayload",
+            "SyncEdgeEntityPayload",
+            "SyncEventEntityPayload",
+            "SyncWorkEntityPayload",
+            "SyncWorkspaceEntityPayload",
+            "SyncUiPreferencesEntityPayload",
             "SyncPullResetResponse",
             "SyncPullResponse",
             "TaskEntityDto",
@@ -377,6 +394,24 @@ impl Registry {
         false
     }
 
+    pub(crate) fn strip_stored_extra_fields(&self, schema: &str, value: &mut Value) {
+        let Some(validator) = self.stored_schemas.get(schema) else {
+            return;
+        };
+        let paths = validator
+            .iter_errors(value)
+            .flat_map(|error| extra_field_errors(&error))
+            .collect::<Vec<_>>();
+        for (pointer, keys) in paths {
+            let Some(target) = value.pointer_mut(&pointer).and_then(Value::as_object_mut) else {
+                continue;
+            };
+            for key in keys {
+                drop(target.remove(&key));
+            }
+        }
+    }
+
     pub(crate) fn validate_table_record(&self, table: &str, value: &Value) -> bool {
         let Some(schema) = studio_runtime_schema::table_schema(table) else {
             return false;
@@ -401,6 +436,25 @@ impl Registry {
     pub(crate) fn validated_stored(&self, schema: &str, raw: &str) -> Option<Value> {
         let value = serde_json::from_str(raw).ok()?;
         self.validate_stored(schema, &value).then_some(value)
+    }
+}
+
+fn extra_field_errors(error: &ValidationError<'_>) -> Vec<(String, Vec<String>)> {
+    match error.kind() {
+        ValidationErrorKind::AdditionalProperties { unexpected } => {
+            vec![(
+                error.instance_path().as_str().to_owned(),
+                unexpected.clone(),
+            )]
+        }
+        ValidationErrorKind::AnyOf { context }
+        | ValidationErrorKind::OneOfNotValid { context }
+        | ValidationErrorKind::OneOfMultipleValid { context } => context
+            .iter()
+            .flatten()
+            .flat_map(extra_field_errors)
+            .collect(),
+        _ => Vec::new(),
     }
 }
 
