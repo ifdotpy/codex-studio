@@ -170,7 +170,8 @@ pub fn check_usage_readonly(db: &Connection) -> StoreResult<crate::StateCheckTab
         failures: vec![],
     };
     if !db.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='runtime_budget_usage')",[],|r|r.get::<_,bool>(0))? {return Ok(report);}
-    let mut statement = db.prepare_cached("SELECT id,agent,kind,tokens,at FROM runtime_budget_usage")?;
+    let mut statement =
+        db.prepare_cached("SELECT id,agent,kind,tokens,at FROM runtime_budget_usage")?;
     let mut rows = statement.query([])?;
     let mut failures = std::collections::BTreeMap::new();
     while let Some(row) = rows.next()? {

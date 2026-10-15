@@ -1769,7 +1769,7 @@ mod tests {
             now.timestamp() as f64,
             &AtomicBool::new(false),
         )
-            .expect("scan fixture logs");
+        .expect("scan fixture logs");
         let oracle = std::process::Command::new("python3")
             .arg("-B")
             .arg("-c")
@@ -1842,7 +1842,7 @@ mod tests {
             now.timestamp() as f64,
             &AtomicBool::new(false),
         )
-            .expect("scan fixture sessions");
+        .expect("scan fixture sessions");
         assert_eq!(result["coverage"], "partial");
         assert_eq!(result["todayUSD"], Value::Null);
         assert_eq!(result["unknownModels"], json!(["claude-test"]));
@@ -1903,15 +1903,8 @@ mod tests {
         std::fs::create_dir_all(home.join("projects")).expect("fixture projects");
         let state = root.path().join("state");
         let cancelled = AtomicBool::new(false);
-        super::refresh_claude_costs(
-            &state,
-            "claude-local",
-            &home,
-            200.0,
-            &cancelled,
-            || 321.0,
-        )
-        .expect("refresh completes");
+        super::refresh_claude_costs(&state, "claude-local", &home, 200.0, &cancelled, || 321.0)
+            .expect("refresh completes");
         let identity = format!("claude-local{}", home.to_string_lossy());
         let cache = state
             .join("account-costs/claude")
@@ -1981,16 +1974,21 @@ mod tests {
         );
 
         let mut fetched = false;
-        assert!(super::pricing_catalog_with_fetch(
-            root.path(),
-            now + super::PRICING_CATALOG_TTL_SECONDS - 1.0,
-            || {
-                fetched = true;
-                Some(json!({}))
-            },
-        )
-        .is_none());
-        assert!(!fetched, "failed fetch follows Python's 24-hour attempt TTL");
+        assert!(
+            super::pricing_catalog_with_fetch(
+                root.path(),
+                now + super::PRICING_CATALOG_TTL_SECONDS - 1.0,
+                || {
+                    fetched = true;
+                    Some(json!({}))
+                },
+            )
+            .is_none()
+        );
+        assert!(
+            !fetched,
+            "failed fetch follows Python's 24-hour attempt TTL"
+        );
 
         let providers = json!({
             "openai":{"models":{"gpt-test":{"cost":{"input":1,"output":2}}}},
@@ -2006,6 +2004,11 @@ mod tests {
         );
         assert!(catalog.is_some());
         assert!(fetched);
-        assert!(!root.path().join("model-pricing/refresh-state.json").exists());
+        assert!(
+            !root
+                .path()
+                .join("model-pricing/refresh-state.json")
+                .exists()
+        );
     }
 }

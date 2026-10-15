@@ -95,7 +95,10 @@ impl FederationTransport for HttpsFederationTransport {
             .iter()
             .find(|(name, _)| name.eq_ignore_ascii_case("x-studio-link"))
             .map(|(_, value)| value.clone());
-        Ok(FederationTransportResponse { body: response.body, link_advert })
+        Ok(FederationTransportResponse {
+            body: response.body,
+            link_advert,
+        })
     }
 }
 

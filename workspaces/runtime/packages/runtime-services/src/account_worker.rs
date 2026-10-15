@@ -1451,9 +1451,16 @@ impl Worker {
                     generation,
                     &frame,
                     managed_tool_runtime.as_deref(),
-                ).await {
-                    let Frame::Request(request) = &frame else { return (cursor, None); };
-                    return (cursor, Some(callback::tool_call_failure(request, dependency)));
+                )
+                .await
+                {
+                    let Frame::Request(request) = &frame else {
+                        return (cursor, None);
+                    };
+                    return (
+                        cursor,
+                        Some(callback::tool_call_failure(request, dependency)),
+                    );
                 }
                 let response = tokio::task::spawn_blocking(move || {
                     callback::managed_response(
@@ -1466,7 +1473,10 @@ impl Worker {
                         monitor_dispatch_wake,
                         managed_tool_runtime,
                     )
-                }).await.ok().flatten();
+                })
+                .await
+                .ok()
+                .flatten();
                 (cursor, response)
             });
         } else if let JournalPayload::Frame(frame) = &entry.payload

@@ -301,7 +301,15 @@ async fn read_entries(
     let mut cursor = 0_u64;
     let mut line = Vec::new();
     loop {
-        if !read_stdout_line(&mut reader, &mut line, &mut total, frame_limit, output_limit).await? {
+        if !read_stdout_line(
+            &mut reader,
+            &mut line,
+            &mut total,
+            frame_limit,
+            output_limit,
+        )
+        .await?
+        {
             return Err(SupervisorError::ConnectionLost.into());
         }
         cursor += 1;
@@ -374,15 +382,19 @@ mod tests {
         let mut line = Vec::new();
         let mut total = 0;
 
-        assert!(read_stdout_line(&mut reader, &mut line, &mut total, 16, 32)
-            .await
-            .expect("first bounded frame"));
+        assert!(
+            read_stdout_line(&mut reader, &mut line, &mut total, 16, 32)
+                .await
+                .expect("first bounded frame")
+        );
         let allocation = (line.as_ptr(), line.capacity());
         assert_eq!(line, b"first\n");
 
-        assert!(read_stdout_line(&mut reader, &mut line, &mut total, 16, 32)
-            .await
-            .expect("second bounded frame"));
+        assert!(
+            read_stdout_line(&mut reader, &mut line, &mut total, 16, 32)
+                .await
+                .expect("second bounded frame")
+        );
         assert_eq!(line, b"second\n");
         assert_eq!((line.as_ptr(), line.capacity()), allocation);
         assert_eq!(total, b"first\nsecond\n".len());

@@ -36,8 +36,8 @@ impl AccountTransferRepository {
             .transpose()
     }
     pub fn ids(db: &Connection) -> StoreResult<Vec<String>> {
-        let mut statement =
-            db.prepare_cached("SELECT id FROM runtime_account_transfers ORDER BY rowid LIMIT 4097")?;
+        let mut statement = db
+            .prepare_cached("SELECT id FROM runtime_account_transfers ORDER BY rowid LIMIT 4097")?;
         let ids = statement
             .query_map([], |row| row.get::<_, String>(0))?
             .collect::<Result<Vec<_>, _>>()?;

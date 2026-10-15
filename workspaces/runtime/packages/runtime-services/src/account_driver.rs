@@ -730,12 +730,8 @@ impl<R: ProviderAuthReader> AccountDriver<R> {
                 .and_then(Value::as_str)
                 .unwrap_or("codex")
                 != "codex"
-                || !row
-                    .get("accountId")
-                    .is_some_and(truthy_value)
-                || row
-                    .get("duplicateOf")
-                    .is_some_and(truthy_value)
+                || !row.get("accountId").is_some_and(truthy_value)
+                || row.get("duplicateOf").is_some_and(truthy_value)
             {
                 return Err(AccountMutationError::Refused(
                     "Select a saved Codex subscription account",
@@ -801,9 +797,7 @@ impl<R: ProviderAuthReader> AccountDriver<R> {
         if login_terminal(receipt)
             || receipt["status"] == "pending"
             || (receipt["status"] == "uncertain"
-                && receipt
-                    .get("loginId")
-                    .is_some_and(truthy_value))
+                && receipt.get("loginId").is_some_and(truthy_value))
         {
             return Ok(receipt.clone());
         }
@@ -873,10 +867,7 @@ impl<R: ProviderAuthReader> AccountDriver<R> {
         if login_terminal(receipt) {
             return Ok(LoginReservation::Replay(receipt.clone()));
         }
-        if !receipt
-            .get("loginId")
-            .is_some_and(truthy_value)
-        {
+        if !receipt.get("loginId").is_some_and(truthy_value) {
             return Err(AccountDriverError::LoginResponseUnknown.into());
         }
         if receipt["status"] == "uncertain" {
@@ -1593,10 +1584,7 @@ impl<R: ProviderAuthReader> AccountDriver<R> {
             {
                 return Ok(AccountStatus::Unavailable);
             }
-            if row
-                .get("duplicateOf")
-                .is_some_and(truthy_value)
-            {
+            if row.get("duplicateOf").is_some_and(truthy_value) {
                 return Ok(status_from_value(row.get("status")));
             }
             AuthProfile {
@@ -1940,9 +1928,7 @@ fn ready_replacement<'a>(
             && row.get("status").and_then(Value::as_str) == Some("ready")
             && row.get("deleted") != Some(&Value::Bool(true))
             && row.get("disconnected") != Some(&Value::Bool(true))
-            && !row
-                .get("duplicateOf")
-                .is_some_and(truthy_value))
+            && !row.get("duplicateOf").is_some_and(truthy_value))
         .then_some(key.as_str())
     })
 }

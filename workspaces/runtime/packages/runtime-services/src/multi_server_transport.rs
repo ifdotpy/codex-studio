@@ -15,6 +15,6 @@ pub use crate::multi_server_orchestration::{
 };
 pub use crate::multi_server_pairing::{MultiServerBoundary, OwnerLookup};
 pub use crate::remote_transport::{
-    exchange_multi_server, load_multi_server_identity, multi_server_signed_headers,
-    verify_multi_server_response, MultiServerExchangeInput, RemoteIdentity,
+    MultiServerExchangeInput, RemoteIdentity, exchange_multi_server, load_multi_server_identity,
+    multi_server_signed_headers, verify_multi_server_response,
 };
