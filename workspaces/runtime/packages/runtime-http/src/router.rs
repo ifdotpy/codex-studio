@@ -70,6 +70,7 @@ pub struct HttpState {
     pub(crate) workspace_id: String,
     pub(crate) native_path: Option<String>,
     pub(crate) state_dir: String,
+    pub(crate) cost_scan_cancelled: Arc<std::sync::atomic::AtomicBool>,
     pub(crate) vm_state_dir: std::path::PathBuf,
     pub(crate) app_server_log: Option<OperationalLog>,
     pub(crate) port: u16,
@@ -206,6 +207,7 @@ impl HttpState {
             workspace_id,
             native_path,
             state_dir,
+            cost_scan_cancelled: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             vm_state_dir,
             app_server_log: None,
             port,
@@ -404,6 +406,8 @@ impl HttpState {
     }
 
     pub async fn shutdown_services(&self) -> std::io::Result<()> {
+        self.cost_scan_cancelled
+            .store(true, std::sync::atomic::Ordering::Release);
         let model = self.model_catalog.shutdown().await;
         if let Some(monitor) = &self.provider_versions {
             monitor.shutdown();
@@ -412,6 +416,11 @@ impl HttpState {
             login.shutdown().await.map_err(std::io::Error::other)?;
         }
         model
+    }
+
+    /// Cancellation shared with blocking local cost scans during shutdown.
+    pub fn cost_scan_cancellation_handle(&self) -> Arc<std::sync::atomic::AtomicBool> {
+        Arc::clone(&self.cost_scan_cancelled)
     }
 
     /// Shared post-commit signal for durable event writers and the scheduler.

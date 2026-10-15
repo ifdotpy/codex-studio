@@ -70,15 +70,17 @@ async fn costs(
         .duration_since(UNIX_EPOCH)
         .map_err(|_| ApiError::internal())?
         .as_secs_f64();
+    let refresh_cancelled = state.cost_scan_cancellation_handle();
     let state_dir = std::path::PathBuf::from(state.state_dir);
     let refresh_state_dir = state_dir.clone();
     let refresh_account = account.clone();
     let refresh_key = account_key.clone();
+    let snapshot_key = account_key.clone();
     let notification_key = refresh_key.clone();
     let notifications = state.resource_notifications.clone();
     let mut result = studio_runtime_process::blocking_pool::spawn_blocking(
         "runtime-http/routes/usage",
-        move || usage::account_cost_snapshot(&state_dir, &account_key, &account, now),
+        move || usage::account_cost_snapshot(&state_dir, &snapshot_key, &account, now),
     )
     .await
     .map_err(|_| ApiError::internal())?
@@ -87,7 +89,10 @@ async fn costs(
     if let Some(object) = result.as_object_mut() {
         object.remove("_refreshDue");
     }
-    if refresh_due && result.get("refreshing").and_then(Value::as_bool) != Some(true) {
+    let refresh_claimed = refresh_due
+        && result.get("refreshing").and_then(Value::as_bool) != Some(true)
+        && usage::claim_cost_refresh_attempt(&account_key);
+    if refresh_claimed {
         if let Some(object) = result.as_object_mut() {
             object.insert("refreshing".to_owned(), Value::Bool(true));
         }
@@ -95,22 +100,23 @@ async fn costs(
             let outcome = studio_runtime_process::blocking_pool::spawn_blocking(
                 "runtime-http/routes/usage",
                 move || {
-                    usage::refresh_account_costs(
+                    usage::refresh_account_costs_report(
                         &refresh_state_dir,
                         &refresh_key,
                         &refresh_account,
-                        now,
+                        &refresh_cancelled,
                     )
                 },
             )
             .await;
-            let completed = outcome.is_ok();
+            let cache_saved = matches!(&outcome, Ok((true, _)));
             match outcome {
-                Ok(Ok(())) | Ok(Err(UsageError::Scan)) => {}
-                Ok(Err(error)) => eprintln!("Local cost refresh failed: {error}"),
+                Ok((_, Ok(()))) => {}
+                Ok((_, Err(UsageError::ScannerCancelled))) => {}
+                Ok((_, Err(error))) => eprintln!("Local cost refresh failed: {error}"),
                 Err(error) => eprintln!("Local cost refresh task failed: {error}"),
             }
-            if completed {
+            if cache_saved {
                 let request = serde_json::json!({
                     "requestId": format!("local-costs:{}:{now}", notification_key),
                     "resources": [{"kind":"costs"}],

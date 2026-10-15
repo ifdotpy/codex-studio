@@ -7,7 +7,8 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::{Mutex, MutexGuard, TryLockError, mpsc};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{LazyLock, Mutex, MutexGuard, TryLockError, mpsc};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime};
 use thiserror::Error;
@@ -31,6 +32,8 @@ const COST_SCANNER_BUILD_SCRIPT: &str = concat!(
 const COST_SCAN_TIMEOUT_SECONDS: Duration = Duration::from_secs(900);
 const COST_SCAN_LOCK_RETRY_INTERVAL_MILLISECONDS: u64 = 50;
 const COST_COMMAND_POLL_INTERVAL_MILLISECONDS: u64 = 10;
+static COST_REFRESH_ATTEMPTS: LazyLock<Mutex<BTreeMap<String, tokio::time::Instant>>> =
+    LazyLock::new(|| Mutex::new(BTreeMap::new()));
 static CODEX_SCAN_LOCK: Mutex<()> = Mutex::new(());
 
 #[derive(Debug, Error, Eq, PartialEq)]
@@ -49,6 +52,10 @@ pub enum UsageError {
     ScannerTimedOut,
     #[error("Local cost scanner is busy.")]
     ScannerBusy,
+    #[error("Local cost scanner was cancelled during shutdown.")]
+    ScannerCancelled,
+    #[error("Could not stop and reap the local cost scanner.")]
+    ScannerCleanup,
     #[error("Local cost scan failed (exit {0}).")]
     ScannerFailed(i32),
     #[error("Local cost report exceeds 32 MiB.")]
@@ -146,27 +153,87 @@ pub fn account_cost_snapshot(
     Ok(Value::Object(response))
 }
 
+/// Reserve an in-process refresh attempt so a failed cache write cannot cause
+/// every following GET to start another scan. The interval remains owned by
+/// `COST_REFRESH_SECONDS` above.
+pub fn claim_cost_refresh_attempt(account_key: &str) -> bool {
+    let now = tokio::time::Instant::now();
+    let Ok(mut attempts) = COST_REFRESH_ATTEMPTS.lock() else {
+        return false;
+    };
+    attempts.retain(|_, started| {
+        now.duration_since(*started) < Duration::from_secs_f64(COST_REFRESH_SECONDS)
+    });
+    if attempts.get(account_key).is_some_and(|started| {
+        now.duration_since(*started) < Duration::from_secs_f64(COST_REFRESH_SECONDS)
+    }) {
+        return false;
+    }
+    attempts.insert(account_key.to_owned(), now);
+    true
+}
+
 /// Refresh local Codex session logs into the same scoped cache used by Python.
 /// Called only from the measured blocking pool; GET handlers return their cache
 /// before scheduling this work. Python's lock wait/busy result is at
-/// codex_costs.py:234-242; scanner process timeout and 32 MiB report limit are
-/// at :260-271; cache persistence is at :308-317.
+/// codex_costs.py:234-242; retry interval is at :216-219; completion-time
+/// checkedAt and cache save are at :280-292; failure timestamping is at :294-306.
 pub fn refresh_account_costs(
     state_dir: &Path,
     account_key: &str,
     account: &Value,
-    now: f64,
+    cancelled: &AtomicBool,
 ) -> Result<(), UsageError> {
-    let home = account
+    refresh_account_costs_report(state_dir, account_key, account, cancelled).1
+}
+
+/// Refresh and report whether a cache value was durably saved, even if the
+/// scanner itself failed and the saved value records that failure.
+pub fn refresh_account_costs_report(
+    state_dir: &Path,
+    account_key: &str,
+    account: &Value,
+    cancelled: &AtomicBool,
+) -> (bool, Result<(), UsageError>) {
+    refresh_account_costs_with(
+        state_dir,
+        account_key,
+        account,
+        cancelled,
+        unix_time_seconds,
+        scan_codex_sessions,
+    )
+}
+
+fn refresh_account_costs_with<C, S>(
+    state_dir: &Path,
+    account_key: &str,
+    account: &Value,
+    cancelled: &AtomicBool,
+    clock: C,
+    scanner: S,
+) -> (bool, Result<(), UsageError>)
+where
+    C: Fn() -> f64,
+    S: FnOnce(&Path, &Path, &Path, &AtomicBool) -> Result<Value, UsageError>,
+{
+    let home = match account
         .get("home")
         .and_then(Value::as_str)
-        .filter(|p| !p.is_empty())
+        .filter(|home| !home.is_empty())
         .map(PathBuf::from)
-        .ok_or(UsageError::MissingProfile)?;
+    {
+        Some(home) => home,
+        None => return (false, Err(UsageError::MissingProfile)),
+    };
     if account.get("provider").and_then(Value::as_str) == Some("claude")
         || account_key == "claude-local"
     {
-        return refresh_claude_costs(state_dir, account_key, &home, now);
+        if cancelled.load(Ordering::Acquire) {
+            return (false, Err(UsageError::ScannerCancelled));
+        }
+        let result = refresh_claude_costs(state_dir, account_key, &home, clock());
+        return (result.is_ok(), result);
     }
     let account_id = account.get("accountId").cloned().unwrap_or(Value::Null);
     let home_text = home.to_string_lossy().into_owned();
@@ -178,16 +245,29 @@ pub fn refresh_account_costs(
     let cache_identity =
         crate::event_write::python_json(&json!([home_text, cache_root.to_string_lossy().as_ref()]));
     let scope = digest(&cache_identity);
-    create_private_dir(&cache_root)?;
+    if let Err(error) = create_private_dir(&cache_root) {
+        return (false, Err(error));
+    }
     let lock_path = cache_root.join(".refresh.lock");
-    let Some(_lock) = claim_refresh_lock(&lock_path)? else {
-        return Ok(());
+    let lock = match claim_refresh_lock(&lock_path) {
+        Ok(lock) => lock,
+        Err(error) => return (false, Err(error)),
     };
+    let Some(_lock) = lock else {
+        return (false, Ok(()));
+    };
+    if cancelled.load(Ordering::Acquire) {
+        return (false, Err(UsageError::ScannerCancelled));
+    }
     let result: Result<(), UsageError> = (|| {
         let scanner_cache = cache_root.join("scanner");
         create_private_dir(&scanner_cache)?;
         let _scan_guard = acquire_codex_scan_lock()?;
-        let data = scan_codex_sessions(&home, state_dir, &scanner_cache)?;
+        let data = scanner(&home, state_dir, &scanner_cache, cancelled)?;
+        if cancelled.load(Ordering::Acquire) {
+            return Err(UsageError::ScannerCancelled);
+        }
+        let checked_at = clock();
         let previous = read_json(&cache_root.join("local-costs.json"));
         let fingerprint = cost_fingerprint(&data);
         let old = previous
@@ -207,15 +287,15 @@ pub fn refresh_account_costs(
             old.cloned().unwrap_or(data)
         };
         let at = if changed {
-            now
+            checked_at
         } else {
             previous
                 .as_ref()
                 .and_then(|v| v.pointer("/state/at"))
                 .and_then(Value::as_f64)
-                .unwrap_or(now)
+                .unwrap_or(checked_at)
         };
-        let state = json!({"at":at,"checkedAt":now,"error":null,"data":data,"sourceFingerprint":fingerprint});
+        let state = json!({"at":at,"checkedAt":checked_at,"error":null,"data":data,"sourceFingerprint":fingerprint});
         let bytes = serde_json::to_vec(&json!({"scope":scope,"state":state}))
             .map_err(|_| UsageError::Scan)?;
         let temp = cache_root.join(format!(".local-costs-{}.tmp", std::process::id()));
@@ -229,7 +309,12 @@ pub fn refresh_account_costs(
         fs::rename(&temp, cache_root.join("local-costs.json")).map_err(|_| UsageError::Scan)?;
         Ok(())
     })();
+    let mut cache_saved = result.is_ok();
     if let Err(error) = &result {
+        if matches!(error, UsageError::ScannerCancelled) {
+            return (false, result);
+        }
+        let checked_at = clock();
         let path = cache_root.join("local-costs.json");
         let mut state = read_json(&path)
             .and_then(|cache| cache.get("state").cloned())
@@ -237,20 +322,28 @@ pub fn refresh_account_costs(
             .unwrap_or_else(|| json!({"at":null,"data":null}));
         if let Some(fields) = state.as_object_mut() {
             fields.insert("error".to_owned(), Value::String(error.to_string()));
-            fields.insert("checkedAt".to_owned(), Value::from(now));
+            fields.insert("checkedAt".to_owned(), Value::from(checked_at));
         }
         let temporary = cache_root.join(format!(".local-costs-error-{}.tmp", std::process::id()));
         if let Ok(bytes) = serde_json::to_vec(&json!({"scope":scope,"state":state})) {
             if fs::write(&temporary, bytes).is_ok() {
-                if let Err(error) = fs::rename(&temporary, path) {
-                    eprintln!("Could not persist local cost scan failure: {error}");
+                match fs::rename(&temporary, path) {
+                    Ok(()) => cache_saved = true,
+                    Err(error) => {
+                        eprintln!("Could not persist local cost scan failure: {error}");
+                    }
                 }
             }
         }
     }
-    drop(_lock);
-    remove_refresh_lock(&lock_path);
-    result
+    (cache_saved, result)
+}
+
+fn unix_time_seconds() -> f64 {
+    SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map(|duration| duration.as_secs_f64())
+        .unwrap_or_default()
 }
 
 fn cost_fingerprint(data: &Value) -> String {
@@ -339,10 +432,27 @@ fn refresh_lock_active(path: &Path) -> bool {
         < COST_SCAN_TIMEOUT_SECONDS
 }
 
-fn claim_refresh_lock(path: &Path) -> Result<Option<File>, UsageError> {
+struct RefreshFileLock {
+    path: PathBuf,
+    file: Option<File>,
+}
+
+impl Drop for RefreshFileLock {
+    fn drop(&mut self) {
+        drop(self.file.take());
+        remove_refresh_lock(&self.path);
+    }
+}
+
+fn claim_refresh_lock(path: &Path) -> Result<Option<RefreshFileLock>, UsageError> {
     loop {
         match OpenOptions::new().write(true).create_new(true).open(path) {
-            Ok(file) => return Ok(Some(file)),
+            Ok(file) => {
+                return Ok(Some(RefreshFileLock {
+                    path: path.to_path_buf(),
+                    file: Some(file),
+                }));
+            }
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
                 if refresh_lock_active(path) {
                     return Ok(None);
@@ -523,6 +633,7 @@ fn scan_codex_sessions(
     home: &Path,
     state_dir: &Path,
     scanner_cache: &Path,
+    cancelled: &AtomicBool,
 ) -> Result<Value, UsageError> {
     let cost_root = state_dir.join("account-costs");
     let executable = cost_root.join("bin/codex-cost-scanner");
@@ -538,8 +649,12 @@ fn scan_codex_sessions(
         COST_SCANNER_BUILD_TIMEOUT_SECONDS,
         COST_SCAN_OUTPUT_LIMIT_BYTES,
         Some(COST_SCANNER_BUILD_STDERR_LIMIT_BYTES),
+        cancelled,
     )
-    .map_err(|_| UsageError::ScannerPrepare)?;
+    .map_err(|error| match error {
+        UsageError::ScannerCancelled => UsageError::ScannerCancelled,
+        _ => UsageError::ScannerPrepare,
+    })?;
     if !build_output.status.success() {
         return Err(UsageError::ScannerPrepare);
     }
@@ -557,6 +672,7 @@ fn scan_codex_sessions(
         COST_SCAN_TIMEOUT_SECONDS,
         COST_SCAN_OUTPUT_LIMIT_BYTES,
         None,
+        cancelled,
     )?;
     if !output.status.success() {
         return Err(UsageError::ScannerFailed(output.status.code().unwrap_or(1)));
@@ -666,6 +782,7 @@ fn run_cost_command(
     timeout: Duration,
     stdout_limit: usize,
     stderr_limit: Option<usize>,
+    cancelled: &AtomicBool,
 ) -> Result<CostCommandOutput, UsageError> {
     let deadline = Instant::now() + timeout;
     let mut command = command;
@@ -679,13 +796,29 @@ fn run_cost_command(
     #[cfg(unix)]
     command.wrap(ProcessGroup::leader());
     let mut child = command.spawn().map_err(|_| UsageError::ScannerPrepare)?;
-    let stdout = child.stdout().take().ok_or(UsageError::ScannerPrepare)?;
+    let stdout = match child.stdout().take() {
+        Some(stdout) => stdout,
+        None => {
+            terminate_cost_child(&mut *child)?;
+            return Err(UsageError::ScannerPrepare);
+        }
+    };
+    let stderr = if stderr_limit.is_some() {
+        match child.stderr().take() {
+            Some(stderr) => Some(stderr),
+            None => {
+                terminate_cost_child(&mut *child)?;
+                return Err(UsageError::ScannerPrepare);
+            }
+        }
+    } else {
+        None
+    };
     let (stdout_sender, stdout_receiver) = mpsc::sync_channel(1);
     let stdout_reader = thread::spawn(move || {
         drop(stdout_sender.send(read_cost_pipe(stdout, stdout_limit)));
     });
-    let stderr_reader = if let Some(limit) = stderr_limit {
-        let stderr = child.stderr().take().ok_or(UsageError::ScannerPrepare)?;
+    let stderr_reader = if let (Some(limit), Some(stderr)) = (stderr_limit, stderr) {
         let (sender, receiver) = mpsc::sync_channel(1);
         let reader = thread::spawn(move || drop(sender.send(read_cost_pipe(stderr, limit))));
         Some((receiver, reader))
@@ -695,41 +828,49 @@ fn run_cost_command(
     let status = loop {
         match child.try_wait() {
             Ok(Some(status)) => break status,
+            Ok(None) if cancelled.load(Ordering::Acquire) => {
+                terminate_cost_child(&mut *child)?;
+                join_cost_reader(stdout_reader)?;
+                if let Some((_, reader)) = stderr_reader {
+                    join_cost_reader(reader)?;
+                }
+                return Err(UsageError::ScannerCancelled);
+            }
             Ok(None) if Instant::now() < deadline => thread::sleep(
                 Duration::from_millis(COST_COMMAND_POLL_INTERVAL_MILLISECONDS)
                     .min(deadline.saturating_duration_since(Instant::now())),
             ),
             Ok(None) => {
-                terminate_cost_child(&mut *child);
-                drop(stdout_reader);
+                terminate_cost_child(&mut *child)?;
+                join_cost_reader(stdout_reader)?;
                 if let Some((_, reader)) = stderr_reader {
-                    drop(reader);
+                    join_cost_reader(reader)?;
                 }
                 return Err(UsageError::ScannerTimedOut);
             }
             Err(_) => {
-                terminate_cost_child(&mut *child);
-                drop(stdout_reader);
+                terminate_cost_child(&mut *child)?;
+                join_cost_reader(stdout_reader)?;
                 if let Some((_, reader)) = stderr_reader {
-                    drop(reader);
+                    join_cost_reader(reader)?;
                 }
                 return Err(UsageError::Scan);
             }
         }
     };
-    terminate_cost_child(&mut *child);
-    let stdout = stdout_receiver
-        .recv_timeout(deadline.saturating_duration_since(Instant::now()))
-        .map_err(|_| UsageError::ScannerTimedOut)?
+    child.wait().map_err(|_| UsageError::ScannerCleanup)?;
+    let stdout_result = stdout_receiver.recv();
+    join_cost_reader(stdout_reader)?;
+    let stdout = stdout_result
+        .map_err(|_| UsageError::Scan)?
         .map_err(|_| UsageError::Scan)?;
     if let Some((receiver, reader)) = stderr_reader {
-        let _stderr = receiver
-            .recv_timeout(deadline.saturating_duration_since(Instant::now()))
-            .map_err(|_| UsageError::ScannerTimedOut)?
+        let stderr_result = receiver.recv();
+        join_cost_reader(reader)?;
+        let _stderr = stderr_result
+            .map_err(|_| UsageError::Scan)?
             .map_err(|_| UsageError::Scan)?;
-        drop(reader);
     }
-    drop(stdout_reader);
     Ok(CostCommandOutput {
         status,
         stdout: stdout.bytes,
@@ -758,9 +899,21 @@ fn read_cost_pipe(mut pipe: impl Read, limit: usize) -> std::io::Result<CostPipe
     Ok(CostPipeOutput { bytes, exceeded })
 }
 
-fn terminate_cost_child(child: &mut dyn ChildWrapper) {
-    drop(child.start_kill());
-    drop(child.try_wait());
+fn terminate_cost_child(child: &mut dyn ChildWrapper) -> Result<(), UsageError> {
+    if child.start_kill().is_err()
+        && child
+            .try_wait()
+            .map_err(|_| UsageError::ScannerCleanup)?
+            .is_none()
+    {
+        return Err(UsageError::ScannerCleanup);
+    }
+    child.wait().map_err(|_| UsageError::ScannerCleanup)?;
+    Ok(())
+}
+
+fn join_cost_reader(reader: thread::JoinHandle<()>) -> Result<(), UsageError> {
+    reader.join().map_err(|_| UsageError::Scan)
 }
 
 fn normalize_codex_costs(payload: &Value) -> Result<Value, UsageError> {
@@ -975,7 +1128,175 @@ fn local_day(timestamp: f64) -> String {
 mod tests {
     use super::{account_cost_snapshot, refresh_account_costs, scan_claude_sessions};
     use serde_json::{Value, json};
+    use std::sync::atomic::AtomicBool;
     use std::time::Duration;
+
+    #[tokio::test(start_paused = true)]
+    async fn long_fake_scan_records_checked_at_when_the_scan_finishes() {
+        let directory = tempfile::tempdir().expect("fixture directory");
+        let state_dir = directory.path().join("state");
+        let home = directory.path().join("profile");
+        let account =
+            json!({"id":"paused-long-scan","accountId":"acct","home":home,"status":"ready"});
+        let clock_value = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(1_000));
+        let clock_for_worker = std::sync::Arc::clone(&clock_value);
+        let (started_sender, started_receiver) = tokio::sync::oneshot::channel();
+        let (finish_sender, finish_receiver) = tokio::sync::oneshot::channel();
+        let account_for_worker = account.clone();
+        let worker = tokio::task::spawn_blocking(move || {
+            super::refresh_account_costs_with(
+                &state_dir,
+                "paused-long-scan",
+                &account_for_worker,
+                &AtomicBool::new(false),
+                move || clock_for_worker.load(std::sync::atomic::Ordering::Relaxed) as f64,
+                move |_, _, _, _| {
+                    started_sender
+                        .send(())
+                        .map_err(|_| super::UsageError::Scan)?;
+                    finish_receiver
+                        .blocking_recv()
+                        .map_err(|_| super::UsageError::Scan)?;
+                    Ok(json!({"todayUSD":2.0,"last30DaysUSD":3.0,"todayTokens":4,
+                        "last30DaysTokens":5,"sourceDay":"2026-10-15","coverage":"reported",
+                        "unknownModels":[],"historyDays":30}))
+                },
+            )
+        });
+        started_receiver.await.expect("scanner starts");
+        tokio::time::advance(Duration::from_secs(121)).await;
+        clock_value.store(1_121, std::sync::atomic::Ordering::Relaxed);
+        finish_sender.send(()).expect("scanner finishes");
+        let (cache_saved, result) = worker.await.expect("refresh worker");
+        assert!(cache_saved);
+        result.expect("refresh succeeds");
+
+        let snapshot = account_cost_snapshot(
+            &directory.path().join("state"),
+            "paused-long-scan",
+            &account,
+            1_122.0,
+        )
+        .expect("read completed cache");
+        assert_eq!(snapshot["checkedAt"], 1_121.0);
+        assert_eq!(snapshot["_refreshDue"], false);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(start_paused = true)]
+    async fn shutdown_kills_and_reaps_fake_scanner_and_releases_refresh_lock() {
+        let directory = tempfile::tempdir().expect("fixture directory");
+        let state_dir = directory.path().join("state");
+        let home = directory.path().join("profile");
+        let marker = directory.path().join("scanner-ready");
+        let account =
+            json!({"id":"cancelled-scan","accountId":"acct","home":home,"status":"ready"});
+        let cancelled = std::sync::Arc::new(AtomicBool::new(false));
+        let cancelled_for_worker = std::sync::Arc::clone(&cancelled);
+        let account_for_worker = account.clone();
+        let marker_for_worker = marker.clone();
+        let state_dir_for_worker = state_dir.clone();
+        let (started_sender, started_receiver) = tokio::sync::oneshot::channel();
+        let worker = tokio::task::spawn_blocking(move || {
+            super::refresh_account_costs_with(
+                &state_dir_for_worker,
+                "cancelled-scan",
+                &account_for_worker,
+                &cancelled_for_worker,
+                || 1_000.0,
+                move |_, _, _, cancellation| {
+                    started_sender
+                        .send(())
+                        .map_err(|_| super::UsageError::Scan)?;
+                    let mut command = std::process::Command::new("python3");
+                    command
+                        .arg("-c")
+                        .arg("import os,sys,time; open(sys.argv[1], 'w').write(str(os.getpid())); time.sleep(60)")
+                        .arg(&marker_for_worker);
+                    super::run_cost_command(
+                        command,
+                        Duration::from_secs(900),
+                        1024,
+                        None,
+                        cancellation,
+                    )?;
+                    Ok(json!({}))
+                },
+            )
+        });
+        started_receiver.await.expect("fake scanner started");
+        let ready_marker = marker.clone();
+        let child_ready = tokio::task::spawn_blocking(move || {
+            for _ in 0..500 {
+                if ready_marker.is_file() {
+                    return true;
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            false
+        })
+        .await
+        .expect("marker waiter");
+        assert!(child_ready, "fake scanner should create its ready marker");
+        let pid = std::fs::read_to_string(&marker)
+            .expect("scanner PID")
+            .parse::<u32>()
+            .expect("valid scanner PID");
+        cancelled.store(true, std::sync::atomic::Ordering::Release);
+        let (cache_saved, result) = worker.await.expect("refresh worker");
+        assert!(!cache_saved);
+        assert!(matches!(result, Err(super::UsageError::ScannerCancelled)));
+
+        let probe = std::process::Command::new("/bin/kill")
+            .args(["-0", &pid.to_string()])
+            .status()
+            .expect("probe scanner process");
+        assert!(!probe.success(), "cancelled scanner process must be reaped");
+        let account_identity = crate::event_write::python_json(&json!([
+            "cancelled-scan",
+            "acct",
+            home.to_string_lossy().as_ref()
+        ]));
+        let cache_root = state_dir
+            .join("account-costs")
+            .join(super::digest(&account_identity));
+        assert!(!cache_root.join(".refresh.lock").exists());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn failed_cache_save_has_a_normal_refresh_backoff() {
+        let directory = tempfile::tempdir().expect("fixture directory");
+        let state_dir = directory.path().join("state");
+        let home = directory.path().join("profile");
+        let key = "failed-save-backoff";
+        let account = json!({"id":key,"accountId":"acct","home":home,"status":"ready"});
+        let account_identity =
+            crate::event_write::python_json(&json!([key, "acct", home.to_string_lossy().as_ref()]));
+        let cache_root = state_dir
+            .join("account-costs")
+            .join(super::digest(&account_identity));
+        std::fs::create_dir_all(cache_root.join("local-costs.json")).expect("make cache save fail");
+        assert!(super::claim_cost_refresh_attempt(key));
+
+        let (cache_saved, result) = super::refresh_account_costs_with(
+            &state_dir,
+            key,
+            &account,
+            &AtomicBool::new(false),
+            || 1_000.0,
+            |_, _, _, _| {
+                Ok(json!({"todayUSD":2.0,"last30DaysUSD":3.0,"todayTokens":4,
+                    "last30DaysTokens":5,"sourceDay":"2026-10-15","coverage":"reported",
+                    "unknownModels":[],"historyDays":30}))
+            },
+        );
+        assert!(!cache_saved);
+        assert!(matches!(result, Err(super::UsageError::Scan)));
+        assert!(!cache_root.join(".refresh.lock").exists());
+        assert!(!super::claim_cost_refresh_attempt(key));
+        tokio::time::advance(Duration::from_secs(120)).await;
+        assert!(super::claim_cost_refresh_attempt(key));
+    }
 
     #[test]
     fn reads_python_shaped_local_cache_without_starting_a_refresh() {
@@ -1108,6 +1429,7 @@ mod tests {
             &root.join("profile"),
             &root.join("state"),
             &root.join("state/account-costs/test/scanner"),
+            &AtomicBool::new(false),
         );
         assert!(matches!(result, Err(super::UsageError::ScannerPrepare)));
         std::fs::remove_dir_all(root).expect("fixture cleanup");
@@ -1164,7 +1486,7 @@ mod tests {
         let account = json!({"id":"claude-local","provider":"claude","home":home,
             "status":"ready"});
         let state = root.join("state");
-        refresh_account_costs(&state, "claude-local", &account, now.timestamp() as f64)
+        refresh_account_costs(&state, "claude-local", &account, &AtomicBool::new(false))
             .expect("refresh local Claude cache");
         let cached =
             account_cost_snapshot(&state, "claude-local", &account, now.timestamp() as f64)
