@@ -967,7 +967,7 @@ mod vault_maintenance_tests {
                 .expect("injected project update commits");
         };
 
-        let error = pull_with_maintenance_interleaved(
+        let error = match pull_with_maintenance_interleaved(
             &store,
             &state_dir,
             &validators,
@@ -979,8 +979,10 @@ mod vault_maintenance_tests {
             None,
             0,
             &mut before_recheck,
-        )
-        .expect_err("persistent room updates exhaust the retry budget");
+        ) {
+            Err(error) => error,
+            Ok(_) => panic!("persistent room updates exhaust the retry budget"),
+        };
         let response = error.into_response();
 
         assert_eq!(response.status(), axum::http::StatusCode::CONFLICT);
@@ -1091,7 +1093,7 @@ mod vault_maintenance_tests {
         )
         .expect("cached vault changes without a SQLite write");
         let second_pull = pull();
-        assert!(second_pull["documents"].is_array());
+        assert!(response_value(&second_pull)["documents"].is_array());
         let second_payload: String = store
             .read()
             .expect("read store")
