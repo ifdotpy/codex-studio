@@ -202,14 +202,14 @@ impl WatcherService {
         agent_directories: HashMap<AgentKey, PathBuf>,
         changes: ChangeNotificationHub,
     ) -> Result<ProgressFileWatch, ProgressWatchError> {
-        self.subscribe_with_registration_hook(agent_directories, changes, || {})
+        self.subscribe_with_pre_watch_hook(agent_directories, changes, || {})
     }
 
-    fn subscribe_with_registration_hook(
+    fn subscribe_with_pre_watch_hook(
         self: &Arc<Self>,
         agent_directories: HashMap<AgentKey, PathBuf>,
         changes: ChangeNotificationHub,
-        after_registration: impl FnOnce(),
+        before_watch_registration: impl FnOnce(),
     ) -> Result<ProgressFileWatch, ProgressWatchError> {
         let _subscription = self
             .subscription_lock
@@ -226,6 +226,17 @@ impl WatcherService {
                 .map(|(agent, directory)| (agent.clone(), directory.clone()))
                 .collect::<Vec<_>>()
         };
+
+        // Keep a baseline before installing the native watch. A change in this
+        // gap cannot produce a watcher event, so the post-registration read
+        // below must publish it.
+        let signatures = new_agents
+            .iter()
+            .filter_map(|(agent, _)| {
+                read_signature(agent).map(|signature| (agent.clone(), signature))
+            })
+            .collect::<HashMap<_, _>>();
+        before_watch_registration();
 
         let mut newly_watched = Vec::<PathBuf>::new();
         {
@@ -246,14 +257,6 @@ impl WatcherService {
             }
         }
 
-        // Keep a pre-registration signature so a change that lands before the
-        // subscriber is visible can be detected by the post-registration read.
-        let signatures = new_agents
-            .iter()
-            .filter_map(|(agent, _)| {
-                read_signature(agent).map(|signature| (agent.clone(), signature))
-            })
-            .collect::<HashMap<_, _>>();
         let subscriber_id = NEXT_SUBSCRIBER_ID.fetch_add(1, Ordering::Relaxed);
         let agents = agent_directories.keys().cloned().collect::<BTreeSet<_>>();
         let mut state = self
@@ -277,7 +280,6 @@ impl WatcherService {
 
         // The native watcher and subscriber are now registered. Re-read to
         // close the gap where a filesystem event could have been dropped.
-        after_registration();
         let current_signatures = new_agents
             .iter()
             .filter_map(|(agent, _)| {
@@ -523,7 +525,7 @@ mod tests {
 
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[test]
-    fn subscription_rereads_progress_after_registration() {
+    fn subscription_rereads_progress_changed_before_native_watch_registration() {
         let directory = tempfile::tempdir().expect("temporary state directory");
         let agent_directory = crate::progress_panel::prepare_watch_directory(
             directory.path(),
@@ -539,27 +541,29 @@ mod tests {
         let agents = HashMap::from([(agent, agent_directory)]);
         let service = get_or_create_service().expect("process watcher starts");
         let changes = ChangeNotificationHub::new();
-        let (registered, registration_gate) = mpsc::channel();
+        let (baseline_captured, registration_gate) = mpsc::channel();
         let (release, release_gate) = mpsc::channel();
         let worker = {
             let service = service.clone();
             let changes = changes.clone();
             std::thread::spawn(move || {
-                service.subscribe_with_registration_hook(agents, changes, || {
-                    registered.send(()).expect("registration gate is open");
-                    release_gate.recv().expect("release registration read");
+                service.subscribe_with_pre_watch_hook(agents, changes, || {
+                    baseline_captured.send(()).expect("baseline waiter is open");
+                    release_gate
+                        .recv()
+                        .expect("release native watch registration");
                 })
             })
         };
 
         registration_gate
             .recv()
-            .expect("subscriber is registered before the post-read");
+            .expect("baseline is captured before native watch registration");
         std::fs::write(&progress_file, "after\n")
-            .expect("progress changes in the registration window");
+            .expect("progress changes before native watch registration");
         release
             .send(())
-            .expect("post-registration read is released");
+            .expect("native watch registration is released");
         let subscription = worker
             .join()
             .expect("subscription worker joins")
