@@ -750,6 +750,7 @@ mod tests {
                     .to_owned(),
                 ),
                 cwd: root.to_str().map(str::to_owned),
+                workspace: Some("worktree".to_owned()),
                 account: Some("default".to_owned()),
                 prompt: if scenario == "agent" { "Task" } else { "" }.to_owned(),
                 previous: (scenario == "previous").then(|| scenario.to_owned()),

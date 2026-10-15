@@ -68,13 +68,11 @@ fn stalled_handshake_and_started_frame_release_connection_slot() {
                 )
                 .is_ok()
         );
-        let error = read_frame(
-            &mut reader,
-            Some(Instant::now() + Duration::from_secs(5)),
-            FRAME_BUDGET,
-        )
-        .unwrap()
-        .unwrap();
+        // The worker has closed its socket. Darwin rejects changing SO_RCVTIMEO
+        // after peer shutdown; use the five-second timeout installed above.
+        let mut line = String::new();
+        reader.read_line(&mut line).unwrap();
+        let error: Value = serde_json::from_str(&line).unwrap();
         assert_eq!(
             error["error"], "Supervisor handshake or frame deadline exceeded",
             "{phase}"

@@ -1139,6 +1139,8 @@ async fn review_full_callback_queue_retains_taken_response_and_resolution() {
     );
 }
 
+// Retained child environment verification is implemented only on Linux.
+#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn review_numeric_request_recovery_needs_hidden_receipt_mapping() {
     use support::*;
@@ -1438,6 +1440,8 @@ async fn written_correlation_survives_reply_resolving_before_receipt() {
     assert_eq!(recovery.deadline_ms, 100);
     session.checked_shutdown().await;
 }
+// Retained child environment verification is implemented only on Linux.
+#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn closure_crash_before_written_persistence_keeps_unknown_without_resend() {
     use support::*;
