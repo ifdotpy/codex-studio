@@ -8,7 +8,7 @@ use serde_json::{Value, json};
 use crate::error::ApiError;
 use crate::router::HttpState;
 use crate::routes::extractors::QueryParams;
-use crate::routes::manifest::{Dependency, OperationStatus, RouteGroup, get};
+use crate::routes::manifest::{OperationStatus, RouteGroup, get};
 use studio_runtime_services::account_policy::AccountsSnapshot;
 use studio_runtime_services::model_catalog::{CatalogRead, ModelCatalogService};
 
@@ -18,15 +18,10 @@ const WORKER_PENDING_MESSAGE: &str =
 const UNAVAILABLE_MESSAGE: &str =
     "Model catalog unavailable; no workers were created: provider request failed";
 const ACCOUNT_UNAVAILABLE_MESSAGE: &str = "Account is unavailable";
-const MODEL_CATALOG_DEPENDENCIES: &[Dependency] = &[
-    Dependency::new("provider-session/account-session"),
-    Dependency::new("provider-session/model-list"),
-];
-
 pub(crate) fn routes() -> RouteGroup {
     RouteGroup::new(vec![get(
         "/api/models",
-        OperationStatus::partial(MODEL_CATALOG_DEPENDENCIES),
+        OperationStatus::Implemented,
         models,
     )])
 }
@@ -99,8 +94,8 @@ async fn account_catalog(
                 return catalog_pending();
             }
             (
-                StatusCode::NOT_IMPLEMENTED,
-                json!({"error":error.to_string()}),
+                StatusCode::BAD_REQUEST,
+                json!({"error": UNAVAILABLE_MESSAGE}),
             )
         })?;
     match catalog
@@ -113,12 +108,8 @@ async fn account_catalog(
             json!({"error": PENDING_MESSAGE, "catalogPending": true}),
         )),
         CatalogRead::Unavailable => Err((
-            if account.provider == "claude" {
-                StatusCode::NOT_IMPLEMENTED
-            } else {
-                StatusCode::BAD_REQUEST
-            },
-            json!({"error": if account.provider == "claude" { "Not implemented: requires provider-session/model-list" } else { UNAVAILABLE_MESSAGE }}),
+            StatusCode::BAD_REQUEST,
+            json!({"error": UNAVAILABLE_MESSAGE}),
         )),
     }
 }
@@ -429,7 +420,7 @@ mod tests {
     }
 
     #[test]
-    fn route_manifest_declares_claude_dependency_as_partial() {
+    fn route_manifest_declares_model_catalog_as_implemented() {
         let operation = crate::routes::manifest::operation_manifest()
             .expect("route manifest validates")
             .into_iter()
@@ -440,8 +431,8 @@ mod tests {
             json!({
                 "method":"GET",
                 "path":"/api/models",
-                "status":"partial",
-                "dependencies":["provider-session/account-session","provider-session/model-list"]
+                "status":"implemented",
+                "dependencies":[]
             })
         );
     }
@@ -451,6 +442,6 @@ inventory::submit! {
     crate::routes::manifest::RouteModuleRegistration {
         name: "models",
         routes: Some(routes),
-        dependencies: &["provider-session/account-session", "provider-session/model-list"],
+        dependencies: &[],
     }
 }

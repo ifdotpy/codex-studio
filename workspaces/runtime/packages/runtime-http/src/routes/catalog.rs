@@ -6,21 +6,12 @@ use axum::extract::State;
 use crate::error::ApiError;
 use crate::router::HttpState;
 use crate::routes::extractors::QueryParams;
-use crate::routes::manifest::{
-    Dependency, OperationStatus, RouteGroup, dependency_unavailable, get as register_get,
-};
-
-static LIMITS_DEPENDENCIES: [Dependency; 1] =
-    [Dependency::new("provider-session/account-rate-limits")];
+use crate::routes::manifest::{OperationStatus, RouteGroup, get as register_get};
 
 pub(crate) fn routes() -> RouteGroup {
     RouteGroup::new(vec![
         register_get("/api/accounts", OperationStatus::Implemented, accounts),
-        register_get(
-            "/api/limits",
-            OperationStatus::partial(&LIMITS_DEPENDENCIES),
-            limits,
-        ),
+        register_get("/api/limits", OperationStatus::Implemented, limits),
     ])
 }
 
@@ -90,8 +81,22 @@ async fn limits(
             },
         )
         .await
-        .map_err(|_| ApiError::internal())?
-        .map_err(limits_session_error)?;
+        .map_err(|_| ApiError::internal())?;
+        let response = match response {
+            Ok(response) => response,
+            Err(
+                studio_runtime_services::account_session_runtime::AccountSessionError::Refused(
+                    "Unknown Codex account",
+                ),
+            ) => {
+                return Err(super::account_login::session_error(
+                    studio_runtime_services::account_session_runtime::AccountSessionError::Refused(
+                        "Unknown Codex account",
+                    ),
+                ));
+            }
+            Err(error) => limit_error_snapshot(&state, &account_key, &error.to_string())?,
+        };
         return serde_json::from_value(response)
             .map(Json)
             .map_err(|_| ApiError::internal());
@@ -111,37 +116,47 @@ async fn limits(
             .map_err(|_| ApiError::internal())?;
         return Ok(Json(response));
     }
-    // Python returns an existing snapshot while scheduling a background
-    // refresh before checking whether the account is currently registered.
     if snapshot.get("data").is_some_and(|data| !data.is_null()) {
-        return Err(dependency_error()?);
+        return serde_json::from_value(snapshot)
+            .map(Json)
+            .map_err(|_| ApiError::internal());
     }
-    Err(dependency_error()?)
-}
-
-fn dependency_error() -> Result<ApiError, ApiError> {
-    dependency_unavailable("GET", "/api/limits", &LIMITS_DEPENDENCIES)
+    let snapshot = limit_error_snapshot(&state, account_key, "Account limits could not be read.")?;
+    serde_json::from_value(snapshot)
+        .map(Json)
         .map_err(|_| ApiError::internal())
 }
 
-fn limits_session_error(
-    error: studio_runtime_services::account_session_runtime::AccountSessionError,
-) -> ApiError {
-    if matches!(
-        error,
-        studio_runtime_services::account_session_runtime::AccountSessionError::Requires(
-            "provider-session/account-session"
-        )
-    ) {
-        dependency_error().unwrap_or_else(|error| error)
-    } else {
-        super::account_login::session_error(error)
-    }
+fn limit_error_snapshot(
+    state: &HttpState,
+    account_key: &str,
+    message: &str,
+) -> Result<serde_json::Value, ApiError> {
+    let account_policy = state
+        .account_policy
+        .as_ref()
+        .ok_or_else(ApiError::internal)?;
+    let mut snapshot = account_policy.limits(account_key);
+    let object = snapshot.as_object_mut().ok_or_else(ApiError::internal)?;
+    object.insert(
+        "error".to_owned(),
+        serde_json::Value::String(message.to_owned()),
+    );
+    object.insert(
+        "checkedAt".to_owned(),
+        serde_json::Value::from(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_err(|_| ApiError::internal())?
+                .as_secs_f64(),
+        ),
+    );
+    Ok(snapshot)
 }
 inventory::submit! {
     crate::routes::manifest::RouteModuleRegistration {
         name: "catalog",
         routes: Some(routes),
-        dependencies: &["provider-session/account-rate-limits", "provider-session/model-list"],
+        dependencies: &[],
     }
 }

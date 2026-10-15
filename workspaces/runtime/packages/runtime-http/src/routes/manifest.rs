@@ -250,11 +250,9 @@ mod tests {
 
     #[test]
     fn dependency_unavailability_requires_a_known_nonempty_list() {
-        static DEPENDENCIES: [Dependency; 1] =
-            [Dependency::new("provider-session/account-rate-limits")];
         assert!(
             OperationStatus::Partial {
-                dependencies: &DEPENDENCIES,
+                dependencies: &[Dependency::new("cross-server-driver/project-location-read")],
             }
             .validate()
             .is_ok()
@@ -272,7 +270,6 @@ mod tests {
             .validate()
             .is_err()
         );
-        assert!(super::dependency_unavailable("GET", "/api/limits", &DEPENDENCIES).is_ok());
         assert!(super::dependency_unavailable("GET", "/api/limits", &UNKNOWN).is_err());
         static TRANSFER: [Dependency; 3] = [
             Dependency::new("account-transfer/provider-history-executor"),

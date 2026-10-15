@@ -163,10 +163,7 @@ async fn run_mutation(
     + 'static,
 ) -> Result<Json<crate::generated::AccountsResponse>, ApiError> {
     let Some(driver) = state.account_driver.clone() else {
-        return Err(ApiError::new(
-            StatusCode::NOT_IMPLEMENTED,
-            "Not implemented: requires account-driver/unavailable",
-        ));
+        return Err(ApiError::internal());
     };
     accounts_response(run_account_operation(&state, driver, mutation).await?)
 }
@@ -258,10 +255,7 @@ async fn discover(
             .map_err(|_| ApiError::internal());
     }
     let Some(driver) = state.account_driver.clone() else {
-        return Err(ApiError::new(
-            StatusCode::NOT_IMPLEMENTED,
-            "Not implemented: requires account-driver/unavailable",
-        ));
+        return Err(ApiError::internal());
     };
     let snapshot = run_account_operation(&state, driver, |driver| {
         driver.discover_codex()?;
@@ -329,10 +323,7 @@ async fn codex_login_cancel(
             .map_err(|_| ApiError::internal());
     }
     let Some(driver) = state.account_driver.clone() else {
-        return Err(ApiError::new(
-            StatusCode::NOT_IMPLEMENTED,
-            "Not implemented: requires account-driver/unavailable",
-        ));
+        return Err(ApiError::internal());
     };
     let receipt = run_account_operation(&state, driver, move |driver| {
         driver.terminal_login_receipt(&body.login_id)
@@ -452,7 +443,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn missing_account_driver_has_named_501() {
+    async fn missing_account_driver_is_a_composition_error() {
         let state_dir = tempfile::tempdir().expect("isolated state directory");
         let state = HttpState::new(
             String::new(),
@@ -466,15 +457,15 @@ mod tests {
         );
         let error = run_mutation(state, |_| unreachable!())
             .await
-            .expect_err("missing driver is a partial operation");
+            .expect_err("missing driver is a composition error");
         let response = error.into_response();
-        assert_eq!(response.status(), StatusCode::NOT_IMPLEMENTED);
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
         let body = to_bytes(response.into_body(), 4096)
             .await
             .expect("error body");
         assert_eq!(
             serde_json::from_slice::<serde_json::Value>(&body).expect("JSON error")["error"],
-            "Not implemented: requires account-driver/unavailable"
+            "Internal server error"
         );
     }
 
