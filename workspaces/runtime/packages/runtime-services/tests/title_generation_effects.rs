@@ -255,6 +255,7 @@ fn admitted_title_catalog_failure_settles_python_receipt_without_renaming() {
             |row| row.get(0),
         )
         .expect("durable failure receipt");
+    drop(connection);
     let result: Value = serde_json::from_str(&result).expect("failure receipt JSON");
     assert_eq!(result["status"], "failed");
     assert_eq!(result["request_id"], "catalog-unavailable");
