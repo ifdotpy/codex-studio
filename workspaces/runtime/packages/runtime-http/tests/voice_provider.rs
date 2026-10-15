@@ -15,6 +15,9 @@ use studio_runtime_services::voice::runtime::{
 use studio_runtime_store::RuntimeStore;
 use tower::ServiceExt;
 
+#[path = "../../runtime-services/tests/multi_server/common.rs"]
+#[allow(dead_code)]
+mod common;
 #[path = "../../runtime-services/tests/wave7_p15_support/fixtures.rs"]
 #[allow(dead_code, unused_imports)]
 mod monitor_fixtures;
@@ -23,11 +26,7 @@ mod monitor_fixtures;
 mod monitor_support;
 #[path = "../../runtime-services/tests/support/prepared_python.rs"]
 #[allow(dead_code)]
-mod prepared_python_support;
-
-#[path = "../../runtime-services/tests/multi_server/common.rs"]
-#[allow(dead_code)]
-mod common;
+pub(crate) mod prepared_python_support;
 
 #[derive(Default)]
 struct RecordingPort {

@@ -333,12 +333,11 @@ fn watch_file_changes(
 ) {
     use notify::Watcher;
     let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
-    let mut watcher = notify::recommended_watcher(move |_: notify::Result<notify::Event>| {
-        match sender.send(()) {
-            Ok(()) => {}
-            Err(_) => return,
-        }
-    })
+    let mut watcher = notify::recommended_watcher(
+        move |_: notify::Result<notify::Event>| {
+            if let Ok(()) = sender.send(()) {}
+        },
+    )
     .expect("file watcher starts");
     watcher
         .watch(

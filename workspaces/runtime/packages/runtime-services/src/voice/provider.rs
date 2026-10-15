@@ -2354,7 +2354,7 @@ async fn complete_start(
         return Err(VoiceProviderError::Operation);
     };
     let context = match provider
-        .prepare(&agent_id, &session_id, &account_key, &thread_id, epoch)
+        .prepare(&agent_id, &session_id, account_key, thread_id, epoch)
         .await
     {
         Ok(context) => context,

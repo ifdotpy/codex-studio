@@ -159,7 +159,7 @@ async fn composed_stop_dispatches_active_voice_session_after_commit() {
         fn signal_dispatch(&self) {
             self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             if let Some(called) = self.called.lock().expect("voice signal lock").take() {
-                let _ = called.send(());
+                called.send(()).unwrap_or(());
             }
         }
     }

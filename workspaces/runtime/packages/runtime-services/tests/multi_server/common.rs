@@ -1,5 +1,4 @@
-#[path = "../support/prepared_python.rs"]
-mod python_oracle;
+use crate::prepared_python_support as python_oracle;
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::{Arc, OnceLock};

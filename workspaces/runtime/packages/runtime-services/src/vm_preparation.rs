@@ -1891,7 +1891,7 @@ mod tests {
             } else {
                 format!("{prefix}/{name}")
             });
-            let size = usize::from_str_radix(&field(&header[124..136]).trim(), 8).unwrap();
+            let size = usize::from_str_radix(field(&header[124..136]).trim(), 8).unwrap();
             offset += 512 + size.div_ceil(512) * 512;
         }
         for entry in [".git/refs/heads/venv", ".git/modules/node_modules/config"] {

@@ -1975,7 +1975,7 @@ mod tests {
         let attempt = std::fs::read_to_string(root.path().join("model-pricing/refresh-state.json"))
             .expect("attempt time is persisted separately from successful catalog");
         assert_eq!(
-            serde_json::from_str::<Value>(&attempt).unwrap()["lastAttemptAt"],
+            serde_json::from_str::<Value>(&attempt).expect("attempt state remains valid JSON")["lastAttemptAt"],
             now
         );
 

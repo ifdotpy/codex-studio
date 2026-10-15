@@ -1226,7 +1226,7 @@ mod tests {
     #![allow(clippy::unwrap_used)]
 
     use super::{
-        GuestRpc, INVALID_LOGIN_JSON, OVERSIZED_PROGRESS_LINE, VAULT_JOB_CAPACITY,
+        GuestRpc, INVALID_LOGIN_JSON, OVERSIZED_PROGRESS_LINE, SetupJob, VAULT_JOB_CAPACITY,
         VAULT_PROGRESS_LINE_MAX_BYTES, VaultJobClient, VaultJobKind, VaultJobOwner,
         consume_progress_lines, find_job, reserve_job, run_login_job, run_setup_job,
     };

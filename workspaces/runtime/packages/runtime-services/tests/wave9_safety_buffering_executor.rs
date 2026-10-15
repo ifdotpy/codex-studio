@@ -711,7 +711,7 @@ fn accepted_start_after_concurrent_stop_stages_interrupt_then_commits_lifecycle(
         let state = result
             .as_ref()
             .map_or_else(|error| error.to_string(), |_| "success".into());
-        let _ = done_tx.send(state);
+        done_tx.send(state).unwrap_or(());
         result
     });
     if entered_rx.recv_timeout(Duration::from_secs(5)).is_err() {

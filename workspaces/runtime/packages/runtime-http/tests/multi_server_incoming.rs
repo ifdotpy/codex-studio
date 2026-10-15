@@ -2,6 +2,8 @@
 
 #[path = "../../runtime-services/tests/multi_server/common.rs"]
 mod common;
+#[path = "../../runtime-services/tests/support/prepared_python.rs"]
+pub(crate) mod prepared_python_support;
 use axum::body::{Body, to_bytes};
 use axum::extract::ConnectInfo;
 use axum::http::{Request, StatusCode};

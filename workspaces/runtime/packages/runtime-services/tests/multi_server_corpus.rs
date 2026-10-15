@@ -3,7 +3,7 @@
 #[path = "multi_server/common.rs"]
 mod common;
 #[path = "support/prepared_python.rs"]
-mod prepared_python;
+pub(crate) mod prepared_python_support;
 use common::*;
 use serde_json::{Value, json};
 use std::time::Duration;
@@ -1155,12 +1155,12 @@ fn python_and_rust_signatures_interoperate_for_multi_server_requests() {
     let server_source = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src");
     let script =
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/multi_server/interop_verify.py");
-    let mut command = Command::new(prepared_python::prepared_python(&server_source));
+    let mut command = Command::new(prepared_python_support::prepared_python(&server_source));
     command
         .arg(&script)
         .arg(python_input.to_string())
         .env("PYTHONDONTWRITEBYTECODE", "1");
-    let environment = prepared_python::IsolatedTestEnvironment::new();
+    let environment = prepared_python_support::IsolatedTestEnvironment::new();
     environment.apply(&mut command);
     let output = command.output().expect("run Python signature verifier");
     assert!(

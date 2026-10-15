@@ -687,6 +687,7 @@ fn should_repair_before_reserve(resume_reserved: bool) -> bool {
 }
 
 #[cfg(test)]
+#[allow(clippy::items_after_test_module)]
 mod native_action_retry_tests {
     use super::{
         NativeRequest, RequestCertainty, SessionReceipt, should_repair_before_reserve,

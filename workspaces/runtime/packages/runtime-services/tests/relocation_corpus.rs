@@ -210,7 +210,7 @@ fn python_location_and_move_corpus_through_consumers() {
                 continue;
             }
             "tool" => {
-                let mut record = case["record"].clone();
+                let record = case["record"].clone();
                 let actor = text(&record, "agent").to_owned();
                 let tool_id = text(&record, "id").to_owned();
                 let actual = store

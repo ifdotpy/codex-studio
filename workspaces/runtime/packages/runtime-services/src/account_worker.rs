@@ -2538,24 +2538,20 @@ impl Worker {
         self.schedule_publication_drain();
         self.drain_publications().await?;
         let committed_any = !committed.is_empty();
-        #[cfg(test)]
-        let mut committed_index = 0;
-        for (entry, effect) in committed {
+        for (index, (entry, effect)) in committed.into_iter().enumerate() {
+            #[cfg(not(test))]
+            let _ = index;
             #[cfg(test)]
+            if self
+                .bridge
+                .faults
+                .fail_journal_ack_at
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .take_if(|fail_at| *fail_at == index)
+                .is_some()
             {
-                let index = committed_index;
-                committed_index += 1;
-                if self
-                    .bridge
-                    .faults
-                    .fail_journal_ack_at
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .take_if(|fail_at| *fail_at == index)
-                    .is_some()
-                {
-                    return Err(WorkerError::TaskFailed);
-                }
+                return Err(WorkerError::TaskFailed);
             }
             self.journal_committed(entry, effect, source, settle)
                 .await?;

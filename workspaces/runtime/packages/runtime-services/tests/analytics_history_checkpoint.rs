@@ -436,7 +436,12 @@ fn history_usage_is_admitted_once_per_bounded_page() {
             self.0.lock().expect("page counts").push(
                 captures
                     .iter()
-                    .map(|(_, params, _)| params["responseId"].as_str().unwrap().to_owned())
+                    .map(|(_, params, _)| {
+                        params["responseId"]
+                            .as_str()
+                            .expect("captured history page includes response ID")
+                            .to_owned()
+                    })
                     .collect(),
             );
             Ok(())
