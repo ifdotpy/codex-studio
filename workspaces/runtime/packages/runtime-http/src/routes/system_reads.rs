@@ -147,7 +147,8 @@ async fn directories(
             studio_runtime_services::multi_server_orchestration::ExchangeOutcome::NotApplied(
                 message,
             ) => return Err(ApiError::new(StatusCode::BAD_REQUEST, message)),
-            studio_runtime_services::multi_server_orchestration::ExchangeOutcome::Unknown => {
+            studio_runtime_services::multi_server_orchestration::ExchangeOutcome::Unknown
+            | studio_runtime_services::multi_server_orchestration::ExchangeOutcome::PreEffectWaiting => {
                 return Err(ApiError::new(
                     StatusCode::SERVICE_UNAVAILABLE,
                     "The remote folder browse outcome is unknown",

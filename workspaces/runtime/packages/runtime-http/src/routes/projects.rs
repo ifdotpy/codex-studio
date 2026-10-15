@@ -838,7 +838,7 @@ fn remote_project_write(
         ExchangeOutcome::NotApplied(message) => {
             return Err(ApiError::new(StatusCode::BAD_REQUEST, message));
         }
-        ExchangeOutcome::Unknown => {
+        ExchangeOutcome::Unknown | ExchangeOutcome::PreEffectWaiting => {
             return Ok(
                 json!({"requestId":operation_id,"outcome":"unknown","projectId":project_id}),
             );
@@ -895,7 +895,8 @@ async fn project_locations(
                     "The paired server could not read this project folder",
                 ));
             }
-            studio_runtime_services::multi_server_orchestration::ExchangeOutcome::Unknown => {
+            studio_runtime_services::multi_server_orchestration::ExchangeOutcome::Unknown
+            | studio_runtime_services::multi_server_orchestration::ExchangeOutcome::PreEffectWaiting => {
                 return Err(ApiError::new(
                     StatusCode::SERVICE_UNAVAILABLE,
                     "The paired server read outcome is unknown",

@@ -70,6 +70,7 @@ impl PairedExchange for SignedBrowserExchange {
                 DeliveryOutcome::Applied(value) => ExchangeOutcome::Applied(value),
                 DeliveryOutcome::NotApplied(error) => ExchangeOutcome::NotApplied(error),
                 DeliveryOutcome::Unknown => ExchangeOutcome::Unknown,
+                DeliveryOutcome::PreEffectWaiting => ExchangeOutcome::Unknown,
             })
         })
     }

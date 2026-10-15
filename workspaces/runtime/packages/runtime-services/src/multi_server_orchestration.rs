@@ -19,6 +19,9 @@ pub enum ExchangeOutcome {
     Applied(Value),
     NotApplied(String),
     Unknown,
+    /// The receiver has not crossed the effect boundary and will wait for its
+    /// prerequisite. Unlike `Unknown`, this claim is safe to retry later.
+    PreEffectWaiting,
 }
 impl ExchangeOutcome {
     pub fn to_value(&self, key: &str) -> Value {
@@ -26,6 +29,9 @@ impl ExchangeOutcome {
             Self::Applied(v) => json!({"requestId":key,"outcome":"applied","value":v}),
             Self::NotApplied(e) => json!({"requestId":key,"outcome":"not_applied","error":e}),
             Self::Unknown => json!({"requestId":key,"outcome":"unknown"}),
+            Self::PreEffectWaiting => {
+                json!({"requestId":key,"outcome":"unknown","waitingFor":"The stop or parent update"})
+            }
         }
     }
     fn from_value(value: &Value, key: &str, now: i64) -> Result<Self, AccessError> {
@@ -918,7 +924,7 @@ fn receive_remote_input(
         .and_then(Value::as_i64)
         .unwrap_or(0);
     if observed_control < control_epoch {
-        return Ok(ExchangeOutcome::Unknown);
+        return Ok(ExchangeOutcome::PreEffectWaiting);
     }
     if observed_control != control_epoch
         || worker
@@ -1782,7 +1788,10 @@ impl OrchestrationDriver {
         result: &ExchangeOutcome,
         now: i64,
     ) -> Result<(), AccessError> {
-        if *result == ExchangeOutcome::Unknown {
+        if matches!(
+            result,
+            ExchangeOutcome::Unknown | ExchangeOutcome::PreEffectWaiting
+        ) {
             if peer_replay_safe(action) && table == "outbox" {
                 let attempts = self.store.read_transaction(|tx| {
                     tx.query_row(
@@ -1799,7 +1808,18 @@ impl OrchestrationDriver {
                     tx.execute("UPDATE runtime_server_outbox SET state='queued',attempts=attempts+1,next_at=?1,error='unknown' WHERE id=?2 AND state='running'",params![now.saturating_add(retry_delay),key])?;
                     Ok::<_,AccessError>(())
                 })?;
-            } else if peer_replay_safe(action) && table == "inbox" {
+            } else if *result == ExchangeOutcome::PreEffectWaiting
+                && action == "input"
+                && table == "inbox"
+            {
+                self.store.transaction_with(|tx| {
+                    tx.execute("UPDATE runtime_server_inbox SET state='waiting' WHERE id=?1 AND state='running'", [key])?;
+                    Ok::<_, AccessError>(())
+                })?;
+            // A generic unknown input can follow a committed message/event.
+            // Keep its claim running; only the typed pre-effect result above
+            // proves that retrying the input is safe.
+            } else if peer_replay_safe(action) && action != "input" && table == "inbox" {
                 self.store.transaction_with(|tx| {
                     tx.execute("UPDATE runtime_server_inbox SET state='waiting' WHERE id=?1 AND state='running'", [key])?;
                     Ok::<_,AccessError>(())

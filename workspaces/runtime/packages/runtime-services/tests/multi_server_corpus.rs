@@ -1353,6 +1353,147 @@ fn pairing_is_atomic_at_every_write_and_replays_after_restart() {
 }
 
 #[test]
+fn unknown_peer_input_claim_is_not_reopened_as_waiting() {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+    use studio_runtime_services::multi_server_auth::AccessError;
+    use studio_runtime_services::multi_server_orchestration::{
+        ExchangeOutcome, OrchestrationDriver, OrchestrationEffects, PairedTransport,
+    };
+
+    struct Effects(Arc<AtomicUsize>);
+    impl OrchestrationEffects for Effects {
+        fn supports(&self, action: &str) -> bool {
+            action == "input"
+        }
+        fn execute(&self, _: &str, _: &Value) -> Result<ExchangeOutcome, AccessError> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Ok(ExchangeOutcome::Unknown)
+        }
+    }
+    struct NoTransport;
+    impl PairedTransport for NoTransport {
+        fn exchange(&self, _: &str, _: &Value, _: Duration) -> Result<Value, AccessError> {
+            panic!("inbound input must not call the transport")
+        }
+    }
+
+    let (root, store) = store();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let driver = OrchestrationDriver::new(
+        store.clone(),
+        Arc::new(NoTransport),
+        Arc::new(Effects(calls.clone())),
+    );
+    let envelope = json!({
+        "requestId":"uncertain-input",
+        "action":"input",
+        "payload":{"actor":"fixture"}
+    });
+    assert_eq!(
+        driver
+            .receive("peer-server", &envelope, 1_700_000_000)
+            .expect("first input attempt"),
+        ExchangeOutcome::Unknown
+    );
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    let state: String = store
+        .read()
+        .expect("read receipt")
+        .query_row(
+            "SELECT state FROM runtime_server_inbox WHERE id='uncertain-input'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("saved receipt");
+    assert_eq!(state, "running");
+
+    assert_eq!(
+        driver
+            .receive("peer-server", &envelope, 1_700_000_001)
+            .expect("same input identity"),
+        ExchangeOutcome::Unknown
+    );
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        1,
+        "unknown input is never retried"
+    );
+    let state: String = store
+        .read()
+        .expect("read receipt")
+        .query_row(
+            "SELECT state FROM runtime_server_inbox WHERE id='uncertain-input'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("saved receipt");
+    assert_eq!(state, "running");
+    drop(root);
+}
+
+#[test]
+fn only_typed_pre_effect_waiting_reopens_peer_input() {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+    use studio_runtime_services::multi_server_auth::AccessError;
+    use studio_runtime_services::multi_server_orchestration::{
+        ExchangeOutcome, OrchestrationDriver, OrchestrationEffects, PairedTransport,
+    };
+
+    struct Effects(Arc<AtomicUsize>);
+    impl OrchestrationEffects for Effects {
+        fn supports(&self, action: &str) -> bool {
+            action == "input"
+        }
+        fn execute(&self, _: &str, _: &Value) -> Result<ExchangeOutcome, AccessError> {
+            if self.0.fetch_add(1, Ordering::SeqCst) == 0 {
+                Ok(ExchangeOutcome::PreEffectWaiting)
+            } else {
+                Ok(ExchangeOutcome::Applied(json!({"applied":true})))
+            }
+        }
+    }
+    struct NoTransport;
+    impl PairedTransport for NoTransport {
+        fn exchange(&self, _: &str, _: &Value, _: Duration) -> Result<Value, AccessError> {
+            panic!("inbound input must not call the transport")
+        }
+    }
+
+    let (_root, store) = store();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let driver = OrchestrationDriver::new(
+        store,
+        Arc::new(NoTransport),
+        Arc::new(Effects(calls.clone())),
+    );
+    let envelope = json!({
+        "requestId":"waiting-input",
+        "action":"input",
+        "payload":{"actor":"fixture"}
+    });
+    assert_eq!(
+        driver
+            .receive("peer-server", &envelope, 1_700_000_000)
+            .expect("waiting input attempt"),
+        ExchangeOutcome::PreEffectWaiting
+    );
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        driver
+            .receive("peer-server", &envelope, 1_700_000_001)
+            .expect("retry after known pre-effect waiting"),
+        ExchangeOutcome::Applied(json!({"applied":true}))
+    );
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
+}
+
+#[test]
 fn multi_server_corpus_witness() {
     let (_root, store) = store();
     let snapshot =
