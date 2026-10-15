@@ -512,7 +512,15 @@ pub(in crate::account_worker) fn recover(
                 && value["result"] != json!("Unknown")
                 && value["cursor"].as_u64().is_some_and(|c| c <= checkpoint) { continue; }
             let request = store::decode(&store::receipt(tx, &call.key(), "written")?.unwrap_or(value["request"].clone()))?;
-            result.push((PendingRequest { call, ticket: request.ticket.clone(), reply: None, result: None, result_cursor: 0 }, request));
+            let actor_id = call.actor.as_ref().map(|actor| actor.agent.clone());
+            result.push((PendingRequest {
+                call,
+                ticket: request.ticket.clone(),
+                actor_id,
+                reply: None,
+                result: None,
+                result_cursor: 0,
+            }, request));
             if result.len() > MAX_PENDING_RESPONSES { return Err(WorkerError::Capacity); }
         }
         Ok(result)

@@ -73,6 +73,14 @@ pub struct BarrierCommand {
     deadline: Instant,
     reply: oneshot::Sender<Result<(), PortError>>,
 }
+pub struct VmNotificationCommand {
+    pub(super) scope: ConnectionScope,
+    pub(super) agent_id: String,
+    pub(super) epoch: i64,
+    pub(super) sequence: u64,
+    pub(super) frame: studio_runtime_providers::Frame,
+    pub(super) reply: oneshot::Sender<Result<(), PortError>>,
+}
 #[derive(Clone)]
 pub struct RetainedSessionPort {
     pub(super) scope: ConnectionScope,
@@ -157,6 +165,56 @@ impl RetainedSessionPort {
             .await
             .map_err(|_| PortError::Deadline)?
             .map_err(|_| PortError::Identity)?
+    }
+
+    /// Commit a guest provider notification through the actor's account worker
+    /// before the guest journal cursor is acknowledged.
+    pub async fn deliver_vm_notification(
+        &self,
+        account: &str,
+        agent_id: &str,
+        epoch: i64,
+        sequence: u64,
+        frame: studio_runtime_providers::Frame,
+    ) -> Result<(), PortError> {
+        let notification = match &frame {
+            studio_runtime_providers::Frame::Notification(_) => true,
+            studio_runtime_providers::Frame::UnknownMethod(frame) => {
+                !frame.fields.contains_key("id")
+            }
+            _ => false,
+        };
+        if account != self.scope.account
+            || agent_id.is_empty()
+            || epoch < 0
+            || sequence == 0
+            || !notification
+            || !self.is_live()
+        {
+            return Err(PortError::Identity);
+        }
+        let (reply, receipt) = oneshot::channel();
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(300);
+        tokio::time::timeout_at(
+            deadline,
+            self.commands.send(AccountCommand::VmNotification(Box::new(
+                VmNotificationCommand {
+                    scope: self.scope.clone(),
+                    agent_id: agent_id.to_owned(),
+                    epoch,
+                    sequence,
+                    frame,
+                    reply,
+                },
+            ))),
+        )
+        .await
+        .map_err(|_| PortError::NotSent)?
+        .map_err(|_| PortError::NotSent)?;
+        tokio::time::timeout_at(deadline, receipt)
+            .await
+            .map_err(|_| PortError::Unknown)?
+            .map_err(|_| PortError::Unknown)?
     }
 }
 fn validate(request: &SessionRequest) -> Result<(), PortError> {

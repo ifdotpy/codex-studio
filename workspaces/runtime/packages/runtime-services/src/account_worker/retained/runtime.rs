@@ -46,6 +46,22 @@ impl Worker {
         } else {
             false
         };
+        if is_vm_actor
+            && let Some(actor) = actor_id.as_deref()
+            && !self.vm_sessions.contains_key(actor)
+            && self.resolving_vm_actors.contains(actor)
+        {
+            if self.queued_commands.len() >= COMMAND_CAPACITY {
+                let _ignored = reply.send(Err(PortError::Capacity));
+            } else {
+                self.queued_commands
+                    .push_back(AccountCommand::RetainedRequest(Box::new(RequestCommand {
+                        request,
+                        reply,
+                    })));
+            }
+            return Ok(());
+        }
         let control = if is_vm_actor {
             let Some(control) = actor_id
                 .as_deref()

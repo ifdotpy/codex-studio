@@ -163,13 +163,11 @@ pub(super) fn recover(
             }
             let written = receipt(tx, &context.operation, "written")?;
             let request = decode(written.as_ref().unwrap_or(&value["request"]))?;
-            let vm_owned = AgentRepository::get(
-                tx,
-                &AgentId::from(context.intent.agent_id.as_str()),
-            )?
-            .is_some_and(|agent| {
-                agent.extra.get("executionMode").and_then(Value::as_str) == Some("vm")
-            });
+            let vm_owned =
+                AgentRepository::get(tx, &AgentId::from(context.intent.agent_id.as_str()))?
+                    .is_some_and(|agent| {
+                        agent.extra.get("executionMode").and_then(Value::as_str) == Some("vm")
+                    });
             if vm_owned {
                 continue;
             }
@@ -231,7 +229,12 @@ pub(super) fn recover_vm_actor_requests(
     let Some(agent_record) = AgentRepository::get(&connection, &AgentId::from(agent))? else {
         return Ok(Vec::new());
     };
-    if agent_record.extra.get("executionMode").and_then(Value::as_str) != Some("vm") {
+    if agent_record
+        .extra
+        .get("executionMode")
+        .and_then(Value::as_str)
+        != Some("vm")
+    {
         return Ok(Vec::new());
     }
     let prefix = format!("account-worker:account:{account}:");
@@ -246,8 +249,8 @@ pub(super) fn recover_vm_actor_requests(
     let mut recovered = Vec::new();
     for (receipt, raw) in rows {
         let value: Value = serde_json::from_str(&raw).map_err(|_| invalid(&receipt))?;
-        let context: Pending = serde_json::from_value(value["context"].clone())
-            .map_err(|_| invalid(&receipt))?;
+        let context: Pending =
+            serde_json::from_value(value["context"].clone()).map_err(|_| invalid(&receipt))?;
         if context.intent.agent_id != agent {
             continue;
         }
@@ -979,7 +982,7 @@ fn journal_one(
     limits_observation: Option<&crate::usage_resume::LimitsObservation>,
 ) -> Result<Option<(NotificationStreamBuffer, Option<Effect>, bool)>, WorkerError> {
     let operation = format!(
-        "journal:{account}:{}:{}",
+        "journal:{journal_scope}:{}:{}",
         entry.generation.0, entry.cursor.0
     );
     let payload = match &entry.payload {

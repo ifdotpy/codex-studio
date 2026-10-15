@@ -3150,7 +3150,61 @@ async fn vm_actor_turn_uses_guest_session_and_settles_complete_turn() {
     assert_eq!(state.event_status("input").await, "delivered");
     worker.shutdown().await.unwrap();
     let guest_state = guest.state.lock().unwrap();
-    assert!(guest_state.stops.is_empty(), "worker cancellation detaches the transport");
+    assert!(
+        guest_state.stops.is_empty(),
+        "worker cancellation detaches the transport"
+    );
+}
+
+#[tokio::test]
+async fn retained_vm_notification_is_epoch_fenced_and_committed_before_delivery() {
+    let state = State::new().await;
+    let agent_id = state.agent.clone();
+    state
+        .bridge
+        .run(move |store| {
+            store.transaction(|tx| {
+                let mut record = AgentRepository::get(tx, &AgentId::from(agent_id.as_str()))?
+                    .expect("fixture agent");
+                record.extra.insert("executionMode".into(), json!("vm"));
+                AgentRepository::put(tx, &record)
+            })?;
+            Ok(())
+        })
+        .await
+        .expect("fixture becomes VM actor");
+    let peer = Peer::new();
+    let mut worker = peer.worker(state.bridge.clone()).await;
+    let session = worker.retained_session();
+    let frame = Frame::Notification(studio_runtime_providers::NotificationFrame {
+        method: Method::TurnStarted,
+        params: Some(json!({"threadId":"unmatched-thread","turnId":"unmatched-turn"})),
+        fields: Default::default(),
+    });
+    session
+        .deliver_vm_notification("default", &state.agent, state.epoch, 2, frame.clone())
+        .await
+        .expect("notification has a durable actor-scoped receipt");
+
+    let agent = state.agent.clone();
+    state
+        .bridge
+        .run(move |store| {
+            store.transaction_with(|tx| {
+                // Committed journal receipts are compacted after their checkpoint
+                // advances, so the actor-scoped durable checkpoint is the proof.
+                assert_eq!(store::checkpoint(tx, &format!("default:vm:{agent}"), 1)?, 2);
+                Ok(())
+            })
+        })
+        .await
+        .expect("durable notification state is readable");
+
+    let stale = session
+        .deliver_vm_notification("default", &state.agent, state.epoch + 1, 3, frame)
+        .await;
+    assert!(matches!(stale, Err(super::retained::PortError::Unknown)));
+    worker.shutdown().await.expect("worker shuts down");
 }
 
 #[tokio::test]

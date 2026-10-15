@@ -291,6 +291,7 @@ impl Drop for AccountLease {
 
 pub enum AccountCommand {
     RetainedRequest(Box<retained::RequestCommand>),
+    VmNotification(Box<retained::VmNotificationCommand>),
     CommittedFrame(Box<retained_frame::FrameCommand>),
     JournalBarrier(retained::BarrierCommand),
     ConnectionRecovery {
@@ -525,6 +526,7 @@ pub async fn start_account_worker_with_publication_sink(
         vm_events,
         vm_event_tx,
         vm_sessions: BTreeMap::new(),
+        resolving_vm_actors: BTreeSet::new(),
         vm_event_forwarders: Vec::new(),
         vm_request_waiters: BTreeMap::new(),
         stop: stop.subscribe(),
@@ -545,6 +547,7 @@ pub async fn start_account_worker_with_publication_sink(
             .then(|| tokio::time::Instant::now() + STREAM_CADENCE),
         streams,
         deferred: VecDeque::new(),
+        vm_notification_waiters: BTreeMap::new(),
         callbacks: BTreeMap::new(),
         managed_callback_cursors: BTreeSet::new(),
         retained_requests: retained
@@ -641,9 +644,10 @@ struct Worker {
     control: SessionControl,
     session: SessionHandle,
     events: mpsc::Receiver<SessionEvent>,
-    vm_events: mpsc::Receiver<(String, SessionEvent)>,
-    vm_event_tx: mpsc::Sender<(String, SessionEvent)>,
+    vm_events: mpsc::Receiver<(String, i64, SessionEvent)>,
+    vm_event_tx: mpsc::Sender<(String, i64, SessionEvent)>,
     vm_sessions: BTreeMap<String, ActorProviderSession>,
+    resolving_vm_actors: BTreeSet<String>,
     vm_event_forwarders: Vec<JoinHandle<()>>,
     vm_request_waiters: BTreeMap<String, tokio::sync::oneshot::Sender<RequestOutcome>>,
     stop: watch::Receiver<bool>,
@@ -656,6 +660,8 @@ struct Worker {
     streams: NotificationStreamBuffer,
     flush_at: Option<tokio::time::Instant>,
     deferred: VecDeque<(JournalEntry, Option<String>, Option<i64>)>,
+    vm_notification_waiters:
+        BTreeMap<(String, u64), tokio::sync::oneshot::Sender<Result<(), retained::PortError>>>,
     effects: VecDeque<Effect>,
     publication_sink: Arc<dyn crate::notification_runtime_effects::NotificationPostCommitSink>,
     publication_retry_at: Option<tokio::time::Instant>,
@@ -719,15 +725,16 @@ impl Worker {
                 }
             }
         }
-        for mut forwarder in self.vm_event_forwarders.drain(..) {
+        let mut forwarders = std::mem::take(&mut self.vm_event_forwarders);
+        while let Some(mut forwarder) = forwarders.pop() {
             loop {
                 tokio::select! {
                     _joined = &mut forwarder => break,
                     event = self.vm_events.recv() => match event {
-                        Some((agent_id, event)) => {
+                        Some((agent_id, actor_epoch, event)) => {
                             let closing = self.closing;
                             self.closing = false;
-                            if let Err(error) = self.event_from(event, Some(&agent_id)).await {
+                            if let Err(error) = self.event_from(event, Some(&agent_id), Some(actor_epoch)).await {
                                 vm_cleanup_error.get_or_insert(error);
                             }
                             self.closing = closing;
@@ -737,10 +744,10 @@ impl Worker {
                 }
             }
         }
-        while let Ok((agent_id, event)) = self.vm_events.try_recv() {
+        while let Ok((agent_id, actor_epoch, event)) = self.vm_events.try_recv() {
             let closing = self.closing;
             self.closing = false;
-            if let Err(error) = self.event_from(event, Some(&agent_id)).await {
+            if let Err(error) = self.event_from(event, Some(&agent_id), Some(actor_epoch)).await {
                 vm_cleanup_error.get_or_insert(error);
             }
             self.closing = closing;
@@ -822,6 +829,7 @@ impl Worker {
                 command = async { match self.queued_commands.pop_front() { Some(command) => Some(command), None => self.inbox.recv().await } }, if self.session.status.borrow().initialization == InitializationStatus::Ready => match command {
                     #[cfg(test)]
                     Some(AccountCommand::Barrier(reply)) => { let _ignored = reply.send(self.bridge.faults.journal_count.load(std::sync::atomic::Ordering::SeqCst)); },
+                    Some(AccountCommand::VmNotification(command)) => self.vm_notification(*command).await?,
                     Some(AccountCommand::CommittedFrame(command)) => self.committed_frame(*command).await?,
                     Some(AccountCommand::RetainedRequest(command)) => self.retained_request(*command).await?,
                     Some(AccountCommand::JournalBarrier(command)) => self.retained_barrier(command).await?,
@@ -893,7 +901,7 @@ impl Worker {
                 },
                 event = self.events.recv() => match event { Some(event) => self.event(event).await?, None => return Ok(()) },
                 vm_event = self.vm_events.recv() => match vm_event {
-                    Some((agent_id, event)) => self.event_from(event, Some(&agent_id)).await?,
+                    Some((agent_id, actor_epoch, event)) => self.event_from(event, Some(&agent_id), Some(actor_epoch)).await?,
                     None => return Ok(()),
                 },
                 _ = self.connection_recovery.join_next(), if !self.connection_recovery.is_empty() => {
@@ -971,6 +979,7 @@ impl Worker {
                 },
                 command = self.inbox.recv(), if !self.closing && self.queued_commands.len() < COMMAND_CAPACITY => match command {
                     Some(AccountCommand::Stop { agent_id }) => self.stop_agent(agent_id).await?,
+                    Some(AccountCommand::VmNotification(command)) => self.vm_notification(*command).await?,
                     Some(command) => self.queued_commands.push_back(command),
                     None => { self.closing = true; self.control.cancel(); }
                 },
@@ -991,10 +1000,11 @@ impl Worker {
                 result = &mut future => return result.map_err(Into::into),
                 event = self.events.recv(), if !self.closing => match event { Some(event) => self.event(event).await?, None => { self.closing=true; self.control.cancel(); } },
                 vm_event = self.vm_events.recv(), if !self.closing => match vm_event {
-                    Some((agent_id, event)) => self.event_from(event, Some(&agent_id)).await?,
+                    Some((agent_id, actor_epoch, event)) => self.event_from(event, Some(&agent_id), Some(actor_epoch)).await?,
                     None => { self.closing=true; self.control.cancel(); }
                 },
                 command = self.inbox.recv(), if !self.closing && self.queued_commands.len() < COMMAND_CAPACITY => match command {
+                    Some(AccountCommand::VmNotification(command)) => self.vm_notification(*command).await?,
                     Some(AccountCommand::RetainedRequest(command)) => Box::pin(self.retained_request(*command)).await?,
                     Some(AccountCommand::CommittedFrame(command)) => Box::pin(self.committed_frame(*command)).await?,
                     Some(AccountCommand::JournalBarrier(command)) => Box::pin(self.retained_barrier(command)).await?,
@@ -1028,11 +1038,12 @@ impl Worker {
                     None => { self.closing=true; self.control.cancel(); }
                 },
                 vm_event = self.vm_events.recv(), if !self.closing => match vm_event {
-                    Some((agent_id, event)) => self.event_from(event, Some(&agent_id)).await
+                    Some((agent_id, actor_epoch, event)) => self.event_from(event, Some(&agent_id), Some(actor_epoch)).await
                         .map_err(|_| crate::continuation::ContinuationError::Unavailable("claude-auth/worker-event"))?,
                     None => { self.closing=true; self.control.cancel(); }
                 },
                 command = self.inbox.recv(), if !self.closing && self.queued_commands.len() < COMMAND_CAPACITY => match command {
+                    Some(AccountCommand::VmNotification(command)) => self.vm_notification(*command).await.map_err(|_| crate::continuation::ContinuationError::Unavailable("claude-auth/vm-notification"))?,
                     Some(AccountCommand::RetainedRequest(command)) => self.retained_request(*command).await.map_err(|_| crate::continuation::ContinuationError::Unavailable("claude-auth/worker-request"))?,
                     Some(AccountCommand::Stop { agent_id }) => self.stop_agent(agent_id).await.map_err(|_| crate::continuation::ContinuationError::Unavailable("claude-auth/worker-stop"))?,
                     Some(command) => self.queued_commands.push_back(command),
@@ -1523,7 +1534,10 @@ impl Worker {
             let guest = self.resources.guest_rpc.clone().ok_or_else(|| {
                 WorkerError::PreparationPending("provider-session/vm-guest-unavailable".into())
             })?;
-            let resolved = self.drive(resolver.resolve(request.clone())).await?;
+            self.resolving_vm_actors.insert(request.agent_id.clone());
+            let resolved = self.drive(resolver.resolve(request.clone())).await;
+            self.resolving_vm_actors.remove(&request.agent_id);
+            let resolved = resolved?;
             let recovery_agent = request.agent_id.clone();
             let recovery_account = self.account.clone();
             let generation = self.generation.0;
@@ -1578,10 +1592,11 @@ impl Worker {
             let control = session.control.clone();
             let mut events = std::mem::replace(&mut session.events, mpsc::channel(1).1);
             let actor = request.agent_id.clone();
+            let actor_epoch = request.epoch;
             let sender = self.vm_event_tx.clone();
             let forwarder = tokio::spawn(async move {
                 while let Some(event) = events.recv().await {
-                    if sender.send((actor.clone(), event)).await.is_err() {
+                    if sender.send((actor.clone(), actor_epoch, event)).await.is_err() {
                         break;
                     }
                 }
@@ -1609,7 +1624,12 @@ impl Worker {
                 _ = Shutdown::cancelled(&mut self.stop) => return Err(WorkerError::Closed),
                 changed = status.changed() => changed.map_err(|_| WorkerError::Closed)?,
                 event = self.vm_events.recv() => match event {
-                    Some((actor, event)) => self.event_from(event, Some(&actor)).await?,
+                    Some((actor, actor_epoch, event)) => self.event_from(event, Some(&actor), Some(actor_epoch)).await?,
+                    None => return Err(WorkerError::Closed),
+                },
+                command = self.inbox.recv(), if self.queued_commands.len() < COMMAND_CAPACITY => match command {
+                    Some(AccountCommand::VmNotification(command)) => self.vm_notification(*command).await?,
+                    Some(command) => self.queued_commands.push_back(command),
                     None => return Err(WorkerError::Closed),
                 },
             }
@@ -1645,7 +1665,7 @@ impl Worker {
         {
             return Ok(());
         }
-        let control = self.control_for_actor(Some(agent_id));
+        let control = self.control_for_actor(Some(agent_id))?;
         let request_id = RequestId::String(operation.clone());
         let prepared = control
             .prepare(RequestSpec {
@@ -1669,10 +1689,15 @@ impl Worker {
                 _ = Shutdown::cancelled(&mut self.stop) => return Err(WorkerError::Closed),
                 response = &mut response => break response.map_err(|_| WorkerError::CallbackUnknown)?,
                 event = self.vm_events.recv() => match event {
-                    Some((actor, event)) => self.event_from(event, Some(&actor)).await?,
+                    Some((actor, actor_epoch, event)) => self.event_from(event, Some(&actor), Some(actor_epoch)).await?,
                     None => return Err(WorkerError::Closed),
                 },
                 event = self.events.recv() => self.event(event.ok_or(WorkerError::Closed)?).await?,
+                command = self.inbox.recv(), if self.queued_commands.len() < COMMAND_CAPACITY => match command {
+                    Some(AccountCommand::VmNotification(command)) => self.vm_notification(*command).await?,
+                    Some(command) => self.queued_commands.push_back(command),
+                    None => return Err(WorkerError::Closed),
+                },
             }
         };
         match outcome {
@@ -1771,7 +1796,7 @@ impl Worker {
                         break;
                     }
                 }
-                self.journal_batch(entries, None, None).await?;
+                self.journal_batch(entries, None, None, true).await?;
                 self.complete_retained().await?;
             } else {
                 self.event_one(event, None).await?;
@@ -1784,15 +1809,22 @@ impl Worker {
         &mut self,
         event: SessionEvent,
         actor_id: Option<&str>,
+        source_epoch: Option<i64>,
     ) -> Result<(), WorkerError> {
         let Some(actor_id) = actor_id else {
             return Ok(());
         };
-        let Some(actor_epoch) = self.vm_sessions.get(actor_id).map(|session| session.epoch) else {
+        let Some(source_epoch) = source_epoch else {
             return Ok(());
         };
+        let Some(current_epoch) = self.vm_sessions.get(actor_id).map(|session| session.epoch) else {
+            return Ok(());
+        };
+        if current_epoch != source_epoch {
+            return Ok(());
+        }
         match self
-            .event_one(event, Some(actor_id.to_owned()), Some(actor_epoch))
+            .event_one(event, Some(actor_id.to_owned()), Some(source_epoch))
             .await
         {
             Err(WorkerError::StaleVmActor) => {
@@ -1811,6 +1843,14 @@ impl Worker {
     ) -> Result<(), WorkerError> {
         let reclassify = !event.outcomes.is_empty();
         for outcome in event.outcomes {
+            if actor_id.is_some()
+                && matches!(&outcome, SessionOutcome::GenerationClosed { .. })
+            {
+                if let Some(actor) = actor_id.as_deref() {
+                    self.retire_vm_actor(actor);
+                }
+                continue;
+            }
             if let SessionOutcome::Resolved { ticket, outcome } = &outcome {
                 let operation = store::id_string(&ticket.id);
                 if let Some(waiter) = self.vm_request_waiters.remove(&operation) {
@@ -1867,7 +1907,7 @@ impl Worker {
                 self.managed_callback_cursors
                     .remove(&(callback_actor.clone(), cursor.0));
                 if !self.closing {
-                    self.control_for_actor(callback_actor.as_deref())
+                    self.control_for_actor(callback_actor.as_deref())?
                         .settled(cursor)
                         .await?;
                 }
@@ -1951,20 +1991,40 @@ impl Worker {
         }
     }
 
-    fn control_for_actor(&self, actor_id: Option<&str>) -> SessionControl {
-        actor_id
-            .and_then(|actor| self.vm_sessions.get(actor))
-            .map(|session| session.control.clone())
-            .unwrap_or_else(|| self.control.clone())
+    fn control_for_actor(&self, actor_id: Option<&str>) -> Result<SessionControl, WorkerError> {
+        match actor_id {
+            Some(actor) => self
+                .vm_sessions
+                .get(actor)
+                .map(|session| session.control.clone())
+                .ok_or(WorkerError::Closed),
+            None => Ok(self.control.clone()),
+        }
     }
-    fn control_status(&self, actor_id: Option<&str>) -> InitializationStatus {
-        actor_id
-            .and_then(|actor| self.vm_sessions.get(actor))
-            .map(|session| session.session.status.borrow().initialization)
-            .unwrap_or_else(|| self.session.status.borrow().initialization)
+    fn control_status(&self, actor_id: Option<&str>) -> Result<InitializationStatus, WorkerError> {
+        match actor_id {
+            Some(actor) => self
+                .vm_sessions
+                .get(actor)
+                .map(|session| session.session.status.borrow().initialization)
+                .ok_or(WorkerError::Closed),
+            None => Ok(self.session.status.borrow().initialization),
+        }
     }
     fn journal_scope(&self, actor_id: Option<&str>) -> String {
-        actor_id.map_or_else(|| self.account.clone(), str::to_owned)
+        actor_id.map_or_else(
+            || self.account.clone(),
+            |actor| format!("{}:vm:{actor}", self.account),
+        )
+    }
+    async fn journal_with_policy(
+        &mut self,
+        entry: JournalEntry,
+        actor_id: Option<&str>,
+        settle: bool,
+        actor_epoch: Option<i64>,
+    ) -> Result<bool, WorkerError> {
+        self.journal_batch(vec![entry], actor_id, actor_epoch, settle).await
     }
     async fn journal(
         &mut self,
@@ -1972,14 +2032,17 @@ impl Worker {
         actor_id: Option<&str>,
         actor_epoch: Option<i64>,
     ) -> Result<(), WorkerError> {
-        self.journal_batch(vec![entry], actor_id, actor_epoch).await
+        self.journal_batch(vec![entry], actor_id, actor_epoch, true)
+            .await
+            .map(|_| ())
     }
     async fn journal_batch(
         &mut self,
         entries: Vec<JournalEntry>,
         actor_id: Option<&str>,
         actor_epoch: Option<i64>,
-    ) -> Result<(), WorkerError> {
+        settle: bool,
+    ) -> Result<bool, WorkerError> {
         #[cfg(test)]
         self.bridge
             .faults
@@ -1989,7 +2052,9 @@ impl Worker {
         let journal_scope = self.journal_scope(actor_id);
         let streams = std::mem::take(&mut self.streams);
         let claude_account_pin = self.resources.claude_account_pin.clone();
-        let expected_vm_actor = actor_id.zip(actor_epoch).map(|(actor, epoch)| (actor.to_owned(), epoch));
+        let expected_vm_actor = actor_id
+            .zip(actor_epoch)
+            .map(|(actor, epoch)| (actor.to_owned(), epoch));
         let (previous, committed) = self
             .db("journal", move |store| {
                 let result = store::journal_batch(
@@ -1999,7 +2064,9 @@ impl Worker {
                     &streams,
                     entries,
                     &claude_account_pin,
-                    expected_vm_actor.as_deref().map(|(actor, epoch)| (actor.as_str(), *epoch)),
+                    expected_vm_actor
+                        .as_deref()
+                        .map(|(actor, epoch)| (actor, *epoch)),
                 );
                 Ok((streams, result))
             })
@@ -2011,6 +2078,7 @@ impl Worker {
         if self.deferred.len().saturating_add(deferred.len()) > MAX_UNSETTLED {
             return Err(WorkerError::Capacity);
         }
+        let had_deferred = !deferred.is_empty();
         self.deferred.extend(deferred.into_iter().map(|entry| {
             (entry, actor_id.map(str::to_owned), actor_epoch)
         }));
@@ -2023,6 +2091,7 @@ impl Worker {
         self.arm_flush();
         self.schedule_publication_drain();
         self.drain_publications().await?;
+        let committed_any = !committed.is_empty();
         for (_index, (entry, effect)) in committed.into_iter().enumerate() {
             #[cfg(test)]
             if self
@@ -2034,17 +2103,18 @@ impl Worker {
                 .take_if(|fail_at| *fail_at == _index)
                 .is_some()
             {
-                // The transaction has committed; simulate losing the worker before this ACK.
                 return Err(WorkerError::TaskFailed);
             }
-            self.journal_committed(entry, effect).await?;
+            self.journal_committed(entry, effect, actor_id, settle).await?;
         }
-        Ok(())
+        Ok(committed_any && !had_deferred)
     }
     async fn journal_committed(
         &mut self,
         entry: JournalEntry,
         effect: Option<Effect>,
+        actor_id: Option<&str>,
+        settle: bool,
     ) -> Result<(), WorkerError> {
         let cursor = entry.cursor;
         let completed = match &entry.payload {
@@ -2064,7 +2134,8 @@ impl Worker {
         if let Some(effect) = effect {
             self.push(effect)?;
         }
-        if let JournalPayload::Frame(Frame::Notification(notification)) = &entry.payload
+        if let JournalPayload::Frame(frame) = &entry.payload
+            && let Frame::Notification(notification) = frame
             && notification.method.as_str() == "command/exec/outputDelta"
         {
             self.bridge.monitor_dispatch_wake().notify_one();
@@ -2136,11 +2207,71 @@ impl Worker {
                 response,
                 actor_id.map(str::to_owned),
             ))?;
-        } else if !self.closing {
-            let control = self.control_for_actor(actor_id);
+        } else if settle && !self.closing {
+            let control = self.control_for_actor(actor_id)?;
             if control.settled(cursor).await.is_err() {
                 self.closing = true;
                 control.cancel();
+            }
+        }
+        if let Some(actor_id) = actor_id
+            && let Some(reply) = self
+                .vm_notification_waiters
+                .remove(&(actor_id.to_owned(), cursor.0))
+        {
+            let _sent = reply.send(Ok(()));
+        }
+        Ok(())
+    }
+    async fn vm_notification(
+        &mut self,
+        command: retained::VmNotificationCommand,
+    ) -> Result<(), WorkerError> {
+        let retained::VmNotificationCommand {
+            scope,
+            agent_id,
+            epoch,
+            sequence,
+            frame,
+            reply,
+        } = command;
+        if scope.account != self.account
+            || scope.connection != self.connection_id
+            || scope.generation != self.generation.0
+            || sequence == 0
+            || epoch < 0
+        {
+            let _sent = reply.send(Err(retained::PortError::Identity));
+            return Ok(());
+        }
+        let entry = JournalEntry {
+            received_at_ms: SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map_err(|_| WorkerError::TaskFailed)?
+                .as_millis()
+                .try_into()
+                .map_err(|_| WorkerError::TaskFailed)?,
+            cursor: studio_runtime_process::EventCursor(sequence),
+            generation: self.generation,
+            payload: JournalPayload::Frame(frame),
+        };
+        let key = (agent_id.clone(), sequence);
+        match self
+            .journal_with_policy(entry, Some(&agent_id), false, Some(epoch))
+            .await
+        {
+            Ok(true) => {
+                let _sent = reply.send(Ok(()));
+            }
+            Ok(false) => {
+                if self.vm_notification_waiters.contains_key(&key) {
+                    let _sent = reply.send(Err(retained::PortError::Capacity));
+                } else {
+                    self.vm_notification_waiters.insert(key, reply);
+                }
+            }
+            Err(_) => {
+                let _sent = reply.send(Err(retained::PortError::Unknown));
             }
         }
         Ok(())
@@ -2157,24 +2288,35 @@ impl Worker {
         frame: Frame,
         actor_id: Option<String>,
     ) -> Result<(), WorkerError> {
-        while self.control_status(actor_id.as_deref()) != InitializationStatus::Ready {
+        while self.control_status(actor_id.as_deref())? != InitializationStatus::Ready {
             tokio::select! { biased;
                 _ = Shutdown::cancelled(&mut self.stop) => { self.closing = true; return Ok(()); },
                 event = self.events.recv(), if actor_id.is_none() => { self.event(event.ok_or(WorkerError::Closed)?).await?; },
                 event = self.vm_events.recv(), if actor_id.is_some() => {
-                    match event { Some((actor, event)) => self.event_from(event, Some(&actor)).await?, None => return Err(WorkerError::Closed) }
+                    match event { Some((actor, actor_epoch, event)) => self.event_from(event, Some(&actor), Some(actor_epoch)).await?, None => return Err(WorkerError::Closed) }
+                },
+                command = self.inbox.recv(), if self.queued_commands.len() < COMMAND_CAPACITY => match command {
+                    Some(AccountCommand::VmNotification(command)) => self.vm_notification(*command).await?,
+                    Some(command) => self.queued_commands.push_back(command),
+                    None => return Err(WorkerError::Closed),
                 },
             }
         }
-        let control = self.control_for_actor(actor_id.as_deref());
+        let control = self.control_for_actor(actor_id.as_deref())?;
         let journal_scope = self.journal_scope(actor_id.as_deref());
         let operation = if actor_id.is_some() {
-            format!("callback:{journal_scope}:{}:{}", self.generation.0, cursor.0)
+            format!(
+                "callback:{journal_scope}:{}:{}",
+                self.generation.0, cursor.0
+            )
         } else {
-            format!("callback:{}:{}:{}", self.account, self.generation.0, cursor.0)
+            format!(
+                "callback:{}:{}:{}",
+                self.account, self.generation.0, cursor.0
+            )
         };
         let prepared = self
-            .control_for_actor(actor_id.as_deref())
+            .control_for_actor(actor_id.as_deref())?
             .prepare_frame(OperationId(operation.clone()), &frame)?;
         let key = operation.clone();
         let generation = self.generation.0;
@@ -2349,6 +2491,9 @@ impl Worker {
             outcomes: exit.outcomes,
         })
         .await?;
+        for (_, reply) in std::mem::take(&mut self.vm_notification_waiters) {
+            let _sent = reply.send(Err(retained::PortError::Unknown));
+        }
         self.flush().await?;
         let account = self.account.clone();
         let generation = self.generation.0;
