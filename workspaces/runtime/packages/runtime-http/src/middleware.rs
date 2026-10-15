@@ -14,7 +14,9 @@ use futures_util::FutureExt;
 use studio_runtime_services::federation_limits::FEDERATION_PATHS;
 use subtle::ConstantTimeEq;
 
-use crate::error::{ApiError, InternalErrorCause, error_response, with_api_headers};
+use crate::error::{
+    ApiError, InternalErrorCause, InternalErrorKind, error_response, with_api_headers,
+};
 use crate::http_body_limits_generated::{REQUEST_BODY_READ_TIMEOUT_SECONDS, request_limit};
 use crate::router::HttpState;
 use crate::schema::{API_SCHEMA_HASH_HEADER, API_SCHEMA_MISMATCH_HEADER, api_schema_hash};
@@ -336,7 +338,7 @@ pub(crate) async fn response_safety(
             )
         })
         .map(|template| format!("{method} {template}"))
-        .unwrap_or_else(|| format!("{method} unmatched"));
+        .unwrap_or_else(|| "unmatched route".to_owned());
     let request_id = request
         .headers()
         .get("x-studio-request-id")
@@ -360,14 +362,14 @@ pub(crate) async fn response_safety(
             &path,
         )
         .is_some();
-    let (mut response, panic_cause) = match AssertUnwindSafe(next.run(request)).catch_unwind().await
-    {
-        Ok(response) => (response, None),
-        Err(_) => (
-            error_response(StatusCode::INTERNAL_SERVER_ERROR, "Internal server error"),
-            Some("request handler panicked".to_owned()),
-        ),
-    };
+    let (mut response, fallback_cause) =
+        match AssertUnwindSafe(next.run(request)).catch_unwind().await {
+            Ok(response) => (response, None),
+            Err(_) => (
+                error_response(StatusCode::INTERNAL_SERVER_ERROR, "Internal server error"),
+                Some(InternalErrorKind::HandlerPanic),
+            ),
+        };
     if api {
         response = with_api_headers(response, response_request_id.as_ref());
     }
@@ -375,9 +377,9 @@ pub(crate) async fn response_safety(
         let cause = response
             .extensions()
             .get::<InternalErrorCause>()
-            .map(|cause| cause.0.as_str())
-            .or(panic_cause.as_deref())
-            .unwrap_or("internal cause unavailable");
+            .map(|cause| cause.0)
+            .or(fallback_cause)
+            .unwrap_or(InternalErrorKind::Unclassified);
         log_internal_error(&route, request_id.as_deref(), cause);
     }
     if etag_route
@@ -392,7 +394,11 @@ pub(crate) async fn response_safety(
         let body = match to_bytes(body, usize::MAX).await {
             Ok(body) => body,
             Err(_) => {
-                log_internal_error(&route, request_id.as_deref(), "response body read failed");
+                log_internal_error(
+                    &route,
+                    request_id.as_deref(),
+                    InternalErrorKind::ResponseBodyRead,
+                );
                 let response =
                     error_response(StatusCode::INTERNAL_SERVER_ERROR, "Internal server error");
                 return if api {
@@ -438,28 +444,18 @@ fn write_internal_error_log(
     writer: &mut impl Write,
     route: &str,
     request_id: Option<&str>,
-    cause: &str,
+    cause: InternalErrorKind,
 ) -> std::io::Result<()> {
-    let cause = cause
-        .chars()
-        .map(|character| {
-            if character.is_control() {
-                ' '
-            } else {
-                character
-            }
-        })
-        .collect::<String>();
     writeln!(
         writer,
-        "ERROR internal HTTP error route={} request_id={} cause={}",
+        "ERROR internal HTTP error route={} request_id={} class={}",
         route,
         request_id.unwrap_or("unavailable"),
-        cause
+        cause.log_class()
     )
 }
 
-fn log_internal_error(route: &str, request_id: Option<&str>, cause: &str) {
+fn log_internal_error(route: &str, request_id: Option<&str>, cause: InternalErrorKind) {
     let stderr = std::io::stderr();
     let mut stderr = stderr.lock();
     if let Err(error) = write_internal_error_log(&mut stderr, route, request_id, cause) {
@@ -490,20 +486,27 @@ mod response_safety_tests {
     }
 
     #[test]
-    fn forced_internal_error_log_includes_route_request_id_and_cause() {
+    fn logs_store_error_class_once_without_error_details() {
         let mut output = Vec::new();
+        let error = studio_runtime_store::StoreError::SchemaMismatch(
+            "password=fixture-secret api_key=fixture-token".to_owned(),
+        );
         super::write_internal_error_log(
             &mut output,
             "POST /api/agents",
             Some("request-123"),
-            "forced internal failure: nested read checkout",
+            crate::error::InternalErrorKind::from_store_error(&error),
         )
         .expect("diagnostic log writes");
         let output = String::from_utf8(output).expect("log is UTF-8");
-        assert!(output.starts_with("ERROR "));
-        assert!(output.contains("route=POST /api/agents"));
-        assert!(output.contains("request_id=request-123"));
-        assert!(output.contains("cause=forced internal failure: nested read checkout"));
+        assert_eq!(output.lines().count(), 1);
+        assert_eq!(
+            output.trim_end(),
+            "ERROR internal HTTP error route=POST /api/agents request_id=request-123 class=store_schema"
+        );
+        assert!(!output.contains("password"));
+        assert!(!output.contains("fixture-secret"));
+        assert!(!output.contains("fixture-token"));
     }
 
     fn state() -> (HttpState, tempfile::TempDir) {

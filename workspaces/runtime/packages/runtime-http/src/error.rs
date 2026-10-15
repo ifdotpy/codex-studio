@@ -14,11 +14,63 @@ pub struct ApiError {
     message: String,
     location: Option<serde_json::Value>,
     content_type: Option<&'static str>,
-    internal_cause: Option<String>,
+    internal_cause: Option<InternalErrorKind>,
 }
 
-#[derive(Clone, Debug)]
-pub(crate) struct InternalErrorCause(pub String);
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum InternalErrorKind {
+    HandlerPanic,
+    StoreConfiguration,
+    StoreData,
+    StoreDatabase,
+    StoreIo,
+    StoreOwnership,
+    StoreSchema,
+    StoreConcurrency,
+    ResponseBodyRead,
+    Unclassified,
+}
+
+impl InternalErrorKind {
+    pub(crate) fn log_class(self) -> &'static str {
+        match self {
+            Self::HandlerPanic => "handler_panic",
+            Self::StoreConfiguration => "store_configuration",
+            Self::StoreData => "store_data",
+            Self::StoreDatabase => "store_database",
+            Self::StoreIo => "store_io",
+            Self::StoreOwnership => "store_ownership",
+            Self::StoreSchema => "store_schema",
+            Self::StoreConcurrency => "store_concurrency",
+            Self::ResponseBodyRead => "response_body_read",
+            Self::Unclassified => "unclassified",
+        }
+    }
+
+    pub(crate) fn from_store_error(error: &studio_runtime_store::StoreError) -> Self {
+        use studio_runtime_store::StoreError;
+        match error {
+            StoreError::StateDirectory(_) => Self::StoreIo,
+            StoreError::AlreadyOwned => Self::StoreOwnership,
+            StoreError::MissingDatabase(_) | StoreError::UnsafeStateDirectory => {
+                Self::StoreConfiguration
+            }
+            StoreError::SchemaMismatch(_)
+            | StoreError::SchemaObjectMismatch { .. }
+            | StoreError::RecordContract(_) => Self::StoreSchema,
+            StoreError::InvalidSyncObject { .. }
+            | StoreError::InvalidStoredRecord { .. }
+            | StoreError::InvalidStoredObject { .. }
+            | StoreError::Json(_)
+            | StoreError::SchemaValidation(_) => Self::StoreData,
+            StoreError::Sqlite(_) | StoreError::CommitOutcomeUnknown(_) => Self::StoreDatabase,
+            StoreError::WriterPoisoned | StoreError::NestedRead => Self::StoreConcurrency,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct InternalErrorCause(pub InternalErrorKind);
 
 impl ApiError {
     pub fn new(status: StatusCode, message: impl Into<String>) -> Self {
@@ -37,6 +89,7 @@ impl ApiError {
             message: "Invalid request".to_owned(),
             location: Some(serde_json::Value::Array(location)),
             content_type: None,
+            internal_cause: None,
         }
     }
 
@@ -54,7 +107,7 @@ impl ApiError {
         Self::new(StatusCode::INTERNAL_SERVER_ERROR, "Internal server error")
     }
 
-    pub(crate) fn internal_with_cause(cause: impl Into<String>) -> Self {
+    pub(crate) fn internal_with_cause(cause: InternalErrorKind) -> Self {
         let mut error = Self::internal();
         error.internal_cause = Some(cause.into());
         error
@@ -71,8 +124,8 @@ impl ApiError {
 impl ApiError {
     pub(crate) fn stored(error: studio_runtime_store::StoreError) -> Self {
         use studio_runtime_store::StoreError;
-        let cause = error_chain(&error);
-        match error {
+        let cause = InternalErrorKind::from_store_error(&error);
+        let mut api_error = match error {
             StoreError::InvalidSyncObject { scope, id } => Self::new(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 format!("Invalid stored object {scope}/{id}"),
@@ -82,18 +135,10 @@ impl ApiError {
                 format!("Invalid stored object {table}/{id}"),
             ),
             _ => Self::internal_with_cause(cause),
-        }
+        };
+        api_error.internal_cause = Some(cause);
+        api_error
     }
-}
-
-fn error_chain(error: &(dyn std::error::Error + 'static)) -> String {
-    let mut parts = Vec::new();
-    let mut current = Some(error);
-    while let Some(error) = current {
-        parts.push(error.to_string());
-        current = error.source();
-    }
-    parts.join(": ")
 }
 
 impl IntoResponse for ApiError {
