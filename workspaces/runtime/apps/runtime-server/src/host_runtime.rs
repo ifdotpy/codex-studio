@@ -54,6 +54,10 @@ impl InstallRoot {
         }
     }
 
+    fn cost_scanner_build_script(&self) -> PathBuf {
+        self.server_source().join("cost-scanner/build.py")
+    }
+
     pub(crate) fn claude_bridge_dir(&self) -> PathBuf {
         let server_source = self.server_source();
         if server_source
@@ -181,7 +185,10 @@ impl HostRuntime {
         let catalog = state.model_catalog_handle();
         let resource_root = install_root.workspace_root().to_owned();
         let server_source = install_root.server_source();
-        *state = state.clone().with_vault_host_command(server_source.clone());
+        *state = state
+            .clone()
+            .with_vault_host_command(server_source.clone())
+            .with_cost_scanner_build_script(install_root.cost_scanner_build_script());
         let mut resources = studio_runtime_process::blocking_pool::spawn_blocking(
             "runtime-server/host_runtime",
             move || {
@@ -593,6 +600,10 @@ mod install_root_tests {
         let source_layout = InstallRoot(source_checkout.clone());
         assert_eq!(source_layout.server_source(), python_source);
         assert_eq!(
+            source_layout.cost_scanner_build_script(),
+            python_source.join("cost-scanner/build.py")
+        );
+        assert_eq!(
             source_layout.claude_bridge_dir(),
             source_checkout.join(CLAUDE_BRIDGE_RELATIVE)
         );
@@ -603,8 +614,14 @@ mod install_root_tests {
         let packaged_bridge = packaged_scripts.join("claude_bridge");
         fs::create_dir_all(&packaged_bridge).unwrap();
         fs::write(packaged_bridge.join("bridge.mjs"), "").unwrap();
+        fs::create_dir_all(packaged_scripts.join("cost-scanner")).unwrap();
+        fs::write(packaged_scripts.join("cost-scanner/build.py"), "").unwrap();
         let packaged_layout = InstallRoot(packaged_root);
         assert_eq!(packaged_layout.server_source(), packaged_scripts);
+        assert_eq!(
+            packaged_layout.cost_scanner_build_script(),
+            packaged_scripts.join("cost-scanner/build.py")
+        );
         assert_eq!(
             packaged_layout.claude_bridge_dir(),
             packaged_scripts.join("claude_bridge")

@@ -316,18 +316,6 @@
     {
       "closures": [
         {
-          "closes": "R5",
-          "kind": "external_or_scope",
-          "owner": "R5"
-        }
-      ],
-      "dependency": "costs/local-scanner",
-      "operation_count": 1,
-      "operations": ["GET /api/costs"]
-    },
-    {
-      "closures": [
-        {
           "closes": "origin/feat/wave7-p19-projects-radio",
           "kind": "accepted_branch",
           "owner": "P19"
@@ -570,10 +558,10 @@
     }
   ],
   "counts": {
-    "implemented": 134,
-    "named_dependencies": 41,
+    "implemented": 135,
+    "named_dependencies": 40,
     "not_registered": 0,
-    "partial": 26,
+    "partial": 25,
     "total": 160
   },
   "lifecycle_dependencies": {
@@ -630,9 +618,9 @@
       "status": "implemented"
     },
     {
-      "dependencies": ["costs/local-scanner"],
+      "dependencies": [],
       "operation": "GET /api/costs",
-      "status": "partial"
+      "status": "implemented"
     },
     {
       "dependencies": [],

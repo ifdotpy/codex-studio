@@ -15,6 +15,8 @@ import tempfile
 
 
 BUILD_FORMAT_VERSION = "1"
+PROCESS_TERMINATION_GRACE_SECONDS = 5
+SCANNER_COMPILER_TIMEOUT_SECONDS = 110
 ROOT = Path(__file__).resolve().parent
 VENDOR = ROOT / "vendor" / "CodexBarCore"
 
@@ -75,7 +77,7 @@ def stop_process_group(process):
     except ProcessLookupError:
         return
     try:
-        process.wait(timeout=5)
+        process.wait(timeout=PROCESS_TERMINATION_GRACE_SECONDS)
     except subprocess.TimeoutExpired:
         try:
             os.killpg(process.pid, signal.SIGKILL)
@@ -98,23 +100,50 @@ def compile_binary(output, files, swiftc):
         str(temporary),
         "-lsqlite3",
     ]
-    process = subprocess.Popen(
-        command,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        start_new_session=True,
-        # The host shell can export the Command Line Tools SDK. It is built
-        # by a newer Swift release on this machine than the selected Xcode
-        # compiler, so let swiftc select its matching SDK.
-        env={key: value for key, value in os.environ.items() if key != "SDKROOT"},
-    )
-    try:
-        stdout, stderr = process.communicate(timeout=110)
-    except subprocess.TimeoutExpired:
+    process = None
+    pending_termination = None
+    previous_handlers = {}
+    termination_signals = (signal.SIGTERM, signal.SIGINT, signal.SIGHUP)
+
+    def forward_termination(signum, _frame):
+        nonlocal pending_termination
+        if process is None:
+            # Record a signal received during Popen startup. Once the child
+            # exists, clean it up before exiting the helper.
+            pending_termination = signum
+            return
         stop_process_group(process)
+        raise SystemExit(128 + signum)
+
+    try:
+        for signum in termination_signals:
+            previous_handlers[signum] = signal.signal(signum, forward_termination)
+        process = subprocess.Popen(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            start_new_session=True,
+            # The host shell can export the Command Line Tools SDK. It is built
+            # by a newer Swift release on this machine than the selected Xcode
+            # compiler, so let swiftc select its matching SDK.
+            env={key: value for key, value in os.environ.items() if key != "SDKROOT"},
+        )
+        if pending_termination is not None:
+            forward_termination(pending_termination, None)
+        try:
+            stdout, stderr = process.communicate(timeout=SCANNER_COMPILER_TIMEOUT_SECONDS)
+        except subprocess.TimeoutExpired:
+            stop_process_group(process)
+            raise RuntimeError("swiftc timed out while building the local cost scanner.") from None
+    except BaseException:
+        if process is not None:
+            stop_process_group(process)
         temporary.unlink(missing_ok=True)
-        raise RuntimeError("swiftc timed out while building the local cost scanner.") from None
+        raise
+    finally:
+        for signum, handler in previous_handlers.items():
+            signal.signal(signum, handler)
     if process.returncode:
         temporary.unlink(missing_ok=True)
         detail = (stderr or stdout).strip()

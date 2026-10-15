@@ -21,6 +21,18 @@ from codex_pricing import PricingCatalog, price_usage
 from codex_claude_costs import parse_claude_usage
 
 
+# Canonical cost bounds: durations are seconds, output limit is bytes, and
+# history windows are days. The Rust and Swift consumers are parity-checked by
+# tests/costs-contract.py.
+COST_REFRESH_INTERVAL_SECONDS = 120
+CLAUDE_COST_REFRESH_INTERVAL_SECONDS = 300
+CLAUDE_COST_HISTORY_DAYS = 30
+COST_REPORT_HISTORY_DAYS = 30
+COST_SCAN_TIMEOUT_SECONDS = 900
+COST_SCANNER_BUILD_TIMEOUT_SECONDS = 120
+COST_SCAN_OUTPUT_LIMIT_BYTES = 32 * 1024 * 1024
+
+
 def amount(value):
     return (
         value
@@ -115,7 +127,7 @@ def normalize(payload):
         "sourceDay": source_day(row),
         "coverage": status,
         "unknownModels": sorted(unknown),
-        "historyDays": row.get("historyDays", 30),
+        "historyDays": row.get("historyDays", COST_REPORT_HISTORY_DAYS),
         "note": "API-rate estimate, not your ChatGPT bill. Base rates apply when the scanner cannot resolve a published context tier.",
     }
 
@@ -155,7 +167,8 @@ class CostReader:
 
     # A first scan of a large profile (25 GB of sessions) takes minutes. A kill
     # discards its progress, so a short bound never let such a profile finish.
-    def __init__(self, root, interval=120, timeout=900, clock=None, *, command, environment=None, scan_lock=None,
+    def __init__(self, root, interval=COST_REFRESH_INTERVAL_SECONDS,
+                 timeout=COST_SCAN_TIMEOUT_SECONDS, clock=None, *, command, environment=None, scan_lock=None,
                  on_change: Callable[[], None] | None = None):
         if not callable(command):
             raise ValueError("A local cost scanner command is required.")
@@ -252,7 +265,7 @@ class CostReader:
                     raise ValueError("Local cost scan timed out.") from None
                 if code:
                     raise ValueError(f"Local cost scan failed (exit {code}).")
-                if output.tell() > 32 * 1024 * 1024:
+                if output.tell() > COST_SCAN_OUTPUT_LIMIT_BYTES:
                     raise ValueError("Local cost report exceeds 32 MiB.")
                 output.seek(0)
                 data = normalize(json.load(output))
@@ -331,7 +344,7 @@ class AccountCostReader:
         builder = Path(__file__).with_name("cost-scanner") / "build.py"
         result = subprocess.run([sys.executable, str(builder), "--output", str(executable)],
                                 stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
-                                timeout=120, text=True)
+                                timeout=COST_SCANNER_BUILD_TIMEOUT_SECONDS, text=True)
         if result.returncode:
             raise ValueError("Cannot prepare the local cost scanner.")
         return [str(executable), "--home", str(home), "--cache", str(cache)]
@@ -412,7 +425,7 @@ class ClaudeCostReader:
         start_refresh = False
         with self.lock:
             now = self.clock()
-            if now - self.checked >= 300 and not self.refreshing:
+            if now - self.checked >= CLAUDE_COST_REFRESH_INTERVAL_SECONDS and not self.refreshing:
                 self.refreshing = True
                 self.checked = now
                 start_refresh = True
@@ -459,7 +472,7 @@ class ClaudeCostReader:
             priced_any = {"today": False, "month": False}
             for row in unique.values():
                 period = ("today" if row["at"] >= day_start else
-                          "month" if row["at"] >= now - 30 * 86400 else None)
+                          "month" if row["at"] >= now - CLAUDE_COST_HISTORY_DAYS * 86400 else None)
                 if not period:
                     continue
                 usage = row["usage"]

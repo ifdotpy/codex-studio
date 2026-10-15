@@ -39,7 +39,8 @@ use tokio::sync::watch;
 
 const DEFAULT_PORT: u16 = 4620;
 const SERVER_SHUTDOWN_GRACE: Duration = Duration::from_secs(20);
-const SHUTDOWN_JOIN_GRACE: Duration = Duration::from_secs(5);
+// Allow the worker and retained-service bounds to complete before process exit.
+const SHUTDOWN_JOIN_GRACE: Duration = Duration::from_secs(20);
 const EXIT_ON_STDIN_CLOSE_ENV: &str = "CODEX_AGENTS_SERVER_EXIT_ON_STDIN_CLOSE";
 
 fn main() {
@@ -497,6 +498,7 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
         eprintln!("lifecycle startup reconciliation remains pending: {error}");
     }
     let sync_changes = state.sync_changes_handle();
+    let cost_scan_cancelled = state.cost_scan_cancellation_handle();
     let vault_job_owner = VaultJobOwner::start();
     state = state.with_vault_job_client(vault_job_owner.client());
     let app = match router(state.clone()) {
@@ -623,6 +625,7 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
     #[cfg(unix)]
     let stop_runtime = runtime.shutdown_handle();
     let shutdown_monitor_task = monitor_shutdown.clone();
+    let shutdown_cost_scans = Arc::clone(&cost_scan_cancelled);
     let result = axum::serve(
         listener,
         app.into_make_service_with_connect_info::<SocketAddr>(),
@@ -630,6 +633,7 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
     .with_graceful_shutdown(async move {
         let reason = shutdown_signal().await;
         eprintln!("{}", shutdown_exit_log(reason));
+        shutdown_cost_scans.store(true, std::sync::atomic::Ordering::Release);
         if let Err(error) = shutdown_requested.send(()) {
             eprintln!("runtime server shutdown watchdog could not start: {error}");
         }

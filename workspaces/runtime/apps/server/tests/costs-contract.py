@@ -15,6 +15,9 @@ import copy
 import json
 import os
 from pathlib import Path
+import re
+import signal
+import subprocess
 import sys
 import tempfile
 import time
@@ -22,7 +25,17 @@ import unittest
 from unittest.mock import patch
 
 sys.path.insert(0, str(SERVER_SOURCE_ROOT))
-from codex_costs import CostReader, normalize
+from codex_costs import (
+    CLAUDE_COST_HISTORY_DAYS,
+    CLAUDE_COST_REFRESH_INTERVAL_SECONDS,
+    COST_REPORT_HISTORY_DAYS,
+    COST_REFRESH_INTERVAL_SECONDS,
+    COST_SCAN_OUTPUT_LIMIT_BYTES,
+    COST_SCAN_TIMEOUT_SECONDS,
+    COST_SCANNER_BUILD_TIMEOUT_SECONDS,
+    CostReader,
+    normalize,
+)
 from server_test_waits import wait_for_condition
 
 
@@ -73,6 +86,201 @@ class CostsTests(unittest.TestCase):
     def tearDown(self):
         self.reader.close()
         self.tmp.cleanup()
+
+    def test_rust_scanner_bounds_match_named_python_owners(self):
+        rust_source = (
+            REPOSITORY_ROOT
+            / "workspaces/runtime/packages/runtime-services/src/usage.rs"
+        ).read_text()
+        swift_source = (
+            SERVER_SOURCE_ROOT / "cost-scanner/main.swift"
+        ).read_text()
+        build_source = (
+            SERVER_SOURCE_ROOT / "cost-scanner/build.py"
+        ).read_text()
+        bounds = {
+            "COST_REFRESH_SECONDS": (
+                COST_REFRESH_INTERVAL_SECONDS,
+                "120.0",
+                120,
+            ),
+            "CLAUDE_COST_REFRESH_SECONDS": (
+                CLAUDE_COST_REFRESH_INTERVAL_SECONDS,
+                "300.0",
+                300,
+            ),
+            "CLAUDE_COST_HISTORY_DAYS": (
+                CLAUDE_COST_HISTORY_DAYS,
+                "30",
+                30,
+            ),
+            "COST_REPORT_HISTORY_DAYS": (
+                COST_REPORT_HISTORY_DAYS,
+                "30",
+                30,
+            ),
+            "COST_SCAN_TIMEOUT_SECONDS": (
+                COST_SCAN_TIMEOUT_SECONDS,
+                "Duration::from_secs(900)",
+                900,
+            ),
+            "COST_SCANNER_BUILD_TIMEOUT_SECONDS": (
+                COST_SCANNER_BUILD_TIMEOUT_SECONDS,
+                "Duration::from_secs(120)",
+                120,
+            ),
+            "COST_SCAN_OUTPUT_LIMIT_BYTES": (
+                COST_SCAN_OUTPUT_LIMIT_BYTES,
+                "32 * 1024 * 1024",
+                32 * 1024 * 1024,
+            ),
+            "COST_SCANNER_BUILD_STDERR_LIMIT_BYTES": (
+                None,
+                "64 * 1024",
+                64 * 1024,
+            ),
+            "COST_COMMAND_TERMINATION_GRACE_SECONDS": (
+                5,
+                "Duration::from_secs(5)",
+                5,
+            ),
+            "COST_COMMAND_TERMINATION_HEADROOM_SECONDS": (
+                None,
+                "Duration::from_secs(2)",
+                2,
+            ),
+            "COST_SCAN_LOCK_RETRY_INTERVAL_MILLISECONDS": (
+                None,
+                "50",
+                50,
+            ),
+            "COST_COMMAND_POLL_INTERVAL_MILLISECONDS": (
+                None,
+                "10",
+                10,
+            ),
+        }
+        for name, (python_value, rust_value, expected) in bounds.items():
+            match = re.search(
+                rf"const\s+{name}\s*:[^=]+?=\s*([^;]+);", rust_source
+            )
+            with self.subTest(name=name):
+                self.assertIsNotNone(match, f"Rust constant {name} is missing")
+                if python_value is not None:
+                    self.assertEqual(python_value, expected)
+                self.assertEqual(match.group(1).strip(), rust_value)
+        swift_days = re.search(
+            r"private\s+let\s+costReportHistoryDays\s*=\s*(\d+)", swift_source
+        )
+        self.assertIsNotNone(swift_days, "Swift scanner history bound is missing")
+        self.assertEqual(int(swift_days.group(1)), COST_REPORT_HISTORY_DAYS)
+        for name, expected in {
+            "PROCESS_TERMINATION_GRACE_SECONDS": 5,
+            "SCANNER_COMPILER_TIMEOUT_SECONDS": 110,
+        }.items():
+            match = re.search(rf"^{name}\s*=\s*(\d+)\s*$", build_source, re.M)
+            with self.subTest(build_bound=name):
+                self.assertIsNotNone(match, f"{name} must own its named seconds bound")
+                self.assertEqual(int(match.group(1)), expected)
+        compiler_timeout = re.search(
+            r"^SCANNER_COMPILER_TIMEOUT_SECONDS\s*=\s*(\d+)\s*$",
+            build_source,
+            re.M,
+        )
+        self.assertLess(
+            int(compiler_timeout.group(1)),
+            COST_SCANNER_BUILD_TIMEOUT_SECONDS,
+            "The scanner compiler timeout must remain inside the outer build timeout",
+        )
+
+    @unittest.skipUnless(
+        os.name == "posix", "the cost scanner helper requires POSIX signals"
+    )
+    def test_build_helper_forwards_shutdown_to_the_swiftc_session(self):
+        build_script = SERVER_SOURCE_ROOT / "cost-scanner/build.py"
+        compiler_pid_path = self.root / "compiler.pid"
+        signal_received_path = self.root / "compiler-signal-received"
+        fake_compiler = self.root / "fake-swiftc"
+        fake_compiler.write_text(
+            f"#!{sys.executable}\n"
+            "import os,pathlib,signal,sys,time\n"
+            "marker=pathlib.Path(os.environ['FAKE_COMPILER_PID'])\n"
+            "temporary=marker.with_suffix('.tmp')\n"
+            "temporary.write_text(str(os.getpid()))\n"
+            "os.replace(temporary,marker)\n"
+            "def received_signal(_signum,_frame):\n"
+            " signal_marker=pathlib.Path(os.environ['FAKE_COMPILER_SIGNAL'])\n"
+            " temporary=signal_marker.with_suffix('.tmp')\n"
+            " temporary.write_text('received')\n"
+            " os.replace(temporary,signal_marker)\n"
+            " raise SystemExit(0)\n"
+            "signal.signal(signal.SIGTERM,received_signal)\n"
+            "time.sleep(60)\n"
+        )
+        fake_compiler.chmod(0o700)
+        output = self.root / "scanner"
+        helper_code = (
+            "import importlib.util,pathlib,sys; "
+            "spec=importlib.util.spec_from_file_location('cost_scanner_build',sys.argv[1]); "
+            "module=importlib.util.module_from_spec(spec); spec.loader.exec_module(module); "
+            "module.compile_binary(pathlib.Path(sys.argv[2]),[],sys.argv[3])"
+        )
+        helper = subprocess.Popen(
+            [
+                sys.executable,
+                "-c",
+                helper_code,
+                str(build_script),
+                str(output),
+                str(fake_compiler),
+            ],
+            env={
+                **os.environ,
+                "FAKE_COMPILER_PID": str(compiler_pid_path),
+                "FAKE_COMPILER_SIGNAL": str(signal_received_path),
+            },
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        compiler_pid = None
+        compiler_reaped = False
+        try:
+            wait_for_condition(
+                lambda: compiler_pid_path.read_text().strip()
+                if compiler_pid_path.is_file()
+                and compiler_pid_path.read_text().strip().isdigit()
+                else None,
+                "fake swiftc PID publication",
+            )
+            compiler_pid = int(compiler_pid_path.read_text())
+            helper.send_signal(signal.SIGTERM)
+            self.assertEqual(helper.wait(timeout=10), 128 + signal.SIGTERM)
+            helper.communicate()
+
+            def compiler_is_gone():
+                try:
+                    os.kill(compiler_pid, 0)
+                except ProcessLookupError:
+                    return True
+                return False
+
+            wait_for_condition(compiler_is_gone, "swiftc process reaping")
+            compiler_reaped = True
+            self.assertTrue(
+                signal_received_path.is_file(),
+                "SIGTERM must reach the detached compiler before the timeout kill",
+            )
+            self.assertFalse(output.exists())
+        finally:
+            if helper.poll() is None:
+                helper.kill()
+                helper.communicate()
+            if compiler_pid is not None and not compiler_reaped:
+                try:
+                    os.kill(compiler_pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
 
     def test_estimate_is_not_bill_and_does_not_add_token_categories(self):
         row = report()
