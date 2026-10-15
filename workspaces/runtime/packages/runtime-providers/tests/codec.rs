@@ -2,7 +2,8 @@ use serde_json::{Map, Value, json};
 use studio_runtime_providers::{
     CodecError, DecodedJournalPayload, Frame, LineDecoder, MAX_FRAME_BYTES, Method,
     NotificationFrame, PendingBook, RequestFrame, RequestId, RequestState, ResponseBody,
-    decode_journal_entry, decode_journal_value, encode_line, encode_line_into,
+    decode_journal_entry, decode_journal_entry_borrowed, decode_journal_value, encode_line,
+    encode_line_into,
 };
 
 fn method(method: Method, id: Option<RequestId>, params: Option<Value>) -> Frame {

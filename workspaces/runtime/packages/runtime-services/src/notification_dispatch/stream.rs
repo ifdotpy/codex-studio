@@ -544,6 +544,7 @@ impl NotificationStreamBuffer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     #[test]
     fn staged_mutation_detaches_only_the_affected_entry() {
