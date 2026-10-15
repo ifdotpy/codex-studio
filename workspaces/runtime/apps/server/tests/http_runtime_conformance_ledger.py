@@ -1964,17 +1964,7 @@ def probe_operations(
                         "schemaHeaderMatches": None,
                         "standard501Envelope": None,
                         "dependencyResponseMatches": None,
-                        "probeCases": [{
-                            "case": "primary",
-                            "status": None,
-                            "expected": None,
-                            "expectedMatches": False,
-                            "dispatched": False,
-                            "body": None,
-                            "elapsedSeconds": 0.0,
-                            "standard501Envelope": False,
-                            "reason": exclusion,
-                        }],
+                        "probeCases": [unsafe_probe_observation(exclusion)],
                         "httpAssertions": planned,
                         "observedSuccessfulAssertions": observed,
                     })
@@ -2545,6 +2535,22 @@ def apply_probe_expectations(
 def unsafe_probe_exclusion(method: str, template: str) -> str | None:
     """Keep global-preference and reset-credit writes out of every ledger run."""
     return UNSAFE_PROBE_EXCLUSIONS.get((method, template))
+
+
+def unsafe_probe_observation(reason: str) -> dict[str, Any]:
+    """Record a named consumer-owned positive without dispatching an unsafe write."""
+    return {
+        "case": "primary",
+        "status": None,
+        "expected": None,
+        "expectedMatches": False,
+        "dispatched": False,
+        "consumerOnly": True,
+        "body": None,
+        "elapsedSeconds": 0.0,
+        "standard501Envelope": False,
+        "reason": reason,
+    }
 
 
 def persisted_probe_body(

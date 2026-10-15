@@ -841,7 +841,37 @@ Server suites: 0 passed, 1 failed, 0 skipped (opt-in), 0 skipped (environment), 
         )) + "disconnected", "disconnected")
 
     def test_reset_redemption_uses_its_fake_provider_contract(self) -> None:
-        self.assertNotIn(("POST", "/api/limits/reset"), ledger.PROBE_CASES)
+        operation = {"method": "POST", "path": "/api/limits/reset"}
+        self.assertNotIn((operation["method"], operation["path"]), ledger.PROBE_CASES)
+        reason = ledger.unsafe_probe_exclusion(operation["method"], operation["path"])
+        if reason is None:
+            self.fail("reset-credit redemption must remain undispatched by the generic probe")
+        self.assertIn("reset-credit", reason)
+        observation = ledger.unsafe_probe_observation(reason)
+        self.assertFalse(observation["dispatched"])
+        self.assertTrue(observation["consumerOnly"])
+        self.assertIsNone(observation["expected"])
+
+        without_positive = ledger.api_fixture_evidence([{
+            **operation,
+            "implementation": "implemented",
+            "classification": "unverified",
+            "probeCases": [observation],
+        }])
+        self.assertEqual(without_positive["status"], "unverified")
+
+        with_positive = ledger.api_fixture_evidence([{
+            **operation,
+            "implementation": "implemented",
+            "classification": "unverified",
+            "observedSuccessfulAssertions": [
+                "workspaces/runtime/apps/server/tests/limit-reset-http-contract.py::"
+                "__main__.ResetCreditHTTPContract.test_exact_request_replay_uses_one_fake_provider_redemption"
+            ],
+            "probeCases": [observation],
+        }])
+        self.assertEqual(with_positive["status"], "pass")
+        self.assertEqual(with_positive["positiveOperations"], 1)
 
     def test_new_partial_probes_have_success_and_named_refusal_shapes(self) -> None:
         for operation in (
