@@ -430,20 +430,6 @@ fn workspace_with_vm_action(
                 error => refusal(error.to_string()),
             })?;
         }
-<<<<<<< HEAD
-        if allow_vm_native_action {
-            let current = {
-                let read = store.read()?;
-                AgentRepository::get(&read, &AgentId::from(intent.agent_id.as_str()))?
-                    .ok_or_else(|| invalid(&intent.agent_id))?
-            };
-            if current.extra.get("layrReady").and_then(Value::as_bool) != Some(true) {
-                return Err(WorkerError::PreparationPending(
-                    "workspace-readiness/vm-guest-not-ready".into(),
-                ));
-            }
-            let host_project = current
-=======
         let ready = AgentRepository::get(&store.read()?, &AgentId::from(intent.agent_id.as_str()))?
             .ok_or_else(|| invalid(&intent.agent_id))?;
         if ready.extra.get("layrReady").and_then(Value::as_bool) != Some(true) {
@@ -455,7 +441,6 @@ fn workspace_with_vm_action(
         // the guest's cwd. Keep the project binding frozen from creation time.
         let cwd = if allow_vm_native_action {
             ready
->>>>>>> dccbc12c (Add VM guest provider turn transport)
                 .extra
                 .get("hostProjectPath")
                 .and_then(Value::as_str)
