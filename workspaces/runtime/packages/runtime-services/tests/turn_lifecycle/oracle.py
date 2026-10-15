@@ -97,8 +97,11 @@ class QuietRuntime(Runtime):
     def model_turn_context(self, db, actor, event_id):
         # Exercise the production metadata writer while keeping fixture guidance
         # out of captured provider input. The role/progress readers are stubbed
-        # above, so this cannot consult the live checkout or agent context.
-        Runtime.model_turn_context(self, db, actor, event_id)
+        # above, so this cannot consult the live checkout or agent context. The
+        # real start caller may pass a stale in-memory actor; reload the seeded
+        # fixture row so Rust and Python compile the same persisted guidance.
+        seeded_actor = self.agent(actor["id"], db)
+        Runtime.model_turn_context(self, db, seeded_actor, event_id)
         return ""
 
     def interrupt(self, agent):
