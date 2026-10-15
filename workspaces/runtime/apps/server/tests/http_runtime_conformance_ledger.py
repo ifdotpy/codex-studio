@@ -100,7 +100,7 @@ def _validate_copy_database(database: Path, name: str) -> None:
     with database.open("rb") as source:
         if source.read(16) != b"SQLite format 3\x00":
             raise ValueError(f"copy state database has an invalid SQLite header: {name}")
-    uri = "file:" + urllib.parse.quote(str(database), safe="/") + "?mode=ro"
+    uri = "file:" + urllib.parse.quote(str(database), safe="/") + "?mode=ro&immutable=1"
     try:
         with closing(sqlite3.connect(uri, uri=True)) as connection:
             if connection.execute("PRAGMA quick_check").fetchone() != ("ok",):
@@ -121,7 +121,7 @@ def _validate_copy_database(database: Path, name: str) -> None:
 
 def copied_agent_witness(root: Path) -> dict[str, str]:
     """Select a native agent already present in the copy for an HTTP read witness."""
-    uri = "file:" + urllib.parse.quote(str(root / "canvas.sqlite3"), safe="/") + "?mode=ro"
+    uri = "file:" + urllib.parse.quote(str(root / "canvas.sqlite3"), safe="/") + "?mode=ro&immutable=1"
     with closing(sqlite3.connect(uri, uri=True)) as connection:
         for identifier, raw in connection.execute(
             "SELECT id,record FROM runtime_agents ORDER BY id"
@@ -1819,7 +1819,7 @@ def probe_operations(
                         "expected": expected,
                         "expectedMatches": expected_matches,
                         "functionalWitness": functional_witness,
-                        "body": response_body,
+                        "body": persisted_probe_body(probe_case, response_body),
                         "elapsedSeconds": round(time.monotonic() - request_started, 4),
                         "standard501Envelope": standard_501,
                         "noWrite": no_write,
@@ -1904,6 +1904,13 @@ def copy_probe_disposition(observations: list[dict[str, Any]]) -> str:
     if any(case.get("functionalWitness") for case in observations):
         return "pass"
     return "unverified"
+
+
+def persisted_probe_body(probe_case: dict[str, Any], response_body: Any) -> Any:
+    """Keep copied-state witness contents out of the portable ledger report."""
+    if probe_case.get("functional_witness") == "copy-existing-agent":
+        return None
+    return response_body
 
 
 def seed_catalog_state(backend: Any, python: str) -> None:

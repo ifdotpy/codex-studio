@@ -249,6 +249,68 @@ Server suites: 0 passed, 1 failed, 0 skipped (opt-in), 0 skipped (environment), 
                 before,
             )
 
+    def test_wal_backup_validation_and_witness_do_not_create_sidecars(self) -> None:
+        with tempfile.TemporaryDirectory() as scratch:
+            root = Path(scratch) / "copy"
+            self.create_marked_copy(root)
+            source_path = Path(scratch) / "source.sqlite3"
+            with closing(sqlite3.connect(source_path)) as source:
+                source.execute("PRAGMA journal_mode=WAL")
+                source.execute(
+                    "CREATE TABLE runtime_agents(id TEXT PRIMARY KEY, record TEXT NOT NULL)"
+                )
+                source.execute(
+                    "INSERT INTO runtime_agents VALUES (?, ?)",
+                    ("wal-agent", json.dumps({"id": "wal-agent", "cwd": "/wal/copied"})),
+                )
+                source.commit()
+                with closing(sqlite3.connect(root / "canvas.sqlite3")) as copied:
+                    source.backup(copied)
+            before = {
+                path.name: path.read_bytes()
+                for path in root.iterdir()
+                if path.is_file()
+            }
+
+            self.assertEqual(ledger.validate_copy_state_root(root), root.resolve())
+            self.assertEqual(
+                ledger.copied_agent_witness(root),
+                {"id": "wal-agent", "cwd": "/wal/copied"},
+            )
+            after = {
+                path.name: path.read_bytes()
+                for path in root.iterdir()
+                if path.is_file()
+            }
+            self.assertEqual(after, before)
+            self.assertEqual({path.name for path in root.iterdir()}, set(before))
+
+    def test_copy_witness_report_redacts_copied_row_contents(self) -> None:
+        probe_case = {"functional_witness": "copy-existing-agent"}
+        response_body = {
+            "kind": "native",
+            "path": "/private/copied/project",
+            "id": "private-agent-id",
+            "record": "private-row-content",
+        }
+        observation = {
+            "functionalWitness": True,
+            "body": ledger.persisted_probe_body(probe_case, response_body),
+        }
+        report = json.dumps(observation)
+        self.assertTrue(observation["functionalWitness"])
+        self.assertIsNone(observation["body"])
+        for copied_value in (
+            "/private/copied/project",
+            "private-agent-id",
+            "private-row-content",
+        ):
+            self.assertNotIn(copied_value, report)
+
+    def test_other_probe_bodies_remain_available_for_diagnostics(self) -> None:
+        body = {"error": "Not found"}
+        self.assertEqual(ledger.persisted_probe_body({}, body), body)
+
     def test_copy_disposition_requires_an_explicit_functional_witness(self) -> None:
         status_only = [{"expected": "2xx", "expectedMatches": True, "status": 200}]
         self.assertEqual(ledger.copy_probe_disposition(status_only), "unverified")
