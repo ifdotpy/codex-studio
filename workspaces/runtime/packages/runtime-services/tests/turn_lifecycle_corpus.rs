@@ -10,6 +10,7 @@
 #[path = "support/prepared_python.rs"]
 mod prepared_python;
 use serde_json::{Value, json};
+use std::ffi::{OsStr, OsString};
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
@@ -18,6 +19,30 @@ use studio_runtime_services::scheduler::{
     claim_intent, lifecycle_transaction, recover_on_startup, settle_terminal_attempt,
 };
 use studio_runtime_store::{RuntimeStore, SchedulerRepository, TurnAttemptIdentity};
+
+const ORACLE_ENVIRONMENT_ALLOWLIST: &[&str] = &[
+    "PATH",
+    "LANG",
+    "LC_ALL",
+    "LC_CTYPE",
+    "LD_LIBRARY_PATH",
+    "DYLD_LIBRARY_PATH",
+    "SYSTEMROOT",
+    "WINDIR",
+];
+
+fn isolated_oracle_environment(
+    environment: impl IntoIterator<Item = (OsString, OsString)>,
+) -> Vec<(OsString, OsString)> {
+    environment
+        .into_iter()
+        .filter(|(name, _)| {
+            ORACLE_ENVIRONMENT_ALLOWLIST
+                .iter()
+                .any(|allowed| name == OsStr::new(allowed))
+        })
+        .collect()
+}
 
 struct Oracle {
     child: Child,
@@ -32,6 +57,11 @@ impl Oracle {
         let mut child = Command::new(python)
             .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/turn_lifecycle/oracle.py"))
             .arg(root)
+            // The oracle constructs fixture Runtime state, never the live
+            // Studio agent's prompt, skills, or provider-home configuration.
+            // Its Python bootstrap installs disposable homes before imports.
+            .env_clear()
+            .envs(isolated_oracle_environment(std::env::vars_os()))
             .env("PYTHONDONTWRITEBYTECODE", "1")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -55,6 +85,32 @@ impl Oracle {
         assert!(response.get("error").is_none(), "{}", response["error"]);
         response["result"].clone()
     }
+}
+
+#[test]
+fn oracle_environment_keeps_python_loader_path_and_strips_provider_homes() {
+    let filtered = isolated_oracle_environment([
+        ("PATH".into(), "/toolchain/bin".into()),
+        ("LD_LIBRARY_PATH".into(), "/toolchain/lib".into()),
+        ("CODEX_HOME".into(), "/live/codex".into()),
+        ("CLAUDE_CONFIG_DIR".into(), "/live/claude".into()),
+        ("OPENAI_API_KEY".into(), "secret".into()),
+    ]);
+    let filtered = filtered
+        .into_iter()
+        .collect::<std::collections::HashMap<_, _>>();
+
+    assert_eq!(
+        filtered.get(OsStr::new("PATH")),
+        Some(&OsString::from("/toolchain/bin"))
+    );
+    assert_eq!(
+        filtered.get(OsStr::new("LD_LIBRARY_PATH")),
+        Some(&OsString::from("/toolchain/lib"))
+    );
+    assert!(!filtered.contains_key(OsStr::new("CODEX_HOME")));
+    assert!(!filtered.contains_key(OsStr::new("CLAUDE_CONFIG_DIR")));
+    assert!(!filtered.contains_key(OsStr::new("OPENAI_API_KEY")));
 }
 impl Drop for Oracle {
     fn drop(&mut self) {
@@ -92,7 +148,7 @@ fn apply(store: &RuntimeStore, case: &Value) -> Result<Value, String> {
             .map_err(|e| e.to_string()),
         "submission_identity" => lifecycle_transaction(store, |tx| SchedulerRepository::mark_submitted_identity(tx,"agent",0,"attempt",case["ticket"].as_str().unwrap_or("ticket"),"default",1,"test-connection","thread").map(|v|json!(v))).map_err(|e|e.to_string()),
         "submission" | "reconcile_submission" => {
-            use studio_runtime_services::{account_worker::preparation::{prepare_turn,PreparationResources},scheduler::{TurnIntent,TurnEvent}};
+            use studio_runtime_services::{account_worker::preparation::{prepare_turn_with_connection_id,PreparationResources},scheduler::{TurnIntent,TurnEvent}};
             use studio_runtime_store::{AgentRepository,AgentId,QueueEventRepository,QueueEventId};
             let (intent,submitted)=lifecycle_transaction(store, |tx| {
                 let agent=AgentRepository::get(tx,&AgentId::from("agent"))?.expect("seed agent").value();
@@ -102,12 +158,66 @@ fn apply(store: &RuntimeStore, case: &Value) -> Result<Value, String> {
             }).map_err(|e|e.to_string())?;
             // Replays test the durable identity boundary without recompiling delivered input.
             if submitted {
-                return lifecycle_transaction(store, |tx| SchedulerRepository::mark_submitted_identity(tx,"agent",0,"attempt",case["ticket"].as_str().unwrap_or("ticket"),"default",1,"test-connection","thread").map(|v|json!(v))).map_err(|e|e.to_string());
+                return lifecycle_transaction(store, |tx| {
+                    let agent = AgentRepository::get(tx, &AgentId::from("agent"))?
+                        .expect("seed agent");
+                    let attempt = &agent.extra["startAttempt"];
+                    SchedulerRepository::mark_submitted_identity(
+                        tx,
+                        "agent",
+                        0,
+                        "attempt",
+                        case["ticket"].as_str().unwrap_or("ticket"),
+                        attempt["accountKey"].as_str().unwrap_or("default"),
+                        attempt["connectionGeneration"].as_u64().unwrap_or(0),
+                        attempt["connectionId"].as_str().unwrap_or(""),
+                        attempt["threadId"].as_str().unwrap_or("thread"),
+                    )
+                    .map(|value| json!(value))
+                })
+                .map_err(|e| e.to_string());
             }
-            let resources=PreparationResources::bundled(String::new(),studio_runtime_services::model_catalog::ModelCatalogService::new(None)).map_err(|e|e.to_string())?;
-            let prepared=prepare_turn(store,&resources,&intent,1).map_err(|e|e.to_string())?;
+            let guidance_root = tempfile::tempdir().map_err(|error| error.to_string())?;
+            for (relative, content) in [
+                ("codex-orchestrator/SKILL.md", "fixture orchestrator skill"),
+                ("codex-subagent/SKILL.md", "fixture subagent skill"),
+                ("codex-orchestrator/references/native-role.md", "fixture native role"),
+                ("codex-orchestrator/references/legacy-move-role.md", "fixture legacy role"),
+                ("codex-subagent/references/native-role.md", "fixture subagent role"),
+            ] {
+                let path = guidance_root.path().join(".agents/skills").join(relative);
+                std::fs::create_dir_all(path.parent().expect("guidance parent"))
+                    .map_err(|error| error.to_string())?;
+                std::fs::write(path, content).map_err(|error| error.to_string())?;
+            }
+            let mut resources = PreparationResources::bundled_at(
+                String::new(),
+                studio_runtime_services::model_catalog::ModelCatalogService::new(None),
+                guidance_root.path().to_path_buf(),
+                guidance_root.path().to_path_buf(),
+            )
+            .map_err(|e| e.to_string())?;
+            assert!(resources
+                .role_guidance
+                .values()
+                .all(|guidance| guidance.starts_with("fixture ")));
+            assert!(resources.skills_root.starts_with(guidance_root.path()));
+            // The request-compilation witness has no progress-file behavior;
+            // keeping this empty prevents even a generated live progress path
+            // from entering the captured provider input.
+            resources.progress_template.clear();
+            let prepared=prepare_turn_with_connection_id(store,&resources,&intent,1,"fixture-connection").map_err(|e|e.to_string())?;
             if case["transition"] == "submission" {
-                assert_eq!(prepared.native_request(),case["nativeRequest"],"{}: native method and params",case["id"]);
+                let actual = prepared.native_request();
+                let expected = &case["nativeRequest"];
+                let actual_text = actual["params"]["input"][0]["text"]
+                    .as_str()
+                    .expect("prepared input text");
+                let expected_text = expected["params"]["input"][0]["text"]
+                    .as_str()
+                    .expect("oracle input text");
+                assert_eq!(actual_text, expected_text, "{}: no live or fixture guidance is appended", case["id"]);
+                assert_eq!(actual, *expected,"{}: native method and params",case["id"]);
             }
             let submitted=prepared.commit(store,case["ticket"].as_str().unwrap_or("ticket"),1).map_err(|e|e.to_string())?;
             if submitted {

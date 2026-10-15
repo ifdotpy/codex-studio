@@ -53,6 +53,11 @@ from codex_runtime import Runtime
 import codex_runtime
 import codex_accounts
 import codex_efficiency
+import codex_vm_agents
+
+# Start-request lifecycle snapshots must not read developer-role skill or
+# progress guidance from a live Studio checkout/agent context.
+codex_vm_agents.progress_context = lambda _runtime, _agent: ""
 
 # Match the accepted turn compiler's canonical context-version encoding while
 # validating the original Python payload hashes before normalizing snapshots.
@@ -82,8 +87,17 @@ _SHAPES = {}
 
 
 class QuietRuntime(Runtime):
+    @staticmethod
+    def role_guidance(_actor):
+        return ""
+
     def schedule(self):
         pass
+
+    def model_turn_context(self, _db, _actor, _event_id):
+        # These lifecycle witnesses compare durable transaction behavior. Never
+        # consult the checkout's live role skills, prompt, or progress files.
+        return ""
 
     def interrupt(self, agent):
         self.interrupted = agent["id"]
@@ -298,7 +312,7 @@ def capture_submission(runtime, *, stop="submitted"):
     runtime.loaded.add(agent["id"])
     with patch.object(runtime, "connect", lambda *_:Provider()), \
          patch.object(runtime, "connect_agent", lambda a:Provider()), \
-         patch.object(runtime, "agent_connection", lambda a:None), \
+         patch.object(runtime, "agent_connection", lambda a:"fixture-connection"), \
          patch.object(runtime, "item", record_item), \
          patch.object(runtime, "submit_reserved", submit):
         try:
@@ -321,6 +335,28 @@ def seed(runtime, case):
         agent.update(id="agent", rootId="agent", cwd="/fixture", accountKey="default",
                      threadId="thread", model="fixture-model", epoch=0, status="queued",
                      autoWake=True, inFlight=False, turnId=None, error=None)
+        agent.pop("nativeRoleGuidance", None)
+        if case["transition"] in {"submission", "reconcile_submission"}:
+            # The Rust compiler appends mode guidance only when it has not
+            # already been delivered. Mark this fixed fixture mode as known so
+            # the captured request never embeds the live Studio session prompt.
+            mode = ("[Studio subagent concurrency, revision 0] Multi agent mode "
+                    "(subagent concurrency 32): delegate sensibly up to 32 simultaneous "
+                    "descendant turns across all providers and reviewer roles. The lead "
+                    "does not use a subagent slot. Excess worker turns queue. Do not poll "
+                    "unchanged status.")
+            version = hashlib.sha256(json.dumps(mode, ensure_ascii=False,
+                                                separators=(",", ":")).encode()).hexdigest()[:24]
+            agent["deliveredMode"] = {"epoch": ["thread", 0], "version": version}
+            agent["nativeRoleGuidance"] = "fixture role guidance"
+            role_version = hashlib.sha256(json.dumps(
+                agent["nativeRoleGuidance"], ensure_ascii=False,
+                separators=(",", ":")).encode()).hexdigest()[:24]
+            progress_version = hashlib.sha256(b'""').hexdigest()[:24]
+            agent["preparedContext"] = {
+                "epoch": ["thread", 0],
+                "versions": {"progressFile": progress_version, "roleSkill": role_version},
+            }
         runtime.put(db, "agents", agent)
         runtime.enqueue(db, agent, "user", "input", "event")
         phase = case.get("phase", "submitted")
@@ -352,6 +388,17 @@ def seed(runtime, case):
         if case.get("expectRefusal"):
             agent["corpusPrivate"] = "SECRET_STORED_SENTINEL"
         runtime.put(db, "agents", agent)
+        if case["transition"] in {"submission", "reconcile_submission"}:
+            # Runtime.put intentionally projects only Python-owned fields. Seed
+            # the lifecycle compiler's Rust-owned delivery marker directly in
+            # this Python-written fixture row, identically for both snapshots.
+            raw, = db.execute("SELECT record FROM runtime_agents WHERE id='agent'").fetchone()
+            stored = json.loads(raw)
+            stored["deliveredMode"] = agent["deliveredMode"]
+            stored["preparedContext"] = agent["preparedContext"]
+            stored["nativeRoleGuidance"] = agent["nativeRoleGuidance"]
+            db.execute("UPDATE runtime_agents SET record=? WHERE id='agent'",
+                       (json.dumps(stored, separators=(",", ":")),))
         if case.get("event"):
             for key, value in case["event"].items():
                 assert key in {"kind", "status", "text", "epoch", "error", "turn_id"}

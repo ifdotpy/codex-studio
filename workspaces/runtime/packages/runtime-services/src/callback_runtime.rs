@@ -161,6 +161,28 @@ impl CallbackRuntime {
                 "provider-session/question-answer",
             ));
         }
+        self.answer_committed(id, data, now)
+    }
+
+    /// Answer through a caller that has independently verified the exact live
+    /// account connection and generation. The callback mailbox itself has no
+    /// registry view, so its generic live-session probe is intentionally false.
+    pub fn answer_on_live_session(
+        &self,
+        id: &str,
+        data: &Value,
+        now: f64,
+        live_context: &CallbackContext,
+    ) -> Result<Value, CallbackError> {
+        if let Some(context) = callbacks::pending_native_delete_context(&self.store, id)?
+            && context != *live_context
+        {
+            return Err(CallbackError::Stale);
+        }
+        self.answer_committed(id, data, now)
+    }
+
+    fn answer_committed(&self, id: &str, data: &Value, now: f64) -> Result<Value, CallbackError> {
         match callbacks::prepare_user_answer(&self.store, id, data, now, false)? {
             Some(reply) => {
                 self.deliver(&reply)?;

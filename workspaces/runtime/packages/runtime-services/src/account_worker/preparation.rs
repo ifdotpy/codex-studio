@@ -126,6 +126,25 @@ pub fn prepare_turn(
 ) -> Result<PreparedTurn, WorkerError> {
     pipeline::prepare(store, resources, intent, Method::TurnStart, generation).map(PreparedTurn)
 }
+/// Prepare with an identity supplied by the account-session owner. This keeps
+/// transport receipts tied to the same connection the caller will submit on.
+pub fn prepare_turn_with_connection_id(
+    store: &RuntimeStore,
+    resources: &PreparationResources,
+    intent: &TurnIntent,
+    generation: u64,
+    connection_id: &str,
+) -> Result<PreparedTurn, WorkerError> {
+    pipeline::prepare_with_connection_id(
+        store,
+        resources,
+        intent,
+        Method::TurnStart,
+        generation,
+        connection_id,
+    )
+    .map(PreparedTurn)
+}
 impl PreparedTurn {
     /// Exact native method and parameters handed to SessionControl::prepare.
     pub fn native_request(&self) -> Value {
