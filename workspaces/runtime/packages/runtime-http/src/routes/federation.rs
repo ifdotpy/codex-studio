@@ -120,7 +120,14 @@ async fn signed_post(
     .await
     .map_err(|_| ApiError::new(StatusCode::BAD_REQUEST, "Invalid federation request body"))?;
     let store = state.store.ok_or_else(ApiError::internal)?;
-    federation_effects::ensure_enabled(&store).map_err(map_signed_error)?;
+    let gate_store = store.clone();
+    studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-http/routes/federation-enabled",
+        move || federation_effects::ensure_enabled(&gate_store),
+    )
+    .await
+    .map_err(|_| ApiError::internal())?
+    .map_err(map_signed_error)?;
 
     let peer_id = single_header(&parts.headers, "x-studio-federation-state")?;
     let timestamp = single_header(&parts.headers, "x-studio-federation-time")?
