@@ -293,9 +293,15 @@ class MessagesHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         cls.busy_agent_id = seed_agent(cls.backend, {
             "status": "running",
             "inFlight": True,
+            # A submitted native review resumes an existing provider thread.
+            # Without its thread identity, Rust correctly repairs preparation
+            # state asynchronously while the replay assertion is taking a
+            # snapshot, obscuring the message write's no-op behavior.
+            "threadId": "messages-contract-held-thread",
             "startAttempt": {
                 "id": "messages-contract-held-review",
                 "epoch": 0,
+                "threadId": "messages-contract-held-thread",
                 "events": [],
                 "action": "review",
                 "submitted": True,
