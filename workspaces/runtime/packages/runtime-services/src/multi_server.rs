@@ -29,7 +29,8 @@ pub fn audit(store: &RuntimeStore) -> Result<Value, MultiServerError> {
 }
 
 pub fn snapshot(store: &RuntimeStore, identity: &Value) -> Result<Value, MultiServerError> {
-    Ok(store.read_transaction(|tx| {
+    Ok(store.transaction_with(|tx| -> Result<Value, StoreError> {
+        let aliases = ensure_server_aliases(tx, identity)?;
         let clients=project_records(tx,"runtime_access_clients")?;
         let discovered=project_records(tx,"runtime_access_discovered")?;
         let invites=tx.prepare_cached("SELECT id,record FROM runtime_access_invites ORDER BY rowid DESC LIMIT 100")?
@@ -37,8 +38,6 @@ pub fn snapshot(store: &RuntimeStore, identity: &Value) -> Result<Value, MultiSe
             .map(|r| { let (id,raw)=r?; let v=parse("runtime_access_invites",&id,&raw)?; let invite_id=v.get("inviteId").and_then(Value::as_str).ok_or_else(||invalid("runtime_access_invites",&id,"inviteId"))?; let expires=v.get("expires").and_then(Value::as_i64).ok_or_else(||invalid("runtime_access_invites",&id,"expires"))?; let created=v.get("created").and_then(Value::as_i64).ok_or_else(||invalid("runtime_access_invites",&id,"created"))?; let status=v.get("status").and_then(Value::as_str).ok_or_else(||invalid("runtime_access_invites",&id,"status"))?; if !["open","used"].contains(&status){return Err(invalid("runtime_access_invites",&id,"status"));} Ok(json!({"inviteId":invite_id,"expires":expires,"created":created,"status":status})) })
             .collect::<Result<Vec<_>,StoreError>>()?;
         let auto_pair=tx.query_row("SELECT auto_pair FROM runtime_access_settings WHERE id=1",[],|r|r.get::<_,i64>(0)).optional()?.unwrap_or(1)!=0;
-        let local_alias=tx.query_row("SELECT alias FROM runtime_access_local_alias WHERE id=1",[],|r|r.get::<_,String>(0)).optional()?.unwrap_or_else(||"LOC".to_owned());
-        let aliases = server_aliases(identity, &clients, &local_alias);
         let mut servers=clients.iter().filter(|v|v.get("kind").and_then(Value::as_str)==Some("server")).cloned().collect::<Vec<_>>();
         for peer in discovered {if !servers.iter().any(|saved|saved.get("id")==peer.get("id")){servers.push(peer);}}
 
@@ -97,31 +96,11 @@ pub fn manage(
                         return Err(MultiServerError::Conflict("request ID has different content".into()));
                     }
                 } else {
-                    let selected_peer = if local {
-                        None
-                    } else {
-                        Some(
-                            stored(tx, "runtime_access_clients", &server)?
-                                .filter(|peer| peer.get("kind").and_then(Value::as_str) == Some("server"))
-                                .ok_or_else(|| MultiServerError::Refused("server does not exist".into()))?,
-                        )
-                    };
-                    let mut peers = Vec::new();
-                    let mut statement = tx.prepare_cached(
-                        "SELECT id,record FROM runtime_access_clients WHERE json_extract(record,'$.kind')='server'",
-                    )?;
-                    for row in statement.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))? {
-                        let (id, raw) = row?;
-                        let peer = parse("runtime_access_clients", &id, &raw)?;
-                        peers.push(peer);
-                    }
-                    let local_alias = tx.query_row(
-                        "SELECT alias FROM runtime_access_local_alias WHERE id=1",
-                        [],
-                        |row| row.get::<_, String>(0),
-                    ).optional()?.unwrap_or_else(|| "LOC".to_owned());
-                    let aliases = server_aliases(identity, &peers, &local_alias);
+                    let aliases = ensure_server_aliases(tx, identity)?;
                     let local_id = identity["serverId"].as_str().unwrap_or_default();
+                    if !local && !aliases.contains_key(&server) {
+                        return Err(MultiServerError::Refused("server does not exist".into()));
+                    }
                     let collision = aliases.iter().any(|(id, existing)| {
                         existing == &alias && id != target && !(local && id == local_id)
                     });
@@ -131,7 +110,8 @@ pub fn manage(
                     if local {
                         tx.execute("INSERT INTO runtime_access_local_alias VALUES(1,?) ON CONFLICT(id) DO UPDATE SET alias=excluded.alias", [&alias])?;
                     } else {
-                        let mut peer = selected_peer.ok_or_else(|| MultiServerError::Refused("server does not exist".into()))?;
+                        let mut peer = stored(tx, "runtime_access_clients", &server)?
+                            .ok_or_else(|| MultiServerError::Refused("server does not exist".into()))?;
                         peer["alias"] = json!(alias);
                         tx.execute("UPDATE runtime_access_clients SET record=?1 WHERE id=?2", rusqlite::params![peer.to_string(), server])?;
                     }
@@ -365,11 +345,19 @@ fn project_records(tx: &rusqlite::Transaction<'_>, table: &str) -> Result<Vec<Va
     })
     .collect()
 }
-fn server_aliases(
+fn ensure_server_aliases(
+    tx: &rusqlite::Transaction<'_>,
     identity: &Value,
-    clients: &[Value],
-    local_alias: &str,
-) -> BTreeMap<String, String> {
+) -> Result<BTreeMap<String, String>, StoreError> {
+    let local_alias = tx
+        .query_row(
+            "SELECT alias FROM runtime_access_local_alias WHERE id=1",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?
+        .unwrap_or_else(|| "LOC".to_owned());
+    let mut clients = project_records(tx, "runtime_access_clients")?;
     let mut aliases = BTreeMap::from([
         ("local".to_owned(), local_alias.to_owned()),
         (
@@ -386,21 +374,27 @@ fn server_aliases(
             used.insert(alias.to_owned());
         }
     }
-    for client in clients
-        .iter()
-        .filter(|client| client.get("kind").and_then(Value::as_str) == Some("server"))
-    {
-        let Some(id) = client.get("id").and_then(Value::as_str) else {
+    for client in &mut clients {
+        if client.get("kind").and_then(Value::as_str) != Some("server") {
+            continue;
+        }
+        let Some(id) = client.get("id").and_then(Value::as_str).map(str::to_owned) else {
             continue;
         };
-        let alias = client
-            .get("alias")
-            .and_then(Value::as_str)
-            .map(str::to_owned)
-            .unwrap_or_else(|| default_server_alias(client, &mut used));
-        aliases.insert(id.to_owned(), alias);
+        let alias = if let Some(alias) = client.get("alias").and_then(Value::as_str) {
+            alias.to_owned()
+        } else {
+            let alias = default_server_alias(client, &mut used);
+            client["alias"] = json!(alias);
+            tx.execute(
+                "UPDATE runtime_access_clients SET record=?1 WHERE id=?2",
+                rusqlite::params![client.to_string(), id],
+            )?;
+            alias
+        };
+        aliases.insert(id, alias);
     }
-    aliases
+    Ok(aliases)
 }
 
 fn default_server_alias(server: &Value, used: &mut BTreeSet<String>) -> String {
@@ -669,5 +663,57 @@ mod tests {
             })
             .expect("alias audit count reads");
         assert_eq!(audit_count, 1);
+    }
+
+    #[test]
+    fn default_peer_alias_is_persisted_before_a_lexically_earlier_peer_arrives() {
+        let root = tempfile::tempdir().expect("isolated multi-server state");
+        let store = RuntimeStore::open(Some(root.path())).expect("runtime store opens");
+        let identity = crate::federation_credentials::Credentials::default()
+            .identity(&store, Some("https://local.example.ts.net"))
+            .expect("fixture identity is created");
+        store
+            .transaction(|tx| {
+                tx.execute(
+                    "INSERT INTO runtime_access_clients(id,record) VALUES(?1,?2)",
+                    rusqlite::params![
+                        "peer-b",
+                        json!({"id":"peer-b","clientId":"peer-b","kind":"server","status":"paired","label":"Bob","created":1,"publicKey":"peer-key-b","origin":"https://bob.example.ts.net"}).to_string(),
+                    ],
+                )?;
+                Ok(())
+            })
+            .expect("first paired peer inserts");
+
+        let first = super::snapshot(&store, &identity).expect("snapshot seeds peer alias");
+        assert_eq!(first["settings"]["aliases"]["peer-b"], "BOB");
+        let saved: String = store
+            .read_transaction(|tx| {
+                tx.query_row(
+                    "SELECT json_extract(record,'$.alias') FROM runtime_access_clients WHERE id='peer-b'",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(studio_runtime_store::StoreError::from)
+            })
+            .expect("default alias is durably saved");
+        assert_eq!(saved, "BOB");
+
+        store
+            .transaction(|tx| {
+                tx.execute(
+                    "INSERT INTO runtime_access_clients(id,record) VALUES(?1,?2)",
+                    rusqlite::params![
+                        "peer-a",
+                        json!({"id":"peer-a","clientId":"peer-a","kind":"server","status":"paired","label":"Bob earlier","created":1,"publicKey":"peer-key-a","origin":"https://bob.example.ts.net"}).to_string(),
+                    ],
+                )?;
+                Ok(())
+            })
+            .expect("lexically earlier peer inserts");
+
+        let later = super::snapshot(&store, &identity).expect("snapshot preserves saved aliases");
+        assert_eq!(later["settings"]["aliases"]["peer-b"], "BOB");
+        assert_eq!(later["settings"]["aliases"]["peer-a"], "AAA");
     }
 }
