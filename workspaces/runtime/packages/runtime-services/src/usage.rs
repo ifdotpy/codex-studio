@@ -34,6 +34,8 @@ const COST_SCAN_LOCK_RETRY_INTERVAL_MILLISECONDS: u64 = 50;
 const COST_COMMAND_POLL_INTERVAL_MILLISECONDS: u64 = 10;
 // Keep helper shutdown aligned with cost-scanner/build.py's compiler cleanup grace.
 const COST_COMMAND_TERMINATION_GRACE_SECONDS: Duration = Duration::from_secs(5);
+// Rust-only scheduling headroom after the helper's bounded compiler cleanup.
+const COST_COMMAND_TERMINATION_HEADROOM_SECONDS: Duration = Duration::from_secs(2);
 static COST_REFRESH_ATTEMPTS: LazyLock<Mutex<BTreeMap<String, tokio::time::Instant>>> =
     LazyLock::new(|| Mutex::new(BTreeMap::new()));
 static CODEX_SCAN_LOCK: Mutex<()> = Mutex::new(());
@@ -906,6 +908,7 @@ fn terminate_cost_child(child: &mut dyn ChildWrapper) -> Result<(), UsageError> 
         if nix::sys::signal::killpg(process_group, nix::sys::signal::Signal::SIGTERM).is_ok() {
             let deadline = Instant::now()
                 + COST_COMMAND_TERMINATION_GRACE_SECONDS
+                + COST_COMMAND_TERMINATION_HEADROOM_SECONDS
                 + Duration::from_millis(COST_COMMAND_POLL_INTERVAL_MILLISECONDS);
             while Instant::now() < deadline {
                 match child.try_wait() {

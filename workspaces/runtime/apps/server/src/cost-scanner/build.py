@@ -101,32 +101,36 @@ def compile_binary(output, files, swiftc):
         "-lsqlite3",
     ]
     process = None
+    pending_termination = None
     previous_handlers = {}
     termination_signals = (signal.SIGTERM, signal.SIGINT, signal.SIGHUP)
 
     def forward_termination(signum, _frame):
-        if process is not None:
-            stop_process_group(process)
+        nonlocal pending_termination
+        if process is None:
+            # Record a signal received during Popen startup. Once the child
+            # exists, clean it up before exiting the helper.
+            pending_termination = signum
+            return
+        stop_process_group(process)
         raise SystemExit(128 + signum)
 
     try:
-        previous_mask = signal.pthread_sigmask(signal.SIG_BLOCK, termination_signals)
-        try:
-            for signum in termination_signals:
-                previous_handlers[signum] = signal.signal(signum, forward_termination)
-            process = subprocess.Popen(
-                command,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                start_new_session=True,
-                # The host shell can export the Command Line Tools SDK. It is built
-                # by a newer Swift release on this machine than the selected Xcode
-                # compiler, so let swiftc select its matching SDK.
-                env={key: value for key, value in os.environ.items() if key != "SDKROOT"},
-            )
-        finally:
-            signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask)
+        for signum in termination_signals:
+            previous_handlers[signum] = signal.signal(signum, forward_termination)
+        process = subprocess.Popen(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            start_new_session=True,
+            # The host shell can export the Command Line Tools SDK. It is built
+            # by a newer Swift release on this machine than the selected Xcode
+            # compiler, so let swiftc select its matching SDK.
+            env={key: value for key, value in os.environ.items() if key != "SDKROOT"},
+        )
+        if pending_termination is not None:
+            forward_termination(pending_termination, None)
         try:
             stdout, stderr = process.communicate(timeout=SCANNER_COMPILER_TIMEOUT_SECONDS)
         except subprocess.TimeoutExpired:

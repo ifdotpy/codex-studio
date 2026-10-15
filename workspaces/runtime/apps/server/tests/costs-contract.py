@@ -144,6 +144,11 @@ class CostsTests(unittest.TestCase):
                 "Duration::from_secs(5)",
                 5,
             ),
+            "COST_COMMAND_TERMINATION_HEADROOM_SECONDS": (
+                None,
+                "Duration::from_secs(2)",
+                2,
+            ),
             "COST_SCAN_LOCK_RETRY_INTERVAL_MILLISECONDS": (
                 None,
                 "50",
@@ -194,14 +199,22 @@ class CostsTests(unittest.TestCase):
     def test_build_helper_forwards_shutdown_to_the_swiftc_session(self):
         build_script = SERVER_SOURCE_ROOT / "cost-scanner/build.py"
         compiler_pid_path = self.root / "compiler.pid"
+        signal_received_path = self.root / "compiler-signal-received"
         fake_compiler = self.root / "fake-swiftc"
         fake_compiler.write_text(
             f"#!{sys.executable}\n"
-            "import os,pathlib,sys,time\n"
+            "import os,pathlib,signal,sys,time\n"
             "marker=pathlib.Path(os.environ['FAKE_COMPILER_PID'])\n"
             "temporary=marker.with_suffix('.tmp')\n"
             "temporary.write_text(str(os.getpid()))\n"
             "os.replace(temporary,marker)\n"
+            "def received_signal(_signum,_frame):\n"
+            " signal_marker=pathlib.Path(os.environ['FAKE_COMPILER_SIGNAL'])\n"
+            " temporary=signal_marker.with_suffix('.tmp')\n"
+            " temporary.write_text('received')\n"
+            " os.replace(temporary,signal_marker)\n"
+            " raise SystemExit(0)\n"
+            "signal.signal(signal.SIGTERM,received_signal)\n"
             "time.sleep(60)\n"
         )
         fake_compiler.chmod(0o700)
@@ -221,7 +234,11 @@ class CostsTests(unittest.TestCase):
                 str(output),
                 str(fake_compiler),
             ],
-            env={**os.environ, "FAKE_COMPILER_PID": str(compiler_pid_path)},
+            env={
+                **os.environ,
+                "FAKE_COMPILER_PID": str(compiler_pid_path),
+                "FAKE_COMPILER_SIGNAL": str(signal_received_path),
+            },
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
@@ -250,6 +267,10 @@ class CostsTests(unittest.TestCase):
 
             wait_for_condition(compiler_is_gone, "swiftc process reaping")
             compiler_reaped = True
+            self.assertTrue(
+                signal_received_path.is_file(),
+                "SIGTERM must reach the detached compiler before the timeout kill",
+            )
             self.assertFalse(output.exists())
         finally:
             if helper.poll() is None:
