@@ -19,7 +19,7 @@ mod provider_ports;
 mod runtime_shutdown;
 use std::collections::BTreeMap;
 use std::env;
-use std::fs::File;
+use std::fs::{self, File};
 use std::future::Future;
 use std::io::Read;
 use std::net::SocketAddr;
@@ -79,6 +79,33 @@ fn main() {
         std::process::exit(1);
     }
     std::process::exit(0);
+}
+
+fn clear_owned_canvas_pid(state_dir: &Path, pid: u32) -> std::io::Result<bool> {
+    let path = state_dir.join("canvas.pid");
+    let contents = match fs::read_to_string(&path) {
+        Ok(contents) => contents,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error),
+    };
+    if contents.trim().parse::<u32>().ok() != Some(pid) {
+        return Ok(false);
+    }
+    fs::remove_file(path)?;
+    Ok(true)
+}
+
+struct CanvasPidCleanup {
+    state_dir: PathBuf,
+    pid: u32,
+}
+
+impl Drop for CanvasPidCleanup {
+    fn drop(&mut self) {
+        if let Err(error) = clear_owned_canvas_pid(&self.state_dir, self.pid) {
+            eprintln!("runtime server could not clear its canvas.pid: {error}");
+        }
+    }
 }
 
 fn start_shutdown_watchdog() -> std::io::Result<(Sender<()>, Sender<()>)> {
@@ -185,6 +212,12 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
     let token = data_encoding::HEXLOWER.encode(&token);
     let configured_state_dir = env::var_os("CODEX_AGENTS_STATE_DIR").map(PathBuf::from);
     let store = Arc::new(RuntimeStore::open(configured_state_dir.as_deref())?);
+    // This guard drops before `store`, so the runtime lock remains held while
+    // the PID file is checked and removed on every post-open exit path.
+    let _canvas_pid_cleanup = CanvasPidCleanup {
+        state_dir: store.root().to_path_buf(),
+        pid: std::process::id(),
+    };
     studio_runtime_services::diagnostics::mark_startup_memory(
         studio_runtime_services::diagnostics::StartupMemoryMark::StoreOpened,
     );
@@ -1214,5 +1247,28 @@ mod exit_logging_tests {
             ContinuationWait::Shutdown
         );
         drop(shutdown_tx2);
+    }
+}
+
+#[cfg(test)]
+mod canvas_pid_tests {
+    use super::clear_owned_canvas_pid;
+    use std::fs;
+
+    #[test]
+    fn shutdown_removes_only_the_pid_owned_by_this_process() {
+        let state = tempfile::tempdir().expect("isolated state directory");
+        let pid_file = state.path().join("canvas.pid");
+
+        fs::write(&pid_file, "1234\n").expect("foreign PID fixture written");
+        assert!(!clear_owned_canvas_pid(state.path(), 5678).expect("cleanup succeeds"));
+        assert_eq!(
+            fs::read_to_string(&pid_file).expect("foreign PID remains"),
+            "1234\n"
+        );
+
+        fs::write(&pid_file, "5678\n").expect("owned PID fixture written");
+        assert!(clear_owned_canvas_pid(state.path(), 5678).expect("owned PID removed"));
+        assert!(!pid_file.exists());
     }
 }

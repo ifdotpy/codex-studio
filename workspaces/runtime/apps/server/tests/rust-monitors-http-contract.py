@@ -209,32 +209,50 @@ class MonitorsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
                 self.assertEqual(malformed.status, 416)
 
     @unittest.skipUnless(os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"), "Rust backend only")
-    def test_monitor_log_refuses_invalid_file_and_deleted_agent(self) -> None:
+    def test_monitor_log_refuses_invalid_file(self) -> None:
         backend = self.backend
         with sqlite3.connect(backend.state / "canvas.sqlite3") as database:
             database.execute(
                 "UPDATE runtime_monitors SET record=json_set(record,'$.log',?) WHERE id=?",
                 (str(backend.state / "monitor-logs"), "contract-monitor"),
             )
-        invalid = backend.request("GET", "/api/monitor/log?id=contract-monitor", headers=self.headers())
-        self.assertEqual(invalid.status, 500)
-        self.assertIn("monitors/contract-monitor", invalid.json()["error"])
-        with sqlite3.connect(backend.state / "canvas.sqlite3") as database:
-            database.execute(
-                "UPDATE runtime_monitors SET record=json_set(record,'$.log',?) WHERE id=?",
-                (str(backend.state / "monitor-logs" / "contract-monitor.log"), "contract-monitor"),
+        try:
+            invalid = backend.request(
+                "GET", "/api/monitor/log?id=contract-monitor", headers=self.headers()
             )
+            self.assertEqual(invalid.status, 503, invalid.body[:1000])
+            self.assertEqual(
+                invalid.json(), {"error": "Stored monitor data is unavailable"}
+            )
+        finally:
+            with sqlite3.connect(backend.state / "canvas.sqlite3") as database:
+                database.execute(
+                    "UPDATE runtime_monitors SET record=json_set(record,'$.log',?) WHERE id=?",
+                    (
+                        str(backend.state / "monitor-logs" / "contract-monitor.log"),
+                        "contract-monitor",
+                    ),
+                )
+
+    def test_monitor_log_deleted_agent_matches_python_bad_request(self) -> None:
+        backend = self.backend
+        with sqlite3.connect(backend.state / "canvas.sqlite3") as database:
             database.execute(
                 "UPDATE runtime_agents SET record=json_set(record,'$.deletedAt',1) WHERE id=?",
                 ("monitor-contract-agent",),
             )
-        deleted = backend.request("GET", "/api/monitor/log?id=contract-monitor", headers=self.headers())
-        self.assertEqual(deleted.status, 400)
-        with sqlite3.connect(backend.state / "canvas.sqlite3") as database:
-            database.execute(
-                "UPDATE runtime_agents SET record=json_set(record,'$.deletedAt',NULL) WHERE id=?",
-                ("monitor-contract-agent",),
+        try:
+            deleted = backend.request(
+                "GET", "/api/monitor/log?id=contract-monitor", headers=self.headers()
             )
+            self.assertEqual(deleted.status, 400, deleted.body[:1000])
+            self.assertEqual(deleted.json()["error"], "This agent was deleted")
+        finally:
+            with sqlite3.connect(backend.state / "canvas.sqlite3") as database:
+                database.execute(
+                    "UPDATE runtime_agents SET record=json_set(record,'$.deletedAt',NULL) WHERE id=?",
+                    ("monitor-contract-agent",),
+                )
 
     def test_rule_save_pause_resume_delete_are_persisted(self) -> None:
         backend = self.backend
@@ -393,24 +411,6 @@ class MonitorsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             "action": "delete", "id": "flight-no-monitor", "agent": "monitor-contract-agent",
         })
         self.assertEqual(deleted.status, 200, deleted.body[:1000])
-
-    def test_rule_failure_rolls_back_runtime_and_sync_entity(self) -> None:
-        backend = self.backend
-        with sqlite3.connect(backend.state / "canvas.sqlite3") as database:
-            database.execute("CREATE TRIGGER fail_rule_insert BEFORE INSERT ON runtime_rules BEGIN SELECT RAISE(ABORT,'injected'); END")
-        response = None
-        try:
-            response = backend.request("POST", "/api/rules", headers=self.headers(), body={
-            "action": "save", "id": "rollback-rule", "agent": "monitor-contract-agent", "name": "Rollback",
-            })
-            expected_status = 500 if os.environ.get("STUDIO_HTTP_BACKEND_COMMAND") else 400
-            self.assertEqual(response.status, expected_status, response.body[:1000])
-            with sqlite3.connect(backend.state / "canvas.sqlite3") as database:
-                self.assertIsNone(database.execute("SELECT 1 FROM runtime_rules WHERE id='rollback-rule'").fetchone())
-                self.assertIsNone(database.execute("SELECT 1 FROM sync_entities WHERE collection='rule' AND id='rollback-rule'").fetchone())
-        finally:
-            with sqlite3.connect(backend.state / "canvas.sqlite3") as database:
-                database.execute("DROP TRIGGER IF EXISTS fail_rule_insert")
 
     def test_active_rule_check_is_cancelled_when_rule_is_paused(self) -> None:
         backend = self.backend

@@ -15,6 +15,7 @@ use crate::error::ApiError;
 use crate::router::HttpState;
 use studio_runtime_store::{AgentId, AgentRepository, MonitorsRepository, StoreError};
 
+const INVALID_STORED_MONITOR_MESSAGE: &str = "Stored monitor data is unavailable";
 const LOG_CHUNK_BYTES: u64 = 65_536;
 
 pub(crate) fn routes() -> RouteGroup {
@@ -50,12 +51,11 @@ async fn log(
             let monitor = MonitorsRepository::get(&connection, &id)
                 .map_err(store_read_error)?
                 .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "Unknown monitor"))?;
-            let monitor_id = monitor.id().as_ref();
             let value = monitor.value();
             let owner = value
                 .get("agent")
                 .and_then(Value::as_str)
-                .ok_or_else(|| invalid_monitor(monitor_id))?;
+                .ok_or_else(invalid_monitor)?;
             let agent = AgentRepository::get(&connection, &AgentId::from(owner))
                 .map_err(store_read_error)?
                 .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "Unknown agent"))?;
@@ -72,18 +72,18 @@ async fn log(
             let path = value
                 .get("log")
                 .and_then(Value::as_str)
-                .ok_or_else(|| invalid_monitor(monitor_id))?;
+                .ok_or_else(invalid_monitor)?;
             let tail = value
                 .get("tail")
                 .and_then(Value::as_str)
-                .ok_or_else(|| invalid_monitor(monitor_id))?
+                .ok_or_else(invalid_monitor)?
                 .as_bytes()
                 .to_vec();
             let bytes = value
                 .get("bytes")
                 .and_then(Value::as_u64)
-                .ok_or_else(|| invalid_monitor(monitor_id))?;
-            let (mut source, size) = open_log(&state_dir, path, monitor_id, tail)?;
+                .ok_or_else(invalid_monitor)?;
+            let (mut source, size) = open_log(&state_dir, path, tail)?;
             let truncated = bytes > size;
             let (start, end, status) = match range.as_deref() {
                 Some(range) => match byte_range(range, size) {
@@ -214,7 +214,6 @@ impl Prepared {
 fn open_log(
     state_dir: &str,
     stored: &str,
-    id: &str,
     fallback: Vec<u8>,
 ) -> Result<(LogSource, u64), ApiError> {
     let root = fs::canonicalize(state_dir)
@@ -222,14 +221,14 @@ fn open_log(
         .join("monitor-logs");
     let path = Path::new(stored);
     if path.parent() != Some(root.as_path()) {
-        return Err(invalid_monitor(id));
+        return Err(invalid_monitor());
     }
     match fs::symlink_metadata(&root) {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             return Ok((LogSource::Bytes(fallback.clone()), fallback.len() as u64));
         }
         Ok(metadata) if metadata.file_type().is_dir() => (),
-        _ => return Err(invalid_monitor(id)),
+        _ => return Err(invalid_monitor()),
     }
     match fs::symlink_metadata(path) {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -244,11 +243,11 @@ fn open_log(
                     .and_then(|path| path.parent().map(PathBuf::from))
                     != Some(root)
             {
-                return Err(invalid_monitor(id));
+                return Err(invalid_monitor());
             }
             Ok((LogSource::File(file), opened.len()))
         }
-        _ => Err(invalid_monitor(id)),
+        _ => Err(invalid_monitor()),
     }
 }
 
@@ -278,29 +277,44 @@ fn byte_range(value: &str, size: u64) -> Option<(u64, u64)> {
     Some((*range.start(), range.end().checked_add(1)?))
 }
 
-fn invalid_monitor(id: &str) -> ApiError {
+fn invalid_monitor() -> ApiError {
     ApiError::new(
-        StatusCode::INTERNAL_SERVER_ERROR,
-        format!("Invalid stored object monitors/{id}"),
+        StatusCode::SERVICE_UNAVAILABLE,
+        INVALID_STORED_MONITOR_MESSAGE,
     )
 }
 
 fn store_read_error(error: StoreError) -> ApiError {
     match error {
-        StoreError::InvalidStoredObject { table, id } => {
-            let object = table.strip_prefix("runtime_").unwrap_or(table);
-            ApiError::new(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Invalid stored object {object}/{id}"),
-            )
-        }
+        StoreError::InvalidStoredObject { .. } => invalid_monitor(),
         _ => ApiError::internal(),
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::byte_range;
+    use super::{INVALID_STORED_MONITOR_MESSAGE, byte_range, invalid_monitor, store_read_error};
+    use axum::http::StatusCode;
+    use axum::response::IntoResponse;
+    use studio_runtime_store::StoreError;
+
+    #[test]
+    fn invalid_stored_monitor_data_is_redacted_and_service_unavailable() {
+        let invalid_record = invalid_monitor().into_response();
+        let invalid_row = store_read_error(StoreError::InvalidStoredObject {
+            table: "runtime_monitors",
+            id: "private-monitor-id".into(),
+        })
+        .into_response();
+
+        for response in [invalid_record, invalid_row] {
+            assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        }
+        assert_eq!(
+            INVALID_STORED_MONITOR_MESSAGE,
+            "Stored monitor data is unavailable"
+        );
+    }
 
     #[test]
     fn byte_ranges_cover_open_suffix_and_parser_edge_cases() {

@@ -1,6 +1,7 @@
 use axum::Json;
 use axum::extract::State;
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 
 use crate::router::HttpState;
 
@@ -18,16 +19,47 @@ pub(crate) async fn get(State(state): State<HttpState>) -> Json<Value> {
     Json(status(&state))
 }
 
-fn status(state: &HttpState) -> Value {
-    let backend_build = std::env::var("CODEX_BACKEND_BUILD")
-        .ok()
-        .filter(|value| {
-            value.len() == 64
-                && value
-                    .bytes()
-                    .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+fn backend_build_from(launcher_value: Option<&str>, executable: &[u8]) -> String {
+    if let Some(value) = launcher_value.filter(|value| is_sha256_hex(value)) {
+        return value.to_owned();
+    }
+    sha256_hex(executable)
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    data_encoding::HEXLOWER.encode(&Sha256::digest(bytes))
+}
+
+fn is_sha256_hex(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+}
+
+fn backend_build() -> String {
+    static BACKEND_BUILD: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    BACKEND_BUILD
+        .get_or_init(|| {
+            let launcher_value = std::env::var("CODEX_BACKEND_BUILD").ok();
+            if let Some(value) = launcher_value
+                .as_deref()
+                .filter(|value| is_sha256_hex(value))
+            {
+                return value.to_owned();
+            }
+            // A directly launched server must be able to read its own binary
+            // to report a stable identity; if not, identity cannot be verified.
+            let executable_path =
+                std::env::current_exe().expect("runtime executable path is available");
+            let executable =
+                std::fs::read(executable_path).expect("runtime executable is readable");
+            backend_build_from(launcher_value.as_deref(), &executable)
         })
-        .unwrap_or_else(|| "rust-runtime-http-skeleton".to_owned());
+        .clone()
+}
+
+fn status(state: &HttpState) -> Value {
     let supervisor = state
         .diagnostics_supervisor
         .as_ref()
@@ -46,7 +78,7 @@ fn status(state: &HttpState) -> Value {
     json!({
         "application": "codex-agents", "protocol": 1, "mobileProtocol": 1,
         "backendKind": "rust",
-        "backendBuild": backend_build, "nativeRuntime": native_runtime,
+        "backendBuild": backend_build(), "nativeRuntime": native_runtime,
         "providerVersions": state.provider_versions.as_ref().map_or_else(
             || json!({"checkedAt": null, "providers": [], "warnings": []}),
             |monitor| monitor.status(),
@@ -73,6 +105,7 @@ inventory::submit! {
 
 #[cfg(test)]
 mod tests {
+    use super::{backend_build_from, is_sha256_hex, sha256_hex};
     use axum::{body::to_bytes, extract::ConnectInfo, http::Request};
     use serde_json::Value;
     use std::{path::Path, sync::Arc, time::Instant};
@@ -82,6 +115,20 @@ mod tests {
         UpstreamReply, VersionFacts, VersionProbe,
     };
     use tower::ServiceExt;
+
+    #[test]
+    fn backend_build_uses_the_launcher_identity_and_has_a_binary_hash_fallback() {
+        let executable = b"runtime executable fixture";
+        let launcher = "ab".repeat(32);
+        assert_eq!(backend_build_from(Some(&launcher), executable), launcher);
+        let derived = backend_build_from(None, executable);
+        assert!(is_sha256_hex(&derived));
+        assert_eq!(derived, sha256_hex(executable));
+        assert!(is_sha256_hex(&backend_build_from(
+            Some("invalid"),
+            executable
+        )));
+    }
 
     fn prepared_python(source: &Path) -> std::path::PathBuf {
         std::env::var_os("CODEX_AGENTS_PYTHON")
@@ -231,6 +278,9 @@ mod tests {
             .await
             .expect("bounded response body");
         let value: Value = serde_json::from_slice(&body).expect("JSON response");
+        assert!(is_sha256_hex(
+            value["backendBuild"].as_str().expect("build ID")
+        ));
         assert_eq!(
             value["providerVersions"],
             serde_json::json!({"checkedAt":null,"providers":[],"warnings":[]})

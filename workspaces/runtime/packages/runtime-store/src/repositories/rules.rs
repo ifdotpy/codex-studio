@@ -216,6 +216,56 @@ mod tests {
     }
 
     #[test]
+    fn failed_rule_write_rolls_back_its_sync_entity_in_the_same_transaction() {
+        use crate::records::RuleRecord;
+        use rusqlite::OptionalExtension;
+        use serde_json::json;
+
+        let mut db = Connection::open_in_memory().expect("in-memory database opens");
+        db.execute_batch(
+            "CREATE TABLE runtime_rules(id TEXT PRIMARY KEY,record TEXT NOT NULL);
+             CREATE TABLE sync_entities(collection TEXT,id TEXT,seq INTEGER,hash TEXT,payload TEXT,deleted INTEGER,
+                 PRIMARY KEY(collection,id));
+             CREATE TABLE sync_documents(seq INTEGER PRIMARY KEY,scope TEXT,id TEXT,payload TEXT,deleted INTEGER);
+             CREATE TABLE sync_versions(seq INTEGER PRIMARY KEY,scope TEXT,hash TEXT,deleted INTEGER,updated REAL);
+             CREATE TRIGGER fail_rule_insert BEFORE INSERT ON runtime_rules
+                 BEGIN SELECT RAISE(ABORT,'injected'); END;",
+        )
+        .expect("rule and sync tables and failure trigger create");
+
+        let transaction = db.transaction().expect("writer transaction opens");
+        let error = RulesRepository::put(
+            &transaction,
+            &RuleRecord::from_value(
+                json!({"id":"rollback-rule","agent":"a1","name":"Rollback","kind":"interval"}),
+            )
+            .expect("rule has a valid ID"),
+        )
+        .expect_err("injected rule storage failure is returned");
+        assert!(matches!(error, crate::StoreError::Sqlite(_)));
+        drop(transaction);
+
+        let rule: Option<i64> = db
+            .query_row(
+                "SELECT 1 FROM runtime_rules WHERE id='rollback-rule'",
+                [],
+                |row| row.get(0),
+            )
+            .optional()
+            .expect("rule table remains readable");
+        let sync_entity: Option<i64> = db
+            .query_row(
+                "SELECT 1 FROM sync_entities WHERE collection='rule' AND id='rollback-rule'",
+                [],
+                |row| row.get(0),
+            )
+            .optional()
+            .expect("sync entity table remains readable");
+        assert_eq!(rule, None);
+        assert_eq!(sync_entity, None);
+    }
+
+    #[test]
     fn active_check_lookup_is_filtered_and_ignores_unrelated_invalid_rows() {
         let db = Connection::open_in_memory().expect("in-memory database opens");
         db.execute_batch(

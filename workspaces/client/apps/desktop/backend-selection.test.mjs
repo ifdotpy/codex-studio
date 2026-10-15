@@ -9,6 +9,7 @@ import {
 } from "node:fs/promises";
 import { createServer } from "node:net";
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
 import { createRequire } from "node:module";
@@ -16,7 +17,7 @@ import { fileURLToPath } from "node:url";
 
 const require = createRequire(import.meta.url);
 const desktopDirectory = path.dirname(fileURLToPath(import.meta.url));
-const { ensureBackend, backendSelection } = require("./backend.cjs");
+const { ensureBackend, backendSelection, identity } = require("./backend.cjs");
 const fixtures = [];
 
 afterEach(async () => {
@@ -90,8 +91,23 @@ http.createServer((request, response) => {
   fixtures[fixtures.length - 1].pid = backend.pid;
   expect(backend.owned).toBe(true);
   expect(backend.backendBuild).toMatch(/^[a-f0-9]{64}$/);
+  expect(backend.backendBuild).toBe(
+    createHash("sha256")
+      .update(await readFile(binary))
+      .digest("hex"),
+  );
   expect(backend.stateDir).toBe(state);
   expect(backend.origin).toBe(`http://127.0.0.1:${port}`);
+  expect(await readFile(path.join(state, "canvas.pid"), "utf8")).toBe(
+    `${backend.pid}\n`,
+  );
+  expect(await identity(backend.origin, state)).toMatchObject({
+    application: "codex-agents",
+    protocol: 1,
+    backendBuild: backend.backendBuild,
+    pid: backend.pid,
+    stateDir: state,
+  });
   const marker = JSON.parse(
     await readFile(path.join(state, "rust-state-owner.json"), "utf8"),
   );
