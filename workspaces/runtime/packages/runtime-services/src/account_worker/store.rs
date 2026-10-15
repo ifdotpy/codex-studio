@@ -1759,7 +1759,9 @@ pub(super) fn pending_preparations(
     account: &str,
 ) -> Result<Vec<(String, i64, String, String)>, WorkerError> {
     let db = store.read()?;
-    let mut query = db.prepare("SELECT id FROM runtime_agents WHERE COALESCE(json_extract(record,'$.accountKey'),'default')=?1 AND json_extract(record,'$.autoWake')=1 AND json_extract(record,'$.epoch')=json_extract(record,'$.preparationWake.epoch') AND json_extract(record,'$.deletedAt') IS NULL ORDER BY id LIMIT 33")?;
+    // Python persists deferred preparation on startAttempt.prepareError and
+    // clears it when preparation resumes (codex_runtime.py:7316, 7502-7505).
+    let mut query = db.prepare("SELECT id FROM runtime_agents WHERE COALESCE(json_extract(record,'$.accountKey'),'default')=?1 AND json_extract(record,'$.autoWake')=1 AND (json_type(record,'$.startAttempt.prepareError')='text' OR (json_type(record,'$.startAttempt') IS NULL AND json_type(record,'$.lastWorkspaceWait.attemptId')='text')) AND json_extract(record,'$.deletedAt') IS NULL ORDER BY id LIMIT 33")?;
     let ids = query
         .query_map([account], |row| row.get::<_, String>(0))?
         .collect::<Result<Vec<_>, _>>()?;
@@ -1772,8 +1774,14 @@ pub(super) fn pending_preparations(
                 .ok_or_else(|| invalid(&id))?;
             let reason = row
                 .extra
-                .get("preparationWake")
-                .and_then(|v| v["reason"].as_str())
+                .get("startAttempt")
+                .and_then(|attempt| attempt["prepareError"].as_str())
+                .or_else(|| {
+                    row.extra
+                        .get("lastWorkspaceWait")
+                        .and_then(|wait| wait["attemptId"].as_str())
+                        .map(|_| "workspace-readiness/pending")
+                })
                 .ok_or_else(|| invalid(&id))?
                 .to_owned();
             let provider = row
@@ -1809,10 +1817,19 @@ pub(super) fn preparation_step<T>(
                         .and_then(Value::as_object_mut)
                 {
                     attempt.insert("prepareError".into(), json!(reason));
-                    row.extra.insert(
-                        "preparationWake".into(),
-                        json!({"epoch":intent.epoch,"reason":reason}),
-                    );
+                    if reason == "workspace-readiness/pending" {
+                        // Python's WorkspaceWaitRecord uses these fields
+                        // (codex_workspace_delivery.py:43-46).
+                        row.extra.insert(
+                            "lastWorkspaceWait".into(),
+                            json!({
+                                "attemptId": intent.attempt_id,
+                                "events": intent.events.iter().map(|event| &event.id).collect::<Vec<_>>(),
+                                "blockers": [],
+                                "at": now(),
+                            }),
+                        );
+                    }
                     AgentRepository::put(tx, &row)?;
                 }
                 Ok::<_, WorkerError>(())

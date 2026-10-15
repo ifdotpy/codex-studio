@@ -504,9 +504,10 @@ pub(crate) fn spawn_agents(
         record["provider"] = json!(provider);
         record["workerBaseMainRef"] = json!(main_ref.clone());
         record["workerBaseBehindMain"] = json!(behind_main);
-        if let Some(profile_id) = spec.get("profile_id") {
-            record["profileId"] = profile_id.clone();
-        }
+        // Python's AgentFactory persists these keys on every row (including
+        // rows without a selected profile): codex_runtime.py:5014-5015.
+        record["profileId"] = spec.get("profile_id").cloned().unwrap_or(Value::Null);
+        record["profileInstructions"] = json!("");
         if let Some(profile) = &profile {
             record["profileInstructions"] = json!(profile.instructions);
         }

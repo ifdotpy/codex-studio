@@ -1203,6 +1203,10 @@ pub(crate) fn commit(
         .as_object_mut()
         .ok_or_else(|| invalid("agent"))?
         .remove("preparationWake");
+    frozen
+        .as_object_mut()
+        .ok_or_else(|| invalid("agent"))?
+        .remove("lastWorkspaceWait");
     if let Some(attempt) = frozen
         .get_mut("startAttempt")
         .and_then(Value::as_object_mut)
