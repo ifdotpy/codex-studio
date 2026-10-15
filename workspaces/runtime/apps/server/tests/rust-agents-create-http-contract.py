@@ -318,36 +318,14 @@ class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
 
     def await_background_quiescence(self, agent_id=None, *, settled=None):
         """Wait for background work, or until a caller's durable state settles."""
-        deadline = time.monotonic() + HTTP_WAIT_GUARD_SECONDS
         def is_pending():
             return not settled() if settled is not None else self.background_work_pending(agent_id)
 
         if not is_pending():
             return
-        query = urlencode({
-            "protocol": "3",
-            "apiSchema": self.backend.schema_hash,
-            "resources": json.dumps([{"kind": "state"}], separators=(",", ":")),
-        })
-        request = Request(
-            f"{self.backend.origin}/api/sync/stream?{query}", headers=self.headers(),
+        self.backend.wait_until(
+            lambda: not is_pending(), "background scheduler/workspace work",
         )
-        with urlopen(request, timeout=HTTP_WAIT_GUARD_SECONDS) as response:
-            raw_socket = response.fp.raw._sock
-            while time.monotonic() < deadline:
-                if not is_pending():
-                    return
-                raw_socket.settimeout(max(0.01, deadline - time.monotonic()))
-                event = None
-                while time.monotonic() < deadline:
-                    line = response.readline().decode("utf-8").rstrip("\r\n")
-                    if line.startswith("event: "):
-                        event = line.removeprefix("event: ")
-                    elif not line and event is not None:
-                        if event == "resources":
-                            break
-                        event = None
-            self.fail("Background scheduler/workspace work did not become quiescent")
 
     def await_provider_version_projection(self):
         """Wait for the monitor that owns workspace.nativeNotices to finish its pass."""
@@ -1188,6 +1166,17 @@ class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
 
     def test_probe_correction_all_creation_values_and_immutable_replay(self):
         self.rust_only()
+        previous_backend, previous_agent_id = self.backend, self.agent_id
+        backend = start_contract_backend(type(self), fake_version_output="codex-cli 999.0.0")
+        self.addCleanup(backend.stop)
+
+        def restore_class_fixture():
+            self.backend, self.agent_id = previous_backend, previous_agent_id
+
+        self.addCleanup(restore_class_fixture)
+        self.backend = backend
+        self.agent_id = seed_python_agent(backend)
+        backend.start()
         self.quiesce_fixture_agent(self.agent_id)
         body = {"id": str(uuid.uuid4()), "cwd": str(self.backend.cwd), "prompt": "Task", "maxAgents": 64}
         self.post("/api/agents", body)
@@ -1317,6 +1306,7 @@ class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         body = {"id": str(uuid.uuid4()), "prompt": "Task", "cwd": "~/project"}
         result = self.post("/api/agents", body)
         self.assertEqual(result["cwd"], str(self.backend.home / "project"))
+        self.quiesce_fixture_agent(result["id"])
         self.post("/api/agents", {"id": str(uuid.uuid4()), "prompt": "Task"}, 400)
 
     def test_probe_extra_legacy_single_mode_and_deleted_root_keep_tombstones(self):
