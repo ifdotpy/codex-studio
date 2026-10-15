@@ -1,8 +1,8 @@
 //! Pure translation of native rollout records. Context contains identities and
 //! token counters only; response bodies live only for the bounded input batch.
-use crate::analytics_capture::truthy;
 use crate::analytics_capture::{CaptureError, first, number};
 use serde_json::{Value, json};
+use studio_runtime_store::truthy;
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum RolloutAction {
@@ -165,7 +165,7 @@ impl RolloutContext {
                     }
                     "task_complete" | "turn_aborted" => {
                         let turn = first(&[&p["turn_id"], &self.value["turnId"]]);
-                        let status = if truthy(&p["error"]) {
+                        let status = if truthy(Some(&p["error"])) {
                             json!("failed")
                         } else if p["type"] == "turn_aborted" {
                             json!("interrupted")
@@ -201,7 +201,7 @@ impl RolloutContext {
                             let last = tokens(&info["last_token_usage"])?;
                             let pending = &self.value["pendingUsage"];
                             let previous = &self.value["noticeAssociation"];
-                            let matches = truthy(&pending["responseId"])
+                            let matches = truthy(Some(&pending["responseId"]))
                                 && pending["turnId"] == self.value["turnId"]
                                 && [
                                     "inputTokens",
@@ -268,7 +268,7 @@ impl RolloutContext {
         Ok(actions)
     }
     fn wrong_thread(&self, p: &Value) -> bool {
-        truthy(&p["thread_id"])
+        truthy(Some(&p["thread_id"]))
             && p["thread_id"] != self.value["threadId"]
             && !self.value["allowedSourceThreadIds"]
                 .as_array()

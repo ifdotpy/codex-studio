@@ -1,11 +1,11 @@
 //! Bounded legacy analytics repairs. Budget receipts are obtained outside the
 //! analytics transaction; a compare-and-swap acknowledges their durable page.
-use crate::analytics_capture::{CaptureError, check_identity, number, text, truthy};
+use crate::analytics_capture::{CaptureError, check_identity, number, text};
 use crate::analytics_history::{HistoryBudgetSink, HistoryError};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde_json::{Value, json};
 use studio_runtime_store::analytics_capture::{AnalyticsCaptureRepository as Repo, CaptureTable};
-use studio_runtime_store::{AnalyticsRepository, RuntimeStore};
+use studio_runtime_store::{AnalyticsRepository, RuntimeStore, truthy};
 const PAGE_SIZE: i64 = 64;
 fn metadata(db: &Connection, key: &str) -> Result<Option<Value>, HistoryError> {
     let raw: Option<String> = db
@@ -109,15 +109,15 @@ pub fn repair_terminal_errors(store: &RuntimeStore) -> Result<(), HistoryError> 
             state["cursor"] = json!(rowid);
             let record: Value = serde_json::from_str(raw).map_err(studio_runtime_store::StoreError::from)?;
             CaptureTable::Turns.validate(&record)?;
-            if !truthy(&record["turnId"]) || record["status"] == "failed" && truthy(&record["error"]) { continue; }
+            if !truthy(Some(&record["turnId"])) || record["status"] == "failed" && truthy(Some(&record["error"])) { continue; }
             let raw: Option<String> = canvas.query_row(
                 "SELECT record FROM runtime_items WHERE id=? AND agent=?",
                 params![format!("{agent}:native-notice:error:{}", text(&record["turnId"])), agent], |r| r.get(0)
             ).optional().map_err(studio_runtime_store::StoreError::from)?;
             let Some(raw) = raw else { continue; };
             let notice: Value = serde_json::from_str(&raw).map_err(studio_runtime_store::StoreError::from)?;
-            if notice["turnId"] != record["turnId"] || !truthy(&notice["nativeError"]) { continue; }
-            let exact = if truthy(&notice["threadId"]) {
+            if notice["turnId"] != record["turnId"] || !truthy(Some(&notice["nativeError"])) { continue; }
+            let exact = if truthy(Some(&notice["threadId"])) {
                 notice["threadId"] == record["threadId"]
             } else {
                 tx.query_row(
