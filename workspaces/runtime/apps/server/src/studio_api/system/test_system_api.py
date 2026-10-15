@@ -411,6 +411,26 @@ class SystemApiTests(unittest.TestCase):
                     "journal": {"status": "notWritten"},
                     "activeTracking": {"tracked": 0, "limit": 256, "untrackedStarts": 0},
                 },
+                "storeAdmission": {
+                    "reads": {
+                        "operations": 0, "waits": 0, "activeWaiters": 0,
+                        "peakWaiters": 0, "openedConnections": 0,
+                        "waitMs": {
+                            "samples": 0, "p50Ms": None, "p95Ms": None,
+                            "p99Ms": None, "maxMs": 0.0,
+                        },
+                    },
+                    "writes": {
+                        "operations": 0, "waits": 0, "activeWaiters": 0,
+                        "peakWaiters": 0, "openedConnections": 0,
+                        "waitMs": {
+                            "samples": 0, "p50Ms": None, "p95Ms": None,
+                            "p99Ms": None, "maxMs": 0.0,
+                        },
+                    },
+                },
+                "sqlProfile": {},
+                "commitProfile": {},
             },
             "httpRequestMetrics": {"routes": [], "untrackedRoutes": 0},
             "runtimeLockOperations": [],

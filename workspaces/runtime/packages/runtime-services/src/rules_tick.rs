@@ -114,7 +114,7 @@ pub fn tick_batch(
     files: &impl RuleFiles,
     monitor: &(impl RuleMonitor + ?Sized),
 ) -> Result<TickReport, RulesTickError> {
-    let rows = RulesTickRepository::page(&store.read()?, after_rowid)?;
+    let rows = RulesTickRepository::page(&*store.read()?, after_rowid)?;
     let mut report = TickReport {
         next_rowid: (rows.len() == RULE_BATCH)
             .then(|| rows.last().map(|row| row.rowid))
@@ -122,7 +122,7 @@ pub fn tick_batch(
         ..TickReport::default()
     };
     for row in rows {
-        let sampled = load_snapshot(&store.read()?, row.rule)?;
+        let sampled = load_snapshot(&*store.read()?, row.rule)?;
         let fingerprint = sampled
             .fingerprint_path(now)
             .map(|path| files.fingerprint(path))
@@ -173,7 +173,7 @@ pub fn recover_batch(
     now: f64,
     monitor: &(impl RuleMonitor + ?Sized),
 ) -> Result<TickReport, RulesTickError> {
-    let rows = RulesTickRepository::page(&store.read()?, after_rowid)?;
+    let rows = RulesTickRepository::page(&*store.read()?, after_rowid)?;
     let mut report = TickReport {
         next_rowid: (rows.len() == RULE_BATCH)
             .then(|| rows.last().map(|row| row.rowid))
@@ -181,7 +181,7 @@ pub fn recover_batch(
         ..TickReport::default()
     };
     for row in rows {
-        let sampled = load_snapshot(&store.read()?, row.rule)?;
+        let sampled = load_snapshot(&*store.read()?, row.rule)?;
         let intent = launch_intent(&sampled)?;
         let state = match &intent {
             Some(check) if sampled.launch_allowed(check) && monitor.available() => {

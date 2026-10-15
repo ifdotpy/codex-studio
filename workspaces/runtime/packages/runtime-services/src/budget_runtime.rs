@@ -24,7 +24,7 @@ use std::path::Path;
 use std::time::UNIX_EPOCH;
 use studio_runtime_store::analytics_capture::CaptureTable;
 use studio_runtime_store::{
-    AgentId, AnalyticsRepository, RuntimeStore, StoreError, Table, Transaction,
+    AgentId, AnalyticsRepository, Connection, RuntimeStore, StoreError, Table, Transaction,
     budget::{BudgetRecord, BudgetRepository},
 };
 use thiserror::Error;
@@ -57,21 +57,34 @@ pub fn read_histories(
     store: &RuntimeStore,
     root_id: &str,
 ) -> Result<BTreeMap<String, HistoryObservation>, BudgetRuntimeError> {
-    let members = store.read_transaction(|tx| {
-        BudgetRepository::agent(tx, root_id)?;
-        let members = BudgetRepository::team(tx, root_id)?;
-        let mut snapshots = Vec::with_capacity(members.len());
-        for agent in members {
-            let id = agent["id"]
-                .as_str()
-                .ok_or_else(|| StoreError::SchemaMismatch("runtime_agents/id".into()))?;
-            let budget = Table::<BudgetRecord>::new(tx)
-                .get(&AgentId::from(id))?
-                .map(|record| record.0);
-            snapshots.push((agent, budget));
-        }
-        Ok(snapshots)
-    })?;
+    let connection = store.read()?;
+    read_histories_from_connection(store, &connection, root_id)
+}
+
+/// Prepare history evidence using a caller's held canvas reader. Admission
+/// callers already hold a snapshot lease, so taking another pool connection
+/// here would be a nested checkout rather than a newer consistent snapshot.
+pub(crate) fn read_histories_from_connection(
+    store: &RuntimeStore,
+    connection: &Connection,
+    root_id: &str,
+) -> Result<BTreeMap<String, HistoryObservation>, BudgetRuntimeError> {
+    let snapshot = connection.unchecked_transaction()?;
+    BudgetRepository::agent(&snapshot, root_id)?;
+    let members = BudgetRepository::team(&snapshot, root_id)?;
+    let mut snapshots = Vec::with_capacity(members.len());
+    for agent in members {
+        let id = agent
+            .get("id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| StoreError::SchemaMismatch("runtime_agents/id".into()))?;
+        let budget = Table::<BudgetRecord>::new(&snapshot)
+            .get(&AgentId::from(id))?
+            .map(|record| record.0);
+        snapshots.push((agent, budget));
+    }
+    let members = snapshots;
+    drop(snapshot);
     let repository = AnalyticsRepository::new(store.root());
     let db = repository.open_read_only()?;
     let has_history = db.query_row(

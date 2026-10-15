@@ -58,6 +58,7 @@ async fn repair(
                 .and_then(Value::as_str)
                 .map(PathBuf::from)
                 .ok_or(RepairError::AccountSession)?;
+            drop(connection);
             context_repair::repair_idle_with_broker(
                 &store,
                 &id,

@@ -338,6 +338,7 @@ fn pull_with_maintenance_interleaved(
                 .entity_projections_need_maintenance(&vault_signature)
                 .map_err(map_sync_store_error)?
         {
+            drop(reader);
             let response = store
                 .read_transaction(|transaction| {
                     pull_entities(
@@ -371,6 +372,7 @@ fn pull_with_maintenance_interleaved(
                 .matches_entity_projections(&reader)
                 .map_err(map_sync_store_error)?
         {
+            drop(reader);
             store
                 .mark_entity_projections_maintained(observed_generation, vault_signature)
                 .map_err(map_sync_store_error)?;
@@ -404,6 +406,7 @@ fn pull_with_maintenance_interleaved(
         let project_server_id = store.local_server_id().map_err(map_sync_store_error)?;
         let rooms = studio_runtime_services::sync_entity_context::RoomDirectory::prepare(&reader)
             .map_err(map_sync_store_error)?;
+        drop(reader);
         before_room_recheck();
         let (response, committed_generation) = store
             .transaction_with_commit_generation(|transaction| {
@@ -451,7 +454,7 @@ fn capture_project_vault_snapshot(
     state_dir: &str,
 ) -> Result<
     (
-        studio_runtime_store::Connection,
+        studio_runtime_store::ReadConnection,
         sync_policy::ProjectVaultSnapshot,
     ),
     ApiError,
@@ -1176,6 +1179,7 @@ mod vault_maintenance_tests {
         assert_eq!(store.committed_change_generation(), seeded_generation);
         let reader = store.read().expect("store reader");
         assert!(sync_policy::has_complete_entity_seed(&reader).expect("seed marker reads"));
+        drop(reader);
         let (_, vault_snapshot) =
             capture_project_vault_snapshot(&store, &state_dir).expect("vault snapshot");
         assert!(

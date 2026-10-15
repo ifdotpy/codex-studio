@@ -143,7 +143,7 @@ pub fn select(
     let checked_directory = match &directory {
         Some(directory) => directory.clone(),
         None => {
-            let raw = AccountTransferRepository::agent(&store.read()?, id)?
+            let raw = AccountTransferRepository::agent(&*store.read()?, id)?
                 .ok_or(TransferError::Refused("Unknown managed agent"))?;
             SelectionSnapshot::read(&raw)?.agent["cwd"]
                 .as_str()

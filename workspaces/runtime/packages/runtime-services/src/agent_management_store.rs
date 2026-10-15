@@ -16,6 +16,10 @@ pub fn execute(store: &RuntimeStore, action: &Action, now: f64) -> Result<Value,
     let rooms = crate::sync_entity_context::RoomDirectory::prepare(&reader)?;
     let projects = ProjectsRepository::list(&reader)?;
     let vault_snapshot = crate::sync_policy::ProjectVaultSnapshot::capture(store.root(), &projects);
+    // The filesystem preparation and transactional decision happen after this
+    // immutable snapshot is complete. Release the pooled reader before the
+    // archive path performs its post-commit readback below.
+    drop(reader);
     let mut result = store.transaction_with_error(|transaction| {
         execute_in_transaction(transaction, action, now, &rooms, &vault_snapshot)
     })?;
@@ -31,7 +35,7 @@ pub fn execute(store: &RuntimeStore, action: &Action, now: f64) -> Result<Value,
             .and_then(Value::as_str)
         {
             if let Some(agent) = studio_runtime_store::AgentRepository::get(
-                &store.read()?,
+                &*store.read()?,
                 &studio_runtime_store::AgentId::from(agent_id),
             )? {
                 if let Some(agent_archive) = agent.value().get("agentArchive") {

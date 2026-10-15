@@ -260,7 +260,7 @@ pub fn submit(
         ));
     }
 
-    let admission = crate::message_admission::PreparedAdmission::load(&store.read()?, agent_id)?;
+    let admission = crate::message_admission::PreparedAdmission::load(&*store.read()?, agent_id)?;
     #[cfg(test)]
     ingress_tests::support::after_preparation(agent_id);
     store.transaction_with_error(|transaction| {

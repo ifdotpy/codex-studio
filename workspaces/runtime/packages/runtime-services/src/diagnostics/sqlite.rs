@@ -63,16 +63,29 @@ struct SqliteState {
     recent: VecDeque<Value>,
     longest: Vec<Value>,
     profile_by_database: BTreeMap<DatabaseKind, (u64, Ring)>,
+    commit_profile_by_database: BTreeMap<DatabaseKind, (u64, Ring)>,
+    read_admission: StoreAdmissionSamples,
+    writer_admission: StoreAdmissionSamples,
     wal_checkpoint_by_database: BTreeMap<DatabaseKind, Value>,
     transaction_count: u64,
     long_transactions: u64,
     write_waits: u64,
     write_wait_ms: f64,
-    write_wait_durations_ms: Ring,
+    write_wait_durations_ns: Ring,
     longest_transaction_ms: f64,
-    transaction_durations_ms: Ring,
+    transaction_durations_ns: Ring,
     coverage_started_at: f64,
     untracked: u64,
+}
+
+#[derive(Debug, Default)]
+struct StoreAdmissionSamples {
+    operations: u64,
+    waits: u64,
+    active_waiters: usize,
+    peak_waiters: usize,
+    opened_connections: usize,
+    wait_ns: Option<Ring>,
 }
 
 impl Default for SqliteState {
@@ -82,14 +95,17 @@ impl Default for SqliteState {
             recent: VecDeque::with_capacity(HISTORY_LIMIT),
             longest: Vec::with_capacity(LONGEST_LIMIT),
             profile_by_database: BTreeMap::new(),
+            commit_profile_by_database: BTreeMap::new(),
+            read_admission: StoreAdmissionSamples::default(),
+            writer_admission: StoreAdmissionSamples::default(),
             wal_checkpoint_by_database: BTreeMap::new(),
             transaction_count: 0,
             long_transactions: 0,
             write_waits: 0,
             write_wait_ms: 0.0,
-            write_wait_durations_ms: Ring::new(HISTORY_LIMIT),
+            write_wait_durations_ns: Ring::new(HISTORY_LIMIT),
             longest_transaction_ms: 0.0,
-            transaction_durations_ms: Ring::new(HISTORY_LIMIT),
+            transaction_durations_ns: Ring::new(HISTORY_LIMIT),
             coverage_started_at: epoch_seconds(),
             untracked: 0,
         }
@@ -116,13 +132,13 @@ fn record_store_transaction_in_state(state: &mut SqliteState, wait: Duration, ho
     }
     if wait_ms >= WRITE_WAIT_MS {
         state
-            .write_wait_durations_ms
-            .record(wait.as_millis().min(u128::from(u64::MAX)) as u64);
+            .write_wait_durations_ns
+            .record(wait.as_nanos().min(u128::from(u64::MAX)) as u64);
     }
     state.longest_transaction_ms = state.longest_transaction_ms.max(hold_ms);
     state
-        .transaction_durations_ms
-        .record(hold.as_millis().min(u128::from(u64::MAX)) as u64);
+        .transaction_durations_ns
+        .record(hold.as_nanos().min(u128::from(u64::MAX)) as u64);
     if hold >= SLOW_TRANSACTION
         && let Some(thread_id) = native_thread_id()
     {
@@ -154,6 +170,102 @@ fn record_store_transaction_in_state(state: &mut SqliteState, wait: Duration, ho
 pub fn record_sqlite_profile(database: DatabaseKind, elapsed: Duration) {
     let _ = try_with_state(state(), |state| {
         record_sqlite_profile_in_state(state, database, elapsed);
+    });
+}
+
+pub fn record_store_admission(
+    read: bool,
+    waited: bool,
+    elapsed: Duration,
+    waiting_threads: usize,
+    peak_waiters: usize,
+    opened_connections: usize,
+) {
+    let _ = try_with_state(state(), |state| {
+        record_store_admission_in_state(
+            state,
+            read,
+            waited,
+            elapsed,
+            waiting_threads,
+            peak_waiters,
+            opened_connections,
+        );
+    });
+}
+
+fn record_store_admission_in_state(
+    state: &mut SqliteState,
+    read: bool,
+    waited: bool,
+    elapsed: Duration,
+    waiting_threads: usize,
+    peak_waiters: usize,
+    opened_connections: usize,
+) {
+    let samples = if read {
+        &mut state.read_admission
+    } else {
+        &mut state.writer_admission
+    };
+    samples.operations = samples.operations.saturating_add(1);
+    samples.active_waiters = waiting_threads;
+    samples.peak_waiters = samples.peak_waiters.max(peak_waiters);
+    samples.opened_connections = opened_connections;
+    if waited {
+        samples.waits = samples.waits.saturating_add(1);
+        samples
+            .wait_ns
+            .get_or_insert_with(|| Ring::new(HISTORY_LIMIT))
+            .record(elapsed.as_nanos().min(u128::from(u64::MAX)) as u64);
+    }
+}
+
+/// Update queue occupancy without counting a new admission or latency sample.
+pub fn record_store_waiter_occupancy(
+    read: bool,
+    waiting_threads: usize,
+    peak_waiters: usize,
+    opened_connections: usize,
+) {
+    let _ = try_with_state(state(), |state| {
+        record_store_waiter_occupancy_in_state(
+            state,
+            read,
+            waiting_threads,
+            peak_waiters,
+            opened_connections,
+        );
+    });
+}
+
+fn record_store_waiter_occupancy_in_state(
+    state: &mut SqliteState,
+    read: bool,
+    waiting_threads: usize,
+    peak_waiters: usize,
+    opened_connections: usize,
+) {
+    let samples = if read {
+        &mut state.read_admission
+    } else {
+        &mut state.writer_admission
+    };
+    samples.active_waiters = waiting_threads;
+    samples.peak_waiters = samples.peak_waiters.max(peak_waiters);
+    if read {
+        samples.opened_connections = opened_connections;
+    }
+}
+
+pub fn record_commit_profile(database: DatabaseKind, elapsed: Duration) {
+    let _ = try_with_state(state(), |state| {
+        let (count, samples) = state
+            .commit_profile_by_database
+            .entry(database)
+            .or_insert_with(|| (0, Ring::new(HISTORY_LIMIT)));
+        *count = count.saturating_add(1);
+        samples.record(elapsed.as_nanos().min(u128::from(u64::MAX)) as u64);
     });
 }
 
@@ -206,7 +318,7 @@ fn record_sqlite_profile_in_state(
         .entry(database)
         .or_insert_with(|| (0, Ring::new(HISTORY_LIMIT)));
     *count = count.saturating_add(1);
-    samples.record(elapsed.as_millis().min(u128::from(u64::MAX)) as u64);
+    samples.record(elapsed.as_nanos().min(u128::from(u64::MAX)) as u64);
 }
 
 fn push_history(state: &mut SqliteState, entry: Value) {
@@ -310,9 +422,12 @@ pub fn sqlite_contention() -> Value {
         "writeWait": null,
         "lockError": null,
         "walTelemetry": null,
+        "storeAdmission": empty_store_admission(),
+        "sqlProfile": {},
+        "commitProfile": {},
     });
     let _ = try_with_state(state(), |state| {
-        let (_, durations) = state.transaction_durations_ms.snapshot();
+        let (_, durations) = state.transaction_durations_ns.snapshot();
         let metric = json!({
             "transactions": state.transaction_count,
             "longTransactions": state.long_transactions,
@@ -320,8 +435,9 @@ pub fn sqlite_contention() -> Value {
             "writeWaitMs": state.write_wait_ms,
             "lockErrors": 0,
             "longestTransactionMs": state.longest_transaction_ms,
-            "p50TransactionMs": quantile(&durations, 50),
-            "p95TransactionMs": quantile(&durations, 95),
+            "p50TransactionMs": quantile_ms(&durations, 50),
+            "p95TransactionMs": quantile_ms(&durations, 95),
+            "p99TransactionMs": quantile_ms(&durations, 99),
             "sites": {
                 "runtime_store.writer_transaction": {
                     "transactions": state.transaction_count,
@@ -330,34 +446,94 @@ pub fn sqlite_contention() -> Value {
                     "writeWaitMs": state.write_wait_ms,
                     "lockErrors": 0,
                     "longestTransactionMs": state.longest_transaction_ms,
-                    "p50TransactionMs": quantile(&durations, 50),
-                    "p95TransactionMs": quantile(&durations, 95),
+                    "p50TransactionMs": quantile_ms(&durations, 50),
+                    "p95TransactionMs": quantile_ms(&durations, 95),
+                    "p99TransactionMs": quantile_ms(&durations, 99),
                     "sites": {}
                 }
             }
         });
         result["transaction"] = metric;
         result["walTelemetry"] = wal_telemetry_from_state(state);
-        let (_, waits) = state.write_wait_durations_ms.snapshot();
+        result["storeAdmission"] = json!({
+            "reads": admission_metric(&state.read_admission),
+            "writes": admission_metric(&state.writer_admission),
+        });
+        result["sqlProfile"] = profile_metrics(&state.profile_by_database);
+        result["commitProfile"] = profile_metrics(&state.commit_profile_by_database);
+        let (_, waits) = state.write_wait_durations_ns.snapshot();
         result["writeWait"] = json!({
             "transactions": 0,
             "longTransactions": 0,
             "writeWaits": state.write_waits,
             "writeWaitMs": state.write_wait_ms,
             "lockErrors": 0,
-            "longestTransactionMs": waits.iter().max().copied().unwrap_or_default() as f64,
-            "p50TransactionMs": quantile(&waits, 50),
-            "p95TransactionMs": quantile(&waits, 95),
+            "longestTransactionMs": waits.iter().max().copied().unwrap_or_default() as f64 / 1_000_000.0,
+            "p50TransactionMs": quantile_ms(&waits, 50),
+            "p95TransactionMs": quantile_ms(&waits, 95),
+            "p99TransactionMs": quantile_ms(&waits, 99),
             "sites": {}
         });
     });
     result
 }
 
+fn empty_store_admission() -> Value {
+    let empty = StoreAdmissionSamples::default();
+    json!({
+        "reads": admission_metric(&empty),
+        "writes": admission_metric(&empty),
+    })
+}
+
 fn wal_telemetry_from_state(state: &SqliteState) -> Value {
     json!({
         "canvas": state.wal_checkpoint_by_database.get(&DatabaseKind::Canvas),
         "analytics": state.wal_checkpoint_by_database.get(&DatabaseKind::Analytics),
+    })
+}
+
+fn admission_metric(samples: &StoreAdmissionSamples) -> Value {
+    let waits = samples
+        .wait_ns
+        .as_ref()
+        .map(|ring| ring.snapshot().1)
+        .unwrap_or_default();
+    let mut summary =
+        json!({"samples": waits.len(), "p50Ms": null, "p95Ms": null, "p99Ms": null, "maxMs": 0.0});
+    if !waits.is_empty() {
+        let values = quantile_summary(&waits, 1_000_000.0);
+        summary = values;
+    }
+    json!({
+        "operations": samples.operations,
+        "waits": samples.waits,
+        "activeWaiters": samples.active_waiters,
+        "peakWaiters": samples.peak_waiters,
+        "openedConnections": samples.opened_connections,
+        "waitMs": summary,
+    })
+}
+
+fn profile_metrics(profiles: &BTreeMap<DatabaseKind, (u64, Ring)>) -> Value {
+    let mut result = serde_json::Map::new();
+    for (database, (count, ring)) in profiles {
+        let samples = ring.snapshot().1;
+        result.insert(
+            format!("{database:?}").to_ascii_lowercase(),
+            json!({"count": count, "p50Ms": quantile_ms(&samples, 50), "p95Ms": quantile_ms(&samples, 95), "p99Ms": quantile_ms(&samples, 99)}),
+        );
+    }
+    Value::Object(result)
+}
+
+fn quantile_summary(values: &[u64], divisor: f64) -> Value {
+    json!({
+        "samples": values.len(),
+        "p50Ms": quantile(values, 50).map(|value| value / divisor),
+        "p95Ms": quantile(values, 95).map(|value| value / divisor),
+        "p99Ms": quantile(values, 99).map(|value| value / divisor),
+        "maxMs": values.iter().max().map(|value| *value as f64 / divisor).unwrap_or_default(),
     })
 }
 
@@ -369,6 +545,10 @@ fn quantile(values: &[u64], percentile: usize) -> Option<f64> {
     values.sort_unstable();
     let index = (values.len() - 1) * percentile / 100;
     Some(values[index] as f64)
+}
+
+fn quantile_ms(values: &[u64], percentile: usize) -> Option<f64> {
+    quantile(values, percentile).map(|value| value / 1_000_000.0)
 }
 
 fn epoch_seconds() -> f64 {
@@ -418,18 +598,43 @@ mod tests {
         let telemetry = wal_telemetry_from_state(&state);
         assert!(telemetry["canvas"].is_null());
 
-        record_wal_checkpoint_in_state(
-            &mut state,
-            DatabaseKind::Canvas,
-            4096,
-            0,
-            12,
-            12,
-        );
+        record_wal_checkpoint_in_state(&mut state, DatabaseKind::Canvas, 4096, 0, 12, 12);
         let telemetry = wal_telemetry_from_state(&state);
         assert_eq!(telemetry["canvas"]["walSizeBytes"], 4096);
         assert_eq!(telemetry["canvas"]["checkpointedFrames"], 12);
         assert!(telemetry["analytics"].is_null());
+    }
+
+    #[test]
+    fn empty_contention_fallback_keeps_store_admission_typed() {
+        let admission = empty_store_admission();
+        for side in ["reads", "writes"] {
+            assert_eq!(admission[side]["operations"], 0);
+            assert_eq!(admission[side]["waits"], 0);
+            assert_eq!(admission[side]["openedConnections"], 0);
+            assert_eq!(admission[side]["waitMs"]["samples"], 0);
+            assert!(admission[side]["waitMs"]["p50Ms"].is_null());
+            assert!(admission[side]["waitMs"]["p95Ms"].is_null());
+            assert!(admission[side]["waitMs"]["p99Ms"].is_null());
+            assert_eq!(admission[side]["waitMs"]["maxMs"], 0.0);
+        }
+    }
+
+    #[test]
+    fn store_admission_reports_only_contended_waits_and_bounded_peaks() {
+        let mut state = SqliteState::default();
+        record_store_admission_in_state(&mut state, true, false, Duration::ZERO, 0, 0, 1);
+        record_store_waiter_occupancy_in_state(&mut state, true, 1, 3, 4);
+        record_store_admission_in_state(&mut state, true, true, Duration::from_millis(2), 0, 3, 4);
+        record_store_admission_in_state(&mut state, true, true, Duration::from_millis(4), 0, 3, 4);
+        let metric = admission_metric(&state.read_admission);
+        assert_eq!(metric["operations"], 3);
+        assert_eq!(metric["waits"], 2);
+        assert_eq!(metric["activeWaiters"], 0);
+        assert_eq!(metric["peakWaiters"], 3);
+        assert_eq!(metric["openedConnections"], 4);
+        assert_eq!(metric["waitMs"]["p95Ms"], 2.0);
+        assert_eq!(metric["waitMs"]["p99Ms"], 2.0);
     }
 
     #[cfg(target_os = "linux")]

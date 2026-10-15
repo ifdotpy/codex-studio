@@ -14892,6 +14892,14 @@
             "title": "Closuremaxms",
             "type": "number"
           },
+          "closureP95Ms": {
+            "title": "Closurep95Ms",
+            "type": "number"
+          },
+          "closureP99Ms": {
+            "title": "Closurep99Ms",
+            "type": "number"
+          },
           "count": {
             "maximum": 9007199254740991,
             "minimum": 0,
@@ -14909,6 +14917,14 @@
           "queueWaitMaxMs": {
             "title": "Queuewaitmaxms",
             "type": "number"
+          },
+          "queueWaitP95Ms": {
+            "title": "Queuewaitp95Ms",
+            "type": "number"
+          },
+          "queueWaitP99Ms": {
+            "title": "Queuewaitp99Ms",
+            "type": "number"
           }
         },
         "required": [
@@ -14916,8 +14932,12 @@
           "count",
           "queueWaitAvgMs",
           "queueWaitMaxMs",
+          "queueWaitP95Ms",
+          "queueWaitP99Ms",
           "closureAvgMs",
-          "closureMaxMs"
+          "closureMaxMs",
+          "closureP95Ms",
+          "closureP99Ms"
         ],
         "title": "BlockingPoolGroupMetrics",
         "type": "object"
@@ -29030,6 +29050,10 @@
             "title": "P95",
             "type": "number"
           },
+          "p99": {
+            "title": "P99",
+            "type": "number"
+          },
           "samples": {
             "maximum": 9007199254740991,
             "minimum": 0,
@@ -29040,6 +29064,7 @@
         "required": [
           "p50",
           "p95",
+          "p99",
           "max",
           "samples"
         ],
@@ -48227,6 +48252,54 @@
         "title": "SqliteActiveTransaction",
         "type": "object"
       },
+      "SqliteAdmissionMetric": {
+        "additionalProperties": false,
+        "properties": {
+          "activeWaiters": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "title": "Activewaiters",
+            "type": "integer"
+          },
+          "openedConnections": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "title": "Openedconnections",
+            "type": "integer"
+          },
+          "operations": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "title": "Operations",
+            "type": "integer"
+          },
+          "peakWaiters": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "title": "Peakwaiters",
+            "type": "integer"
+          },
+          "waitMs": {
+            "$ref": "#/components/schemas/SqliteWaitQuantiles"
+          },
+          "waits": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "title": "Waits",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "operations",
+          "waits",
+          "activeWaiters",
+          "peakWaiters",
+          "openedConnections",
+          "waitMs"
+        ],
+        "title": "SqliteAdmissionMetric",
+        "type": "object"
+      },
       "SqliteContention": {
         "additionalProperties": false,
         "properties": {
@@ -48239,6 +48312,13 @@
             },
             "title": "Activetransactions",
             "type": "array"
+          },
+          "commitProfile": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/SqliteProfileMetric"
+            },
+            "title": "Commitprofile",
+            "type": "object"
           },
           "lockError": {
             "anyOf": [
@@ -48253,6 +48333,16 @@
           },
           "slowTransactions": {
             "$ref": "#/components/schemas/SqliteHistory"
+          },
+          "sqlProfile": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/SqliteProfileMetric"
+            },
+            "title": "Sqlprofile",
+            "type": "object"
+          },
+          "storeAdmission": {
+            "$ref": "#/components/schemas/SqliteStoreAdmission"
           },
           "transaction": {
             "anyOf": [
@@ -48291,7 +48381,10 @@
         "required": [
           "activeTransactions",
           "activeTransactionScan",
-          "slowTransactions"
+          "slowTransactions",
+          "storeAdmission",
+          "sqlProfile",
+          "commitProfile"
         ],
         "title": "SqliteContention",
         "type": "object"
@@ -48475,6 +48568,18 @@
             "default": null,
             "title": "P95Transactionms"
           },
+          "p99TransactionMs": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "number"
+              }
+            ],
+            "default": null,
+            "title": "P99Transactionms"
+          },
           "sites": {
             "additionalProperties": {
               "$ref": "#/components/schemas/SqliteMetric"
@@ -48538,6 +48643,58 @@
         "title": "SqliteObservation",
         "type": "object"
       },
+      "SqliteProfileMetric": {
+        "additionalProperties": false,
+        "properties": {
+          "count": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "title": "Count",
+            "type": "integer"
+          },
+          "p50Ms": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "number"
+              }
+            ],
+            "title": "P50Ms"
+          },
+          "p95Ms": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "number"
+              }
+            ],
+            "title": "P95Ms"
+          },
+          "p99Ms": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "number"
+              }
+            ],
+            "title": "P99Ms"
+          }
+        },
+        "required": [
+          "count",
+          "p50Ms",
+          "p95Ms",
+          "p99Ms"
+        ],
+        "title": "SqliteProfileMetric",
+        "type": "object"
+      },
       "SqliteStatement": {
         "enum": [
           "BEGIN",
@@ -48554,6 +48711,23 @@
         ],
         "title": "SqliteStatement",
         "type": "string"
+      },
+      "SqliteStoreAdmission": {
+        "additionalProperties": false,
+        "properties": {
+          "reads": {
+            "$ref": "#/components/schemas/SqliteAdmissionMetric"
+          },
+          "writes": {
+            "$ref": "#/components/schemas/SqliteAdmissionMetric"
+          }
+        },
+        "required": [
+          "reads",
+          "writes"
+        ],
+        "title": "SqliteStoreAdmission",
+        "type": "object"
       },
       "SqliteThread": {
         "additionalProperties": false,
@@ -48743,6 +48917,63 @@
         ],
         "title": "SqliteTransactionState",
         "type": "string"
+      },
+      "SqliteWaitQuantiles": {
+        "additionalProperties": false,
+        "properties": {
+          "maxMs": {
+            "title": "Maxms",
+            "type": "number"
+          },
+          "p50Ms": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "number"
+              }
+            ],
+            "title": "P50Ms"
+          },
+          "p95Ms": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "number"
+              }
+            ],
+            "title": "P95Ms"
+          },
+          "p99Ms": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "number"
+              }
+            ],
+            "title": "P99Ms"
+          },
+          "samples": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "title": "Samples",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "samples",
+          "p50Ms",
+          "p95Ms",
+          "p99Ms",
+          "maxMs"
+        ],
+        "title": "SqliteWaitQuantiles",
+        "type": "object"
       },
       "StartActionIdentityRecordResponse": {
         "additionalProperties": {

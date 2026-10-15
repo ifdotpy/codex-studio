@@ -36,12 +36,16 @@ pub use repositories::remote_transport::{
 };
 pub use repositories::system_reads;
 
-use std::collections::HashMap;
+use std::cell::RefCell;
+use std::collections::{HashMap, HashSet};
 use std::fs::{File, OpenOptions};
 use std::io::BufReader;
+use std::marker::PhantomData;
+use std::ops::{Deref, DerefMut};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
+use std::rc::Rc;
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use rusqlite::trace::{TraceEvent, TraceEventCodes};
@@ -98,15 +102,43 @@ pub use repositories::workspace_ready;
 pub use repositories::workspace_views::{WorkspaceTaskRow, WorkspaceViewsRepository};
 
 const DATABASE_BUSY_TIMEOUT_MS: u32 = 15_000;
+/// Maximum concurrently checked-out read-only canvas connections per store.
+const READ_CONNECTION_POOL_CAPACITY: usize = 4;
 
 /// Value-free observations emitted by the optional diagnostics callback.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum StoreDiagnosticsEvent {
+    WriterAdmission {
+        wait: Duration,
+        waited: bool,
+        waiting_threads: usize,
+        peak_waiters: usize,
+    },
+    WriterWaiters {
+        waiting_threads: usize,
+        peak_waiters: usize,
+    },
+    ReadAdmission {
+        wait: Duration,
+        waited: bool,
+        waiting_threads: usize,
+        peak_waiters: usize,
+        opened_connections: usize,
+    },
+    ReadWaiters {
+        waiting_threads: usize,
+        peak_waiters: usize,
+        opened_connections: usize,
+    },
     WriterTransaction {
         wait: Duration,
         hold: Duration,
     },
     SqlProfile {
+        database: StoreDatabaseKind,
+        elapsed: Duration,
+    },
+    CommitDuration {
         database: StoreDatabaseKind,
         elapsed: Duration,
     },
@@ -148,16 +180,25 @@ fn emit_diagnostic(event: StoreDiagnosticsEvent) {
     }
 }
 
-fn profile_statement(event: TraceEvent<'_>) {
+fn profile_statement(database: StoreDatabaseKind, event: TraceEvent<'_>) {
     if let TraceEvent::Profile(_statement, elapsed) = event {
-        emit_diagnostic(StoreDiagnosticsEvent::SqlProfile {
-            database: StoreDatabaseKind::Canvas,
-            elapsed,
-        });
+        emit_diagnostic(StoreDiagnosticsEvent::SqlProfile { database, elapsed });
     }
 }
 
-fn install_profile(connection: &mut Connection) {
+fn profile_canvas(event: TraceEvent<'_>) {
+    profile_statement(StoreDatabaseKind::Canvas, event);
+}
+
+fn profile_analytics(event: TraceEvent<'_>) {
+    profile_statement(StoreDatabaseKind::Analytics, event);
+}
+
+fn profile_other(event: TraceEvent<'_>) {
+    profile_statement(StoreDatabaseKind::Other, event);
+}
+
+fn install_profile(connection: &mut Connection, database: StoreDatabaseKind) {
     let enabled = diagnostics_callback()
         .try_lock()
         .map(|callback| callback.is_some())
@@ -168,7 +209,11 @@ fn install_profile(connection: &mut Connection) {
         } else {
             TraceEventCodes::empty()
         },
-        enabled.then_some(profile_statement),
+        enabled.then_some(match database {
+            StoreDatabaseKind::Canvas => profile_canvas,
+            StoreDatabaseKind::Analytics => profile_analytics,
+            StoreDatabaseKind::Other => profile_other,
+        }),
     );
 }
 
@@ -218,6 +263,8 @@ pub enum StoreError {
     RecordContract(&'static str),
     #[error("runtime store writer mutex was poisoned")]
     WriterPoisoned,
+    #[error("nested read checkout from the same runtime store is not supported")]
+    NestedRead,
 }
 
 pub type StoreResult<T> = Result<T, StoreError>;
@@ -251,12 +298,216 @@ pub struct RuntimeStore {
     writer: Mutex<Connection>,
     analytics: Mutex<Connection>,
     version_reader: Mutex<Connection>,
+    read_pool: Arc<ReadConnectionPool>,
+    writer_waiters: AtomicUsize,
+    writer_waiter_peak: AtomicUsize,
     identity_registry_path: PathBuf,
     commit_notifiers: Mutex<CommitNotifiers>,
     /// Count of committed transactions that changed rows; owned and advanced by the writer.
     committed_change_generation: AtomicU64,
     last_entity_projection_state: Mutex<Option<(u64, String)>>,
     entity_projection_maintenance_lock: Mutex<()>,
+}
+
+struct ReadConnectionPool {
+    path: PathBuf,
+    state: Mutex<ReadConnectionPoolState>,
+    available: Condvar,
+    waiters: AtomicUsize,
+    waiter_peak: AtomicUsize,
+}
+
+struct ReadConnectionPoolState {
+    idle: Vec<Connection>,
+    opened: usize,
+}
+
+thread_local! {
+    static ACTIVE_READ_POOLS: RefCell<HashSet<usize>> = RefCell::new(HashSet::new());
+}
+
+/// A checked-out read-only canvas connection returned to its bounded pool on drop.
+pub struct ReadConnection {
+    connection: Option<Connection>,
+    pool: Arc<ReadConnectionPool>,
+    pool_id: usize,
+    _thread_bound: PhantomData<Rc<()>>,
+}
+
+impl Deref for ReadConnection {
+    type Target = Connection;
+
+    fn deref(&self) -> &Self::Target {
+        self.connection
+            .as_ref()
+            .expect("checked-out read connection")
+    }
+}
+
+impl DerefMut for ReadConnection {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.connection
+            .as_mut()
+            .expect("checked-out read connection")
+    }
+}
+
+impl Drop for ReadConnection {
+    fn drop(&mut self) {
+        ACTIVE_READ_POOLS.with(|active| {
+            active.borrow_mut().remove(&self.pool_id);
+        });
+        let Some(connection) = self.connection.take() else {
+            return;
+        };
+        if let Ok(mut state) = self.pool.state.lock() {
+            state.idle.push(connection);
+            self.pool.available.notify_one();
+        }
+    }
+}
+
+impl ReadConnectionPool {
+    fn new(path: PathBuf) -> Self {
+        Self {
+            path,
+            state: Mutex::new(ReadConnectionPoolState {
+                idle: Vec::new(),
+                opened: 0,
+            }),
+            available: Condvar::new(),
+            waiters: AtomicUsize::new(0),
+            waiter_peak: AtomicUsize::new(0),
+        }
+    }
+
+    fn checkout(self: &Arc<Self>) -> StoreResult<ReadConnection> {
+        let pool_id = Arc::as_ptr(self) as usize;
+        if ACTIVE_READ_POOLS.with(|active| active.borrow().contains(&pool_id)) {
+            return Err(StoreError::NestedRead);
+        }
+        let started = Instant::now();
+        let mut waiting = false;
+        let mut state = self.state.lock().map_err(|_| StoreError::WriterPoisoned)?;
+        loop {
+            if let Some(connection) = state.idle.pop() {
+                if waiting {
+                    let waiting_threads = self.waiters.fetch_sub(1, Ordering::Relaxed) - 1;
+                    emit_diagnostic(StoreDiagnosticsEvent::ReadWaiters {
+                        waiting_threads,
+                        peak_waiters: self.waiter_peak.load(Ordering::Relaxed),
+                        opened_connections: state.opened,
+                    });
+                }
+                emit_diagnostic(StoreDiagnosticsEvent::ReadAdmission {
+                    wait: started.elapsed(),
+                    waited: waiting,
+                    waiting_threads: self.waiters.load(Ordering::Relaxed),
+                    peak_waiters: self.waiter_peak.load(Ordering::Relaxed),
+                    opened_connections: state.opened,
+                });
+                ACTIVE_READ_POOLS.with(|active| {
+                    active.borrow_mut().insert(pool_id);
+                });
+                return Ok(ReadConnection {
+                    connection: Some(connection),
+                    pool: Arc::clone(self),
+                    pool_id,
+                    _thread_bound: PhantomData,
+                });
+            }
+            if state.opened < READ_CONNECTION_POOL_CAPACITY {
+                state.opened += 1;
+                drop(state);
+                let result = open_database(&self.path, OpenFlags::SQLITE_OPEN_READ_ONLY).and_then(
+                    |connection| {
+                        connection.pragma_update(None, "query_only", "ON")?;
+                        Ok(connection)
+                    },
+                );
+                if result.is_err() {
+                    if let Ok(mut state) = self.state.lock() {
+                        state.opened = state.opened.saturating_sub(1);
+                        self.available.notify_one();
+                    }
+                }
+                if waiting {
+                    let waiting_threads = self.waiters.fetch_sub(1, Ordering::Relaxed) - 1;
+                    emit_diagnostic(StoreDiagnosticsEvent::ReadWaiters {
+                        waiting_threads,
+                        peak_waiters: self.waiter_peak.load(Ordering::Relaxed),
+                        opened_connections: self
+                            .state
+                            .lock()
+                            .map(|state| state.opened)
+                            .unwrap_or_default(),
+                    });
+                }
+                let opened_connections = self
+                    .state
+                    .lock()
+                    .map(|state| state.opened)
+                    .unwrap_or_default();
+                emit_diagnostic(StoreDiagnosticsEvent::ReadAdmission {
+                    wait: started.elapsed(),
+                    waited: waiting,
+                    waiting_threads: self.waiters.load(Ordering::Relaxed),
+                    peak_waiters: self.waiter_peak.load(Ordering::Relaxed),
+                    opened_connections,
+                });
+                if result.is_ok() {
+                    ACTIVE_READ_POOLS.with(|active| {
+                        active.borrow_mut().insert(pool_id);
+                    });
+                }
+                return result.map(|connection| ReadConnection {
+                    connection: Some(connection),
+                    pool: Arc::clone(self),
+                    pool_id,
+                    _thread_bound: PhantomData,
+                });
+            }
+            if !waiting {
+                waiting = true;
+                let active = self.waiters.fetch_add(1, Ordering::Relaxed) + 1;
+                let peak_waiters = self
+                    .waiter_peak
+                    .fetch_max(active, Ordering::Relaxed)
+                    .max(active);
+                emit_diagnostic(StoreDiagnosticsEvent::ReadWaiters {
+                    waiting_threads: active,
+                    peak_waiters,
+                    opened_connections: state.opened,
+                });
+            }
+            state = match self.available.wait(state) {
+                Ok(state) => state,
+                Err(error) => {
+                    if waiting {
+                        let waiting_threads = self.waiters.fetch_sub(1, Ordering::Relaxed) - 1;
+                        emit_diagnostic(StoreDiagnosticsEvent::ReadWaiters {
+                            waiting_threads,
+                            peak_waiters: self.waiter_peak.load(Ordering::Relaxed),
+                            opened_connections: error.get_ref().opened,
+                        });
+                        emit_diagnostic(StoreDiagnosticsEvent::ReadAdmission {
+                            wait: started.elapsed(),
+                            waited: true,
+                            waiting_threads: self.waiters.load(Ordering::Relaxed),
+                            peak_waiters: self.waiter_peak.load(Ordering::Relaxed),
+                            opened_connections: error.get_ref().opened,
+                        });
+                    }
+                    return Err(StoreError::WriterPoisoned);
+                }
+            };
+        }
+    }
+
+    #[cfg(test)]
+    fn opened_count(&self) -> usize {
+        self.state.lock().expect("read pool lock").opened
+    }
 }
 
 #[derive(Default)]
@@ -298,7 +549,7 @@ impl RuntimeStore {
         let writer = open_database(&canvas_path, OpenFlags::SQLITE_OPEN_READ_WRITE)?;
         writer.pragma_update(None, "synchronous", "FULL")?;
         schema::register_python_trigger_functions(&writer)?;
-        let mut analytics = open_database(&analytics_path, OpenFlags::SQLITE_OPEN_READ_WRITE)?;
+        let analytics = open_database(&analytics_path, OpenFlags::SQLITE_OPEN_READ_WRITE)?;
         analytics.pragma_update(None, "journal_mode", "WAL")?;
         analytics.pragma_update(None, "synchronous", "FULL")?;
         let version_reader = open_database(&canvas_path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
@@ -322,6 +573,9 @@ impl RuntimeStore {
             writer: Mutex::new(writer),
             analytics: Mutex::new(analytics),
             version_reader: Mutex::new(version_reader),
+            read_pool: Arc::new(ReadConnectionPool::new(canvas_path.clone())),
+            writer_waiters: AtomicUsize::new(0),
+            writer_waiter_peak: AtomicUsize::new(0),
             identity_registry_path,
             commit_notifiers: Mutex::new(CommitNotifiers::default()),
             committed_change_generation: AtomicU64::new(0),
@@ -420,10 +674,18 @@ impl RuntimeStore {
             *current = callback;
         }
         if let Ok(mut writer) = self.writer.lock() {
-            install_profile(&mut writer);
+            install_profile(&mut writer, StoreDatabaseKind::Canvas);
+        }
+        if let Ok(mut analytics) = self.analytics.lock() {
+            install_profile(&mut analytics, StoreDatabaseKind::Analytics);
         }
         if let Ok(mut reader) = self.version_reader.lock() {
-            install_profile(&mut reader);
+            install_profile(&mut reader, StoreDatabaseKind::Canvas);
+        }
+        if let Ok(mut pool) = self.read_pool.state.lock() {
+            for connection in &mut pool.idle {
+                install_profile(connection, StoreDatabaseKind::Canvas);
+            }
         }
         if callback.is_some() {
             let _ = self.checkpoint_wal_passive();
@@ -440,7 +702,10 @@ impl RuntimeStore {
         )?;
         drop(writer);
 
-        let analytics = self.analytics.lock().map_err(|_| StoreError::WriterPoisoned)?;
+        let analytics = self
+            .analytics
+            .lock()
+            .map_err(|_| StoreError::WriterPoisoned)?;
         self.checkpoint_connection(
             &analytics,
             StoreDatabaseKind::Analytics,
@@ -455,17 +720,14 @@ impl RuntimeStore {
         database: StoreDatabaseKind,
         wal_path: &Path,
     ) -> StoreResult<()> {
-        let (busy, log_frames, checkpointed_frames) = connection.query_row(
-            "PRAGMA wal_checkpoint(PASSIVE)",
-            [],
-            |row| {
+        let (busy, log_frames, checkpointed_frames) =
+            connection.query_row("PRAGMA wal_checkpoint(PASSIVE)", [], |row| {
                 Ok((
                     row.get::<_, i64>(0)?,
                     row.get::<_, i64>(1)?,
                     row.get::<_, i64>(2)?,
                 ))
-            },
-        )?;
+            })?;
         let wal_size_bytes = std::fs::metadata(wal_path).map_or(0, |metadata| metadata.len());
         emit_diagnostic(StoreDiagnosticsEvent::WalCheckpoint {
             database,
@@ -525,8 +787,60 @@ impl RuntimeStore {
     {
         let diagnostics_enabled = DIAGNOSTICS_ENABLED.load(Ordering::Acquire);
         let waiting = diagnostics_enabled.then(Instant::now);
-        let mut writer = self.writer.lock().map_err(|_| StoreError::WriterPoisoned)?;
+        let mut did_wait = false;
+        let (mut writer, waiting_threads) = match self.writer.try_lock() {
+            Ok(writer) => (writer, self.writer_waiters.load(Ordering::Relaxed)),
+            Err(std::sync::TryLockError::WouldBlock) => {
+                did_wait = true;
+                let active_waiters = self.writer_waiters.fetch_add(1, Ordering::Relaxed) + 1;
+                let peak_waiters = self
+                    .writer_waiter_peak
+                    .fetch_max(active_waiters, Ordering::Relaxed)
+                    .max(active_waiters);
+                emit_diagnostic(StoreDiagnosticsEvent::WriterWaiters {
+                    waiting_threads: active_waiters,
+                    peak_waiters,
+                });
+                let writer = match self.writer.lock() {
+                    Ok(writer) => writer,
+                    Err(_) => {
+                        let waiting_threads =
+                            self.writer_waiters.fetch_sub(1, Ordering::Relaxed) - 1;
+                        if diagnostics_enabled {
+                            emit_diagnostic(StoreDiagnosticsEvent::WriterWaiters {
+                                waiting_threads,
+                                peak_waiters: self.writer_waiter_peak.load(Ordering::Relaxed),
+                            });
+                            emit_diagnostic(StoreDiagnosticsEvent::WriterAdmission {
+                                wait: waiting.map_or(Duration::ZERO, |started| started.elapsed()),
+                                waited: true,
+                                waiting_threads,
+                                peak_waiters: self.writer_waiter_peak.load(Ordering::Relaxed),
+                            });
+                        }
+                        return Err(StoreError::WriterPoisoned.into());
+                    }
+                };
+                let waiting_threads = self.writer_waiters.fetch_sub(1, Ordering::Relaxed) - 1;
+                emit_diagnostic(StoreDiagnosticsEvent::WriterWaiters {
+                    waiting_threads,
+                    peak_waiters: self.writer_waiter_peak.load(Ordering::Relaxed),
+                });
+                (writer, waiting_threads)
+            }
+            Err(std::sync::TryLockError::Poisoned(_)) => {
+                return Err(StoreError::WriterPoisoned.into());
+            }
+        };
         let wait = waiting.map_or(Duration::ZERO, |started| started.elapsed());
+        if diagnostics_enabled {
+            emit_diagnostic(StoreDiagnosticsEvent::WriterAdmission {
+                wait,
+                waited: did_wait,
+                waiting_threads,
+                peak_waiters: self.writer_waiter_peak.load(Ordering::Relaxed),
+            });
+        }
         let holding = diagnostics_enabled.then(Instant::now);
         let outcome = (|| {
             let transaction = writer
@@ -537,9 +851,16 @@ impl RuntimeStore {
             match operation(&transaction) {
                 Ok(value) => {
                     let changed = transaction.total_changes() != initial_changes;
+                    let commit_started = diagnostics_enabled.then(Instant::now);
                     transaction
                         .commit()
                         .map_err(StoreError::CommitOutcomeUnknown)?;
+                    if let Some(started) = commit_started {
+                        emit_diagnostic(StoreDiagnosticsEvent::CommitDuration {
+                            database: StoreDatabaseKind::Canvas,
+                            elapsed: started.elapsed(),
+                        });
+                    }
                     if changed {
                         self.committed_change_generation
                             .fetch_add(1, Ordering::Release);
@@ -580,14 +901,8 @@ impl RuntimeStore {
     }
 
     /// Open an independent read-only, query-only connection to the main DB.
-    pub fn read(&self) -> StoreResult<Connection> {
-        let mut connection = open_database(
-            &self.root.join("canvas.sqlite3"),
-            OpenFlags::SQLITE_OPEN_READ_ONLY,
-        )?;
-        install_profile(&mut connection);
-        connection.pragma_update(None, "query_only", "ON")?;
-        Ok(connection)
+    pub fn read(&self) -> StoreResult<ReadConnection> {
+        self.read_pool.checkout()
     }
 
     /// Run related reads in one SQLite snapshot.
@@ -788,7 +1103,12 @@ fn invalid_local_identity(reason: &str) -> StoreError {
 
 fn open_database(path: &Path, flags: OpenFlags) -> StoreResult<Connection> {
     let mut connection = Connection::open_with_flags(path, flags)?;
-    install_profile(&mut connection);
+    let database = match path.file_name().and_then(|name| name.to_str()) {
+        Some("analytics.sqlite3") => StoreDatabaseKind::Analytics,
+        Some("canvas.sqlite3") => StoreDatabaseKind::Canvas,
+        _ => StoreDatabaseKind::Other,
+    };
+    install_profile(&mut connection, database);
     connection.busy_timeout(std::time::Duration::from_millis(u64::from(
         DATABASE_BUSY_TIMEOUT_MS,
     )))?;
@@ -796,19 +1116,176 @@ fn open_database(path: &Path, flags: OpenFlags) -> StoreResult<Connection> {
 }
 
 #[cfg(test)]
+mod read_pool_tests {
+    use super::*;
+    use std::sync::mpsc;
+
+    #[test]
+    fn sequential_reads_reuse_a_bounded_connection() {
+        let directory = tempfile::tempdir().expect("temporary state directory");
+        let canvas_path = directory.path().join("canvas.sqlite3");
+        Connection::open(&canvas_path).expect("canvas database");
+        let store = RuntimeStore {
+            root: directory.path().to_path_buf(),
+            _runtime_lock: RuntimeLock::acquire(directory.path()).expect("runtime lock"),
+            writer: Mutex::new(Connection::open_in_memory().expect("writer connection")),
+            analytics: Mutex::new(Connection::open_in_memory().expect("analytics connection")),
+            version_reader: Mutex::new(Connection::open_in_memory().expect("version reader")),
+            read_pool: Arc::new(ReadConnectionPool::new(canvas_path)),
+            writer_waiters: AtomicUsize::new(0),
+            writer_waiter_peak: AtomicUsize::new(0),
+            identity_registry_path: directory.path().join("canvas.sqlite3"),
+            commit_notifiers: Mutex::new(CommitNotifiers::default()),
+            committed_change_generation: AtomicU64::new(0),
+            last_entity_projection_state: Mutex::new(None),
+            entity_projection_maintenance_lock: Mutex::new(()),
+        };
+
+        for _ in 0..16 {
+            let reader = store.read().expect("read checkout");
+            assert_eq!(
+                reader
+                    .query_row("SELECT 1", [], |row| row.get::<_, i64>(0))
+                    .unwrap(),
+                1
+            );
+        }
+
+        assert_eq!(store.read_pool.opened_count(), 1);
+        assert!(READ_CONNECTION_POOL_CAPACITY > 1);
+    }
+
+    #[test]
+    fn nested_read_fails_fast_when_all_pooled_connections_are_checked_out() {
+        let directory = tempfile::tempdir().expect("temporary state directory");
+        let canvas_path = directory.path().join("canvas.sqlite3");
+        Connection::open(&canvas_path).expect("canvas database");
+        let store = Arc::new(RuntimeStore {
+            root: directory.path().to_path_buf(),
+            _runtime_lock: RuntimeLock::acquire(directory.path()).expect("runtime lock"),
+            writer: Mutex::new(Connection::open_in_memory().expect("writer connection")),
+            analytics: Mutex::new(Connection::open_in_memory().expect("analytics connection")),
+            version_reader: Mutex::new(Connection::open_in_memory().expect("version reader")),
+            read_pool: Arc::new(ReadConnectionPool::new(canvas_path)),
+            writer_waiters: AtomicUsize::new(0),
+            writer_waiter_peak: AtomicUsize::new(0),
+            identity_registry_path: directory.path().join("canvas.sqlite3"),
+            commit_notifiers: Mutex::new(CommitNotifiers::default()),
+            committed_change_generation: AtomicU64::new(0),
+            last_entity_projection_state: Mutex::new(None),
+            entity_projection_maintenance_lock: Mutex::new(()),
+        });
+        let (ready_tx, ready_rx) = mpsc::channel();
+        let (start_nested_tx, start_nested_rx) = mpsc::channel();
+        let mut start_nested_rx = Some(start_nested_rx);
+        let (nested_result_tx, nested_result_rx) = mpsc::sync_channel(1);
+        let mut release_senders = Vec::with_capacity(READ_CONNECTION_POOL_CAPACITY);
+
+        std::thread::scope(|scope| {
+            for index in 0..READ_CONNECTION_POOL_CAPACITY {
+                let store = Arc::clone(&store);
+                let ready_tx = ready_tx.clone();
+                let start_nested_rx = if index == 0 {
+                    start_nested_rx.take()
+                } else {
+                    None
+                };
+                let nested_result_tx = nested_result_tx.clone();
+                let (release_tx, release_rx) = mpsc::channel();
+                release_senders.push(release_tx);
+                scope.spawn(move || {
+                    let _reader = store.read().expect("acquire pool connection");
+                    ready_tx.send(()).expect("report read connection ready");
+                    if let Some(start_nested_rx) = start_nested_rx {
+                        start_nested_rx.recv().expect("start nested checkout");
+                        let nested_is_refused = matches!(store.read(), Err(StoreError::NestedRead));
+                        nested_result_tx
+                            .send(nested_is_refused)
+                            .expect("report nested checkout result");
+                    }
+                    release_rx.recv().expect("release read connection");
+                });
+            }
+
+            for _ in 0..READ_CONNECTION_POOL_CAPACITY {
+                ready_rx
+                    .recv_timeout(Duration::from_secs(5))
+                    .expect("all pool connections are checked out");
+            }
+            assert_eq!(
+                store.read_pool.opened_count(),
+                READ_CONNECTION_POOL_CAPACITY
+            );
+            start_nested_tx.send(()).expect("request nested checkout");
+            let immediate_result = nested_result_rx.recv_timeout(Duration::from_secs(2));
+
+            // If nested checkout regresses to waiting, release the other leases
+            // so the test can report the wrong result instead of hanging.
+            for release in release_senders.iter().skip(1) {
+                release.send(()).expect("release other read connection");
+            }
+            let nested_result = match immediate_result {
+                Ok(result) => Some(result),
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    nested_result_rx.recv_timeout(Duration::from_secs(5)).ok()
+                }
+                Err(mpsc::RecvTimeoutError::Disconnected) => None,
+            };
+            release_senders[0]
+                .send(())
+                .expect("release nested-read worker");
+            assert!(
+                immediate_result.is_ok() && nested_result == Some(true),
+                "nested read must be refused before waiting for another pool connection"
+            );
+        });
+    }
+}
+
+#[cfg(test)]
 mod diagnostics_hook_tests {
     use super::*;
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Condvar, Mutex, mpsc};
 
-    static EVENTS: AtomicUsize = AtomicUsize::new(0);
+    static EVENTS: Mutex<Vec<StoreDiagnosticsEvent>> = Mutex::new(Vec::new());
+    static EVENTS_READY: Condvar = Condvar::new();
+    static TEST_LOCK: Mutex<()> = Mutex::new(());
 
-    fn count_event(_event: StoreDiagnosticsEvent) {
-        EVENTS.fetch_add(1, Ordering::Relaxed);
+    fn record_event(event: StoreDiagnosticsEvent) {
+        EVENTS.lock().expect("diagnostic events lock").push(event);
+        EVENTS_READY.notify_all();
+    }
+
+    fn wait_for_event(predicate: impl Fn(&StoreDiagnosticsEvent) -> bool) -> bool {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let mut events = EVENTS.lock().expect("diagnostic events lock");
+        loop {
+            if events.iter().any(&predicate) {
+                return true;
+            }
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return false;
+            }
+            let (next, timeout) = EVENTS_READY
+                .wait_timeout(events, remaining)
+                .expect("diagnostics event wait");
+            events = next;
+            if timeout.timed_out() && !events.iter().any(&predicate) {
+                return false;
+            }
+        }
     }
 
     #[test]
     fn optional_hook_observes_writer_and_sql_timing_and_can_be_cleared() {
+        let _test_guard = TEST_LOCK.lock().expect("serialize diagnostics hook tests");
         let directory = tempfile::tempdir().expect("temporary state directory");
+        let canvas_path = directory.path().join("canvas.sqlite3");
+        Connection::open(&canvas_path)
+            .expect("create read pool database")
+            .close()
+            .expect("close read pool database");
         let writer = Connection::open_in_memory().expect("writer connection");
         let reader = Connection::open_in_memory().expect("reader connection");
         let store = RuntimeStore {
@@ -817,14 +1294,17 @@ mod diagnostics_hook_tests {
             writer: Mutex::new(writer),
             analytics: Mutex::new(Connection::open_in_memory().expect("analytics connection")),
             version_reader: Mutex::new(reader),
+            read_pool: Arc::new(ReadConnectionPool::new(canvas_path)),
+            writer_waiters: AtomicUsize::new(0),
+            writer_waiter_peak: AtomicUsize::new(0),
             identity_registry_path: directory.path().join("canvas.sqlite3"),
             commit_notifiers: Mutex::new(CommitNotifiers::default()),
             committed_change_generation: AtomicU64::new(0),
             last_entity_projection_state: Mutex::new(None),
             entity_projection_maintenance_lock: Mutex::new(()),
         };
-        EVENTS.store(0, Ordering::Relaxed);
-        store.set_diagnostics_callback(Some(count_event));
+        EVENTS.lock().expect("diagnostic events lock").clear();
+        store.set_diagnostics_callback(Some(record_event));
         store
             .transaction(|transaction| {
                 transaction.execute_batch("CREATE TABLE measured(value INTEGER);")?;
@@ -832,17 +1312,203 @@ mod diagnostics_hook_tests {
                 Ok(())
             })
             .expect("transaction succeeds");
-        assert!(EVENTS.load(Ordering::Relaxed) >= 3);
+        assert!(EVENTS.lock().expect("diagnostic events lock").len() >= 3);
+
+        EVENTS.lock().expect("diagnostic events lock").clear();
+        let writer_guard = store.writer.lock().expect("hold writer");
+        let writer_wait_observed = std::thread::scope(|scope| {
+            let waiter = scope.spawn(|| store.transaction(|_| Ok::<(), StoreError>(())));
+            let observed = wait_for_event(|event| {
+                matches!(
+                    event,
+                    StoreDiagnosticsEvent::WriterWaiters {
+                        waiting_threads: 1,
+                        ..
+                    }
+                )
+            });
+            drop(writer_guard);
+            waiter
+                .join()
+                .expect("writer waiter thread")
+                .expect("writer wait completes");
+            observed
+        });
+        assert!(
+            writer_wait_observed,
+            "writer queue occupancy was not published"
+        );
+        assert_eq!(
+            EVENTS
+                .lock()
+                .expect("diagnostic events lock")
+                .iter()
+                .filter(|event| matches!(
+                    event,
+                    StoreDiagnosticsEvent::WriterAdmission { waited: true, .. }
+                ))
+                .count(),
+            1,
+            "one completed wait must produce one admission latency sample"
+        );
+
+        EVENTS.lock().expect("diagnostic events lock").clear();
+        let read_wait_observed = std::thread::scope(|scope| {
+            let (ready_tx, ready_rx) = mpsc::channel();
+            let mut release = Vec::with_capacity(READ_CONNECTION_POOL_CAPACITY);
+            for _ in 0..READ_CONNECTION_POOL_CAPACITY {
+                let (release_tx, release_rx) = mpsc::channel();
+                release.push(release_tx);
+                let ready_tx = ready_tx.clone();
+                let store_ref = &store;
+                scope.spawn(move || {
+                    let reader = store_ref.read().expect("checkout held reader");
+                    ready_tx.send(()).expect("report held reader");
+                    release_rx.recv().expect("release held reader");
+                    drop(reader);
+                });
+            }
+            drop(ready_tx);
+            let mut all_readers_held = true;
+            for _ in 0..READ_CONNECTION_POOL_CAPACITY {
+                if ready_rx.recv_timeout(Duration::from_secs(2)).is_err() {
+                    all_readers_held = false;
+                    break;
+                }
+            }
+            if !all_readers_held {
+                for release in &release {
+                    let _result = release.send(());
+                }
+                return false;
+            }
+            let (done_tx, done_rx) = mpsc::channel();
+            let store_ref = &store;
+            let waiter = scope.spawn(move || {
+                let reader = store_ref
+                    .read()
+                    .expect("read waiter acquires released slot");
+                done_tx.send(()).expect("report acquired reader");
+                drop(reader);
+            });
+            let observed = wait_for_event(|event| {
+                matches!(
+                    event,
+                    StoreDiagnosticsEvent::ReadWaiters {
+                        waiting_threads: 1,
+                        peak_waiters: 1,
+                        ..
+                    }
+                )
+            });
+            release[0].send(()).expect("release first read slot");
+            let acquired = done_rx.recv_timeout(Duration::from_secs(2)).is_ok();
+            for release in release.iter().skip(1) {
+                release.send(()).expect("release read slot");
+            }
+            waiter.join().expect("read waiter thread");
+            observed && acquired
+        });
+        assert!(
+            read_wait_observed,
+            "read pool queue occupancy was not published"
+        );
+        assert_eq!(
+            EVENTS
+                .lock()
+                .expect("diagnostic events lock")
+                .iter()
+                .filter(|event| matches!(
+                    event,
+                    StoreDiagnosticsEvent::ReadAdmission { waited: true, .. }
+                ))
+                .count(),
+            1,
+            "one completed read wait must produce one admission latency sample"
+        );
 
         store.set_diagnostics_callback(None);
-        let previous = EVENTS.load(Ordering::Relaxed);
+        let previous = EVENTS.lock().expect("diagnostic events lock").len();
         store
             .transaction(|transaction| {
                 transaction.execute("INSERT INTO measured(value) VALUES (2)", [])?;
                 Ok(())
             })
             .expect("transaction succeeds with no observer");
-        assert_eq!(EVENTS.load(Ordering::Relaxed), previous);
+        assert_eq!(
+            EVENTS.lock().expect("diagnostic events lock").len(),
+            previous
+        );
+    }
+
+    #[test]
+    fn analytics_writer_publishes_queue_occupancy_before_blocking() {
+        let _test_guard = TEST_LOCK.lock().expect("serialize diagnostics hook tests");
+        let directory = tempfile::tempdir().expect("temporary state directory");
+        let store =
+            Arc::new(RuntimeStore::open(Some(directory.path())).expect("open runtime store"));
+        EVENTS.lock().expect("diagnostic events lock").clear();
+        store.set_diagnostics_callback(Some(record_event));
+        let writer_guard = store.writer.lock().expect("hold canvas writer");
+
+        std::thread::scope(|scope| {
+            let waiter = scope.spawn(|| {
+                store
+                    .analytics_transaction(|_, _| Ok::<(), StoreError>(()))
+                    .expect("analytics transaction succeeds after writer release");
+            });
+            assert!(
+                wait_for_event(|event| {
+                    matches!(
+                        event,
+                        StoreDiagnosticsEvent::WriterWaiters {
+                            waiting_threads: 1,
+                            ..
+                        }
+                    )
+                }),
+                "analytics writer must publish occupancy before waiting on the writer"
+            );
+            assert_eq!(
+                EVENTS
+                    .lock()
+                    .expect("diagnostic events lock")
+                    .iter()
+                    .filter(|event| matches!(
+                        event,
+                        StoreDiagnosticsEvent::WriterAdmission { waited: true, .. }
+                    ))
+                    .count(),
+                0,
+                "a blocked analytics admission has no completed latency sample yet"
+            );
+            drop(writer_guard);
+            waiter.join().expect("analytics waiter thread");
+        });
+
+        let events = EVENTS.lock().expect("diagnostic events lock");
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(
+                    event,
+                    StoreDiagnosticsEvent::WriterAdmission { waited: true, .. }
+                ))
+                .count(),
+            1,
+            "completed analytics wait contributes exactly one admission sample"
+        );
+        assert!(
+            events.iter().any(|event| matches!(
+                event,
+                StoreDiagnosticsEvent::WriterWaiters {
+                    waiting_threads: 0,
+                    ..
+                }
+            )),
+            "analytics waiter departure must publish the new occupancy"
+        );
+        store.set_diagnostics_callback(None);
     }
 }
 
@@ -860,6 +1526,11 @@ mod commit_notification_tests {
             writer: Mutex::new(Connection::open_in_memory().expect("writer connection")),
             analytics: Mutex::new(Connection::open_in_memory().expect("analytics connection")),
             version_reader: Mutex::new(Connection::open_in_memory().expect("reader connection")),
+            read_pool: Arc::new(ReadConnectionPool::new(
+                directory.path().join("canvas.sqlite3"),
+            )),
+            writer_waiters: AtomicUsize::new(0),
+            writer_waiter_peak: AtomicUsize::new(0),
             identity_registry_path: directory.path().join("canvas.sqlite3"),
             commit_notifiers: Mutex::new(CommitNotifiers::default()),
             committed_change_generation: AtomicU64::new(0),

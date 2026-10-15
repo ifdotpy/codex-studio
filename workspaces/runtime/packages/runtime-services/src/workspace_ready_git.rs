@@ -264,7 +264,7 @@ impl Context {
     }
 }
 fn snapshot(store: &RuntimeStore, id: &str) -> Result<WorkspaceSnapshot, WorkspaceError> {
-    CheckpointsRepository::workspace_snapshot(&store.read()?, id)?
+    CheckpointsRepository::workspace_snapshot(&*store.read()?, id)?
         .ok_or(WorkspaceError::InvalidRecord)
 }
 fn actor(snapshot: &WorkspaceSnapshot) -> Result<WorkspaceActor, WorkspaceError> {
@@ -333,7 +333,7 @@ fn observe(
     let destination = repository
         .join(".worktrees/codex-agents")
         .join(&context.actor.id);
-    let journal = WorkspaceReadyRepository::journal(&store.read()?, &id)?;
+    let journal = WorkspaceReadyRepository::journal(&*store.read()?, &id)?;
     let plan = if let Some(operation) = journal {
         context.journaled = true;
         serde_json::from_value(operation["plan"].clone())

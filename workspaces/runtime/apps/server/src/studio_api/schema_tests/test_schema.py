@@ -525,7 +525,7 @@ class SchemaContractTests(unittest.TestCase):
                 with self.assertRaises(ValidationError):
                     adapter.validate_python(invalid)
 
-    def test_generated_document_does_not_loosen_main_constraint_baseline(self) -> None:
+    def test_generated_document_only_adds_reviewed_diagnostic_fields(self) -> None:
         baseline_path = Path(__file__).with_name("openapi_constraint_baseline.json")
         manifest = json.loads(baseline_path.read_text(encoding="utf-8"))
         self.assertEqual(manifest["sourceCommit"], "51d376b7")
@@ -542,7 +542,89 @@ class SchemaContractTests(unittest.TestCase):
         # Keep the historical baseline while requiring every other constraint to
         # remain unchanged.
         self.assertEqual(loosenings, manifest.get("acceptedLoosenings", []))
+        self.assertEqual(
+            {(item["pointer"], item["constraint"]) for item in loosenings},
+            self._reviewed_diagnostics_additions(),
+            "only reviewed store and blocking-pool telemetry may add response fields",
+        )
 
+
+    @staticmethod
+    def _reviewed_diagnostics_additions() -> set[tuple[str, str]]:
+        """Allow only fields required by store and blocking-pool latency telemetry.
+
+        The store percentiles are nullable because a cold process has no samples;
+        WAL entries are nullable until a checkpoint has observed that database.
+        These diagnostics are additive wire fields, while the metrics themselves
+        remain closed objects and keep their numeric bounds.
+        """
+        allowed: set[tuple[str, str]] = set()
+
+        def add(pointer: str, *constraints: str) -> None:
+            allowed.update((pointer, constraint) for constraint in constraints)
+
+        blocking_fields = ("closureP95Ms", "closureP99Ms", "queueWaitP95Ms", "queueWaitP99Ms")
+        for prefix in (
+            "/components/schemas/BlockingPoolGroupMetrics/properties",
+            "/components/schemas/BlockingPoolMetrics/properties/groups/items/properties",
+        ):
+            for field in blocking_fields:
+                add(f"{prefix}/{field}", "property")
+
+        for schema in ("DiagnosticsResponse", "SqliteContention"):
+            base = f"/components/schemas/{schema}/properties"
+            if schema == "DiagnosticsResponse":
+                base += "/sqliteContention/properties"
+            for field in ("commitProfile", "sqlProfile", "storeAdmission", "walTelemetry"):
+                add(f"{base}/{field}", "property")
+            add(f"{base}/walTelemetry", "@nullable", "@nullableBranch")
+
+        sqlite_metric = "/components/schemas/SqliteMetric/properties"
+        for suffix in ("p99TransactionMs", "sites/additionalProperties/properties/p99TransactionMs"):
+            pointer = f"{sqlite_metric}/{suffix}"
+            add(pointer, "property", "@nullable", "@nullableBranch")
+
+        # Percentiles are null until the first sample is recorded.
+        nullable_percentiles = ("p50Ms", "p95Ms", "p99Ms")
+        nullable_prefixes = [
+            "/components/schemas/SqliteAdmissionMetric/properties/waitMs/properties",
+            "/components/schemas/SqliteProfileMetric/properties",
+            "/components/schemas/SqliteWaitQuantiles/properties",
+            "/components/schemas/SqliteStoreAdmission/properties/reads/properties/waitMs/properties",
+            "/components/schemas/SqliteStoreAdmission/properties/writes/properties/waitMs/properties",
+        ]
+        for response in ("DiagnosticsResponse", "SqliteContention"):
+            base = f"/components/schemas/{response}/properties"
+            if response == "DiagnosticsResponse":
+                base += "/sqliteContention/properties"
+            for profile in ("sqlProfile", "commitProfile"):
+                nullable_prefixes.append(f"{base}/{profile}/additionalProperties/properties")
+            for side in ("reads", "writes"):
+                nullable_prefixes.append(
+                    f"{base}/storeAdmission/properties/{side}/properties/waitMs/properties"
+                )
+        for prefix in nullable_prefixes:
+            for field in nullable_percentiles:
+                add(f"{prefix}/{field}", "@nullable", "@nullableBranch")
+
+        # The Rust runtime-lock series already publishes these quantiles; keep
+        # them in the closed diagnostics contract alongside the Python owner.
+        for pointer in (
+            "/components/schemas/LockMetricSummary/properties/p99",
+            "/components/schemas/RuntimeLockOperation/properties/waitMs/properties/p99",
+            "/components/schemas/RuntimeLockOperation/properties/holdMs/properties/p99",
+            "/components/schemas/DiagnosticsResponse/properties/runtimeLockOperations/items/properties/waitMs/properties/p99",
+            "/components/schemas/DiagnosticsResponse/properties/runtimeLockOperations/items/properties/holdMs/properties/p99",
+        ):
+            add(pointer, "property")
+
+        for database in ("canvas", "analytics"):
+            add(
+                f"/components/schemas/WalTelemetry/properties/{database}",
+                "@nullable",
+                "@nullableBranch",
+            )
+        return allowed
     def test_constraint_diff_detects_five_removed_constraints(self) -> None:
         baseline_doc: dict[str, JsonValue] = {
             "paths": {

@@ -130,6 +130,10 @@ pub fn execute(
     let rooms = crate::sync_entity_context::RoomDirectory::prepare(&reader)?;
     let projects = studio_runtime_store::ProjectsRepository::list(&reader)?;
     let vault_snapshot = crate::sync_policy::ProjectVaultSnapshot::capture(store.root(), &projects);
+    // The lifecycle transaction and committed-effect wake happen after these
+    // immutable inputs have been captured; do not retain a pooled reader across
+    // that work, which may perform its own store reads.
+    drop(reader);
     let result = store.transaction_with_error(|tx| {
         execute_in_transaction(tx, action, now, ports, &rooms, &vault_snapshot)
     })?;

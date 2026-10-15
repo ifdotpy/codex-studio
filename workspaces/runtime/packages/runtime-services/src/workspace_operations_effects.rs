@@ -28,11 +28,11 @@ pub fn checkpoint_after_turn(
     let checkpoint_id = request.checkpoint_id();
     let operation_id = format!("checkpoint:{checkpoint_id}");
     let snapshot = checkpoints::capture_context(store, request.agent_id())?;
-    let committed = Repository::completed(&store.read()?, request.agent_id(), request.turn_id())?;
+    let committed = Repository::completed(&*store.read()?, request.agent_id(), request.turn_id())?;
     if !CompletionSnapshot::from_record(&snapshot.agent.record, committed)?.eligible(request) {
         return Ok(None);
     }
-    if let Some(checkpoint) = CheckpointsRepository::checkpoint(&store.read()?, &checkpoint_id)? {
+    if let Some(checkpoint) = CheckpointsRepository::checkpoint(&*store.read()?, &checkpoint_id)? {
         let mut summary = checkpoint.record;
         if let Some(object) = summary.as_object_mut() {
             for field in ["items", "historyDelta", "_payloadBlobs"] {

@@ -190,7 +190,11 @@ impl<'a> MessageIngressAdmission<'a> {
                         .get("tokenBudget")
                         .is_some_and(|budget| !budget.is_null())
                 }) {
-                    crate::budget_runtime::read_histories(store, &agent.root_id.0)?
+                    crate::budget_runtime::read_histories_from_connection(
+                        store,
+                        connection,
+                        &agent.root_id.0,
+                    )?
                 } else {
                     BTreeMap::new()
                 }
@@ -282,6 +286,50 @@ fn resolve_path(path: &str) -> PathBuf {
         }
     }
     resolved
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn positive_budget_admission_reuses_the_caller_reader_for_history_snapshot() {
+        let directory = tempfile::tempdir().expect("temporary state directory");
+        let project_directory = tempfile::tempdir().expect("temporary project directory");
+        let project = project_directory.path().to_path_buf();
+        let store = RuntimeStore::open(Some(directory.path())).expect("open runtime store");
+        let agent = AgentRecord::from_value(json!({
+            "id":"lead", "rootId":"lead", "epoch":1, "status":"idle",
+            "isLead":true, "autoWake":true, "accountKey":"default",
+            "provider":"codex", "model":"gpt-6-astra", "cwd":project,
+            "threadId":"thread-1", "tokenBudget":100
+        }))
+        .expect("valid lead record");
+        store
+            .transaction_with_error(|tx| {
+                AgentRepository::put(tx, &agent)?;
+                Ok::<_, studio_runtime_store::StoreError>(())
+            })
+            .expect("persist lead record");
+
+        let connection = store.read().expect("hold message admission snapshot");
+        let admission = MessageIngressAdmission::load(&store, &connection, "lead")
+            .expect("positive token budget history loads without nested read");
+        assert!(admission.histories.contains_key("lead"));
+    }
+}
+
+/// Runtime.send stores attachment IDs verbatim. Existence, count and ownership
+/// belong to turn_prepare::compile, matching Python message_inputs timing.
+/// Non-ID upload requests still require the separately owned upload adapter.
+pub(crate) fn attachments(assets: &[Value]) -> Result<(), CoordinationError> {
+    if assets.iter().any(|asset| !asset.is_string()) {
+        return Err(CoordinationError::RequiresDependency(
+            "payload-store/uploads",
+        ));
+    }
+    Ok(())
 }
 
 fn other_operation(

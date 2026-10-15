@@ -2081,6 +2081,7 @@ fn queued_managed_tool_request_can_be_cancelled_before_dispatch() {
             .unwrap();
     assert_eq!(cancelled["stage"], "cancelled");
     assert_eq!(cancelled["cancelRequested"], true);
+    drop(connection);
     assert_eq!(intent_count(&store, "spawn"), 0);
 }
 
@@ -2414,6 +2415,7 @@ fn dispatcher_service_bundle_calls_spawn_and_review_entry_points() {
         actual_spawn_child, expected_spawn_child,
         "complete spawn child row"
     );
+    drop(read);
 
     let fallback = crate::managed_child_create::spawn_agents(
         &store,
@@ -2474,6 +2476,7 @@ fn dispatcher_service_bundle_calls_spawn_and_review_entry_points() {
         normalize_persisted_ids_and_times(&mut expected_value);
         assert_eq!(actual, expected_value, "complete {label} row(s)");
     }
+    drop(read);
     let before_workspace_refusal: i64 = store
         .read()
         .unwrap()
@@ -2531,6 +2534,7 @@ fn dispatcher_service_bundle_calls_spawn_and_review_entry_points() {
         actual_review_child, expected_review_child,
         "complete review child row"
     );
+    drop(read);
     store
         .transaction_with::<_, StoreError>(|tx| {
             let root = studio_runtime_store::AgentRepository::get(

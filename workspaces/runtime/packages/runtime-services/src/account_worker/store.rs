@@ -290,7 +290,7 @@ pub(super) fn claim(
     agent: &str,
     epoch: i64,
 ) -> Result<Option<TurnIntent>, WorkerError> {
-    let snapshot = AgentRepository::get(&store.read()?, &AgentId::from(agent))?;
+    let snapshot = AgentRepository::get(&*store.read()?, &AgentId::from(agent))?;
     if snapshot.as_ref().is_none_or(|record| {
         record.epoch != epoch
             || account_key(record) != account
@@ -1026,7 +1026,7 @@ pub(super) fn interrupt_intent(
     agent: &str,
     thread: &str,
 ) -> Result<Option<(TurnIntent, i64)>, WorkerError> {
-    let Some(a) = AgentRepository::get(&store.read()?, &AgentId::from(agent))? else {
+    let Some(a) = AgentRepository::get(&*store.read()?, &AgentId::from(agent))? else {
         return Ok(None);
     };
     let attempt = &a.extra.get("startAttempt").unwrap_or(&Value::Null);

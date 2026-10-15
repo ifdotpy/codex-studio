@@ -99,16 +99,12 @@ impl HttpsPairedTransport {
     pub fn new(store: Arc<RuntimeStore>) -> Self {
         Self { store }
     }
-}
 
-impl PairedTransport for HttpsPairedTransport {
-    fn exchange(
-        &self,
+    fn paired_server_identity(
+        store: &RuntimeStore,
         server: &str,
-        envelope: &Value,
-        timeout: std::time::Duration,
-    ) -> Result<Value, AccessError> {
-        let connection = self.store.read()?;
+    ) -> Result<(String, String), AccessError> {
+        let connection = store.read()?;
         let raw: Option<String> = connection
             .query_row(
                 "SELECT record FROM runtime_access_clients WHERE id=?1",
@@ -133,8 +129,23 @@ impl PairedTransport for HttpsPairedTransport {
         {
             return Err(refused(403, "client_revoked", "The server is not paired"));
         }
-        let origin = text(&value, "origin").to_owned();
-        let public_key = text(&value, "publicKey").to_owned();
+        Ok((
+            text(&value, "origin").to_owned(),
+            text(&value, "publicKey").to_owned(),
+        ))
+    }
+}
+
+impl PairedTransport for HttpsPairedTransport {
+    fn exchange(
+        &self,
+        server: &str,
+        envelope: &Value,
+        timeout: std::time::Duration,
+    ) -> Result<Value, AccessError> {
+        // The helper returns owned fields, so its pooled reader is dropped before
+        // identity loading, signing, or the potentially 20-second network exchange.
+        let (origin, public_key) = Self::paired_server_identity(&self.store, server)?;
         let identity = load_multi_server_identity(self.store.root()).map_err(|_| {
             refused(
                 503,
@@ -1579,8 +1590,12 @@ fn retired(
 #[cfg(test)]
 mod tests {
     use super::{
-        DeliveryDecision, DeliverySnapshot, ExchangeOutcome, decide_delivery, peer_retry_delay,
+        DeliveryDecision, DeliverySnapshot, ExchangeOutcome, HttpsPairedTransport, decide_delivery,
+        peer_retry_delay,
     };
+    use rusqlite::params;
+    use std::sync::{Arc, mpsc};
+    use studio_runtime_store::RuntimeStore;
 
     fn saved(state: &str, next_at: f64) -> DeliverySnapshot {
         DeliverySnapshot {
@@ -1665,5 +1680,60 @@ mod tests {
             [5, 10, 20, 40, 80, 160, 300, 300]
         );
         assert_eq!(peer_retry_delay(-1), 5);
+    }
+
+    #[test]
+    fn paired_identity_read_lease_is_released_before_transport() {
+        let directory = tempfile::tempdir().expect("temporary state directory");
+        let store = Arc::new(RuntimeStore::open(Some(directory.path())).expect("open store"));
+        let record = serde_json::json!({
+            "id": "peer-a",
+            "clientId": "client-a",
+            "kind": "server",
+            "label": "Peer",
+            "created": 1,
+            "publicKey": "public-key",
+            "origin": "https://peer.invalid",
+            "status": "paired"
+        });
+        store
+            .transaction(|tx| {
+                tx.execute(
+                    "INSERT INTO runtime_access_clients(id,record) VALUES (?1,?2)",
+                    params!["peer-a", record.to_string()],
+                )?;
+                Ok(())
+            })
+            .expect("insert paired peer");
+
+        assert_eq!(
+            HttpsPairedTransport::paired_server_identity(&store, "peer-a").expect("peer identity"),
+            ("https://peer.invalid".to_owned(), "public-key".to_owned())
+        );
+        let (ready_tx, ready_rx) = mpsc::channel();
+        const READ_POOL_SLOTS: usize = 4;
+        let mut release_senders = Vec::with_capacity(READ_POOL_SLOTS);
+        std::thread::scope(|scope| {
+            for _ in 0..READ_POOL_SLOTS {
+                let store = Arc::clone(&store);
+                let ready_tx = ready_tx.clone();
+                let (release_tx, release_rx) = mpsc::channel();
+                release_senders.push(release_tx);
+                scope.spawn(move || {
+                    let _reader = store.read().expect("reader slot remains available");
+                    ready_tx.send(()).expect("report available slot");
+                    release_rx.recv().expect("release slot");
+                });
+            }
+            drop(ready_tx);
+            for _ in 0..READ_POOL_SLOTS {
+                ready_rx
+                    .recv_timeout(std::time::Duration::from_secs(2))
+                    .expect("every pooled slot is available after credential lookup");
+            }
+            for release in release_senders {
+                release.send(()).expect("release reader slot");
+            }
+        });
     }
 }

@@ -370,7 +370,7 @@ pub(crate) fn workspace(
     {
         crate::workspace_ready::WorkspaceDecision::Ready { token } => {
             let record =
-                AgentRepository::get(&store.read()?, &AgentId::from(intent.agent_id.as_str()))?
+                AgentRepository::get(&*store.read()?, &AgentId::from(intent.agent_id.as_str()))?
                     .ok_or_else(|| invalid(&intent.agent_id))?;
             if record.extra.get("isLead") == Some(&json!(true)) {
                 if intent.agent_id.is_empty()
@@ -524,7 +524,7 @@ pub(crate) fn prepare_monitor_command(
         return Err(refusal("monitor-preparation/agent-id-invalid".into()));
     }
     let filesystem = FilesystemSnapshot::capture(store, agent_id)?;
-    let observed = AgentRepository::get(&store.read()?, &AgentId::from(agent_id))?
+    let observed = AgentRepository::get(&*store.read()?, &AgentId::from(agent_id))?
         .ok_or_else(|| invalid(agent_id))?
         .value();
     validate_monitor_actor(&observed, epoch)?;
@@ -726,7 +726,7 @@ fn prepare_native_snapshot(
     generation: u64,
     allow_paused_start: bool,
 ) -> Result<thread::Snapshot, WorkerError> {
-    let record = AgentRepository::get(&store.read()?, &AgentId::from(agent_id))?
+    let record = AgentRepository::get(&*store.read()?, &AgentId::from(agent_id))?
         .ok_or_else(|| invalid("agent"))?
         .value();
     let intent = TurnIntent {
@@ -824,7 +824,7 @@ pub(crate) fn prepare_safety_retry(
     {
         return Err(refusal("safety-retry/identity-invalid".into()));
     }
-    let record = AgentRepository::get(&store.read()?, &AgentId::from(request.agent_id.as_str()))?
+    let record = AgentRepository::get(&*store.read()?, &AgentId::from(request.agent_id.as_str()))?
         .ok_or_else(|| invalid("agent"))?
         .value();
     if record.get("threadId").and_then(Value::as_str) != Some(&request.source_thread_id)
