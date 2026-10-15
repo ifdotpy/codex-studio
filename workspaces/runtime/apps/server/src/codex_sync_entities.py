@@ -548,16 +548,16 @@ def event_trigger_statements(operation: str) -> tuple[str, ...]:
     ) ORDER BY created DESC,id LIMIT {EVENT_WINDOW}"""
     old_in_window = f"EXISTS (SELECT 1 FROM ({recent_before}) e WHERE e.id=OLD.id)"
     new_in_window = f"EXISTS (SELECT 1 FROM ({recent}) e WHERE e.id=NEW.id)"
-    membership_changed = f"""(
-        (OLD.id IS NOT NEW.id OR OLD.created IS NOT NEW.created)
-        AND (WITH old_member AS (SELECT {old_in_window} AS present),
-                  new_member AS (SELECT {new_in_window} AS present)
-             SELECT CASE WHEN OLD.id IS NEW.id
-                         THEN old_member.present != new_member.present
-                         ELSE old_member.present OR new_member.present
-                    END
-             FROM old_member,new_member)
-    )"""
+    membership_changed = f"""CASE
+        WHEN OLD.id IS NEW.id AND OLD.created IS NEW.created THEN 0
+        ELSE (WITH old_member AS (SELECT {old_in_window} AS present),
+                   new_member AS (SELECT {new_in_window} AS present)
+              SELECT CASE WHEN OLD.id IS NEW.id
+                          THEN old_member.present != new_member.present
+                          ELSE old_member.present OR new_member.present
+                     END
+              FROM old_member,new_member)
+    END"""
     payload_when = "WHEN (" \
         "OLD.id IS NOT NEW.id OR OLD.agent IS NOT NEW.agent OR " \
         "OLD.kind IS NOT NEW.kind OR OLD.status IS NOT NEW.status OR " \
