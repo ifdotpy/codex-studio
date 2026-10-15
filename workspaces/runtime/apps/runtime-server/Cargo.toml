@@ -17,6 +17,7 @@ studio-runtime-http = { path = "../../packages/runtime-http" }
 studio-runtime-services = { path = "../../packages/runtime-services" }
 studio-runtime-store = { path = "../../packages/runtime-store" }
 nix = { workspace = true }
+process-wrap = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
 rusqlite = { workspace = true }

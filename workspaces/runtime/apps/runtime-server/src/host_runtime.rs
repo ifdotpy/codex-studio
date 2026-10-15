@@ -4,14 +4,19 @@ use crate::account_registry::{
     AccountLaunch, AccountLauncher, AccountRegistry, AccountRegistryConfig, AccountSessionBroker,
     LaunchFuture,
 };
+#[cfg(unix)]
+use process_wrap::std::ProcessGroup;
+use process_wrap::std::{ChildWrapper, CommandWrap};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeMap,
     env,
+    io::{BufRead, Read, Write},
     path::{Path, PathBuf},
+    process::Stdio,
     sync::{Arc, Mutex},
-    time::Duration,
+    time::{Duration, Instant},
 };
 use studio_runtime_http::HttpState;
 use studio_runtime_process::{
@@ -201,6 +206,7 @@ impl HostRuntime {
         )
         .await
         .map_err(|_| WorkerError::TaskFailed)??;
+        let claude_bridge_dir = install_root.claude_bridge_dir();
         resources.account_driver = Some(accounts.clone());
         let vm_guest: Arc<dyn studio_runtime_services::linux_vm_guest::GuestRpc> = Arc::new(
             studio_runtime_services::linux_vm_guest::UnixGuestRpc::for_runtime_state(store.root()),
@@ -211,8 +217,8 @@ impl HostRuntime {
             account_session: state.account_session.clone(),
             store: store.clone(),
             guest: vm_guest,
+            claude_bridge_dir: claude_bridge_dir.clone(),
         }));
-        let claude_bridge_dir = install_root.claude_bridge_dir();
         let resources = resources.with_account_session(state.account_session.clone());
         let preparation_resources = Arc::new(resources.clone());
         let callback_runtime = Arc::new(
@@ -415,10 +421,22 @@ struct ServerVmProviderLaunchResolver {
         Option<Arc<dyn studio_runtime_services::account_session_runtime::AccountSessionPort>>,
     store: Arc<RuntimeStore>,
     guest: Arc<dyn studio_runtime_services::linux_vm_guest::GuestRpc>,
+    claude_bridge_dir: PathBuf,
 }
 
 const CODEX_ACCESS_REFRESH_WINDOW_SECONDS: f64 = 300.0;
 const CODEX_ACCESS_MIN_REMAINING_SECONDS: f64 = 30.0;
+const CLAUDE_ACCESS_REFRESH_WINDOW_MS: f64 = 300_000.0;
+const CLAUDE_ACCESS_REFRESH_TRIGGER_MS: f64 = 315_000.0;
+const CLAUDE_REFRESH_READINESS_TIMEOUT: Duration = Duration::from_secs(60);
+const CLAUDE_REFRESH_TOTAL_TIMEOUT: Duration = Duration::from_secs(90);
+const CLAUDE_REFRESH_READINESS_LINE_LIMIT: usize = 512;
+#[cfg(target_os = "macos")]
+const CLAUDE_KEYCHAIN_READ_TIMEOUT: Duration = Duration::from_secs(10);
+const CLAUDE_ACCOUNT_ID_PREFIX: &str = "claude:";
+type VmClaudeAccountLocks = Mutex<BTreeMap<String, Arc<Mutex<()>>>>;
+static VM_CLAUDE_ACCOUNT_LOCKS: std::sync::OnceLock<VmClaudeAccountLocks> =
+    std::sync::OnceLock::new();
 
 impl studio_runtime_services::account_worker::preparation::VmProviderLaunchResolver
     for ServerVmProviderLaunchResolver
@@ -430,6 +448,7 @@ impl studio_runtime_services::account_worker::preparation::VmProviderLaunchResol
         Box::pin(async move {
             let accounts = self.accounts.clone();
             let account_session = self.account_session.clone();
+            let claude_bridge_dir = self.claude_bridge_dir.clone();
             let request_for_resolution = request.clone();
             let (provider, profile, launch, credential_path, credential_document, bootstrap) =
                 studio_runtime_process::blocking_pool::spawn_blocking(
@@ -438,6 +457,7 @@ impl studio_runtime_services::account_worker::preparation::VmProviderLaunchResol
                         resolve_vm_launch_inputs(
                             &accounts,
                             account_session.as_deref(),
+                            &claude_bridge_dir,
                             request_for_resolution,
                         )
                     },
@@ -474,6 +494,7 @@ fn resolve_vm_launch_inputs(
     account_session: Option<
         &dyn studio_runtime_services::account_session_runtime::AccountSessionPort,
     >,
+    claude_bridge_dir: &Path,
     request: studio_runtime_services::account_worker::preparation::VmProviderLaunchRequest,
 ) -> Result<
     (
@@ -546,6 +567,7 @@ fn resolve_vm_launch_inputs(
                 .and_then(serde_json::Value::as_str)
                 .filter(|value| !value.is_empty())
                 .map(PathBuf::from)
+                .or_else(|| env::var_os("CLAUDE_CONFIG_DIR").map(PathBuf::from))
                 .or_else(|| {
                     env::var_os("HOME")
                         .map(PathBuf::from)
@@ -555,8 +577,23 @@ fn resolve_vm_launch_inputs(
                     WorkerError::PreparationRefused("provider-session/claude-profile-home".into())
                 })?;
             let credential_path = format!("{profile_relative}/.credentials.json");
-            let credential_document =
-                read_vm_claude_credentials(&host_config.join(".credentials.json"))?;
+            let credential_file = host_config.join(".credentials.json");
+            let email = account
+                .get("email")
+                .and_then(Value::as_str)
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| {
+                    WorkerError::PreparationRefused("vm-credentials/account-identity".into())
+                })?;
+            let credential_document = read_vm_claude_credentials(
+                &credential_file,
+                &host_config,
+                email,
+                &request.account_key,
+                account,
+                accounts,
+                claude_bridge_dir,
+            )?;
             let binary = options
                 .get("binaryPath")
                 .and_then(serde_json::Value::as_str)
@@ -791,41 +828,120 @@ fn read_vm_codex_bootstrap(
     Ok(payload)
 }
 
-/// Copy only Claude's short-lived access credential allowlist, as the Python
-/// `claude_access` path does; refresh credentials stay on the host.
-fn read_vm_claude_credentials(path: &Path) -> Result<Vec<u8>, WorkerError> {
-    let metadata = std::fs::metadata(path)
-        .map_err(|_| WorkerError::PreparationRefused("vm-credentials/unavailable".into()))?;
-    if metadata.len()
-        > studio_runtime_services::linux_vm_provider::MAX_GUEST_CREDENTIAL_BYTES as u64
-    {
-        return Err(WorkerError::PreparationRefused(
-            "vm-credentials/size-limit".into(),
-        ));
-    }
-    let bytes = std::fs::read(path)
-        .map_err(|_| WorkerError::PreparationRefused("vm-credentials/unavailable".into()))?;
-    let value: serde_json::Value = serde_json::from_slice(&bytes)
-        .map_err(|_| WorkerError::PreparationRefused("vm-credentials/invalid".into()))?;
-    let access = value
-        .get("claudeAiOauth")
-        .and_then(serde_json::Value::as_object)
-        .ok_or_else(|| WorkerError::PreparationRefused("vm-credentials/invalid".into()))?;
-    let expiry = access
-        .get("expiresAt")
-        .and_then(serde_json::Value::as_f64)
-        .filter(|expiry| expiry.is_finite())
-        .ok_or_else(|| WorkerError::PreparationRefused("vm-credentials/invalid".into()))?;
-    let now_ms = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
+/// Mirror Python `claude_access` (codex_linux_vm_auth.py:168-185): refresh
+/// inside the CLI's existing helper, then verify account identity and expiry
+/// before the access-only document reaches the durable guest-copy operation.
+fn read_vm_claude_credentials(
+    path: &Path,
+    host_config: &Path,
+    email: &str,
+    account_key: &str,
+    original_account: &Value,
+    accounts: &AccountDriver,
+    claude_bridge_dir: &Path,
+) -> Result<Vec<u8>, WorkerError> {
+    let account_lock = VM_CLAUDE_ACCOUNT_LOCKS
+        .get_or_init(|| Mutex::new(BTreeMap::new()))
+        .lock()
         .map_err(|_| WorkerError::TaskFailed)?
-        .as_secs_f64()
-        * 1000.0;
-    if expiry <= now_ms + 315_000.0 {
+        .entry(account_key.to_owned())
+        .or_insert_with(|| Arc::new(Mutex::new(())))
+        .clone();
+    let _refresh_guard = account_lock.lock().map_err(|_| WorkerError::TaskFailed)?;
+    // `auth_pin` includes the internal credential identity that Python's
+    // `_same_account` compares across the refresh.
+    let expected_pin = accounts
+        .auth_pin(account_key)
+        .map_err(|_| WorkerError::PreparationPending("vm-credentials/account-status".into()))?;
+    let mut access = read_vm_claude_oauth(path)?;
+    let mut expiry = claude_expiry_ms(&access)?;
+    let mut auth_status_verified = false;
+    let now_ms = unix_time_ms()?;
+    if expiry <= now_ms + CLAUDE_ACCESS_REFRESH_TRIGGER_MS {
+        // Python waits only for the final 15 seconds before allowing the native
+        // CLI refresh window to open (codex_linux_vm_auth.py:173-177).
+        let wait_deadline = Instant::now() + Duration::from_secs(15);
+        while expiry > unix_time_ms()? + CLAUDE_ACCESS_REFRESH_WINDOW_MS {
+            if Instant::now() >= wait_deadline {
+                return Err(WorkerError::PreparationPending(
+                    "vm-credentials/refresh-window".into(),
+                ));
+            }
+            std::thread::sleep(
+                Duration::from_millis(100)
+                    .min(wait_deadline.saturating_duration_since(Instant::now())),
+            );
+            access = read_vm_claude_oauth(path)?;
+            expiry = claude_expiry_ms(&access)?;
+        }
+        verify_vm_claude_account(
+            accounts,
+            account_key,
+            original_account,
+            &expected_pin,
+            email,
+            false,
+        )?;
+        let config_dir = host_config.to_string_lossy();
+        let binary = studio_runtime_services::account_driver::claude::resolve_claude_binary(
+            original_account,
+        )
+        .ok_or_else(|| {
+            WorkerError::PreparationRefused("vm-credentials/claude-unavailable".into())
+        })?;
+        let node = find_vm_node().ok_or_else(|| {
+            WorkerError::PreparationRefused("vm-credentials/node-unavailable".into())
+        })?;
+        let helper = claude_bridge_dir.join("refresh-auth.mjs");
+        if !helper.is_file() {
+            return Err(WorkerError::PreparationRefused(
+                "vm-credentials/refresh-helper-unavailable".into(),
+            ));
+        }
+        let mut helper_environment =
+            studio_runtime_services::account_driver::claude::subscription_environment(
+                env::vars_os().collect(),
+            );
+        helper_environment.insert("CLAUDE_CONFIG_DIR".into(), config_dir.into_owned().into());
+        helper_environment.insert("STUDIO_CLAUDE_BIN".into(), binary.into());
+        helper_environment.insert("STUDIO_CLAUDE_ACCOUNT".into(), email.into());
+        run_vm_claude_refresh_helper(&node, &helper, &helper_environment, || {
+            let current = read_vm_claude_oauth(path)?;
+            Ok(claude_expiry_ms(&current)? > unix_time_ms()? + CLAUDE_ACCESS_REFRESH_WINDOW_MS)
+        })?;
+        verify_vm_claude_account(
+            accounts,
+            account_key,
+            original_account,
+            &expected_pin,
+            email,
+            true,
+        )?;
+        auth_status_verified = true;
+        access = read_vm_claude_oauth(path)?;
+        expiry = claude_expiry_ms(&access)?;
+    }
+    // Python forces native auth metadata even when no refresh was needed
+    // (codex_linux_vm_auth.py:182-185).
+    verify_vm_claude_account(
+        accounts,
+        account_key,
+        original_account,
+        &expected_pin,
+        email,
+        !auth_status_verified,
+    )?;
+    if expiry <= unix_time_ms()? + CLAUDE_ACCESS_REFRESH_TRIGGER_MS {
         return Err(WorkerError::PreparationPending(
-            "vm-credentials/refresh-required".into(),
+            "vm-credentials/refresh-not-fresh".into(),
         ));
     }
+    encode_vm_claude_credentials(&access)
+}
+
+fn encode_vm_claude_credentials(
+    access: &serde_json::Map<String, Value>,
+) -> Result<Vec<u8>, WorkerError> {
     let mut allowlisted = serde_json::Map::new();
     for name in [
         "accessToken",
@@ -840,19 +956,456 @@ fn read_vm_claude_credentials(path: &Path) -> Result<Vec<u8>, WorkerError> {
     }
     if allowlisted
         .get("accessToken")
-        .and_then(serde_json::Value::as_str)
+        .and_then(Value::as_str)
         .is_none_or(str::is_empty)
         || !allowlisted
             .get("scopes")
-            .and_then(serde_json::Value::as_array)
+            .and_then(Value::as_array)
             .is_some_and(|scopes| scopes.iter().any(|scope| scope == "user:inference"))
     {
         return Err(WorkerError::PreparationRefused(
             "vm-credentials/invalid".into(),
         ));
     }
-    serde_json::to_vec(&serde_json::json!({"claudeAiOauth":allowlisted}))
-        .map_err(|_| WorkerError::TaskFailed)
+    serde_json::to_vec(&json!({"claudeAiOauth":allowlisted})).map_err(|_| WorkerError::TaskFailed)
+}
+
+fn read_vm_claude_oauth(path: &Path) -> Result<serde_json::Map<String, Value>, WorkerError> {
+    let max_bytes = studio_runtime_services::linux_vm_provider::MAX_GUEST_CREDENTIAL_BYTES;
+    #[cfg(target_os = "macos")]
+    let keychain_bytes = read_vm_claude_keychain(path)?;
+    #[cfg(not(target_os = "macos"))]
+    let keychain_bytes: Option<Vec<u8>> = None;
+    let bytes = match keychain_bytes {
+        Some(bytes) => bytes,
+        None => {
+            let file = std::fs::File::open(path).map_err(|_| {
+                WorkerError::PreparationRefused("vm-credentials/unavailable".into())
+            })?;
+            if file
+                .metadata()
+                .map_err(|_| WorkerError::PreparationRefused("vm-credentials/unavailable".into()))?
+                .len()
+                > max_bytes as u64
+            {
+                return Err(WorkerError::PreparationRefused(
+                    "vm-credentials/size-limit".into(),
+                ));
+            }
+            let mut bytes = Vec::new();
+            std::io::Read::take(file, max_bytes as u64 + 1)
+                .read_to_end(&mut bytes)
+                .map_err(|_| {
+                    WorkerError::PreparationRefused("vm-credentials/unavailable".into())
+                })?;
+            if bytes.len() > max_bytes {
+                return Err(WorkerError::PreparationRefused(
+                    "vm-credentials/size-limit".into(),
+                ));
+            }
+            bytes
+        }
+    };
+    let value: Value = serde_json::from_slice(&bytes)
+        .map_err(|_| WorkerError::PreparationRefused("vm-credentials/invalid".into()))?;
+    let access = value
+        .get("claudeAiOauth")
+        .and_then(serde_json::Value::as_object)
+        .cloned()
+        .ok_or_else(|| WorkerError::PreparationRefused("vm-credentials/invalid".into()))?;
+    // Validate required fields without retaining token material in an error.
+    let _token = access
+        .get("accessToken")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| WorkerError::PreparationRefused("vm-credentials/invalid".into()))?;
+    let scopes = access
+        .get("scopes")
+        .and_then(Value::as_array)
+        .filter(|scopes| scopes.iter().any(|scope| scope == "user:inference"))
+        .ok_or_else(|| WorkerError::PreparationRefused("vm-credentials/invalid".into()))?;
+    let _ = scopes;
+    let _expiry = claude_expiry_ms(&access)?;
+    Ok(access)
+}
+
+#[cfg(target_os = "macos")]
+/// Read the same per-config Keychain service as
+/// `codex_linux_vm_credentials.py:13-19` and `codex_linux_vm_auth.py:96-120`.
+fn read_vm_claude_keychain(path: &Path) -> Result<Option<Vec<u8>>, WorkerError> {
+    let config_dir = path.parent().ok_or(WorkerError::TaskFailed)?;
+    let mut config_identity = config_dir.to_string_lossy().into_owned();
+    while config_identity.ends_with('/') {
+        config_identity.pop();
+    }
+    let mut service = "Claude Code-credentials".to_owned();
+    if !config_identity.is_empty() {
+        let digest = data_encoding::HEXLOWER.encode(&Sha256::digest(config_identity.as_bytes()));
+        service.push('-');
+        service.push_str(&digest[..8]);
+    }
+    let security = Path::new("/usr/bin/security");
+    let mut command = CommandWrap::with_new(security.as_os_str(), |command| {
+        command
+            .args(["find-generic-password", "-s", service.as_str(), "-w"])
+            .env_clear()
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null());
+    });
+    #[cfg(unix)]
+    command.wrap(ProcessGroup::leader());
+    let mut child = command.spawn().map_err(|_| {
+        WorkerError::PreparationRefused("vm-credentials/keychain-unavailable".into())
+    })?;
+    let stdout = child.stdout().take().ok_or(WorkerError::TaskFailed)?;
+    let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+    let reader = std::thread::Builder::new()
+        .name("vm-claude-keychain-read".into())
+        .spawn(move || {
+            let limit = studio_runtime_services::linux_vm_provider::MAX_GUEST_CREDENTIAL_BYTES;
+            let mut output = Vec::new();
+            let result = std::io::Read::take(stdout, limit as u64 + 1)
+                .read_to_end(&mut output)
+                .map(|_| output);
+            let _sent = sender.send(result);
+        })
+        .map_err(|_| WorkerError::TaskFailed)?;
+    let deadline = Instant::now() + CLAUDE_KEYCHAIN_READ_TIMEOUT;
+    let status = loop {
+        if let Some(status) = child
+            .inner_mut()
+            .try_wait()
+            .map_err(|_| WorkerError::TaskFailed)?
+        {
+            break status;
+        }
+        if Instant::now() >= deadline {
+            stop_vm_claude_refresh_child(&mut *child)?;
+            drop(reader);
+            return Err(WorkerError::PreparationPending(
+                "vm-credentials/keychain-timeout".into(),
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    let output = receiver
+        // The process has exited, but the pipe-reader thread may not yet have
+        // been scheduled to report EOF.
+        .recv_timeout(Duration::from_secs(1))
+        .map_err(|_| WorkerError::TaskFailed)?
+        .map_err(|_| WorkerError::TaskFailed)?;
+    reader.join().map_err(|_| WorkerError::TaskFailed)?;
+    if !status.success() {
+        return Ok(None);
+    }
+    if output.len() > studio_runtime_services::linux_vm_provider::MAX_GUEST_CREDENTIAL_BYTES {
+        return Err(WorkerError::PreparationRefused(
+            "vm-credentials/size-limit".into(),
+        ));
+    }
+    Ok(Some(output))
+}
+
+fn claude_expiry_ms(access: &serde_json::Map<String, Value>) -> Result<f64, WorkerError> {
+    let expiry = access
+        .get("expiresAt")
+        .and_then(serde_json::Value::as_f64)
+        .filter(|expiry| expiry.is_finite())
+        .ok_or_else(|| WorkerError::PreparationRefused("vm-credentials/invalid".into()))?;
+    Ok(expiry)
+}
+
+fn unix_time_ms() -> Result<f64, WorkerError> {
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|_| WorkerError::TaskFailed)?
+        .as_secs_f64()
+        * 1000.0;
+    Ok(now_ms)
+}
+
+fn verify_vm_claude_account(
+    accounts: &AccountDriver,
+    account_key: &str,
+    original_account: &Value,
+    expected_pin: &Value,
+    email: &str,
+    refresh_auth_status: bool,
+) -> Result<(), WorkerError> {
+    if refresh_auth_status
+        && accounts
+            .get(account_key)
+            .map_err(|_| WorkerError::PreparationPending("vm-credentials/account-status".into()))?
+            != AccountStatus::Ready
+    {
+        return Err(WorkerError::PreparationRefused(
+            "vm-credentials/account-identity".into(),
+        ));
+    }
+    let snapshot = accounts
+        .snapshot()
+        .map_err(|_| WorkerError::PreparationPending("account-driver/unavailable".into()))?;
+    let current = snapshot
+        .accounts
+        .iter()
+        .find(|row| row.get("id").and_then(Value::as_str) == Some(account_key))
+        .ok_or_else(|| WorkerError::PreparationRefused("vm-credentials/account-identity".into()))?;
+    if accounts
+        .auth_pin(account_key)
+        .map_err(|_| WorkerError::PreparationPending("vm-credentials/account-status".into()))?
+        != *expected_pin
+    {
+        return Err(WorkerError::PreparationRefused(
+            "vm-credentials/account-changed".into(),
+        ));
+    }
+    for field in [
+        "provider",
+        "home",
+        "accountId",
+        "email",
+        "claudeOptions",
+        "deleted",
+        "disconnected",
+        "duplicateOf",
+        "_credentialIdentity",
+    ] {
+        if current.get(field) != original_account.get(field) {
+            return Err(WorkerError::PreparationRefused(
+                "vm-credentials/account-changed".into(),
+            ));
+        }
+    }
+    let expected_account_id = format!("{CLAUDE_ACCOUNT_ID_PREFIX}{email}");
+    if current.get("status").and_then(Value::as_str) != Some("ready")
+        || current.get("provider").and_then(Value::as_str) != Some("claude")
+        || current.get("email").and_then(Value::as_str) != Some(email)
+        || current.get("accountId").and_then(Value::as_str) != Some(expected_account_id.as_str())
+    {
+        return Err(WorkerError::PreparationRefused(
+            "vm-credentials/account-identity".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn find_vm_node() -> Option<PathBuf> {
+    let path = env::var_os("PATH").unwrap_or_default();
+    for directory in env::split_paths(&path) {
+        let candidate = directory.join("node");
+        if is_executable(&candidate) {
+            return Some(candidate);
+        }
+    }
+    let homebrew_node = PathBuf::from("/opt/homebrew/bin/node");
+    is_executable(&homebrew_node).then_some(homebrew_node)
+}
+
+/// Invoke the existing refresh-auth.mjs helper, matching
+/// `codex_linux_vm_auth.py:122-156`. It emits one bounded readiness line; the
+/// caller releases its held query only after the on-disk access token is
+/// outside the native refresh window. Child output never includes secrets.
+fn run_vm_claude_refresh_helper(
+    node: &Path,
+    helper: &Path,
+    environment: &BTreeMap<std::ffi::OsString, std::ffi::OsString>,
+    mut access_is_fresh: impl FnMut() -> Result<bool, WorkerError>,
+) -> Result<(), WorkerError> {
+    let mut command = CommandWrap::with_new(node.as_os_str(), |command| {
+        command
+            .arg(helper)
+            .env_clear()
+            .envs(environment)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null());
+    });
+    #[cfg(unix)]
+    command.wrap(ProcessGroup::leader());
+    let mut child = command
+        .spawn()
+        .map_err(|_| WorkerError::PreparationPending("vm-credentials/refresh-start".into()))?;
+    let stdout = child
+        .stdout()
+        .take()
+        .ok_or_else(|| WorkerError::TaskFailed)?;
+    let mut stdin = child
+        .stdin()
+        .take()
+        .ok_or_else(|| WorkerError::TaskFailed)?;
+    let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel(1);
+    let ready_reader = std::thread::Builder::new()
+        .name("vm-claude-refresh-ready".into())
+        .spawn(move || {
+            let mut line = String::new();
+            let result = std::io::BufReader::new(stdout)
+                .take((CLAUDE_REFRESH_READINESS_LINE_LIMIT + 1) as u64)
+                .read_line(&mut line)
+                .map(|_| line);
+            let _sent = ready_tx.send(result);
+        })
+        .map_err(|_| WorkerError::TaskFailed)?;
+    let started = Instant::now();
+    let ready_deadline = started + CLAUDE_REFRESH_READINESS_TIMEOUT;
+    let ready_line = loop {
+        if Instant::now() >= ready_deadline {
+            stop_vm_claude_refresh_child(&mut *child)?;
+            drop(ready_reader);
+            return Err(WorkerError::PreparationPending(
+                "vm-credentials/refresh-readiness-timeout".into(),
+            ));
+        }
+        match ready_rx.recv_timeout(Duration::from_millis(50)) {
+            Ok(Ok(line)) => break line,
+            Ok(Err(_)) => {
+                stop_vm_claude_refresh_child(&mut *child)?;
+                drop(ready_reader);
+                return Err(WorkerError::PreparationPending(
+                    "vm-credentials/refresh-readiness-failed".into(),
+                ));
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                stop_vm_claude_refresh_child(&mut *child)?;
+                drop(ready_reader);
+                return Err(WorkerError::TaskFailed);
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                let child_status = match child.inner_mut().try_wait() {
+                    Ok(status) => status,
+                    Err(_) => {
+                        let _stopped = stop_vm_claude_refresh_child(&mut *child);
+                        drop(ready_reader);
+                        return Err(WorkerError::TaskFailed);
+                    }
+                };
+                if child_status.is_some() {
+                    drop(ready_reader);
+                    return Err(WorkerError::PreparationPending(
+                        "vm-credentials/refresh-readiness-failed".into(),
+                    ));
+                }
+            }
+        }
+    };
+    let ready: Value = match serde_json::from_str(ready_line.trim()) {
+        Ok(ready) => ready,
+        Err(_) => {
+            stop_vm_claude_refresh_child(&mut *child)?;
+            drop(ready_reader);
+            return Err(WorkerError::PreparationPending(
+                "vm-credentials/refresh-readiness-failed".into(),
+            ));
+        }
+    };
+    if ready != json!({"ready":true}) || ready_line.len() > CLAUDE_REFRESH_READINESS_LINE_LIMIT {
+        stop_vm_claude_refresh_child(&mut *child)?;
+        drop(ready_reader);
+        return Err(WorkerError::PreparationPending(
+            "vm-credentials/refresh-readiness-failed".into(),
+        ));
+    }
+    let total_deadline = started + CLAUDE_REFRESH_TOTAL_TIMEOUT;
+    loop {
+        let access_is_fresh = match access_is_fresh() {
+            Ok(fresh) => fresh,
+            Err(error) => {
+                stop_vm_claude_refresh_child(&mut *child)?;
+                drop(ready_reader);
+                return Err(error);
+            }
+        };
+        if access_is_fresh {
+            if stdin
+                .write_all(b"done\n")
+                .and_then(|()| stdin.flush())
+                .is_err()
+            {
+                let _stopped = stop_vm_claude_refresh_child(&mut *child);
+                drop(ready_reader);
+                return Err(WorkerError::PreparationPending(
+                    "vm-credentials/refresh-release".into(),
+                ));
+            }
+            drop(stdin);
+            break;
+        }
+        if Instant::now() >= total_deadline {
+            stop_vm_claude_refresh_child(&mut *child)?;
+            drop(ready_reader);
+            return Err(WorkerError::PreparationPending(
+                "vm-credentials/refresh-timeout".into(),
+            ));
+        }
+        let child_status = match child.inner_mut().try_wait() {
+            Ok(status) => status,
+            Err(_) => {
+                let _stopped = stop_vm_claude_refresh_child(&mut *child);
+                drop(ready_reader);
+                return Err(WorkerError::TaskFailed);
+            }
+        };
+        if child_status.is_some() {
+            drop(ready_reader);
+            return Err(WorkerError::PreparationPending(
+                "vm-credentials/refresh-exited-early".into(),
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(250));
+    }
+    loop {
+        let status = match child.inner_mut().try_wait() {
+            Ok(status) => status,
+            Err(_) => {
+                let _stopped = stop_vm_claude_refresh_child(&mut *child);
+                drop(ready_reader);
+                return Err(WorkerError::TaskFailed);
+            }
+        };
+        if let Some(status) = status {
+            if !status.success() {
+                drop(ready_reader);
+                return Err(WorkerError::PreparationRefused(
+                    "vm-credentials/refresh-failed".into(),
+                ));
+            }
+            ready_reader.join().map_err(|_| WorkerError::TaskFailed)?;
+            return Ok(());
+        }
+        if Instant::now() >= total_deadline {
+            stop_vm_claude_refresh_child(&mut *child)?;
+            drop(ready_reader);
+            return Err(WorkerError::PreparationPending(
+                "vm-credentials/refresh-timeout".into(),
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+}
+
+fn stop_vm_claude_refresh_child(child: &mut dyn ChildWrapper) -> Result<(), WorkerError> {
+    if child
+        .inner_mut()
+        .try_wait()
+        .map_err(|_| WorkerError::TaskFailed)?
+        .is_some()
+    {
+        return Ok(());
+    }
+    child.start_kill().map_err(|_| WorkerError::TaskFailed)?;
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < deadline {
+        if child
+            .inner_mut()
+            .try_wait()
+            .map_err(|_| WorkerError::TaskFailed)?
+            .is_some()
+        {
+            return Ok(());
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    Err(WorkerError::TaskFailed)
 }
 
 impl AccountLauncher for HostLauncher {
@@ -2024,5 +2577,156 @@ fn is_executable(path: &Path) -> bool {
     #[cfg(not(unix))]
     {
         path.is_file()
+    }
+}
+
+#[cfg(all(test, unix))]
+#[allow(clippy::unwrap_used)]
+mod vm_claude_refresh_tests {
+    use super::{
+        CLAUDE_ACCESS_REFRESH_WINDOW_MS, WorkerError, encode_vm_claude_credentials,
+        read_vm_claude_oauth, run_vm_claude_refresh_helper, unix_time_ms, verify_vm_claude_account,
+    };
+    use serde_json::{Value, json};
+    use std::{collections::BTreeMap, fs, os::unix::fs::PermissionsExt};
+
+    #[test]
+    fn existing_refresh_helper_handshake_waits_for_a_fresh_access_token() {
+        let root = tempfile::tempdir().unwrap();
+        let config = root.path().join("claude-profile");
+        fs::create_dir_all(&config).unwrap();
+        let credential_path = config.join(".credentials.json");
+        let now_ms = unix_time_ms().unwrap();
+        fs::write(
+            &credential_path,
+            serde_json::to_vec(&json!({"claudeAiOauth": {
+                "accessToken":"expired-fake-token",
+                "expiresAt":now_ms + 1000.0,
+                "scopes":["user:inference"]
+            }}))
+            .unwrap(),
+        )
+        .unwrap();
+        let helper = root.path().join("refresh-auth.mjs");
+        fs::write(&helper, "// fake helper entrypoint\n").unwrap();
+        let node = root.path().join("fake-node");
+        fs::write(
+            &node,
+            r##"#!/bin/sh
+cat > "$CLAUDE_CONFIG_DIR/.credentials.json" <<'JSON'
+{"claudeAiOauth":{"accessToken":"fresh-fake-token","expiresAt":4102444800000,"scopes":["user:inference"],"subscriptionType":"pro"}}
+JSON
+printf '{"ready":true}\n'
+IFS= read -r release
+[ "$release" = "done" ]
+"##,
+        )
+        .unwrap();
+        let mut permissions = fs::metadata(&node).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&node, permissions).unwrap();
+        let environment = BTreeMap::from([
+            (
+                std::ffi::OsString::from("CLAUDE_CONFIG_DIR"),
+                config.as_os_str().to_owned(),
+            ),
+            (
+                std::ffi::OsString::from("STUDIO_CLAUDE_BIN"),
+                std::ffi::OsString::from("fake-claude"),
+            ),
+            (
+                std::ffi::OsString::from("STUDIO_CLAUDE_ACCOUNT"),
+                std::ffi::OsString::from("fake@example.invalid"),
+            ),
+        ]);
+
+        run_vm_claude_refresh_helper(&node, &helper, &environment, || {
+            let access =
+                read_vm_claude_oauth(&credential_path).map_err(|_| WorkerError::TaskFailed)?;
+            Ok(access["expiresAt"].as_f64().unwrap()
+                > unix_time_ms().unwrap() + CLAUDE_ACCESS_REFRESH_WINDOW_MS)
+        })
+        .unwrap();
+
+        let access = read_vm_claude_oauth(&credential_path).unwrap();
+        assert_eq!(access["accessToken"], "fresh-fake-token");
+        assert!(access["expiresAt"].as_f64().unwrap() > now_ms);
+    }
+
+    #[test]
+    fn refreshed_claude_access_requires_the_same_ready_account_identity() {
+        let root = tempfile::tempdir().unwrap();
+        let registry = root.path().join("accounts/registry.json");
+        fs::create_dir_all(registry.parent().unwrap()).unwrap();
+        let account = json!({
+            "id": "claude-test",
+            "provider": "claude",
+            "home": root.path().join("home").to_string_lossy(),
+            "label": "fixture",
+            "source": "test",
+            "status": "ready",
+            "email": "fixture@example.invalid",
+            "accountId": "claude:fixture@example.invalid",
+            "claudeOptions": {}
+        });
+        fs::write(
+            &registry,
+            json!({
+                "version": 1,
+                "defaultAccountKey": "claude-test",
+                "accounts": {"claude-test": account},
+                "logins": {},
+                "deleteReceipts": {}
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let accounts =
+            studio_runtime_services::account_driver::AccountDriver::open(registry).unwrap();
+        let account = accounts.snapshot().unwrap().accounts[0].clone();
+
+        verify_vm_claude_account(
+            &accounts,
+            "claude-test",
+            &account,
+            &accounts.auth_pin("claude-test").unwrap(),
+            "fixture@example.invalid",
+            false,
+        )
+        .unwrap();
+        assert!(
+            verify_vm_claude_account(
+                &accounts,
+                "claude-test",
+                &account,
+                &accounts.auth_pin("claude-test").unwrap(),
+                "other@example.invalid",
+                false,
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn guest_credential_copy_excludes_host_refresh_material() {
+        let access = json!({
+            "accessToken": "fake-access-token",
+            "expiresAt": 4102444800000.0,
+            "scopes": ["user:inference"],
+            "refreshToken": "fake-refresh-token",
+            "unknownHostField": "private"
+        });
+        let copied: Value = serde_json::from_slice(
+            &encode_vm_claude_credentials(access.as_object().unwrap()).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            copied,
+            json!({"claudeAiOauth": {
+                "accessToken": "fake-access-token",
+                "expiresAt": 4102444800000.0,
+                "scopes": ["user:inference"]
+            }})
+        );
     }
 }

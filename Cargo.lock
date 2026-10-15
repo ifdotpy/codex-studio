@@ -2294,6 +2294,7 @@ dependencies = [
  "getrandom 0.3.4",
  "nix 0.31.3",
  "notify",
+ "process-wrap",
  "rusqlite",
  "serde_json",
  "sha2",
