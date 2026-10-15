@@ -9,6 +9,13 @@ use studio_runtime_store::{
 };
 use thiserror::Error;
 
+/// Maximum accepted user-message text length, measured in Unicode characters.
+pub const MAX_MESSAGE_CHARACTERS: usize = 32_000;
+
+pub fn message_text_within_limit(text: &str) -> bool {
+    text.chars().count() <= MAX_MESSAGE_CHARACTERS
+}
+
 #[derive(Debug, Error)]
 pub enum CoordinationError {
     #[error("{0}")]
@@ -187,7 +194,7 @@ fn post_managed_message(
     admission: &dyn crate::message_admission::MessageAdmission,
 ) -> Result<PostMessageResult, CoordinationError> {
     let text = crate::event_write::python_strip(input.text);
-    if input.text.chars().count() > 32_000 || (text.is_empty() && input.assets.is_empty()) {
+    if !message_text_within_limit(input.text) || (text.is_empty() && input.assets.is_empty()) {
         return Err(CoordinationError::InvalidRequest(
             "Message must have text or attachments, at most 32000 characters",
         ));
@@ -440,7 +447,7 @@ fn send_followup_inner(
         radio_answer_turn_id,
     } = input;
     let text = crate::event_write::python_strip(text);
-    if text.is_empty() || text.chars().count() > 32_000 {
+    if text.is_empty() || !message_text_within_limit(&text) {
         return Err(CoordinationError::InvalidRequest(
             "Message must have text or attachments, at most 32000 characters",
         ));
@@ -1005,7 +1012,7 @@ fn validated_message(
     if message.id.is_empty()
         || message.room.is_empty()
         || message.author.is_empty()
-        || message.text.chars().count() > 32_000
+        || !message_text_within_limit(&message.text)
         || !message.at.is_finite()
     {
         return Err(CoordinationError::InvalidStored {
@@ -1142,8 +1149,14 @@ mod tests {
 
     use super::{
         CoordinationError, PostManagedMessage, PostMessage, connect_chat, create_chat,
-        post_message, post_message_with_admission, require_single_team,
+        message_text_within_limit, post_message, post_message_with_admission, require_single_team,
     };
+
+    #[test]
+    fn message_limit_counts_unicode_characters_for_paired_inputs() {
+        assert!(message_text_within_limit(&"🙂".repeat(10_000)));
+        assert!(!message_text_within_limit(&"🙂".repeat(32_001)));
+    }
 
     fn database() -> Connection {
         let connection = Connection::open_in_memory().expect("in-memory database opens");

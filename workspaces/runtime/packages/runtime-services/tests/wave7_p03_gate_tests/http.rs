@@ -460,6 +460,37 @@ async fn http_queues_remote_anchor_message_as_paired_event_intent() {
             .status(),
         403
     );
+    receiver
+        .store
+        .transaction(|tx| {
+            tx.execute(
+                "UPDATE runtime_server_links SET record=json_set(record,'$.parentEpoch',1) WHERE id='remote-link'",
+                [],
+            )?;
+            tx.execute(
+                "UPDATE runtime_server_inbox SET state='running',result=NULL WHERE id=?1",
+                [remote_event_id],
+            )?;
+            Ok::<_, studio_runtime_store::StoreError>(())
+        })
+        .expect("simulate link epoch change after effect and before inbox completion");
+    let epoch_changed_retry = driver
+        .receive("source-server", &envelope, 106)
+        .expect("a committed-effect retry stays uncertain after link epoch change");
+    assert_eq!(epoch_changed_retry, ExchangeOutcome::Unknown);
+    let connection = receiver
+        .store
+        .read()
+        .expect("event reader after epoch retry");
+    let event_count: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM runtime_events WHERE id=?1 AND agent=?2 AND kind='user'",
+            (remote_event_id, "late-operation-recipient"),
+            |row| row.get(0),
+        )
+        .expect("home event remains durable after epoch change");
+    assert_eq!(event_count, 1);
+    drop(connection);
 
     let asset = studio_runtime_services::payload_store::upload(
         &fixture.store,

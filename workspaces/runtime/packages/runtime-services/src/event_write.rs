@@ -1018,6 +1018,10 @@ mod tests {
             "INSERT INTO runtime_access_clients(id,record) VALUES(?1,?2)",
             ("remote", json!({"id":"remote","clientId":"client","kind":"server","label":"Remote","created":1,"publicKey":"public","status":"paired"}).to_string()),
         ).expect("paired peer writes");
+        let unicode_text = "🙂".repeat(10_000);
+        assert!(crate::coordination::message_text_within_limit(
+            &unicode_text
+        ));
         let result = with_transaction(&mut connection, |tx| {
             QueueWriteRepository::put_metadata(
                 tx,
@@ -1029,7 +1033,7 @@ mod tests {
                 &agent,
                 "message-1".into(),
                 "user",
-                "hello".into(),
+                unicode_text.clone(),
                 100.0,
             )
         })
@@ -1049,6 +1053,7 @@ mod tests {
         assert_eq!(body["payload"]["delivery"], "steer");
         assert_eq!(body["payload"]["parentEpoch"], 4);
         assert_eq!(body["payload"]["epoch"], 3);
+        assert_eq!(body["payload"]["text"], unicode_text);
     }
 
     fn annotation(id: &str) -> AnnotationWrite {

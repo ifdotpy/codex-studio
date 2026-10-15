@@ -631,7 +631,9 @@ impl RuntimeOrchestrationEffects {
                         .get("text")
                         .and_then(Value::as_str)
                         .map(crate::event_write::python_strip)
-                        .filter(|text| !text.is_empty() && text.chars().count() <= 32000)
+                        .filter(|text| {
+                            !text.is_empty() && crate::coordination::message_text_within_limit(text)
+                        })
                         .ok_or_else(|| {
                             refused(400, "invalid_request", "Invalid move-send request")
                         })?;
@@ -709,7 +711,7 @@ fn receive_remote_anchor_input(
         .unwrap_or("queue");
     if key.is_empty()
         || link_id.is_empty()
-        || event_text.chars().count() > 32_000
+        || !crate::coordination::message_text_within_limit(event_text)
         || kind != "user"
         || !matches!(delivery, "queue" | "steer" | "after_tool" | "after_turn")
     {
@@ -849,7 +851,11 @@ fn receive_remote_input(
     if key.is_empty()
         || link_id.is_empty()
         || worker_id.is_empty()
-        || event_text.len() > 32_000
+        || (if matches!(kind, "user" | "followup") {
+            !crate::coordination::message_text_within_limit(event_text)
+        } else {
+            event_text.len() > 32_000
+        })
         || !matches!(
             kind,
             "user"
@@ -1637,35 +1643,64 @@ impl OrchestrationDriver {
             ));
         }
         let signature = envelope.incoming_signature(principal)?;
-        let decision=self.store.transaction_with(|tx| {
-            if !is_local { require_paired(tx,principal)?; }
-            if retired(tx,&envelope.key,"in",&signature,None)? {return Ok(DeliveryDecision::Return(ExchangeOutcome::Unknown));}
-            let saved=inbox(tx,&envelope.key,now)?;
-            let decision=decide_delivery(saved.as_ref(),&signature,None,false,&envelope.action,now)?;
+        let (decision, replaying_claim) = self.store.transaction_with(|tx| {
+            if !is_local {
+                require_paired(tx, principal)?;
+            }
+            if retired(tx, &envelope.key, "in", &signature, None)? {
+                return Ok((DeliveryDecision::Return(ExchangeOutcome::Unknown), false));
+            }
+            let saved = inbox(tx, &envelope.key, now)?;
+            let replaying_claim = saved.is_some();
+            let decision = decide_delivery(
+                saved.as_ref(),
+                &signature,
+                None,
+                false,
+                &envelope.action,
+                now,
+            )?;
             if matches!(decision,DeliveryDecision::Execute) {
                 if saved.is_some() {
-                    tx.execute("UPDATE runtime_server_inbox SET state='running' WHERE id=?1 AND state IN ('waiting','running')", [&envelope.key])?;
+                    tx.execute(
+                        "UPDATE runtime_server_inbox SET state='running' WHERE id=?1 AND state IN ('waiting','running')",
+                        [&envelope.key],
+                    )?;
                 } else {
-                    tx.execute("INSERT INTO runtime_server_inbox(id,signature,state,result,created_at,principal,actor) VALUES(?1,?2,'running',NULL,?3,?4,?5)",params![envelope.key,signature,now,principal,envelope.payload.get("actor").and_then(Value::as_str)])?;
+                    tx.execute(
+                        "INSERT INTO runtime_server_inbox(id,signature,state,result,created_at,principal,actor) VALUES(?1,?2,'running',NULL,?3,?4,?5)",
+                        params![envelope.key, signature, now, principal, envelope.payload.get("actor").and_then(Value::as_str)],
+                    )?;
                 }
             }
-            Ok::<_,AccessError>(decision)
+            Ok::<_, AccessError>((decision, replaying_claim))
         })?;
         if let DeliveryDecision::Return(result) = decision {
             return Ok(result);
         }
-        let result = match self.effects.execute(principal, &envelope.value()) {
+        let mut result = match self.effects.execute(principal, &envelope.value()) {
             Ok(result) => result,
             Err(error) if envelope.action == "browser_callback" && error.status() < 500 => {
                 ExchangeOutcome::NotApplied(error.to_string())
             }
-            Err(error) if envelope.action == "input" && error.status() < 500 => {
+            Err(error)
+                if envelope.action == "input" && !replaying_claim && error.status() < 500 =>
+            {
                 // Input refusals are validated before the durable write; keep
-                // permanent 4xx failures from retrying forever as unknown.
+                // fresh permanent 4xx failures from retrying forever as unknown.
                 ExchangeOutcome::NotApplied(error.to_string())
             }
             Err(_) => ExchangeOutcome::Unknown,
         };
+        if envelope.action == "input"
+            && replaying_claim
+            && matches!(result, ExchangeOutcome::NotApplied(_))
+        {
+            // A prior claim may already have committed the durable input. Do
+            // not turn a later 4xx (or stale-epoch refusal) into a false
+            // negative receipt after response loss.
+            result = ExchangeOutcome::Unknown;
+        }
         if result.to_value(&envelope.key).to_string().len() > MAX_RESPONSE_BYTES {
             self.finish(
                 "inbox",
