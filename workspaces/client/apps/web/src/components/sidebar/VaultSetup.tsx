@@ -11,7 +11,7 @@ import {
   Title,
 } from "@mantine/core";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { canShowVaultKeys, showVaultKeys } from "../../native/fileDialogs";
+import { useServerFileDialogs } from "../../servers/ServerServicesContext";
 import { errorText } from "../../api";
 import type { SidebarBackend } from "./services";
 import {
@@ -41,6 +41,7 @@ export default function VaultSetup({
   onClose: () => void;
   onDone: (text: string) => void;
 }) {
+  const { showVaultKeys, canShowVaultKeys } = useServerFileDialogs();
   const projectId = entry.vault.projectId;
   const [facts, setFacts] = useState<VaultSetupFacts | null>(null);
   const [prefix, setPrefix] = useState("");

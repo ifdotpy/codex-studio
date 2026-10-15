@@ -50,3 +50,21 @@ it.each([
     expect(invoke).not.toHaveBeenCalled();
   },
 );
+
+it("does not let same-window remote targets use local native or Electron file actions", async () => {
+  const { api, invoke } = await setup(false, true);
+  const local = api.createFileActions("local");
+  const remote = api.createFileActions("remote");
+  const delayedRemoteOpen = () =>
+    remote.openFile({ agent: "same-id", path: "/tmp/same-path" });
+  expect(local.canUseNativeFiles()).toBe(true);
+  expect(remote.canUseNativeFiles()).toBe(false);
+  await local.openFile({ agent: "same-id", path: "/tmp/same-path" });
+  expect(await delayedRemoteOpen()).toBe(false);
+  expect(invoke).toHaveBeenCalledTimes(1);
+  const fileAction = vi.fn();
+  vi.stubGlobal("window", { codexDesktop: { fileAction } });
+  expect(remote.canUseNativeFiles()).toBe(false);
+  expect(await remote.revealFile({ asset: "same-id" })).toBe(false);
+  expect(fileAction).not.toHaveBeenCalled();
+});

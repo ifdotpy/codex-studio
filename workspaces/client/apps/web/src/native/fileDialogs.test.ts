@@ -81,3 +81,38 @@ it("opens vault keys locally and rejects a remote view before IPC", async () => 
   );
   expect(remote.invoke).not.toHaveBeenCalled();
 });
+
+it("keeps local file privileges with the owner when both servers share one window", async () => {
+  const { api, invoke } = await setup();
+  const local = api.createFileDialogs("local");
+  const remote = api.createFileDialogs("remote");
+  const delayedRemoteReveal = () => remote.revealPath("/tmp/remote-path");
+  expect(local.canPickDirectory()).toBe(true);
+  expect(remote.canPickDirectory()).toBe(false);
+  expect(remote.canPickFiles()).toBe(false);
+  expect(remote.canRevealPath()).toBe(false);
+  expect(remote.canShowVaultKeys()).toBe(false);
+  await local.pickDirectory();
+  await expect(delayedRemoteReveal()).rejects.toThrow("unavailable");
+  await expect(remote.pickDirectory()).rejects.toThrow("unavailable");
+  await expect(remote.pickFiles()).rejects.toThrow("unavailable");
+  await expect(remote.showVaultKeys("remote-project")).rejects.toThrow(
+    "unavailable",
+  );
+  expect(invoke).toHaveBeenCalledTimes(1);
+});
+
+it("does not let an Electron picker bypass a remote owner", async () => {
+  const { api, invoke } = await setup();
+  const pickDirectory = vi.fn();
+  const pickFiles = vi.fn();
+  vi.stubGlobal("window", { codexDesktop: { pickDirectory, pickFiles } });
+  const remote = api.createFileDialogs("remote");
+  expect(remote.canPickDirectory()).toBe(false);
+  expect(remote.canPickFiles()).toBe(false);
+  await expect(remote.pickDirectory()).rejects.toThrow("unavailable");
+  await expect(remote.pickFiles()).rejects.toThrow("unavailable");
+  expect(pickDirectory).not.toHaveBeenCalled();
+  expect(pickFiles).not.toHaveBeenCalled();
+  expect(invoke).not.toHaveBeenCalled();
+});

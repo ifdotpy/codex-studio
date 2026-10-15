@@ -1,8 +1,4 @@
-import {
-  canPickDirectory,
-  pickDirectory,
-  revealPath,
-} from "../native/fileDialogs";
+import { useServerFileDialogs } from "../servers/ServerServicesContext";
 import {
   localSidebarBackend,
   localSidebarServices,
@@ -170,6 +166,8 @@ export default function Sidebar(p: SidebarProps) {
 }
 
 function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
+  const { canPickDirectory, pickDirectory, revealPath } =
+    useServerFileDialogs();
   const services = p.services;
   const canEdit = (target: SidebarTarget) =>
     services.available?.(target) ?? true;

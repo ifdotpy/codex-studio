@@ -1,3 +1,5 @@
+import { createFileActions } from "../fileActions";
+import { createFileDialogs } from "../native/fileDialogs";
 import { watchResourceReads } from "../components/watchResourceReads";
 import { createAccountLimitsCache } from "../usage/accountUsage";
 import { createBrowserDrafts } from "../sync/drafts";
@@ -131,6 +133,8 @@ export function createServerServices(server: StudioServer) {
   }
   return {
     owner: transport.owner,
+    fileDialogs: createFileDialogs(transport.owner.id),
+    fileActions: createFileActions(transport.owner.id),
     accountLimits,
     watchResourceReads: ((refs, read, failed, options) =>
       watchResourceReads(refs, read, failed, {

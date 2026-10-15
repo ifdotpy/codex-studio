@@ -1,5 +1,5 @@
 import { useServerApi } from "../servers/ServerServicesContext";
-import { canPickDirectory, pickDirectory } from "../native/fileDialogs";
+import { useServerFileDialogs } from "../servers/ServerServicesContext";
 import { isRemoteServerView } from "../servers/environment";
 import {
   ActionIcon,
@@ -38,6 +38,7 @@ export default function ProjectDirectoryPicker({
   showServerSelector?: boolean;
   submitLabel?: string;
 }) {
+  const { canPickDirectory, pickDirectory } = useServerFileDialogs();
   const { get } = useServerApi();
 
   const [servers, setServers] = useState<ProjectServerChoice[]>(

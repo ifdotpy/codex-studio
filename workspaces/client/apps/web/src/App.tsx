@@ -5,7 +5,7 @@ import {
   useServerOutbox,
   useServerActivityScope,
 } from "./servers/ServerServicesContext";
-import { canRevealPath, revealPath } from "./native/fileDialogs";
+import { useServerFileDialogs } from "./servers/ServerServicesContext";
 import { onDesktopNavigate } from "./native/notifications";
 import { writePreferenceEdit } from "./sync/uiPreferenceStore";
 import { createUiPreferenceBridge } from "./sync/uiPreferenceBridge";
@@ -232,6 +232,7 @@ const BackgroundTasks = lazy(
   () => import("./components/shell/BackgroundTasks"),
 );
 export default function App() {
+  const { canRevealPath, revealPath } = useServerFileDialogs();
   const { watchResourceChanges } = useServerResources();
   const watchResourceReads = useServerResourceReads();
   const {

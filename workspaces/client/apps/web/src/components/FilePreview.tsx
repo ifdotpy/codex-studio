@@ -1,14 +1,11 @@
-import { useServerApi } from "../servers/ServerServicesContext";
+import {
+  useServerApi,
+  useServerFileActions,
+} from "../servers/ServerServicesContext";
 import { Button, Loader } from "@mantine/core";
 import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import "../api";
-import {
-  canUseNativeFiles,
-  openFile,
-  previewFile,
-  revealFile,
-  saveFile,
-} from "../fileActions";
+
 import ErrorDescription from "./ErrorDescription";
 import { isolatedDocument } from "./RichPreview";
 import { fileFormat, parseDelimited, safeSvg } from "./filePreviewFormats";
@@ -40,6 +37,8 @@ export default function FilePreview({
   target: PreviewTarget | null;
   onClose: () => void;
 }) {
+  const { canUseNativeFiles, openFile, previewFile, revealFile, saveFile } =
+    useServerFileActions();
   const { get } = useServerApi();
 
   const key = JSON.stringify([target?.agent, target?.path, target?.asset]);

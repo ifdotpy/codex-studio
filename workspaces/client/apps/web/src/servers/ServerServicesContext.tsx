@@ -1,3 +1,5 @@
+import * as defaultFileActions from "../fileActions";
+import * as defaultFileDialogs from "../native/fileDialogs";
 import { watchResourceReads } from "../components/watchResourceReads";
 import * as defaultAccountLimits from "../usage/accountUsage";
 import * as defaultActivity from "./activity";
@@ -62,3 +64,9 @@ export const useServerAccountLimits = () =>
 
 export const useServerResourceReads = () =>
   useServerServices()?.watchResourceReads ?? watchResourceReads;
+
+export const useServerFileDialogs = () =>
+  useServerServices()?.fileDialogs ?? defaultFileDialogs;
+
+export const useServerFileActions = () =>
+  useServerServices()?.fileActions ?? defaultFileActions;

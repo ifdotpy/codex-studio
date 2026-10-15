@@ -1,5 +1,5 @@
 import { useServerApi } from "../servers/ServerServicesContext";
-import { canPickFiles, pickFiles } from "../native/fileDialogs";
+import { useServerFileDialogs } from "../servers/ServerServicesContext";
 import { Button, Loader } from "@mantine/core";
 import { File, Paperclip, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
@@ -24,6 +24,7 @@ export default function ComposerAttachments(p: {
   add: (files: globalThis.File[]) => Promise<void>;
   remove: (id: string) => void;
 }) {
+  const { canPickFiles, pickFiles } = useServerFileDialogs();
   const input = useRef<HTMLInputElement>(null);
   const [preview, setPreview] = useState<string | null>(null);
   const unsavedFiles = useRef<{
