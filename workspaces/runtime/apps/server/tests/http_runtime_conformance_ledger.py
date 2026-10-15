@@ -2395,7 +2395,9 @@ class SqliteSnapshot:
             version_at_compare = self._data_version()
         except (OSError, sqlite3.Error):
             return False
-        if self.identity == current_identity and self.version_before == version_at_compare:
+        if self.identity != current_identity:
+            return False
+        if self.version_before == version_at_compare:
             return True
 
         try:

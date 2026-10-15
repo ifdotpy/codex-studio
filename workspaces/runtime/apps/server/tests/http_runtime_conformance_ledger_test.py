@@ -690,6 +690,23 @@ Server suites: 0 passed, 1 failed, 0 skipped (opt-in), 0 skipped (environment), 
                     connection.commit()
                 self.assertFalse(snapshot.unchanged())
 
+    def test_sqlite_snapshot_detects_identical_content_file_replacement(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="ledger-sqlite-replaced-") as scratch:
+            database = Path(scratch) / "canvas.sqlite3"
+            replacement = Path(scratch) / "replacement.sqlite3"
+            for path in (database, replacement):
+                with closing(sqlite3.connect(path)) as connection:
+                    connection.execute("CREATE TABLE state(value TEXT)")
+                    connection.execute("INSERT INTO state VALUES ('same logical contents')")
+                    connection.commit()
+
+            with ledger.sqlite_snapshot(database) as snapshot:
+                original_identity = ledger._sqlite_file_identity(database)
+                replacement_identity = ledger._sqlite_file_identity(replacement)
+                self.assertNotEqual(original_identity, replacement_identity)
+                os.replace(replacement, database)
+                self.assertFalse(snapshot.unchanged())
+
     def test_copy_mode_hides_response_bodies_and_skips_global_writes_and_reset(self) -> None:
         copied_response = {
             "stateDir": "/copied/private/state",
