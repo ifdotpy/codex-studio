@@ -1145,12 +1145,15 @@ async fn conversation(
     let needs_settings_conversation_account =
         conversation_settings_need_conversation_account(&value);
     let catalog_account = if needs_conversation_catalog || needs_settings_conversation_account {
+        let catalog_cwd =
+            catalog_cwd_for_conversation(request.worker_settings, request.cwd.as_deref())
+                .map(str::to_owned);
         Some(
             conversation_catalog_account(
                 &state,
                 request.id.clone(),
                 request.expected_account.clone(),
-                request.cwd.clone(),
+                catalog_cwd,
             )
             .await?,
         )
@@ -1219,6 +1222,13 @@ fn conversation_settings_need_conversation_account(value: &Value) -> bool {
     has_review_model || has_unpinned_worker_defaults
 }
 
+fn catalog_cwd_for_conversation(
+    worker_settings: bool,
+    requested_cwd: Option<&str>,
+) -> Option<&str> {
+    if worker_settings { None } else { requested_cwd }
+}
+
 fn worker_settings_catalog_account(
     defaults: &Value,
     conversation_account: Option<&str>,
@@ -1243,8 +1253,9 @@ fn review_settings_catalog_account(
 #[cfg(test)]
 mod conversation_catalog_admission_tests {
     use super::{
-        conversation_needs_catalog, conversation_settings_need_conversation_account,
-        review_settings_catalog_account, worker_settings_catalog_account,
+        catalog_cwd_for_conversation, conversation_needs_catalog,
+        conversation_settings_need_conversation_account, review_settings_catalog_account,
+        worker_settings_catalog_account,
     };
     use serde_json::json;
 
@@ -1308,6 +1319,19 @@ mod conversation_catalog_admission_tests {
             )
             .as_deref(),
             Some("worker-account")
+        );
+    }
+
+    #[test]
+    fn worker_settings_catalog_admission_uses_stored_account_when_cwd_is_present() {
+        let requested_cwd = "/different-project";
+        assert_eq!(
+            catalog_cwd_for_conversation(true, Some(requested_cwd)),
+            None
+        );
+        assert_eq!(
+            catalog_cwd_for_conversation(false, Some(requested_cwd)),
+            Some(requested_cwd)
         );
     }
 }
