@@ -1478,9 +1478,12 @@ pub fn decide_delivery(
             })?,
         ));
     }
+    // A running input claim is ambiguous: only an exact durable-effect lookup
+    // may resolve it. The generic effect adapter cannot prove that lookup, so
+    // leave the receipt unknown instead of executing the input again.
     if !outgoing
         && (snapshot.state == "waiting"
-            || (peer_replay_safe(action) && snapshot.state == "running"))
+            || (peer_replay_safe(action) && action != "input" && snapshot.state == "running"))
     {
         return Ok(DeliveryDecision::Execute);
     }
@@ -1962,6 +1965,16 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn running_peer_input_remains_unknown_without_durable_effect_evidence() {
+        let mut running = saved("running", 0.0);
+        running.server = None;
+        assert!(matches!(
+            decide_delivery(Some(&running), "same-content", None, false, "input", 200),
+            Ok(DeliveryDecision::Return(ExchangeOutcome::Unknown))
+        ));
     }
 
     #[test]
