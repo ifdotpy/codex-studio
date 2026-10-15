@@ -90,7 +90,7 @@ fn apply(store: &RuntimeStore, case: &Value) -> Result<Value, String> {
         "claim" => claim_intent(store, "agent", 0, "attempt", 10.0)
             .map(|value| value.map(|v| json!({"agent_id":v.agent_id,"epoch":v.epoch,"attempt_id":v.attempt_id,"account_key":v.account_key,"provider":v.provider,"thread_id":v.thread_id,"cwd":v.cwd,"model":v.model,"events":v.events.iter().map(|e|json!({"id":e.id,"kind":e.kind,"text":e.text,"created":e.created,"epoch":e.epoch,"error":e.error,"metadata":e.metadata})).collect::<Vec<_>>()})).unwrap_or(Value::Null))
             .map_err(|e| e.to_string()),
-        "submission_identity" => lifecycle_transaction(store, |tx| SchedulerRepository::mark_submitted_identity(tx,"agent",0,"attempt",case["ticket"].as_str().unwrap_or("ticket"),"default",1,"thread").map(|v|json!(v))).map_err(|e|e.to_string()),
+        "submission_identity" => lifecycle_transaction(store, |tx| SchedulerRepository::mark_submitted_identity(tx,"agent",0,"attempt",case["ticket"].as_str().unwrap_or("ticket"),"default",1,"test-connection","thread").map(|v|json!(v))).map_err(|e|e.to_string()),
         "submission" | "reconcile_submission" => {
             use studio_runtime_services::{account_worker::preparation::{prepare_turn,PreparationResources},scheduler::{TurnIntent,TurnEvent}};
             use studio_runtime_store::{AgentRepository,AgentId,QueueEventRepository,QueueEventId};
@@ -102,7 +102,7 @@ fn apply(store: &RuntimeStore, case: &Value) -> Result<Value, String> {
             }).map_err(|e|e.to_string())?;
             // Replays test the durable identity boundary without recompiling delivered input.
             if submitted {
-                return lifecycle_transaction(store, |tx| SchedulerRepository::mark_submitted_identity(tx,"agent",0,"attempt",case["ticket"].as_str().unwrap_or("ticket"),"default",1,"thread").map(|v|json!(v))).map_err(|e|e.to_string());
+                return lifecycle_transaction(store, |tx| SchedulerRepository::mark_submitted_identity(tx,"agent",0,"attempt",case["ticket"].as_str().unwrap_or("ticket"),"default",1,"test-connection","thread").map(|v|json!(v))).map_err(|e|e.to_string());
             }
             let resources=PreparationResources::bundled(String::new(),studio_runtime_services::model_catalog::ModelCatalogService::new(None)).map_err(|e|e.to_string())?;
             let prepared=prepare_turn(store,&resources,&intent,1).map_err(|e|e.to_string())?;

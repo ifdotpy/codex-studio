@@ -450,6 +450,7 @@ pub fn authorize_submission(
     intent: &TurnIntent,
     request_id: &str,
     generation: u64,
+    connection_id: &str,
 ) -> Result<bool, SchedulerError> {
     let Some(thread) = intent.thread_id.as_deref() else {
         return Ok(false);
@@ -465,6 +466,7 @@ pub fn authorize_submission(
             request_id,
             &intent.account_key,
             generation,
+            connection_id,
             thread,
         )?;
         Ok(result && !replay)
@@ -476,6 +478,7 @@ pub fn mark_submitted_for_provider(
     intent: &TurnIntent,
     request_id: &str,
     generation: u64,
+    connection_id: &str,
 ) -> Result<bool, SchedulerError> {
     let Some(thread_id) = intent.thread_id.as_deref() else {
         return Ok(false);
@@ -489,6 +492,7 @@ pub fn mark_submitted_for_provider(
             request_id,
             &intent.account_key,
             generation,
+            connection_id,
             thread_id,
         )
     })?)

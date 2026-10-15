@@ -1001,7 +1001,8 @@ async fn scenario_restart_after_submitted_before_written_recovers_unknown_withou
                 &request,
                 None,
                 prepared.submission.as_ref(),
-                Some(&prepared.guard)
+                Some(&prepared.guard),
+                "test-connection",
             )?);
             Ok(request.ticket.id)
         })
@@ -2523,7 +2524,7 @@ async fn preparation_commit_rechecks_workspace_settings_and_input() {
             let context = Pending { thread: prepared.thread, compiled: prepared.compiled,
                 intent: prepared.intent, method: "turn/start".into(), operation: operation.clone() };
             assert!(!store::submitted(store, &context, "default", &request, None,
-                prepared.submission.as_ref(), Some(&prepared.guard))?, "{mutation}");
+                prepared.submission.as_ref(), Some(&prepared.guard), "test-connection")?, "{mutation}");
             scheduler::lifecycle_transaction_with(store, |tx| {
                 assert!(store::receipt(tx, &operation, "submitted")?.is_none());
                 let row = AgentRepository::get(tx, &AgentId::from(agent.as_str()))?.unwrap().value();

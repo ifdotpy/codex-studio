@@ -733,6 +733,28 @@ fn maintain_event_window(
     if !table_exists(transaction, "runtime_events")? {
         return Ok(());
     }
+    // The generated runtime_events triggers use the same marker fast path as
+    // Python's sync_event_window(full=False). Avoid reprojecting the entire
+    // window after a trigger has already recorded its current high sequence.
+    let changed = transaction.query_row(
+        "SELECT COALESCE(MAX(seq),0) FROM sync_entities WHERE collection='event'",
+        [],
+        |row| row.get::<_, i64>(0),
+    )?;
+    let marker = transaction
+        .query_row(
+            "SELECT value FROM sync_entity_meta WHERE key='event_window_seq'",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?;
+    if marker
+        .as_deref()
+        .and_then(|value| value.parse::<i64>().ok())
+        == Some(changed)
+    {
+        return Ok(());
+    }
     let mut statement = transaction.prepare(
         "SELECT id,agent,kind,status,created,error FROM runtime_events ORDER BY created DESC,id LIMIT 200",
     )?;

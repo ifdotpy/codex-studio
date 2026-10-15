@@ -107,7 +107,10 @@ async fn read_account_session_catalog(
     let mut seen_models = std::collections::HashSet::new();
     let mut total_bytes = 0_usize;
     for page_index in 0..MAX_CATALOG_PAGES {
-        let mut params = json!({"limit": MODEL_CATALOG_ITEMS_PER_PAGE});
+        let mut params = json!({
+            "limit": MODEL_CATALOG_ITEMS_PER_PAGE,
+            "includeHidden": true
+        });
         if let Some(cursor) = &cursor {
             params
                 .as_object_mut()
@@ -188,9 +191,7 @@ async fn read_account_session_catalog(
             None | Some(Value::Null) => {
                 let mut result = first_page.ok_or(())?;
                 result.insert("data".into(), Value::Array(rows));
-                if page_index > 0 || result.contains_key("nextCursor") {
-                    result.insert("nextCursor".into(), Value::Null);
-                }
+                result.insert("nextCursor".into(), Value::Null);
                 return Ok(Value::Object(result));
             }
             Some(Value::String(value))
@@ -259,7 +260,7 @@ impl ModelCatalogService {
         provider: &str,
     ) -> AdmissionCatalogRead {
         let key = (account_key.to_owned(), home.to_owned(), provider.to_owned());
-        if provider != "codex" {
+        if !matches!(provider, "codex" | "claude") {
             return AdmissionCatalogRead::Unavailable;
         }
         let Ok(cache) = self.0.cache.lock() else {
@@ -1044,8 +1045,8 @@ pub(crate) mod tests {
         assert_eq!(
             session.params.lock().expect("params").as_slice(),
             &[
-                json!({"limit":MODEL_CATALOG_ITEMS_PER_PAGE}),
-                json!({"limit":MODEL_CATALOG_ITEMS_PER_PAGE,"cursor":"next"}),
+                json!({"limit":MODEL_CATALOG_ITEMS_PER_PAGE,"includeHidden":true}),
+                json!({"limit":MODEL_CATALOG_ITEMS_PER_PAGE,"includeHidden":true,"cursor":"next"}),
             ]
         );
     }
@@ -1516,7 +1517,7 @@ pub(crate) mod tests {
         );
         assert_eq!(
             service.read_for_admission(&key.0, &key.1, "claude"),
-            AdmissionCatalogRead::Unavailable
+            AdmissionCatalogRead::Pending
         );
         let value = json!({"data": [{"model": "one"}]});
         let expiry = Instant::now() + CATALOG_TTL;

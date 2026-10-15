@@ -208,7 +208,8 @@ pub(super) async fn scenario_late_context_change_refuses_submission() {
                 &request,
                 None,
                 prepared.submission.as_ref(),
-                Some(&prepared.guard)
+                Some(&prepared.guard),
+                "test-connection",
             )?);
             Ok(())
         })
@@ -339,7 +340,8 @@ pub(super) async fn scenario_sibling_completion_does_not_refuse_non_lead() {
                 &request,
                 None,
                 prepared.submission.as_ref(),
-                Some(&prepared.guard)
+                Some(&prepared.guard),
+                "test-connection",
             )?);
             Ok(())
         })

@@ -1530,6 +1530,9 @@ fn managed_tools_match_python_rows_events_and_sync_projection() {
                             if table == "sync_entities" {
                                 return format!("actual={actual_row:?}; expected={expected_row:?}");
                             }
+                            if table == "sync_entity_meta" {
+                                return format!("actual={actual_row:?}; expected={expected_row:?}");
+                            }
                             let fields = match (&actual_row[1], &expected_row[1]) {
                                 (Value::Object(actual), Value::Object(expected)) => actual
                                     .keys()
