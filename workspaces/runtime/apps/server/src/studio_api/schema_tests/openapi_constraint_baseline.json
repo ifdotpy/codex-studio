@@ -3,6 +3,234 @@
   "sourcePath": "workspaces/runtime/packages/runtime-http/openapi.json",
   "acceptedLoosenings": [
     {
+      "pointer": "/components/schemas/BlockingPoolGroupMetrics/properties/closureP95Ms",
+      "constraint": "property",
+      "baseline": "absent from closed object",
+      "candidate": "accepted property"
+    },
+    {
+      "pointer": "/components/schemas/BlockingPoolGroupMetrics/properties/closureP99Ms",
+      "constraint": "property",
+      "baseline": "absent from closed object",
+      "candidate": "accepted property"
+    },
+    {
+      "pointer": "/components/schemas/BlockingPoolGroupMetrics/properties/queueWaitP95Ms",
+      "constraint": "property",
+      "baseline": "absent from closed object",
+      "candidate": "accepted property"
+    },
+    {
+      "pointer": "/components/schemas/BlockingPoolGroupMetrics/properties/queueWaitP99Ms",
+      "constraint": "property",
+      "baseline": "absent from closed object",
+      "candidate": "accepted property"
+    },
+    {
+      "pointer": "/components/schemas/BlockingPoolMetrics/properties/groups/items/properties/closureP95Ms",
+      "constraint": "property",
+      "baseline": "absent from closed object",
+      "candidate": "accepted property"
+    },
+    {
+      "pointer": "/components/schemas/BlockingPoolMetrics/properties/groups/items/properties/closureP99Ms",
+      "constraint": "property",
+      "baseline": "absent from closed object",
+      "candidate": "accepted property"
+    },
+    {
+      "pointer": "/components/schemas/BlockingPoolMetrics/properties/groups/items/properties/queueWaitP95Ms",
+      "constraint": "property",
+      "baseline": "absent from closed object",
+      "candidate": "accepted property"
+    },
+    {
+      "pointer": "/components/schemas/BlockingPoolMetrics/properties/groups/items/properties/queueWaitP99Ms",
+      "constraint": "property",
+      "baseline": "absent from closed object",
+      "candidate": "accepted property"
+    },
+    {
+      "pointer": "/components/schemas/DiagnosticsResponse/properties/executions/properties/runs/items/properties/effects/items/properties/status",
+      "constraint": "@anyOf",
+      "baseline": "['{\"enum\":[\"answered\",\"expired\",\"lost\"],\"type\":\"string\"}', '{\"enum\":[\"pending\",\"running\",\"accepted\",\"observed\",\"unknown\",\"unsent\",\"rejected\",\"completed\",\"failed\",\"interrupted\",\"cancelled\",\"queued\",\"starting\",\"approval\",\"paused\",\"idle\",\"submitted\",\"not_applied\"],\"title\":\"ExecutionStatus\",\"type\":\"string\"}', '{\"type\":\"null\"}']",
+      "candidate": "['{\"enum\":[\"answered\",\"expired\",\"lost\",\"approved\"],\"type\":\"string\"}', '{\"enum\":[\"pending\",\"running\",\"accepted\",\"observed\",\"unknown\",\"unsent\",\"rejected\",\"completed\",\"failed\",\"interrupted\",\"cancelled\",\"queued\",\"starting\",\"approval\",\"paused\",\"idle\",\"submitted\",\"not_applied\"],\"title\":\"ExecutionStatus\",\"type\":\"string\"}', '{\"type\":\"null\"}']"
+    },
+    {
+      "pointer": "/components/schemas/DiagnosticsResponse/properties/runtimeLockOperations/items/properties/holdMs/properties/p99",
+      "constraint": "property",
+      "baseline": "absent from closed object",
+      "candidate": "accepted property"
+    },
+    {
+      "pointer": "/components/schemas/DiagnosticsResponse/properties/runtimeLockOperations/items/properties/waitMs/properties/p99",
+      "constraint": "property",
+      "baseline": "absent from closed object",
+      "candidate": "accepted property"
+    },
+    {
+      "pointer": "/components/schemas/DiagnosticsResponse/properties/sqliteContention/properties/commitProfile",
+      "constraint": "property",
+      "baseline": "absent from closed object",
+      "candidate": "accepted property"
+    },
+    {
+      "pointer": "/components/schemas/DiagnosticsResponse/properties/sqliteContention/properties/commitProfile/additionalProperties/properties/p50Ms",
+      "constraint": "@nullable",
+      "baseline": "None",
+      "candidate": "True"
+    },
+    {
+      "pointer": "/components/schemas/DiagnosticsResponse/properties/sqliteContention/properties/commitProfile/additionalProperties/properties/p50Ms",
+      "constraint": "@nullableBranch",
+      "baseline": "None",
+      "candidate": "['{}']"
+    },
+    {
+      "pointer": "/components/schemas/DiagnosticsResponse/properties/sqliteContention/properties/commitProfile/additionalProperties/properties/p95Ms",
+      "constraint": "@nullable",
+      "baseline": "None",
+      "candidate": "True"
+    },
+    {
+      "pointer": "/components/schemas/DiagnosticsResponse/properties/sqliteContention/properties/commitProfile/additionalProperties/properties/p95Ms",
+      "constraint": "@nullableBranch",
+      "baseline": "None",
+      "candidate": "['{}']"
+    },
+    {
+      "pointer": "/components/schemas/DiagnosticsResponse/properties/sqliteContention/properties/commitProfile/additionalProperties/properties/p99Ms",
+      "constraint": "@nullable",
+      "baseline": "None",
+      "candidate": "True"
+    },
+    {
+      "pointer": "/components/schemas/DiagnosticsResponse/properties/sqliteContention/properties/commitProfile/additionalProperties/properties/p99Ms",
+      "constraint": "@nullableBranch",
+      "baseline": "None",
+      "candidate": "['{}']"
+    },
+    {
+      "pointer": "/components/schemas/DiagnosticsResponse/properties/sqliteContention/properties/sqlProfile",
+      "constraint": "property",
+      "baseline": "absent from closed object",
+      "candidate": "accepted property"
+    },
+    {
+      "pointer": "/components/schemas/DiagnosticsResponse/properties/sqliteContention/properties/sqlProfile/additionalProperties/properties/p50Ms",
+      "constraint": "@nullable",
+      "baseline": "None",
+      "candidate": "True"
+    },
+    {
+      "pointer": "/components/schemas/DiagnosticsResponse/properties/sqliteContention/properties/sqlProfile/additionalProperties/properties/p50Ms",
+      "constraint": "@nullableBranch",
+      "baseline": "None",
+      "candidate": "['{}']"
+    },
+    {
+      "pointer": "/components/schemas/DiagnosticsResponse/properties/sqliteContention/properties/sqlProfile/additionalProperties/properties/p95Ms",
+      "constraint": "@nullable",
+      "baseline": "None",
+      "candidate": "True"
+    },
+    {
+      "pointer": "/components/schemas/DiagnosticsResponse/properties/sqliteContention/properties/sqlProfile/additionalProperties/properties/p95Ms",
+      "constraint": "@nullableBranch",
+      "baseline": "None",
+      "candidate": "['{}']"
+    },
+    {
+      "pointer": "/components/schemas/DiagnosticsResponse/properties/sqliteContention/properties/sqlProfile/additionalProperties/properties/p99Ms",
+      "constraint": "@nullable",
+      "baseline": "None",
+      "candidate": "True"
+    },
+    {
+      "pointer": "/components/schemas/DiagnosticsResponse/properties/sqliteContention/properties/sqlProfile/additionalProperties/properties/p99Ms",
+      "constraint": "@nullableBranch",
+      "baseline": "None",
+      "candidate": "['{}']"
+    },
+    {
+      "pointer": "/components/schemas/DiagnosticsResponse/properties/sqliteContention/properties/storeAdmission",
+      "constraint": "property",
+      "baseline": "absent from closed object",
+      "candidate": "accepted property"
+    },
+    {
+      "pointer": "/components/schemas/DiagnosticsResponse/properties/sqliteContention/properties/storeAdmission/properties/reads/properties/waitMs/properties/p50Ms",
+      "constraint": "@nullable",
+      "baseline": "None",
+      "candidate": "True"
+    },
+    {
+      "pointer": "/components/schemas/DiagnosticsResponse/properties/sqliteContention/properties/storeAdmission/properties/reads/properties/waitMs/properties/p50Ms",
+      "constraint": "@nullableBranch",
+      "baseline": "None",
+      "candidate": "['{}']"
+    },
+    {
+      "pointer": "/components/schemas/DiagnosticsResponse/properties/sqliteContention/properties/storeAdmission/properties/reads/properties/waitMs/properties/p95Ms",
+      "constraint": "@nullable",
+      "baseline": "None",
+      "candidate": "True"
+    },
+    {
+      "pointer": "/components/schemas/DiagnosticsResponse/properties/sqliteContention/properties/storeAdmission/properties/reads/properties/waitMs/properties/p95Ms",
+      "constraint": "@nullableBranch",
+      "baseline": "None",
+      "candidate": "['{}']"
+    },
+    {
+      "pointer": "/components/schemas/DiagnosticsResponse/properties/sqliteContention/properties/storeAdmission/properties/reads/properties/waitMs/properties/p99Ms",
+      "constraint": "@nullable",
+      "baseline": "None",
+      "candidate": "True"
+    },
+    {
+      "pointer": "/components/schemas/DiagnosticsResponse/properties/sqliteContention/properties/storeAdmission/properties/reads/properties/waitMs/properties/p99Ms",
+      "constraint": "@nullableBranch",
+      "baseline": "None",
+      "candidate": "['{}']"
+    },
+    {
+      "pointer": "/components/schemas/DiagnosticsResponse/properties/sqliteContention/properties/storeAdmission/properties/writes/properties/waitMs/properties/p50Ms",
+      "constraint": "@nullable",
+      "baseline": "None",
+      "candidate": "True"
+    },
+    {
+      "pointer": "/components/schemas/DiagnosticsResponse/properties/sqliteContention/properties/storeAdmission/properties/writes/properties/waitMs/properties/p50Ms",
+      "constraint": "@nullableBranch",
+      "baseline": "None",
+      "candidate": "['{}']"
+    },
+    {
+      "pointer": "/components/schemas/DiagnosticsResponse/properties/sqliteContention/properties/storeAdmission/properties/writes/properties/waitMs/properties/p95Ms",
+      "constraint": "@nullable",
+      "baseline": "None",
+      "candidate": "True"
+    },
+    {
+      "pointer": "/components/schemas/DiagnosticsResponse/properties/sqliteContention/properties/storeAdmission/properties/writes/properties/waitMs/properties/p95Ms",
+      "constraint": "@nullableBranch",
+      "baseline": "None",
+      "candidate": "['{}']"
+    },
+    {
+      "pointer": "/components/schemas/DiagnosticsResponse/properties/sqliteContention/properties/storeAdmission/properties/writes/properties/waitMs/properties/p99Ms",
+      "constraint": "@nullable",
+      "baseline": "None",
+      "candidate": "True"
+    },
+    {
+      "pointer": "/components/schemas/DiagnosticsResponse/properties/sqliteContention/properties/storeAdmission/properties/writes/properties/waitMs/properties/p99Ms",
+      "constraint": "@nullableBranch",
+      "baseline": "None",
+      "candidate": "['{}']"
+    },
+    {
       "pointer": "/components/schemas/DiagnosticsResponse/properties/sqliteContention/properties/walTelemetry",
       "constraint": "property",
       "baseline": "absent from closed object",
@@ -21,6 +249,240 @@
       "candidate": "['{\"$ref\":\"#/components/schemas/WalTelemetry\"}']"
     },
     {
+      "pointer": "/components/schemas/ExecutionEffect/properties/status",
+      "constraint": "@anyOf",
+      "baseline": "['{\"enum\":[\"answered\",\"expired\",\"lost\"],\"type\":\"string\"}', '{\"enum\":[\"pending\",\"running\",\"accepted\",\"observed\",\"unknown\",\"unsent\",\"rejected\",\"completed\",\"failed\",\"interrupted\",\"cancelled\",\"queued\",\"starting\",\"approval\",\"paused\",\"idle\",\"submitted\",\"not_applied\"],\"title\":\"ExecutionStatus\",\"type\":\"string\"}', '{\"type\":\"null\"}']",
+      "candidate": "['{\"enum\":[\"answered\",\"expired\",\"lost\",\"approved\"],\"type\":\"string\"}', '{\"enum\":[\"pending\",\"running\",\"accepted\",\"observed\",\"unknown\",\"unsent\",\"rejected\",\"completed\",\"failed\",\"interrupted\",\"cancelled\",\"queued\",\"starting\",\"approval\",\"paused\",\"idle\",\"submitted\",\"not_applied\"],\"title\":\"ExecutionStatus\",\"type\":\"string\"}', '{\"type\":\"null\"}']"
+    },
+    {
+      "pointer": "/components/schemas/ExecutionLedger/properties/runs/items/properties/effects/items/properties/status",
+      "constraint": "@anyOf",
+      "baseline": "['{\"enum\":[\"answered\",\"expired\",\"lost\"],\"type\":\"string\"}', '{\"enum\":[\"pending\",\"running\",\"accepted\",\"observed\",\"unknown\",\"unsent\",\"rejected\",\"completed\",\"failed\",\"interrupted\",\"cancelled\",\"queued\",\"starting\",\"approval\",\"paused\",\"idle\",\"submitted\",\"not_applied\"],\"title\":\"ExecutionStatus\",\"type\":\"string\"}', '{\"type\":\"null\"}']",
+      "candidate": "['{\"enum\":[\"answered\",\"expired\",\"lost\",\"approved\"],\"type\":\"string\"}', '{\"enum\":[\"pending\",\"running\",\"accepted\",\"observed\",\"unknown\",\"unsent\",\"rejected\",\"completed\",\"failed\",\"interrupted\",\"cancelled\",\"queued\",\"starting\",\"approval\",\"paused\",\"idle\",\"submitted\",\"not_applied\"],\"title\":\"ExecutionStatus\",\"type\":\"string\"}', '{\"type\":\"null\"}']"
+    },
+    {
+      "pointer": "/components/schemas/ExecutionRun/properties/effects/items/properties/status",
+      "constraint": "@anyOf",
+      "baseline": "['{\"enum\":[\"answered\",\"expired\",\"lost\"],\"type\":\"string\"}', '{\"enum\":[\"pending\",\"running\",\"accepted\",\"observed\",\"unknown\",\"unsent\",\"rejected\",\"completed\",\"failed\",\"interrupted\",\"cancelled\",\"queued\",\"starting\",\"approval\",\"paused\",\"idle\",\"submitted\",\"not_applied\"],\"title\":\"ExecutionStatus\",\"type\":\"string\"}', '{\"type\":\"null\"}']",
+      "candidate": "['{\"enum\":[\"answered\",\"expired\",\"lost\",\"approved\"],\"type\":\"string\"}', '{\"enum\":[\"pending\",\"running\",\"accepted\",\"observed\",\"unknown\",\"unsent\",\"rejected\",\"completed\",\"failed\",\"interrupted\",\"cancelled\",\"queued\",\"starting\",\"approval\",\"paused\",\"idle\",\"submitted\",\"not_applied\"],\"title\":\"ExecutionStatus\",\"type\":\"string\"}', '{\"type\":\"null\"}']"
+    },
+    {
+      "pointer": "/components/schemas/LockMetricSummary/properties/p99",
+      "constraint": "property",
+      "baseline": "absent from closed object",
+      "candidate": "accepted property"
+    },
+    {
+      "pointer": "/components/schemas/RuntimeLockOperation/properties/holdMs/properties/p99",
+      "constraint": "property",
+      "baseline": "absent from closed object",
+      "candidate": "accepted property"
+    },
+    {
+      "pointer": "/components/schemas/RuntimeLockOperation/properties/waitMs/properties/p99",
+      "constraint": "property",
+      "baseline": "absent from closed object",
+      "candidate": "accepted property"
+    },
+    {
+      "pointer": "/components/schemas/SqliteAdmissionMetric/properties/waitMs/properties/p50Ms",
+      "constraint": "@nullable",
+      "baseline": "None",
+      "candidate": "True"
+    },
+    {
+      "pointer": "/components/schemas/SqliteAdmissionMetric/properties/waitMs/properties/p50Ms",
+      "constraint": "@nullableBranch",
+      "baseline": "None",
+      "candidate": "['{}']"
+    },
+    {
+      "pointer": "/components/schemas/SqliteAdmissionMetric/properties/waitMs/properties/p95Ms",
+      "constraint": "@nullable",
+      "baseline": "None",
+      "candidate": "True"
+    },
+    {
+      "pointer": "/components/schemas/SqliteAdmissionMetric/properties/waitMs/properties/p95Ms",
+      "constraint": "@nullableBranch",
+      "baseline": "None",
+      "candidate": "['{}']"
+    },
+    {
+      "pointer": "/components/schemas/SqliteAdmissionMetric/properties/waitMs/properties/p99Ms",
+      "constraint": "@nullable",
+      "baseline": "None",
+      "candidate": "True"
+    },
+    {
+      "pointer": "/components/schemas/SqliteAdmissionMetric/properties/waitMs/properties/p99Ms",
+      "constraint": "@nullableBranch",
+      "baseline": "None",
+      "candidate": "['{}']"
+    },
+    {
+      "pointer": "/components/schemas/SqliteContention/properties/commitProfile",
+      "constraint": "property",
+      "baseline": "absent from closed object",
+      "candidate": "accepted property"
+    },
+    {
+      "pointer": "/components/schemas/SqliteContention/properties/commitProfile/additionalProperties/properties/p50Ms",
+      "constraint": "@nullable",
+      "baseline": "None",
+      "candidate": "True"
+    },
+    {
+      "pointer": "/components/schemas/SqliteContention/properties/commitProfile/additionalProperties/properties/p50Ms",
+      "constraint": "@nullableBranch",
+      "baseline": "None",
+      "candidate": "['{}']"
+    },
+    {
+      "pointer": "/components/schemas/SqliteContention/properties/commitProfile/additionalProperties/properties/p95Ms",
+      "constraint": "@nullable",
+      "baseline": "None",
+      "candidate": "True"
+    },
+    {
+      "pointer": "/components/schemas/SqliteContention/properties/commitProfile/additionalProperties/properties/p95Ms",
+      "constraint": "@nullableBranch",
+      "baseline": "None",
+      "candidate": "['{}']"
+    },
+    {
+      "pointer": "/components/schemas/SqliteContention/properties/commitProfile/additionalProperties/properties/p99Ms",
+      "constraint": "@nullable",
+      "baseline": "None",
+      "candidate": "True"
+    },
+    {
+      "pointer": "/components/schemas/SqliteContention/properties/commitProfile/additionalProperties/properties/p99Ms",
+      "constraint": "@nullableBranch",
+      "baseline": "None",
+      "candidate": "['{}']"
+    },
+    {
+      "pointer": "/components/schemas/SqliteContention/properties/sqlProfile",
+      "constraint": "property",
+      "baseline": "absent from closed object",
+      "candidate": "accepted property"
+    },
+    {
+      "pointer": "/components/schemas/SqliteContention/properties/sqlProfile/additionalProperties/properties/p50Ms",
+      "constraint": "@nullable",
+      "baseline": "None",
+      "candidate": "True"
+    },
+    {
+      "pointer": "/components/schemas/SqliteContention/properties/sqlProfile/additionalProperties/properties/p50Ms",
+      "constraint": "@nullableBranch",
+      "baseline": "None",
+      "candidate": "['{}']"
+    },
+    {
+      "pointer": "/components/schemas/SqliteContention/properties/sqlProfile/additionalProperties/properties/p95Ms",
+      "constraint": "@nullable",
+      "baseline": "None",
+      "candidate": "True"
+    },
+    {
+      "pointer": "/components/schemas/SqliteContention/properties/sqlProfile/additionalProperties/properties/p95Ms",
+      "constraint": "@nullableBranch",
+      "baseline": "None",
+      "candidate": "['{}']"
+    },
+    {
+      "pointer": "/components/schemas/SqliteContention/properties/sqlProfile/additionalProperties/properties/p99Ms",
+      "constraint": "@nullable",
+      "baseline": "None",
+      "candidate": "True"
+    },
+    {
+      "pointer": "/components/schemas/SqliteContention/properties/sqlProfile/additionalProperties/properties/p99Ms",
+      "constraint": "@nullableBranch",
+      "baseline": "None",
+      "candidate": "['{}']"
+    },
+    {
+      "pointer": "/components/schemas/SqliteContention/properties/storeAdmission",
+      "constraint": "property",
+      "baseline": "absent from closed object",
+      "candidate": "accepted property"
+    },
+    {
+      "pointer": "/components/schemas/SqliteContention/properties/storeAdmission/properties/reads/properties/waitMs/properties/p50Ms",
+      "constraint": "@nullable",
+      "baseline": "None",
+      "candidate": "True"
+    },
+    {
+      "pointer": "/components/schemas/SqliteContention/properties/storeAdmission/properties/reads/properties/waitMs/properties/p50Ms",
+      "constraint": "@nullableBranch",
+      "baseline": "None",
+      "candidate": "['{}']"
+    },
+    {
+      "pointer": "/components/schemas/SqliteContention/properties/storeAdmission/properties/reads/properties/waitMs/properties/p95Ms",
+      "constraint": "@nullable",
+      "baseline": "None",
+      "candidate": "True"
+    },
+    {
+      "pointer": "/components/schemas/SqliteContention/properties/storeAdmission/properties/reads/properties/waitMs/properties/p95Ms",
+      "constraint": "@nullableBranch",
+      "baseline": "None",
+      "candidate": "['{}']"
+    },
+    {
+      "pointer": "/components/schemas/SqliteContention/properties/storeAdmission/properties/reads/properties/waitMs/properties/p99Ms",
+      "constraint": "@nullable",
+      "baseline": "None",
+      "candidate": "True"
+    },
+    {
+      "pointer": "/components/schemas/SqliteContention/properties/storeAdmission/properties/reads/properties/waitMs/properties/p99Ms",
+      "constraint": "@nullableBranch",
+      "baseline": "None",
+      "candidate": "['{}']"
+    },
+    {
+      "pointer": "/components/schemas/SqliteContention/properties/storeAdmission/properties/writes/properties/waitMs/properties/p50Ms",
+      "constraint": "@nullable",
+      "baseline": "None",
+      "candidate": "True"
+    },
+    {
+      "pointer": "/components/schemas/SqliteContention/properties/storeAdmission/properties/writes/properties/waitMs/properties/p50Ms",
+      "constraint": "@nullableBranch",
+      "baseline": "None",
+      "candidate": "['{}']"
+    },
+    {
+      "pointer": "/components/schemas/SqliteContention/properties/storeAdmission/properties/writes/properties/waitMs/properties/p95Ms",
+      "constraint": "@nullable",
+      "baseline": "None",
+      "candidate": "True"
+    },
+    {
+      "pointer": "/components/schemas/SqliteContention/properties/storeAdmission/properties/writes/properties/waitMs/properties/p95Ms",
+      "constraint": "@nullableBranch",
+      "baseline": "None",
+      "candidate": "['{}']"
+    },
+    {
+      "pointer": "/components/schemas/SqliteContention/properties/storeAdmission/properties/writes/properties/waitMs/properties/p99Ms",
+      "constraint": "@nullable",
+      "baseline": "None",
+      "candidate": "True"
+    },
+    {
+      "pointer": "/components/schemas/SqliteContention/properties/storeAdmission/properties/writes/properties/waitMs/properties/p99Ms",
+      "constraint": "@nullableBranch",
+      "baseline": "None",
+      "candidate": "['{}']"
+    },
+    {
       "pointer": "/components/schemas/SqliteContention/properties/walTelemetry",
       "constraint": "property",
       "baseline": "absent from closed object",
@@ -37,6 +499,186 @@
       "constraint": "@nullableBranch",
       "baseline": "None",
       "candidate": "['{\"$ref\":\"#/components/schemas/WalTelemetry\"}']"
+    },
+    {
+      "pointer": "/components/schemas/SqliteMetric/properties/p99TransactionMs",
+      "constraint": "property",
+      "baseline": "absent from closed object",
+      "candidate": "accepted property"
+    },
+    {
+      "pointer": "/components/schemas/SqliteMetric/properties/p99TransactionMs",
+      "constraint": "@nullable",
+      "baseline": "None",
+      "candidate": "True"
+    },
+    {
+      "pointer": "/components/schemas/SqliteMetric/properties/p99TransactionMs",
+      "constraint": "@nullableBranch",
+      "baseline": "None",
+      "candidate": "['{}']"
+    },
+    {
+      "pointer": "/components/schemas/SqliteMetric/properties/sites/additionalProperties/properties/p99TransactionMs",
+      "constraint": "property",
+      "baseline": "absent from closed object",
+      "candidate": "accepted property"
+    },
+    {
+      "pointer": "/components/schemas/SqliteMetric/properties/sites/additionalProperties/properties/p99TransactionMs",
+      "constraint": "@nullable",
+      "baseline": "None",
+      "candidate": "True"
+    },
+    {
+      "pointer": "/components/schemas/SqliteMetric/properties/sites/additionalProperties/properties/p99TransactionMs",
+      "constraint": "@nullableBranch",
+      "baseline": "None",
+      "candidate": "['{}']"
+    },
+    {
+      "pointer": "/components/schemas/SqliteProfileMetric/properties/p50Ms",
+      "constraint": "@nullable",
+      "baseline": "None",
+      "candidate": "True"
+    },
+    {
+      "pointer": "/components/schemas/SqliteProfileMetric/properties/p50Ms",
+      "constraint": "@nullableBranch",
+      "baseline": "None",
+      "candidate": "['{}']"
+    },
+    {
+      "pointer": "/components/schemas/SqliteProfileMetric/properties/p95Ms",
+      "constraint": "@nullable",
+      "baseline": "None",
+      "candidate": "True"
+    },
+    {
+      "pointer": "/components/schemas/SqliteProfileMetric/properties/p95Ms",
+      "constraint": "@nullableBranch",
+      "baseline": "None",
+      "candidate": "['{}']"
+    },
+    {
+      "pointer": "/components/schemas/SqliteProfileMetric/properties/p99Ms",
+      "constraint": "@nullable",
+      "baseline": "None",
+      "candidate": "True"
+    },
+    {
+      "pointer": "/components/schemas/SqliteProfileMetric/properties/p99Ms",
+      "constraint": "@nullableBranch",
+      "baseline": "None",
+      "candidate": "['{}']"
+    },
+    {
+      "pointer": "/components/schemas/SqliteStoreAdmission/properties/reads/properties/waitMs/properties/p50Ms",
+      "constraint": "@nullable",
+      "baseline": "None",
+      "candidate": "True"
+    },
+    {
+      "pointer": "/components/schemas/SqliteStoreAdmission/properties/reads/properties/waitMs/properties/p50Ms",
+      "constraint": "@nullableBranch",
+      "baseline": "None",
+      "candidate": "['{}']"
+    },
+    {
+      "pointer": "/components/schemas/SqliteStoreAdmission/properties/reads/properties/waitMs/properties/p95Ms",
+      "constraint": "@nullable",
+      "baseline": "None",
+      "candidate": "True"
+    },
+    {
+      "pointer": "/components/schemas/SqliteStoreAdmission/properties/reads/properties/waitMs/properties/p95Ms",
+      "constraint": "@nullableBranch",
+      "baseline": "None",
+      "candidate": "['{}']"
+    },
+    {
+      "pointer": "/components/schemas/SqliteStoreAdmission/properties/reads/properties/waitMs/properties/p99Ms",
+      "constraint": "@nullable",
+      "baseline": "None",
+      "candidate": "True"
+    },
+    {
+      "pointer": "/components/schemas/SqliteStoreAdmission/properties/reads/properties/waitMs/properties/p99Ms",
+      "constraint": "@nullableBranch",
+      "baseline": "None",
+      "candidate": "['{}']"
+    },
+    {
+      "pointer": "/components/schemas/SqliteStoreAdmission/properties/writes/properties/waitMs/properties/p50Ms",
+      "constraint": "@nullable",
+      "baseline": "None",
+      "candidate": "True"
+    },
+    {
+      "pointer": "/components/schemas/SqliteStoreAdmission/properties/writes/properties/waitMs/properties/p50Ms",
+      "constraint": "@nullableBranch",
+      "baseline": "None",
+      "candidate": "['{}']"
+    },
+    {
+      "pointer": "/components/schemas/SqliteStoreAdmission/properties/writes/properties/waitMs/properties/p95Ms",
+      "constraint": "@nullable",
+      "baseline": "None",
+      "candidate": "True"
+    },
+    {
+      "pointer": "/components/schemas/SqliteStoreAdmission/properties/writes/properties/waitMs/properties/p95Ms",
+      "constraint": "@nullableBranch",
+      "baseline": "None",
+      "candidate": "['{}']"
+    },
+    {
+      "pointer": "/components/schemas/SqliteStoreAdmission/properties/writes/properties/waitMs/properties/p99Ms",
+      "constraint": "@nullable",
+      "baseline": "None",
+      "candidate": "True"
+    },
+    {
+      "pointer": "/components/schemas/SqliteStoreAdmission/properties/writes/properties/waitMs/properties/p99Ms",
+      "constraint": "@nullableBranch",
+      "baseline": "None",
+      "candidate": "['{}']"
+    },
+    {
+      "pointer": "/components/schemas/SqliteWaitQuantiles/properties/p50Ms",
+      "constraint": "@nullable",
+      "baseline": "None",
+      "candidate": "True"
+    },
+    {
+      "pointer": "/components/schemas/SqliteWaitQuantiles/properties/p50Ms",
+      "constraint": "@nullableBranch",
+      "baseline": "None",
+      "candidate": "['{}']"
+    },
+    {
+      "pointer": "/components/schemas/SqliteWaitQuantiles/properties/p95Ms",
+      "constraint": "@nullable",
+      "baseline": "None",
+      "candidate": "True"
+    },
+    {
+      "pointer": "/components/schemas/SqliteWaitQuantiles/properties/p95Ms",
+      "constraint": "@nullableBranch",
+      "baseline": "None",
+      "candidate": "['{}']"
+    },
+    {
+      "pointer": "/components/schemas/SqliteWaitQuantiles/properties/p99Ms",
+      "constraint": "@nullable",
+      "baseline": "None",
+      "candidate": "True"
+    },
+    {
+      "pointer": "/components/schemas/SqliteWaitQuantiles/properties/p99Ms",
+      "constraint": "@nullableBranch",
+      "baseline": "None",
+      "candidate": "['{}']"
     },
     {
       "pointer": "/components/schemas/WalTelemetry/properties/analytics",

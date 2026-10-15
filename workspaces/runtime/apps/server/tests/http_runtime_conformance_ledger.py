@@ -61,10 +61,28 @@ def validate_copy_state_root(
     if (not marker.is_file() or marker.is_symlink()
             or marker.read_text(encoding="utf-8") != COPY_MARKER_CONTENT):
         raise ValueError(f"copy state root lacks the {COPY_MARKER} marker")
+    copy_database_stats: dict[str, Any] = {}
     for name in ("canvas.sqlite3", "analytics.sqlite3"):
         database = root / name
         if not database.is_file() or database.is_symlink():
             raise ValueError(f"copy state root requires a regular {name}")
+        stat = database.stat()
+        if stat.st_nlink > 1:
+            raise ValueError(f"copy state database must not have hard links: {name}")
+        copy_database_stats[name] = stat
+    known_live_roots = [Path.home() / ".local/state/codex-agents"]
+    if live_state_root is not None:
+        known_live_roots.append(Path(live_state_root).expanduser())
+    if configured_state_root:
+        known_live_roots.append(Path(configured_state_root).expanduser())
+    for live_root in known_live_roots:
+        for name, copy_stat in copy_database_stats.items():
+            try:
+                live_stat = (live_root / name).stat()
+            except OSError:
+                continue
+            if (copy_stat.st_dev, copy_stat.st_ino) == (live_stat.st_dev, live_stat.st_ino):
+                raise ValueError(f"copy state database aliases a known live database: {name}")
     allowed = {COPY_MARKER, "canvas.sqlite3", "analytics.sqlite3"}
     unexpected = sorted(path.name for path in root.iterdir() if path.name not in allowed)
     if unexpected:
@@ -198,7 +216,12 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
         "primary": {"query": {"room": "$room"}, "query_omit": ["before", "after"], "expected": "2xx"},
     },
     ("GET", "/api/agents/finder-view"): {
-        "primary": {"query": {"agent": "$agent"}},
+        "primary": {
+            "query": {"agent": "$agent"},
+            # Verify an HTTP read of the uniquely namespaced row seeded into
+            # this marked copy; a bare success status is not copy evidence.
+            "functional_witness": "copy-agent-record",
+        },
     },
     ("GET", "/api/analytics"): {
         "primary": {"query": {"agent": "$analyticsAgent"}, "query_omit": ["view", "detail", "item", "turn", "thread", "turns", "tool", "timing", "export"], "expected": "2xx"},
@@ -567,14 +590,9 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
     },
     ("POST", "/api/questions/delete"): {
         "primary": {"body": {"id": "$questionDelete"}, "expected": "2xx"},
-        "additional": [{
-            # Python deletes pending native questions by resolving them through
-            # Runtime.answer (codex_questions.py:86-90), which sends their RPC
-            # through the retained provider session (codex_runtime.py:11300-11304).
-            "name": "native question provider delivery dependency",
-            "body": {"id": "$providerQuestion"},
-            "expected": "2xx",
-        }],
+        # A fabricated pending card without a live retained session is not a
+        # meaningful HTTP success probe. The fake provider callback contract is
+        # covered at its owner by callback_runtime's durable delete test.
     },
     ("POST", "/api/panel/layout"): {
         "primary": {"body": {
@@ -1102,11 +1120,6 @@ try:
             "params": {{"questions": [{{"id": "value", "question": "Value?"}}]}},
         }}, sync_rooms=False)
         runtime.put(db, "requests", {{
-            "id": "ledger-probe-provider-question", "agent": {agent_id!r}, "epoch": 0,
-            "method": "item/tool/requestUserInput", "status": "pending", "createdAt": 1.0,
-            "params": {{"questions": [{{"id": "value", "question": "Value?"}}]}},
-        }}, sync_rooms=False)
-        runtime.put(db, "requests", {{
             "id": "ledger-probe-monitor-approval", "agent": {agent_id!r}, "epoch": 0,
             "method": "monitor/approve", "status": "pending", "createdAt": 1.0,
             "params": {{"monitorId": "ledger-probe-monitor", "command": "echo ledger", "cwd": os.environ["CODEX_CANVAS_CWD"]}},
@@ -1256,7 +1269,6 @@ finally:
         "question": f"{prefix}probe-question",
         "questionDelete": f"{prefix}probe-question",
         "answerQuestion": f"{prefix}probe-answer-question",
-        "providerQuestion": f"{prefix}probe-provider-question",
         "voiceRecord": f"{prefix}probe-voice-record",
         "voiceEndedSession": f"{prefix}probe-voice-ended",
         "voiceActiveSession": f"{prefix}probe-voice-active",
@@ -1685,6 +1697,10 @@ def probe_operations(
                         response_body = json.loads(result.body)
                     except (ValueError, TypeError):
                         response_body = None
+                    functional_witness = (
+                        probe_case.get("functional_witness") == "copy-agent-record"
+                        and response_body == {"kind": "native", "path": str(backend.cwd)}
+                    )
                     operation_key = f"{method} {template}"
                     probe_event = {
                         "operation": operation_key,
@@ -1724,11 +1740,14 @@ def probe_operations(
                         or (expected == "2xx" and 200 <= result.status < 300)
                         or (isinstance(expected, str) and expected.isdecimal() and result.status == int(expected))
                     )
+                    if probe_case.get("functional_witness"):
+                        expected_matches = expected_matches and functional_witness
                     observations.append({
                         "case": case_name,
                         "status": result.status,
                         "expected": expected,
                         "expectedMatches": expected_matches,
+                        "functionalWitness": functional_witness,
                         "body": response_body,
                         "elapsedSeconds": round(time.monotonic() - request_started, 4),
                         "standard501Envelope": standard_501,
@@ -1807,11 +1826,13 @@ def collect_probe_strings(value: Any) -> set[str]:
 
 
 def copy_probe_disposition(observations: list[dict[str, Any]]) -> str:
-    if any(case.get("unverified") or case.get("expected") is None for case in observations):
+    if not observations or any(case.get("expected") is None for case in observations):
         return "unverified"
-    if all(case.get("expectedMatches") and 200 <= case.get("status", 0) < 300 for case in observations):
+    if any(not case.get("expectedMatches") for case in observations):
+        return "refused"
+    if any(case.get("functionalWitness") for case in observations):
         return "pass"
-    return "refused"
+    return "unverified"
 
 
 def seed_catalog_state(backend: Any) -> None:

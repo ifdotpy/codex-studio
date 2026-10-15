@@ -696,11 +696,9 @@ impl AccountSessionPort for AccountSessionRuntime {
         let session = self.session.as_ref().ok_or(AccountSessionError::Requires(
             "account-worker/recovery-history",
         ))?;
-        let expected = session
-            .current_scope(account)
-            .ok_or(AccountSessionError::Requires(
-                "account-worker/recovery-history",
-            ))?;
+        let Some(expected) = session.current_scope(account) else {
+            return Ok(serde_json::json!({"status":"superseded"}));
+        };
         self.block_on_retained(session.recover_connection(account.to_owned(), agent_id.to_owned()))
             .and_then(|result| {
                 if session.current_scope(account).as_ref() == Some(&expected) {

@@ -128,6 +128,60 @@ Server suites: 0 passed, 1 failed, 0 skipped (opt-in), 0 skipped (environment), 
             with self.assertRaisesRegex(ValueError, "analytics.sqlite3"):
                 ledger.validate_copy_state_root(root)
 
+    def test_copy_state_root_rejects_database_hardlinks_before_writing(self) -> None:
+        with tempfile.TemporaryDirectory() as scratch:
+            root = Path(scratch) / "copy"
+            root.mkdir()
+            (root / ledger.COPY_MARKER).write_text(ledger.COPY_MARKER_CONTENT)
+            canvas = root / "canvas.sqlite3"
+            canvas.write_bytes(b"copy database bytes")
+            (root / "analytics.sqlite3").write_bytes(b"analytics database bytes")
+            external_link = Path(scratch) / "linked-live-canvas.sqlite3"
+            os.link(canvas, external_link)
+            original = canvas.read_bytes()
+
+            with self.assertRaisesRegex(ValueError, "hard links"):
+                ledger.validate_copy_state_root(root)
+
+            self.assertEqual(canvas.read_bytes(), original)
+
+    def test_copy_state_root_rejects_a_known_live_database_identity(self) -> None:
+        with tempfile.TemporaryDirectory() as scratch:
+            root = Path(scratch) / "copy"
+            live = Path(scratch) / "known-live"
+            root.mkdir()
+            live.mkdir()
+            (root / ledger.COPY_MARKER).write_text(ledger.COPY_MARKER_CONTENT)
+            canvas = root / "canvas.sqlite3"
+            canvas.write_bytes(b"copy database bytes")
+            (root / "analytics.sqlite3").write_bytes(b"analytics database bytes")
+            live_canvas = live / "canvas.sqlite3"
+            os.link(canvas, live_canvas)
+            original_stat = Path.stat
+
+            def report_copy_as_unlinked(path, *args, **kwargs):
+                stat = original_stat(path, *args, **kwargs)
+                if path == canvas:
+                    values = list(stat)
+                    values[3] = 1
+                    return os.stat_result(values)
+                return stat
+
+            with patch.object(Path, "stat", report_copy_as_unlinked):
+                with self.assertRaisesRegex(ValueError, "aliases a known live database"):
+                    ledger.validate_copy_state_root(root, live_state_root=live)
+
+    def test_copy_disposition_requires_an_explicit_functional_witness(self) -> None:
+        status_only = [{"expected": "2xx", "expectedMatches": True, "status": 200}]
+        self.assertEqual(ledger.copy_probe_disposition(status_only), "unverified")
+        functional = [{
+            "expected": "2xx", "expectedMatches": True, "status": 200,
+            "functionalWitness": True,
+        }]
+        self.assertEqual(ledger.copy_probe_disposition(functional), "pass")
+        functional[0]["expectedMatches"] = False
+        self.assertEqual(ledger.copy_probe_disposition(functional), "refused")
+
     def test_copy_backend_command_requires_ephemeral_port(self) -> None:
         self.assertEqual(
             ledger.validate_ephemeral_backend_command("/tmp/studio-runtime-server --port 0"),
@@ -229,7 +283,7 @@ Server suites: 0 passed, 1 failed, 0 skipped (opt-in), 0 skipped (environment), 
             "agent", "imageAgent", "task", "complaint", "room", "checkpoint", "item",
             "monitor", "terminal", "activeRule", "chat", "message", "filePath",
             "layoutRevision", "emptyQueueRevision", "queueIds", "question", "toolReceipt", "toolCancel",
-            "questionDelete", "providerQuestion", "answerQuestion", "projectPath", "claudeAccount",
+            "questionDelete", "answerQuestion", "projectPath", "claudeAccount",
             "voiceRecord", "voiceEndedSession", "voiceActiveSession",
             "analyticsAgent", "schemaHash", "approvalRequest", "codexLogin", "activeCommand",
             "liveTerminal",
@@ -365,6 +419,11 @@ Server suites: 0 passed, 1 failed, 0 skipped (opt-in), 0 skipped (environment), 
         self.assertEqual(defer_path, "/api/questions/defer")
         self.assertEqual(defer_body["id"], "ledger-probe-question")
         self.assertNotEqual(answer_body["id"], defer_body["id"])
+
+    def test_native_question_delete_uses_provider_callback_owner_witness(self) -> None:
+        probe = ledger.PROBE_CASES[("POST", "/api/questions/delete")]
+        self.assertEqual(probe["primary"]["expected"], "2xx")
+        self.assertNotIn("additional", probe)
 
     def test_native_command_probe_uses_a_distinct_seeded_running_task(self) -> None:
         probe = ledger.PROBE_CASES[("POST", "/api/native-command")]["primary"]

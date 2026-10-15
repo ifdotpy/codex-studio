@@ -55,6 +55,17 @@ impl AccountSessionPort for UnknownRecoveryPort {
     }
 }
 
+struct SupersededRecoveryPort;
+impl AccountSessionPort for SupersededRecoveryPort {
+    fn recover_connection(
+        &self,
+        _account: &str,
+        _agent_id: &str,
+    ) -> Result<Value, AccountSessionError> {
+        Ok(json!({"status":"superseded"}))
+    }
+}
+
 #[tokio::test]
 async fn connection_recovery_http_returns_the_synchronous_worker_status() {
     let (root, store, context) = fixture::fixture();
@@ -164,5 +175,44 @@ async fn connection_recovery_unknown_outcome_is_service_unavailable() {
     assert_eq!(
         response.status(),
         axum::http::StatusCode::SERVICE_UNAVAILABLE
+    );
+}
+
+#[tokio::test]
+async fn connection_recovery_superseded_outcome_is_successful_http_result() {
+    let (root, store, context) = fixture::fixture();
+    let mut state = HttpState::new(
+        "token".into(),
+        "fixture".into(),
+        None,
+        root.path().to_string_lossy().into(),
+        49171,
+        None,
+        Some(store),
+        None,
+    );
+    state.account_session = Some(Arc::new(SupersededRecoveryPort));
+    let app = router(state).unwrap();
+    let request = Request::builder()
+        .method("POST")
+        .uri("/api/connection-recovery")
+        .header("host", "127.0.0.1:49171")
+        .header("content-type", "application/json")
+        .header("x-canvas-token", "token")
+        .header(
+            studio_runtime_http::API_SCHEMA_HASH_HEADER,
+            studio_runtime_http::schema::api_schema_hash(),
+        )
+        .extension(ConnectInfo(
+            "127.0.0.1:12345".parse::<std::net::SocketAddr>().unwrap(),
+        ))
+        .body(Body::from(json!({"id":context.agent}).to_string()))
+        .unwrap();
+    let response = app.oneshot(request).await.unwrap();
+    assert_eq!(response.status(), axum::http::StatusCode::OK);
+    let body = to_bytes(response.into_body(), 1024 * 1024).await.unwrap();
+    assert_eq!(
+        serde_json::from_slice::<Value>(&body).unwrap(),
+        json!({"status":"superseded"})
     );
 }

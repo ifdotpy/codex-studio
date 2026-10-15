@@ -98,6 +98,24 @@ pub struct ProjectVaultSnapshot {
 }
 
 impl ProjectVaultSnapshot {
+    /// Capture filesystem views for valid stored projects while ignoring
+    /// malformed rows, matching Python's sync projection reader.
+    pub fn capture_for_sync(state_dir: &Path, connection: &Connection) -> StoreResult<Self> {
+        let mut statement =
+            connection.prepare_cached("SELECT id,record FROM runtime_projects ORDER BY rowid")?;
+        let rows = statement.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
+        let mut projects = Vec::new();
+        for row in rows {
+            let (id, raw) = row?;
+            if valid_stored_record("runtime_projects", &id, &raw) {
+                projects.push((id, serde_json::from_str(&raw)?));
+            }
+        }
+        Ok(Self::capture(state_dir, &projects))
+    }
+
     /// Read each project's cached vault record before the caller starts its store transaction.
     pub fn capture(state_dir: &Path, projects: &[(String, Value)]) -> Self {
         let vm_state_dir = crate::vault::linux_vm_state_dir(state_dir);
@@ -156,7 +174,7 @@ impl ProjectVaultSnapshot {
     }
 
     fn recheck(&self, transaction: &Transaction<'_>) -> StoreResult<()> {
-        let current = stored_records(transaction, "runtime_projects")?;
+        let current = projection_records(transaction, "runtime_projects")?;
         if current.len() != self.projects.len()
             || current.into_iter().any(|(id, raw)| {
                 serde_json::from_str::<Value>(&raw).ok().as_ref() != self.projects.get(&id)
@@ -231,7 +249,7 @@ pub fn maintain_entity_projections_with_server_id(
         "runtime_federation_rooms",
     ]
     .into_iter()
-    .map(|table| stored_records(transaction, table).map(|records| (table, records)))
+    .map(|table| projection_records(transaction, table).map(|records| (table, records)))
     .collect::<StoreResult<HashMap<_, _>>>()?;
     vault_snapshot.recheck(transaction)?;
     let peer_agents = source_records
@@ -478,8 +496,8 @@ fn put_projection(
     Ok(())
 }
 
-pub(crate) fn table_exists(transaction: &Transaction<'_>, name: &str) -> StoreResult<bool> {
-    Ok(transaction.query_row(
+pub(crate) fn table_exists(connection: &Connection, name: &str) -> StoreResult<bool> {
+    Ok(connection.query_row(
         "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)",
         [name],
         |row| row.get(0),
@@ -490,24 +508,9 @@ pub(crate) fn stored_records(
     transaction: &Transaction<'_>,
     table: &str,
 ) -> StoreResult<Vec<(String, String)>> {
-    if !table_exists(transaction, table)? {
-        return Ok(Vec::new());
-    }
-    let mut statement =
-        transaction.prepare(&format!("SELECT id,record FROM {table} ORDER BY rowid"))?;
-    let rows = statement.query_map([], |row| {
-        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-    })?;
-    let rows = rows.collect::<Result<Vec<_>, _>>()?;
+    let rows = stored_record_rows(transaction, table)?;
     for (id, raw) in &rows {
-        let valid = serde_json::from_str::<Value>(raw).is_ok_and(|record| {
-            record.is_object()
-                && record.get("id").and_then(Value::as_str) == Some(id)
-                && studio_runtime_schema::table_schema(table).is_none_or(|schema| {
-                    studio_runtime_schema::validate(schema, &record).unwrap_or(false)
-                })
-        });
-        if !valid {
+        if !valid_stored_record(table, id, raw) {
             return Err(StoreError::InvalidSyncObject {
                 scope: table.to_owned(),
                 id: id.clone(),
@@ -515,6 +518,48 @@ pub(crate) fn stored_records(
         }
     }
     Ok(rows)
+}
+
+fn projection_records(
+    transaction: &Transaction<'_>,
+    table: &str,
+) -> StoreResult<Vec<(String, String)>> {
+    // Python owner: codex_sync_entities._stored_record skips malformed rows
+    // while refreshing sync projections instead of failing the whole pull.
+    Ok(stored_record_rows(transaction, table)?
+        .into_iter()
+        .filter(|(id, raw)| valid_stored_record(table, id, raw))
+        .collect())
+}
+
+pub(crate) fn projection_values(connection: &Connection, table: &str) -> StoreResult<Vec<Value>> {
+    Ok(stored_record_rows(connection, table)?
+        .into_iter()
+        .filter(|(id, raw)| valid_stored_record(table, id, raw))
+        .map(|(_, raw)| serde_json::from_str(&raw))
+        .collect::<Result<Vec<_>, _>>()?)
+}
+
+fn stored_record_rows(connection: &Connection, table: &str) -> StoreResult<Vec<(String, String)>> {
+    if !table_exists(connection, table)? {
+        return Ok(Vec::new());
+    }
+    let mut statement =
+        connection.prepare(&format!("SELECT id,record FROM {table} ORDER BY rowid"))?;
+    let rows = statement.query_map([], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+    })?;
+    Ok(rows.collect::<Result<Vec<_>, _>>()?)
+}
+
+fn valid_stored_record(table: &str, id: &str, raw: &str) -> bool {
+    serde_json::from_str::<Value>(raw).is_ok_and(|record| {
+        record.is_object()
+            && record.get("id").and_then(Value::as_str) == Some(id)
+            && studio_runtime_schema::table_schema(table).is_none_or(|schema| {
+                studio_runtime_schema::validate(schema, &record).unwrap_or(false)
+            })
+    })
 }
 
 pub(crate) fn normalized_project_path(value: &str) -> Option<String> {
@@ -1423,8 +1468,57 @@ pub fn push_preferences(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rusqlite::Connection;
     use std::fs;
     use studio_runtime_store::ProjectsRepository;
+
+    #[test]
+    fn sync_projection_skips_malformed_persisted_rows() {
+        let mut connection = Connection::open_in_memory().expect("open test database");
+        connection
+            .execute_batch("CREATE TABLE runtime_agents (id TEXT, record TEXT);")
+            .expect("create source table");
+        connection
+            .execute(
+                "INSERT INTO runtime_agents (id, record) VALUES ('broken-agent', '{')",
+                [],
+            )
+            .expect("insert malformed source row");
+        let transaction = connection.transaction().expect("begin test transaction");
+
+        assert!(
+            projection_records(&transaction, "runtime_agents")
+                .expect("sync projection ignores one malformed stored row")
+                .is_empty()
+        );
+        assert!(matches!(
+            stored_records(&transaction, "runtime_agents"),
+            Err(StoreError::InvalidSyncObject { scope, id })
+                if scope == "runtime_agents" && id == "broken-agent"
+        ));
+    }
+
+    #[test]
+    fn sync_vault_snapshot_skips_malformed_persisted_projects() {
+        let connection = Connection::open_in_memory().expect("open test database");
+        connection
+            .execute_batch("CREATE TABLE runtime_projects (id TEXT, record TEXT);")
+            .expect("create source table");
+        connection
+            .execute(
+                "INSERT INTO runtime_projects (id, record) VALUES ('broken-project', '{')",
+                [],
+            )
+            .expect("insert malformed project row");
+
+        let snapshot = ProjectVaultSnapshot::capture_for_sync(Path::new("/unused"), &connection)
+            .expect("sync snapshot ignores malformed stored project");
+        let mut connection = connection;
+        let transaction = connection.transaction().expect("begin sync transaction");
+        snapshot
+            .recheck(&transaction)
+            .expect("malformed row stays outside the valid project snapshot");
+    }
 
     #[test]
     fn draft_identity_matches_row_key_and_allows_extension_members() {

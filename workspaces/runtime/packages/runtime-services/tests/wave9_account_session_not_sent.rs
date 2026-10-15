@@ -261,6 +261,20 @@ fn absent_live_scope_maps_login_and_cancel_to_python_not_sent_receipts() {
 }
 
 #[test]
+fn absent_recovery_scope_returns_superseded_without_provider_replay() {
+    // Python owner: codex_connection_recovery.recover returns superseded when
+    // the agent's connection context is no longer current (lines 227-264).
+    let fixture = Fixture::new();
+    let session = Arc::new(FakeSession::no_live_scope());
+    let result = fixture
+        .service(Arc::clone(&session))
+        .recover_connection("default", "fixture-agent")
+        .expect("stale recovery is a completed superseded outcome");
+    assert_eq!(result, json!({"status":"superseded"}));
+    assert_eq!(session.calls.load(Ordering::SeqCst), 0);
+}
+
+#[test]
 fn unknown_login_remains_uncertain_and_is_never_replayed() {
     let fixture = Fixture::new();
     let session = Arc::new(FakeSession::new(RequestCertainty::Unknown, None));
