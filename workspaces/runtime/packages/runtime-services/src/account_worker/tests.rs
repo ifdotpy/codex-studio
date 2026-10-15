@@ -2954,6 +2954,7 @@ struct VmTurnGuestState {
 #[derive(Default)]
 struct VmTurnGuest {
     state: std::sync::Mutex<VmTurnGuestState>,
+    changed: tokio::sync::Notify,
 }
 
 impl VmTurnGuest {
@@ -3011,7 +3012,7 @@ impl crate::linux_vm_guest::GuestRpc for VmTurnGuest {
                 "write" => {
                     let message = params["message"].clone();
                     state.writes.push(message.clone());
-                    if message["method"] == "thread/resume" {
+                    if message["method"] == "thread/start" || message["method"] == "thread/resume" {
                         Self::enqueue_frame(
                             &mut state,
                             json!({"id":message["id"],"result":{"thread":{"id":"fake-thread-0"}}}),
@@ -3026,12 +3027,14 @@ impl crate::linux_vm_guest::GuestRpc for VmTurnGuest {
                             json!({"method":"turn/completed","params":{"threadId":"fake-thread-0","turn":{"id":"vm-turn","status":"completed"}}}),
                         );
                     }
+                    self.changed.notify_one();
                     Ok(
                         json!({"accepted":true,"remoteId":message.get("id").cloned().unwrap_or(Value::Null)}),
                     )
                 }
                 "ack" => {
                     state.acknowledged = params["sequence"].as_u64().unwrap_or(0);
+                    self.changed.notify_one();
                     Ok(json!({"acknowledged":state.acknowledged}))
                 }
                 "info" => Ok(json!({
@@ -3075,7 +3078,6 @@ impl preparation::VmProviderLaunchResolver for VmTurnResolver {
 async fn vm_actor_turn_uses_guest_session_and_settles_complete_turn() {
     let state = State::new().await;
     let agent_id = state.agent.clone();
-    let expected_agent_id = agent_id.clone();
     state
         .bridge
         .run(move |store| {
@@ -3088,6 +3090,7 @@ async fn vm_actor_turn_uses_guest_session_and_settles_complete_turn() {
                     .extra
                     .insert("cwd".into(), json!("/home/studio/project"));
                 record.extra.insert("workspaceMode".into(), json!("layr"));
+                record.extra.insert("threadId".into(), Value::Null);
                 AgentRepository::put(tx, &record)
             })?;
             Ok(())
@@ -3111,6 +3114,7 @@ async fn vm_actor_turn_uses_guest_session_and_settles_complete_turn() {
 
     tokio::time::timeout(std::time::Duration::from_secs(10), async {
         loop {
+            let changed = guest.changed.notified();
             let state = guest.state.lock().unwrap();
             let has_turn = state
                 .writes
@@ -3121,7 +3125,7 @@ async fn vm_actor_turn_uses_guest_session_and_settles_complete_turn() {
             if has_turn && completed {
                 break;
             }
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            changed.await;
         }
     })
     .await
@@ -3133,7 +3137,7 @@ async fn vm_actor_turn_uses_guest_session_and_settles_complete_turn() {
         guest_state
             .writes
             .iter()
-            .any(|write| write["method"] == "thread/resume")
+            .any(|write| write["method"] == "thread/start")
     );
     assert!(
         guest_state
@@ -3146,11 +3150,7 @@ async fn vm_actor_turn_uses_guest_session_and_settles_complete_turn() {
     assert_eq!(state.event_status("input").await, "delivered");
     worker.shutdown().await.unwrap();
     let guest_state = guest.state.lock().unwrap();
-    assert_eq!(guest_state.stops.len(), 1);
-    assert_eq!(
-        guest_state.stops[0]["handle"],
-        format!("linux-worker:{expected_agent_id}")
-    );
+    assert!(guest_state.stops.is_empty(), "worker cancellation detaches the transport");
 }
 
 #[tokio::test]

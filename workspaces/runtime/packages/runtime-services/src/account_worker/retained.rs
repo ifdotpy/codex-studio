@@ -635,6 +635,7 @@ impl Call {
 pub(super) struct PendingRequest {
     call: Call,
     ticket: RequestTicket,
+    actor_id: Option<String>,
     reply: Option<Reply>,
     result: Option<RequestResult>,
     result_cursor: u64,

@@ -562,6 +562,15 @@ fn resolve_vm_launch_inputs(
                 .map_err(|_| {
                     WorkerError::PreparationRefused("provider-session/claude-runtime-launch".into())
                 })?;
+            // The host CLI path is not portable and can expose host layout.
+            // The guest bridge resolves its own `claude` executable.
+            let mut options = options;
+            options.remove("binaryPath");
+            let explicit_host_config = options
+                .get("configDir")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|value| !value.is_empty())
+                || env::var_os("CLAUDE_CONFIG_DIR").is_some();
             let host_config = options
                 .get("configDir")
                 .and_then(serde_json::Value::as_str)
@@ -593,15 +602,11 @@ fn resolve_vm_launch_inputs(
                 account,
                 accounts,
                 claude_bridge_dir,
+                explicit_host_config,
             )?;
-            let binary = options
-                .get("binaryPath")
-                .and_then(serde_json::Value::as_str)
-                .filter(|value| !value.is_empty())
-                .unwrap_or("claude");
             let environment = BTreeMap::from([
                 ("CLAUDE_CONFIG_DIR".into(), guest_profile),
-                ("STUDIO_CLAUDE_BIN".into(), binary.into()),
+                ("STUDIO_CLAUDE_BIN".into(), "claude".into()),
                 ("STUDIO_CLAUDE_OPTIONS".into(), options.to_string()),
                 (
                     "STUDIO_CLAUDE_ACCOUNT".into(),
@@ -628,7 +633,7 @@ fn resolve_vm_launch_inputs(
             // external auth through the retained provider session.
             let credential_path = format!("{profile_relative}/auth.json");
             let bootstrap =
-                read_vm_codex_bootstrap(accounts, account_session, &request.account_key, account)?;
+                read_vm_codex_bootstrap(accounts, account_session, &request.account_key, account, false)?;
             (
                 vec![
                     "codex".into(),
@@ -663,6 +668,7 @@ fn read_vm_codex_bootstrap(
     session: Option<&dyn studio_runtime_services::account_session_runtime::AccountSessionPort>,
     account_key: &str,
     account: &Value,
+    force_refresh: bool,
 ) -> Result<Value, WorkerError> {
     use base64::Engine as _;
     let read = || -> Result<(Value, Option<f64>), WorkerError> {
@@ -754,14 +760,28 @@ fn read_vm_codex_bootstrap(
         .duration_since(std::time::UNIX_EPOCH)
         .map_err(|_| WorkerError::TaskFailed)?
         .as_secs_f64();
-    if expires.is_some_and(|value| value <= now + CODEX_ACCESS_REFRESH_WINDOW_SECONDS) {
+    if force_refresh || expires.is_some_and(|value| value <= now + CODEX_ACCESS_REFRESH_WINDOW_SECONDS) {
         let port = session.ok_or_else(|| {
             WorkerError::PreparationPending("provider-session/account-session".into())
         })?;
         let scope = port.ensure_session(account_key).map_err(|_| {
             WorkerError::PreparationPending("provider-session/account-session".into())
         })?;
-        let operation = format!("vm-codex-token-refresh:{account_key}:{}", scope.generation);
+        let source_token = payload
+            .pointer("/accessToken")
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                WorkerError::PreparationRefused("provider-session/codex-auth-invalid".into())
+            })?;
+        let source_digest = studio_runtime_store::sha256_hex(source_token.as_bytes());
+        let source_expiry = expires.ok_or_else(|| {
+            WorkerError::PreparationRefused("provider-session/codex-auth-invalid".into())
+        })?;
+        let operation = format!(
+            "vm-codex-token-refresh:{account_key}:{}:{source_expiry}:{}",
+            scope.generation,
+            &source_digest[..24]
+        );
         let receipt = port
             .provider_request(
                 studio_runtime_services::account_session_runtime::ProviderRequest {
@@ -839,6 +859,7 @@ fn read_vm_claude_credentials(
     original_account: &Value,
     accounts: &AccountDriver,
     claude_bridge_dir: &Path,
+    explicit_host_config: bool,
 ) -> Result<Vec<u8>, WorkerError> {
     let account_lock = VM_CLAUDE_ACCOUNT_LOCKS
         .get_or_init(|| Mutex::new(BTreeMap::new()))
@@ -853,7 +874,7 @@ fn read_vm_claude_credentials(
     let expected_pin = accounts
         .auth_pin(account_key)
         .map_err(|_| WorkerError::PreparationPending("vm-credentials/account-status".into()))?;
-    let mut access = read_vm_claude_oauth(path)?;
+    let mut access = read_vm_claude_oauth(path, explicit_host_config)?;
     let mut expiry = claude_expiry_ms(&access)?;
     let mut auth_status_verified = false;
     let now_ms = unix_time_ms()?;
@@ -871,7 +892,7 @@ fn read_vm_claude_credentials(
                 Duration::from_millis(100)
                     .min(wait_deadline.saturating_duration_since(Instant::now())),
             );
-            access = read_vm_claude_oauth(path)?;
+            access = read_vm_claude_oauth(path, explicit_host_config)?;
             expiry = claude_expiry_ms(&access)?;
         }
         verify_vm_claude_account(
@@ -906,7 +927,7 @@ fn read_vm_claude_credentials(
         helper_environment.insert("STUDIO_CLAUDE_BIN".into(), binary.into());
         helper_environment.insert("STUDIO_CLAUDE_ACCOUNT".into(), email.into());
         run_vm_claude_refresh_helper(&node, &helper, &helper_environment, || {
-            let current = read_vm_claude_oauth(path)?;
+            let current = read_vm_claude_oauth(path, explicit_host_config)?;
             Ok(claude_expiry_ms(&current)? > unix_time_ms()? + CLAUDE_ACCESS_REFRESH_WINDOW_MS)
         })?;
         verify_vm_claude_account(
@@ -918,7 +939,7 @@ fn read_vm_claude_credentials(
             true,
         )?;
         auth_status_verified = true;
-        access = read_vm_claude_oauth(path)?;
+        access = read_vm_claude_oauth(path, explicit_host_config)?;
         expiry = claude_expiry_ms(&access)?;
     }
     // Python forces native auth metadata even when no refresh was needed
@@ -970,10 +991,13 @@ fn encode_vm_claude_credentials(
     serde_json::to_vec(&json!({"claudeAiOauth":allowlisted})).map_err(|_| WorkerError::TaskFailed)
 }
 
-fn read_vm_claude_oauth(path: &Path) -> Result<serde_json::Map<String, Value>, WorkerError> {
+fn read_vm_claude_oauth(
+    path: &Path,
+    explicit_config_dir: bool,
+) -> Result<serde_json::Map<String, Value>, WorkerError> {
     let max_bytes = studio_runtime_services::linux_vm_provider::MAX_GUEST_CREDENTIAL_BYTES;
     #[cfg(target_os = "macos")]
-    let keychain_bytes = read_vm_claude_keychain(path)?;
+    let keychain_bytes = read_vm_claude_keychain(path, explicit_config_dir)?;
     #[cfg(not(target_os = "macos"))]
     let keychain_bytes: Option<Vec<u8>> = None;
     let bytes = match keychain_bytes {
@@ -1032,18 +1056,13 @@ fn read_vm_claude_oauth(path: &Path) -> Result<serde_json::Map<String, Value>, W
 #[cfg(target_os = "macos")]
 /// Read the same per-config Keychain service as
 /// `codex_linux_vm_credentials.py:13-19` and `codex_linux_vm_auth.py:96-120`.
-fn read_vm_claude_keychain(path: &Path) -> Result<Option<Vec<u8>>, WorkerError> {
+fn read_vm_claude_keychain(
+    path: &Path,
+    explicit_config_dir: bool,
+) -> Result<Option<Vec<u8>>, WorkerError> {
     let config_dir = path.parent().ok_or(WorkerError::TaskFailed)?;
-    let mut config_identity = config_dir.to_string_lossy().into_owned();
-    while config_identity.ends_with('/') {
-        config_identity.pop();
-    }
-    let mut service = "Claude Code-credentials".to_owned();
-    if !config_identity.is_empty() {
-        let digest = data_encoding::HEXLOWER.encode(&Sha256::digest(config_identity.as_bytes()));
-        service.push('-');
-        service.push_str(&digest[..8]);
-    }
+    let config_identity = explicit_config_dir.then(|| config_dir.to_string_lossy());
+    let service = vm_claude_keychain_service(config_identity.as_deref());
     let security = Path::new("/usr/bin/security");
     let mut command = CommandWrap::with_new(security.as_os_str(), |command| {
         command
@@ -1105,6 +1124,42 @@ fn read_vm_claude_keychain(path: &Path) -> Result<Option<Vec<u8>>, WorkerError> 
         ));
     }
     Ok(Some(output))
+}
+
+fn vm_claude_keychain_service(config_dir: Option<&str>) -> String {
+    let mut service = "Claude Code-credentials".to_owned();
+    if let Some(config_dir) = config_dir {
+        let config_dir = config_dir.trim_end_matches('/');
+        let digest = data_encoding::HEXLOWER.encode(&Sha256::digest(config_dir.as_bytes()));
+        service.push('-');
+        service.push_str(&digest[..8]);
+    }
+    service
+}
+
+#[cfg(test)]
+mod vm_claude_keychain_tests {
+    use super::vm_claude_keychain_service;
+    use sha2::{Digest, Sha256};
+
+    #[test]
+    fn default_claude_keychain_service_stays_unsuffixed() {
+        assert_eq!(
+            vm_claude_keychain_service(None),
+            "Claude Code-credentials"
+        );
+    }
+
+    #[test]
+    fn explicitly_selected_claude_config_uses_scoped_service() {
+        assert_eq!(
+            vm_claude_keychain_service(Some("/tmp/claude-profile/")),
+            "Claude Code-credentials-"
+                .to_owned()
+                + &data_encoding::HEXLOWER
+                    .encode(&Sha256::digest(b"/tmp/claude-profile"))[..8]
+        );
+    }
 }
 
 fn claude_expiry_ms(access: &serde_json::Map<String, Value>) -> Result<f64, WorkerError> {

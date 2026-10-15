@@ -163,6 +163,16 @@ pub(super) fn recover(
             }
             let written = receipt(tx, &context.operation, "written")?;
             let request = decode(written.as_ref().unwrap_or(&value["request"]))?;
+            let vm_owned = AgentRepository::get(
+                tx,
+                &AgentId::from(context.intent.agent_id.as_str()),
+            )?
+            .is_some_and(|agent| {
+                agent.extra.get("executionMode").and_then(Value::as_str) == Some("vm")
+            });
+            if vm_owned {
+                continue;
+            }
             if context.method()? == Method::TurnStart {
                 SchedulerRepository::settle_start_outcome(
                     tx,
@@ -206,6 +216,66 @@ pub(super) fn recover(
         }
         Ok(recovered)
     })
+}
+
+/// Restore outstanding tickets belonging to one VM actor into that actor's
+/// guest session. Host tickets are handled by `recover` and never cross this
+/// boundary.
+pub(super) fn recover_vm_actor_requests(
+    store: &RuntimeStore,
+    account: &str,
+    agent: &str,
+    generation: u64,
+) -> Result<Vec<(Pending, RecoveredRequest)>, WorkerError> {
+    let connection = store.read()?;
+    let Some(agent_record) = AgentRepository::get(&connection, &AgentId::from(agent))? else {
+        return Ok(Vec::new());
+    };
+    if agent_record.extra.get("executionMode").and_then(Value::as_str) != Some("vm") {
+        return Ok(Vec::new());
+    }
+    let prefix = format!("account-worker:account:{account}:");
+    let mut statement = connection.prepare(
+        "SELECT id,result FROM runtime_operation_receipts WHERE id>=?1 AND id<?2 AND substr(id,-10)=':submitted' AND NOT EXISTS (SELECT 1 FROM runtime_operation_receipts done WHERE done.id=substr(id,1,length(id)-10)||':resolved') ORDER BY id",
+    )?;
+    let rows = statement
+        .query_map(params![prefix, format!("{prefix}~")], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut recovered = Vec::new();
+    for (receipt, raw) in rows {
+        let value: Value = serde_json::from_str(&raw).map_err(|_| invalid(&receipt))?;
+        let context: Pending = serde_json::from_value(value["context"].clone())
+            .map_err(|_| invalid(&receipt))?;
+        if context.intent.agent_id != agent {
+            continue;
+        }
+        let operation = receipt
+            .strip_prefix("account-worker:")
+            .and_then(|value| value.strip_suffix(":submitted"))
+            .ok_or_else(|| invalid(&receipt))?;
+        let written_id = receipt_id(operation, "written");
+        let written = connection
+            .query_row(
+                "SELECT result FROM runtime_operation_receipts WHERE id=?1",
+                [written_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        let record = match written {
+            Some(raw) => serde_json::from_str(&raw).map_err(|_| invalid(&receipt))?,
+            None => value["request"].clone(),
+        };
+        let request = decode(&record)?;
+        if request.ticket.generation == generation {
+            recovered.push((context, request));
+            if recovered.len() > MAX_PENDING_RESPONSES {
+                return Err(WorkerError::Capacity);
+            }
+        }
+    }
+    Ok(recovered)
 }
 // Reconciliation has already held old-generation input. Transport receipts
 // from a closed generation cannot authorize replay and no longer need journals.

@@ -32,6 +32,34 @@ impl Worker {
             let _ignored = reply.send(Err(PortError::Capacity));
             return Ok(());
         }
+        let actor_id = request.actor.as_ref().map(|actor| actor.agent.clone());
+        let actor_lookup = request.actor.as_ref().map(|actor| actor.agent.clone());
+        let is_vm_actor = if let Some(actor) = actor_lookup {
+            self.db("retained_actor_mode", move |store| {
+                let connection = store.read()?;
+                let record = AgentRepository::get(&connection, &AgentId::from(actor.as_str()))?;
+                Ok(record.is_some_and(|record| {
+                    record.extra.get("executionMode").and_then(Value::as_str) == Some("vm")
+                }))
+            })
+            .await?
+        } else {
+            false
+        };
+        let control = if is_vm_actor {
+            let Some(control) = actor_id
+                .as_deref()
+                .and_then(|actor| self.vm_sessions.get(actor))
+                .map(|session| session.control.clone())
+            else {
+                let _ignored = reply.send(Err(PortError::NotSent));
+                return Ok(());
+            };
+            control
+        } else {
+            self.control.clone()
+        };
+        let journal_actor_id = if is_vm_actor { actor_id.clone() } else { None };
         let call = Call {
             scope: request.scope,
             operation: request.operation,
@@ -72,7 +100,6 @@ impl Worker {
             }
             Ok(Replay::Retry(ticket)) => Some(ticket),
         };
-        let control = self.control.clone();
         let remaining = tokio::time::Instant::from_std(request.deadline)
             .saturating_duration_since(tokio::time::Instant::now());
         let deadline = tokio::time::Instant::from_std(request.deadline);
@@ -123,6 +150,7 @@ impl Worker {
             PendingRequest {
                 call,
                 ticket: ticket.clone(),
+                actor_id: journal_actor_id.clone(),
                 reply: Some(reply),
                 result: None,
                 result_cursor: 0,
@@ -140,11 +168,11 @@ impl Worker {
                     recovery: None,
                 },
                 0,
+                journal_actor_id.as_deref(),
             )
             .await?;
             return self.complete_retained().await;
         }
-        let control = self.control.clone();
         if let Err(error) = self
             .drive(async {
                 tokio::time::timeout_at(deadline, control.submit(prepared))
@@ -166,6 +194,7 @@ impl Worker {
                     recovery: None,
                 },
                 0,
+                journal_actor_id.as_deref(),
             )
             .await?;
             self.complete_retained().await?;
@@ -176,6 +205,7 @@ impl Worker {
         &mut self,
         outcome: &SessionOutcome,
         cursor: u64,
+        actor_id: Option<&str>,
     ) -> Result<bool, WorkerError> {
         let ticket = match outcome {
             SessionOutcome::Write {
@@ -187,6 +217,9 @@ impl Worker {
         let Some(pending) = self.retained_requests.get(&ticket.id) else {
             return Ok(false);
         };
+        if pending.actor_id.as_deref() != actor_id {
+            return Ok(false);
+        }
         if &pending.ticket != ticket {
             return Err(WorkerError::PreparationRefused(
                 "retained-session/ticket-mismatch".into(),

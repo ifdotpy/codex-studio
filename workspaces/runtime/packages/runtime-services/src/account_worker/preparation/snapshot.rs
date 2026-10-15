@@ -40,7 +40,23 @@ pub type VmProviderLaunchFuture<'a> =
 /// caller starts the provider process.
 pub trait VmProviderLaunchResolver: Send + Sync {
     fn resolve(&self, request: VmProviderLaunchRequest) -> VmProviderLaunchFuture<'_>;
+
+    /// Host-owned Codex refresh for a token callback emitted by a guest actor.
+    fn refresh_codex(
+        &self,
+        _account_key: String,
+        _previous_account_id: String,
+    ) -> VmProviderAuthFuture<'_> {
+        Box::pin(async {
+            Err(WorkerError::PreparationPending(
+                "provider-session/vm-token-refresh".into(),
+            ))
+        })
+    }
 }
+
+pub type VmProviderAuthFuture<'a> =
+    Pin<Box<dyn Future<Output = Result<Value, WorkerError>> + Send + 'a>>;
 
 #[derive(Clone)]
 pub struct PreparationResources {

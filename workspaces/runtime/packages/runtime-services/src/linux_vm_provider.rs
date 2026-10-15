@@ -79,6 +79,9 @@ enum PersistedStart {
     Reserved {
         identity: StartIdentity,
     },
+    NotSent {
+        identity: StartIdentity,
+    },
     Started {
         identity: StartIdentity,
         info: Value,
@@ -379,11 +382,15 @@ async fn run_guest_attachment(
             }
         }
     }
+    // The read lane is independent of command cancellation. Stop and join it
+    // before returning so a failed attachment cannot leave a concurrent guest
+    // read racing its replacement. Cancellation detaches; explicit actor
+    // disposal owns provider.stop.
+    reader.abort();
     let _reader_exit = reader.await;
-    let cleanup = session.stop().await.err().map(|error| error.to_string());
     TaskExit {
         result,
-        cleanup_error: cleanup,
+        cleanup_error: None,
         recovery_needed: None,
     }
 }
@@ -430,7 +437,10 @@ impl GuestProviderSession {
                     info
                 }
                 Err(error) if error.uncertain() => return Err(GuestProviderError::Unknown),
-                Err(error) => return Err(error.into()),
+                Err(error) => {
+                    persist_not_sent(store.clone(), identity.clone()).await?;
+                    return Err(error.into());
+                }
             }
         } else {
             // An existing reservation means dispatch may have happened before a
@@ -906,11 +916,12 @@ fn reserve_start(
                 .into());
             }
             let saved: PersistedStart = serde_json::from_str(&saved.result)?;
-            let identity = match saved {
-                PersistedStart::Reserved { identity }
-                | PersistedStart::Started { identity, .. } => identity,
+            let (identity, dispatch) = match saved {
+                PersistedStart::Reserved { identity } => (identity, false),
+                PersistedStart::NotSent { identity } => (identity, true),
+                PersistedStart::Started { identity, .. } => (identity, false),
             };
-            return Ok((identity, false));
+            return Ok((identity, dispatch));
         }
         let request_id = uuid::Uuid::new_v4().to_string();
         if request_id.len() > START_REQUEST_ID_MAX_BYTES {
@@ -935,6 +946,38 @@ fn reserve_start(
     })
 }
 
+async fn persist_not_sent(store: Arc<RuntimeStore>, identity: StartIdentity) -> Result<()> {
+    let receipt_id = format!(
+        "{START_RECEIPT_PREFIX}{}:{}",
+        identity.agent_id, identity.epoch
+    );
+    tokio::task::spawn_blocking(move || {
+        store.transaction_with(|tx: &Transaction<'_>| -> Result<()> {
+            let Some(saved) = EventWriteRepository::receipt(tx, &receipt_id)? else {
+                return Err(GuestProviderError::Unknown);
+            };
+            let current: PersistedStart = serde_json::from_str(&saved.result)?;
+            let current_identity = match current {
+                PersistedStart::Reserved { identity }
+                | PersistedStart::NotSent { identity }
+                | PersistedStart::Started { identity, .. } => identity,
+            };
+            if current_identity != identity {
+                return Err(GuestProviderError::Unknown);
+            }
+            let result = serde_json::to_string(&PersistedStart::NotSent { identity })?;
+            tx.execute(
+                "UPDATE runtime_operation_receipts SET result=?1 WHERE id=?2 AND signature=?3",
+                rusqlite::params![result, receipt_id, saved.signature],
+            )
+            .map_err(StoreError::from)?;
+            Ok(())
+        })
+    })
+    .await
+    .map_err(|_| GuestProviderError::Task)?
+}
+
 async fn persist_started(
     store: Arc<RuntimeStore>,
     identity: StartIdentity,
@@ -952,6 +995,7 @@ async fn persist_started(
             let current: PersistedStart = serde_json::from_str(&saved.result)?;
             let current_identity = match current {
                 PersistedStart::Reserved { identity }
+                | PersistedStart::NotSent { identity }
                 | PersistedStart::Started { identity, .. } => identity,
             };
             if current_identity != identity {
@@ -1068,6 +1112,8 @@ mod tests {
         stops: Mutex<Vec<Value>>,
         credential_puts: Mutex<Vec<(Option<String>, Value)>>,
         uncertain_start_once: Mutex<bool>,
+        definite_start_failure_once: Mutex<bool>,
+        start_ids: Mutex<Vec<Option<String>>>,
     }
 
     impl FakeGuest {
@@ -1079,6 +1125,8 @@ mod tests {
                 stops: Mutex::new(Vec::new()),
                 credential_puts: Mutex::new(Vec::new()),
                 uncertain_start_once: Mutex::new(uncertain_start_once),
+                definite_start_failure_once: Mutex::new(false),
+                start_ids: Mutex::new(Vec::new()),
             }
         }
 
@@ -1101,6 +1149,19 @@ mod tests {
             match method {
                 "provider.start" => {
                     *self.starts.lock().unwrap() += 1;
+                    self.start_ids
+                        .lock()
+                        .unwrap()
+                        .push(request_id.map(str::to_owned));
+                    let mut definite = self.definite_start_failure_once.lock().unwrap();
+                    if *definite {
+                        *definite = false;
+                        return Err(GuestError::Rejected {
+                            code: Some("invalid_params".into()),
+                            detail: None,
+                            uncertain: false,
+                        });
+                    }
                     let mut uncertain = self.uncertain_start_once.lock().unwrap();
                     if *uncertain {
                         *uncertain = false;
@@ -1240,6 +1301,23 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn proven_unsent_start_retries_same_identity_without_info_reconciliation() {
+        let (_directory, store) = open_store();
+        let guest = Arc::new(FakeGuest::new(false));
+        *guest.definite_start_failure_once.lock().unwrap() = true;
+        assert!(matches!(
+            open_session(store.clone(), guest.clone()).await,
+            Err(GuestProviderError::Guest(_))
+        ));
+        let session = open_session(store, guest.clone()).await.unwrap();
+        assert_eq!(session.identity().handle, "linux-worker:agent-1");
+        let ids = guest.start_ids.lock().unwrap();
+        assert_eq!(ids.len(), 2);
+        assert_eq!(ids[0], ids[1]);
+        assert_eq!(*guest.starts.lock().unwrap(), 2);
+    }
+
+    #[tokio::test]
     async fn failed_settlement_does_not_ack_guest_event() {
         let (_directory, store) = open_store();
         let guest = Arc::new(FakeGuest::new(false));
@@ -1374,9 +1452,6 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(exit.cleanup_error, None);
-        assert_eq!(
-            guest.stops.lock().unwrap()[0]["handle"],
-            "linux-worker:agent-1"
-        );
+        assert!(guest.stops.lock().unwrap().is_empty());
     }
 }
