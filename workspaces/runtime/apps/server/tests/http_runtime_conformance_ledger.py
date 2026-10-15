@@ -22,7 +22,6 @@ from typing import Any, Iterator
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from runtime_test_environment import runtime_environment
-from http_runtime_test_support import ANSWER_REFUSAL_DEPENDENCIES, answer_refusal_error
 
 ROOT = Path(__file__).resolve().parents[5]
 TESTS = ROOT / "workspaces/runtime/apps/server/tests"
@@ -503,7 +502,10 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
     ("POST", "/api/questions/delete"): {
         "primary": {"body": {"id": "$questionDelete"}, "expected": "2xx"},
         "additional": [{
-            "name": "provider-owned question answer dependency",
+            # Python deletes pending native questions by resolving them through
+            # Runtime.answer (codex_questions.py:86-90), which sends their RPC
+            # through the retained provider session (codex_runtime.py:11300-11304).
+            "name": "native question provider delivery dependency",
             "body": {"id": "$providerQuestion"},
             "expected": "501",
             "expected_error": "Not implemented: requires provider-session/question-answer",
@@ -571,7 +573,10 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
         "primary": {"body": {"home": "$projectPath"}, "expected": "400", "assert_no_write": True},
     },
     ("POST", "/api/accounts/discover"): {"primary": {"body": {}, "expected": "2xx"}},
-    ("POST", "/api/answer"): {"primary": {"body": {"id": "$question", "decision": "cancel"}, "expected": "501", "expected_error": answer_refusal_error(), "assert_no_write": True}},
+    # Python routes this operation to Runtime.answer (studio_api/work/router.py:376-379;
+    # codex_runtime.py:11215-11254), which handles async questions and schedules
+    # their follow-up. This probe answers the seeded async question.
+    ("POST", "/api/answer"): {"primary": {"body": {"id": "$question", "answers": {"value": {"answers": ["Ledger answer"]}}}, "expected": "2xx"}},
     ("POST", "/api/branch"): {"primary": {"body": {"agent": "$agent", "id": "ledger-branch", "message_id": "ledger-message"}, "expected": "400", "assert_no_write": True}},
     ("POST", "/api/capacity-retry"): {
         "primary": {"body": {"id": "$agent", "retry_id": "ledger-capacity-cancel", "action": "cancel"}, "expected": "2xx"},
@@ -2062,11 +2067,6 @@ def main() -> int:
         raise RuntimeError("HTTP ledger error-body trace regression failed")
     routes = operations()
     manifest = rust_operation_manifest()
-    answer_manifest = manifest.get(("POST", "/api/answer"), {})
-    if tuple(answer_manifest.get("dependencies", [])) != ANSWER_REFUSAL_DEPENDENCIES:
-        raise RuntimeError(
-            "POST /api/answer refusal expectation does not match the Rust operation manifest"
-        )
     validate_missing_service_exclusions(manifest)
     ensure_operation_probe_cases(manifest)
     DEFAULT_CACHE.mkdir(parents=True, exist_ok=True)

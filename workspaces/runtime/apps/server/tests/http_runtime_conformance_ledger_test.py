@@ -211,6 +211,16 @@ Server suites: 0 passed, 1 failed, 0 skipped (opt-in), 0 skipped (environment), 
                 self.assertEqual(probe["expected"], "403")
                 self.assertNotIn("headers", probe)
 
+    def test_answer_probe_covers_the_implemented_async_question_flow(self) -> None:
+        probe = ledger.PROBE_CASES[("POST", "/api/answer")]["primary"]
+        self.assertEqual(probe["expected"], "2xx")
+        self.assertEqual(probe["body"]["id"], "$question")
+        self.assertEqual(
+            probe["body"]["answers"],
+            {"value": {"answers": ["Ledger answer"]}},
+        )
+        self.assertNotIn("expected_error", probe)
+
     def test_changes_and_models_probes_use_slice_contract_request_shapes(self) -> None:
         identifiers = {"agent": "lead-agent", "claudeAccount": "claude-account"}
         changes = ledger.PROBE_CASES[("GET", "/api/changes")]["additional"][0]
