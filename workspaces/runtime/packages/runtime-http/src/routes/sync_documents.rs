@@ -834,6 +834,8 @@ fn query_integer(query: &QueryParams, name: &str, default: i64) -> Result<i64, A
 
 #[cfg(test)]
 mod vault_maintenance_tests {
+    #![allow(clippy::unwrap_used)]
+
     use super::sync_policy;
     use super::{
         ENTITY_PROJECTION_PREPARATION_MAX_ATTEMPTS, SyncPullResponseBody,

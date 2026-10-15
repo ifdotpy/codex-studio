@@ -375,6 +375,8 @@ fn usage_error(error: UsageRepositoryError, path: &'static str) -> ApiError {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used)]
+
     use super::current_time;
     use axum::body::Body;
     use axum::extract::ConnectInfo;

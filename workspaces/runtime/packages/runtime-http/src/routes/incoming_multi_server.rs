@@ -405,6 +405,40 @@ fn validate_response(
     }
 }
 
+fn failure(error: AccessError) -> Response {
+    let status = StatusCode::from_u16(error.status()).unwrap_or(StatusCode::SERVICE_UNAVAILABLE);
+    // Stored-object locations are operator diagnostics, not remote response data.
+    match error {
+        AccessError::Refused { message, code, .. } => (
+            status,
+            Json(serde_json::json!({"error":message,"code":code})),
+        )
+            .into_response(),
+        _ => error_response(status, "The server access operation failed"),
+    }
+}
+
+fn credential_error(
+    error: studio_runtime_services::federation_credentials::CredentialError,
+) -> AccessError {
+    use studio_runtime_services::federation_credentials::CredentialError;
+    match error {
+        CredentialError::Conflict => multi_server_auth::refused(
+            409,
+            "request_conflict",
+            "The request ID has different content",
+        ),
+        CredentialError::RemoteRequired => {
+            multi_server_auth::refused(403, "server_required", "A paired server is required")
+        }
+        _ => multi_server_auth::refused(
+            503,
+            "identity_unavailable",
+            "The server identity is unavailable",
+        ),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{IncomingMultiServerResponse, validate_response};
@@ -443,39 +477,5 @@ mod tests {
             validate_response("POST", false, false, response),
             Ok(IncomingMultiServerResponse::Pair(_))
         ));
-    }
-}
-
-fn failure(error: AccessError) -> Response {
-    let status = StatusCode::from_u16(error.status()).unwrap_or(StatusCode::SERVICE_UNAVAILABLE);
-    // Stored-object locations are operator diagnostics, not remote response data.
-    match error {
-        AccessError::Refused { message, code, .. } => (
-            status,
-            Json(serde_json::json!({"error":message,"code":code})),
-        )
-            .into_response(),
-        _ => error_response(status, "The server access operation failed"),
-    }
-}
-
-fn credential_error(
-    error: studio_runtime_services::federation_credentials::CredentialError,
-) -> AccessError {
-    use studio_runtime_services::federation_credentials::CredentialError;
-    match error {
-        CredentialError::Conflict => multi_server_auth::refused(
-            409,
-            "request_conflict",
-            "The request ID has different content",
-        ),
-        CredentialError::RemoteRequired => {
-            multi_server_auth::refused(403, "server_required", "A paired server is required")
-        }
-        _ => multi_server_auth::refused(
-            503,
-            "identity_unavailable",
-            "The server identity is unavailable",
-        ),
     }
 }

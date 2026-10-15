@@ -360,7 +360,7 @@ async fn pull(
         .ok_or_else(ApiError::internal)?;
     let requested_parent = body.get("to").and_then(Value::as_str);
     let parent = match requested_parent {
-        Some(path) if path == "~" => home.clone(),
+        Some("~") => home.clone(),
         Some(path) if path.starts_with("~/") => home.join(&path[2..]),
         Some(path) => std::path::PathBuf::from(path),
         None => home.join("Downloads"),
@@ -425,17 +425,17 @@ async fn setup(
     let (job, started) =
         reserve_job(&job_client, VaultJobKind::Setup, &request_id, initial).await?;
     if started {
-        tokio::spawn(run_setup_job(
+        tokio::spawn(run_setup_job(SetupJob {
             request_id,
             prefix,
             profile,
             region,
             writer,
-            host_command.clone(),
+            host_command: host_command.clone(),
             vm_state_dir,
-            Arc::clone(&state.sync_changes),
+            sync_changes: Arc::clone(&state.sync_changes),
             job_client,
-        ));
+        }));
     }
     Ok(Json(job))
 }
@@ -740,7 +740,7 @@ async fn run_login_job(
     }
 }
 
-async fn run_setup_job(
+struct SetupJob {
     request_id: String,
     prefix: String,
     profile: String,
@@ -750,7 +750,20 @@ async fn run_setup_job(
     vm_state_dir: std::path::PathBuf,
     sync_changes: Arc<studio_runtime_services::change_notifications::ChangeNotificationHub>,
     job_client: VaultJobClient,
-) {
+}
+
+async fn run_setup_job(job: SetupJob) {
+    let SetupJob {
+        request_id,
+        prefix,
+        profile,
+        region,
+        writer,
+        host_command,
+        vm_state_dir,
+        sync_changes,
+        job_client,
+    } = job;
     let args = vec![
         "deploy".to_owned(),
         "--project".to_owned(),
@@ -1210,6 +1223,8 @@ inventory::submit! {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used)]
+
     use super::{
         GuestRpc, INVALID_LOGIN_JSON, OVERSIZED_PROGRESS_LINE, VAULT_JOB_CAPACITY,
         VAULT_PROGRESS_LINE_MAX_BYTES, VaultJobClient, VaultJobKind, VaultJobOwner,
@@ -1495,17 +1510,17 @@ mod tests {
             Arc::new(studio_runtime_services::change_notifications::ChangeNotificationHub::new());
         let mut receiver = changes.subscribe();
 
-        run_setup_job(
-            request_id.clone(),
-            "project-one".to_owned(),
-            "fixture".to_owned(),
-            "eu-central-1".to_owned(),
-            "writer".to_owned(),
+        run_setup_job(SetupJob {
+            request_id: request_id.clone(),
+            prefix: "project-one".to_owned(),
+            profile: "fixture".to_owned(),
+            region: "eu-central-1".to_owned(),
+            writer: "writer".to_owned(),
             host_command,
-            state.path().join("linux-vm"),
-            changes,
-            client.clone(),
-        )
+            vm_state_dir: state.path().join("linux-vm"),
+            sync_changes: changes,
+            job_client: client.clone(),
+        })
         .await;
 
         let job = find_job(&client, VaultJobKind::Setup, &request_id)
@@ -1548,17 +1563,17 @@ mod tests {
             Arc::new(studio_runtime_services::change_notifications::ChangeNotificationHub::new());
         let mut receiver = changes.subscribe();
 
-        run_setup_job(
-            request_id.clone(),
-            "project-one".to_owned(),
-            "fixture".to_owned(),
-            "eu-central-1".to_owned(),
-            "writer".to_owned(),
+        run_setup_job(SetupJob {
+            request_id: request_id.clone(),
+            prefix: "project-one".to_owned(),
+            profile: "fixture".to_owned(),
+            region: "eu-central-1".to_owned(),
+            writer: "writer".to_owned(),
             host_command,
-            state.path().join("linux-vm"),
-            changes,
-            client.clone(),
-        )
+            vm_state_dir: state.path().join("linux-vm"),
+            sync_changes: changes,
+            job_client: client.clone(),
+        })
         .await;
 
         let job = find_job(&client, VaultJobKind::Setup, &request_id)
@@ -1793,17 +1808,19 @@ mod tests {
         )
         .await
         .unwrap();
-        run_setup_job(
-            setup_id.clone(),
-            "project".to_owned(),
-            "default".to_owned(),
-            "eu-central-1".to_owned(),
-            "writer".to_owned(),
-            fake_host_command(root.path(), "printf '%16385s' '' >&2"),
-            root.path().join("linux-vm"),
-            Arc::new(studio_runtime_services::change_notifications::ChangeNotificationHub::new()),
-            client.clone(),
-        )
+        run_setup_job(SetupJob {
+            request_id: setup_id.clone(),
+            prefix: "project".to_owned(),
+            profile: "default".to_owned(),
+            region: "eu-central-1".to_owned(),
+            writer: "writer".to_owned(),
+            host_command: fake_host_command(root.path(), "printf '%16385s' '' >&2"),
+            vm_state_dir: root.path().join("linux-vm"),
+            sync_changes: Arc::new(
+                studio_runtime_services::change_notifications::ChangeNotificationHub::new(),
+            ),
+            job_client: client.clone(),
+        })
         .await;
         let setup = find_job(&client, VaultJobKind::Setup, &setup_id)
             .await

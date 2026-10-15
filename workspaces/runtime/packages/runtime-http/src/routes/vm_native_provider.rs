@@ -330,13 +330,18 @@ fn reply_body(frame: Value) -> Result<Value, GuestError> {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used)]
+
     use super::*;
     use serde_json::json;
     use std::sync::Mutex;
     use studio_runtime_providers::Method;
 
+    type NotificationDelivery = (String, String, u64, u64, studio_runtime_providers::Frame);
+    type NotificationDeliveries = Arc<Mutex<Vec<NotificationDelivery>>>;
+
     struct NotificationSink {
-        deliveries: Arc<Mutex<Vec<(String, String, u64, u64, studio_runtime_providers::Frame)>>>,
+        deliveries: NotificationDeliveries,
         order: Arc<Mutex<Vec<&'static str>>>,
     }
 
@@ -363,10 +368,7 @@ mod tests {
 
     fn notification_sink(
         order: Arc<Mutex<Vec<&'static str>>>,
-    ) -> (
-        Arc<NotificationSink>,
-        Arc<Mutex<Vec<(String, String, u64, u64, studio_runtime_providers::Frame)>>>,
-    ) {
+    ) -> (Arc<NotificationSink>, NotificationDeliveries) {
         let deliveries = Arc::new(Mutex::new(Vec::new()));
         (
             Arc::new(NotificationSink {

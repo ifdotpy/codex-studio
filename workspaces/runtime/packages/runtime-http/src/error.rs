@@ -111,7 +111,7 @@ impl ApiError {
 
     pub(crate) fn internal_with_cause(cause: InternalErrorKind) -> Self {
         let mut error = Self::internal();
-        error.internal_cause = Some(cause.into());
+        error.internal_cause = Some(cause);
         error
     }
 
