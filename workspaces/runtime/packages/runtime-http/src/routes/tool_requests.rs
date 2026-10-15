@@ -50,6 +50,7 @@ async fn run(
 ) -> Result<Json<Value>, ApiError> {
     let store = state.store.ok_or_else(ApiError::internal)?;
     let state_root = store.root().to_owned();
+    let payload_root = state_root.clone();
     let now =
         studio_runtime_services::event_write::unix_time().map_err(|_| ApiError::internal())?;
     let value = studio_runtime_process::blocking_pool::spawn_blocking(
@@ -61,7 +62,7 @@ async fn run(
                     (Some(id), false) => Action::Get(id),
                     _ => Action::List,
                 };
-                let value = tool_requests::execute_http(tx, &actor, action, now)?;
+                let value = tool_requests::execute_http(tx, &actor, action, now, &payload_root)?;
                 Ok(value)
             };
             if cancel {
@@ -145,6 +146,7 @@ fn error(error: ToolRequestError) -> ApiError {
             ApiError::new(StatusCode::BAD_REQUEST, message)
         }
         ToolRequestError::RequiresDependency(name) => ApiError::dependency(name),
+        ToolRequestError::Payload(_) => ApiError::internal(),
         ToolRequestError::Store(error) => ApiError::stored(error),
     }
 }

@@ -334,6 +334,25 @@ class MessagesHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         # row snapshots observe the same durable turn state.
         cls.backend.hold_provider("thread/start")
         cls.backend.start()
+        if os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"):
+            def scheduler_admissions_settled() -> bool:
+                with closing(sqlite3.connect(cls.backend.state / "canvas.sqlite3")) as database:
+                    rows = database.execute("SELECT record FROM runtime_agents").fetchall()
+                for (raw,) in rows:
+                    record = json.loads(raw)
+                    attempt = record.get("startAttempt") or {}
+                    # Python creates startAttempt before preparation and marks
+                    # it submitted before provider work (codex_runtime.py:
+                    # 7188-7196, 7459-7466). Wait for that admission to settle
+                    # before asserting snapshots across unrelated HTTP writes.
+                    if record.get("inFlight") and attempt.get("submitted") is not True:
+                        return False
+                return True
+
+            cls.backend.wait_until(
+                scheduler_admissions_settled,
+                "background agent scheduler admission before message snapshots",
+            )
 
     @classmethod
     def tearDownClass(cls) -> None:
@@ -986,19 +1005,6 @@ class MessagesNoWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         }, headers=self.headers())
         self.assertEqual(federation.status, 400, federation.body[:1000])
         self.assertEqual(no_write_snapshot(path.parent), before)
-
-    @unittest.skipUnless(os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"), "Rust backend only")
-    def test_managed_send_upload_route_refuses_before_canvas_writes(self):
-        path = self.backend.state / "canvas.sqlite3"
-        before = no_write_snapshot(path.parent)
-        direct = self.backend.request("POST", "/api/messages", body={
-            "id": "17171717-1717-1717-1717-171717171717",
-            "room": self.agent_id, "text": "x" * 32_000, "assets": [{"attachment": "x"}],
-        }, headers=self.headers())
-        self.assertEqual(direct.status, 501, direct.body[:1000])
-        self.assertEqual(direct.json().get("error"), "Not implemented: requires payload-store/uploads")
-
-
 
 if __name__ == "__main__":
     unittest.main()

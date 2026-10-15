@@ -444,6 +444,58 @@ class ToolRequestsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             if "True" in identity and action!="list":
                 self.assertTrue(json.loads(response.json()["result"]["contentItems"][0]["text"])["expired"])
 
+    def test_large_server_outcomes_are_restored_before_settlement(self):
+        identities = []
+        try:
+            for outcome in ("unknown", "not_applied"):
+                identity = f"large-server-{outcome}"
+                identities.append(identity)
+                details = "x" * 70_000
+                text = json.dumps(
+                    {"detail": details, "outcome": outcome, "requestId": identity},
+                    separators=(",", ":"),
+                )
+                record = receipt(
+                    identity,
+                    self.lead_id,
+                    stage="queued",
+                    outcome="pending",
+                    tool="orchestration_servers",
+                    result=None,
+                )
+                result = {"success": True, "contentItems": [{"type": "inputText", "text": text}]}
+                if outcome == "unknown":
+                    write_receipts(self.backend, [record], saved_results={identity: result})
+                else:
+                    record["result"] = result
+                    write_receipts(self.backend, [record])
+
+                response = self.backend.request(
+                    "GET",
+                    "/api/tool-requests?" + urlencode({"agent": self.lead_id, "request_id": identity}),
+                    headers=self.headers(),
+                )
+
+                self.assertEqual(response.status, 200, response.body[:1000])
+                self.assertEqual(response.json()["outcome"], outcome)
+                self.assertEqual(response.json()["result"]["contentItems"][0]["text"], text)
+                with sqlite3.connect(self.backend.state / "canvas.sqlite3") as database:
+                    stored = json.loads(
+                        database.execute(
+                            "SELECT record FROM runtime_tool_requests WHERE id=?", (identity,)
+                        ).fetchone()[0]
+                    )
+                self.assertEqual(stored["outcome"], outcome)
+        finally:
+            with sqlite3.connect(self.backend.state / "canvas.sqlite3") as database:
+                for identity in identities:
+                    database.execute("DELETE FROM runtime_tool_requests WHERE id=?", (identity,))
+                    database.execute("DELETE FROM runtime_tool_results WHERE id=?", (identity,))
+                    database.execute(
+                        "DELETE FROM runtime_payload_refs WHERE record_id=? AND table_name IN (?,?)",
+                        (identity, "runtime_tool_requests", "runtime_tool_results"),
+                    )
+
     def test_saved_expired_result_list_settles_original_applied_evidence(self):
         record=receipt("saved-expired-list",self.lead_id,stage="queued",outcome="pending",
                        tool="orchestration_servers",result=None)

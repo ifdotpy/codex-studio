@@ -25,6 +25,9 @@ impl From<tool_requests::ToolRequestError> for CallbackError {
     fn from(error: tool_requests::ToolRequestError) -> Self {
         match error {
             tool_requests::ToolRequestError::Store(error) => Self::Store(error),
+            tool_requests::ToolRequestError::Payload(_) => {
+                Self::Stored("runtime_tool_requests payload".into())
+            }
             tool_requests::ToolRequestError::RequiresDependency(name) => Self::Dependency(name),
             tool_requests::ToolRequestError::InvalidRequest(message) => Self::Invalid(message),
         }

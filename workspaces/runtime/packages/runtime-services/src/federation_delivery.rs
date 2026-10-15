@@ -438,6 +438,10 @@ pub fn user_message(
     key: &str,
     now: f64,
 ) -> Result<Value> {
+    let text = crate::event_write::python_strip(text);
+    if text.is_empty() || text.chars().count() > core::MAX_MESSAGE || key.len() > 4096 {
+        return Err(Error::Invalid("message"));
+    }
     let sender = store.read_transaction(|connection| {
         let room = Repo::record(connection, Table::Room, room_id, "")?.ok_or(
             StoreError::SchemaMismatch("shared room is unavailable".to_owned()),
@@ -457,7 +461,7 @@ pub fn user_message(
             ))?;
         Ok::<_, StoreError>(sender.to_owned())
     })?;
-    send_message(store, &sender, room_id, text, key, now)
+    send_message(store, &sender, room_id, &text, key, now)
 }
 
 /// Queue a federation room message in the caller's owning transaction. This is
