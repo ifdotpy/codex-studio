@@ -46,9 +46,8 @@ pub fn read(connection: &Connection) -> StoreResult<BTreeMap<String, Vec<Value>>
         }
         tables.insert((*table).to_owned(), records);
     }
-    let mut statement = connection.prepare_cached(&format!(
-        "SELECT id,agent,status,epoch FROM runtime_events ORDER BY rowid"
-    ))?;
+    let mut statement = connection
+        .prepare_cached("SELECT id,agent,status,epoch FROM runtime_events ORDER BY rowid")?;
     let events = statement.query_map([], |r| Ok(json!({"id":r.get::<_,String>(0)?,"agent":r.get::<_,String>(1)?,"status":r.get::<_,String>(2)?,"epoch":r.get::<_,i64>(3)?})))?.collect::<Result<Vec<_>,_>>()?;
     tables.insert("runtime_events".to_owned(), events);
     // These lazy tables use columns rather than JSON records. Session liveness

@@ -302,7 +302,7 @@ fn check_sync_entities(connection: &Connection) -> StoreResult<StateCheckTable> 
                 continue;
             }
         };
-        match studio_runtime_schema::normalize_sync_entity_payload(
+        if let Some((pointer, keyword)) = studio_runtime_schema::normalize_sync_entity_payload(
             &collection,
             &id,
             deleted,
@@ -310,15 +310,12 @@ fn check_sync_entities(connection: &Connection) -> StoreResult<StateCheckTable> 
         )
         .map_err(crate::StoreError::SchemaValidation)?
         {
-            Some((pointer, keyword)) => {
-                record_failure(
-                    &mut failures,
-                    &mut report.rejected_count,
-                    &pointer,
-                    &keyword,
-                );
-            }
-            None => {}
+            record_failure(
+                &mut failures,
+                &mut report.rejected_count,
+                &pointer,
+                &keyword,
+            );
         }
     }
     report.failures = failures

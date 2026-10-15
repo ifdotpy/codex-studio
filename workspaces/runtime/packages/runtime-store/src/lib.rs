@@ -88,13 +88,16 @@ pub use repositories::questions_write::QuestionsWriteRepository;
 pub use repositories::queue_write::{PendingEvent, QueueWriteRepository};
 pub use repositories::rules::RulesRepository;
 pub use repositories::rules_tick;
-pub use repositories::scheduler::{ClaimedEvents, SchedulerRepository, TurnAttemptIdentity};
+pub use repositories::scheduler::{
+    AccountWakePage, ClaimedEvents, SchedulerRepository, TurnAttemptIdentity,
+};
 pub use repositories::sync_documents::{
     EntityPage, EntityRow, SyncDocument, SyncDocumentsRepository,
 };
 pub use repositories::terminals::{TerminalRow, TerminalsRepository};
 pub use repositories::transcript::{
-    TranscriptItem, TranscriptRepository, TranscriptStoreError, TranscriptStoreResult,
+    TranscriptItem, TranscriptRepository, TranscriptSearchKind, TranscriptStoreError,
+    TranscriptStoreResult,
 };
 pub use repositories::usage::{
     UsageRepositoryError, cancel_capacity_retry, cancel_usage_resume, disable_usage_resume,
@@ -443,11 +446,11 @@ impl ReadConnectionPool {
                         Ok(connection)
                     },
                 );
-                if result.is_err() {
-                    if let Ok(mut state) = self.state.lock() {
-                        state.opened = state.opened.saturating_sub(1);
-                        self.available.notify_one();
-                    }
+                if result.is_err()
+                    && let Ok(mut state) = self.state.lock()
+                {
+                    state.opened = state.opened.saturating_sub(1);
+                    self.available.notify_one();
                 }
                 if waiting {
                     let waiting_threads = self.waiters.fetch_sub(1, Ordering::Relaxed) - 1;
@@ -1205,13 +1208,15 @@ mod read_pool_tests {
             assert_eq!(
                 reader
                     .query_row("SELECT 1", [], |row| row.get::<_, i64>(0))
-                    .unwrap(),
+                    .expect("checked out reader remains queryable"),
                 1
             );
         }
 
         assert_eq!(store.read_pool.opened_count(), 1);
-        assert!(READ_CONNECTION_POOL_CAPACITY > 1);
+        const {
+            assert!(READ_CONNECTION_POOL_CAPACITY > 1);
+        }
     }
 
     #[test]

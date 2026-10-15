@@ -106,6 +106,12 @@ pub struct TranscriptItem {
 }
 
 #[derive(Clone, Copy, Debug, Default)]
+pub struct TranscriptSearchKind<'a> {
+    pub indexed: bool,
+    pub kind: Option<&'a str>,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
 pub struct TranscriptRepository;
 
 impl TranscriptRepository {
@@ -453,8 +459,10 @@ impl TranscriptRepository {
             record,
             created,
             text,
-            index_search,
-            None,
+            TranscriptSearchKind {
+                indexed: index_search,
+                kind: None,
+            },
         )
     }
 
@@ -467,8 +475,7 @@ impl TranscriptRepository {
         record: &Value,
         created: f64,
         text: &str,
-        index_search: bool,
-        search_kind: Option<&str>,
+        search: TranscriptSearchKind<'_>,
     ) -> TranscriptStoreResult<()> {
         if !matches!(
             record.get("role").and_then(Value::as_str),
@@ -483,8 +490,7 @@ impl TranscriptRepository {
             record,
             created,
             text,
-            index_search,
-            search_kind,
+            search,
         )
     }
 
@@ -506,8 +512,10 @@ impl TranscriptRepository {
             record,
             created,
             text,
-            index_search,
-            None,
+            TranscriptSearchKind {
+                indexed: index_search,
+                kind: None,
+            },
         )
     }
 
@@ -518,8 +526,7 @@ impl TranscriptRepository {
         record: &Value,
         created: f64,
         text: &str,
-        index_search: bool,
-        search_kind: Option<&str>,
+        search: TranscriptSearchKind<'_>,
     ) -> TranscriptStoreResult<()> {
         if record.get("id").and_then(Value::as_str) != Some(id)
             || !matches!(
@@ -560,12 +567,12 @@ impl TranscriptRepository {
         } else if has_fulltext {
             transaction.execute("DELETE FROM runtime_item_fulltext WHERE id=?1", [id])?;
         }
-        if index_search {
+        if search.indexed {
             index_search_item(
                 transaction,
                 id,
                 agent,
-                search_kind.unwrap_or_else(|| {
+                search.kind.unwrap_or_else(|| {
                     if record["role"] == "system" || record["role"] == "output" {
                         record
                             .get("title")

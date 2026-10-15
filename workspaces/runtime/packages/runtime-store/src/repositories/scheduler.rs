@@ -11,6 +11,8 @@ use crate::{
     EventWriteRepository, ExecutionHistoryRepository, QueueEvent, StoreError, StoreResult,
 };
 
+pub type AccountWakePage = BTreeMap<String, Vec<(String, i64, Option<String>)>>;
+
 const MAX_EVENTS_PER_TURN: usize = 32;
 const TABLES: &[TableRequirement] = &[
     TableRequirement {

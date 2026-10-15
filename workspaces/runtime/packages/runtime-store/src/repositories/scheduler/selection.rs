@@ -10,7 +10,7 @@ impl SchedulerRepository {
         after_agents: &BTreeMap<String, String>,
         account_limit: usize,
         agent_limit: usize,
-    ) -> StoreResult<BTreeMap<String, Vec<(String, i64, Option<String>)>>> {
+    ) -> StoreResult<AccountWakePage> {
         let targets = format!(
             "WITH targets AS (
  SELECT a.id, COALESCE(json_extract(a.record,'$.accountKey'),'default') account,
@@ -392,14 +392,13 @@ impl SchedulerRepository {
                 format!("scheduler cannot claim {kind}: requires {dependency}"),
             )));
         }
-        let mut events = if radio_event.is_some() {
-            prepared.events.iter().take(1).cloned().collect()
-        } else if preparation
-            && prepared
-                .events
-                .first()
-                .is_some_and(|e| !matches!(e.kind.as_str(), "user" | "complaint"))
-        {
+        let take_single_event = radio_event.is_some()
+            || (preparation
+                && prepared
+                    .events
+                    .first()
+                    .is_some_and(|e| !matches!(e.kind.as_str(), "user" | "complaint")));
+        let mut events = if take_single_event {
             prepared.events.iter().take(1).cloned().collect()
         } else {
             select_turn_batch(&prepared.events, &prepared.metadata, prefix)

@@ -20,7 +20,7 @@ use studio_runtime_services::account_session_runtime::{
 use studio_runtime_services::account_worker::retained::RequestActor;
 use studio_runtime_store::{
     AgentId, AgentRepository, CheckpointsRepository, RuntimeStore, TranscriptRepository,
-    WorkspaceFilesRepository, sha256_hex,
+    TranscriptSearchKind, WorkspaceFilesRepository, sha256_hex,
 };
 
 use crate::error::ApiError;
@@ -931,7 +931,18 @@ fn copy_branch_history(store: &RuntimeStore, copy: BranchCopy<'_>) -> Result<Val
             if source_inputs.is_some() {
                 record["inputs"] = json!(inputs);
             }
-            TranscriptRepository::put_item_with_search_kind(tx,&id,target,&record,copied_at,text,true,Some(&index_kind))
+            TranscriptRepository::put_item_with_search_kind(
+                tx,
+                &id,
+                target,
+                &record,
+                copied_at,
+                text,
+                TranscriptSearchKind {
+                    indexed: true,
+                    kind: Some(&index_kind),
+                },
+            )
                 .map_err(transcript_store_error)?;
         }
         if before {

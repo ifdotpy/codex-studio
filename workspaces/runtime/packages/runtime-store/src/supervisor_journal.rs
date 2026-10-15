@@ -425,59 +425,6 @@ impl JournalError {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn retiring_handle_drops_its_buffered_cache_entry() {
-        let root = tempfile::tempdir().expect("temporary supervisor journal root");
-        let journal = SupervisorJournal::open(root.path()).expect("open journal");
-        journal
-            .reserve("server-command:fixture", "signature", 1.0)
-            .expect("reserve handle");
-        let generation = journal
-            .opened("server-command:fixture", "signature", 41, "start")
-            .expect("open child handle");
-        assert_eq!(generation, 1);
-        assert_eq!(
-            journal
-                .append(
-                    "server-command:fixture",
-                    generation,
-                    1,
-                    "stdout",
-                    &json!({"text": "buffered"}),
-                )
-                .expect("append output"),
-            AppendResult::Saved
-        );
-        journal
-            .ack("server-command:fixture", 1)
-            .expect("ack output");
-        assert_eq!(
-            journal
-                .buffered_by_handle
-                .lock()
-                .expect("cache lock")
-                .get("server-command:fixture"),
-            Some(&0)
-        );
-
-        journal
-            .retire("server-command:fixture", generation, true, true)
-            .expect("retire completed handle");
-
-        assert!(
-            !journal
-                .buffered_by_handle
-                .lock()
-                .expect("cache lock")
-                .contains_key("server-command:fixture")
-        );
-    }
-}
-
 fn sql(value: u64) -> Result<i64> {
     i64::try_from(value).map_err(|_| Refusal("Supervisor integer exceeds SQLite range").into())
 }
@@ -542,5 +489,58 @@ fn migrate(db: &Connection) -> Result<()> {
             db.execute_batch("ROLLBACK")?;
             Err(error)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn retiring_handle_drops_its_buffered_cache_entry() {
+        let root = tempfile::tempdir().expect("temporary supervisor journal root");
+        let journal = SupervisorJournal::open(root.path()).expect("open journal");
+        journal
+            .reserve("server-command:fixture", "signature", 1.0)
+            .expect("reserve handle");
+        let generation = journal
+            .opened("server-command:fixture", "signature", 41, "start")
+            .expect("open child handle");
+        assert_eq!(generation, 1);
+        assert_eq!(
+            journal
+                .append(
+                    "server-command:fixture",
+                    generation,
+                    1,
+                    "stdout",
+                    &json!({"text": "buffered"}),
+                )
+                .expect("append output"),
+            AppendResult::Saved
+        );
+        journal
+            .ack("server-command:fixture", 1)
+            .expect("ack output");
+        assert_eq!(
+            journal
+                .buffered_by_handle
+                .lock()
+                .expect("cache lock")
+                .get("server-command:fixture"),
+            Some(&0)
+        );
+
+        journal
+            .retire("server-command:fixture", generation, true, true)
+            .expect("retire completed handle");
+
+        assert!(
+            !journal
+                .buffered_by_handle
+                .lock()
+                .expect("cache lock")
+                .contains_key("server-command:fixture")
+        );
     }
 }
