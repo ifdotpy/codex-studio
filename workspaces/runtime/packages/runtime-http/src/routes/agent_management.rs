@@ -208,9 +208,15 @@ async fn native_action(
     // request consumer is connected, matching Python's read-only preconditions.
     let preflight_store = state.store.clone().ok_or_else(ApiError::internal)?;
     let preflight_request = request.clone();
-    studio_runtime_process::blocking_pool::spawn_blocking(
+    let preflight_result = studio_runtime_process::blocking_pool::spawn_blocking(
         "runtime-http/routes/agent_management",
         move || {
+            if let Some(replayed) =
+                native_actions::replay_if_settled(&preflight_store, &preflight_request)
+                    .map_err(native_error)?
+            {
+                return Ok::<_, ApiError>(Some(replayed));
+            }
             let connection = preflight_store.read().map_err(ApiError::stored)?;
             let agent = AgentRepository::get(
                 &connection,
@@ -241,11 +247,14 @@ async fn native_action(
                     "This agent is not ready for a native action",
                 ));
             }
-            Ok::<(), ApiError>(())
+            Ok(None)
         },
     )
     .await
     .map_err(|_| ApiError::internal())??;
+    if let Some(replayed) = preflight_result {
+        return Ok(Json(replayed));
+    }
     let repair = repair.map(|Extension(port)| port).ok_or_else(|| {
         ApiError::new(
             StatusCode::NOT_IMPLEMENTED,
@@ -291,6 +300,7 @@ async fn native_action(
                     .map_err(|_| ApiError::internal())?,
                 )
             };
+            drop(connection);
             let admission = admission_override.as_deref().unwrap_or(prepared.as_ref());
             let bridge = NativeAdmission(admission);
             let preparation_run = NativeActionPreparationRun {

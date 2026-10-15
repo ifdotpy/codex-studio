@@ -178,6 +178,7 @@ pub(super) async fn post_message(
                         .map_err(coordination_error)?,
                     )
                 };
+                drop(connection);
                 #[cfg(test)]
                 ingress_tests::support::after_preparation(&body.room);
                 let admission = state

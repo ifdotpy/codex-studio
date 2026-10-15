@@ -669,6 +669,19 @@ pub fn execute_provider_prepared(
     Err(NativeError::Unknown)
 }
 
+/// Return a previously settled action receipt before an HTTP caller applies
+/// readiness preflights that may no longer hold after the original action.
+pub fn replay_if_settled(store: &RuntimeStore, request: &Request) -> Result<Option<Value>> {
+    let existing = store.read_transaction_with_error(|tx| replay(tx, request))?;
+    Ok(existing
+        .as_ref()
+        .filter(|snapshot| {
+            !matches!(snapshot.outcome, Outcome::Pending { .. })
+                || snapshot.agent["startAttempt"]["submitted"] == true
+        })
+        .map(|snapshot| response(snapshot, true)))
+}
+
 fn should_repair_before_reserve(resume_reserved: bool) -> bool {
     !resume_reserved
 }
