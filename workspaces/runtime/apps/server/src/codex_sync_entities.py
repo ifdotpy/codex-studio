@@ -589,6 +589,7 @@ def event_trigger_statements(operation: str) -> tuple[str, ...]:
             trigger_operation: str,
             trigger_when: str,
             statements: tuple[str, ...]) -> str:
+        joined_statements = ";\n          ".join(statements)
         return f"""CREATE TRIGGER IF NOT EXISTS {ENTITY_EVENT_TRIGGER_PREFIX}_{suffix}
           AFTER {trigger_operation} ON runtime_events {trigger_when} BEGIN
           INSERT INTO sync_entities(collection,id,seq,hash,payload,deleted)
@@ -600,7 +601,7 @@ def event_trigger_statements(operation: str) -> tuple[str, ...]:
           ON CONFLICT(collection,id) DO UPDATE SET
             seq=excluded.seq,hash=excluded.hash,payload=excluded.payload,deleted=excluded.deleted
           WHERE sync_entities.hash!=excluded.hash OR sync_entities.deleted!=excluded.deleted;
-          {';\n          '.join(statements)};
+          {joined_statements};
         END"""
 
     window_statements = event_window_statements()
