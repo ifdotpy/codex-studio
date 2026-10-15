@@ -13,7 +13,8 @@ impl Worker {
         command: RequestCommand,
     ) -> Result<(), WorkerError> {
         let RequestCommand { request, reply } = command;
-        if request.scope != self.retained_scope() {
+        let stale_scope = request.scope != self.retained_scope();
+        if request.scope.account != self.account {
             let _ignored = reply.send(Err(PortError::Identity));
             return Ok(());
         }
@@ -54,7 +55,21 @@ impl Worker {
                 let _ignored = reply.send(Ok(receipt));
                 return Ok(());
             }
+            Ok(Replay::Miss) if stale_scope => {
+                // The recorded connection is gone. Without a durable submitted
+                // receipt, never send its request through a replacement worker.
+                let _ignored = reply.send(Err(PortError::Unknown));
+                return Ok(());
+            }
             Ok(Replay::Miss) => None,
+            Ok(Replay::Retry(ticket)) if stale_scope => {
+                // Retry is permitted only on the connection that proved the
+                // prior attempt NotSent. Preserve that certainty across restart.
+                let mut receipt = call.receipt(ticket, RequestResult::NotSent);
+                receipt.replayed = true;
+                let _ignored = reply.send(Ok(receipt));
+                return Ok(());
+            }
             Ok(Replay::Retry(ticket)) => Some(ticket),
         };
         let control = self.control.clone();

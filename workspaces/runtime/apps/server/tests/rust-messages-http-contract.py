@@ -949,22 +949,54 @@ class MessagesNoWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         update_agent(self.backend, agent_id, {"rootId": agent_id})
         update_agent(self.backend, peer_agent_id, {}, remove=("agentMode", "concurrency"))
 
-    @unittest.skipUnless(os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"), "Rust backend only")
-    def test_federation_refusal_without_writes(self):
+    def test_federated_room_rejects_empty_message_before_canvas_writes(self):
+        from codex_federation import _crypto
+
         path = self.backend.state / "canvas.sqlite3"
+        local = _crypto("generate")
+        remote = _crypto("generate")
+        peer_id = "22222222-2222-4222-8222-222222222222"
         with sqlite3.connect(path) as database:
             database.execute("CREATE TABLE IF NOT EXISTS runtime_federation_rooms(id TEXT PRIMARY KEY, record TEXT NOT NULL)")
+            database.execute("INSERT OR REPLACE INTO runtime_federation_settings VALUES('global',?)", ('{"enabled":true}',))
+            database.execute("INSERT OR REPLACE INTO runtime_federation_identity VALUES('local',?)", (
+                json.dumps({"stateId": "11111111-1111-4111-8111-111111111111",
+                            "label": "Local test server", **local}),
+            ))
+            database.execute("INSERT OR REPLACE INTO runtime_federation_peers VALUES(?,?)", (
+                peer_id, json.dumps({"stateId": peer_id, "label": "Fake peer",
+                                     "origin": "https://peer.ts.net", "publicKey": remote["publicKey"],
+                                     "status": "approved", "localApproved": True,
+                                     "remoteApproved": True, "whoisStatus": "missing",
+                                     "whoisUser": None, "created": 1, "updated": 1}),
+            ))
             database.execute("INSERT OR REPLACE INTO runtime_federation_rooms(id,record) VALUES(?,?)", (
-                "federated:peer:room", json.dumps({"id": "federated:peer:room", "status": "approved"}),
+                "federated:peer:room", json.dumps({
+                    "id": "federated:peer:room", "peerId": peer_id, "status": "approved",
+                    "localApproved": True, "remoteApproved": True,
+                    "localMembers": [self.agent_id], "localParticipants": [
+                        {"id": self.agent_id, "role": "lead"}], "remoteMembers": [],
+                    "shareNames": False, "shareStatus": False,
+                }),
             ))
         before = no_write_snapshot(path.parent)
         federation = self.backend.request("POST", "/api/messages", body={
             "id": "16161616-1616-1616-1616-161616161616",
             "room": "federated:peer:room", "text": "",
         }, headers=self.headers())
-        self.assertEqual(federation.status, 501, federation.body[:1000])
-        self.assertIn("federation-driver/rooms", federation.json()["error"])
+        self.assertEqual(federation.status, 400, federation.body[:1000])
         self.assertEqual(no_write_snapshot(path.parent), before)
+
+    @unittest.skipUnless(os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"), "Rust backend only")
+    def test_managed_send_upload_route_refuses_before_canvas_writes(self):
+        path = self.backend.state / "canvas.sqlite3"
+        before = no_write_snapshot(path.parent)
+        direct = self.backend.request("POST", "/api/messages", body={
+            "id": "17171717-1717-1717-1717-171717171717",
+            "room": self.agent_id, "text": "x" * 32_000, "assets": [{"attachment": "x"}],
+        }, headers=self.headers())
+        self.assertEqual(direct.status, 501, direct.body[:1000])
+        self.assertEqual(direct.json().get("error"), "Not implemented: requires payload-store/uploads")
 
 
 

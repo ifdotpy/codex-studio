@@ -84,7 +84,7 @@ async fn installed_binary_uses_python_from_prefix_without_a_source_tree() {
     fs::write(
         binary_dir.join("python3"),
         format!(
-            "#!{}\nimport pathlib, runpy, sys\nscript = pathlib.Path(sys.argv[2])\npathlib.Path(__file__).with_name('python-bootstrap-arg').write_text(str(script))\nsys.path.insert(0, str(script.parent))\nsys.argv = [str(script)]\nrunpy.run_path(str(script), run_name='__main__')\n",
+            "#!{}\nimport pathlib, sys\npathlib.Path(__file__).with_name('python-invoked').write_text('unexpected')\nsys.exit(97)\n",
             system_python.display()
         ),
     )
@@ -167,10 +167,7 @@ async fn installed_binary_uses_python_from_prefix_without_a_source_tree() {
     }
     assert!(state.join("canvas.sqlite3").exists());
     assert!(Path::new(&home).is_dir());
-    assert_eq!(
-        fs::read_to_string(binary_dir.join("python-bootstrap-arg")).unwrap(),
-        scripts.join("codex_python.py").to_string_lossy()
-    );
+    assert!(!binary_dir.join("python-invoked").exists());
     let python_layout = StdCommand::new(&system_python)
         .args([
             "-c",
@@ -266,8 +263,5 @@ async fn installed_binary_uses_python_from_prefix_without_a_source_tree() {
     assert_eq!(source_child.try_wait().unwrap(), None);
     source_child.kill().await.unwrap();
     source_child.wait().await.unwrap();
-    assert_eq!(
-        fs::read_to_string(binary_dir.join("python-bootstrap-arg")).unwrap(),
-        source.join("codex_python.py").to_string_lossy()
-    );
+    assert!(!binary_dir.join("python-invoked").exists());
 }

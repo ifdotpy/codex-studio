@@ -245,6 +245,12 @@ async fn write_project(
     State(state): State<HttpState>,
     ApiJson(body): ApiJson<Value>,
 ) -> Result<Response, ApiError> {
+    if state.store.is_none() && projects::write_dependency(&body).is_some() {
+        return Err(ApiError::new(
+            StatusCode::FORBIDDEN,
+            "The server is not paired or is revoked",
+        ));
+    }
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
     let account_policy = state
         .account_policy

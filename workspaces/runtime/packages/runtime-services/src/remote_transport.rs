@@ -912,6 +912,33 @@ pub fn validate_federation_nonce(
     Ok(())
 }
 
+/// Normalize the HTTPS Tailscale Serve origin accepted by Python federation.
+pub fn validate_federation_origin(value: &str) -> RemoteTransportResult<String> {
+    let parsed = url::Url::parse(value).map_err(|_| RemoteTransportError::InvalidInput)?;
+    let host = parsed
+        .host_str()
+        .ok_or(RemoteTransportError::InvalidInput)?;
+    if parsed.scheme() != "https"
+        || !host.ends_with(".ts.net")
+        || host.is_empty()
+        || parsed.username() != ""
+        || parsed.password().is_some()
+        || !matches!(parsed.path(), "" | "/")
+        || parsed.query().is_some()
+        || parsed.fragment().is_some()
+        || !host
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || b".-".contains(&byte))
+    {
+        return Err(RemoteTransportError::InvalidInput);
+    }
+    let port = parsed.port().filter(|port| *port != 443);
+    Ok(match port {
+        Some(port) => format!("https://{host}:{port}"),
+        None => format!("https://{host}"),
+    })
+}
+
 pub fn new_nonce() -> RemoteTransportResult<String> {
     let mut random = [0u8; 24];
     getrandom::fill(&mut random).map_err(|_| RemoteTransportError::InvalidInput)?;

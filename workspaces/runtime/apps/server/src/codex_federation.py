@@ -23,6 +23,7 @@ from codex_remote import RemoteAccess
 from codex_executables import tailscale as resolve_tailscale, command as executable_command
 from codex_federation_limits import (
     FEDERATION_BODY_LIMIT,
+    INVITATION_TTL_SECONDS,
     MAX_BATCH_BYTES,
     MAX_BATCH_ITEMS,
     MAX_MESSAGE_CODEPOINTS,
@@ -31,6 +32,7 @@ from codex_federation_limits import (
     MAX_ROOM_MEMBERS,
     MAX_ROOM_RATE,
     PROTOCOL_VERSION,
+    TAILSCALE_COMMAND_TIMEOUT_SECONDS,
 )
 from codex_records import (
     FederationIdentityRecord, FederationInviteRecord, FederationOutboxRecord,
@@ -127,7 +129,7 @@ def _whoami() -> JsonObject:
         return {"status": "unavailable", "warning": "Tailscale identity could not be checked"}
     try:
         result = subprocess.run(executable_command(executable, ["whoami", "--json"]), capture_output=True,
-                                text=True, timeout=5, check=True)
+                                text=True, timeout=TAILSCALE_COMMAND_TIMEOUT_SECONDS, check=True)
         data = json.loads(result.stdout)
         user_data = data.get("UserProfile") or data.get("User") or {}
         user = user_data.get("LoginName") or user_data.get("Name")
@@ -157,7 +159,7 @@ def _observed_whois(headers: Mapping[str, str], remote_address: str) -> str | No
         return None
     try:
         result = subprocess.run(executable_command(executable, ["whois", str(address)]), capture_output=True,
-                                text=True, timeout=5, check=True)
+                                text=True, timeout=TAILSCALE_COMMAND_TIMEOUT_SECONDS, check=True)
         in_user = False
         for line in result.stdout.splitlines():
             if line.strip() == "User:":
@@ -350,7 +352,7 @@ class FederationService:
             db.execute("UPDATE runtime_federation_identity SET record=? WHERE id='local'", (_json(identity),))
             invite_id = str(uuid.uuid4())
             token = secrets.token_urlsafe(32)
-            expires = int(time.time()) + 900
+            expires = int(time.time()) + INVITATION_TTL_SECONDS
             record = {"id": invite_id, "tokenHash": hashlib.sha256(token.encode()).hexdigest(),
                       "created": time.time(), "expires": expires, "status": "open",
                       "expectedUser": expected_user.strip().lower() if expected_user else None}
@@ -376,7 +378,7 @@ class FederationService:
         required = ("inviteId", "token", "stateId", "label", "origin", "publicKey", "expires")
         if any(not isinstance(invitation.get(key), str if key != "expires" else int) for key in required):
             raise ValueError("Invalid federation invitation")
-        if invitation["expires"] < time.time() or invitation["expires"] > time.time() + 900:
+        if invitation["expires"] < time.time() or invitation["expires"] > time.time() + INVITATION_TTL_SECONDS:
             raise ValueError("Federation invitation has expired")
         if len(invitation["token"]) > 128 or len(invitation["publicKey"]) > 4096:
             raise ValueError("Federation invitation is too large")
