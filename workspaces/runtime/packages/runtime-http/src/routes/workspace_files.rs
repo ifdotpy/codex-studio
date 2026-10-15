@@ -213,7 +213,7 @@ fn validate_agent(store: &RuntimeStore, agent_id: &str) -> Result<WorkspaceConte
     let record = agent.value();
     if record
         .get("deletedAt")
-        .is_some_and(studio_runtime_store::truthy)
+        .is_some_and(|value| studio_runtime_store::truthy(Some(value)))
     {
         return Err(ApiError::new(
             StatusCode::BAD_REQUEST,

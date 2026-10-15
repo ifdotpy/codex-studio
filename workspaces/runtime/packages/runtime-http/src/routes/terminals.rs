@@ -273,7 +273,7 @@ fn checked_agent_cwd(
     if agent
         .extra
         .get("deletedAt")
-        .is_some_and(studio_runtime_store::truthy)
+        .is_some_and(|value| studio_runtime_store::truthy(Some(value)))
     {
         return Err(TerminalError::InvalidRequest);
     }

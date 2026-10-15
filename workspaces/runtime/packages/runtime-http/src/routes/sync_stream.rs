@@ -220,7 +220,7 @@ async fn active_panel_agents(
                     !agent
                         .extra
                         .get("deletedAt")
-                        .is_some_and(studio_runtime_store::truthy)
+                        .is_some_and(|value| studio_runtime_store::truthy(Some(value)))
                 }) {
                     active.push(id);
                 }
