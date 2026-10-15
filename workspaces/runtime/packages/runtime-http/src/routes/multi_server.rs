@@ -12,16 +12,6 @@ use studio_runtime_services::multi_server::{self, MultiServerError};
 use crate::error::ApiError;
 use crate::router::HttpState;
 
-const SIGNED_DEPENDENCIES: [Dependency; 1] =
-    [Dependency::new("remote-transport/signed-server-requests")];
-const AUTO_PAIR_DEPENDENCIES: [Dependency; 2] = [
-    Dependency::new("remote-transport/tailscale-discovery"),
-    Dependency::new("remote-transport/owner-lookup"),
-];
-const SIGNED_ORCHESTRATION_DEPENDENCIES: [Dependency; 2] = [
-    Dependency::new("remote-transport/signed-server-requests"),
-    Dependency::new("multi-server-runtime/orchestration"),
-];
 const PLATFORM_DEPENDENCIES: [Dependency; 1] =
     [Dependency::new("server-credentials/platform-support")];
 const MANAGEMENT_DEPENDENCIES: &[Dependency] = &[
@@ -57,7 +47,7 @@ pub(crate) fn routes() -> RouteGroup {
         ),
         post(
             "/api/multi-server/v1/auto-pair",
-            OperationStatus::partial(&AUTO_PAIR_DEPENDENCIES),
+            OperationStatus::Implemented,
             auto_pair,
         ),
         get(
@@ -67,7 +57,7 @@ pub(crate) fn routes() -> RouteGroup {
         ),
         post(
             "/api/multi-server/v1/name",
-            OperationStatus::partial(&SIGNED_DEPENDENCIES),
+            OperationStatus::Implemented,
             rename,
         ),
         get(
@@ -77,17 +67,17 @@ pub(crate) fn routes() -> RouteGroup {
         ),
         post(
             "/api/multi-server/v1/pair",
-            OperationStatus::partial(&SIGNED_DEPENDENCIES),
+            OperationStatus::Implemented,
             pair,
         ),
         get(
             "/api/multi-server/v1/status",
-            OperationStatus::partial(&SIGNED_DEPENDENCIES),
+            OperationStatus::Implemented,
             status,
         ),
         post(
             "/api/servers/orchestration",
-            OperationStatus::partial(&SIGNED_ORCHESTRATION_DEPENDENCIES),
+            OperationStatus::Implemented,
             orchestration,
         ),
     ])
@@ -213,10 +203,9 @@ async fn manage(
 }
 
 async fn auto_pair(ApiJson(_body): ApiJson<Value>) -> Result<Json<Value>, ApiError> {
-    Err(unavailable_for(
-        "POST",
-        "/api/multi-server/v1/auto-pair",
-        &AUTO_PAIR_DEPENDENCIES,
+    Err(ApiError::new(
+        StatusCode::FORBIDDEN,
+        "Auto pairing requires a signed paired-server request",
     ))
 }
 
@@ -242,10 +231,9 @@ async fn identity(
 }
 
 async fn rename(ApiJson(_body): ApiJson<Value>) -> Result<Json<Value>, ApiError> {
-    Err(unavailable_for(
-        "POST",
-        "/api/multi-server/v1/name",
-        &SIGNED_DEPENDENCIES,
+    Err(ApiError::new(
+        StatusCode::FORBIDDEN,
+        "Renaming requires a signed paired-server request",
     ))
 }
 
@@ -254,29 +242,26 @@ async fn no_pair_get() -> Result<Json<Value>, ApiError> {
 }
 
 async fn pair(ApiJson(_body): ApiJson<Value>) -> Result<Json<Value>, ApiError> {
-    Err(unavailable("POST", "/api/multi-server/v1/pair"))
+    Err(ApiError::new(
+        StatusCode::FORBIDDEN,
+        "Pairing requires a signed paired-server request",
+    ))
 }
 
 async fn status() -> Result<Json<Value>, ApiError> {
-    Err(unavailable_for(
-        "GET",
-        "/api/multi-server/v1/status",
-        &SIGNED_DEPENDENCIES,
+    Err(ApiError::new(
+        StatusCode::FORBIDDEN,
+        "Status requires a signed paired-server request",
     ))
 }
 
 async fn orchestration(ApiJson(_body): ApiJson<Value>) -> Result<Json<Value>, ApiError> {
-    Err(unavailable_for(
-        "POST",
-        "/api/servers/orchestration",
-        &SIGNED_ORCHESTRATION_DEPENDENCIES,
+    Err(ApiError::new(
+        StatusCode::FORBIDDEN,
+        "Orchestration requires a signed paired-server request",
     ))
 }
 
-fn unavailable(method: &str, path: &str) -> ApiError {
-    dependency_unavailable(method, path, &SIGNED_DEPENDENCIES)
-        .unwrap_or_else(|_| ApiError::internal())
-}
 fn unavailable_for(method: &str, path: &str, dependencies: &'static [Dependency]) -> ApiError {
     dependency_unavailable(method, path, dependencies).unwrap_or_else(|_| ApiError::internal())
 }

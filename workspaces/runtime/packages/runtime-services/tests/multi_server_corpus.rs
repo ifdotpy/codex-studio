@@ -242,7 +242,7 @@ fn paired_project_location_read_uses_the_fake_peer_transport() {
     peer_store
         .transaction(|tx| {
             tx.execute(
-                "INSERT INTO runtime_access_clients(id,record) VALUES('local-server',?1)",
+                "INSERT OR REPLACE INTO runtime_access_clients(id,record) VALUES('local-server',?1)",
                 [json!({"id":"local-server","clientId":"local-client","kind":"server","label":"Fake local peer","created":1,"publicKey":"fixture-key","status":"paired"}).to_string()],
             )?;
             Ok::<_, studio_runtime_store::StoreError>(())
@@ -256,7 +256,7 @@ fn paired_project_location_read_uses_the_fake_peer_transport() {
     let (local_root, local_store) = store();
     local_store.transaction(|tx| {
         tx.execute(
-            "INSERT INTO runtime_access_clients(id,record) VALUES('peer-server',?1)",
+            "INSERT OR REPLACE INTO runtime_access_clients(id,record) VALUES('peer-server',?1)",
             [json!({"id":"peer-server","clientId":"peer-client","kind":"server","label":"Fake peer","created":1,"publicKey":"fixture-key","status":"paired"}).to_string()],
         )?;
         Ok::<_, studio_runtime_store::StoreError>(())
@@ -267,7 +267,13 @@ fn paired_project_location_read_uses_the_fake_peer_transport() {
         Arc::new(RuntimeOrchestrationEffects::new(local_store)),
     );
     let folder = local_root.path().join("remote-project");
-    std::fs::create_dir_all(folder.join(".git")).expect("fake remote project directory");
+    std::fs::create_dir_all(&folder).expect("fake remote project directory");
+    let initialized = std::process::Command::new("git")
+        .args(["init", "-q"])
+        .arg(&folder)
+        .status()
+        .expect("local Git fixture initializes");
+    assert!(initialized.success(), "local Git fixture initializes");
     std::fs::write(
         folder.join(".git/config"),
         "[remote \"origin\"]\n\turl = https://example.invalid/team/repo.git\n",
@@ -287,6 +293,24 @@ fn paired_project_location_read_uses_the_fake_peer_transport() {
     };
     assert_eq!(value["gitOrigin"], "example.invalid/team/repo");
     assert_eq!(value["matches"], json!([]));
+    let browse = local_root.path().join("remote-browse");
+    std::fs::create_dir_all(browse.join("visible-child")).expect("fake remote child");
+    std::fs::create_dir_all(browse.join(".hidden-child")).expect("fake hidden child");
+    let folders = local
+        .exchange(
+            "peer-server",
+            "folders",
+            &json!({"cwd":browse.to_string_lossy()}),
+            "folder-browse-read-1",
+            101,
+        )
+        .expect("fake remote folder browse");
+    let ExchangeOutcome::Applied(folders) = folders else {
+        panic!("expected applied folder browse")
+    };
+    assert_eq!(folders["path"], browse.to_string_lossy().as_ref());
+    assert_eq!(folders["directories"].as_array().unwrap().len(), 1);
+    assert_eq!(folders["directories"][0]["name"], "visible-child");
 }
 
 #[test]
@@ -846,7 +870,10 @@ fn python_and_rust_signatures_interoperate_for_multi_server_requests() {
     });
     let rust_signature = STANDARD.encode(key.sign(&rust_wire).as_ref());
     UnparsedPublicKey::new(&ED25519, key.public_key().as_ref())
-        .verify(&rust_wire, &STANDARD.decode(&rust_signature).expect("signature decodes"))
+        .verify(
+            &rust_wire,
+            &STANDARD.decode(&rust_signature).expect("signature decodes"),
+        )
         .expect("Rust signature verifies locally");
     let mut spki = vec![
         0x30, 0x2a, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x03, 0x21, 0x00,
@@ -864,8 +891,8 @@ fn python_and_rust_signatures_interoperate_for_multi_server_requests() {
         "publicKey":public_key,
     });
     let server_source = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../apps/server/src");
-    let script = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/multi_server/interop_verify.py");
+    let script =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/multi_server/interop_verify.py");
     let mut command = Command::new(prepared_python::prepared_python(&server_source));
     command
         .arg(&script)
@@ -873,8 +900,9 @@ fn python_and_rust_signatures_interoperate_for_multi_server_requests() {
         .env("PYTHONDONTWRITEBYTECODE", "1");
     let environment = prepared_python::IsolatedTestEnvironment::new();
     environment.apply(&mut command);
-    let output = prepared_python::output_with_timeout(&mut command, &script, Duration::from_secs(30))
-        .expect("Python verification has a bounded deadline");
+    let output =
+        prepared_python::output_with_timeout(&mut command, &script, Duration::from_secs(30))
+            .expect("Python verification has a bounded deadline");
     assert!(
         output.status.success(),
         "Python rejected the Rust signature: {}",

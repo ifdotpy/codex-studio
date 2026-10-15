@@ -17,6 +17,12 @@ pub(crate) mod operations;
 pub use operations::peer_team_write;
 use operations::reorder;
 
+/// Match the Python cross-server UUIDv5 namespace and input encoding.
+pub fn cross_server_identity(parts: &[&str]) -> String {
+    let name = format!("studio-cross-server:{}", parts.join(":"));
+    Uuid::new_v5(&Uuid::NAMESPACE_URL, name.as_bytes()).to_string()
+}
+
 #[derive(Debug, Error)]
 pub enum ProjectsError {
     #[error("invalid request: {0}")]

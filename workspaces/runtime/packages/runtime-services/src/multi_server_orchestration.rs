@@ -256,13 +256,14 @@ impl PairedTransport for HttpsPairedTransport {
                 "The paired server refused the request",
             ));
         }
-        let value = verify_multi_server_response(&response.body, server, &public_key).map_err(|_| {
-            refused(
-                503,
-                "invalid_receipt",
-                "The paired server returned an invalid receipt",
-            )
-        })?;
+        let value =
+            verify_multi_server_response(&response.body, server, &public_key).map_err(|_| {
+                refused(
+                    503,
+                    "invalid_receipt",
+                    "The paired server returned an invalid receipt",
+                )
+            })?;
         #[cfg(unix)]
         {
             let advert = response
@@ -292,6 +293,8 @@ pub trait BrowserCallbackEffect: Send + Sync {
 pub struct RuntimeOrchestrationEffects {
     store: Arc<RuntimeStore>,
     browser_callback: Arc<dyn BrowserCallbackEffect>,
+    default_account: String,
+    known_accounts: Vec<Value>,
 }
 
 impl RuntimeOrchestrationEffects {
@@ -302,6 +305,8 @@ impl RuntimeOrchestrationEffects {
         Self {
             store,
             browser_callback,
+            default_account: "default".to_owned(),
+            known_accounts: Vec::new(),
         }
     }
 
@@ -312,7 +317,136 @@ impl RuntimeOrchestrationEffects {
         Self {
             store,
             browser_callback,
+            default_account: "default".to_owned(),
+            known_accounts: Vec::new(),
         }
+    }
+
+    pub fn with_project_accounts(
+        store: Arc<RuntimeStore>,
+        browser_callback: Arc<dyn BrowserCallbackEffect>,
+        default_account: String,
+        known_accounts: Vec<Value>,
+    ) -> Self {
+        Self {
+            store,
+            browser_callback,
+            default_account,
+            known_accounts,
+        }
+    }
+
+    fn project_location(
+        &self,
+        principal: &str,
+        envelope: &Value,
+    ) -> Result<ExchangeOutcome, AccessError> {
+        let action = text(envelope, "action");
+        let payload = &envelope["payload"];
+        let home_project = text(payload, "project");
+        let request_id = text(envelope, "requestId");
+        if home_project.is_empty() || request_id.is_empty() {
+            return Err(refused(400, "invalid_request", "Invalid project location"));
+        }
+        if action == "add_location" {
+            let path = text(payload, "path");
+            let name = text(payload, "name");
+            if path.is_empty() || path.len() > 4096 || name.is_empty() || name.len() > 255 {
+                return Err(refused(400, "invalid_request", "Invalid project location"));
+            }
+            let registered = crate::projects::write(
+                &self.store,
+                &json!({"action":"register","path":path,"name":name}),
+                &self.default_account,
+                &self.known_accounts,
+            )
+            .map_err(|_| {
+                refused(
+                    400,
+                    "location_unavailable",
+                    "The project folder is unavailable",
+                )
+            })?;
+            let project_id = text(&registered, "id");
+            let canonical_path = text(&registered, "path");
+            if project_id.is_empty() || canonical_path.is_empty() {
+                return Err(refused(
+                    503,
+                    "invalid_project",
+                    "The project folder is unavailable",
+                ));
+            }
+            let local_server = self.store.local_server_id()?.ok_or_else(|| {
+                refused(
+                    503,
+                    "identity_unavailable",
+                    "The server identity is unavailable",
+                )
+            })?;
+            let git_origin = crate::projects::peer_location_info(canonical_path)
+                .ok()
+                .and_then(|value| value.get("gitOrigin").cloned())
+                .unwrap_or(Value::Null);
+            self.store.transaction_with(|tx| {
+                let (_, mut project) = studio_runtime_store::ProjectsRepository::get(
+                    tx, project_id,
+                )?
+                .ok_or_else(|| refused(503, "project_unavailable", "The project is unavailable"))?;
+                let aliases = project
+                    .get("projectAliases")
+                    .and_then(Value::as_array)
+                    .cloned()
+                    .unwrap_or_default();
+                let mut aliases = aliases
+                    .into_iter()
+                    .filter(|alias| {
+                        alias.get("serverId").and_then(Value::as_str) != Some(principal)
+                            || alias.get("projectId").and_then(Value::as_str) != Some(home_project)
+                    })
+                    .collect::<Vec<_>>();
+                if principal != local_server || home_project != project_id {
+                    aliases
+                        .push(json!({"serverId":principal,"projectId":home_project,"name":name}));
+                }
+                project["projectAliases"] = Value::Array(aliases);
+                studio_runtime_store::ProjectsRepository::put_project(tx, &project)?;
+                Ok::<_, AccessError>(())
+            })?;
+            return Ok(ExchangeOutcome::Applied(json!({
+                "serverId":local_server,"path":path,"canonicalPath":canonical_path,
+                "projectId":project_id,"gitOrigin":git_origin,
+                "homeProjectId":home_project,"requestId":request_id
+            })));
+        }
+        let location = &payload["location"];
+        let project_id = text(location, "projectId");
+        if !project_id.is_empty() {
+            self.store.transaction_with(|tx| {
+                if let Some((_, mut project)) =
+                    studio_runtime_store::ProjectsRepository::get(tx, project_id)?
+                {
+                    let aliases = project
+                        .get("projectAliases")
+                        .and_then(Value::as_array)
+                        .cloned()
+                        .unwrap_or_default()
+                        .into_iter()
+                        .filter(|alias| {
+                            alias.get("serverId").and_then(Value::as_str) != Some(principal)
+                                || alias.get("projectId").and_then(Value::as_str)
+                                    != Some(home_project)
+                        })
+                        .collect::<Vec<_>>();
+                    project["projectAliases"] = Value::Array(aliases);
+                    studio_runtime_store::ProjectsRepository::put_project(tx, &project)?;
+                }
+                Ok::<_, AccessError>(())
+            })?;
+        }
+        let local_server = self.store.local_server_id()?.unwrap_or_default();
+        Ok(ExchangeOutcome::Applied(
+            json!({"removed":true,"serverId":local_server}),
+        ))
     }
 
     fn worker_call(
@@ -750,6 +884,9 @@ impl OrchestrationEffects for RuntimeOrchestrationEffects {
                 | "move_send"
                 | "input"
                 | "browser_callback"
+                | "folders"
+                | "add_location"
+                | "remove_location"
                 | "location_info"
                 | "location_matches"
         )
@@ -762,6 +899,19 @@ impl OrchestrationEffects for RuntimeOrchestrationEffects {
                 .browser_callback
                 .receive(envelope)
                 .map(ExchangeOutcome::Applied);
+        }
+        if action == "folders" {
+            let path = envelope["payload"].get("cwd").and_then(Value::as_str);
+            let result = crate::system_reads::directories(path)
+                .map_err(|_| refused(400, "folder_unavailable", "This directory is unavailable"))?;
+            return serde_json::to_value(result)
+                .map(ExchangeOutcome::Applied)
+                .map_err(|_| {
+                    refused(503, "folder_unavailable", "The directory could not be read")
+                });
+        }
+        if matches!(action, "add_location" | "remove_location") {
+            return self.project_location(principal, envelope);
         }
         if action == "location_info" {
             let path = text(&envelope["payload"], "cwd");
@@ -1089,7 +1239,7 @@ pub enum DeliveryDecision {
 fn peer_replay_safe(action: &str) -> bool {
     matches!(
         action,
-        "event" | "message" | "move_send" | "input" | "location_info" | "location_matches"
+        "event" | "message" | "move_send" | "location_info" | "location_matches"
     )
 }
 

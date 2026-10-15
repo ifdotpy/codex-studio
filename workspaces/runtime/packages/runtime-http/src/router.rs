@@ -113,13 +113,19 @@ impl HttpState {
         let vm_state_dir =
             studio_runtime_services::vault::linux_vm_state_dir(std::path::Path::new(&state_dir));
         let sync_changes = Arc::new(ChangeNotificationHub::new());
+        let project_accounts = account_policy.as_ref().map(|policy| policy.accounts());
         let orchestration_driver = store.as_ref().map(|store| {
             Arc::new(studio_runtime_services::multi_server_orchestration::OrchestrationDriver::new(
                 Arc::clone(store),
                 Arc::new(studio_runtime_services::multi_server_orchestration::HttpsPairedTransport::new(Arc::clone(store))),
-                Arc::new(studio_runtime_services::multi_server_orchestration::RuntimeOrchestrationEffects::with_browser_callback(
+                Arc::new(studio_runtime_services::multi_server_orchestration::RuntimeOrchestrationEffects::with_project_accounts(
                     Arc::clone(store),
                     Arc::new(studio_runtime_services::browser::BrowserCallbackReceiver::new(Arc::clone(store))),
+                    project_accounts.as_ref()
+                        .and_then(|snapshot| snapshot.default_account_key.as_str())
+                        .unwrap_or("default")
+                        .to_owned(),
+                    project_accounts.as_ref().map(|snapshot| snapshot.accounts.clone()).unwrap_or_default(),
                 )),
             ))
         });
@@ -199,10 +205,7 @@ impl HttpState {
     }
 
     /// Advertise the running QUIC link to authenticated paired-server requests.
-    pub fn with_peer_link_advert(
-        mut self,
-        advert: Arc<std::sync::RwLock<Option<String>>>,
-    ) -> Self {
+    pub fn with_peer_link_advert(mut self, advert: Arc<std::sync::RwLock<Option<String>>>) -> Self {
         self.peer_link_advert = advert;
         self
     }

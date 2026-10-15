@@ -20,11 +20,8 @@ use studio_runtime_services::{
 use tokio::time::Instant;
 
 use super::extractors::ApiJson;
-use super::manifest::{Dependency, OperationStatus, RouteGroup, dependency_unavailable, post};
+use super::manifest::{OperationStatus, RouteGroup, post};
 use crate::{error::ApiError, router::HttpState};
-
-const FORWARD_DEPENDENCIES: [Dependency; 1] =
-    [Dependency::new("multi-server-runtime/orchestration")];
 
 struct SignedBrowserExchange {
     driver: Arc<OrchestrationDriver>,
@@ -83,7 +80,7 @@ pub(crate) fn new_forwarder(driver: Arc<OrchestrationDriver>) -> Arc<BrowserForw
 pub(crate) fn routes() -> RouteGroup {
     RouteGroup::new(vec![post(
         "/api/browser/forward",
-        OperationStatus::partial(&FORWARD_DEPENDENCIES),
+        OperationStatus::Implemented,
         forward,
     )])
 }
@@ -121,12 +118,7 @@ async fn forward(
             })?,
     };
     let forwarder = state.browser_forwarder.ok_or_else(|| {
-        dependency_unavailable(
-            "POST",
-            "/api/browser/forward",
-            &FORWARD_DEPENDENCIES,
-        )
-        .unwrap_or_else(|_| ApiError::internal())
+        ApiError::new(StatusCode::BAD_REQUEST, "The agent runtime is unavailable")
     })?;
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -219,8 +211,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn forward_refuses_without_the_orchestration_consumer() {
+    async fn forward_starts_for_a_local_window_with_the_runtime_available() {
         let state_dir = tempfile::tempdir().expect("isolated state directory");
+        let store = Arc::new(
+            studio_runtime_store::RuntimeStore::open(Some(state_dir.path()))
+                .expect("isolated runtime store"),
+        );
         let state = crate::router::HttpState::new(
             "token".into(),
             "workspace".into(),
@@ -228,17 +224,32 @@ mod tests {
             state_dir.path().to_string_lossy().into_owned(),
             12345,
             None,
-            None,
+            Some(store),
             None,
         );
+        let forwarder = Arc::clone(
+            state
+                .browser_forwarder
+                .as_ref()
+                .expect("runtime installs its browser forwarder"),
+        );
+        let callback =
+            std::net::TcpListener::bind(("127.0.0.1", 0)).expect("ephemeral callback port");
+        let callback_port = callback.local_addr().expect("callback address").port();
+        drop(callback);
+        let expires_at = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock follows the Unix epoch")
+            .as_secs_f64()
+            + 30.0;
         let app = crate::router::router(state).expect("HTTP router composes the route");
         let body = json!({
             "server":"peer",
             "bridgeId":"0123456789abcdef0123456789abcdef",
             "host":"127.0.0.1",
-            "port":1024,
+            "port":callback_port,
             "path":"/callback",
-            "expiresAt":2000000000,
+            "expiresAt":expires_at,
             "token":"abcdefghijklmnop"
         });
         let request = axum::http::Request::builder()
@@ -261,14 +272,17 @@ mod tests {
                 54321,
             ))));
         let response = app.oneshot(request).await.expect("HTTP response");
-        assert_eq!(response.status(), axum::http::StatusCode::NOT_IMPLEMENTED);
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
         let bytes = axum::body::to_bytes(response.into_body(), 4096)
             .await
-            .expect("error body reads");
+            .expect("response body reads");
         let body: Value = serde_json::from_slice(&bytes).expect("error envelope parses");
-        assert_eq!(
-            body,
-            json!({"error":"Not implemented: requires multi-server-runtime/orchestration"})
+        assert_eq!(body, json!({"status":"forwarding"}));
+        assert!(
+            forwarder
+                .close("0123456789abcdef0123456789abcdef")
+                .await
+                .expect("forwarder closes")
         );
     }
 }
