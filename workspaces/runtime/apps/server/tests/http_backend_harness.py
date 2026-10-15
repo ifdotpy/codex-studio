@@ -749,6 +749,12 @@ class BackendProcess:
             raise RuntimeError("Backend is already running")
         if getattr(self, "_provider_executable", None) is None:
             raise RuntimeError("HTTP backend harness requires an explicit replay provider")
+        if self._provider_hold_method is not None:
+            # Gate markers belong to one provider process. A restart resets the
+            # fake provider's occurrence counter, so stale phase/release files
+            # would make waiters observe a previous RPC as the current event.
+            (self.root / "provider-gate-phase").unlink(missing_ok=True)
+            (self.root / "provider-gate-release").unlink(missing_ok=True)
         command = self._command()
         environment = self._environment()
         if os.environ.get("STUDIO_HTTP_BACKEND_COMMAND") and not (self.state / "canvas.sqlite3").is_file():
