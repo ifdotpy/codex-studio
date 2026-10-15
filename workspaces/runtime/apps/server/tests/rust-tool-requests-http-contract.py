@@ -796,7 +796,26 @@ class ToolRequestsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         import subprocess
         write_receipts(self.backend,[receipt("state-check",self.lead_id)])
         before=database_snapshot(self.backend.state)
-        command=shlex.split(os.environ["STUDIO_HTTP_BACKEND_COMMAND"])+["state-check",str(self.backend.state)]
+        command = shlex.split(os.environ["STUDIO_HTTP_BACKEND_COMMAND"])
+        # The runtime server accepts state-check only as argv[1]. The HTTP
+        # harness allows its command to include the ephemeral serving port, so
+        # remove that listener option before invoking the diagnostic mode.
+        runnable = []
+        index = 0
+        while index < len(command):
+            argument = command[index]
+            if argument == "--port":
+                self.assertLess(index + 1, len(command), "--port needs a value")
+                self.assertEqual(command[index + 1], "0")
+                index += 2
+                continue
+            if argument.startswith("--port="):
+                self.assertEqual(argument.partition("=")[2], "0")
+                index += 1
+                continue
+            runnable.append(argument)
+            index += 1
+        command = [*runnable, "state-check", str(self.backend.state)]
         result=subprocess.run(command,capture_output=True,text=True,check=True)
         report=json.loads(result.stdout)
         tables={r["table"]:r for r in report["tables"]}

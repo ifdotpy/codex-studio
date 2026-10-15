@@ -1,24 +1,16 @@
 //! Thin adapters over the synchronous receipt action service.
 use super::extractors::{ApiJson, QueryParams};
-use super::manifest::{Dependency, OperationStatus, RouteGroup, get, post};
+use super::manifest::{OperationStatus, RouteGroup, get, post};
 use crate::{error::ApiError, router::HttpState};
 use axum::{Json, extract::State, http::StatusCode};
 use serde_json::Value;
 use studio_runtime_services::tool_requests::{self, Action, ToolRequestError};
-const DEPENDENCIES: [Dependency; 2] = [
-    Dependency::new("payload-store/tool-request-recovery"),
-    Dependency::new("store-bootstrap/tool-request-schema"),
-];
 pub(crate) fn routes() -> RouteGroup {
     RouteGroup::new(vec![
-        get(
-            "/api/tool-requests",
-            OperationStatus::partial(&DEPENDENCIES),
-            read,
-        ),
+        get("/api/tool-requests", OperationStatus::Implemented, read),
         post(
             "/api/tool-requests/cancel",
-            OperationStatus::partial(&DEPENDENCIES),
+            OperationStatus::Implemented,
             cancel,
         ),
     ])
@@ -153,7 +145,7 @@ fn error(error: ToolRequestError) -> ApiError {
 
 inventory::submit! {
     crate::routes::manifest::RouteModuleRegistration {
-        name:"tool_requests", routes:Some(routes), dependencies:&["payload-store/tool-request-recovery","store-bootstrap/tool-request-schema"],
+        name:"tool_requests", routes:Some(routes), dependencies:&[],
     }
 }
 

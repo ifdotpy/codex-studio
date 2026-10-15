@@ -102,40 +102,6 @@
     {
       "closures": [
         {
-          "closes": "origin/feat/wave7-p04-callback-runtime",
-          "kind": "accepted_branch",
-          "owner": "P04"
-        },
-        {
-          "closes": "Wave 7 P05 Managed host tools",
-          "kind": "open_task",
-          "owner": "P05"
-        }
-      ],
-      "dependency": "payload-store/tool-request-recovery",
-      "operation_count": 2,
-      "operations": ["GET /api/tool-requests", "POST /api/tool-requests/cancel"]
-    },
-    {
-      "closures": [
-        {
-          "closes": "origin/feat/wave7-p04-callback-runtime",
-          "kind": "accepted_branch",
-          "owner": "P04"
-        },
-        {
-          "closes": "Wave 7 P05 Managed host tools",
-          "kind": "open_task",
-          "owner": "P05"
-        }
-      ],
-      "dependency": "store-bootstrap/tool-request-schema",
-      "operation_count": 2,
-      "operations": ["GET /api/tool-requests", "POST /api/tool-requests/cancel"]
-    },
-    {
-      "closures": [
-        {
           "closes": "origin/feat/wave7-p09-budget-runtime",
           "kind": "accepted_branch",
           "owner": "P09"
@@ -504,10 +470,10 @@
     }
   ],
   "counts": {
-    "implemented": 143,
-    "named_dependencies": 36,
+    "implemented": 145,
+    "named_dependencies": 34,
     "not_registered": 0,
-    "partial": 17,
+    "partial": 15,
     "total": 160
   },
   "lifecycle_dependencies": {
@@ -779,12 +745,9 @@
       "status": "implemented"
     },
     {
-      "dependencies": [
-        "payload-store/tool-request-recovery",
-        "store-bootstrap/tool-request-schema"
-      ],
+      "dependencies": [],
       "operation": "GET /api/tool-requests",
-      "status": "partial"
+      "status": "implemented"
     },
     {
       "dependencies": [],
@@ -1268,12 +1231,9 @@
       "status": "implemented"
     },
     {
-      "dependencies": [
-        "payload-store/tool-request-recovery",
-        "store-bootstrap/tool-request-schema"
-      ],
+      "dependencies": [],
       "operation": "POST /api/tool-requests/cancel",
-      "status": "partial"
+      "status": "implemented"
     },
     {
       "dependencies": [
