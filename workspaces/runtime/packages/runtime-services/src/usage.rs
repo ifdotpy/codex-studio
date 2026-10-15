@@ -8,7 +8,7 @@ use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{LazyLock, Mutex, MutexGuard, TryLockError, mpsc};
+use std::sync::{Arc, LazyLock, Mutex, MutexGuard, TryLockError, mpsc};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime};
 use thiserror::Error;
@@ -248,7 +248,15 @@ where
         if cancelled.load(Ordering::Acquire) {
             return (false, Err(UsageError::ScannerCancelled));
         }
-        let result = refresh_claude_costs(state_dir, account_key, &home, clock());
+        let scan_started_at = clock();
+        let result = refresh_claude_costs(
+            state_dir,
+            account_key,
+            &home,
+            scan_started_at,
+            cancelled,
+            clock,
+        );
         return (result.is_ok(), result);
     }
     let account_id = account.get("accountId").cloned().unwrap_or(Value::Null);
@@ -384,6 +392,8 @@ fn refresh_claude_costs(
     account_key: &str,
     home: &Path,
     now: f64,
+    cancelled: &AtomicBool,
+    clock: impl Fn() -> f64,
 ) -> Result<(), UsageError> {
     let identity = format!("{account_key}{}", home.to_string_lossy());
     let root = state_dir
@@ -392,14 +402,18 @@ fn refresh_claude_costs(
     create_private_dir(&root)?;
     let cache = root.join("claude-costs.json");
     let previous = read_json(&cache);
-    let (data, error) = match scan_claude_sessions(home, state_dir, now) {
+    let (data, error) = match scan_claude_sessions(home, state_dir, now, cancelled) {
         Ok(data) => (Some(data), Value::Null),
+        Err(UsageError::ScannerCancelled) => return Err(UsageError::ScannerCancelled),
         Err(_) => (
             previous.as_ref().and_then(|v| v.get("data")).cloned(),
             Value::String("Claude account logs are unavailable".to_owned()),
         ),
     };
-    let content = json!({"config":home,"data":data,"checked":now,"error":error});
+    if cancelled.load(Ordering::Acquire) {
+        return Err(UsageError::ScannerCancelled);
+    }
+    let content = json!({"config":home,"data":data,"checked":clock(),"error":error});
     let temporary = root.join(format!(".claude-costs-{}.tmp", std::process::id()));
     fs::write(
         &temporary,
@@ -411,6 +425,10 @@ fn refresh_claude_costs(
         use std::os::unix::fs::PermissionsExt;
         fs::set_permissions(&temporary, fs::Permissions::from_mode(0o600))
             .map_err(|_| UsageError::Scan)?;
+    }
+    if cancelled.load(Ordering::Acquire) {
+        let _ = fs::remove_file(&temporary);
+        return Err(UsageError::ScannerCancelled);
     }
     fs::rename(&temporary, cache).map_err(|_| UsageError::Scan)?;
     Ok(())
@@ -459,7 +477,26 @@ struct ClaudeUsage {
 
 /// Read deduplicated Claude Code assistant usage rows under the chosen profile.
 /// Python owner: codex_claude_costs.py:6-34 and codex_costs.py:391-478.
-fn scan_claude_sessions(config: &Path, state_dir: &Path, now: f64) -> Result<Value, UsageError> {
+fn scan_claude_sessions(
+    config: &Path,
+    state_dir: &Path,
+    now: f64,
+    cancelled: &AtomicBool,
+) -> Result<Value, UsageError> {
+    scan_claude_sessions_with_catalog(config, now, cancelled, || {
+        pricing_catalog_with_fetch(state_dir, now, fetch_models_dev_catalog)
+    })
+}
+
+fn scan_claude_sessions_with_catalog<F>(
+    config: &Path,
+    now: f64,
+    cancelled: &AtomicBool,
+    fetch_catalog: F,
+) -> Result<Value, UsageError>
+where
+    F: FnOnce() -> Option<crate::pricing::PricingCatalog>,
+{
     let started = Instant::now();
     let projects = config.join("projects");
     if !projects.is_dir() {
@@ -468,8 +505,14 @@ fn scan_claude_sessions(config: &Path, state_dir: &Path, now: f64) -> Result<Val
     let mut stack = vec![projects];
     let mut rows = BTreeMap::<String, ClaudeUsage>::new();
     while let Some(directory) = stack.pop() {
+        if cancelled.load(Ordering::Acquire) {
+            return Err(UsageError::ScannerCancelled);
+        }
         check_scan_timeout(started)?;
         for entry in fs::read_dir(directory).map_err(|_| UsageError::Scan)? {
+            if cancelled.load(Ordering::Acquire) {
+                return Err(UsageError::ScannerCancelled);
+            }
             let entry = entry.map_err(|_| UsageError::Scan)?;
             let path = entry.path();
             let kind = entry.file_type().map_err(|_| UsageError::Scan)?;
@@ -482,6 +525,9 @@ fn scan_claude_sessions(config: &Path, state_dir: &Path, now: f64) -> Result<Val
             }
             let file = File::open(path).map_err(|_| UsageError::Scan)?;
             for line in BufReader::new(file).lines() {
+                if cancelled.load(Ordering::Acquire) {
+                    return Err(UsageError::ScannerCancelled);
+                }
                 check_scan_timeout(started)?;
                 let line = line.map_err(|_| UsageError::Scan)?;
                 let Ok(row) = serde_json::from_str::<Value>(&line) else {
@@ -538,7 +584,10 @@ fn scan_claude_sessions(config: &Path, state_dir: &Path, now: f64) -> Result<Val
         }
     }
 
-    let catalog = pricing_catalog_with_fetch(state_dir, now, fetch_models_dev_catalog);
+    if cancelled.load(Ordering::Acquire) {
+        return Err(UsageError::ScannerCancelled);
+    }
+    let catalog = fetch_catalog();
     let today = local_day(now);
     let mut today_cost = 0.0;
     let mut month_cost = 0.0;
@@ -547,6 +596,10 @@ fn scan_claude_sessions(config: &Path, state_dir: &Path, now: f64) -> Result<Val
     let mut unknown = BTreeSet::new();
     let mut groups = BTreeMap::<String, f64>::new();
     for row in rows.values() {
+        if cancelled.load(Ordering::Acquire) {
+            return Err(UsageError::ScannerCancelled);
+        }
+        check_scan_timeout(started)?;
         let day = chrono::DateTime::from_timestamp(row.at as i64, 0).map(|date| {
             date.with_timezone(&chrono::Local)
                 .format("%Y-%m-%d")
@@ -837,27 +890,47 @@ where
     if write_private_json_atomic(&path, &artifact, ".models-dev-").is_err() {
         return current_catalog;
     }
+    let _ = fs::remove_file(attempt_path);
     Some(catalog)
 }
 
 fn fetch_models_dev_catalog() -> Option<Value> {
+    fetch_models_dev_catalog_with(|agent, url| {
+        let response = agent
+            .get(url)
+            .header("Accept", "application/json")
+            .header("User-Agent", "Codex-Studio-pricing-cache/1")
+            .call()
+            .ok()?;
+        if response.status().as_u16() != 200 {
+            return None;
+        }
+        let body: Value = serde_json::from_reader(response.into_body().into_reader()).ok()?;
+        body.get("providers").cloned().or(Some(body))
+    })
+}
+
+fn fetch_models_dev_catalog_with<F>(request: F) -> Option<Value>
+where
+    F: FnOnce(&ureq::Agent, &str) -> Option<Value>,
+{
+    use ureq::tls::{RootCerts, TlsConfig, TlsProvider};
+    let tls = TlsConfig::builder()
+        .provider(TlsProvider::Rustls)
+        .unversioned_rustls_crypto_provider(Arc::new(rustls::crypto::ring::default_provider()))
+        .root_certs(RootCerts::PlatformVerifier)
+        .build();
     let agent = ureq::Agent::config_builder()
         .https_only(true)
         .http_status_as_error(false)
         .max_redirects(0)
+        .tls_config(tls)
         .timeout_global(Some(PRICING_CATALOG_REQUEST_TIMEOUT))
         .build();
-    let response = ureq::Agent::new_with_config(agent)
-        .get("https://models.dev/api.json")
-        .header("Accept", "application/json")
-        .header("User-Agent", "Codex-Studio-pricing-cache/1")
-        .call()
-        .ok()?;
-    if response.status().as_u16() != 200 {
-        return None;
-    }
-    let body: Value = serde_json::from_reader(response.into_body().into_reader()).ok()?;
-    body.get("providers").cloned().or(Some(body))
+    request(
+        &ureq::Agent::new_with_config(agent),
+        "https://models.dev/api.json",
+    )
 }
 
 fn write_pricing_attempt(path: &Path, now: f64) -> Result<(), UsageError> {
@@ -1690,7 +1763,12 @@ mod tests {
         );
         let log_path = logs.join("session.jsonl");
         std::fs::write(&log_path, format!("{row}{row}")).expect("fixture log");
-        let result = scan_claude_sessions(&home, &root.join("state"), now.timestamp() as f64)
+        let result = scan_claude_sessions(
+            &home,
+            &root.join("state"),
+            now.timestamp() as f64,
+            &AtomicBool::new(false),
+        )
             .expect("scan fixture logs");
         let oracle = std::process::Command::new("python3")
             .arg("-B")
@@ -1758,7 +1836,12 @@ mod tests {
         )
         .expect("write session row without output token count");
 
-        let result = scan_claude_sessions(&home, &root.join("state"), now.timestamp() as f64)
+        let result = scan_claude_sessions(
+            &home,
+            &root.join("state"),
+            now.timestamp() as f64,
+            &AtomicBool::new(false),
+        )
             .expect("scan fixture sessions");
         assert_eq!(result["coverage"], "partial");
         assert_eq!(result["todayUSD"], Value::Null);
@@ -1801,5 +1884,128 @@ mod tests {
         );
         assert!(catalog.is_some());
         assert!(refreshed, "expired catalog schedules a new refresh");
+    }
+
+    #[test]
+    fn models_dev_fetch_builds_platform_tls_and_uses_injected_response() {
+        let expected = json!({"openai":{"models":{}},"anthropic":{"models":{}}});
+        let fetched = super::fetch_models_dev_catalog_with(|_agent, url| {
+            assert_eq!(url, "https://models.dev/api.json");
+            Some(expected.clone())
+        });
+        assert_eq!(fetched, Some(expected));
+    }
+
+    #[test]
+    fn claude_refresh_uses_completion_time_and_does_not_publish_after_cancellation() {
+        let root = tempfile::tempdir().expect("fixture state directory");
+        let home = root.path().join("profile");
+        std::fs::create_dir_all(home.join("projects")).expect("fixture projects");
+        let state = root.path().join("state");
+        let cancelled = AtomicBool::new(false);
+        super::refresh_claude_costs(
+            &state,
+            "claude-local",
+            &home,
+            200.0,
+            &cancelled,
+            || 321.0,
+        )
+        .expect("refresh completes");
+        let identity = format!("claude-local{}", home.to_string_lossy());
+        let cache = state
+            .join("account-costs/claude")
+            .join(super::digest(&identity))
+            .join("claude-costs.json");
+        let saved: Value = serde_json::from_slice(&std::fs::read(&cache).expect("cache exists"))
+            .expect("valid cache");
+        assert_eq!(saved["checked"], 321.0);
+
+        let cancelled_state = root.path().join("cancelled-state");
+        let cancelled = AtomicBool::new(true);
+        assert!(matches!(
+            super::refresh_claude_costs(
+                &cancelled_state,
+                "claude-local",
+                &home,
+                200.0,
+                &cancelled,
+                || 321.0,
+            ),
+            Err(super::UsageError::ScannerCancelled)
+        ));
+        let cancelled_cache = cancelled_state
+            .join("account-costs/claude")
+            .join(super::digest(&identity))
+            .join("claude-costs.json");
+        assert!(!cancelled_cache.exists(), "cancelled scan is not published");
+    }
+
+    #[test]
+    fn claude_pricing_loop_observes_shutdown_after_catalog_fetch() {
+        let root = tempfile::tempdir().expect("fixture state directory");
+        let home = root.path().join("profile");
+        let logs = home.join("projects/sample");
+        std::fs::create_dir_all(&logs).expect("fixture sessions");
+        std::fs::write(
+            logs.join("session.jsonl"),
+            format!(
+                "{{\"type\":\"assistant\",\"timestamp\":\"{}\",\"message\":{{\"id\":\"message-1\",\"model\":\"claude-test\",\"usage\":{{\"input_tokens\":1,\"output_tokens\":1}}}}}}\n",
+                chrono::Utc::now().to_rfc3339()
+            ),
+        )
+        .expect("write usage row");
+        let cancelled = AtomicBool::new(false);
+        let result = super::scan_claude_sessions_with_catalog(
+            &home,
+            chrono::Utc::now().timestamp() as f64,
+            &cancelled,
+            || {
+                cancelled.store(true, std::sync::atomic::Ordering::Release);
+                None
+            },
+        );
+        assert!(matches!(result, Err(super::UsageError::ScannerCancelled)));
+    }
+
+    #[test]
+    fn failed_pricing_fetch_uses_python_daily_attempt_ttl() {
+        let root = tempfile::tempdir().expect("fixture state directory");
+        let now = 2_000_000.0;
+        assert!(super::pricing_catalog_with_fetch(root.path(), now, || None).is_none());
+        let attempt = std::fs::read_to_string(root.path().join("model-pricing/refresh-state.json"))
+            .expect("attempt time is persisted separately from successful catalog");
+        assert_eq!(
+            serde_json::from_str::<Value>(&attempt).unwrap()["lastAttemptAt"],
+            now
+        );
+
+        let mut fetched = false;
+        assert!(super::pricing_catalog_with_fetch(
+            root.path(),
+            now + super::PRICING_CATALOG_TTL_SECONDS - 1.0,
+            || {
+                fetched = true;
+                Some(json!({}))
+            },
+        )
+        .is_none());
+        assert!(!fetched, "failed fetch follows Python's 24-hour attempt TTL");
+
+        let providers = json!({
+            "openai":{"models":{"gpt-test":{"cost":{"input":1,"output":2}}}},
+            "anthropic":{"models":{"claude-test":{"cost":{"input":1,"output":2}}}}
+        });
+        let catalog = super::pricing_catalog_with_fetch(
+            root.path(),
+            now + super::PRICING_CATALOG_TTL_SECONDS,
+            || {
+                fetched = true;
+                Some(providers)
+            },
+        );
+        assert!(catalog.is_some());
+        assert!(fetched);
+        assert!(!root.path().join("model-pricing/refresh-state.json").exists());
     }
 }
