@@ -657,6 +657,25 @@ class NativeChats(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(len(tool.codes), 1)
 
+    def test_close_cancels_a_pending_control_socket_long_poll(self) -> None:
+        errors: list[Exception] = []
+
+        def wait_for_browser() -> None:
+            try:
+                self.guest.call("browser.wait", {"after": 0, "waitSeconds": 20}, timeout=35)
+            except Exception as error:
+                errors.append(error)
+
+        client = threading.Thread(target=wait_for_browser, daemon=True)
+        client.start()
+        wait_until(lambda: bool(self.guest.control_tasks))
+        started = time.monotonic()
+        self.guest.close()
+        self.assertLess(time.monotonic() - started, 2)
+        client.join(timeout=2)
+        self.assertFalse(client.is_alive(), "closing the host bridge must release its control RPC")
+        self.assertTrue(errors)
+
     def test_a_window_on_another_mac_relays_through_its_own_server(self) -> None:
         tool, result = self.launch(self.agent_id)
         self.assertEqual(result.returncode, 0, result.stderr)
