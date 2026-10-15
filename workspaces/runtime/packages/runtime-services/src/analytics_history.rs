@@ -306,15 +306,61 @@ fn read_history_checkpoint(
         let diagnostic = format!(
             "analytics_history/{key} at {pointer}: {reason}; value type {kind}, length {length}"
         );
-        quarantine_history_checkpoint(store, key, &raw, agent, &diagnostic)?;
-        return Ok(Some(initial_history_checkpoint(key, agent, &diagnostic)));
+        let mut retained = value.clone();
+        remove_json_pointer(&mut retained, &pointer);
+        retained["status"] = json!("invalidRecord");
+        retained["error"] = json!(diagnostic);
+        retained["invalidRecordDiagnostic"] = json!(diagnostic);
+        let replacement = if retained.get("id").and_then(Value::as_str) == Some(key)
+            && CaptureTable::History.validate(&retained).is_ok()
+        {
+            retained
+        } else {
+            initial_history_checkpoint(key, agent, &diagnostic)
+        };
+        quarantine_history_checkpoint(store, key, &raw, replacement.clone())?;
+        return Ok(Some(replacement));
     }
     let diagnostic = format!(
         "analytics_history/{key} at : invalid_json; record length {} bytes",
         raw.len()
     );
-    quarantine_history_checkpoint(store, key, &raw, agent, &diagnostic)?;
-    Ok(Some(initial_history_checkpoint(key, agent, &diagnostic)))
+    let replacement = initial_history_checkpoint(key, agent, &diagnostic);
+    quarantine_history_checkpoint(store, key, &raw, replacement.clone())?;
+    Ok(Some(replacement))
+}
+
+fn remove_json_pointer(value: &mut Value, pointer: &str) {
+    if pointer.is_empty() || pointer == "/" {
+        return;
+    }
+    let parts = pointer
+        .strip_prefix('/')
+        .unwrap_or(pointer)
+        .split('/')
+        .map(|part| part.replace("~1", "/").replace("~0", "~"))
+        .collect::<Vec<_>>();
+    let Some((last, parents)) = parts.split_last() else {
+        return;
+    };
+    let mut parent = value;
+    for part in parents {
+        let Some(next) = (if let Ok(index) = part.parse::<usize>() {
+            parent.get_mut(index)
+        } else {
+            parent.get_mut(part.as_str())
+        }) else {
+            return;
+        };
+        parent = next;
+    }
+    if let Some(object) = parent.as_object_mut() {
+        object.remove(last);
+    } else if let (Ok(index), Some(array)) = (last.parse::<usize>(), parent.as_array_mut())
+        && index < array.len()
+    {
+        array.remove(index);
+    }
 }
 
 fn analytics_value_shape(value: Option<&Value>) -> (&'static str, String) {
@@ -355,10 +401,8 @@ fn quarantine_history_checkpoint(
     store: &RuntimeStore,
     key: &str,
     previous_raw: &str,
-    agent: &Value,
-    diagnostic: &str,
+    replacement: Value,
 ) -> Result<(), HistoryError> {
-    let replacement = initial_history_checkpoint(key, agent, diagnostic);
     store.analytics_transaction(|tx, _| {
         let current: Option<String> = tx
             .query_row(
@@ -373,7 +417,7 @@ fn quarantine_history_checkpoint(
         }
         tx.execute(
             "UPDATE analytics_history SET agent=?2,record=?3 WHERE id=?1",
-            rusqlite::params![key, agent["id"].as_str(), replacement.to_string()],
+            rusqlite::params![key, replacement["agent"].as_str(), replacement.to_string()],
         )
         .map_err(studio_runtime_store::StoreError::from)?;
         Ok(())
@@ -917,8 +961,12 @@ mod invalid_record_tests {
             "agent": "bad",
             "accountKey": "default",
             "threadId": "bad-thread",
-            "offset": 0,
-            "importedRecords": 0,
+            "path": "/profile/rollout.jsonl",
+            "filesystemIdentity": [12, 34],
+            "anchor": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "validated": true,
+            "offset": 4096,
+            "importedRecords": 32,
             "malformedLines": 0,
             "context": {"threadId": "bad-thread", "window": "private value"}
         });
@@ -955,6 +1003,16 @@ mod invalid_record_tests {
         assert!(diagnostic.contains("anyOf"));
         assert!(diagnostic.contains("value type string"));
         assert!(!diagnostic.contains("private value"));
+        assert_eq!(recovered["offset"], 4096);
+        assert_eq!(recovered["importedRecords"], 32);
+        assert_eq!(recovered["filesystemIdentity"], json!([12, 34]));
+        assert_eq!(recovered["path"], "/profile/rollout.jsonl");
+        assert_eq!(
+            recovered["anchor"],
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        );
+        assert!(recovered["context"].get("window").is_none());
+        assert_eq!(recovered["status"], "invalidRecord");
         let good_agent = json!({"id":"good","accountKey":"default","threadId":"good-thread"});
         let still_valid = read_history_checkpoint(&store, valid_key, &good_agent)
             .expect("continue importing valid row")

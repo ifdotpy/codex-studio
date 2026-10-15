@@ -127,9 +127,28 @@ pub fn recover_on_startup(store: &RuntimeStore) -> Result<usize, SchedulerError>
                 eprintln!("scheduler startup skipped malformed reservation row id={id}");
                 0
             }
+            Err(StoreError::InvalidSyncObjectField { scope, id, .. })
+                if scope == "runtime_agents" =>
+            {
+                eprintln!("scheduler startup skipped invalid-field reservation row id={id}");
+                0
+            }
             Err(error) => return Err(error),
         };
-        let submitted = SchedulerRepository::recover_submitted(transaction)?;
+        let submitted = match SchedulerRepository::recover_submitted(transaction) {
+            Ok(recovered) => recovered,
+            Err(StoreError::InvalidSyncObject { scope, id }) if scope == "runtime_agents" => {
+                eprintln!("scheduler startup skipped malformed submitted row id={id}");
+                0
+            }
+            Err(StoreError::InvalidSyncObjectField { scope, id, .. })
+                if scope == "runtime_agents" =>
+            {
+                eprintln!("scheduler startup skipped invalid-field submitted row id={id}");
+                0
+            }
+            Err(error) => return Err(error),
+        };
         clear_startup_agent_state(transaction, account_registry.as_ref())?;
         Ok(unsubmitted + submitted)
     })?)
@@ -172,6 +191,10 @@ fn clear_startup_agent_state(
         // Match Runtime.__init__: every local row is put after cleanup. Publish only
         // when this Rust pass changed a durable field.
         if in_flight_changed || removed_attempt {
+            if AgentRecord::from_value(agent.clone()).is_err() {
+                eprintln!("scheduler startup preserved malformed agent row id={id}");
+                continue;
+            }
             AgentRepository::put(transaction, &AgentRecord::from_value(agent.clone())?)?;
             crate::agents_create::publish_agent(transaction, &agent)?;
         }
@@ -749,5 +772,51 @@ mod terminal_policy_tests {
             Some(("interrupted", AgentStatus::Interrupted, None))
         );
         assert!(terminal_outcome(&json!({"status":"inProgress"}), None).is_none());
+    }
+}
+
+#[cfg(test)]
+mod invalid_record_recovery_tests {
+    use super::*;
+
+    #[test]
+    fn startup_recovery_skips_invalid_field_agent_rows_without_blocking_startup() {
+        let directory = tempfile::tempdir().expect("temporary state directory");
+        let store = RuntimeStore::open(Some(directory.path())).expect("runtime store opens");
+        store
+            .transaction(|tx| {
+                tx.execute(
+                    "INSERT INTO runtime_agents(id,record) VALUES('bad',?1)",
+                    [json!({
+                        "id":"bad", "rootId":17, "epoch":1, "status":"running",
+                        "autoWake":true, "inFlight":true,
+                        "startAttempt":{"id":"attempt","epoch":1,"submitted":true,"events":[]}
+                    })
+                    .to_string()],
+                )?;
+                tx.execute(
+                    "INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch,turn_id,error) \
+                     VALUES('reserved','bad','user','input','reserved',1,1,NULL,NULL)",
+                    [],
+                )?;
+                Ok(())
+            })
+            .expect("seed malformed reserved row");
+
+        let recovered = recover_on_startup(&store).expect("startup tolerates invalid field");
+
+        assert_eq!(recovered, 0);
+        let connection = store.read().expect("state reader opens");
+        let raw: String = connection
+            .query_row(
+                "SELECT record FROM runtime_agents WHERE id='bad'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("original malformed row remains available for repair");
+        let preserved = serde_json::from_str::<Value>(&raw).unwrap();
+        assert_eq!(preserved["rootId"], 17);
+        assert_eq!(preserved["inFlight"], true);
+        assert_eq!(preserved["startAttempt"]["submitted"], true);
     }
 }

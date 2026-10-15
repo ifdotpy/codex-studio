@@ -79,12 +79,74 @@ impl AgentRepository {
     }
 
     pub fn put(connection: &Connection, record: &AgentRecord) -> StoreResult<()> {
-        Table::<AgentRecord>::new(connection).put(record)
+        Table::<AgentRecord>::new(connection).put(record)?;
+        let has_receipts: bool = connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='runtime_operation_receipts')",
+            [],
+            |row| row.get(0),
+        )?;
+        if has_receipts {
+            connection.execute(
+                "DELETE FROM runtime_operation_receipts WHERE id=?1 AND signature=?2",
+                rusqlite::params![
+                    format!(
+                        "{}{}",
+                        crate::INVALID_AGENT_HOLD_RECEIPT_PREFIX,
+                        record.id.0
+                    ),
+                    crate::INVALID_AGENT_HOLD_RECEIPT_SIGNATURE
+                ],
+            )?;
+        }
+        Ok(())
     }
 }
 inventory::submit! {
     crate::repositories::SchemaRegistration {
         repository: "agents",
         requirements: &REQUIREMENTS,
+    }
+}
+
+#[cfg(test)]
+mod invalid_agent_repair_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn valid_agent_repair_clears_the_invalid_record_hold() {
+        let directory = tempfile::tempdir().expect("temporary runtime");
+        let store = crate::RuntimeStore::open(Some(directory.path())).expect("runtime opens");
+        let agent = AgentRecord::from_value(json!({
+            "id":"agent", "rootId":"agent", "epoch":1, "status":"idle"
+        }))
+        .expect("valid repair record");
+        store
+            .transaction(|tx| {
+                AgentRepository::put(tx, &agent)?;
+                tx.execute(
+                    "INSERT INTO runtime_operation_receipts(id,signature,result) VALUES (?1,?2,'{}')",
+                    rusqlite::params![
+                        format!("{}agent", crate::INVALID_AGENT_HOLD_RECEIPT_PREFIX),
+                        crate::INVALID_AGENT_HOLD_RECEIPT_SIGNATURE
+                    ],
+                )?;
+                Ok(())
+            })
+            .expect("seed agent and hold");
+
+        store
+            .transaction(|tx| AgentRepository::put(tx, &agent))
+            .expect("typed repair saves and clears hold atomically");
+
+        let connection = store.read().expect("reader opens");
+        let remaining: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM runtime_operation_receipts WHERE id=?1",
+                [format!("{}agent", crate::INVALID_AGENT_HOLD_RECEIPT_PREFIX)],
+                |row| row.get(0),
+            )
+            .expect("hold receipt count reads");
+        assert_eq!(remaining, 0);
     }
 }

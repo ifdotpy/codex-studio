@@ -891,7 +891,7 @@ async fn invalid_agent_record_is_held_without_stopping_other_agent_dispatch() {
     reached
         .await
         .expect("worker reaches barrier after malformed-agent wake");
-    let (stored_record, diagnostic, json_extract_safe) = state
+    let (stored_record, diagnostic, json_extract_safe, projected) = state
         .bridge
         .run({
             let bad_id = bad_id.clone();
@@ -916,7 +916,12 @@ async fn invalid_agent_record_is_held_without_stopping_other_agent_dispatch() {
                     [format!("{}{bad_id}", studio_runtime_store::INVALID_AGENT_HOLD_RECEIPT_PREFIX)],
                     |row| row.get(0),
                 )?;
-                Ok((raw, diagnostic, json_extract_safe))
+                let projected: String = db.query_row(
+                    "SELECT payload FROM sync_entities WHERE collection='agent' AND id=?1",
+                    [&bad_id],
+                    |row| row.get(0),
+                )?;
+                Ok((raw, diagnostic, json_extract_safe, projected))
             }
         })
         .await
@@ -924,6 +929,14 @@ async fn invalid_agent_record_is_held_without_stopping_other_agent_dispatch() {
     assert!(
         json_extract_safe,
         "held receipt remains safe for JSON SQL consumers"
+    );
+    let projected: Value = serde_json::from_str(&projected).expect("held agent projection JSON");
+    assert_eq!(projected["value"]["status"], "failed");
+    assert_eq!(projected["value"]["autoWake"], false);
+    assert!(
+        projected["value"]["error"]
+            .as_str()
+            .is_some_and(|error| error.contains("runtime_agents/invalid-neighbor"))
     );
     assert_eq!(
         stored_record, original_record,
@@ -1010,6 +1023,63 @@ async fn scenario_interrupt_before_start_reply_uses_observed_turn_and_revokes_ep
     peer.accepted(&start).await;
     assert!(state.record().await["epoch"].as_i64().unwrap() > state.epoch);
     worker.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn unresolved_receipt_for_held_invalid_agent_does_not_block_recovery() {
+    let state = State::new().await;
+    let agent_id = state.agent.clone();
+    let (recovered, unresolved) = state
+        .bridge
+        .run({
+            let agent_id = agent_id.clone();
+            move |store| {
+                store.transaction(|tx| {
+                    tx.execute(
+                        "UPDATE runtime_agents SET record=json_set(record,'$.rootId',json('23')) WHERE id=?1",
+                        [&agent_id],
+                    )?;
+                    Ok(())
+                })?;
+                store::hold_invalid_agent_record(store, &agent_id, "runtime_agents/rootId invalid")?;
+                store.transaction(|tx| {
+                    let context = json!({
+                        "intent": {
+                            "agent_id": agent_id, "epoch": 1, "attempt_id": "uncertain-start",
+                            "account_key": "default", "provider": "codex",
+                            "thread_id": "fake-thread-0", "cwd": null, "model": null,
+                            "events": [], "radio_authorized": false
+                        },
+                        "method": "thread/start", "operation": "uncertain-start"
+                    });
+                    let result = json!({"context":context,"request":{}});
+                    tx.execute(
+                        "INSERT INTO runtime_operation_receipts(id,signature,result) VALUES (?1,'submitted',?2)",
+                        rusqlite::params![
+                            "account-worker:account:default:uncertain-start:submitted",
+                            result.to_string()
+                        ],
+                    )?;
+                    Ok(())
+                })?;
+
+                let recovered = store::recover(store, "default", Generation(1))?;
+                let unresolved: i64 = store.read()?.query_row(
+                    "SELECT COUNT(*) FROM runtime_operation_receipts \
+                     WHERE id='account-worker:account:default:uncertain-start:submitted'",
+                    [],
+                    |row| row.get(0),
+                )?;
+                Ok((recovered.len(), unresolved))
+            }
+        })
+        .await
+        .expect("held invalid agent does not make recovery loop");
+    assert_eq!(recovered, 0);
+    assert_eq!(
+        unresolved, 1,
+        "unknown submitted receipt remains unresolved"
+    );
 }
 async fn scenario_shutdown_full_queue_and_silent_provider_is_bounded() {
     let state = State::new().await;

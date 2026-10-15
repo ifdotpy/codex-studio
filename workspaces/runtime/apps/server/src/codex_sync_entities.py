@@ -305,34 +305,70 @@ def _contract_extra_paths(error: ValidationError) -> tuple[tuple[object, ...], .
     # Only those union-branch labels are metadata; the remaining path is the
     # field path to remove from the selected DTO alternative.
     branch_names: set[str] = set()
-    pending = list(_DTO_MODELS.values()) + [UiPreferencesDto]
-    visited: set[type[BaseModel]] = set()
+
+    def contract_model(value: Any) -> bool:
+        return isinstance(value, type) and (
+            issubclass(value, BaseModel) or hasattr(value, "__pydantic_config__")
+        )
+
+    pending: list[Any] = list(_DTO_MODELS.values()) + [UiPreferencesDto]
+    visited: set[Any] = set()
     while pending:
-        model = pending.pop()
-        if model in visited:
+        node = pending.pop()
+        if node in visited:
             continue
-        visited.add(model)
-        for field in model.model_fields.values():
-            annotation = field.annotation
-            arguments = get_args(annotation)
-            if len(arguments) > 1:
-                branch_names.update(
-                    argument.__name__
-                    for argument in arguments
-                    if isinstance(argument, type)
-                    and issubclass(argument, BaseModel)
-                )
-            pending.extend(
-                argument
+        visited.add(node)
+        if contract_model(node):
+            if issubclass(node, BaseModel):
+                pending.extend(field.annotation for field in node.model_fields.values())
+            else:
+                pending.extend(getattr(node, "__annotations__", {}).values())
+            continue
+        arguments = get_args(node)
+        if len(arguments) > 1:
+            branch_names.update(
+                argument.__name__
                 for argument in arguments
-                if isinstance(argument, type)
-                and issubclass(argument, BaseModel)
+                if contract_model(argument)
             )
+        pending.extend(
+            argument
+            for argument in arguments
+            if get_args(argument) or contract_model(argument)
+        )
+    errors = error.errors()
+    union_groups: dict[tuple[object, ...], dict[str, list[dict[str, Any]]]] = {}
+    for item in errors:
+        location = tuple(item.get("loc", ()))
+        for index, part in enumerate(location):
+            if isinstance(part, str) and part in branch_names:
+                prefix = location[:index]
+                union_groups.setdefault(prefix, {}).setdefault(part, []).append(item)
+
+    selected_branches: dict[tuple[object, ...], str] = {}
+    for prefix, branches in union_groups.items():
+        selected_branches[prefix] = min(
+            branches,
+            key=lambda branch: (
+                sum(item.get("type") != "extra_forbidden" for item in branches[branch]),
+                len(branches[branch]),
+                branch,
+            ),
+        )
+
     paths: set[tuple[object, ...]] = set()
-    for item in error.errors():
+    for item in errors:
         if item.get("type") != "extra_forbidden":
             continue
         location = tuple(item.get("loc", ()))
+        selected = True
+        for index, part in enumerate(location):
+            if isinstance(part, str) and part in branch_names:
+                if selected_branches.get(location[:index]) != part:
+                    selected = False
+                    break
+        if not selected:
+            continue
         location = tuple(part for part in location if part not in branch_names)
         if location:
             paths.add(location)

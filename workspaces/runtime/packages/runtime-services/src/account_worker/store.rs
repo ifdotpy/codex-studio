@@ -143,6 +143,24 @@ pub(super) fn recover(
             if Method::from_wire(&context.method).is_none() {
                 return Err(invalid(account));
             }
+            let held: bool = tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM runtime_operation_receipts \
+                 WHERE id=?1 AND signature=?2)",
+                params![
+                    format!(
+                        "{}{}",
+                        studio_runtime_store::INVALID_AGENT_HOLD_RECEIPT_PREFIX,
+                        context.intent.agent_id
+                    ),
+                    studio_runtime_store::INVALID_AGENT_HOLD_RECEIPT_SIGNATURE
+                ],
+                |row| row.get(0),
+            )?;
+            if held {
+                // Keep the unresolved submission and its uncertainty intact,
+                // but do not repeatedly decode the quarantined agent row.
+                continue;
+            }
             let written = receipt(tx, &context.operation, "written")?;
             let request = decode(written.as_ref().unwrap_or(&value["request"]))?;
             if context.method()? == Method::TurnStart {
@@ -420,18 +438,23 @@ pub(super) fn hold_invalid_agent_record(
     agent_id: &str,
     diagnostic: &str,
 ) -> Result<(), WorkerError> {
+    let server_id = store.local_server_id()?;
     store.transaction(|tx| {
-        let exists = tx.query_row(
-            "SELECT EXISTS(SELECT 1 FROM runtime_agents WHERE id=?1)",
-            [agent_id],
-            |row| row.get::<_, bool>(0),
-        )?;
-        if !exists {
+        let raw: Option<String> = tx
+            .query_row(
+                "SELECT record FROM runtime_agents WHERE id=?1",
+                [agent_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let Some(raw) = raw else {
             return Ok(());
-        }
-        // Keep the original runtime_agents bytes untouched. Persist the hold
-        // and safe, value-free diagnostic in the existing receipt table so a
-        // later repair or Python reader can still recover the user's record.
+        };
+        let parsed: Value =
+            serde_json::from_str(&raw).map_err(|_| StoreError::InvalidSyncObject {
+                scope: "runtime_agents".into(),
+                id: agent_id.into(),
+            })?;
         tx.execute(
             "INSERT INTO runtime_operation_receipts(id,signature,result) VALUES (?1,?2,?3) \
              ON CONFLICT(id) DO UPDATE SET signature=excluded.signature,result=excluded.result",
@@ -444,6 +467,30 @@ pub(super) fn hold_invalid_agent_record(
                 serde_json::to_string(&serde_json::json!({"held": true, "diagnostic": diagnostic}))
                     .map_err(StoreError::from)?
             ],
+        )?;
+
+        // Publish a minimal safe agent view so the renderer can show that this
+        // row is held while the malformed persisted bytes remain untouched.
+        let public = json!({
+            "id": agent_id,
+            "rootId": agent_id,
+            "epoch": parsed.get("epoch").and_then(Value::as_i64).unwrap_or_default(),
+            "status": "failed",
+            "error": diagnostic,
+            "nativeFailureHold": true,
+            "autoWake": false
+        });
+        let context =
+            crate::sync_entity_context::agent_view_context(tx, &public, server_id.as_deref())?;
+        let projection =
+            crate::sync_views::agent_entity_view(&public, &context).ok_or_else(|| {
+                StoreError::InvalidSyncObject {
+                    scope: "runtime_agents".into(),
+                    id: agent_id.into(),
+                }
+            })?;
+        studio_runtime_store::SyncDocumentsRepository::put_entity(
+            tx, "agent", agent_id, projection, false,
         )?;
         Ok(())
     })?;

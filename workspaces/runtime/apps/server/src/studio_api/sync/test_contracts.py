@@ -93,6 +93,32 @@ class TransferRuntimeFixture:
 
 
 class SyncEntityContractTests(unittest.TestCase):
+    def test_nested_union_sanitizer_keeps_fields_from_the_matching_notice_variant(self) -> None:
+        payload = json.dumps({
+            "collection": "workspace",
+            "id": "workspace",
+            "value": {
+                "nativeNotices": [{
+                    "id": "notice",
+                    "accountKey": "default",
+                    "connectionId": "connection-a",
+                    "message": "Native notice",
+                    "details": {"reason": "restart"},
+                    "at": 1.0,
+                    "unmodeled": "private extra",
+                }]
+            },
+        })
+
+        response, deleted, removed, _ = codex_sync_entities.response_entity_payload_fail_open(payload)
+        projected = json.loads(response)["value"]["nativeNotices"][0]
+
+        self.assertFalse(deleted)
+        self.assertEqual(removed, ("nativeNotices.unmodeled",))
+        self.assertEqual(projected["connectionId"], "connection-a")
+        self.assertEqual(projected["details"], {"reason": "restart"})
+        self.assertNotIn("unmodeled", projected)
+
     def test_closed_typed_dicts_reject_unmodeled_projection_fields(self) -> None:
         from pydantic import TypeAdapter
         from codex_records import NativeNoticeRecord, NativeSafetyBufferingRecord
