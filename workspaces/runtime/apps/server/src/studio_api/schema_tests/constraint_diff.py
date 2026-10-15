@@ -654,14 +654,14 @@ def constraint_changes(
                     for branch in old
                     if isinstance(branch, str)
                 ]
-                new_branch = {
+                replacement_branch = {
                     name: value
                     for name, value in new_schema.items()
                     if not name.startswith("@")
                 }
                 constraint_direction = union_direction(
                     [_canonical(branch) for branch in old_branches],
-                    [_canonical(new_branch)],
+                    [_canonical(replacement_branch)],
                 )
             if (
                 key in {"@anyOf", "@nullableBranch"}

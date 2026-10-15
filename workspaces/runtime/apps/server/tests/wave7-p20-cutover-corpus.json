@@ -1,57 +1,10 @@
 {
-  "blockers_ordered_by_operations_unblocked": [
-    {
-      "closures": [
-        {
-          "closes": "origin/feat/wave7-p03-message-ingress",
-          "kind": "accepted_branch",
-          "owner": "P03"
-        },
-        {
-          "closes": "Wave 7 P12 Completion/continuations",
-          "kind": "open_task",
-          "owner": "P12"
-        }
-      ],
-      "dependency": "capacity-retry/store",
-      "operation_count": 1,
-      "operations": ["POST /api/messages"]
-    },
-    {
-      "closures": [
-        {
-          "closes": "R1",
-          "kind": "external_or_scope",
-          "owner": "R1"
-        }
-      ],
-      "dependency": "cross-server/remote-events",
-      "operation_count": 1,
-      "operations": ["POST /api/messages"]
-    },
-    {
-      "closures": [
-        {
-          "closes": "R1",
-          "kind": "external_or_scope",
-          "owner": "R1"
-        },
-        {
-          "closes": "origin/feat/wave7-p03-message-ingress",
-          "kind": "accepted_branch",
-          "owner": "P03"
-        }
-      ],
-      "dependency": "federation-driver/rooms",
-      "operation_count": 1,
-      "operations": ["POST /api/messages"]
-    }
-  ],
+  "blockers_ordered_by_operations_unblocked": [],
   "counts": {
-    "implemented": 159,
-    "named_dependencies": 3,
+    "implemented": 160,
+    "named_dependencies": 0,
     "not_registered": 0,
-    "partial": 1,
+    "partial": 0,
     "total": 160
   },
   "lifecycle_dependencies": {
@@ -603,13 +556,9 @@
       "status": "implemented"
     },
     {
-      "dependencies": [
-        "capacity-retry/store",
-        "cross-server/remote-events",
-        "federation-driver/rooms"
-      ],
+      "dependencies": [],
       "operation": "POST /api/messages",
-      "status": "partial"
+      "status": "implemented"
     },
     {
       "dependencies": [],
