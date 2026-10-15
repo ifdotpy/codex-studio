@@ -1054,6 +1054,8 @@ async fn composed_delete_stages_voice_sessions_before_rows_are_removed_and_stops
         calls: Mutex<Vec<String>>,
         dispatched_after_commit: Mutex<Vec<bool>>,
         called: Notify,
+        completed: std::sync::atomic::AtomicUsize,
+        completion_changed: Notify,
     }
     impl VoiceRequestPort for RecordingVoice {
         fn prepare<'a>(
@@ -1096,7 +1098,11 @@ async fn composed_delete_stages_voice_sessions_before_rows_are_removed_and_stops
             if is_released_held_session {
                 self.called.notify_one();
             }
+            let completed = &self.completed;
+            let completion_changed = &self.completion_changed;
             Box::pin(async move {
+                completed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                completion_changed.notify_one();
                 VoiceRequestReceipt {
                     certainty: VoiceWriteCertainty::NotSent,
                 }
@@ -1179,6 +1185,8 @@ async fn composed_delete_stages_voice_sessions_before_rows_are_removed_and_stops
         calls: Mutex::new(Vec::new()),
         dispatched_after_commit: Mutex::new(Vec::new()),
         called: Notify::new(),
+        completed: std::sync::atomic::AtomicUsize::new(0),
+        completion_changed: Notify::new(),
     });
     let voice_port: Arc<dyn VoiceRequestPort> = voice.clone();
     let ports = ProductionLifecyclePorts::new(
@@ -1245,6 +1253,14 @@ async fn composed_delete_stages_voice_sessions_before_rows_are_removed_and_stops
     tokio::time::timeout(std::time::Duration::from_secs(2), voice.called.notified())
         .await
         .expect("post-commit voice stop dispatched");
+    while voice.completed.load(std::sync::atomic::Ordering::SeqCst) < 16 {
+        voice.completion_changed.notified().await;
+    }
+    assert_eq!(
+        voice.completed.load(std::sync::atomic::Ordering::SeqCst),
+        16,
+        "every dispatched voice request future completed"
+    );
 
     let calls = voice.calls.lock().expect("calls lock");
     assert_eq!(calls.len(), 16);
