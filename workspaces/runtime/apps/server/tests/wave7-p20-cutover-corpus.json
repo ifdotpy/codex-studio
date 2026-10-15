@@ -47,22 +47,6 @@
     {
       "closures": [
         {
-          "closes": "R1",
-          "kind": "external_or_scope",
-          "owner": "R1"
-        }
-      ],
-      "dependency": "federation/trusted-origin-observation",
-      "operation_count": 3,
-      "operations": [
-        "POST /api/federation/v1/message",
-        "POST /api/federation/v1/pull",
-        "POST /api/federation/v1/status"
-      ]
-    },
-    {
-      "closures": [
-        {
           "closes": "origin/feat/wave7-p18-account-catalog",
           "kind": "accepted_branch",
           "owner": "P18"
@@ -183,18 +167,6 @@
       "dependency": "event-driver/child-stop-notification",
       "operation_count": 2,
       "operations": ["POST /api/conversation/delete", "POST /api/stop"]
-    },
-    {
-      "closures": [
-        {
-          "closes": "R1",
-          "kind": "external_or_scope",
-          "owner": "R1"
-        }
-      ],
-      "dependency": "federation-credentials/private-key",
-      "operation_count": 2,
-      "operations": ["POST /api/federation", "POST /api/federation/v1/pair"]
     },
     {
       "closures": [
@@ -458,6 +430,18 @@
     {
       "closures": [
         {
+          "closes": "R1",
+          "kind": "external_or_scope",
+          "owner": "R1"
+        }
+      ],
+      "dependency": "cross-server/remote-events",
+      "operation_count": 1,
+      "operations": ["POST /api/messages"]
+    },
+    {
+      "closures": [
+        {
           "closes": "Wave 7 P12 Completion/continuations",
           "kind": "open_task",
           "owner": "P12"
@@ -466,30 +450,6 @@
       "dependency": "event-driver/queue-mutations",
       "operation_count": 1,
       "operations": ["POST /api/capacity-retry"]
-    },
-    {
-      "closures": [
-        {
-          "closes": "R1",
-          "kind": "external_or_scope",
-          "owner": "R1"
-        }
-      ],
-      "dependency": "federation-credentials/invitation",
-      "operation_count": 1,
-      "operations": ["POST /api/federation"]
-    },
-    {
-      "closures": [
-        {
-          "closes": "R1",
-          "kind": "external_or_scope",
-          "owner": "R1"
-        }
-      ],
-      "dependency": "federation-credentials/key-generation",
-      "operation_count": 1,
-      "operations": ["POST /api/federation"]
     },
     {
       "closures": [
@@ -567,18 +527,6 @@
       "dependency": "remote-transport/owner-lookup",
       "operation_count": 1,
       "operations": ["POST /api/multi-server"]
-    },
-    {
-      "closures": [
-        {
-          "closes": "R1",
-          "kind": "external_or_scope",
-          "owner": "R1"
-        }
-      ],
-      "dependency": "remote-transport/signed-federation-exchange",
-      "operation_count": 1,
-      "operations": ["POST /api/federation"]
     },
     {
       "closures": [
@@ -690,10 +638,10 @@
     }
   ],
   "counts": {
-    "implemented": 129,
-    "named_dependencies": 48,
+    "implemented": 133,
+    "named_dependencies": 44,
     "not_registered": 0,
-    "partial": 31,
+    "partial": 27,
     "total": 160
   },
   "lifecycle_dependencies": {
@@ -1222,35 +1170,29 @@
       "status": "partial"
     },
     {
-      "dependencies": [
-        "federation-credentials/invitation",
-        "federation-credentials/key-generation",
-        "federation-credentials/private-key",
-        "remote-transport/signed-federation-exchange",
-        "remote-transport/tailscale-identity"
-      ],
+      "dependencies": ["remote-transport/tailscale-identity"],
       "operation": "POST /api/federation",
       "status": "partial"
     },
     {
-      "dependencies": ["federation/trusted-origin-observation"],
+      "dependencies": [],
       "operation": "POST /api/federation/v1/message",
-      "status": "partial"
+      "status": "implemented"
     },
     {
-      "dependencies": ["federation-credentials/private-key"],
+      "dependencies": [],
       "operation": "POST /api/federation/v1/pair",
-      "status": "partial"
+      "status": "implemented"
     },
     {
-      "dependencies": ["federation/trusted-origin-observation"],
+      "dependencies": [],
       "operation": "POST /api/federation/v1/pull",
-      "status": "partial"
+      "status": "implemented"
     },
     {
-      "dependencies": ["federation/trusted-origin-observation"],
+      "dependencies": [],
       "operation": "POST /api/federation/v1/status",
-      "status": "partial"
+      "status": "implemented"
     },
     {
       "dependencies": [],
@@ -1292,6 +1234,7 @@
     {
       "dependencies": [
         "capacity-retry/store",
+        "cross-server/remote-events",
         "federation-driver/rooms",
         "payload-store/uploads",
         "workspace-policy/message-admission"

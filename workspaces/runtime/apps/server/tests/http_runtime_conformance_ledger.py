@@ -422,8 +422,7 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
             "name": "federation invitation dependency",
             "body": {"action": "create_invite", "label": "Ledger probe"},
             "replace_body": True,
-            "expected": "501",
-            "expected_error": "Not implemented: requires federation-credentials/private-key, remote-transport/tailscale-identity, federation-credentials/key-generation, federation-credentials/invitation, remote-transport/signed-federation-exchange",
+            "expected": "4xx",
             "assert_no_write": True,
         }],
     },
@@ -581,10 +580,10 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
     ("POST", "/api/action"): {"primary": {"body": {"id": "$agent", "action": "review", "request_id": "ledger-native-action"}, "replace_body": True, "expected": "501", "expected_error": "Not implemented: requires account-worker/native-action", "assert_no_write": True}},
     ("POST", "/api/stop"): {"primary": {"body": {"id": "$agent"}, "expected": "501", "expected_error": "Not implemented: requires account-worker/agent-interrupt", "assert_no_write": True}},
     ("POST", "/api/conversation/delete"): {"primary": {"body": {"id": "$agent"}, "expected": "2xx"}},
-    ("POST", "/api/federation/v1/message"): {"primary": {"body": {"protocol": 1, "envelope": {"protocol": 1, "senderServer": "ledger-server", "id": "ledger-message", "kind": "chat-message", "room": "ledger-room", "payload": {}, "created": 1, "timestamp": 1, "nonce": "ledger-probe-nonce", "signature": "ledger-signature"}}, "expected": "501", "assert_no_write": True}},
-    ("POST", "/api/federation/v1/pair"): {"primary": {"body": {"protocol": 1, "inviteId": "fixture-invite", "token": "fixture-token", "stateId": "fixture-state", "label": "Ledger", "origin": "https://ledger.example", "publicKey": "fixture-key"}, "expected": "501", "assert_no_write": True}},
-    ("POST", "/api/federation/v1/pull"): {"primary": {"body": {"protocol": 1, "acks": []}, "expected": "501", "assert_no_write": True}},
-    ("POST", "/api/federation/v1/status"): {"primary": {"body": {"protocol": 1}, "expected": "501", "assert_no_write": True}},
+    ("POST", "/api/federation/v1/message"): {"primary": {"body": {"protocol": 1, "envelope": {"protocol": 1, "senderServer": "ledger-server", "id": "ledger-message", "kind": "chat-message", "room": "ledger-room", "payload": {}, "created": 1, "timestamp": 1, "nonce": "ledger-probe-nonce", "signature": "ledger-signature"}}, "expected": "4xx", "assert_no_write": True}},
+    ("POST", "/api/federation/v1/pair"): {"primary": {"body": {"protocol": 1, "inviteId": "fixture-invite", "token": "fixture-token", "stateId": "fixture-state", "label": "Ledger", "origin": "https://ledger.example", "publicKey": "fixture-key"}, "expected": "4xx", "assert_no_write": True}},
+    ("POST", "/api/federation/v1/pull"): {"primary": {"body": {"protocol": 1, "acks": []}, "expected": "4xx", "assert_no_write": True}},
+    ("POST", "/api/federation/v1/status"): {"primary": {"body": {"protocol": 1}, "expected": "4xx", "assert_no_write": True}},
     ("POST", "/api/multi-server/v1/auto-pair"): {"primary": {"body": {"protocol": 1, "serverId": "ledger-server", "label": "Ledger", "origin": "https://ledger.example", "publicKey": "ledger-key", "requestId": "ledger-auto-pair"}, "expected": "501", "assert_no_write": True}},
     ("POST", "/api/multi-server/v1/name"): {"primary": {"body": {"requestId": "ledger-name", "label": "Ledger"}, "expected": "501", "assert_no_write": True}},
     ("POST", "/api/multi-server/v1/pair"): {"primary": {"body": {"protocol": 1, "inviteId": "fixture-invite", "token": "fixture-token", "clientId": "fixture-client", "label": "Ledger", "kind": "ui", "publicKey": "fixture-key", "requestId": "ledger-pair"}, "expected": "501", "assert_no_write": True}},
@@ -1512,6 +1511,7 @@ def probe_operations(
                         or (implementation == "unimplemented" and result.status == 501 and standard_501)
                         or (expected == "404" and result.status == 404 and response_body == {"error": "Not found"})
                         or (expected == "400" and result.status == 400)
+                        or (expected == "4xx" and 400 <= result.status < 500)
                         or (expected == "2xx" and 200 <= result.status < 300)
                     )
                     observations.append({

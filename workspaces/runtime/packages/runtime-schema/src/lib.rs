@@ -470,6 +470,7 @@ fn compile_schemas() -> SchemaResult<CompiledSchemas> {
         "MessageRequest",
         "MonitorRecordResponse",
         "PlanView",
+        "PairRequest",
         "ProfileRecord",
         "PullRequest",
         "PullResult",

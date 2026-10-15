@@ -586,6 +586,21 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
                             .duration_since(std::time::UNIX_EPOCH)
                             .map(|value| value.as_secs_f64())
                             .unwrap_or_default();
+                        if let Ok(pairings) =
+                            studio_runtime_services::federation_delivery::pending_pairings(&store)
+                        {
+                            for id in pairings {
+                                let mut transport = studio_runtime_services::federation_delivery::HttpsFederationTransport;
+                                if let Err(error) = studio_runtime_services::federation_delivery::pair_peer(
+                                    &store, &id, now, &mut transport, &cancelled,
+                                ) {
+                                    eprintln!("federation pairing failed: {error}");
+                                }
+                                if cancelled.load(std::sync::atomic::Ordering::Acquire) {
+                                    break;
+                                }
+                            }
+                        }
                         for peer in snapshot["peers"].as_array().into_iter().flatten() {
                             if peer["status"] != "approved" { continue; }
                             let Some(id) = peer["id"].as_str() else { continue };

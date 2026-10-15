@@ -44,28 +44,41 @@ impl<'a> PassBudget<'a> {
 pub trait FederationTransport {
     fn exchange(
         &mut self,
+        store: &RuntimeStore,
+        server_id: &str,
+        public_key: &str,
         url: &str,
         headers: &[(String, String)],
         body: &[u8],
         budget: &PassBudget<'_>,
-    ) -> transport::RemoteTransportResult<Vec<u8>>;
+    ) -> transport::RemoteTransportResult<FederationTransportResponse>;
 }
+
+pub struct FederationTransportResponse {
+    pub body: Vec<u8>,
+    pub link_advert: Option<String>,
+}
+
 pub struct HttpsFederationTransport;
 impl FederationTransport for HttpsFederationTransport {
     fn exchange(
         &mut self,
+        store: &RuntimeStore,
+        server_id: &str,
+        public_key: &str,
         url: &str,
         headers: &[(String, String)],
         body: &[u8],
         budget: &PassBudget<'_>,
-    ) -> transport::RemoteTransportResult<Vec<u8>> {
+    ) -> transport::RemoteTransportResult<FederationTransportResponse> {
         let headers = headers
             .iter()
             .map(|(k, v)| (k.as_str(), v.as_str()))
             .collect::<Vec<_>>();
-        // Blocking HTTPS observes cancellation before/after I/O; its in-flight
-        // cancellation latency is bounded by the remaining absolute pass budget.
-        let response = transport::SignedHttpClient::exchange(
+        let response = transport::exchange_paired_request(
+            store,
+            server_id,
+            public_key,
             "POST",
             url,
             &headers,
@@ -77,10 +90,136 @@ impl FederationTransport for HttpsFederationTransport {
         if response.status != 200 {
             return Err(transport::RemoteTransportError::InvalidResponse);
         }
-        Ok(response.body)
+        let link_advert = response
+            .headers
+            .iter()
+            .find(|(name, _)| name.eq_ignore_ascii_case("x-studio-link"))
+            .map(|(_, value)| value.clone());
+        Ok(FederationTransportResponse { body: response.body, link_advert })
     }
 }
+
+pub fn pending_pairings(store: &RuntimeStore) -> std::result::Result<Vec<String>, StoreError> {
+    store.read_transaction(|connection| {
+        let mut statement = connection.prepare_cached(
+            "SELECT id FROM runtime_federation_peers WHERE json_extract(record,'$.localApproved')=1 AND json_extract(record,'$.remoteApproved')=0 AND json_extract(record,'$.status')!='revoked' AND json_extract(record,'$.inviteId') IS NOT NULL ORDER BY id",
+        )?;
+        let rows = statement.query_map([], |row| row.get(0))?;
+        rows.collect::<std::result::Result<Vec<String>, _>>()
+            .map_err(StoreError::from)
+    })
+}
+
+/// Complete a durable outgoing invitation pairing. The peer row already holds
+/// the invitation ID/token before any network call, so retries keep its identity.
+pub fn pair_peer(
+    store: &RuntimeStore,
+    peer_id: &str,
+    now: f64,
+    transport: &mut impl FederationTransport,
+    cancelled: &AtomicBool,
+) -> Result<Value> {
+    let identity = transport::load_federation_identity(store)?;
+    let record = store.read_transaction(|connection| {
+        let raw: Option<String> = connection
+            .query_row(
+                "SELECT record FROM runtime_federation_peers WHERE id=?1",
+                [peer_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        raw.map(|raw| serde_json::from_str::<Value>(&raw))
+            .transpose()
+            .map_err(|_| StoreError::SchemaMismatch("invalid federation peer record".to_owned()))?
+            .ok_or_else(|| StoreError::SchemaMismatch("unknown federation peer".to_owned()))
+    })?;
+    if record["status"] == "revoked"
+        || record["localApproved"] != true
+        || record["remoteApproved"] == true
+    {
+        return Err(Error::Forbidden("peer is not awaiting local pairing"));
+    }
+    let peer: core::Peer =
+        serde_json::from_value(record.clone()).map_err(|_| Error::Invalid("peer"))?;
+    let invite_id = record["inviteId"]
+        .as_str()
+        .ok_or(Error::Invalid("peer.inviteId"))?;
+    let invite_token = record["inviteToken"]
+        .as_str()
+        .ok_or(Error::Invalid("peer.inviteToken"))?;
+    let local_origin = record["localOrigin"]
+        .as_str()
+        .ok_or(Error::Invalid("peer.localOrigin"))?;
+    let lead_name = record["localLeadName"].as_str().unwrap_or("Lead");
+    let body = json!({
+        "protocol": PROTOCOL,
+        "inviteId": invite_id,
+        "token": invite_token,
+        "stateId": identity.id(),
+        "label": identity.label(),
+        "leadName": lead_name,
+        "origin": local_origin,
+        "publicKey": identity.public_key_pem(),
+        "tailscaleUser": Value::Null,
+        "tailscaleStatus": "unavailable",
+    });
+    core::validate("PairRequest", &body, "body")?;
+    let deadline = Instant::now() + PASS_TIMEOUT;
+    let budget = PassBudget::new(deadline, cancelled);
+    let response = request(
+        store,
+        transport,
+        &peer,
+        &identity,
+        "/api/federation/v1/pair",
+        body,
+        now as i64,
+        &budget,
+    )?;
+    let whois_status = response["whoisStatus"]
+        .as_str()
+        .filter(|status| matches!(*status, "verified" | "missing" | "unavailable"))
+        .ok_or(Error::Invalid("pair.response.whoisStatus"))?;
+    if response["accepted"] != true || response["stateId"] != peer_id {
+        return Err(Error::Invalid("pair.response"));
+    }
+    store.transaction_with(|tx| {
+        let latest = Repo::record(tx, Table::Peer, peer_id, peer_id)?
+            .ok_or(Error::Conflict("pairing intent disappeared"))?;
+        if latest["inviteId"] != invite_id
+            || latest["inviteToken"] != invite_token
+            || latest["publicKey"] != record["publicKey"]
+        {
+            return Err(Error::Conflict("pairing intent changed"));
+        }
+        let mut updated = latest;
+        updated["remoteApproved"] = response
+            .get("remoteApproved")
+            .cloned()
+            .unwrap_or(Value::Bool(false));
+        updated["whoisStatus"] = json!(whois_status);
+        updated["whoisUser"] = record
+            .get("whoisUser")
+            .cloned()
+            .unwrap_or(Value::Null);
+        if whois_status == "missing" {
+            updated["localApproved"] = Value::Bool(false);
+            updated["lastError"] = json!("Tailscale identity was unavailable; explicitly accept this warning to finish pairing");
+        } else {
+            updated["lastError"] = Value::Null;
+        }
+        updated["status"] = json!(if updated["localApproved"] == true && updated["remoteApproved"] == true {
+            "approved"
+        } else {
+            "pending"
+        });
+        updated["updated"] = json!(now);
+        Repo::put(tx, Table::Peer, peer_id, peer_id, &updated)?;
+        Ok::<_, Error>(updated)
+    })
+}
 fn request(
+    store: &RuntimeStore,
     transport: &mut impl FederationTransport,
     peer: &core::Peer,
     identity: &RemoteIdentity,
@@ -101,17 +240,27 @@ fn request(
         now,
     )?;
     budget.remaining()?;
-    let response = transport.exchange(&url, &headers, &body, budget)?;
+    let response = transport.exchange(
+        store,
+        &peer.state_id,
+        &peer.public_key,
+        &url,
+        &headers,
+        &body,
+        budget,
+    )?;
     budget.remaining()?;
-    if response.len() > transport::MAX_REQUEST_BYTES {
+    if response.body.len() > transport::MAX_REQUEST_BYTES {
         return Err(Error::Invalid("response.size"));
     }
-    Ok(transport::verify_federation_response(
-        &response,
+    let verified = transport::verify_federation_response(
+        &response.body,
         &peer.public_key,
         Some(&peer.state_id),
         now,
-    )?)
+    )?;
+    transport::learn_paired_request_link(store, &peer.state_id, response.link_advert.as_deref());
+    Ok(verified)
 }
 
 /// One bounded pass for an approved peer; the runtime timer owns scheduling/cancellation
@@ -176,6 +325,7 @@ pub(crate) fn pump_peer_until(
             Ok(())
         })?;
         let result = request(
+            store,
             transport,
             &peer,
             &identity,
@@ -251,6 +401,7 @@ pub(crate) fn pump_peer_until(
         )
     })?;
     let response = request(
+        store,
         transport,
         &peer,
         &identity,
@@ -277,6 +428,36 @@ pub fn send_message(
         effects::check_identity(tx, &identity)?;
         send_message_in_transaction(tx, sender, room_id, text, key, now)
     })
+}
+
+/// The Python `/api/messages` path sends a user message as the local lead.
+pub fn user_message(
+    store: &RuntimeStore,
+    room_id: &str,
+    text: &str,
+    key: &str,
+    now: f64,
+) -> Result<Value> {
+    let sender = store.read_transaction(|connection| {
+        let room = Repo::record(connection, Table::Room, room_id, "")?.ok_or(
+            StoreError::SchemaMismatch("shared room is unavailable".to_owned()),
+        )?;
+        let sender = room
+            .get("localParticipants")
+            .and_then(Value::as_array)
+            .and_then(|participants| {
+                participants.iter().find_map(|person| {
+                    (person.get("role").and_then(Value::as_str) == Some("lead"))
+                        .then(|| person.get("id").and_then(Value::as_str))
+                        .flatten()
+                })
+            })
+            .ok_or(StoreError::SchemaMismatch(
+                "the local lead is not a room participant".to_owned(),
+            ))?;
+        Ok::<_, StoreError>(sender.to_owned())
+    })?;
+    send_message(store, &sender, room_id, text, key, now)
 }
 
 /// Queue a federation room message in the caller's owning transaction. This is
