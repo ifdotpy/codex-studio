@@ -537,7 +537,17 @@ mod tests {
         assert_eq!(second_json["outcome"], "reset");
         let calls = session.calls.lock().unwrap();
         assert_eq!(calls.len(), 2);
-        assert_eq!(calls[0], calls[1]);
+        let charge_key = calls[0].1["idempotencyKey"].as_str().unwrap();
+        assert_eq!(calls[0].0, format!("limit-reset:{charge_key}:1"));
+        assert_eq!(calls[1].0, format!("limit-reset:{charge_key}:2"));
+        assert_ne!(
+            calls[0].0, calls[1].0,
+            "transport attempts have distinct broker identities"
+        );
+        assert_eq!(
+            calls[0].1, calls[1].1,
+            "both attempts retain the exact provider charge body"
+        );
         assert_eq!(calls[0].1["creditId"], "credit-A");
         assert_eq!(*session.reads.lock().unwrap(), 4);
     }
