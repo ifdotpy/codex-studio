@@ -751,10 +751,17 @@
           "title": "Connectionid"
         },
         "epoch": {
-          "maximum": 9007199254740991,
-          "minimum": 0,
-          "title": "Epoch",
-          "type": "integer"
+          "anyOf": [
+            {
+              "maximum": 9007199254740991,
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Epoch"
         },
         "id": {
           "maxLength": 4096,
