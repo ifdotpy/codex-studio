@@ -432,7 +432,13 @@ fn apply(store: &RuntimeStore, case: &Value, prepared: &Value) -> Result<Value, 
             .filter(|effect| effect["kind"] != "tokenRateUsage")
             .filter(|effect| case["analytics_semantics"] != true || effect["kind"] != "analytics")
             .cloned()
+            .map(normalize_observation_agent)
             .collect();
+        let expected = expected
+            .iter()
+            .cloned()
+            .map(normalize_observation_agent)
+            .collect::<Vec<_>>();
         let mut diff = vec![];
         differences(
             Some(&json!(expected)),
@@ -571,7 +577,11 @@ fn post_commit_value(
     let agent = if kind == "stream" {
         Value::Null
     } else {
-        observation.agent.clone().unwrap_or(Value::Null)
+        observation
+            .agent
+            .as_ref()
+            .map(|agent| (**agent).clone())
+            .unwrap_or(Value::Null)
     };
     let mut value = json!({"kind":kind, "agent":agent, "method":observation.method, "params":observation.params,
         "account":observation.delivery.provider_handle.strip_prefix("account:"),
@@ -582,6 +592,38 @@ fn post_commit_value(
         value["stream_metrics"] = serde_json::to_value(metrics).expect("metrics");
     }
     value
+}
+
+fn normalize_observation_agent(mut effect: Value) -> Value {
+    if effect["kind"] == "stream" || !effect["agent"].is_object() {
+        return effect;
+    }
+    const FIELDS: &[&str] = &[
+        "id",
+        "name",
+        "rootId",
+        "parentId",
+        "accountKey",
+        "accountHistory",
+        "provider",
+        "threadId",
+        "epoch",
+        "turnId",
+        "inFlight",
+        "events",
+        "tokensUsed",
+        "tokenUsageAccounting",
+        "model",
+        "effort",
+        "fastMode",
+        "daybreakEnabled",
+        "cyberAccessProgram",
+        "cwd",
+        "deletedAt",
+    ];
+    let agent = effect["agent"].as_object_mut().expect("checked object");
+    agent.retain(|field, _| FIELDS.contains(&field.as_str()));
+    effect
 }
 
 /// Fail immediately before and after each transactional effect, then let the

@@ -25,8 +25,8 @@ mod questions;
 mod snapshot;
 pub use effects::{
     NotificationDependency, NotificationEffects, NotificationHourMetrics, NotificationObservation,
-    NotificationPostCommit, NotificationPublicationBatch, NotificationStreamMetrics, SharedJson,
-    RecoveredNotificationObservation, UnavailableNotificationEffects,
+    NotificationPostCommit, NotificationPublicationBatch, NotificationStreamMetrics,
+    RecoveredNotificationObservation, SharedJson, UnavailableNotificationEffects,
 };
 
 #[path = "notification_dispatch/stream.rs"]

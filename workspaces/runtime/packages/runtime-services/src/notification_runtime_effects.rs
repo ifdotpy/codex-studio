@@ -397,13 +397,24 @@ mod tests {
             })
             .collect::<Vec<_>>();
         assert_eq!(observations.len(), 2);
-        assert!(observations[0].params.shares_storage_with(&observations[1].params));
+        assert!(
+            observations[0]
+                .params
+                .shares_storage_with(&observations[1].params)
+        );
         let analytics_agent = observations[0].agent.as_ref().expect("agent projection");
         assert_eq!(analytics_agent["id"], "agent");
-        assert!(!analytics_agent.as_object().unwrap().contains_key("unrelatedTranscript"));
-        assert!(serde_json::to_value(&effects[0])
-            .expect("journal serialization")
-            .pointer("/observation/params/threadId")
-            .is_some());
+        assert!(
+            !analytics_agent
+                .as_object()
+                .unwrap()
+                .contains_key("unrelatedTranscript")
+        );
+        assert!(
+            serde_json::to_value(&effects[0])
+                .expect("journal serialization")
+                .pointer("/Analytics/observation/params/threadId")
+                .is_some()
+        );
     }
 }

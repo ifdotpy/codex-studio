@@ -2,9 +2,9 @@
 use super::{DispatchOutcome, NotificationDispatchError, ProviderDeliveryIdentity};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use studio_runtime_store::Transaction;
 use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
+use studio_runtime_store::Transaction;
 
 /// JSON payload shared by immutable publication observations. Serialization is
 /// transparent so durable journal records retain the same shape.
@@ -30,6 +30,9 @@ impl SharedJson {
             "epoch",
             "turnId",
             "inFlight",
+            "events",
+            "tokensUsed",
+            "tokenUsageAccounting",
             "model",
             "effort",
             "fastMode",
