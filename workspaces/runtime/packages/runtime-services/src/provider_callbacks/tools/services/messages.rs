@@ -273,6 +273,16 @@ fn send_as_actor(
     room["userHidden"] = json!(false);
     records::validate("runtime_rooms", &room_id, room.clone())?;
     tx.execute("INSERT INTO runtime_rooms(id,record) VALUES(?1,?2) ON CONFLICT(id) DO UPDATE SET record=excluded.record",params![room_id,room.to_string()])?;
+    // Python projects the room immediately after writing runtime_rooms, before
+    // it enqueues recipient events. Keep the shared global sync sequence in
+    // that order; the room is projected again below after the chat message
+    // supplies its new lastMessage.
+    let directory = crate::sync_entity_context::RoomDirectory::load(tx)?;
+    if let Some(view) =
+        crate::sync_views::room_entity_view(&room, &directory.for_room(tx, &room, true)?)
+    {
+        SyncDocumentsRepository::put_entity(tx, "room", &room_id, view, false)?;
+    }
     let mut deliveries = serde_json::Map::new();
     for recipient in recipients {
         let recipient_id = text(&recipient, "id")?;
