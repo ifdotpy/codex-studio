@@ -626,6 +626,7 @@ mod diagnostics_http_tests {
         let store = Arc::new(
             RuntimeStore::open(Some(directory.path())).expect("open isolated runtime store"),
         );
+        let store_lifetime_guard = Arc::clone(&store);
         let proof_connection = store.read().expect("read-only write proof");
         let version_before: i64 = proof_connection
             .query_row("PRAGMA data_version", [], |row| row.get(0))
@@ -691,6 +692,7 @@ mod diagnostics_http_tests {
             state_directory_snapshot(directory.path()),
             "diagnostics refusal does not change state directory names, sizes, or mtimes"
         );
+        drop(store_lifetime_guard);
     }
 
     fn diagnostics_request() -> Request<Body> {
