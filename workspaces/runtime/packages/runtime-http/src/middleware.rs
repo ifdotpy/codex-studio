@@ -509,6 +509,24 @@ mod response_safety_tests {
         assert!(!output.contains("fixture-token"));
     }
 
+    #[test]
+    fn writes_one_handler_panic_cause_line() {
+        let mut output = Vec::new();
+        super::write_internal_error_log(
+            &mut output,
+            "GET /api/session",
+            Some("request-456"),
+            crate::error::InternalErrorKind::HandlerPanic,
+        )
+        .expect("diagnostic log writes");
+        let output = String::from_utf8(output).expect("log is UTF-8");
+        assert_eq!(output.lines().count(), 1);
+        assert_eq!(
+            output.trim_end(),
+            "ERROR internal HTTP error route=GET /api/session request_id=request-456 class=handler_panic"
+        );
+    }
+
     fn state() -> (HttpState, tempfile::TempDir) {
         let directory = tempfile::tempdir().expect("isolated state directory");
         let mut state = HttpState::new(

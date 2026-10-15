@@ -23,7 +23,7 @@ use std::fs::File;
 use std::future::Future;
 use std::io::Read;
 use std::net::SocketAddr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -48,7 +48,7 @@ const EXIT_ON_STDIN_CLOSE_ENV: &str = "CODEX_AGENTS_SERVER_EXIT_ON_STDIN_CLOSE";
 
 fn main() {
     std::panic::set_hook(Box::new(|panic| {
-        eprintln!("{}", panic_exit_log(&panic.to_string()));
+        eprintln!("{}", panic_observed_log(panic.location()));
     }));
     let runtime = match tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -146,8 +146,17 @@ fn error_exit_log(reason: &str) -> String {
     format!("runtime server exiting after error: {reason}")
 }
 
-fn panic_exit_log(reason: &str) -> String {
-    format!("runtime server exiting after panic: {reason}")
+fn panic_observed_log(location: Option<&std::panic::Location<'_>>) -> String {
+    let location = location
+        .map(|location| {
+            let file = Path::new(location.file())
+                .file_name()
+                .and_then(|file| file.to_str())
+                .unwrap_or("unknown source");
+            format!(" at {file}:{}", location.line())
+        })
+        .unwrap_or_default();
+    format!("runtime server observed panic{location} (payload redacted)")
 }
 
 async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::Error>> {
@@ -1119,7 +1128,7 @@ mod exit_logging_tests {
     use tokio::sync::{Notify, watch};
 
     use super::{
-        ContinuationWait, ShutdownReason, error_exit_log, panic_exit_log,
+        ContinuationWait, ShutdownReason, error_exit_log, panic_observed_log,
         runtime_initialization_exit_log, shutdown_exit_log, shutdown_join, wait_for_continuation,
     };
 
@@ -1140,7 +1149,7 @@ mod exit_logging_tests {
     }
 
     #[test]
-    fn startup_runtime_and_panic_exit_paths_log_their_reason() {
+    fn startup_and_error_exit_paths_log_their_reason() {
         assert_eq!(
             runtime_initialization_exit_log("resource limit reached"),
             "runtime server exiting because Tokio runtime initialization failed: resource limit reached"
@@ -1149,10 +1158,15 @@ mod exit_logging_tests {
             error_exit_log("state lock is busy"),
             "runtime server exiting after error: state lock is busy"
         );
-        assert_eq!(
-            panic_exit_log("projection invariant failed"),
-            "runtime server exiting after panic: projection invariant failed"
-        );
+    }
+
+    #[test]
+    fn panic_log_redacts_payload_and_keeps_source_location() {
+        let log = panic_observed_log(Some(std::panic::Location::caller()));
+        assert!(log.starts_with("runtime server observed panic at "));
+        assert!(log.ends_with(" (payload redacted)"));
+        assert!(!log.contains("projection invariant failed"));
+        assert!(!log.contains("exiting"));
     }
 
     #[tokio::test(start_paused = true)]
