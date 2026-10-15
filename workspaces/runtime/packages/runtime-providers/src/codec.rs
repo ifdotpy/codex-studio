@@ -498,20 +498,7 @@ fn raw_object_entry(
 /// Decode a complete supervisor stdout journal record without losing its
 /// cursor when its payload is not valid protocol JSON.
 pub fn decode_journal_entry(cursor: u64, generation: u64, bytes: Vec<u8>) -> DecodedJournalEntry {
-    let mut line = bytes.as_slice();
-    if let Some(without_newline) = line.strip_suffix(b"\n") {
-        line = without_newline;
-        if let Some(without_carriage_return) = line.strip_suffix(b"\r") {
-            line = without_carriage_return;
-        }
-    }
-    let decoded = if line.len() > MAX_FRAME_BYTES {
-        Err(CodecError::FrameTooLarge {
-            limit: MAX_FRAME_BYTES,
-        })
-    } else {
-        decode_frame(line)
-    };
+    let decoded = decode_journal_frame(&bytes);
     let payload = match decoded {
         Ok(frame) => DecodedJournalPayload::Frame(frame),
         Err(error) => DecodedJournalPayload::RawStdout { bytes, error },
@@ -520,6 +507,44 @@ pub fn decode_journal_entry(cursor: u64, generation: u64, bytes: Vec<u8>) -> Dec
         cursor,
         generation,
         payload,
+    }
+}
+
+/// Decode a complete stdout record by borrowing its buffer. Malformed bytes are
+/// copied into the returned journal entry; valid frame bytes are not retained.
+pub fn decode_journal_entry_borrowed(
+    cursor: u64,
+    generation: u64,
+    bytes: &[u8],
+) -> DecodedJournalEntry {
+    let payload = match decode_journal_frame(bytes) {
+        Ok(frame) => DecodedJournalPayload::Frame(frame),
+        Err(error) => DecodedJournalPayload::RawStdout {
+            bytes: bytes.to_vec(),
+            error,
+        },
+    };
+    DecodedJournalEntry {
+        cursor,
+        generation,
+        payload,
+    }
+}
+
+fn decode_journal_frame(bytes: &[u8]) -> Result<Frame, CodecError> {
+    let mut line = bytes;
+    if let Some(without_newline) = line.strip_suffix(b"\n") {
+        line = without_newline;
+        if let Some(without_carriage_return) = line.strip_suffix(b"\r") {
+            line = without_carriage_return;
+        }
+    }
+    if line.len() > MAX_FRAME_BYTES {
+        Err(CodecError::FrameTooLarge {
+            limit: MAX_FRAME_BYTES,
+        })
+    } else {
+        decode_frame(line)
     }
 }
 

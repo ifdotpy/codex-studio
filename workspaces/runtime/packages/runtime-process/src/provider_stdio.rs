@@ -4,7 +4,7 @@
 use crate::{child_priority::ChildPriority, operational_log::OperationalLog, provider_seam::*, *};
 use process_wrap::tokio::{CommandWrap, ProcessGroup};
 use std::{io, process::Stdio};
-use studio_runtime_providers::{DecodedJournalPayload, decode_journal_entry};
+use studio_runtime_providers::{DecodedJournalPayload, decode_journal_entry_borrowed};
 use tokio::{
     io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader},
     process::Command,
@@ -299,31 +299,13 @@ async fn read_entries(
     let mut reader = BufReader::new(stdout);
     let mut total = 0_usize;
     let mut cursor = 0_u64;
+    let mut line = Vec::new();
     loop {
-        let mut line = Vec::new();
-        loop {
-            let available = reader.fill_buf().await.map_err(process_error)?;
-            if available.is_empty() {
-                return Err(SupervisorError::ConnectionLost.into());
-            }
-            let count = available
-                .iter()
-                .position(|byte| *byte == b'\n')
-                .map_or(available.len(), |end| end + 1);
-            total = total
-                .checked_add(count)
-                .ok_or(AdapterError::InvalidConfiguration)?;
-            if line.len() + count > frame_limit || total > output_limit {
-                return Err(AdapterError::InvalidConfiguration);
-            }
-            line.extend_from_slice(&available[..count]);
-            reader.consume(count);
-            if line.last() == Some(&b'\n') {
-                break;
-            }
+        if !read_stdout_line(&mut reader, &mut line, &mut total, frame_limit, output_limit).await? {
+            return Err(SupervisorError::ConnectionLost.into());
         }
         cursor += 1;
-        let decoded = decode_journal_entry(cursor, generation.0, line);
+        let decoded = decode_journal_entry_borrowed(cursor, generation.0, &line);
         let payload = match decoded.payload {
             DecodedJournalPayload::Frame(frame) => JournalPayload::Frame(frame),
             DecodedJournalPayload::RawStdout { bytes, error } => {
@@ -342,6 +324,37 @@ async fn read_entries(
     }
 }
 
+async fn read_stdout_line<R: AsyncRead + Unpin>(
+    reader: &mut BufReader<R>,
+    line: &mut Vec<u8>,
+    total: &mut usize,
+    frame_limit: usize,
+    output_limit: usize,
+) -> Result<bool, AdapterError> {
+    line.clear();
+    loop {
+        let available = reader.fill_buf().await.map_err(process_error)?;
+        if available.is_empty() {
+            return Ok(false);
+        }
+        let count = available
+            .iter()
+            .position(|byte| *byte == b'\n')
+            .map_or(available.len(), |end| end + 1);
+        *total = total
+            .checked_add(count)
+            .ok_or(AdapterError::InvalidConfiguration)?;
+        if line.len() + count > frame_limit || *total > output_limit {
+            return Err(AdapterError::InvalidConfiguration);
+        }
+        line.extend_from_slice(&available[..count]);
+        reader.consume(count);
+        if line.last() == Some(&b'\n') {
+            return Ok(true);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #[tokio::test(start_paused = true)]
@@ -355,6 +368,26 @@ mod tests {
     }
 
     use super::*;
+    #[tokio::test]
+    async fn stdout_line_buffer_reuses_its_allocation_between_frames() {
+        let mut reader = BufReader::new(&b"first\nsecond\n"[..]);
+        let mut line = Vec::new();
+        let mut total = 0;
+
+        assert!(read_stdout_line(&mut reader, &mut line, &mut total, 16, 32)
+            .await
+            .expect("first bounded frame"));
+        let allocation = (line.as_ptr(), line.capacity());
+        assert_eq!(line, b"first\n");
+
+        assert!(read_stdout_line(&mut reader, &mut line, &mut total, 16, 32)
+            .await
+            .expect("second bounded frame"));
+        assert_eq!(line, b"second\n");
+        assert_eq!((line.as_ptr(), line.capacity()), allocation);
+        assert_eq!(total, b"first\nsecond\n".len());
+    }
+
     #[tokio::test(start_paused = true)]
     async fn raw_unknown_output_counts_toward_the_total_limit() {
         let (entries, mut journal) = mpsc::channel(LANE_CAPACITY);

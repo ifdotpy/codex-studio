@@ -183,6 +183,19 @@ fn journal_decode_keeps_cursor_generation_and_malformed_stdout_bytes() {
 }
 
 #[test]
+fn borrowed_journal_decode_matches_owned_valid_and_malformed_records() {
+    for bytes in [
+        b"{\"method\":\"turn/started\"}\r\n".as_slice(),
+        b"provider diagnostic, not JSON\n".as_slice(),
+    ] {
+        assert_eq!(
+            decode_journal_entry_borrowed(17, 4, bytes),
+            decode_journal_entry(17, 4, bytes.to_vec()),
+        );
+    }
+}
+
+#[test]
 fn journal_value_decoder_matches_the_wire_decoder_for_valid_and_malformed_values() {
     let valid = json!({
         "method": "turn/started",
