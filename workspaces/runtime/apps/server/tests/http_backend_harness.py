@@ -501,10 +501,10 @@ def strip_owned_json_fields(value: object, column: str, owned: frozenset[str]) -
 def assert_read_succeeds_unchanged_under_writer(test_case, backend, path, headers) -> None:
     """Prove an HTTP GET completes without taking SQLite's writer.
 
-    A direct same-thread check cannot work here: the route is reached over HTTP
-    and would block the test thread if it attempted BEGIN IMMEDIATE. The bounded
-    future wait is only a failure guard; response equality and database snapshots
-    are the success assertions.
+    The generous future timeout is only a failure guard. Response equality and
+    database snapshots are checked while the writer remains held, so a read
+    that regresses to waiting on that writer fails rather than passing after
+    the lock is released.
     """
     baseline = backend.request("GET", path, headers=headers)
     test_case.assertEqual(baseline.status, 200, baseline.body[:1000])
@@ -517,7 +517,7 @@ def assert_read_succeeds_unchanged_under_writer(test_case, backend, path, header
     pool = ThreadPoolExecutor(max_workers=1)
     future = pool.submit(backend.request, "GET", path, headers=headers)
     try:
-        response = future.result(timeout=3)
+        response = future.result(timeout=HTTP_WAIT_GUARD_SECONDS)
         test_case.assertEqual(response.status, 200, response.body[:1000])
         test_case.assertEqual(response.body, baseline.body)
         test_case.assertEqual(no_write_snapshot(backend.state), before)
