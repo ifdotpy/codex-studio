@@ -11,8 +11,9 @@ use super::manifest::{Dependency, OperationStatus, RouteGroup, get, post};
 use crate::error::ApiError;
 use crate::router::HttpState;
 
-const MESSAGE_SEND_DEPENDENCIES: [Dependency; 4] = [
+const MESSAGE_SEND_DEPENDENCIES: [Dependency; 5] = [
     Dependency::new("capacity-retry/store"),
+    Dependency::new("cross-server/remote-events"),
     Dependency::new("federation-driver/rooms"),
     Dependency::new("payload-store/uploads"),
     Dependency::new("workspace-policy/message-admission"),
@@ -137,6 +138,43 @@ pub(super) async fn post_message(
 ) -> Result<Json<crate::generated::StudioApiWorkModelsMessageReceipt>, ApiError> {
     let store = state.store.ok_or_else(ApiError::internal)?;
     let wake = state.event_wake;
+    let federated_room = store
+        .read_transaction(|connection| {
+            connection
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM runtime_federation_rooms WHERE id=?1)",
+                    [&body.room],
+                    |row| row.get::<_, bool>(0),
+                )
+                .map_err(studio_runtime_store::StoreError::from)
+        })
+        .map_err(|_| ApiError::internal())?;
+    if federated_room {
+        let room = body.room.clone();
+        let id = body.id.clone();
+        let text = body.text.clone();
+        let receipt = studio_runtime_process::blocking_pool::spawn_blocking(
+            "runtime-http/routes/messages/federation",
+            move || {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_err(|_| ApiError::internal())?
+                    .as_secs_f64();
+                let mut result = studio_runtime_services::federation_delivery::user_message(
+                    &store, &room, &text, &id, now,
+                )
+                .map_err(federation_error)?;
+                result["id"] = Value::String(id);
+                super::generated_json::<crate::generated::StudioApiWorkModelsMessageReceipt>(
+                    result,
+                )
+            },
+        )
+        .await
+        .map_err(|_| ApiError::internal())??;
+        wake.notify_one();
+        return Ok(Json(receipt));
+    }
     let orchestration_driver = state.orchestration_driver.clone();
     let assets = body
         .assets
@@ -353,6 +391,7 @@ inventory::submit! {
         routes: Some(routes),
         dependencies: &[
             "capacity-retry/store",
+            "cross-server/remote-events",
             "event-driver/message-send",
             "federation-driver/rooms",
             "payload-store/uploads",

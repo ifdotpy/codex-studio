@@ -10,6 +10,7 @@ from codex_layout import REPOSITORY_ROOT
 from codex_federation_limits import (
     FEDERATION_BODY_LIMIT,
     FEDERATION_PATHS,
+    INVITATION_TTL_SECONDS,
     MAX_BATCH_BYTES,
     MAX_BATCH_ITEMS,
     MAX_MESSAGE_CODEPOINTS,
@@ -18,6 +19,7 @@ from codex_federation_limits import (
     MAX_ROOM_RATE,
     MAX_ROOM_MEMBERS,
     PROTOCOL_VERSION,
+    TAILSCALE_COMMAND_TIMEOUT_SECONDS,
 )
 
 
@@ -33,6 +35,8 @@ RUST_EXPECTED = (
     f"pub const MAX_QUEUE_ROWS: u64 = {MAX_QUEUE_ROWS};\n"
     f"pub const MAX_QUEUE_BYTES: u64 = {MAX_QUEUE_BYTES};\n"
     f"pub const MAX_ROOM_RATE: u64 = {MAX_ROOM_RATE};\n"
+    f"pub const INVITATION_TTL_SECONDS: u64 = {INVITATION_TTL_SECONDS};\n"
+    f"pub const TAILSCALE_COMMAND_TIMEOUT_SECONDS: u64 = {TAILSCALE_COMMAND_TIMEOUT_SECONDS};\n"
     f"pub const PROTOCOL_VERSION: u64 = {PROTOCOL_VERSION};\n"
     f"pub const FEDERATION_BODY_LIMIT: usize = {FEDERATION_BODY_LIMIT};\n"
     f"pub const FEDERATION_PATHS: [&str; {len(FEDERATION_PATHS)}] = [\n"

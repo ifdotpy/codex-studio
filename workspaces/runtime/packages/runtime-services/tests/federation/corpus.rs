@@ -373,6 +373,119 @@ fn authenticated_consumer(corpus: &Corpus) {
     .expect("fixture operation");
     assert_eq!(receipt["accepted"], true);
 }
+
+#[test]
+fn federation_pair_consumes_one_invitation_and_replays_by_peer_identity() {
+    let corpus = Corpus::new();
+    let (_, receiver) = corpus.store("pair-receiver", false);
+    let (_, signer) = corpus.store("pair-signer", true);
+    let identity = transport::load_federation_identity(&signer).expect("fixture identity");
+    let peer_id = corpus.peer();
+    let invite_id = "44444444-4444-4444-8444-444444444444";
+    let token = "fake-peer-invitation-token";
+    receiver
+        .transaction(|tx| {
+            tx.execute(
+                "INSERT INTO runtime_federation_invites(id,record) VALUES(?1,?2)",
+                params![invite_id, json!({"id":invite_id,"tokenHash":studio_runtime_store::sha256_hex(token.as_bytes()),"created":corpus.now(),"expires":corpus.now() as i64 + 900,"status":"open","expectedUser":"peer@example.test"}).to_string()],
+            )?;
+            Ok(())
+        })
+        .expect("insert disposable invitation");
+    let body = json!({
+        "protocol": 1,
+        "inviteId": invite_id,
+        "token": token,
+        "stateId": peer_id,
+        "label": "Remote fixture",
+        "leadName": "Remote lead",
+        "origin": "https://peer.fixture.ts.net",
+        "publicKey": identity.public_key_pem(),
+        "tailscaleUser": "peer@example.test",
+        "tailscaleStatus": "verified",
+    });
+    let raw = transport::canonical_json(&body)
+        .expect("canonical pair body")
+        .into_bytes();
+    let request = |nonce: &str| {
+        let signature = identity.sign(&transport::federation_signing_bytes(
+            "POST",
+            "/api/federation/v1/pair",
+            corpus.now() as i64,
+            nonce,
+            &raw,
+        ));
+        effects::handle(
+            &receiver,
+            effects::SignedRequest {
+                action: effects::FederationAction::Pair,
+                peer_id,
+                timestamp: corpus.now() as i64,
+                nonce,
+                signature: &signature,
+                raw: &raw,
+            },
+            effects::OriginObservation::observed(Some("peer@example.test".into())),
+            corpus.now(),
+        )
+    };
+    let first = request("pair-nonce-initial-12345").expect("pair request");
+    let local = transport::load_federation_identity(&receiver).expect("local signing identity");
+    let receipt = transport::verify_federation_response(
+        &serde_json::to_vec(&first).expect("signed response"),
+        local.public_key_pem(),
+        Some(local.id()),
+        corpus.now() as i64,
+    )
+    .expect("verify pair response");
+    assert_eq!(receipt["accepted"], true);
+    assert_eq!(receipt["whoisStatus"], "verified");
+    assert_eq!(
+        rows(&receiver, "runtime_federation_peers")[0]["stateId"],
+        peer_id
+    );
+    assert_eq!(
+        rows(&receiver, "runtime_federation_invites")[0]["status"],
+        "used"
+    );
+    request("pair-nonce-retry-67890").expect("same invitation and peer are replay safe");
+    assert!(request("pair-nonce-initial-12345").is_err());
+}
+
+#[test]
+fn federation_user_message_uses_the_local_lead_and_stable_idempotency_key() {
+    let corpus = Corpus::new();
+    let (_, store) = corpus.store("user-message", false);
+    let first = delivery::user_message(
+        &store,
+        corpus.room(),
+        "user message",
+        "stable-user-message-key",
+        corpus.now(),
+    )
+    .expect("federated user message");
+    let replay = delivery::user_message(
+        &store,
+        corpus.room(),
+        "user message",
+        "stable-user-message-key",
+        corpus.now() + 1.0,
+    )
+    .expect("idempotent federated user message");
+    assert_eq!(first, replay);
+    assert_eq!(rows(&store, "runtime_federation_outbox").len(), 1);
+    assert!(
+        delivery::user_message(
+            &store,
+            corpus.room(),
+            "changed text",
+            "stable-user-message-key",
+            corpus.now(),
+        )
+        .is_err()
+    );
+}
+
 fn malformed_records(corpus: &Corpus) {
     for (index, value) in [Value::Null, json!([]), json!({}), json!({"enabled":"true"})]
         .into_iter()

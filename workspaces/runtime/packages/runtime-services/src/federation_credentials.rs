@@ -21,7 +21,9 @@ use std::{fs, io::Write, path::Path, sync::Mutex};
 use studio_runtime_store::{FederationCredentialsRepository as Journal, RuntimeStore, StoreError};
 use thiserror::Error;
 
-use crate::remote_transport::{self, RemoteTransportError, StoredMultiServerIdentity};
+use crate::remote_transport::{
+    self, RemoteIdentity, RemoteTransportError, StoredMultiServerIdentity,
+};
 
 #[derive(Debug, Error)]
 pub enum CredentialError {
@@ -48,6 +50,60 @@ pub struct Credentials {
 }
 
 impl Credentials {
+    /// Create Python-compatible federation signing keys in the existing identity row.
+    /// Key material is generated before the transaction; an insert race keeps the
+    /// first committed identity and never replaces it.
+    pub fn ensure_federation_identity(
+        store: &RuntimeStore,
+        label: &str,
+        lead_name: &str,
+        created: f64,
+    ) -> Result<RemoteIdentity, CredentialError> {
+        validate_federation_label(label)?;
+        let exists = store.read_transaction(|connection| {
+            connection
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM runtime_federation_identity WHERE id='local')",
+                    [],
+                    |row| row.get::<_, bool>(0),
+                )
+                .map_err(StoreError::from)
+        })?;
+        if exists {
+            return remote_transport::load_federation_identity(store)
+                .map_err(CredentialError::Identity);
+        }
+
+        let generated = generate()?;
+        let state_id = uuid::Uuid::new_v4().to_string();
+        let record = json!({
+            "stateId": state_id,
+            "privateKey": generated.private_key,
+            "publicKey": generated.public_key,
+            "label": label,
+            "leadName": lead_name,
+            "created": created,
+        });
+        store.transaction_with(|tx| -> Result<(), CredentialError> {
+            let exists: bool = tx
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM runtime_federation_identity WHERE id='local')",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(StoreError::from)?;
+            if !exists {
+                tx.execute(
+                    "INSERT INTO runtime_federation_identity(id,record) VALUES('local',?1)",
+                    [record.to_string()],
+                )
+                .map_err(StoreError::from)?;
+            }
+            Ok(())
+        })?;
+        remote_transport::load_federation_identity(store).map_err(CredentialError::Identity)
+    }
+
     pub fn identity(
         &self,
         store: &RuntimeStore,
@@ -193,6 +249,13 @@ fn validate_stored_name(label: &str) -> Result<(), CredentialError> {
     } else {
         Err(CredentialError::InvalidJournal)
     }
+}
+
+fn validate_federation_label(label: &str) -> Result<(), CredentialError> {
+    if label.trim().is_empty() || label.trim().chars().count() > 80 {
+        return Err(CredentialError::Storage);
+    }
+    Ok(())
 }
 
 fn supported_platform() -> Result<(), CredentialError> {
