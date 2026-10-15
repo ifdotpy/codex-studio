@@ -346,12 +346,9 @@ async fn start(
     State(state): State<HttpState>,
     ApiJson(body): ApiJson<crate::generated::VoiceStartRequest>,
 ) -> Result<Json<crate::generated::VoiceSessionResponse>, ApiError> {
-    let provider = state
-        .voice_request_port
-        .clone()
-        .ok_or_else(voice_provider_unavailable)?;
+    let provider = state.voice_request_port.clone();
     let store = state.store.ok_or_else(ApiError::internal)?;
-    let result = voice::provider::start(
+    let result = voice::provider::start_admitted(
         store,
         provider,
         body.agent,

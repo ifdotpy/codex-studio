@@ -496,6 +496,7 @@ class VoiceHTTPContract(TimedHTTPContractTest, unittest.TestCase):
                 "UPDATE voice_records SET payload='not-json' WHERE id='python-user-record'"
             )
         self.backend.start()
+
         self.backend.ready_samples.append(self.backend.ready_seconds or 0)
         # Startup recovery is allowed to expire unrelated requests and
         # normalize scheduler state, as Python Runtime.__init__ does. The
@@ -514,6 +515,42 @@ class VoiceHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             )
         self.backend.start()
         self.backend.ready_samples.append(self.backend.ready_seconds or 0)
+
+    def test_z_voice_start_returns_the_committed_session_and_replays_it(self):
+        session_id = "voice-start-async-http-contract"
+        offer = "v=0\r\n"
+        response = self.request("/api/voice/start", {
+            "agent": self.lead_id,
+            "session_id": session_id,
+            "sdp": offer,
+        })
+        self.assertEqual(response.status, 200, response.body[:1000])
+        self.assertEqual(response.json()["session_id"], session_id)
+        self.assertEqual(response.json()["state"], "connecting")
+        with sqlite3.connect(self.backend.state / "canvas.sqlite3") as connection:
+            row = connection.execute(
+                "SELECT state,sdp FROM voice_sessions WHERE id=? AND agent=?",
+                (session_id, self.lead_id),
+            ).fetchone()
+            count = connection.execute(
+                "SELECT COUNT(*) FROM voice_sessions WHERE id=?", (session_id,),
+            ).fetchone()[0]
+        self.assertIsNotNone(row, "the HTTP success follows a durable session insert")
+        self.assertEqual(row[1], offer)
+        self.assertEqual(count, 1)
+
+        replay = self.request("/api/voice/start", {
+            "agent": self.lead_id,
+            "session_id": session_id,
+            "sdp": offer,
+        })
+        self.assertEqual(replay.status, 200, replay.body[:1000])
+        self.assertEqual(replay.json()["session_id"], session_id)
+        with sqlite3.connect(self.backend.state / "canvas.sqlite3") as connection:
+            count = connection.execute(
+                "SELECT COUNT(*) FROM voice_sessions WHERE id=?", (session_id,),
+            ).fetchone()[0]
+        self.assertEqual(count, 1, "replay returns the existing session without another insert")
 
 
 if __name__ == "__main__":

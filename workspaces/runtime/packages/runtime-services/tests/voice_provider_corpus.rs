@@ -930,6 +930,30 @@ impl CallbackReplyPort for NoopCallbackReplyPort {
     }
 }
 
+#[derive(Default)]
+struct LiveCallbackReplyPort(AtomicUsize);
+
+impl CallbackReplyPort for LiveCallbackReplyPort {
+    fn has_live_session(
+        &self,
+        _: &studio_runtime_services::provider_callbacks::CallbackContext,
+    ) -> bool {
+        true
+    }
+
+    fn deliver(
+        &self,
+        reply: &studio_runtime_services::provider_callbacks::Reply,
+        _deadline: Duration,
+    ) -> Result<ReplyReceipt, CallbackError> {
+        self.0.fetch_add(1, Ordering::SeqCst);
+        Ok(ReplyReceipt {
+            identity: reply.identity.clone(),
+            outcome: ReplyOutcome::Written,
+        })
+    }
+}
+
 #[tokio::test]
 async fn account_session_voice_adapter_preserves_scope_identity_and_unknown_once() {
     let (_root, store) = seeded_store();
@@ -1115,7 +1139,7 @@ async fn account_session_voice_approval_uses_the_shared_callback_lane() {
         .expect("seed callback request and live actor");
 
     let store = Arc::new(store);
-    let reply_port = Arc::new(NoopCallbackReplyPort::default());
+    let reply_port = Arc::new(LiveCallbackReplyPort::default());
     let callbacks = Arc::new(
         studio_runtime_services::callback_runtime::CallbackRuntime::new(
             Arc::clone(&store),
@@ -1367,10 +1391,12 @@ async fn real_python_start_speech_end_rows_match_rust_with_rpc_boundary_stub() {
         Ok(())
     }).expect("seed Rust speech row");
     let store = Arc::new(store);
-    let provider = Arc::new(ReceiptProvider {
+    let provider = Arc::new(SignaledReceiptProvider {
         certainty: VoiceWriteCertainty::Written,
+        requested: tokio::sync::Notify::new(),
         calls: Mutex::new(Vec::new()),
     });
+    let requested = provider.requested.notified();
     voice::provider::start(
         store.clone(),
         provider.clone(),
@@ -1381,6 +1407,8 @@ async fn real_python_start_speech_end_rows_match_rust_with_rpc_boundary_stub() {
     )
     .await
     .expect("Rust start");
+    requested.await;
+    voice::provider::wait_for_start_setup("agent", "oracle-session").await;
     voice::provider::handle_notification(&store, "account", "receipt-matrix-connection", &json!({"method":"thread/realtime/sdp","params":{"threadId":"thread","realtimeSessionId":"oracle-session","sdp":"answer"}}), 100.0).expect("Rust SDP callback");
     voice::provider::speech(
         store.clone(),
@@ -1596,6 +1624,132 @@ struct ReceiptProvider {
     calls: Mutex<Vec<(String, Method)>>,
 }
 
+struct SignaledReceiptProvider {
+    certainty: VoiceWriteCertainty,
+    requested: tokio::sync::Notify,
+    calls: Mutex<Vec<(String, Method)>>,
+}
+
+struct PrepareNotSentProvider {
+    prepare_entered: tokio::sync::Notify,
+    release_prepare: tokio::sync::Notify,
+    prepare_calls: AtomicUsize,
+    request_calls: AtomicUsize,
+}
+
+struct DelayedPrepareProvider {
+    prepare_entered: tokio::sync::Notify,
+    release_prepare: tokio::sync::Notify,
+    requested: tokio::sync::Notify,
+    prepare_calls: AtomicUsize,
+    request_calls: AtomicUsize,
+}
+
+impl VoiceProviderPort for DelayedPrepareProvider {
+    fn prepare<'a>(
+        &'a self,
+        agent_id: &'a str,
+        _session_id: &'a str,
+        account_key: &'a str,
+        thread_id: &'a str,
+        epoch: i64,
+    ) -> ProviderFuture<'a, Result<VoiceProviderContext, VoiceWriteCertainty>> {
+        Box::pin(async move {
+            self.prepare_calls.fetch_add(1, Ordering::SeqCst);
+            self.prepare_entered.notify_one();
+            self.release_prepare.notified().await;
+            Ok(VoiceProviderContext {
+                agent_id: agent_id.to_owned(),
+                epoch,
+                account_key: account_key.to_owned(),
+                thread_id: thread_id.to_owned(),
+                connection_id: "delayed-prepare-connection".into(),
+                generation: 1,
+            })
+        })
+    }
+
+    fn request<'a>(
+        &'a self,
+        _scope: VoiceProviderContext,
+        _operation_id: String,
+        _method: Method,
+        _params: serde_json::Value,
+        _deadline: Instant,
+    ) -> ProviderFuture<'a, VoiceRequestReceipt> {
+        Box::pin(async move {
+            self.request_calls.fetch_add(1, Ordering::SeqCst);
+            self.requested.notify_one();
+            VoiceRequestReceipt {
+                certainty: VoiceWriteCertainty::Written,
+            }
+        })
+    }
+
+    fn reply<'a>(
+        &'a self,
+        _scope: VoiceProviderContext,
+        _operation_id: String,
+        _reply: VoiceReply,
+        _deadline: Instant,
+    ) -> ProviderFuture<'a, VoiceRequestReceipt> {
+        Box::pin(async {
+            VoiceRequestReceipt {
+                certainty: VoiceWriteCertainty::NotSent,
+            }
+        })
+    }
+}
+
+impl VoiceProviderPort for PrepareNotSentProvider {
+    fn prepare<'a>(
+        &'a self,
+        _agent_id: &'a str,
+        _session_id: &'a str,
+        _account_key: &'a str,
+        _thread_id: &'a str,
+        _epoch: i64,
+    ) -> ProviderFuture<'a, Result<VoiceProviderContext, VoiceWriteCertainty>> {
+        Box::pin(async move {
+            self.prepare_calls.fetch_add(1, Ordering::SeqCst);
+            self.prepare_entered.notify_one();
+            self.release_prepare.notified().await;
+            Err(VoiceWriteCertainty::NotSent)
+        })
+    }
+
+    fn request<'a>(
+        &'a self,
+        _scope: VoiceProviderContext,
+        _operation_id: String,
+        _method: Method,
+        _params: serde_json::Value,
+        _deadline: Instant,
+    ) -> ProviderFuture<'a, VoiceRequestReceipt> {
+        Box::pin(async move {
+            self.request_calls.fetch_add(1, Ordering::SeqCst);
+            VoiceRequestReceipt {
+                certainty: VoiceWriteCertainty::NotSent,
+            }
+        })
+    }
+
+    fn reply<'a>(
+        &'a self,
+        _scope: VoiceProviderContext,
+        _operation_id: String,
+        _reply: VoiceReply,
+        _deadline: Instant,
+    ) -> ProviderFuture<'a, VoiceRequestReceipt> {
+        Box::pin(async move {
+            self.request_calls.fetch_add(1, Ordering::SeqCst);
+            VoiceRequestReceipt {
+                certainty: VoiceWriteCertainty::NotSent,
+            }
+        })
+    }
+}
+
 impl VoiceProviderPort for ReceiptProvider {
     fn prepare<'a>(
         &'a self,
@@ -1643,6 +1797,66 @@ impl VoiceProviderPort for ReceiptProvider {
         operation_id: String,
         _reply: VoiceReply,
         _deadline: std::time::Instant,
+    ) -> ProviderFuture<'a, VoiceRequestReceipt> {
+        Box::pin(async move {
+            self.calls
+                .lock()
+                .expect("provider call log")
+                .push((operation_id, Method::ItemCommandExecutionRequestApproval));
+            VoiceRequestReceipt {
+                certainty: self.certainty,
+            }
+        })
+    }
+}
+
+impl VoiceProviderPort for SignaledReceiptProvider {
+    fn prepare<'a>(
+        &'a self,
+        agent_id: &'a str,
+        _session_id: &'a str,
+        account_key: &'a str,
+        thread_id: &'a str,
+        epoch: i64,
+    ) -> ProviderFuture<'a, Result<VoiceProviderContext, VoiceWriteCertainty>> {
+        Box::pin(async move {
+            Ok(VoiceProviderContext {
+                agent_id: agent_id.to_owned(),
+                epoch,
+                account_key: account_key.to_owned(),
+                thread_id: thread_id.to_owned(),
+                connection_id: "receipt-matrix-connection".into(),
+                generation: 1,
+            })
+        })
+    }
+
+    fn request<'a>(
+        &'a self,
+        _scope: VoiceProviderContext,
+        operation_id: String,
+        method: Method,
+        _params: serde_json::Value,
+        _deadline: Instant,
+    ) -> ProviderFuture<'a, VoiceRequestReceipt> {
+        Box::pin(async move {
+            self.calls
+                .lock()
+                .expect("provider call log")
+                .push((operation_id, method));
+            self.requested.notify_one();
+            VoiceRequestReceipt {
+                certainty: self.certainty,
+            }
+        })
+    }
+
+    fn reply<'a>(
+        &'a self,
+        _scope: VoiceProviderContext,
+        operation_id: String,
+        _reply: VoiceReply,
+        _deadline: Instant,
     ) -> ProviderFuture<'a, VoiceRequestReceipt> {
         Box::pin(async move {
             self.calls
@@ -1918,13 +2132,184 @@ async fn approval_from_another_connection_generation_is_refused_without_writes()
 }
 
 #[tokio::test]
+async fn voice_start_returns_connecting_before_provider_setup_and_replays_once() {
+    let (_root, store) = seeded_store();
+    let store = Arc::new(store);
+    let provider = Arc::new(DelayedPrepareProvider {
+        prepare_entered: tokio::sync::Notify::new(),
+        release_prepare: tokio::sync::Notify::new(),
+        requested: tokio::sync::Notify::new(),
+        prepare_calls: AtomicUsize::new(0),
+        request_calls: AtomicUsize::new(0),
+    });
+    let entered = provider.prepare_entered.notified();
+    let accepted = voice::provider::start(
+        store.clone(),
+        provider.clone(),
+        "other-agent".into(),
+        "delayed-prepare-success".into(),
+        "v=0\r\n".into(),
+        10.0,
+    )
+    .await
+    .expect("the durable connecting session is accepted before provider setup");
+    assert_eq!(accepted["state"], "connecting");
+    entered.await;
+    let connection = store.read().expect("read connecting session");
+    let (state, connection_id): (String, Option<String>) = connection
+        .query_row(
+            "SELECT state,connection_id FROM voice_sessions WHERE id='delayed-prepare-success'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .expect("durable connecting session exists before setup completes");
+    assert_eq!(state, "connecting");
+    assert_eq!(connection_id, None);
+    drop(connection);
+
+    provider.release_prepare.notify_one();
+    provider.requested.notified().await;
+    voice::provider::wait_for_start_setup("other-agent", "delayed-prepare-success").await;
+    let replay = voice::provider::start(
+        store,
+        provider.clone(),
+        "other-agent".into(),
+        "delayed-prepare-success".into(),
+        "v=0\r\n".into(),
+        11.0,
+    )
+    .await
+    .expect("retry returns the stored session");
+    assert_eq!(replay["session_id"], "delayed-prepare-success");
+    assert_eq!(provider.prepare_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(provider.request_calls.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn voice_start_without_provider_commits_then_records_setup_failure() {
+    let (_root, store) = seeded_store();
+    store
+        .transaction(|tx| {
+            tx.execute(
+                "UPDATE runtime_agents SET record=json_remove(record,'$.threadId') WHERE id='other-agent'",
+                [],
+            )?;
+            Ok(())
+        })
+        .expect("seed an actor without a thread, as Python permits at admission");
+    let store = Arc::new(store);
+    let accepted = voice::provider::start_admitted(
+        store.clone(),
+        None,
+        "other-agent".into(),
+        "missing-provider-start".into(),
+        "v=0\r\n".into(),
+        10.0,
+    )
+    .await
+    .expect("missing provider setup does not change the accepted HTTP response");
+    assert_eq!(accepted["state"], "connecting");
+
+    voice::provider::wait_for_start_setup("other-agent", "missing-provider-start").await;
+    let connection = store.read().expect("read setup result");
+    let (state, error): (String, Option<String>) = connection
+        .query_row(
+            "SELECT state,error FROM voice_sessions WHERE id='missing-provider-start'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .expect("accepted session remains durable");
+    assert_eq!(state, "failed");
+    assert!(error.is_some());
+    drop(connection);
+
+    let replay = voice::provider::start_admitted(
+        store,
+        None,
+        "other-agent".into(),
+        "missing-provider-start".into(),
+        "v=0\r\n".into(),
+        11.0,
+    )
+    .await
+    .expect("replay returns the failed saved session");
+    assert_eq!(replay["state"], "failed");
+}
+
+#[tokio::test]
+async fn not_sent_voice_prepare_replays_the_persisted_intent_without_repreparing() {
+    let (_root, store) = seeded_store();
+    let store = Arc::new(store);
+    let provider = Arc::new(PrepareNotSentProvider {
+        prepare_entered: tokio::sync::Notify::new(),
+        release_prepare: tokio::sync::Notify::new(),
+        prepare_calls: AtomicUsize::new(0),
+        request_calls: AtomicUsize::new(0),
+    });
+
+    let entered = provider.prepare_entered.notified();
+    let first = voice::provider::start(
+        store.clone(),
+        provider.clone(),
+        "other-agent".into(),
+        "prepare-not-sent".into(),
+        "v=0\r\n".into(),
+        10.0,
+    )
+    .await
+    .expect("provider setup does not delay HTTP acceptance");
+    assert_eq!(first["state"], "connecting");
+    entered.await;
+    let connection = store.read().expect("read persisted start intent");
+    let (state, ended, connection_id): (String, Option<f64>, Option<String>) = connection
+        .query_row(
+            "SELECT state,ended,connection_id FROM voice_sessions WHERE id='prepare-not-sent'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .expect("failed prepare keeps its durable session");
+    assert_eq!(state, "connecting");
+    assert_eq!(ended, None);
+    assert_eq!(connection_id, None);
+    drop(connection);
+
+    provider.release_prepare.notify_one();
+    voice::provider::wait_for_start_setup("other-agent", "prepare-not-sent").await;
+    let replay = voice::provider::start(
+        store.clone(),
+        provider.clone(),
+        "other-agent".into(),
+        "prepare-not-sent".into(),
+        "v=0\r\n".into(),
+        11.0,
+    )
+    .await
+    .expect("the durable failed session is replayed");
+    assert_eq!(replay["state"], "failed");
+    let connection = store.read().expect("read committed setup failure");
+    let (state, ended): (String, Option<f64>) = connection
+        .query_row(
+            "SELECT state,ended FROM voice_sessions WHERE id='prepare-not-sent'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .expect("failed voice session remains durable");
+    assert_eq!(state, "failed");
+    assert!(ended.is_some());
+    assert_eq!(provider.prepare_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(provider.request_calls.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
 async fn unknown_provider_receipts_survive_restart_without_resending() {
     let (root, store) = seeded_store();
     let mut store = Arc::new(store);
-    let provider = Arc::new(ReceiptProvider {
+    let provider = Arc::new(SignaledReceiptProvider {
         certainty: VoiceWriteCertainty::Unknown,
+        requested: tokio::sync::Notify::new(),
         calls: Mutex::new(Vec::new()),
     });
+    let requested = provider.requested.notified();
 
     let start = voice::provider::start(
         store.clone(),
@@ -1935,10 +2320,24 @@ async fn unknown_provider_receipts_survive_restart_without_resending() {
         10.0,
     )
     .await;
-    assert!(matches!(
-        start,
-        Err(voice::provider::VoiceProviderError::Unknown)
-    ));
+    assert_eq!(
+        start.expect("provider setup is asynchronous")["state"],
+        "connecting"
+    );
+    requested.await;
+    voice::provider::wait_for_start_setup("other-agent", "matrix-start").await;
+    assert_eq!(provider.calls.lock().expect("provider calls").len(), 1);
+    let replay_before_restart = voice::provider::start(
+        store.clone(),
+        provider.clone(),
+        "other-agent".into(),
+        "matrix-start".into(),
+        "v=0\r\n".into(),
+        10.5,
+    )
+    .await
+    .expect("replay waits for the setup worker and returns its saved outcome");
+    assert_eq!(replay_before_restart["state"], "unknown");
     drop(store);
     store = Arc::new(
         RuntimeStore::open(Some(&root.path().join("state"))).expect("restart after start"),
@@ -2139,10 +2538,12 @@ async fn unknown_provider_receipts_survive_restart_without_resending() {
 async fn written_provider_effects_survive_restart_and_replay_once() {
     let (root, store) = seeded_store();
     let mut store = Arc::new(store);
-    let provider = Arc::new(ReceiptProvider {
+    let provider = Arc::new(SignaledReceiptProvider {
         certainty: VoiceWriteCertainty::Written,
+        requested: tokio::sync::Notify::new(),
         calls: Mutex::new(Vec::new()),
     });
+    let requested = provider.requested.notified();
 
     let start_written = voice::provider::start(
         store.clone(),
@@ -2153,9 +2554,22 @@ async fn written_provider_effects_survive_restart_and_replay_once() {
         20.0,
     )
     .await
-    .expect("provider reports Written before the process restart");
+    .expect("provider setup is asynchronous");
     assert_eq!(start_written["state"], "connecting");
+    requested.await;
+    voice::provider::wait_for_start_setup("other-agent", "written-start").await;
     assert_eq!(provider.calls.lock().expect("provider calls").len(), 1);
+    let before_restart = voice::provider::start(
+        store.clone(),
+        provider.clone(),
+        "other-agent".into(),
+        "written-start".into(),
+        "v=0\r\n".into(),
+        20.5,
+    )
+    .await
+    .expect("replay waits for the setup lease and returns the saved session");
+    assert_eq!(before_restart["state"], "connecting");
     drop(store);
     store = Arc::new(
         RuntimeStore::open(Some(&root.path().join("state"))).expect("restart after written start"),
@@ -2319,20 +2733,6 @@ async fn start_admission_finishes_before_end_dispatches_stop() {
         "dispatch-session".into(),
         2.0,
     ));
-    tokio::task::yield_now().await;
-    assert!(
-        !ending.is_finished(),
-        "end must wait behind start admission"
-    );
-    assert!(
-        provider
-            .methods
-            .lock()
-            .expect("provider call log")
-            .as_slice()
-            == [Method::ThreadRealtimeStart]
-    );
-
     provider.release_start.notify_one();
     starting
         .await

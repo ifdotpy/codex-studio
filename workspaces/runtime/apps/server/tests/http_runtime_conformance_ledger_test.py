@@ -159,7 +159,11 @@ Server suites: 0 passed, 1 failed, 0 skipped (opt-in), 0 skipped (environment), 
             cases = [spec["primary"], *spec.get("additional", [])]
             for probe_case in cases:
                 with self.subTest(operation=operation, case=probe_case.get("name", "primary")):
-                    self.assertIn(probe_case.get("expected", "2xx"), {"2xx", "400", "403", "404", "501"})
+                    expected = probe_case.get("expected", "2xx")
+                    self.assertTrue(
+                        expected in {"2xx", "400", "403", "404", "409", "not_501"}
+                        or (isinstance(expected, str) and expected.isdecimal() and 100 <= int(expected) <= 599)
+                    )
                     self.assertLessEqual(references(probe_case), fixture_keys)
                     if probe_case.get("expected") == "404":
                         self.assertTrue(probe_case.get("reason"))
@@ -177,13 +181,10 @@ Server suites: 0 passed, 1 failed, 0 skipped (opt-in), 0 skipped (environment), 
     def test_new_partial_probes_have_success_and_named_refusal_shapes(self) -> None:
         for operation in (
             ("GET", "/api/changes"),
-            ("GET", "/api/models"),
             ("POST", "/api/federation"),
             ("POST", "/api/messages"),
             ("POST", "/api/multi-server"),
-            ("POST", "/api/peer-teams"),
             ("POST", "/api/projects"),
-            ("POST", "/api/questions/delete"),
         ):
             with self.subTest(operation=operation):
                 spec = ledger.PROBE_CASES[operation]
@@ -198,6 +199,42 @@ Server suites: 0 passed, 1 failed, 0 skipped (opt-in), 0 skipped (environment), 
                 else:
                     self.assertTrue(all(case["expected"] == "501" for case in refusals))
                     self.assertTrue(all(case.get("expected_error") for case in refusals))
+
+    def test_implemented_route_expectations_follow_the_current_manifest(self) -> None:
+        operation = ("POST", "/api/ledger-test")
+        ledger.PROBE_CASES[operation] = {
+            "primary": {"expected": "501", "expected_error": "obsolete refusal"},
+            "additional": [{"expected": "501", "expected_error": "obsolete refusal"}],
+        }
+        try:
+            ledger.ensure_operation_probe_cases({
+                operation: {"status": "implemented", "dependencies": []},
+            })
+            cases = [
+                ledger.PROBE_CASES[operation]["primary"],
+                *ledger.PROBE_CASES[operation]["additional"],
+            ]
+            self.assertTrue(all(case["expected"] == "not_501" for case in cases))
+            self.assertTrue(all("expected_error" not in case for case in cases))
+        finally:
+            ledger.PROBE_CASES.pop(operation, None)
+
+    def test_named_refusal_expectations_remain_owned_by_partial_manifest(self) -> None:
+        operation = ("POST", "/api/ledger-test")
+        ledger.PROBE_CASES[operation] = {
+            "primary": {"expected": "501", "expected_error": "Not implemented: requires test/service"},
+        }
+        try:
+            ledger.ensure_operation_probe_cases({
+                operation: {"status": "partial", "dependencies": ["test/service"]},
+            })
+            self.assertEqual(ledger.PROBE_CASES[operation]["primary"]["expected"], "501")
+            self.assertEqual(
+                ledger.PROBE_CASES[operation]["primary"]["expected_error"],
+                "Not implemented: requires test/service",
+            )
+        finally:
+            ledger.PROBE_CASES.pop(operation, None)
 
     def test_disabled_signed_federation_probes_expect_python_gate_before_headers(self) -> None:
         for path in (
@@ -344,12 +381,12 @@ Server suites: 0 passed, 1 failed, 0 skipped (opt-in), 0 skipped (environment), 
             ("POST", "/api/rules"): ["2xx", "2xx"],
             ("POST", "/api/agents"): ["2xx", "501"],
             ("POST", "/api/leads"): ["2xx", "501"],
-            ("POST", "/api/configure"): ["2xx", "501"],
-            ("POST", "/api/conversation"): ["2xx", "501"],
+            ("POST", "/api/configure"): ["2xx", "400"],
+            ("POST", "/api/conversation"): ["2xx", "400"],
             ("POST", "/api/checkpoint"): ["501", "2xx"],
             ("POST", "/api/checkpoint/preview"): ["2xx"],
-            ("POST", "/api/voice/end"): ["2xx", "501"],
-            ("POST", "/api/voice/speech"): ["2xx", "501"],
+            ("POST", "/api/voice/end"): ["2xx", "2xx"],
+            ("POST", "/api/voice/speech"): ["2xx", "400"],
             ("POST", "/api/voice/submit"): ["2xx", "400"],
         }
         for operation, expected in expected_cases.items():

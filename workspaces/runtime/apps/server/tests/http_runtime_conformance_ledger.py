@@ -188,15 +188,13 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
         "primary": {
             "query": {"account_key": "default"},
             "query_omit": ["workers", "retry"],
-            "expected": "2xx",
-            "wait_for_success": True,
+            "expected": "400",
         },
         "additional": [{
-            "name": "Claude catalog dependency",
+            "name": "unavailable Claude account",
             "query": {"account_key": "$claudeAccount"},
             "query_omit": ["workers", "retry"],
-            "expected": "501",
-            "expected_error": "Not implemented: requires provider-session/model-list",
+            "expected": "400",
         }],
     },
     ("GET", "/api/multi-server"): {
@@ -230,16 +228,14 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
     ("GET", "/api/import"): {
         "primary": {
             "query": {"account_key": "default"},
-            "expected": "501",
-            "expected_error": "Not implemented: requires provider-session/thread-import",
+            "expected": "503",
             "assert_no_write": True,
         },
     },
     ("POST", "/api/import"): {
         "primary": {
             "body": {"threadId": "source-thread", "prompt": "Continue the synthetic fixture."},
-            "expected": "501",
-            "expected_error": "Not implemented: requires provider-session/thread-import",
+            "expected": "503",
             "assert_no_write": True,
         },
     },
@@ -294,7 +290,7 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
         },
     },
     ("GET", "/api/accounts/claude/login"): {
-        "primary": {"query": {"request_id": "88888888-8888-4888-8888-888888888888"}, "expected": "501"},
+        "primary": {"query": {"request_id": "88888888-8888-4888-8888-888888888888"}, "expected": "400"},
     },
     ("GET", "/api/multi-server/v1/identity"): {"primary": {"expected": "501"}},
     ("GET", "/api/multi-server/v1/status"): {"primary": {"expected": "501"}},
@@ -392,6 +388,9 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
     ("POST", "/api/context-repair"): {
         "primary": {"body": {"id": "$agent"}, "expected": "2xx"},
     },
+    ("POST", "/api/browser/forward"): {
+        "primary": {"body": {}, "expected": "400", "assert_no_write": True},
+    },
     ("POST", "/api/messages"): {
         "primary": {
             "body": {"id": "$message", "room": "$chat", "text": "Ledger message"},
@@ -476,8 +475,8 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
                 ],
             },
             "replace_body": True,
-            "expected": "501",
-            "expected_error": "Not implemented: requires workspace-state/peer-radio",
+            "expected": "400",
+            "assert_no_write": True,
         }],
     },
     ("POST", "/api/projects"): {
@@ -508,8 +507,7 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
             # through the retained provider session (codex_runtime.py:11300-11304).
             "name": "native question provider delivery dependency",
             "body": {"id": "$providerQuestion"},
-            "expected": "501",
-            "expected_error": "Not implemented: requires provider-session/question-answer",
+            "expected": "2xx",
         }],
     },
     ("POST", "/api/panel/layout"): {
@@ -541,22 +539,22 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
         "additional": [{"name": "provider generated title without a provider session", "body": {"id": "$agent", "name": None, "request_id": "ledger-smart-title"}, "expected": "2xx", "python_citation": "codex_rename.py:195-199"}],
     },
     ("POST", "/api/accounts/claude/add"): {
-        "primary": {"body": {"login_id": "88888888-8888-4888-8888-888888888881", "email": "ledger@example.test"}, "replace_body": True, "expected": "501", "expected_error": "Not implemented: requires provider-session/claude-login", "assert_no_write": True},
+        "primary": {"body": {"login_id": "88888888-8888-4888-8888-888888888881", "email": "ledger@example.test"}, "replace_body": True, "expected": "400", "assert_no_write": True},
     },
     ("POST", "/api/accounts/claude/login"): {
-        "primary": {"body": {"login_id": "88888888-8888-4888-8888-888888888882", "account_key": "$claudeAccount"}, "replace_body": True, "expected": "501", "expected_error": "Not implemented: requires provider-session/claude-login", "assert_no_write": True},
+        "primary": {"body": {"login_id": "88888888-8888-4888-8888-888888888882", "account_key": "$claudeAccount"}, "replace_body": True, "expected": "400", "assert_no_write": True},
     },
     ("POST", "/api/accounts/claude/login/cancel"): {
-        "primary": {"body": {"login_id": "88888888-8888-4888-8888-888888888883"}, "replace_body": True, "expected": "501", "expected_error": "Not implemented: requires provider-session/claude-login", "assert_no_write": True},
+        "primary": {"body": {"login_id": "88888888-8888-4888-8888-888888888883"}, "replace_body": True, "expected": "400", "assert_no_write": True},
     },
     ("POST", "/api/accounts/claude/login/code"): {
-        "primary": {"body": {"login_id": "88888888-8888-4888-8888-888888888884", "code": "123456"}, "replace_body": True, "expected": "501", "expected_error": "Not implemented: requires provider-session/claude-login", "assert_no_write": True},
+        "primary": {"body": {"login_id": "88888888-8888-4888-8888-888888888884", "code": "123456"}, "replace_body": True, "expected": "400", "assert_no_write": True},
     },
     ("POST", "/api/accounts/login"): {
-        "primary": {"body": {"login_id": "88888888-8888-4888-8888-888888888885"}, "replace_body": True, "expected": "501", "expected_error": "Not implemented: requires provider-session/codex-login", "assert_no_write": True},
+        "primary": {"body": {"login_id": "88888888-8888-4888-8888-888888888885"}, "replace_body": True, "expected": "2xx", "python_citation": "codex_accounts.py:688-700"},
     },
     ("POST", "/api/accounts/login/cancel"): {
-        "primary": {"body": {"login_id": "$codexLogin"}, "replace_body": True, "expected": "501", "expected_error": "Not implemented: requires provider-session/codex-login", "assert_no_write": True, "assert_no_file_write": ["accounts/registry.json"]},
+        "primary": {"body": {"login_id": "$codexLogin"}, "replace_body": True, "expected": "2xx", "python_citation": "codex_accounts.py:772-800"},
     },
     ("POST", "/api/accounts/delete"): {
         "primary": {"body": {"account_key": "ledger-unknown-account", "request_id": "ledger-delete"}, "expected": "400", "assert_no_write": True},
@@ -584,8 +582,9 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
         "primary": {"body": {"id": "$agent", "retry_id": "ledger-capacity-cancel", "action": "cancel"}, "expected": "2xx"},
         "additional": [{"name": "provider turn retry", "body": {"id": "$agent", "retry_id": "ledger-capacity-retry", "action": "retry"}, "expected": "501", "expected_error": "Not implemented: requires event-driver/queue-mutations, store-bootstrap/capacity-retry-schema, turn-driver/capacity-retry", "assert_no_write": True}],
     },
-    ("POST", "/api/checkpoint/restore"): {"primary": {"body": {"agent": "$agent", "checkpoint": "$checkpoint", "expectedTree": "0000000000000000000000000000000000000000"}, "expected": "501", "assert_no_write": True}},
-    ("POST", "/api/claude/profiles"): {"primary": {"body": {}, "expected": "501", "assert_no_write": True}},
+    ("POST", "/api/checkpoint/restore"): {"primary": {"body": {"agent": "$agent", "checkpoint": "$checkpoint", "expectedTree": "0000000000000000000000000000000000000000"}, "expected": "409", "assert_no_write": True}},
+    ("POST", "/api/claude/profiles"): {"primary": {"body": {"account_key": "ledger-missing-claude-account"}, "replace_body": True, "expected": "400", "assert_no_write": True}},
+    ("POST", "/api/claude/session"): {"primary": {"body": {"action": "state", "id": "$agent"}, "replace_body": True, "expected": "400", "assert_no_write": True}},
     ("POST", "/api/action"): {"primary": {"body": {"id": "$agent", "action": "review", "request_id": "ledger-native-action"}, "replace_body": True, "expected": "501", "expected_error": "Not implemented: requires account-worker/native-action", "assert_no_write": True}},
     ("POST", "/api/stop"): {"primary": {"body": {"id": "$agent"}, "expected": "501", "expected_error": "Not implemented: requires account-worker/agent-interrupt", "assert_no_write": True}},
     ("POST", "/api/conversation/delete"): {"primary": {"body": {"id": "$agent"}, "expected": "2xx"}},
@@ -628,9 +627,11 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
         "primary": {"body": {"id": "$agent", "resume_id": "ledger-resume-disable", "enabled": False}, "expected": "2xx"},
         "additional": [{"name": "provider turn resume", "body": {"id": "$agent", "resume_id": "ledger-resume-enable", "enabled": True}, "expected": "501", "expected_error": "Not implemented: requires store-bootstrap/usage-resume-schema, turn-driver/usage-resume", "assert_no_write": True}],
     },
-    ("POST", "/api/voice/approve"): {"primary": {"body": {"agent": "$agent", "session_id": "$voiceActiveSession", "speech_id": "ledger-speech", "transcript_id": "ledger-transcript"}, "expected": "501", "assert_no_write": True}},
-    ("POST", "/api/voice/audio"): {"primary": {"body": {"agent": "$agent", "session_id": "$voiceActiveSession", "chunk_id": "ledger-audio", "audio": "", "mime": "audio/webm"}, "expected": "501", "assert_no_write": True}},
-    ("POST", "/api/voice/start"): {"primary": {"body": {"agent": "$agent", "session_id": "ledger-voice-start", "sdp": "v=0\\r\\n"}, "expected": "501", "assert_no_write": True}},
+    ("POST", "/api/voice/approve"): {"primary": {"body": {"agent": "$agent", "session_id": "$voiceActiveSession", "speech_id": "ledger-speech", "transcript_id": "ledger-transcript"}, "expected": "400", "assert_no_write": True}},
+    ("POST", "/api/voice/audio"): {"primary": {"body": {"agent": "$agent", "session_id": "$voiceActiveSession", "chunk_id": "ledger-audio", "audio": "", "mime": "audio/webm"}, "expected": "2xx"}},
+    # Python commits the connecting session before its asynchronous provider
+    # setup and returns it immediately (codex_native_voice.py:51-77).
+    ("POST", "/api/voice/start"): {"primary": {"body": {"agent": "$agent", "session_id": "ledger-voice-start", "sdp": "v=0\r\n"}, "expected": "2xx"}},
     ("POST", "/api/agents"): {
         "primary": {"body": {"id": "66666666-6666-4666-8666-666666666666", "prompt": "Ledger agent", "cwd": "$projectPath"}, "expected": "2xx"},
         "additional": [{"name": "worker assignment dependency", "body": {"id": "66666666-6666-4666-8666-666666666667", "prompt": "Ledger worker dependency", "cwd": "$projectPath", "parent": "$agent"}, "expected": "501", "expected_error": "Not implemented: requires worker-driver/workspace-preparation", "assert_no_write": True}],
@@ -647,12 +648,19 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
     },
     ("POST", "/api/configure"): {
         "primary": {"body": {"id": "$agent", "maxAgents": 10}, "fixture_mutations": {"agent_name": "HTTP ledger probe owner"}, "restore": ["agent_record"], "expected": "2xx"},
-        "additional": [{"name": "agent mode settings dependency", "body": {"id": "$agent", "concurrency": 0}, "expected": "501", "expected_error": "Not implemented: requires agent-management/agent-mode-settings", "assert_no_write": True}],
+        "additional": [{"name": "invalid agent mode settings", "body": {"id": "$agent", "concurrency": 0}, "expected": "400", "assert_no_write": True}],
     },
     ("POST", "/api/conversation"): {
         "primary": {"body": {"id": "$agent", "excluded_account_keys": ["other-account"]}, "fixture_mutations": {"agent_name": "HTTP ledger probe owner"}, "restore": ["agent_record"], "expected": "2xx"},
-        "additional": [{"name": "conversation settings dependency", "body": {"id": "$agent", "agent_mode": "single"}, "expected": "501", "expected_error": "Not implemented: requires agent-management/conversation-settings", "assert_no_write": True}],
+        "additional": [{"name": "invalid conversation mode", "body": {"id": "$agent", "agent_mode": "single"}, "expected": "400", "assert_no_write": True}],
     },
+    ("POST", "/api/mac-sync/config"): {"primary": {"body": {"projectId": "ledger-project", "enabled": True}, "replace_body": True, "expected": "400", "assert_no_write": True}},
+    ("POST", "/api/mac-sync/resolve"): {"primary": {"body": {"projectId": "ledger-project", "path": "ledger.txt", "choice": "mac"}, "replace_body": True, "expected": "400", "assert_no_write": True}},
+    ("POST", "/api/project-secrets/list"): {"primary": {"body": {"projectId": "ledger-project"}, "replace_body": True, "expected": "503", "assert_no_write": True}},
+    ("POST", "/api/project-secrets/set"): {"primary": {"body": {"projectId": "ledger-project", "name": "LEDGER_SECRET", "value": "fixture-value", "requestId": "ledger-set-secret"}, "replace_body": True, "expected": "503", "assert_no_write": True}},
+    ("POST", "/api/project-secrets/remove"): {"primary": {"body": {"projectId": "ledger-project", "name": "LEDGER_SECRET", "requestId": "ledger-remove-secret"}, "replace_body": True, "expected": "503", "assert_no_write": True}},
+    ("POST", "/api/vault/setup/facts"): {"primary": {"body": {"projectId": "ledger-project"}, "replace_body": True, "expected": "400", "assert_no_write": True}},
+    ("POST", "/api/vault/setup"): {"primary": {"body": {"projectId": "ledger-project", "requestId": "ledger-vault-setup", "prefix": "ledger", "profile": "fixture", "region": "us-east-1"}, "replace_body": True, "expected": "400", "assert_no_write": True}},
     ("POST", "/api/leads"): {
         "primary": {"body": {"id": "77777777-7777-4777-8777-777777777777", "cwd": "$projectPath", "workspaceMode": "worktree"}, "replace_body": True, "expected": "2xx"},
         "additional": [{"name": "lead model catalog dependency", "body": {"id": "77777777-7777-4777-8777-777777777778", "cwd": "$projectPath", "workspaceMode": "worktree", "model": "claude-sonnet-4-5"}, "replace_body": True, "expected": "501", "expected_error": "Not implemented: requires provider-session/model-list", "assert_no_write": True}],
@@ -675,11 +683,11 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
     },
     ("POST", "/api/voice/end"): {
         "primary": {"body": {"agent": "$agent", "session_id": "$voiceEndedSession"}, "expected": "2xx"},
-        "additional": [{"name": "active voice session dependency", "body": {"agent": "$agent", "session_id": "$voiceActiveSession"}, "expected": "501", "expected_error": "Not implemented: requires provider-session/voice", "assert_no_write": True}],
+        "additional": [{"name": "active voice session", "body": {"agent": "$agent", "session_id": "$voiceActiveSession"}, "expected": "2xx"}],
     },
     ("POST", "/api/voice/speech"): {
         "primary": {"body": {"agent": "$agent", "record_id": "$voiceRecord", "session_id": "$voiceEndedSession"}, "expected": "2xx"},
-        "additional": [{"name": "provider-backed voice speech", "body": {"agent": "$agent", "record_id": "$voiceRecord", "session_id": "$voiceActiveSession"}, "expected": "501", "expected_error": "Not implemented: requires provider-session/voice", "assert_no_write": True}],
+        "additional": [{"name": "active voice speech without a saved receipt", "body": {"agent": "$agent", "record_id": "$voiceRecord", "session_id": "$voiceActiveSession"}, "expected": "400", "assert_no_write": True}],
     },
     ("POST", "/api/rules"): {
         "primary": {"body": {
@@ -893,7 +901,7 @@ def sample_value(schema: dict[str, Any], document: dict[str, Any], active: froze
 def ensure_operation_probe_cases(
     manifest: dict[tuple[str, str], dict[str, Any]],
 ) -> None:
-    """Generate only unambiguous probes; partial routes require explicit cases."""
+    """Keep refusal expectations tied to the current route census."""
     for key, entry in manifest.items():
         status = entry.get("status")
         spec = PROBE_CASES.setdefault(key, {})
@@ -906,6 +914,14 @@ def ensure_operation_probe_cases(
         primary = spec.setdefault("primary", {})
         if status == "implemented":
             primary.setdefault("expected", "2xx")
+            for probe_case in [primary, *spec.get("additional", [])]:
+                if probe_case.get("expected") == "501":
+                    # The route census is the owner of a named 501 capability gap.
+                    # Once implemented, leave the exact Python probe outcome to
+                    # an explicit case when it is a runtime precondition; otherwise
+                    # require only that the stale refusal has disappeared.
+                    probe_case["expected"] = "not_501"
+                    probe_case.pop("expected_error", None)
         elif not primary.get("expected"):
             primary["unverified"] = True
 
@@ -1576,8 +1592,11 @@ def probe_operations(
                         or (expected == "404" and result.status == 404 and response_body == {"error": "Not found"})
                         or (expected == "400" and result.status == 400)
                         or (expected == "403" and result.status == 403)
+                        or (expected == "409" and result.status == 409)
+                        or (expected == "not_501" and result.status != 501)
                         or (expected == "4xx" and 400 <= result.status < 500)
                         or (expected == "2xx" and 200 <= result.status < 300)
+                        or (isinstance(expected, str) and expected.isdecimal() and result.status == int(expected))
                     )
                     observations.append({
                         "case": case_name,
@@ -1690,7 +1709,7 @@ def seed_catalog_state(backend: Any) -> None:
 
 
 def seed_codex_login(backend: Any) -> str:
-    """Create the pending local login through AccountStore's Python writer."""
+    """Create a pending local login for the fake-provider cancel probe."""
     login_id = "88888888-8888-4888-8888-888888888880"
     account_key = "ledger-pending-login"
     profile = backend.state / "accounts" / account_key
@@ -2110,9 +2129,18 @@ def main() -> int:
         cwd=ROOT,
         env=environment,
         check=False,
+        capture_output=True,
+        text=True,
     )
     if differential.returncode:
+        diagnostic = (differential.stderr + differential.stdout)[-12000:]
+        diagnostic_path = DEFAULT_CACHE / "http-runtime-extractor-differential-failure.txt"
+        diagnostic_path.parent.mkdir(parents=True, exist_ok=True)
+        diagnostic_path.write_text(diagnostic, encoding="utf-8")
+        print(f"HTTP extractor differential failed; details: {diagnostic_path}", file=sys.stderr)
         raise RuntimeError("HTTP extractor differential contract failed")
+    sys.stdout.write(differential.stdout)
+    sys.stderr.write(differential.stderr)
     trace_regression = subprocess.run(
         [sys.executable, str(TESTS / "http_runtime_conformance_ledger_test.py")],
         cwd=ROOT, env=environment, check=False,
