@@ -43,16 +43,20 @@ impl RadioIngress for Ingress {
 }
 fn corpus(root: &Path) -> Vec<Value> {
     let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let script = manifest.join("tests/wave7_p19/oracle.py");
     let mut command = Command::new(python_support::prepared_python(
         &manifest.join("../../apps/server/src"),
     ));
-    command
-        .arg(manifest.join("tests/wave7_p19/oracle.py"))
-        .arg(root);
+    command.arg(&script).arg(root);
     if std::env::var("STUDIO_RUNTIME_CORPUS_FULL").as_deref() == Ok("1") {
         command.arg("--full");
     }
-    let output = command.output().expect("oracle starts");
+    let output = python_support::output_with_timeout(
+        &mut command,
+        &script,
+        python_support::PYTHON_ORACLE_TIMEOUT,
+    )
+    .unwrap_or_else(|error| panic!("could not run P19 Python oracle: {error}"));
     assert!(
         output.status.success(),
         "{}",

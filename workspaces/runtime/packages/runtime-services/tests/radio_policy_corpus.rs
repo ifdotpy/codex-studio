@@ -4,7 +4,9 @@ mod python_test_support;
 use serde_json::{Value, json};
 use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
-use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+use std::process::{Child, ChildStdin, Command, Stdio};
+use std::sync::mpsc::{self, Receiver};
+use std::time::{Duration, Instant};
 use studio_runtime_services::radio::{
     RadioAuthorizationRecords, RadioAuthorizationSnapshot, RadioDenial, RadioTurnDecision,
 };
@@ -12,8 +14,29 @@ use studio_runtime_services::radio::{
 struct Oracle {
     child: Child,
     input: ChildStdin,
-    output: BufReader<ChildStdout>,
+    output: Receiver<Result<String, String>>,
+    deadline: Instant,
     _environment: python_test_support::IsolatedTestEnvironment,
+}
+
+fn receive_oracle_response(
+    output: &Receiver<Result<String, String>>,
+    timeout: Duration,
+    case_name: &str,
+) -> Result<String, String> {
+    match output.recv_timeout(timeout) {
+        Ok(Ok(line)) => Ok(line),
+        Ok(Err(error)) => Err(format!(
+            "radio Python oracle failed for {case_name}: {error}"
+        )),
+        Err(mpsc::RecvTimeoutError::Timeout) => Err(format!(
+            "radio Python oracle did not reply to {case_name} within {} seconds",
+            timeout.as_secs_f64()
+        )),
+        Err(mpsc::RecvTimeoutError::Disconnected) => Err(format!(
+            "radio Python oracle stopped before replying to {case_name}"
+        )),
+    }
 }
 
 impl Oracle {
@@ -32,10 +55,34 @@ impl Oracle {
             .stderr(Stdio::inherit())
             .spawn()
             .expect("guarded radio Python oracle");
+        let stdout = child.stdout.take().expect("oracle stdout");
+        let (sender, output) = mpsc::channel();
+        std::thread::spawn(move || {
+            let mut reader = BufReader::new(stdout);
+            loop {
+                let mut line = String::new();
+                match reader.read_line(&mut line) {
+                    Ok(0) => {
+                        let _ = sender.send(Err("oracle closed stdout before replying".to_owned()));
+                        return;
+                    }
+                    Ok(_) => {
+                        if sender.send(Ok(line)).is_err() {
+                            return;
+                        }
+                    }
+                    Err(error) => {
+                        let _ = sender.send(Err(format!("could not read oracle stdout: {error}")));
+                        return;
+                    }
+                }
+            }
+        });
         Self {
             input: child.stdin.take().expect("oracle stdin"),
-            output: BufReader::new(child.stdout.take().expect("oracle stdout")),
+            output,
             child,
+            deadline: Instant::now() + python_test_support::PYTHON_ORACLE_TIMEOUT,
             _environment: environment,
         }
     }
@@ -43,10 +90,10 @@ impl Oracle {
     fn call(&mut self, case: &Value) -> Value {
         writeln!(self.input, "{case}").expect("write oracle case");
         self.input.flush().expect("flush oracle case");
-        let mut line = String::new();
-        self.output
-            .read_line(&mut line)
-            .expect("read oracle result");
+        let case_name = case["name"].as_str().unwrap_or("unnamed case");
+        let remaining = self.deadline.saturating_duration_since(Instant::now());
+        let line = receive_oracle_response(&self.output, remaining, case_name)
+            .unwrap_or_else(|error| panic!("{error}"));
         let result: Value = serde_json::from_str(&line).expect("oracle result JSON");
         assert!(result.get("oracle_error").is_none(), "{result}");
         result
@@ -55,25 +102,13 @@ impl Oracle {
 
 impl Drop for Oracle {
     fn drop(&mut self) {
-        let graceful =
-            writeln!(self.input, "{{\"close\":true}}").is_ok() && self.input.flush().is_ok();
-        if graceful {
-            if let Err(error) = self.child.wait() {
-                eprintln!("could not reap radio oracle during teardown: {error}");
-            }
-        } else {
-            match self.child.try_wait() {
-                Ok(Some(_)) => {}
-                Ok(None) => match self.child.kill() {
-                    Ok(()) => {
-                        if let Err(error) = self.child.wait() {
-                            eprintln!("could not reap radio oracle: {error}");
-                        }
-                    }
-                    Err(error) => eprintln!("could not stop radio oracle: {error}"),
-                },
-                Err(error) => eprintln!("could not inspect radio oracle: {error}"),
-            }
+        match self.child.kill() {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::InvalidInput => {}
+            Err(error) => eprintln!("could not stop radio oracle: {error}"),
+        }
+        if let Err(error) = self.child.wait() {
+            eprintln!("could not reap radio oracle: {error}");
         }
     }
 }
@@ -214,4 +249,13 @@ fn radio_snapshot_refuses_malformed_consumed_records_with_locations() {
     );
     let error = RadioAuthorizationSnapshot::from_records(&input).expect_err("null autoWake");
     assert!(error.location.ends_with("/autoWake"), "{error}");
+}
+
+#[test]
+fn radio_oracle_response_timeout_is_reported_with_case_identity() {
+    let (_sender, receiver) = mpsc::channel();
+    let error = receive_oracle_response(&receiver, Duration::from_millis(1), "test-case")
+        .expect_err("missing response times out");
+    assert!(error.contains("test-case"), "{error}");
+    assert!(error.contains("did not reply"), "{error}");
 }
