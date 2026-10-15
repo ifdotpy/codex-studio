@@ -30,7 +30,7 @@ const BASE_BUILD_WAIT: Duration = Duration::from_secs(900);
 const BASE_BUILD_POLL: Duration = Duration::from_millis(50);
 static BASE_BUILD_WORKERS: OnceLock<Mutex<BTreeSet<String>>> = OnceLock::new();
 
-#[allow(dead_code)]
+#[cfg(test)]
 pub(crate) fn fsevents_history_lost(events: &[(u64, u32)]) -> bool {
     events
         .iter()
