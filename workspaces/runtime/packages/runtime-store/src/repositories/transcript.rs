@@ -261,7 +261,7 @@ impl TranscriptRepository {
     pub fn agent(connection: &Connection, agent: &str) -> TranscriptStoreResult<Option<Value>> {
         Table::<AgentRecord>::new(connection)
             .get(&AgentId::from(agent))
-            .map(|record| record.map(|record| record.value()))
+            .map(|record| record.map(AgentRecord::into_value))
             .map_err(map_store_error)
     }
 
