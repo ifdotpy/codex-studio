@@ -1868,9 +1868,36 @@ pub(super) fn load_agent(db: &Connection, id: &str) -> StoreResult<Option<AgentR
     .transpose()
 }
 pub(super) fn decode_agent(id: &str, raw: &str) -> StoreResult<AgentRecord> {
-    let record: AgentRecord = serde_json::from_str(raw).map_err(|_| invalid_agent(id))?;
+    let value: serde_json::Value = serde_json::from_str(raw).map_err(|_| {
+        crate::records::invalid_agent_field(
+            id,
+            "",
+            &format!("invalid_json; record length {} bytes", raw.len()),
+            None,
+        )
+    })?;
+    if !studio_runtime_schema::validate("PersistedAgentRecord", &value)
+        .map_err(StoreError::SchemaValidation)?
+    {
+        let (pointer, reason) = studio_runtime_schema::first_error("PersistedAgentRecord", &value)
+            .map_err(StoreError::SchemaValidation)?
+            .unwrap_or_else(|| ("/".to_owned(), "schema_invalid".to_owned()));
+        return Err(crate::records::invalid_agent_field(
+            id,
+            &pointer,
+            &reason,
+            Some(&value),
+        ));
+    }
+    let record: AgentRecord = serde_json::from_value(value.clone())
+        .map_err(|_| crate::records::invalid_agent_field(id, "", "record_decode", Some(&value)))?;
     if record.id.0 != id {
-        return Err(invalid_agent(id));
+        return Err(crate::records::invalid_agent_field(
+            id,
+            "/id",
+            "row_id_mismatch",
+            Some(&value),
+        ));
     }
     Ok(record)
 }

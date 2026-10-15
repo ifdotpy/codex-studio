@@ -387,7 +387,7 @@ mod tests {
 
         connection
             .execute(
-                "UPDATE runtime_agents SET record=json_set(record,'$.status','queued','$.inFlight',0)",
+                "UPDATE runtime_agents SET record=json_set(record,'$.status','queued','$.inFlight',json('false'))",
                 [],
             )
             .expect("agent is queued with unresolved attempt");
@@ -424,7 +424,7 @@ mod tests {
             .expect("claim executes");
         transaction
             .execute(
-                "UPDATE runtime_agents SET record=json_set(record,'$.epoch',5,'$.status','queued','$.inFlight',0)",
+                "UPDATE runtime_agents SET record=json_set(record,'$.epoch',5,'$.status','queued','$.inFlight',json('false'))",
                 [],
             )
             .expect("agent epoch advances");
@@ -651,7 +651,7 @@ mod tests {
         let mut connection = database();
         connection
             .execute(
-                "UPDATE runtime_agents SET record=json_set(record,'$.autoWake',0)",
+                "UPDATE runtime_agents SET record=json_set(record,'$.autoWake',json('false'))",
                 [],
             )
             .expect("disabled autowake writes");

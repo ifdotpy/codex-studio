@@ -429,13 +429,32 @@ pub async fn start_account_worker_with_publication_sink(
     publication_sink: Arc<dyn crate::notification_runtime_effects::NotificationPostCommitSink>,
 ) -> Result<AccountHandle, WorkerError> {
     let lease = AccountLease::acquire(&bridge, &account)?;
-    let recovery_account = account.clone();
     let generation = config.generation;
-    let recovered = bridge
-        .worker_run("recover", move |store| {
-            store::recover(store, &recovery_account, generation)
-        })
-        .await?;
+    let recovered = loop {
+        let recovery_account = account.clone();
+        match bridge
+            .worker_run("recover", move |store| {
+                store::recover(store, &recovery_account, generation)
+            })
+            .await
+        {
+            Ok(recovered) => break recovered,
+            Err(error) if invalid_agent_record_error(&error) => {
+                let WorkerError::Store(StoreError::InvalidSyncObjectField { id, .. }) = &error
+                else {
+                    unreachable!("guard matches InvalidSyncObjectField")
+                };
+                let invalid_id = id.clone();
+                let diagnostic = error.to_string();
+                bridge
+                    .worker_run("hold_invalid_agent", move |store| {
+                        store::hold_invalid_agent_record(store, &invalid_id, &diagnostic)
+                    })
+                    .await?;
+            }
+            Err(error) => return Err(error),
+        }
+    };
     config.recovered = recovered.iter().map(|(_, record)| record.clone()).collect();
     let recovery_account = account.clone();
     let retained = bridge
@@ -1028,12 +1047,35 @@ impl Worker {
         if self.closing || self.pending.len() >= MAX_PENDING_RESPONSES {
             return Ok(());
         }
-        let account = self.account.clone();
-        let candidate = self
-            .db("claim", move |store| {
-                store::claim(store, &account, &agent, epoch)
-            })
-            .await?;
+        let candidate = loop {
+            let account = self.account.clone();
+            let claim_agent = agent.clone();
+            match self
+                .db("claim", move |store| {
+                    store::claim(store, &account, &claim_agent, epoch)
+                })
+                .await
+            {
+                Ok(candidate) => break candidate,
+                Err(error) if invalid_agent_record_error(&error) => {
+                    let WorkerError::Store(StoreError::InvalidSyncObjectField { id, .. }) = &error
+                    else {
+                        unreachable!("guard matches InvalidSyncObjectField")
+                    };
+                    let invalid_id = id.clone();
+                    let was_requested_agent = invalid_id == agent;
+                    let diagnostic = error.to_string();
+                    self.db("hold_invalid_agent", move |store| {
+                        store::hold_invalid_agent_record(store, &invalid_id, &diagnostic)
+                    })
+                    .await?;
+                    if was_requested_agent {
+                        return Ok(());
+                    }
+                }
+                Err(error) => return Err(error),
+            }
+        };
         if let Some(intent) = candidate {
             self.submit(intent, Method::ThreadResume, None).await?;
         }
@@ -1840,6 +1882,14 @@ impl Worker {
         }
         exit.result.map_err(Into::into)
     }
+}
+
+fn invalid_agent_record_error(error: &WorkerError) -> bool {
+    matches!(
+        error,
+        WorkerError::Store(StoreError::InvalidSyncObjectField { scope, .. })
+            if scope == "runtime_agents"
+    )
 }
 fn definite_rejection(error: &WorkerError) -> bool {
     matches!(

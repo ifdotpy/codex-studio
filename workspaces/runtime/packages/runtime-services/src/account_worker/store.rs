@@ -409,6 +409,45 @@ pub(super) fn claim(
         }
     })
 }
+
+/// Persist a visible fail-closed state for one malformed agent without decoding
+/// it through the typed repository. The original invalid field is retained for
+/// repair, while this agent can no longer be selected for provider work.
+pub(super) fn hold_invalid_agent_record(
+    store: &RuntimeStore,
+    agent_id: &str,
+    diagnostic: &str,
+) -> Result<(), WorkerError> {
+    store.transaction(|tx| {
+        let raw = tx
+            .query_row(
+                "SELECT record FROM runtime_agents WHERE id=?1",
+                [agent_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        let Some(raw) = raw else {
+            return Ok(());
+        };
+        let mut value = serde_json::from_str::<Value>(&raw)
+            .ok()
+            .filter(Value::is_object)
+            .unwrap_or_else(|| json!({"id":agent_id,"rootId":agent_id,"epoch":0}));
+        let record = value
+            .as_object_mut()
+            .expect("malformed record fallback is an object");
+        record.insert("status".into(), json!("failed"));
+        record.insert("error".into(), json!(diagnostic));
+        record.insert("nativeFailureHold".into(), json!(true));
+        record.insert("autoWake".into(), json!(false));
+        tx.execute(
+            "UPDATE runtime_agents SET record=?2 WHERE id=?1",
+            rusqlite::params![agent_id, value.to_string()],
+        )?;
+        Ok(())
+    })?;
+    Ok(())
+}
 fn account_key(agent: &studio_runtime_store::AgentRecord) -> &str {
     agent
         .extra

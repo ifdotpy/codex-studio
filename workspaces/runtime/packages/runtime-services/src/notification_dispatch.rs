@@ -2640,7 +2640,10 @@ mod tests {
             2.0,
         )
         .expect_err("malformed stored epoch is refused");
-        assert!(error.to_string().contains("runtime_agents:agent"));
+        assert!(error.to_string().contains("runtime_agents/agent"));
+        assert!(error.to_string().contains("/epoch"));
+        assert!(error.to_string().contains("value type string"));
+        assert!(error.to_string().contains("length"));
         assert!(!error.to_string().contains("SECRET_STORED_SENTINEL"));
         transaction
             .commit()

@@ -70,11 +70,45 @@ pub(crate) fn lifecycle_transaction_with<T, E: From<StoreError>>(
         let result = change(tx)?;
         let mut statement = tx.prepare_cached("SELECT a.id,a.record FROM runtime_agents a JOIN runtime_scheduler_agent_changes c ON c.id=a.id WHERE c.generation>?1 ORDER BY a.id").map_err(StoreError::from)?;
         let rows = statement.query_map([generation],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?))).map_err(StoreError::from)?.collect::<Result<Vec<_>,_>>().map_err(StoreError::from)?;
-        for (id,raw) in rows {
-            let agent: Value = serde_json::from_str(&raw).map_err(|_|StoreError::InvalidSyncObject {scope:"runtime_agents".into(),id:id.clone()})?;
+        for (row_id,raw) in rows {
+            let agent = match AgentRepository::get(tx, &AgentId::from(row_id.as_str())) {
+                Ok(Some(record)) => record.value(),
+                Ok(None) => return Err(StoreError::InvalidSyncObject {scope:"runtime_agents".into(),id:row_id.clone()}.into()),
+                Err(error) => {
+                    let parsed = serde_json::from_str::<Value>(&raw).ok();
+                    let Some(parsed) = parsed else {
+                        return Err(error.into());
+                    };
+                    let held = parsed.get("status").and_then(Value::as_str) == Some("failed")
+                        && parsed.get("nativeFailureHold") == Some(&Value::Bool(true))
+                        && parsed.get("autoWake") == Some(&Value::Bool(false));
+                    let is_agent_error = matches!(
+                        &error,
+                        StoreError::InvalidSyncObjectField { scope, id, .. }
+                            if scope == "runtime_agents" && id == &row_id
+                    );
+                    let Some(message) = parsed.get("error").and_then(Value::as_str).filter(|_| held) else {
+                        return Err(error.into());
+                    };
+                    if !is_agent_error {
+                        return Err(error.into());
+                    }
+                    // Keep a valid, privacy-safe sync projection for the held
+                    // row while preserving the malformed source for repair.
+                    json!({
+                        "id": row_id,
+                        "rootId": row_id,
+                        "epoch": parsed.get("epoch").and_then(Value::as_i64).unwrap_or_default(),
+                        "status": "failed",
+                        "error": message,
+                        "nativeFailureHold": true,
+                        "autoWake": false
+                    })
+                }
+            };
             let context = crate::sync_entity_context::agent_view_context(tx,&agent,server_id.as_deref())?;
-            let projection = crate::sync_views::agent_entity_view(&agent,&context).ok_or_else(||StoreError::InvalidSyncObject {scope:"runtime_agents".into(),id:id.clone()})?;
-            studio_runtime_store::SyncDocumentsRepository::put_entity(tx,"agent",&id,projection,crate::event_write::truthy(agent.get("deletedAt")))?;
+            let projection = crate::sync_views::agent_entity_view(&agent,&context).ok_or_else(||StoreError::InvalidSyncObject {scope:"runtime_agents".into(),id:row_id.clone()})?;
+            studio_runtime_store::SyncDocumentsRepository::put_entity(tx,"agent",&row_id,projection,crate::event_write::truthy(agent.get("deletedAt")))?;
         }
         Ok(result)
     })

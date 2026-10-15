@@ -903,6 +903,37 @@ pub(crate) fn decode_value(
 }
 
 pub(crate) fn decode_record<R: JsonRecord>(row_id: &str, encoded: &str) -> StoreResult<R> {
+    if R::TABLE == "runtime_agents" {
+        let value: Value = serde_json::from_str(encoded).map_err(|_| {
+            invalid_agent_field(
+                row_id,
+                "",
+                &format!("invalid_json; record length {} bytes", encoded.len()),
+                None,
+            )
+        })?;
+        if !studio_runtime_schema::validate(R::SCHEMA, &value)
+            .map_err(crate::StoreError::SchemaValidation)?
+        {
+            let (pointer, reason) = studio_runtime_schema::first_error(R::SCHEMA, &value)
+                .map_err(crate::StoreError::SchemaValidation)?
+                .unwrap_or_else(|| ("/".to_owned(), "schema_invalid".to_owned()));
+            return Err(invalid_agent_field(row_id, &pointer, &reason, Some(&value)));
+        }
+        let record = serde_json::from_value::<R>(value.clone())
+            .map_err(|_| invalid_agent_field(row_id, "", "record_decode", None))?;
+        if R::KEY_MODE == RecordKeyMode::PayloadId
+            && record.record_key().map(AsRef::as_ref) != Some(row_id)
+        {
+            return Err(invalid_agent_field(
+                row_id,
+                "/id",
+                "row_id_mismatch",
+                Some(&value),
+            ));
+        }
+        return Ok(record);
+    }
     let invalid = || crate::StoreError::InvalidStoredObject {
         table: R::TABLE,
         id: row_id.to_owned(),
@@ -915,6 +946,30 @@ pub(crate) fn decode_record<R: JsonRecord>(row_id: &str, encoded: &str) -> Store
         return Err(invalid());
     }
     Ok(record)
+}
+
+pub(crate) fn invalid_agent_field(
+    row_id: &str,
+    pointer: &str,
+    reason: &str,
+    record: Option<&Value>,
+) -> crate::StoreError {
+    let value = record.and_then(|record| record.pointer(pointer));
+    let (value_type, length) = match value {
+        Some(Value::String(value)) => ("string", format!("{} bytes", value.len())),
+        Some(Value::Array(value)) => ("array", format!("{} items", value.len())),
+        Some(Value::Object(value)) => ("object", format!("{} properties", value.len())),
+        Some(Value::Number(_)) => ("number", "not applicable".to_owned()),
+        Some(Value::Bool(_)) => ("boolean", "not applicable".to_owned()),
+        Some(Value::Null) => ("null", "not applicable".to_owned()),
+        None => ("missing", "not applicable".to_owned()),
+    };
+    crate::StoreError::InvalidSyncObjectField {
+        scope: "runtime_agents".to_owned(),
+        id: row_id.to_owned(),
+        pointer: pointer.to_owned(),
+        reason: format!("{reason}; value type {value_type}, length {length}"),
+    }
 }
 
 fn encode_record<R: JsonRecord>(record: &R, row_id: &str) -> StoreResult<String> {
@@ -1235,11 +1290,17 @@ mod tests {
         let table = Table::<AgentRecord>::new(&connection);
 
         for id in ["bad-json", "outer-id"] {
-            assert!(matches!(
-                table.get(&AgentId::from(id)).expect_err("invalid record is refused"),
-                StoreError::InvalidStoredObject { table: "runtime_agents", id: ref bad_id }
-                    if bad_id == id
-            ));
+            let error = table
+                .get(&AgentId::from(id))
+                .expect_err("invalid record is refused");
+            assert!(error.to_string().contains(&format!("runtime_agents/{id}")));
+            if id == "outer-id" {
+                assert!(error.to_string().contains("/id"));
+                assert!(error.to_string().contains("row_id_mismatch"));
+            } else {
+                assert!(error.to_string().contains("invalid_json"));
+                assert!(!error.to_string().contains("{\"id\""));
+            }
         }
     }
 
@@ -1272,26 +1333,24 @@ mod tests {
     fn invalid_schema_reads_and_writes_include_the_record_key() {
         let connection = database();
         let table = Table::<AgentRecord>::new(&connection);
-        let invalid = agent(json!({
-            "id":"invalid-epoch","rootId":"invalid-epoch","epoch":9007199254740992_i64,
-            "status":"idle"
-        }));
-        assert!(matches!(
-            table.put(&invalid).expect_err("invalid record is not written"),
-            StoreError::InvalidStoredObject { table: "runtime_agents", id }
-                if id == "invalid-epoch"
-        ));
         connection
             .execute(
-                "INSERT INTO runtime_agents(id,record) VALUES ('invalid-epoch','{\"id\":\"invalid-epoch\",\"rootId\":\"invalid-epoch\",\"epoch\":9007199254740992,\"status\":\"idle\"}')",
+                "INSERT INTO runtime_agents(id,record) VALUES ('invalid-epoch','{\"id\":\"invalid-epoch\",\"rootId\":23,\"epoch\":0,\"status\":\"idle\"}')",
                 [],
             )
             .expect("invalid record fixture inserts");
-        assert!(matches!(
-            table.list().expect_err("schema-invalid record is not returned"),
-            StoreError::InvalidStoredObject { table: "runtime_agents", id }
-                if id == "invalid-epoch"
-        ));
+        let error = table
+            .list()
+            .expect_err("schema-invalid record is not returned");
+        assert!(
+            matches!(error, StoreError::InvalidSyncObjectField { ref scope, ref id, ref pointer, .. }
+            if scope == "runtime_agents" && id == "invalid-epoch" && pointer == "/rootId")
+        );
+        let diagnostic = error.to_string();
+        assert!(diagnostic.contains("value type number"));
+        assert!(diagnostic.contains("length not applicable"));
+        assert!(!diagnostic.contains("private user text"));
+        assert!(!diagnostic.contains("\"rootId\":23"));
     }
 
     #[test]

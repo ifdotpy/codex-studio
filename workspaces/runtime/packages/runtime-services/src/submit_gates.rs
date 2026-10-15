@@ -313,15 +313,14 @@ impl AuthorizationSnapshot {
         };
         for (key, raw) in &rows.agents {
             let location = format!("agents/{key}");
-            let row = object(raw, &location)?;
-            let id = row
-                .get("id")
-                .and_then(Value::as_str)
-                .filter(|id| !id.is_empty() && *id == key)
-                .ok_or_else(|| invalid(format!("{location}/id")))?;
-            snapshot.agents.insert(
-                key.clone(),
-                AgentAuthority {
+            let authority = (|| {
+                let row = object(raw, &location)?;
+                let id = row
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .filter(|id| !id.is_empty() && *id == key)
+                    .ok_or_else(|| invalid(format!("{location}/id")))?;
+                Ok::<_, SnapshotError>(AgentAuthority {
                     id: id.into(),
                     root_id: optional_string(row.get("rootId"), &format!("{location}/rootId"))?,
                     parent_id: optional_string(
@@ -331,8 +330,18 @@ impl AuthorizationSnapshot {
                     is_lead: row.get("isLead") == Some(&Value::Bool(true)),
                     deleted: truthy(row.get("deletedAt")),
                     resolved_cwd: resolve(row.get("cwd"), &format!("{location}/cwd"))?,
-                },
-            );
+                })
+            })();
+            match authority {
+                Ok(authority) => {
+                    snapshot.agents.insert(key.clone(), authority);
+                }
+                Err(_) if key != &rows.recipient_id => {
+                    // An unrelated malformed agent has no authority in this
+                    // decision. Its own turn is held by the account worker.
+                }
+                Err(error) => return Err(error),
+            }
         }
         for (key, raw) in &rows.rooms {
             let location = format!("rooms/{key}");
