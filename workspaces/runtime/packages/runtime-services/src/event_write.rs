@@ -410,6 +410,9 @@ fn enqueue(
             .and_then(Value::as_i64)
             .ok_or(EventWriteError::Conflict("Remote event link is invalid"))?;
         if matches!(kind, "user" | "followup") {
+            if is_anchor && kind != "user" {
+                return Err(EventWriteError::RemoteEventsUnavailable);
+            }
             let metadata = QueueWriteRepository::metadata(transaction, &id)?
                 .unwrap_or_else(|| json!({"assets": [], "delivery": "queue"}));
             if metadata

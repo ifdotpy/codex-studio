@@ -343,6 +343,25 @@ async fn http_queues_remote_anchor_message_as_paired_event_intent() {
         .expect("paired input receipt replays");
     assert_eq!(replay, delivered);
     let remote_event_id = envelope["requestId"].as_str().expect("request identity");
+    receiver
+        .store
+        .transaction(|tx| {
+            tx.execute(
+                "UPDATE runtime_server_inbox SET state='running',result=NULL WHERE id=?1",
+                [remote_event_id],
+            )?;
+            Ok::<_, studio_runtime_store::StoreError>(())
+        })
+        .expect("simulate response loss after committed input effect");
+    let recovered = driver
+        .receive("source-server", &envelope, 102)
+        .expect("running input receipt safely replays its exact effect");
+    let (ExchangeOutcome::Applied(first_receipt), ExchangeOutcome::Applied(recovered_receipt)) =
+        (&delivered, &recovered)
+    else {
+        panic!("paired input and its recovered retry must both be applied");
+    };
+    assert_eq!(first_receipt["id"], recovered_receipt["id"]);
     let connection = receiver.store.read().expect("receiver event reader");
     let (event_count, event_status): (i64, String) = connection
         .query_row(
@@ -355,15 +374,64 @@ async fn http_queues_remote_anchor_message_as_paired_event_intent() {
     assert_eq!(event_status, "pending");
     drop(connection);
 
+    let unicode_text = "🙂".repeat(10_000);
+    let unicode_response = app
+        .clone()
+        .oneshot(request(
+            "00000000-0000-4000-8000-000000000007",
+            &unicode_text,
+            &[],
+        ))
+        .await
+        .expect("Unicode HTTP response");
+    assert_eq!(unicode_response.status(), axum::http::StatusCode::OK);
+    let connection = fixture.store.read().expect("Unicode outbox reader");
+    let raw: String = connection
+        .query_row(
+            "SELECT body FROM runtime_server_outbox WHERE server='remote-server' AND json_extract(body,'$.payload.text')=?1",
+            [&unicode_text],
+            |row| row.get(0),
+        )
+        .expect("queued Unicode paired input");
+    drop(connection);
+    let unicode_envelope: serde_json::Value =
+        serde_json::from_str(&raw).expect("Unicode paired envelope");
+    assert_eq!(unicode_envelope["payload"]["text"], unicode_text);
+    let unicode_delivery = driver
+        .receive("source-server", &unicode_envelope, 104)
+        .expect("10,000 Unicode characters pass paired validation");
+    assert!(matches!(unicode_delivery, ExchangeOutcome::Applied(_)));
+    let unicode_event_id = unicode_envelope["requestId"]
+        .as_str()
+        .expect("Unicode input request identity");
+    let connection = receiver.store.read().expect("Unicode event reader");
+    let (unicode_count, stored_text): (i64, String) = connection
+        .query_row(
+            "SELECT COUNT(*),MAX(text) FROM runtime_events WHERE id=?1 AND agent=?2 AND kind='user'",
+            (unicode_event_id, "late-operation-recipient"),
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .expect("durable Unicode home user event");
+    assert_eq!(unicode_count, 1);
+    assert_eq!(stored_text, unicode_text);
+    drop(connection);
+
     let mut changed_content = envelope.clone();
     changed_content["payload"]["text"] = serde_json::json!("Changed paired content");
     assert_eq!(
         driver
-            .receive("source-server", &changed_content, 102)
+            .receive("source-server", &changed_content, 103)
             .expect_err("same identity cannot change content")
             .status(),
         409
     );
+    let mut followup = envelope.clone();
+    followup["requestId"] = serde_json::json!("unsupported-anchor-followup");
+    followup["payload"]["kind"] = serde_json::json!("followup");
+    let refused_followup = driver
+        .receive("source-server", &followup, 105)
+        .expect("model-authored followup is a definite refusal");
+    assert!(matches!(refused_followup, ExchangeOutcome::NotApplied(_)));
     let effects = RuntimeOrchestrationEffects::new(receiver_store.clone());
     assert_eq!(
         effects
@@ -430,5 +498,5 @@ async fn http_queues_remote_anchor_message_as_paired_event_intent() {
             |row| row.get(0),
         )
         .expect("queued paired intent count after conflict");
-    assert_eq!(outbox_count, 1, "changed retry must not add an intent");
+    assert_eq!(outbox_count, 2, "refused inputs must not add an intent");
 }

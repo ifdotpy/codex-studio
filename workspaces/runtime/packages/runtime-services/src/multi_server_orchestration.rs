@@ -709,8 +709,8 @@ fn receive_remote_anchor_input(
         .unwrap_or("queue");
     if key.is_empty()
         || link_id.is_empty()
-        || event_text.len() > 32_000
-        || !matches!(kind, "user" | "followup")
+        || event_text.chars().count() > 32_000
+        || kind != "user"
         || !matches!(delivery, "queue" | "steer" | "after_tool" | "after_turn")
     {
         return Err(refused(
@@ -1433,9 +1433,11 @@ pub enum DeliveryDecision {
     Return(ExchangeOutcome),
 }
 fn peer_replay_safe(action: &str) -> bool {
+    // Every input variant binds its stable request identity to a durable
+    // message receipt or event row before reporting an applied effect.
     matches!(
         action,
-        "event" | "message" | "move_send" | "location_info" | "location_matches" | "stop"
+        "event" | "input" | "message" | "move_send" | "location_info" | "location_matches" | "stop"
     )
 }
 
@@ -1655,6 +1657,11 @@ impl OrchestrationDriver {
         let result = match self.effects.execute(principal, &envelope.value()) {
             Ok(result) => result,
             Err(error) if envelope.action == "browser_callback" && error.status() < 500 => {
+                ExchangeOutcome::NotApplied(error.to_string())
+            }
+            Err(error) if envelope.action == "input" && error.status() < 500 => {
+                // Input refusals are validated before the durable write; keep
+                // permanent 4xx failures from retrying forever as unknown.
                 ExchangeOutcome::NotApplied(error.to_string())
             }
             Err(_) => ExchangeOutcome::Unknown,
