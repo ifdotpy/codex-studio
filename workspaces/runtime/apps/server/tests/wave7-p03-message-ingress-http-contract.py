@@ -195,19 +195,27 @@ class MessageIngressHTTP(TimedHTTPContractTest, unittest.TestCase):
     def test_budget_and_workspace_admission_never_write_an_event(self):
         for fields in ({"tokenBudget": 0}, {"workspaceOperation": "restore"}):
             _fixture.update_agent(self.backend, self.agent, fields)
-            before = no_write_snapshot(self.backend.state)
-            response = self.request("POST", "/api/messages", {
-                "id": "05050505-0505-0505-0505-050505050505", "room": self.agent, "text": "blocked",
-            })
-            if "tokenBudget" in fields:
-                self.assertEqual(response.status, 400, response.body)
-                self.assertTrue(response.json()["error"].startswith("Team token budget"))
-            else:
-                self.assertEqual(response.status, 400, response.body)
-                self.assertTrue(response.json()["error"].startswith(
-                    "A workspace operation is active in this directory:"))
-            self.assertEqual(no_write_snapshot(self.backend.state), before)
-            _fixture.update_agent(self.backend, self.agent, {}, remove=tuple(fields))
+            try:
+                before = no_write_snapshot(self.backend.state)
+                response = self.request("POST", "/api/messages", {
+                    "id": "05050505-0505-0505-0505-050505050505", "room": self.agent, "text": "blocked",
+                })
+                if "tokenBudget" in fields:
+                    self.assertEqual(response.status, 400, response.body)
+                    self.assertTrue(response.json()["error"].startswith("Team token budget"))
+                else:
+                    self.assertEqual(response.status, 400, response.body)
+                    self.assertTrue(response.json()["error"].startswith(
+                        "A workspace operation is active in this directory:"))
+                after = no_write_snapshot(self.backend.state, baseline_snapshot=before)
+                self.assertEqual(after, before)
+                with sqlite3.connect(self.backend.state / "canvas.sqlite3") as db:
+                    self.assertIsNone(db.execute(
+                        "SELECT 1 FROM runtime_events WHERE id=?",
+                        ("05050505-0505-0505-0505-050505050505",),
+                    ).fetchone())
+            finally:
+                _fixture.update_agent(self.backend, self.agent, {}, remove=tuple(fields))
 
 
 if __name__ == "__main__":

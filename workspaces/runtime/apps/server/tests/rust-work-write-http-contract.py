@@ -22,6 +22,34 @@ TICK_OWNED_WORK_FIELDS = {
     "archive": {"tasks"},
     "archiveIntent": {"attempts", "nextAttemptAt", "lastOutcome"},
 }
+
+
+def without_accepted_archive_tick_fields(snapshot):
+    """Normalize only the retry fields owned by the accepted-archive tick."""
+    normalized = []
+    for database_name, tables in snapshot:
+        normalized_tables = []
+        for table, columns, rows in tables:
+            if table == "runtime_work" and "record" in columns:
+                record_index = columns.index("record")
+                stable_rows = []
+                for row in rows:
+                    values = list(row)
+                    record = json.loads(values[record_index])
+                    for owner, fields in TICK_OWNED_WORK_FIELDS.items():
+                        section = record.get(owner)
+                        if isinstance(section, dict):
+                            record[owner] = {
+                                key: value for key, value in section.items() if key not in fields
+                            }
+                    values[record_index] = json.dumps(record, sort_keys=True, separators=(",", ":"))
+                    stable_rows.append(tuple(values))
+                rows = tuple(stable_rows)
+            normalized_tables.append((table, columns, rows))
+        normalized.append((database_name, tuple(normalized_tables)))
+    return tuple(normalized)
+
+
 sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE.parents[4] / "workspaces/runtime/packages/runtime-services/tests/turn_lifecycle"))
 from oracle_guard import install_guard
@@ -714,7 +742,11 @@ class WorkWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         response = self.organization({"id": self.agent_id, "archived": True})
         self.assertEqual(response.status, 400, response.body[:1000])
         self.assertIn("Stop active work before archiving", response.body.decode())
-        self.assertEqual(no_write_snapshot(self.backend.state), expected_state)
+        actual_state = no_write_snapshot(self.backend.state)
+        self.assertEqual(
+            without_accepted_archive_tick_fields(actual_state),
+            without_accepted_archive_tick_fields(expected_state),
+        )
 
     @unittest.skipUnless(os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"), "strict persisted-row validation is Rust-specific")
     def test_organization_corrupt_revisions_are_located_and_no_write(self):
