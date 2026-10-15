@@ -133,7 +133,11 @@ pub async fn wait_for_start_setup(agent_id: &str, session_id: &str) {
     };
     let mut finished = completion.subscribe();
     if !*finished.borrow() {
-        let _ = finished.changed().await;
+        // Holding the sender's Arc guarantees this wait ends with a change.
+        finished
+            .changed()
+            .await
+            .expect("registered start completion remains open");
     }
 }
 
@@ -2278,11 +2282,13 @@ pub async fn start_admitted(
                 &write_agent,
                 &write_session,
                 &write_offer,
-                &write_account_key,
-                &write_thread_id,
-                epoch,
+                VoiceStartContext {
+                    account_key: &write_account_key,
+                    thread_id: &write_thread_id,
+                    epoch,
+                    now,
+                },
                 &histories,
-                now,
             )
         },
     )
@@ -2300,18 +2306,23 @@ pub async fn start_admitted(
     let completed_session = session_id.clone();
     drop(_dispatch);
     tokio::spawn(async move {
-        let _ = complete_start(
+        if let Err(error) = complete_start(
             store,
             provider,
             agent_id,
             session_id,
             offer,
-            account_key,
-            thread_id,
-            epoch,
-            now,
+            VoiceStartContext {
+                account_key: &account_key,
+                thread_id: &thread_id,
+                epoch,
+                now,
+            },
         )
-        .await;
+        .await
+        {
+            eprintln!("Voice start setup failed: {error}");
+        }
         finish_start_completion(&completed_agent, &completed_session, &start_completion);
     });
     Ok(response)
@@ -2323,11 +2334,14 @@ async fn complete_start(
     agent_id: String,
     session_id: String,
     offer: String,
-    account_key: String,
-    thread_id: String,
-    epoch: i64,
-    now: f64,
+    start: VoiceStartContext<'_>,
 ) -> Result<(), VoiceProviderError> {
+    let VoiceStartContext {
+        account_key,
+        thread_id,
+        epoch,
+        now,
+    } = start;
     let Some(provider) = provider else {
         let store_for_error = store.clone();
         let id = session_id.clone();
@@ -2484,17 +2498,27 @@ fn read_start_rows(
     )?)
 }
 
+struct VoiceStartContext<'a> {
+    account_key: &'a str,
+    thread_id: &'a str,
+    epoch: i64,
+    now: f64,
+}
+
 fn create_session(
     store: &RuntimeStore,
     agent_id: &str,
     session_id: &str,
     offer: &str,
-    account_key: &str,
-    thread_id: &str,
-    epoch: i64,
+    start: VoiceStartContext<'_>,
     histories: &std::collections::BTreeMap<String, crate::budget::HistoryObservation>,
-    now: f64,
 ) -> Result<StartDecision, VoiceProviderError> {
+    let VoiceStartContext {
+        account_key,
+        thread_id,
+        epoch,
+        now,
+    } = start;
     let request = StartRequest::new(
         AgentId::from(agent_id),
         session_id.to_owned(),
@@ -2911,7 +2935,7 @@ mod tests {
             let _guard = session_dispatch_guard("agent", "session-a").await;
             same_tx.send(()).expect("same-session receiver remains");
         });
-        let (other_tx, mut other_rx) = tokio::sync::oneshot::channel();
+        let (other_tx, other_rx) = tokio::sync::oneshot::channel();
         tokio::spawn(async move {
             let _guard = session_dispatch_guard("agent", "session-b").await;
             other_tx.send(()).expect("other-session receiver remains");

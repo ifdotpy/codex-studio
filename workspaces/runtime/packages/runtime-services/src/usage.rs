@@ -344,13 +344,13 @@ where
             fields.insert("checkedAt".to_owned(), Value::from(checked_at));
         }
         let temporary = cache_root.join(format!(".local-costs-error-{}.tmp", std::process::id()));
-        if let Ok(bytes) = serde_json::to_vec(&json!({"scope":scope,"state":state})) {
-            if fs::write(&temporary, bytes).is_ok() {
-                match fs::rename(&temporary, path) {
-                    Ok(()) => cache_saved = true,
-                    Err(error) => {
-                        eprintln!("Could not persist local cost scan failure: {error}");
-                    }
+        if let Ok(bytes) = serde_json::to_vec(&json!({"scope":scope,"state":state}))
+            && fs::write(&temporary, bytes).is_ok()
+        {
+            match fs::rename(&temporary, path) {
+                Ok(()) => cache_saved = true,
+                Err(error) => {
+                    eprintln!("Could not persist local cost scan failure: {error}");
                 }
             }
         }
@@ -427,7 +427,9 @@ fn refresh_claude_costs(
             .map_err(|_| UsageError::Scan)?;
     }
     if cancelled.load(Ordering::Acquire) {
-        let _ = fs::remove_file(&temporary);
+        if let Err(error) = fs::remove_file(&temporary) {
+            eprintln!("Could not remove cancelled Claude cost scan file: {error}");
+        }
         return Err(UsageError::ScannerCancelled);
     }
     fs::rename(&temporary, cache).map_err(|_| UsageError::Scan)?;
@@ -867,7 +869,9 @@ where
     }
     if let Some(existing) = artifact.as_mut() {
         existing["lastAttemptAt"] = json!(now);
-        let _ = write_private_json_atomic(&path, existing, ".models-dev-");
+        if let Err(error) = write_private_json_atomic(&path, existing, ".models-dev-") {
+            eprintln!("Could not persist models.dev pricing attempt: {error}");
+        }
     }
     let Some(providers) = fetch() else {
         return current_catalog;
@@ -890,7 +894,9 @@ where
     if write_private_json_atomic(&path, &artifact, ".models-dev-").is_err() {
         return current_catalog;
     }
-    let _ = fs::remove_file(attempt_path);
+    if let Err(error) = fs::remove_file(attempt_path) {
+        eprintln!("Could not remove successful models.dev attempt marker: {error}");
+    }
     Some(catalog)
 }
 
@@ -1530,10 +1536,10 @@ mod tests {
         let compiler_pid = tokio::task::spawn_blocking(move || {
             let deadline = Instant::now() + READY_TIMEOUT;
             while Instant::now() < deadline {
-                if let Ok(value) = std::fs::read_to_string(&ready_path) {
-                    if let Ok(pid) = value.trim().parse::<u32>() {
-                        return Some(pid);
-                    }
+                if let Ok(value) = std::fs::read_to_string(&ready_path)
+                    && let Ok(pid) = value.trim().parse::<u32>()
+                {
+                    return Some(pid);
                 }
                 thread::sleep(Duration::from_millis(10));
             }
@@ -1543,7 +1549,7 @@ mod tests {
         .expect("fake compiler PID waiter");
         let Some(compiler_pid) = compiler_pid else {
             cancelled.store(true, std::sync::atomic::Ordering::Release);
-            let _ = worker.await;
+            drop(worker.await.expect("cancelled scanner worker"));
             panic!("fake compiler did not publish its PID");
         };
 

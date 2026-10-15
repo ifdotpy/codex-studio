@@ -301,15 +301,15 @@ pub fn maintain_entity_projections_with_server_id(
             "entity projection source snapshot is incomplete",
         ))?;
         for (id, raw) in records {
-            let record = serde_json::from_str::<Value>(&raw)?;
+            let record = serde_json::from_str::<Value>(raw)?;
             if collection == "agent" && truthy(record.get("deletedAt")) {
-                retire_if_live(transaction, collection, &id, &validate_projection)?;
+                retire_if_live(transaction, collection, id, &validate_projection)?;
                 continue;
             }
             if collection == "request"
                 && record.get("status").and_then(Value::as_str) != Some("pending")
             {
-                retire_if_live(transaction, collection, &id, &validate_projection)?;
+                retire_if_live(transaction, collection, id, &validate_projection)?;
                 continue;
             }
             let projected = match collection {
@@ -343,7 +343,7 @@ pub fn maintain_entity_projections_with_server_id(
                         value.get("state").and_then(Value::as_str) == Some("ready")
                     });
                     let cached_vault = if readiness_is_ready {
-                        vault_snapshot.view(&id, &record)?
+                        vault_snapshot.view(id, &record)?
                     } else {
                         None
                     };
@@ -368,7 +368,7 @@ pub fn maintain_entity_projections_with_server_id(
                 put_projection(
                     transaction,
                     collection,
-                    &id,
+                    id,
                     projected,
                     false,
                     &validate_projection,
@@ -861,7 +861,7 @@ fn maintain_peer_team_entities(
     }
     let agents = agent_records
         .iter()
-        .filter_map(|(_, raw)| serde_json::from_str::<Value>(&raw).ok())
+        .filter_map(|(_, raw)| serde_json::from_str::<Value>(raw).ok())
         .filter_map(|agent| {
             let id = agent.get("id")?.as_str()?.to_owned();
             let live = agent.get("deletedAt").is_none_or(Value::is_null);
@@ -873,7 +873,7 @@ fn maintain_peer_team_entities(
         .collect::<BTreeMap<_, _>>();
     let mut current = BTreeMap::<String, Value>::new();
     for (_, raw) in project_records {
-        let Ok(project) = serde_json::from_str::<Value>(&raw) else {
+        let Ok(project) = serde_json::from_str::<Value>(raw) else {
             continue;
         };
         let Some(project_path) = project

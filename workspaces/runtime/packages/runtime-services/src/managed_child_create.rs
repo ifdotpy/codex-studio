@@ -188,10 +188,10 @@ fn expand_review_home(path: &str, home: Option<&str>) -> PathBuf {
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from(path));
     }
-    if let Some(rest) = path.strip_prefix("~/") {
-        if let Some(home) = home {
-            return Path::new(home).join(rest);
-        }
+    if let Some(rest) = path.strip_prefix("~/")
+        && let Some(home) = home
+    {
+        return Path::new(home).join(rest);
     }
     PathBuf::from(path)
 }
@@ -248,73 +248,6 @@ impl From<ManagedCreationEnvironmentError> for Error {
             }
             ManagedCreationEnvironmentError::Unavailable(name) => Error::Unavailable(name),
         }
-    }
-}
-
-#[cfg(test)]
-mod vm_review_identity_tests {
-    use super::{
-        Error, host_project_cwd, validate_image_workspace_platform, validate_vm_parent_workspace,
-        vm_review_guest_ids,
-    };
-    use serde_json::json;
-
-    #[test]
-    fn guest_review_ids_are_bounded_and_match_the_named_python_limit() {
-        let python = include_str!("../../../apps/server/src/codex_linux_vm.py");
-        assert!(python.contains("GUEST_REQUEST_ID_MAX_CHARS = 128"));
-        assert!(python.contains("len(identity) <= GUEST_REQUEST_ID_MAX_CHARS"));
-        let rust_guest = include_str!("linux_vm_guest.rs");
-        assert!(rust_guest.contains("chars().count() > GUEST_REQUEST_ID_MAX_CHARS"));
-        let long = "r".repeat(4096);
-        for supplied in ["short-request", long.as_str()] {
-            let (request_id, turn_id) = vm_review_guest_ids(supplied).unwrap();
-            assert!(
-                request_id.chars().count() <= crate::linux_vm_guest::GUEST_REQUEST_ID_MAX_CHARS
-            );
-            assert!(turn_id.chars().count() <= crate::linux_vm_guest::GUEST_REQUEST_ID_MAX_CHARS);
-            assert!(request_id.starts_with("layr-review-state:"));
-            assert!(turn_id.starts_with("review:"));
-            assert_eq!(
-                (request_id, turn_id),
-                vm_review_guest_ids(supplied).unwrap(),
-                "operation IDs are stable for the same source request"
-            );
-        }
-    }
-
-    #[test]
-    fn native_parent_cannot_create_layr_child_without_panicking() {
-        assert!(matches!(
-            validate_vm_parent_workspace("layr", false),
-            Err(Error::Managed(crate::managed_host_tools::Error::Invalid(
-                "A VM workspace requires a VM parent"
-            )))
-        ));
-        assert!(validate_vm_parent_workspace("layr", true).is_ok());
-    }
-
-    #[test]
-    fn vm_child_rechecks_parent_project_with_host_cwd() {
-        let root = json!({"cwd":"/guest/project","hostProjectPath":"/host/project"});
-        assert_eq!(
-            host_project_cwd(true, &root, "/guest/project"),
-            "/host/project"
-        );
-        assert_eq!(
-            host_project_cwd(false, &root, "/host/project"),
-            "/host/project"
-        );
-    }
-
-    #[test]
-    fn image_child_refuses_on_unsupported_platform_before_creation() {
-        assert!(matches!(
-            validate_image_workspace_platform("image", false),
-            Err(Error::Unavailable("workspace-state/image-provisioning"))
-        ));
-        assert!(validate_image_workspace_platform("image", true).is_ok());
-        assert!(validate_image_workspace_platform("worktree", false).is_ok());
     }
 }
 
@@ -844,17 +777,16 @@ pub(crate) fn spawn_agents(
                     text.push_str(&format!(" This base is {behind} commits behind {}. Check for newer project instructions before starting.", draft.worker_base_main_ref.as_deref().unwrap_or("main")));
                 }
             }
-            if draft.workspace == "image" {
-                if let Some(base_ref) = draft
+            if draft.workspace == "image"
+                && let Some(base_ref) = draft
                     .record
                     .get("imageWorkspaceBaseRef")
                     .and_then(Value::as_str)
-                {
-                    text.push_str(&format!(
-                        "\n\n[Studio requested base] Ref {base_ref} resolves to commit {}. Check out this commit yourself before editing.",
-                        draft.record["workerBaseCommit"].as_str().unwrap_or_default()
-                    ));
-                }
+            {
+                text.push_str(&format!(
+                    "\n\n[Studio requested base] Ref {base_ref} resolves to commit {}. Check out this commit yourself before editing.",
+                    draft.record["workerBaseCommit"].as_str().unwrap_or_default()
+                ));
             }
             if let Some(task) = &draft.task_id {
                 let work = studio_runtime_store::WorkItemsRepository::work_record(tx, task)?
@@ -891,7 +823,9 @@ pub(crate) fn spawn_agents(
         let cwd = match environment.provision_image_workspace(store, Path::new(&root), &id) {
             Ok(cwd) => cwd,
             Err(error) => {
-                let _ = crate::image_workspace::remove_workspace(&id, true);
+                if let Err(cleanup_error) = crate::image_workspace::remove_workspace(&id, true) {
+                    eprintln!("Could not remove failed image workspace: {cleanup_error}");
+                }
                 crate::agents_create::persist_image_provision_failure(
                     store,
                     &id,
@@ -922,7 +856,9 @@ pub(crate) fn spawn_agents(
             })
             .map_err(Error::from)?;
         if !committed {
-            let _ = crate::image_workspace::remove_workspace(&id, true);
+            if let Err(cleanup_error) = crate::image_workspace::remove_workspace(&id, true) {
+                eprintln!("Could not remove stale image workspace: {cleanup_error}");
+            }
             return Err(crate::managed_host_tools::Error::Stale.into());
         }
         if let Some(children) = result.value["agents"].as_array_mut() {
@@ -1575,5 +1511,73 @@ impl crate::native_review::ReviewCreator for ReviewCreator<'_> {
         _: &Value,
     ) -> crate::native_actions::Result<()> {
         Ok(())
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod vm_review_identity_tests {
+    use super::{
+        Error, host_project_cwd, validate_image_workspace_platform, validate_vm_parent_workspace,
+        vm_review_guest_ids,
+    };
+    use serde_json::json;
+
+    #[test]
+    fn guest_review_ids_are_bounded_and_match_the_named_python_limit() {
+        let python = include_str!("../../../apps/server/src/codex_linux_vm.py");
+        assert!(python.contains("GUEST_REQUEST_ID_MAX_CHARS = 128"));
+        assert!(python.contains("len(identity) <= GUEST_REQUEST_ID_MAX_CHARS"));
+        let rust_guest = include_str!("linux_vm_guest.rs");
+        assert!(rust_guest.contains("chars().count() > GUEST_REQUEST_ID_MAX_CHARS"));
+        let long = "r".repeat(4096);
+        for supplied in ["short-request", long.as_str()] {
+            let (request_id, turn_id) = vm_review_guest_ids(supplied).unwrap();
+            assert!(
+                request_id.chars().count() <= crate::linux_vm_guest::GUEST_REQUEST_ID_MAX_CHARS
+            );
+            assert!(turn_id.chars().count() <= crate::linux_vm_guest::GUEST_REQUEST_ID_MAX_CHARS);
+            assert!(request_id.starts_with("layr-review-state:"));
+            assert!(turn_id.starts_with("review:"));
+            assert_eq!(
+                (request_id, turn_id),
+                vm_review_guest_ids(supplied).unwrap(),
+                "operation IDs are stable for the same source request"
+            );
+        }
+    }
+
+    #[test]
+    fn native_parent_cannot_create_layr_child_without_panicking() {
+        assert!(matches!(
+            validate_vm_parent_workspace("layr", false),
+            Err(Error::Managed(crate::managed_host_tools::Error::Invalid(
+                "A VM workspace requires a VM parent"
+            )))
+        ));
+        assert!(validate_vm_parent_workspace("layr", true).is_ok());
+    }
+
+    #[test]
+    fn vm_child_rechecks_parent_project_with_host_cwd() {
+        let root = json!({"cwd":"/guest/project","hostProjectPath":"/host/project"});
+        assert_eq!(
+            host_project_cwd(true, &root, "/guest/project"),
+            "/host/project"
+        );
+        assert_eq!(
+            host_project_cwd(false, &root, "/host/project"),
+            "/host/project"
+        );
+    }
+
+    #[test]
+    fn image_child_refuses_on_unsupported_platform_before_creation() {
+        assert!(matches!(
+            validate_image_workspace_platform("image", false),
+            Err(Error::Unavailable("workspace-state/image-provisioning"))
+        ));
+        assert!(validate_image_workspace_platform("image", true).is_ok());
+        assert!(validate_image_workspace_platform("worktree", false).is_ok());
     }
 }

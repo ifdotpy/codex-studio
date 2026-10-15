@@ -1,4 +1,5 @@
 //! Regression callers for the canonical recovery and analytics staging ports.
+#![allow(clippy::unwrap_used)]
 use super::*;
 use crate::notification_dispatch::stream::{EnqueueResult, StreamKey};
 

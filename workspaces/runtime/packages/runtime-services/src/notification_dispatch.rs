@@ -383,7 +383,7 @@ pub fn dispatch_notification_with_effects(
                 kind,
                 "item/agentMessage/delta" | "item/commandExecution/outputDelta"
             ) {
-                let key = command_key(agent_id, identity, &params)?;
+                let key = command_key(agent_id, identity, params)?;
                 let mut key = key;
                 key.method = kind.to_owned();
                 for effect in effects.post_commit(
@@ -428,11 +428,11 @@ pub fn dispatch_notification_with_effects(
                 }
             }
             if kind == "item/commandExecution/outputDelta" {
-                let key = command_key(agent_id, identity, &params)?;
+                let key = command_key(agent_id, identity, params)?;
                 let delta = params["delta"]
                     .as_str()
                     .ok_or(NotificationDispatchError::InvalidNotification)?;
-                let outcome = match next_streams.enqueue_delta(key, delta, &params) {
+                let outcome = match next_streams.enqueue_delta(key, delta, params) {
                     EnqueueResult::Buffered => DispatchOutcome::Written,
                     EnqueueResult::Closed => DispatchOutcome::Ignored {
                         reason: "closed-stream".into(),
@@ -468,7 +468,7 @@ pub fn dispatch_notification_with_effects(
                 transaction,
                 &mut agent,
                 kind,
-                &params,
+                params,
                 identity,
                 publication,
                 observed_at,
@@ -507,7 +507,7 @@ pub fn dispatch_notification_with_effects(
                                             .strip_prefix("account:")
                                             .unwrap_or_default(),
                                         generation: identity.generation,
-                                        params: &params,
+                                        params,
                                         item_id,
                                         observed_at,
                                         update: TextUpdate::Delta(delta),
@@ -567,7 +567,7 @@ pub fn dispatch_notification_with_effects(
                                         .strip_prefix("account:")
                                         .unwrap_or_default(),
                                     generation: identity.generation,
-                                    params: &params,
+                                    params,
                                     item_id,
                                     observed_at,
                                     update,
@@ -575,12 +575,7 @@ pub fn dispatch_notification_with_effects(
                             )? {
                                 if kind == "item/completed" && has_questions(item.get("questions"))
                                 {
-                                    questions::completed(
-                                        transaction,
-                                        &agent,
-                                        &params,
-                                        observed_at,
-                                    )?;
+                                    questions::completed(transaction, &agent, params, observed_at)?;
                                 }
                                 DispatchOutcome::Written
                             } else {
@@ -592,11 +587,11 @@ pub fn dispatch_notification_with_effects(
                     }
                 }
                 "thread/tokenUsage/updated" => {
-                    effects.capture_usage(transaction, &mut agent, &params, observed_at)?;
+                    effects.capture_usage(transaction, &mut agent, params, observed_at)?;
                     if crate::event_write::truthy(agent.get("movedFrom")) {
-                        effects.capture_move_cache(transaction, &agent, &params, observed_at)?;
+                        effects.capture_move_cache(transaction, &agent, params, observed_at)?;
                     }
-                    apply_token_usage(&mut agent, &params, observed_at)?
+                    apply_token_usage(&mut agent, params, observed_at)?
                 }
                 _ => return Err(NotificationDispatchError::InvalidNotification),
             };
@@ -633,7 +628,7 @@ pub fn dispatch_notification_with_effects(
                 "item/agentMessage/delta" | "item/commandExecution/outputDelta"
             ) && matches!(&outcome, DispatchOutcome::Ignored { reason } if reason == "stale-turn-item")
             {
-                let mut key = command_key(agent_id, identity, &params)?;
+                let mut key = command_key(agent_id, identity, params)?;
                 key.method = kind.to_owned();
                 if let Some(agent) = &before {
                     next_streams.flush_analytics(&key, agent);
@@ -882,9 +877,7 @@ fn saved_text(
         .ok_or_else(|| stored("runtime_items", id))
 }
 
-fn notification_parts<'a>(
-    notification: &'a Frame,
-) -> Result<(&'a str, &'a Value), NotificationDispatchError> {
+fn notification_parts(notification: &Frame) -> Result<(&str, &Value), NotificationDispatchError> {
     static NULL: Value = Value::Null;
     let (kind, params) = match notification {
         Frame::Notification(frame) => (

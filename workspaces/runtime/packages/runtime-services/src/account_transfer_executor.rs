@@ -1354,6 +1354,7 @@ mod destination_settings_tests {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod retained_executor_tests {
     use super::*;
     use crate::account_session_runtime::{
@@ -1890,13 +1891,17 @@ mod retained_executor_tests {
             guest_rpc: None,
             vm_provider_launch: None,
         };
-        let _ = before_start(
-            &recovered_store,
-            Some(recovered_session.clone()),
-            &recovered_catalog,
-            &recovered_resources,
-            "lead",
-            3.0,
+        assert!(
+            before_start(
+                &recovered_store,
+                Some(recovered_session.clone()),
+                &recovered_catalog,
+                &recovered_resources,
+                "lead",
+                3.0,
+            )
+            .is_err(),
+            "unknown provider outcome must refuse retry after restart"
         );
         assert_eq!(
             recovered_session
