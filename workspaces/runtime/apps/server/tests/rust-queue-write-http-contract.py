@@ -80,6 +80,9 @@ def clone_for_python(backend: object) -> Path:
     with closing(sqlite3.connect(backend.state / "canvas.sqlite3")) as source:
         with closing(sqlite3.connect(root / "canvas.sqlite3")) as target:
             source.backup(target)
+    # Project locations refer to this fixture server identity, stored outside SQLite.
+    # A new identity would make local projects remote during startup projection.
+    shutil.copytree(backend.state / "multi-server", root / "multi-server")
     return root
 
 
@@ -165,7 +168,10 @@ def python_mutation(backend: object, agent_id: str, body: dict):
         def schedule(self):
             pass
 
-    runtime = make_runtime(QuietRuntime, root, fixture.FakeServer)
+    # The reference database uses the same host readiness records as the backend.
+    # Keep VM discovery independent of the reference database clone path.
+    runtime = make_runtime(QuietRuntime, root, fixture.FakeServer,
+                           environment_overrides={"CODEX_LINUX_VM_STATE_DIR": str(backend.state / "linux-vm")})
     try:
         python_body = dict(body)
         if "expected_revision" in python_body:
