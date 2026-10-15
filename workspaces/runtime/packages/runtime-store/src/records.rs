@@ -44,6 +44,10 @@ macro_rules! record_newtype {
                 &self.value
             }
 
+            pub fn into_value(self) -> Value {
+                self.value
+            }
+
             pub fn get(&self, key: &str) -> Option<&Value> {
                 self.value.get(key)
             }
@@ -1071,6 +1075,30 @@ mod tests {
                 .as_ptr(),
             source_ptr,
             "the consuming projection must move, not clone, the nested JSON tree"
+        );
+    }
+
+    #[test]
+    fn consuming_json_record_projection_moves_value_tree() {
+        let record = TranscriptItemRecord::from_value(json!({
+            "id":"item-1", "agent":"agent-1", "nested":[{"retained":true}]
+        }))
+        .expect("transcript item has an id");
+        let source_ptr = record.value()["nested"]
+            .as_array()
+            .expect("nested value is an array")
+            .as_ptr();
+
+        let projected = record.into_value();
+
+        assert_eq!(projected["nested"][0]["retained"], Value::Bool(true));
+        assert_eq!(
+            projected["nested"]
+                .as_array()
+                .expect("projected nested value is an array")
+                .as_ptr(),
+            source_ptr,
+            "the consuming projection must move, not clone, the record tree"
         );
     }
 

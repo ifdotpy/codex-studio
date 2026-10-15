@@ -276,10 +276,13 @@ impl TranscriptRepository {
                 Some(RecordPredicate::PhysicalAgentEquals(agent)),
             )
             .map(|item| {
-                item.map(|item| TranscriptItem {
-                    id: item.id().as_ref().to_owned(),
-                    agent: agent.to_owned(),
-                    record: item.value().clone(),
+                item.map(|item| {
+                    let id = item.id().as_ref().to_owned();
+                    TranscriptItem {
+                        id,
+                        agent: agent.to_owned(),
+                        record: item.into_value(),
+                    }
                 })
             })
             .map_err(map_store_error)
@@ -300,10 +303,13 @@ impl TranscriptRepository {
         Table::<TranscriptItemRecord>::new(connection)
             .get(&TranscriptItemId::from(id))
             .map(|item| {
-                item.map(|item| TranscriptItem {
-                    id: item.id().as_ref().to_owned(),
-                    agent: agent.clone(),
-                    record: item.value().clone(),
+                item.map(|item| {
+                    let id = item.id().as_ref().to_owned();
+                    TranscriptItem {
+                        id,
+                        agent: agent.clone(),
+                        record: item.into_value(),
+                    }
                 })
             })
             .map_err(map_store_error)
@@ -337,10 +343,13 @@ impl TranscriptRepository {
                 records
                     .into_iter()
                     .filter(|record| include_restored || visible(record.value()))
-                    .map(|record| TranscriptItem {
-                        id: record.id().as_ref().to_owned(),
-                        agent: agent.to_owned(),
-                        record: record.value().clone(),
+                    .map(|record| {
+                        let id = record.id().as_ref().to_owned();
+                        TranscriptItem {
+                            id,
+                            agent: agent.to_owned(),
+                            record: record.into_value(),
+                        }
                     })
                     .collect()
             })
