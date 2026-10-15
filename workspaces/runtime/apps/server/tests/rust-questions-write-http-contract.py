@@ -7,9 +7,11 @@ from test_isolation import isolate_supervisor_environment
 
 import json
 import os
+import socket
 import sqlite3
 import subprocess
 import sys
+import threading
 import unittest
 import uuid
 from contextlib import closing
@@ -72,6 +74,8 @@ try:
             runtime.put(db, "agents", agent, sync_rooms=False)
         for key, method, status in (
             ("defer", "agent/asyncQuestion", "pending"),
+            ("async-answer", "agent/asyncQuestion", "pending"),
+            ("browser-host", "browser/open", "pending"),
             ("delete", "agent/asyncQuestion", "pending"),
             ("native", "item/tool/requestUserInput", "pending"),
             ("elicitation", "mcpServer/elicitation/request", "pending"),
@@ -93,8 +97,13 @@ try:
                 "supervisor":{{"generation":1}},
                 "params":({{"mode":"form", "requestedSchema":{{"properties":{{}}}},
                            "threadId":"questions-write-thread", "turnId":"questions-write-turn"}}
-                          if key == "elicitation" else {{"questions":[{{"id":"value", "question":"Value?"}}],
-                                                         "threadId":"questions-write-thread", "turnId":"questions-write-turn"}}),
+                          if key == "elicitation" else (
+                              {{"bridgeId":"0123456789abcdef0123456789abcdef",
+                                "url":"https://login.example.test/", "source":"host"}}
+                              if key == "browser-host" else
+                              {{"questions":[{{"id":"value", "question":"Value?"}}],
+                               "threadId":"questions-write-thread", "turnId":"questions-write-turn"}}
+                          )),
             }}, sync_rooms=False)
         runtime.put(db, "complaints", {{
             "id":"questions-write-malformed-complaint", "leadId":lead["id"],
@@ -222,6 +231,35 @@ class QuestionsWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         ).status, 200)
         self.assertEqual(no_write_snapshot(self.backend.state), before_replay)
 
+    def test_async_question_answer_queues_one_durable_followup_and_replays(self) -> None:
+        request = {
+            "id": "questions-write-async-answer",
+            "answers": {"value": {"answers": ["An answer"]}},
+        }
+        answered = self._post("/api/answer", request)
+        self.assertEqual(answered.status, 200, answered.body[:1000])
+        self.assertEqual(answered.json()["status"], "answered")
+        with closing(sqlite3.connect(self.backend.state / "canvas.sqlite3")) as db:
+            event = db.execute(
+                "SELECT agent,kind,text FROM runtime_events WHERE id=?",
+                ("questions-write-async-answer:answer",),
+            ).fetchone()
+            self.assertIsNotNone(event)
+            self.assertEqual(event[0], "questions-write-lead")
+            self.assertEqual(event[2], "Value?\nAn answer")
+            self.assertEqual(db.execute(
+                "SELECT count(*) FROM runtime_events WHERE id=?",
+                ("questions-write-async-answer:answer",),
+            ).fetchone()[0], 1)
+        replay = self._post("/api/answer", request)
+        self.assertEqual(replay.status, 200, replay.body[:1000])
+        self.assertTrue(replay.json().get("replayed"))
+        with closing(sqlite3.connect(self.backend.state / "canvas.sqlite3")) as db:
+            self.assertEqual(db.execute(
+                "SELECT count(*) FROM runtime_events WHERE id=?",
+                ("questions-write-async-answer:answer",),
+            ).fetchone()[0], 1)
+
         deleted = self._post("/api/questions/delete", {"id": "questions-write-delete"})
         self.assertEqual(deleted.status, 200, deleted.body[:1000])
         self.assertEqual(deleted.json()["id"], "questions-write-delete")
@@ -231,6 +269,59 @@ class QuestionsWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             "/api/questions/delete", {"id": "questions-write-delete"}
         ).status, 200)
         self.assertEqual(no_write_snapshot(self.backend.state), before_replay)
+
+    def test_browser_answer_uses_the_host_bridge_socket(self) -> None:
+        # Startup recovery expires pending browser cards before HTTP readiness.
+        self._set_request_status("questions-write-browser-host", "pending")
+        socket_path = self.backend.state / "browser-host" / "control.sock"
+        socket_path.parent.mkdir(parents=True, exist_ok=True)
+        socket_path.unlink(missing_ok=True)
+        server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        server.bind(str(socket_path))
+        server.listen(1)
+        server.settimeout(5)
+        requests: list[dict[str, object]] = []
+
+        def answer_from_host_bridge() -> None:
+            connection, _ = server.accept()
+            with connection:
+                stream = connection.makefile("rwb")
+                request = json.loads(stream.readline())
+                requests.append(request)
+                stream.write(json.dumps({
+                    "id": request["id"], "result": {"state": "opened"},
+                }).encode() + b"\n")
+                stream.flush()
+
+        worker = threading.Thread(target=answer_from_host_bridge, daemon=True)
+        worker.start()
+        try:
+            response = self._post("/api/answer", {
+                "id": "questions-write-browser-host", "decision": "accept",
+            })
+        finally:
+            server.close()
+            socket_path.unlink(missing_ok=True)
+        self.assertEqual(response.status, 200, response.body[:1000])
+        worker.join(timeout=5)
+        self.assertFalse(worker.is_alive(), "host bridge did not receive the answer")
+        self.assertEqual(response.json(), {
+            "status": "answered", "openUrl": "https://login.example.test/",
+        })
+        self.assertEqual(len(requests), 1)
+        self.assertEqual(requests[0]["method"], "browser.answer")
+        self.assertEqual(requests[0]["params"], {
+            "id": "0123456789abcdef0123456789abcdef", "decision": "approve",
+        })
+        self.assertEqual(requests[0]["id"],
+                         "browser-answer:0123456789abcdef0123456789abcdef:approve")
+        with closing(sqlite3.connect(self.backend.state / "canvas.sqlite3")) as db:
+            row = db.execute(
+                "SELECT record FROM runtime_requests WHERE id=?",
+                ("questions-write-browser-host",),
+            ).fetchone()
+        self.assertIsNotNone(row)
+        self.assertEqual(json.loads(row[0])["status"], "answered")
 
     def test_provider_delivery_refusals_and_invalid_state_write_nothing(self) -> None:
         self._unchanged_error(

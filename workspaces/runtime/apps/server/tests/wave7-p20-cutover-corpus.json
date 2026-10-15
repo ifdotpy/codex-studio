@@ -39,6 +39,32 @@
     {
       "closures": [
         {
+          "closes": "origin/feat/wave7-p01-runtime-composition",
+          "kind": "accepted_branch",
+          "owner": "P01"
+        },
+        {
+          "closes": "Wave 7 P02 Host creation/configuration",
+          "kind": "open_task",
+          "owner": "P02"
+        },
+        {
+          "closes": "origin/feat/wave7-p18-account-catalog",
+          "kind": "accepted_branch",
+          "owner": "P18"
+        }
+      ],
+      "dependency": "account-driver/unavailable",
+      "operation_count": 3,
+      "operations": [
+        "POST /api/agents",
+        "POST /api/conversation",
+        "POST /api/leads"
+      ]
+    },
+    {
+      "closures": [
+        {
           "closes": "R1",
           "kind": "external_or_scope",
           "owner": "R1"
@@ -71,6 +97,27 @@
     {
       "closures": [
         {
+          "closes": "origin/feat/wave7-p18-account-catalog",
+          "kind": "accepted_branch",
+          "owner": "P18"
+        },
+        {
+          "closes": "Wave 7 P02 Host creation/configuration",
+          "kind": "open_task",
+          "owner": "P02"
+        }
+      ],
+      "dependency": "provider-session/model-list",
+      "operation_count": 3,
+      "operations": [
+        "POST /api/agents",
+        "POST /api/conversation",
+        "POST /api/leads"
+      ]
+    },
+    {
+      "closures": [
+        {
           "closes": "R1",
           "kind": "external_or_scope",
           "owner": "R1"
@@ -82,6 +129,27 @@
         "GET /api/multi-server/v1/identity",
         "POST /api/multi-server",
         "POST /api/multi-server/v1/auto-pair"
+      ]
+    },
+    {
+      "closures": [
+        {
+          "closes": "origin/feat/wave7-p18-account-catalog",
+          "kind": "accepted_branch",
+          "owner": "P18"
+        },
+        {
+          "closes": "Wave 7 P02 Host creation/configuration",
+          "kind": "open_task",
+          "owner": "P02"
+        }
+      ],
+      "dependency": "worker-driver/settings-catalog",
+      "operation_count": 3,
+      "operations": [
+        "POST /api/agents",
+        "POST /api/conversation",
+        "POST /api/leads"
       ]
     },
     {
@@ -264,30 +332,6 @@
       "dependency": "payload-store/tool-request-recovery",
       "operation_count": 2,
       "operations": ["GET /api/tool-requests", "POST /api/tool-requests/cancel"]
-    },
-    {
-      "closures": [
-        {
-          "closes": "origin/feat/wave7-p15-monitors-rules",
-          "kind": "accepted_branch",
-          "owner": "P15"
-        }
-      ],
-      "dependency": "provider-session/monitor-commands",
-      "operation_count": 2,
-      "operations": ["POST /api/monitor/cancel", "POST /api/monitor/input"]
-    },
-    {
-      "closures": [
-        {
-          "closes": "origin/feat/wave7-p04-callback-runtime",
-          "kind": "accepted_branch",
-          "owner": "P04"
-        }
-      ],
-      "dependency": "provider-session/question-answer",
-      "operation_count": 2,
-      "operations": ["POST /api/answer", "POST /api/questions/delete"]
     },
     {
       "closures": [
@@ -638,18 +682,6 @@
     {
       "closures": [
         {
-          "closes": "origin/feat/wave7-p15-monitors-rules",
-          "kind": "accepted_branch",
-          "owner": "P15"
-        }
-      ],
-      "dependency": "monitor-driver/active-checks",
-      "operation_count": 1,
-      "operations": ["POST /api/rules"]
-    },
-    {
-      "closures": [
-        {
           "closes": "R1",
           "kind": "external_or_scope",
           "owner": "R1"
@@ -730,62 +762,6 @@
       "dependency": "provider-session/title-generation",
       "operation_count": 1,
       "operations": ["POST /api/rename"]
-    },
-    {
-      "closures": [
-        {
-          "closes": "origin/feat/wave7-p04-callback-runtime",
-          "kind": "accepted_branch",
-          "owner": "P04"
-        },
-        {
-          "closes": "Wave 7 P05 Managed host tools",
-          "kind": "open_task",
-          "owner": "P05"
-        }
-      ],
-      "dependency": "question-answer/async-question",
-      "operation_count": 1,
-      "operations": ["POST /api/answer"]
-    },
-    {
-      "closures": [
-        {
-          "closes": "origin/feat/wave7-p04-callback-runtime",
-          "kind": "accepted_branch",
-          "owner": "P04"
-        },
-        {
-          "closes": "Wave 7 P05 Managed host tools",
-          "kind": "open_task",
-          "owner": "P05"
-        },
-        {
-          "closes": "R1",
-          "kind": "external_or_scope",
-          "owner": "R1"
-        }
-      ],
-      "dependency": "question-answer/browser-open",
-      "operation_count": 1,
-      "operations": ["POST /api/answer"]
-    },
-    {
-      "closures": [
-        {
-          "closes": "origin/feat/wave7-p04-callback-runtime",
-          "kind": "accepted_branch",
-          "owner": "P04"
-        },
-        {
-          "closes": "origin/feat/wave7-p15-monitors-rules",
-          "kind": "accepted_branch",
-          "owner": "P15"
-        }
-      ],
-      "dependency": "question-answer/monitor-approval",
-      "operation_count": 1,
-      "operations": ["POST /api/answer"]
     },
     {
       "closures": [
@@ -914,10 +890,10 @@
     }
   ],
   "counts": {
-    "implemented": 113,
-    "named_dependencies": 65,
+    "implemented": 116,
+    "named_dependencies": 62,
     "not_registered": 0,
-    "partial": 47,
+    "partial": 44,
     "total": 160
   },
   "lifecycle_dependencies": {
@@ -1313,6 +1289,9 @@
     },
     {
       "dependencies": [
+        "account-driver/unavailable",
+        "provider-session/model-list",
+        "worker-driver/settings-catalog",
         "workspace-state/image-workspace",
         "workspace-state/vm-workspace"
       ],
@@ -1339,14 +1318,9 @@
       "status": "implemented"
     },
     {
-      "dependencies": [
-        "provider-session/question-answer",
-        "question-answer/async-question",
-        "question-answer/browser-open",
-        "question-answer/monitor-approval"
-      ],
+      "dependencies": [],
       "operation": "POST /api/answer",
-      "status": "partial"
+      "status": "implemented"
     },
     {
       "dependencies": [],
@@ -1428,9 +1402,13 @@
       "status": "implemented"
     },
     {
-      "dependencies": [],
+      "dependencies": [
+        "account-driver/unavailable",
+        "provider-session/model-list",
+        "worker-driver/settings-catalog"
+      ],
       "operation": "POST /api/conversation",
-      "status": "implemented"
+      "status": "partial"
     },
     {
       "dependencies": [
@@ -1486,9 +1464,12 @@
     },
     {
       "dependencies": [
+        "account-driver/unavailable",
         "cross-server-driver/local-identity",
         "cross-server-driver/project-binding",
         "project-driver/folder-selection",
+        "provider-session/model-list",
+        "worker-driver/settings-catalog",
         "workspace-state/image-workspace",
         "workspace-state/vm-workspace"
       ],
@@ -1527,17 +1508,14 @@
       "status": "partial"
     },
     {
-      "dependencies": [
-        "cross-server/remote-events",
-        "provider-session/monitor-commands"
-      ],
+      "dependencies": ["cross-server/remote-events"],
       "operation": "POST /api/monitor/cancel",
       "status": "partial"
     },
     {
-      "dependencies": ["provider-session/monitor-commands"],
+      "dependencies": [],
       "operation": "POST /api/monitor/input",
-      "status": "partial"
+      "status": "implemented"
     },
     {
       "dependencies": [
@@ -1628,9 +1606,9 @@
       "status": "implemented"
     },
     {
-      "dependencies": ["provider-session/question-answer"],
+      "dependencies": [],
       "operation": "POST /api/questions/delete",
-      "status": "partial"
+      "status": "implemented"
     },
     {
       "dependencies": [],
@@ -1648,9 +1626,9 @@
       "status": "implemented"
     },
     {
-      "dependencies": ["monitor-driver/active-checks"],
+      "dependencies": [],
       "operation": "POST /api/rules",
-      "status": "partial"
+      "status": "implemented"
     },
     {
       "dependencies": [

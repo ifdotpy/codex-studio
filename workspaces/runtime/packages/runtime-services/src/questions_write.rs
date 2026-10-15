@@ -4,12 +4,18 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::{Value, json};
 use studio_runtime_store::{
-    AgentId, AgentRecord, AgentRepository, QuestionsWriteRepository, Transaction,
+    AgentId, AgentRecord, AgentRepository, QuestionsWriteRepository, RuntimeStore, Transaction,
 };
 use thiserror::Error;
 use uuid::Uuid;
 
 use crate::event_write::{self, EventWriteError};
+use crate::{
+    coordination::{self, CoordinationError, SystemFollowup},
+    host_project_runtime::PreparedHost,
+    message_admission::MessageAdmission,
+    projects::ProjectsError,
+};
 
 const USER: &str = "user";
 const PENDING: &str = "pending";
@@ -35,6 +41,10 @@ pub enum QuestionsWriteError {
     Json(#[from] serde_json::Error),
     #[error("system clock is before the Unix epoch")]
     Clock,
+    #[error(transparent)]
+    Coordination(#[from] CoordinationError),
+    #[error(transparent)]
+    Projects(#[from] ProjectsError),
 }
 
 pub struct ComplaintResponseWrite<'a> {
@@ -50,6 +60,249 @@ pub struct ComplaintWriteResult {
     pub record: Value,
     pub event_inserted: bool,
     pub wake_event_worker: bool,
+}
+
+pub struct AsyncQuestionAnswerResult {
+    pub response: Value,
+    pub event_inserted: bool,
+}
+
+pub fn answer_async_question_in_store(
+    store: &RuntimeStore,
+    id: &str,
+    data: &Value,
+    now: f64,
+    validate: impl Fn(&Value) -> bool,
+) -> Result<Option<AsyncQuestionAnswerResult>, QuestionsWriteError> {
+    let raw = store
+        .read_transaction_with_error(|transaction| {
+            QuestionsWriteRepository::request(transaction, id)
+        })?
+        .ok_or(QuestionsWriteError::InvalidRequest("Unknown question"))?;
+    let record: Value =
+        serde_json::from_str(&raw).map_err(|_| invalid_stored("runtime_requests", id))?;
+    if record.get("id").and_then(Value::as_str) != Some(id) || !validate(&record) {
+        return Err(invalid_stored("runtime_requests", id));
+    }
+    if record.get("method").and_then(Value::as_str) != Some("agent/asyncQuestion") {
+        return Ok(None);
+    }
+    let agent_id = record
+        .get("agent")
+        .and_then(Value::as_str)
+        .ok_or_else(|| invalid_stored("runtime_requests", id))?
+        .to_owned();
+    let text = async_answer_text(&record, data)?;
+    let connection = store.read()?;
+    let admission =
+        crate::message_admission::MessageIngressAdmission::load(store, &connection, &agent_id)?;
+    drop(connection);
+    let prepared = PreparedHost::load(store)?;
+    let result = store.transaction_with_error(|transaction| {
+        answer_async_question(
+            transaction,
+            id,
+            data,
+            &text,
+            &admission,
+            &prepared,
+            now,
+            &validate,
+        )
+    })?;
+    Ok(Some(result))
+}
+
+fn async_answer_text(record: &Value, data: &Value) -> Result<String, QuestionsWriteError> {
+    let questions = record
+        .pointer("/params/questions")
+        .and_then(Value::as_array)
+        .ok_or_else(|| {
+            invalid_stored(
+                "runtime_requests",
+                record["id"].as_str().unwrap_or_default(),
+            )
+        })?;
+    let answers = data.get("answers").and_then(Value::as_object).ok_or(
+        QuestionsWriteError::InvalidRequest("Supply question answers"),
+    )?;
+    let mut sections = Vec::with_capacity(questions.len());
+    for question in questions {
+        let question_id = question.get("id").and_then(Value::as_str).ok_or_else(|| {
+            invalid_stored(
+                "runtime_requests",
+                record["id"].as_str().unwrap_or_default(),
+            )
+        })?;
+        let prompt = question
+            .get("question")
+            .and_then(Value::as_str)
+            .unwrap_or(question_id);
+        let choices = answers
+            .get(question_id)
+            .and_then(|answer| answer.get("answers"))
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        if choices.iter().any(|choice| !choice.is_string()) {
+            return Err(QuestionsWriteError::InvalidRequest(
+                "Supply question answers",
+            ));
+        }
+        let mut section = vec![prompt.to_owned()];
+        section.extend(choices.iter().filter_map(Value::as_str).map(str::to_owned));
+        sections.push(section.join("\n"));
+    }
+    Ok(sections.join("\n"))
+}
+
+/// Atomically admit an async-question follow-up, mirror an active radio answer,
+/// and record the answer receipt. All filesystem and budget history preparation
+/// is owned by the caller and happens before this writer transaction.
+pub fn answer_async_question(
+    transaction: &Transaction<'_>,
+    id: &str,
+    data: &Value,
+    text: &str,
+    admission: &dyn MessageAdmission,
+    prepared: &PreparedHost,
+    now: f64,
+    validate: impl Fn(&Value) -> bool,
+) -> Result<AsyncQuestionAnswerResult, QuestionsWriteError> {
+    let mut record = request(transaction, id, &validate)?;
+    if record.get("method").and_then(Value::as_str) != Some("agent/asyncQuestion") {
+        return Err(QuestionsWriteError::InvalidRequest("Not an async question"));
+    }
+    let signature = crate::provider_callbacks::answer_signature(data);
+    if let Some(previous) = record.get("answerSignature").and_then(Value::as_str) {
+        if previous != signature {
+            return Err(QuestionsWriteError::Conflict(
+                "This request already has a different answer",
+            ));
+        }
+        if record.get("status").and_then(Value::as_str) == Some("answered") {
+            return Ok(AsyncQuestionAnswerResult {
+                response: json!({"status":"answered","replayed":true}),
+                event_inserted: false,
+            });
+        }
+        return Err(QuestionsWriteError::InvalidRequest(
+            "Answer delivery is uncertain. Do not resend; inspect the agent conversation",
+        ));
+    }
+    if record.get("status").and_then(Value::as_str) != Some(PENDING) {
+        return Err(QuestionsWriteError::InvalidRequest(
+            "Request is no longer pending",
+        ));
+    }
+    let agent_id = record
+        .get("agent")
+        .and_then(Value::as_str)
+        .ok_or_else(|| invalid_stored("runtime_requests", id))?;
+    let agent = stored_agent(transaction, agent_id)?
+        .ok_or(QuestionsWriteError::InvalidRequest("Unknown agent"))?;
+    if !event_write::truthy(agent.extra.get("isLead")) {
+        return Err(QuestionsWriteError::InvalidRequest(
+            "Only the orchestrator can ask the user. The subagent must contact its orchestrator.",
+        ));
+    }
+    if event_write::truthy(agent.extra.get("deletedAt"))
+        || record.get("epoch").and_then(Value::as_i64) != Some(agent.epoch)
+        || !event_write::truthy(agent.extra.get("autoWake"))
+    {
+        return Err(QuestionsWriteError::InvalidRequest(
+            "This question belongs to a stopped turn",
+        ));
+    }
+    let text = event_write::python_strip(text);
+    let consumed = crate::radio_runtime::route_question_answer(
+        transaction,
+        prepared,
+        &record,
+        &text,
+        None,
+        now,
+    )?;
+    let event_inserted = if consumed {
+        false
+    } else {
+        let turn_id = record.get("turnId").and_then(Value::as_str);
+        let accepted = coordination::send_system_followup_with_radio_answer(
+            transaction,
+            SystemFollowup {
+                recipient_id: agent_id,
+                id: &format!("{id}:answer"),
+                text: &text,
+                delivery: "queue",
+                now,
+            },
+            turn_id,
+            admission,
+        )?;
+        crate::radio_runtime::record_question_answer_followup(
+            transaction,
+            prepared,
+            &record,
+            &text,
+            now,
+        )?;
+        accepted.event_inserted
+    };
+
+    record["status"] = json!("answered");
+    record["answerSignature"] = json!(signature);
+    record["answeredBy"] = json!(USER);
+    record["answeredAt"] = json!(now);
+    record["decision"] = data.get("decision").cloned().unwrap_or(json!("answer"));
+    record["deferred"] = json!(false);
+    record["answerHistory"] = answer_history(&record, data)?;
+    put_request(transaction, id, &record, &validate)?;
+    Ok(AsyncQuestionAnswerResult {
+        response: json!({"status":"answered"}),
+        event_inserted,
+    })
+}
+
+fn answer_history(record: &Value, data: &Value) -> Result<Value, QuestionsWriteError> {
+    let questions = record
+        .pointer("/params/questions")
+        .and_then(Value::as_array)
+        .ok_or_else(|| {
+            invalid_stored(
+                "runtime_requests",
+                record["id"].as_str().unwrap_or_default(),
+            )
+        })?;
+    let answers = data.get("answers").and_then(Value::as_object).ok_or(
+        QuestionsWriteError::InvalidRequest("Supply question answers"),
+    )?;
+    let mut history = Vec::with_capacity(questions.len());
+    for question in questions {
+        let question_id = question.get("id").and_then(Value::as_str).ok_or_else(|| {
+            invalid_stored(
+                "runtime_requests",
+                record["id"].as_str().unwrap_or_default(),
+            )
+        })?;
+        let values = answers
+            .get(question_id)
+            .and_then(|answer| answer.get("answers"))
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        if values.iter().any(|value| !value.is_string()) {
+            return Err(QuestionsWriteError::InvalidRequest(
+                "Supply question answers",
+            ));
+        }
+        history.push(json!({
+            "id":question_id,
+            "question":question.get("question").and_then(Value::as_str).unwrap_or(question_id),
+            "isSecret":event_write::truthy(question.get("isSecret")),
+            "answer":if event_write::truthy(question.get("isSecret")) { json!("[redacted]") } else { json!(values) }
+        }));
+    }
+    Ok(Value::Array(history))
 }
 
 pub fn defer_question(

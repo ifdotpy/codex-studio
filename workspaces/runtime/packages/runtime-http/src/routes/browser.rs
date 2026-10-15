@@ -15,6 +15,7 @@ use std::{
 };
 use studio_runtime_services::{
     browser::{BrowserError, BrowserForwarder, ExchangeOutcome, ForwardInput, PairedExchange},
+    linux_vm_guest::GuestRpc,
     multi_server_orchestration::{ExchangeOutcome as DeliveryOutcome, OrchestrationDriver},
 };
 use tokio::time::Instant;
@@ -80,6 +81,56 @@ pub(crate) fn new_forwarder(driver: Arc<OrchestrationDriver>) -> Arc<BrowserForw
     })))
 }
 
+struct GuestCallbackExchange {
+    guest: Arc<dyn GuestRpc>,
+}
+
+impl PairedExchange for GuestCallbackExchange {
+    fn exchange<'a>(
+        &'a self,
+        _server: &'a str,
+        action: &'a str,
+        payload: &'a Value,
+        request_id: &'a str,
+        _now: i64,
+        deadline: Instant,
+    ) -> Pin<Box<dyn Future<Output = Result<ExchangeOutcome, BrowserError>> + Send + 'a>> {
+        let guest = Arc::clone(&self.guest);
+        let action = action.to_owned();
+        let mut payload = payload.clone();
+        let request_id = request_id.to_owned();
+        Box::pin(async move {
+            if action != "browser_callback" {
+                return Err(BrowserError::Exchange);
+            }
+            if let Some(bridge_id) = payload.get("bridgeId").cloned() {
+                payload["id"] = bridge_id;
+            }
+            let timeout = deadline
+                .checked_duration_since(Instant::now())
+                .filter(|value| !value.is_zero())
+                .ok_or(BrowserError::Unknown)?;
+            let result = studio_runtime_process::blocking_pool::spawn_blocking(
+                "runtime-http/routes/browser",
+                move || guest.call("browser.callback", &payload, Some(&request_id), timeout),
+            )
+            .await
+            .map_err(|_| BrowserError::Exchange)?;
+            match result {
+                Ok(value) => Ok(ExchangeOutcome::Applied(value)),
+                Err(error) if error.uncertain() => Ok(ExchangeOutcome::Unknown),
+                Err(error) => Ok(ExchangeOutcome::NotApplied(error.to_string())),
+            }
+        })
+    }
+}
+
+pub(crate) fn new_local_forwarder(guest: Arc<dyn GuestRpc>) -> Arc<BrowserForwarder> {
+    Arc::new(BrowserForwarder::new(Arc::new(GuestCallbackExchange {
+        guest,
+    })))
+}
+
 pub(crate) fn routes() -> RouteGroup {
     RouteGroup::new(vec![post(
         "/api/browser/forward",
@@ -142,7 +193,7 @@ fn string(body: &Value, key: &str) -> Result<String, ApiError> {
         .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "The sign-in forward is invalid"))
 }
 
-fn local_window(headers: &HeaderMap, peer: SocketAddr) -> bool {
+pub(crate) fn local_window(headers: &HeaderMap, peer: SocketAddr) -> bool {
     if !peer.ip().is_loopback()
         || [
             "x-forwarded-for",
@@ -167,7 +218,7 @@ fn local_window(headers: &HeaderMap, peer: SocketAddr) -> bool {
     matches!(host, "127.0.0.1" | "localhost" | "::1")
 }
 
-fn map_browser_error(error: BrowserError) -> ApiError {
+pub(crate) fn map_browser_error(error: BrowserError) -> ApiError {
     let status = match &error {
         BrowserError::InvalidForward | BrowserError::Expired => StatusCode::BAD_REQUEST,
         BrowserError::PortInUse(_) | BrowserError::Conflict => StatusCode::CONFLICT,

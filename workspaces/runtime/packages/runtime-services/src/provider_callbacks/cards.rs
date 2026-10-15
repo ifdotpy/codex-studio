@@ -464,7 +464,7 @@ fn matching_rpc_cards(
     .collect()
 }
 
-fn answer_signature(data: &Value) -> String {
+pub(crate) fn answer_signature(data: &Value) -> String {
     let relevant: serde_json::Map<String, Value> = ["answers", "content", "decision"]
         .into_iter()
         .filter_map(|key| data.get(key).map(|v| (key.to_owned(), v.clone())))

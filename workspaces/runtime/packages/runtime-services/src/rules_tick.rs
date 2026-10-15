@@ -248,6 +248,7 @@ pub fn submit_check(
                 CheckResult {
                     code: None,
                     error: Some(&error),
+                    cancelled: false,
                     output: "",
                 },
                 now,
@@ -484,6 +485,7 @@ impl crate::monitor_runtime::RuleFinish for MonitorRuleFinish {
                 } else {
                     after["error"].as_str()
                 },
+                cancelled: after["status"] == "cancelled",
                 output: after["tail"].as_str().unwrap_or_default(),
             },
             now,

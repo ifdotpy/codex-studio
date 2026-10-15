@@ -9,7 +9,11 @@
 //! own shape. The model-supplied `orchestration_title` tool remains the caller's
 //! responsibility; its `manualName` and name-change guards are enforced here.
 
-use std::{future::Future, pin::Pin, time::SystemTime};
+use std::{
+    future::Future,
+    pin::Pin,
+    time::{Duration, SystemTime},
+};
 
 use rusqlite::{Connection, OptionalExtension, params};
 use serde_json::{Value, json};
@@ -19,6 +23,8 @@ use thiserror::Error;
 
 const MAX_ITEMS: usize = 40;
 const MAX_ITEM_BYTES: usize = 1_048_576;
+/// Python's one-shot title generation deadline (`codex_rename.py:109-110`).
+pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
 
 #[derive(Debug, Error)]
 pub enum TitleError {

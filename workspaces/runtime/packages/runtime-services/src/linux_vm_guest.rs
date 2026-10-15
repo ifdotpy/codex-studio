@@ -288,6 +288,43 @@ impl GuestRpc for UnixVmControlRpc {
     }
 }
 
+/// Production client for an application-owned Unix JSON-RPC socket.
+#[cfg(unix)]
+#[derive(Clone, Debug)]
+pub struct UnixSocketGuestRpc {
+    socket_path: PathBuf,
+}
+
+#[cfg(unix)]
+impl UnixSocketGuestRpc {
+    pub fn new(socket_path: impl Into<PathBuf>) -> Self {
+        Self {
+            socket_path: socket_path.into(),
+        }
+    }
+}
+
+#[cfg(unix)]
+impl GuestRpc for UnixSocketGuestRpc {
+    fn stream(
+        &self,
+        method: &str,
+        params: &Value,
+        request_id: Option<&str>,
+        timeout: Duration,
+        on_frame: &mut dyn FnMut(Value) -> Result<(), GuestError>,
+    ) -> Result<Value, GuestError> {
+        stream_socket(
+            &self.socket_path,
+            method,
+            params,
+            request_id,
+            timeout,
+            on_frame,
+        )
+    }
+}
+
 #[cfg(unix)]
 fn stream_socket(
     socket_path: &Path,

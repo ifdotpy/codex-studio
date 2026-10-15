@@ -5,11 +5,13 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::extractors::ApiJson;
-use super::manifest::{Dependency, OperationStatus, RouteGroup, dependency_unavailable, get, post};
+use super::manifest::{OperationStatus, RouteGroup, get, post};
+use axum::Extension;
 use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
 use serde_json::{Number, Value, json};
+use std::sync::Arc;
 use studio_runtime_services::rules::{self, RulesError};
 use studio_runtime_store::{RuleRecord, RulesRepository, StoreError};
 
@@ -17,17 +19,10 @@ use crate::error::ApiError;
 use crate::router::HttpState;
 
 static RULE_ID_SEQUENCE: AtomicU64 = AtomicU64::new(0);
-static ACTIVE_CHECK_DEPENDENCIES: [Dependency; 1] =
-    [Dependency::new("monitor-driver/active-checks")];
-
 pub(crate) fn routes() -> RouteGroup {
     RouteGroup::new(vec![
         get("/api/rules", OperationStatus::Implemented, list),
-        post(
-            "/api/rules",
-            OperationStatus::partial(&ACTIVE_CHECK_DEPENDENCIES),
-            update,
-        ),
+        post("/api/rules", OperationStatus::Implemented, update),
     ])
 }
 
@@ -58,6 +53,9 @@ pub(crate) async fn list(
 
 async fn update(
     State(state): State<HttpState>,
+    runtime: Option<
+        Extension<Arc<studio_runtime_services::monitor_runtime_wiring::MonitorRuntime>>,
+    >,
     ApiJson(body): ApiJson<Value>,
 ) -> Result<Json<RuleWriteResponse>, ApiError> {
     let action = string(&body, "action").unwrap_or("save");
@@ -75,7 +73,7 @@ async fn update(
     let agent_id = string(&body, "agent").unwrap_or_default().to_owned();
     let supplied_id = string(&body, "id").map(str::to_owned);
     let rule_id = supplied_id.unwrap_or_else(new_rule_id);
-    let result = studio_runtime_process::blocking_pool::spawn_blocking(
+    let (result, cancel_ids) = studio_runtime_process::blocking_pool::spawn_blocking(
         "runtime-http/routes/rules",
         move || {
             store.transaction_with(|transaction| {
@@ -100,15 +98,17 @@ async fn update(
             if action == "resume" && old_value.as_ref().and_then(|v| v.get("inFlight")).and_then(Value::as_bool) == Some(true) {
                 return Err(ApiError::new(StatusCode::BAD_REQUEST, "Wait for the current rule check before resuming"));
             }
+            let cancel_ids = if matches!(action.as_str(), "pause" | "delete") {
+                RulesRepository::active_check_ids(transaction, &rule_id).map_err(store_api_error)?
+            } else {
+                Vec::new()
+            };
             let result = match action.as_str() {
                 "delete" | "pause" | "resume" => {
                     let (Some(_old), Some(mut value)) = (old, old_value) else {
                         return Err(ApiError::new(StatusCode::BAD_REQUEST, "Unknown rule"));
                     };
                     if action == "delete" {
-                        if RulesRepository::has_active_check(transaction, &rule_id).map_err(store_api_error)? {
-                            return Err(active_check_error());
-                        }
                         RulesRepository::delete(transaction, &rule_id).map_err(store_api_error)?;
                         json!({"deleted": rule_id})
                     } else {
@@ -123,11 +123,6 @@ async fn update(
                         {
                             value
                         } else {
-                            if action == "pause"
-                                && RulesRepository::has_active_check(transaction, &rule_id).map_err(store_api_error)?
-                            {
-                                return Err(active_check_error());
-                            }
                             let interval = value.get("intervalSeconds").and_then(Value::as_f64).unwrap_or(60.0);
                             let kind = string(&value, "kind").unwrap_or("").to_owned();
                             let file_update = (action == "resume" && kind == "file").then(|| {
@@ -220,11 +215,52 @@ async fn update(
                 super::generated_json::<crate::generated::RuleRecordResponse>(result)
                     .map(RuleWriteResponse::Record)
             }
+                .map(|result| (result, cancel_ids))
             })
         },
     )
     .await
     .map_err(|_| ApiError::internal())??;
+    if !cancel_ids.is_empty() {
+        let store = state.store.clone().ok_or_else(ApiError::internal)?;
+        let ids = cancel_ids;
+        if let Some(Extension(runtime)) = runtime {
+            studio_runtime_process::blocking_pool::spawn_blocking(
+                "runtime-http/routes/rules",
+                move || {
+                    for id in ids {
+                        runtime.cancel(&id, None, now).map_err(monitor_api_error)?;
+                    }
+                    Ok::<(), ApiError>(())
+                },
+            )
+            .await
+            .map_err(|_| ApiError::internal())??;
+        } else {
+            studio_runtime_process::blocking_pool::spawn_blocking(
+                "runtime-http/routes/rules",
+                move || {
+                    store
+                        .transaction_with(|transaction| {
+                            for id in ids {
+                                studio_runtime_services::monitor_runtime::cancel_in_transaction(
+                                    transaction,
+                                    &id,
+                                    None,
+                                    now,
+                                )?;
+                            }
+                            Ok(())
+                        })
+                        .map_err(monitor_api_error)?;
+                    Ok::<(), ApiError>(())
+                },
+            )
+            .await
+            .map_err(|_| ApiError::internal())??;
+            state.event_wake.notify_one();
+        }
+    }
     Ok(Json(result))
 }
 
@@ -265,9 +301,26 @@ fn located(field: &str) -> ApiError {
     ])
 }
 
-fn active_check_error() -> ApiError {
-    dependency_unavailable("POST", "/api/rules", &ACTIVE_CHECK_DEPENDENCIES)
-        .unwrap_or_else(|_| ApiError::internal())
+fn monitor_api_error(error: studio_runtime_services::monitor_policy::MonitorError) -> ApiError {
+    use studio_runtime_services::monitor_policy::MonitorError;
+    match error {
+        MonitorError::Refused(message) => ApiError::new(StatusCode::BAD_REQUEST, message),
+        MonitorError::Unavailable(name) => ApiError::new(
+            StatusCode::NOT_IMPLEMENTED,
+            format!("Not implemented: requires {name}"),
+        ),
+        MonitorError::InvalidStored { id, location } => ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Invalid stored object monitors/{id} at {location}"),
+        ),
+        MonitorError::Event(
+            studio_runtime_services::event_write::EventWriteError::RemoteEventsUnavailable,
+        ) => ApiError::new(
+            StatusCode::NOT_IMPLEMENTED,
+            "Not implemented: requires cross-server/remote-events",
+        ),
+        _ => ApiError::internal(),
+    }
 }
 
 fn store_api_error(error: StoreError) -> ApiError {
@@ -419,6 +472,6 @@ inventory::submit! {
     crate::routes::manifest::RouteModuleRegistration {
         name: "rules",
         routes: Some(routes),
-        dependencies: &["monitor-driver/active-checks", "rule-driver/event-rules"],
+        dependencies: &["rule-driver/event-rules"],
     }
 }

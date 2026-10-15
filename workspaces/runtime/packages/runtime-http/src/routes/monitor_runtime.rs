@@ -15,23 +15,16 @@ use studio_runtime_services::{
     monitor_runtime,
 };
 
-const DEPENDENCIES: [Dependency; 2] = [
-    Dependency::new(monitor_runtime::SESSION_DEPENDENCY),
-    Dependency::new("cross-server/remote-events"),
-];
+const CANCEL_DEPENDENCIES: [Dependency; 1] = [Dependency::new("cross-server/remote-events")];
 
 pub(crate) fn routes() -> RouteGroup {
     RouteGroup::new(vec![
         post(
             "/api/monitor/cancel",
-            OperationStatus::partial(&DEPENDENCIES),
+            OperationStatus::partial(&CANCEL_DEPENDENCIES),
             cancel,
         ),
-        post(
-            "/api/monitor/input",
-            OperationStatus::partial(&DEPENDENCIES[..1]),
-            input,
-        ),
+        post("/api/monitor/input", OperationStatus::Implemented, input),
     ])
 }
 

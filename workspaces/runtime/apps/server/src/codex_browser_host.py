@@ -32,6 +32,7 @@ from browser_bridge import BridgeError, BrowserBridge, Listener, proc_listeners 
 
 FOLDER = "browser-host"
 SESSION_FILE = "studio-browser.json"
+HOST_BROWSER_CONTROL_SOCKET_NAME = "control.sock"
 
 
 def lsof_listeners(text: str) -> list[Listener]:
@@ -128,6 +129,7 @@ class HostGuest:
                  http_providers: frozenset[str] = frozenset()) -> None:
         environment = session_environment(Path(runtime.root))
         self.socket = Path(environment["STUDIO_BROWSER_SOCKET"])
+        self.control_socket = self.socket.parent / HOST_BROWSER_CONTROL_SOCKET_NAME
         self.loop = asyncio.new_event_loop()
         self.thread = threading.Thread(target=self.loop.run_forever, name="studio-browser-host", daemon=True)
         self.thread.start()
@@ -138,6 +140,11 @@ class HostGuest:
             await bridge.listen(self.socket)
             # The folder is private; only this user's processes reach the socket.
             self.socket.chmod(0o600)
+            self.control_socket.unlink(missing_ok=True)
+            self.control_server = await asyncio.start_unix_server(
+                self.control_client, path=str(self.control_socket), limit=64 * 1024
+            )
+            self.control_socket.chmod(0o600)
             return bridge
         try:
             self.bridge = asyncio.run_coroutine_threadsafe(start(), self.loop).result(10)
@@ -153,8 +160,43 @@ class HostGuest:
         except BridgeError as error:
             raise LinuxVMError(str(error), code=error.code) from None
 
+    async def control_client(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        identity = ""
+        try:
+            line = await asyncio.wait_for(reader.readline(), 5)
+            if len(line) > 64 * 1024 or not line.endswith(b"\n"):
+                raise BridgeError("invalid_request", "Send one bounded JSON request")
+            request = json.loads(line)
+            if not isinstance(request, dict):
+                raise BridgeError("invalid_request", "The request must be an object")
+            identity = request.get("id") if isinstance(request.get("id"), str) else ""
+            method = request.get("method")
+            params = request.get("params", {})
+            if not identity or not isinstance(method, str) or not isinstance(params, dict):
+                raise BridgeError("invalid_request", "The request identity, method or parameters are invalid")
+            result = await self.bridge.call(method, params)
+            response = {"id": identity, "result": result}
+        except BridgeError as error:
+            response = {"id": identity, "error": {"code": error.code, "message": str(error)}}
+        except (asyncio.TimeoutError, OSError, ValueError, TypeError):
+            response = {"id": identity, "error": {"code": "invalid_request", "message": "The browser request is invalid"}}
+        try:
+            writer.write(json.dumps(response, separators=(",", ":")).encode() + b"\n")
+            await asyncio.wait_for(writer.drain(), 5)
+        except (asyncio.TimeoutError, OSError):
+            pass
+        finally:
+            writer.close()
+            try:
+                await writer.wait_closed()
+            except OSError:
+                pass
+
     def close(self) -> None:
         try:
+            self.control_server.close()
+            asyncio.run_coroutine_threadsafe(self.control_server.wait_closed(), self.loop).result(10)
+            self.control_socket.unlink(missing_ok=True)
             asyncio.run_coroutine_threadsafe(self.bridge.close(), self.loop).result(10)
         finally:
             self.loop.call_soon_threadsafe(self.loop.stop)
