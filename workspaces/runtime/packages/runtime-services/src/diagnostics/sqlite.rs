@@ -221,6 +221,43 @@ fn record_store_admission_in_state(
     }
 }
 
+/// Update queue occupancy without counting a new admission or latency sample.
+pub fn record_store_waiter_occupancy(
+    read: bool,
+    waiting_threads: usize,
+    peak_waiters: usize,
+    opened_connections: usize,
+) {
+    let _ = try_with_state(state(), |state| {
+        record_store_waiter_occupancy_in_state(
+            state,
+            read,
+            waiting_threads,
+            peak_waiters,
+            opened_connections,
+        );
+    });
+}
+
+fn record_store_waiter_occupancy_in_state(
+    state: &mut SqliteState,
+    read: bool,
+    waiting_threads: usize,
+    peak_waiters: usize,
+    opened_connections: usize,
+) {
+    let samples = if read {
+        &mut state.read_admission
+    } else {
+        &mut state.writer_admission
+    };
+    samples.active_waiters = waiting_threads;
+    samples.peak_waiters = samples.peak_waiters.max(peak_waiters);
+    if read {
+        samples.opened_connections = opened_connections;
+    }
+}
+
 pub fn record_commit_profile(database: DatabaseKind, elapsed: Duration) {
     let _ = try_with_state(state(), |state| {
         let (count, samples) = state
@@ -587,11 +624,13 @@ mod tests {
     fn store_admission_reports_only_contended_waits_and_bounded_peaks() {
         let mut state = SqliteState::default();
         record_store_admission_in_state(&mut state, true, false, Duration::ZERO, 0, 0, 1);
-        record_store_admission_in_state(&mut state, true, true, Duration::from_millis(2), 1, 3, 4);
+        record_store_waiter_occupancy_in_state(&mut state, true, 1, 3, 4);
+        record_store_admission_in_state(&mut state, true, true, Duration::from_millis(2), 0, 3, 4);
         record_store_admission_in_state(&mut state, true, true, Duration::from_millis(4), 0, 3, 4);
         let metric = admission_metric(&state.read_admission);
         assert_eq!(metric["operations"], 3);
         assert_eq!(metric["waits"], 2);
+        assert_eq!(metric["activeWaiters"], 0);
         assert_eq!(metric["peakWaiters"], 3);
         assert_eq!(metric["openedConnections"], 4);
         assert_eq!(metric["waitMs"]["p95Ms"], 2.0);

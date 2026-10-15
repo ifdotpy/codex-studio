@@ -36,7 +36,8 @@ pub use locks::{record_store_writer_transaction, runtime_lock_operations, runtim
 pub use sqlite::{
     DatabaseKind, SqliteStatement, TransactionOutcome, TransactionTrace, begin_sqlite_transaction,
     finish_sqlite_transaction, record_commit_profile, record_sqlite_profile,
-    record_store_admission, record_wal_checkpoint, sqlite_contention, sqlite_history,
+    record_store_admission, record_store_waiter_occupancy, record_wal_checkpoint,
+    sqlite_contention, sqlite_history,
 };
 pub use startup::{StartupMemoryMark, mark_startup_memory, startup_memory_marks};
 pub use store::{durable_input_pending, execution_ledger, migration_status};
@@ -57,6 +58,10 @@ pub fn observe_store_event(event: studio_runtime_store::StoreDiagnosticsEvent) {
             waiting_threads,
             peak_waiters,
         } => record_store_admission(false, waited, wait, waiting_threads, peak_waiters, 0),
+        studio_runtime_store::StoreDiagnosticsEvent::WriterWaiters {
+            waiting_threads,
+            peak_waiters,
+        } => record_store_waiter_occupancy(false, waiting_threads, peak_waiters, 0),
         studio_runtime_store::StoreDiagnosticsEvent::ReadAdmission {
             wait,
             waited,
@@ -71,6 +76,11 @@ pub fn observe_store_event(event: studio_runtime_store::StoreDiagnosticsEvent) {
             peak_waiters,
             opened_connections,
         ),
+        studio_runtime_store::StoreDiagnosticsEvent::ReadWaiters {
+            waiting_threads,
+            peak_waiters,
+            opened_connections,
+        } => record_store_waiter_occupancy(true, waiting_threads, peak_waiters, opened_connections),
         studio_runtime_store::StoreDiagnosticsEvent::SqlProfile { database, elapsed } => {
             let database = match database {
                 studio_runtime_store::StoreDatabaseKind::Canvas => DatabaseKind::Canvas,

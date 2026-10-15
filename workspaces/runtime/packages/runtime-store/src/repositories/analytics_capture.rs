@@ -196,16 +196,44 @@ impl RuntimeStore {
                     + 1;
                 self.writer_waiter_peak
                     .fetch_max(waiters, std::sync::atomic::Ordering::Relaxed);
+                if diagnostics_enabled {
+                    crate::emit_diagnostic(crate::StoreDiagnosticsEvent::WriterWaiters {
+                        waiting_threads: waiters,
+                        peak_waiters: self
+                            .writer_waiter_peak
+                            .load(std::sync::atomic::Ordering::Relaxed),
+                    });
+                }
                 let writer = match self.writer.lock() {
                     Ok(writer) => writer,
                     Err(_) => {
-                        self.writer_waiters
-                            .fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+                        let waiting_threads = self
+                            .writer_waiters
+                            .fetch_sub(1, std::sync::atomic::Ordering::Relaxed)
+                            - 1;
+                        if diagnostics_enabled {
+                            crate::emit_diagnostic(crate::StoreDiagnosticsEvent::WriterWaiters {
+                                waiting_threads,
+                                peak_waiters: self
+                                    .writer_waiter_peak
+                                    .load(std::sync::atomic::Ordering::Relaxed),
+                            });
+                        }
                         return Err(StoreError::WriterPoisoned.into());
                     }
                 };
-                self.writer_waiters
-                    .fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+                let waiting_threads = self
+                    .writer_waiters
+                    .fetch_sub(1, std::sync::atomic::Ordering::Relaxed)
+                    - 1;
+                if diagnostics_enabled {
+                    crate::emit_diagnostic(crate::StoreDiagnosticsEvent::WriterWaiters {
+                        waiting_threads,
+                        peak_waiters: self
+                            .writer_waiter_peak
+                            .load(std::sync::atomic::Ordering::Relaxed),
+                    });
+                }
                 writer
             }
             Err(std::sync::TryLockError::Poisoned(_)) => {

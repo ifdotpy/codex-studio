@@ -114,9 +114,18 @@ pub enum StoreDiagnosticsEvent {
         waiting_threads: usize,
         peak_waiters: usize,
     },
+    WriterWaiters {
+        waiting_threads: usize,
+        peak_waiters: usize,
+    },
     ReadAdmission {
         wait: Duration,
         waited: bool,
+        waiting_threads: usize,
+        peak_waiters: usize,
+        opened_connections: usize,
+    },
+    ReadWaiters {
         waiting_threads: usize,
         peak_waiters: usize,
         opened_connections: usize,
@@ -383,7 +392,12 @@ impl ReadConnectionPool {
         loop {
             if let Some(connection) = state.idle.pop() {
                 if waiting {
-                    self.waiters.fetch_sub(1, Ordering::Relaxed);
+                    let waiting_threads = self.waiters.fetch_sub(1, Ordering::Relaxed) - 1;
+                    emit_diagnostic(StoreDiagnosticsEvent::ReadWaiters {
+                        waiting_threads,
+                        peak_waiters: self.waiter_peak.load(Ordering::Relaxed),
+                        opened_connections: state.opened,
+                    });
                 }
                 emit_diagnostic(StoreDiagnosticsEvent::ReadAdmission {
                     wait: started.elapsed(),
@@ -418,7 +432,16 @@ impl ReadConnectionPool {
                     }
                 }
                 if waiting {
-                    self.waiters.fetch_sub(1, Ordering::Relaxed);
+                    let waiting_threads = self.waiters.fetch_sub(1, Ordering::Relaxed) - 1;
+                    emit_diagnostic(StoreDiagnosticsEvent::ReadWaiters {
+                        waiting_threads,
+                        peak_waiters: self.waiter_peak.load(Ordering::Relaxed),
+                        opened_connections: self
+                            .state
+                            .lock()
+                            .map(|state| state.opened)
+                            .unwrap_or_default(),
+                    });
                 }
                 let opened_connections = self
                     .state
@@ -451,9 +474,7 @@ impl ReadConnectionPool {
                     .waiter_peak
                     .fetch_max(active, Ordering::Relaxed)
                     .max(active);
-                emit_diagnostic(StoreDiagnosticsEvent::ReadAdmission {
-                    wait: started.elapsed(),
-                    waited: true,
+                emit_diagnostic(StoreDiagnosticsEvent::ReadWaiters {
                     waiting_threads: active,
                     peak_waiters,
                     opened_connections: state.opened,
@@ -463,7 +484,12 @@ impl ReadConnectionPool {
                 Ok(state) => state,
                 Err(error) => {
                     if waiting {
-                        self.waiters.fetch_sub(1, Ordering::Relaxed);
+                        let waiting_threads = self.waiters.fetch_sub(1, Ordering::Relaxed) - 1;
+                        emit_diagnostic(StoreDiagnosticsEvent::ReadWaiters {
+                            waiting_threads,
+                            peak_waiters: self.waiter_peak.load(Ordering::Relaxed),
+                            opened_connections: error.get_ref().opened,
+                        });
                         emit_diagnostic(StoreDiagnosticsEvent::ReadAdmission {
                             wait: started.elapsed(),
                             waited: true,
@@ -771,9 +797,7 @@ impl RuntimeStore {
                     .writer_waiter_peak
                     .fetch_max(active_waiters, Ordering::Relaxed)
                     .max(active_waiters);
-                emit_diagnostic(StoreDiagnosticsEvent::WriterAdmission {
-                    wait: waiting.map_or(Duration::ZERO, |started| started.elapsed()),
-                    waited: true,
+                emit_diagnostic(StoreDiagnosticsEvent::WriterWaiters {
                     waiting_threads: active_waiters,
                     peak_waiters,
                 });
@@ -783,6 +807,10 @@ impl RuntimeStore {
                         let waiting_threads =
                             self.writer_waiters.fetch_sub(1, Ordering::Relaxed) - 1;
                         if diagnostics_enabled {
+                            emit_diagnostic(StoreDiagnosticsEvent::WriterWaiters {
+                                waiting_threads,
+                                peak_waiters: self.writer_waiter_peak.load(Ordering::Relaxed),
+                            });
                             emit_diagnostic(StoreDiagnosticsEvent::WriterAdmission {
                                 wait: waiting.map_or(Duration::ZERO, |started| started.elapsed()),
                                 waited: true,
@@ -794,6 +822,10 @@ impl RuntimeStore {
                     }
                 };
                 let waiting_threads = self.writer_waiters.fetch_sub(1, Ordering::Relaxed) - 1;
+                emit_diagnostic(StoreDiagnosticsEvent::WriterWaiters {
+                    waiting_threads,
+                    peak_waiters: self.writer_waiter_peak.load(Ordering::Relaxed),
+                });
                 (writer, waiting_threads)
             }
             Err(std::sync::TryLockError::Poisoned(_)) => {
@@ -1217,6 +1249,7 @@ mod diagnostics_hook_tests {
 
     static EVENTS: Mutex<Vec<StoreDiagnosticsEvent>> = Mutex::new(Vec::new());
     static EVENTS_READY: Condvar = Condvar::new();
+    static TEST_LOCK: Mutex<()> = Mutex::new(());
 
     fn record_event(event: StoreDiagnosticsEvent) {
         EVENTS.lock().expect("diagnostic events lock").push(event);
@@ -1246,6 +1279,7 @@ mod diagnostics_hook_tests {
 
     #[test]
     fn optional_hook_observes_writer_and_sql_timing_and_can_be_cleared() {
+        let _test_guard = TEST_LOCK.lock().expect("serialize diagnostics hook tests");
         let directory = tempfile::tempdir().expect("temporary state directory");
         let canvas_path = directory.path().join("canvas.sqlite3");
         Connection::open(&canvas_path)
@@ -1287,8 +1321,7 @@ mod diagnostics_hook_tests {
             let observed = wait_for_event(|event| {
                 matches!(
                     event,
-                    StoreDiagnosticsEvent::WriterAdmission {
-                        waited: true,
+                    StoreDiagnosticsEvent::WriterWaiters {
                         waiting_threads: 1,
                         ..
                     }
@@ -1304,6 +1337,19 @@ mod diagnostics_hook_tests {
         assert!(
             writer_wait_observed,
             "writer queue occupancy was not published"
+        );
+        assert_eq!(
+            EVENTS
+                .lock()
+                .expect("diagnostic events lock")
+                .iter()
+                .filter(|event| matches!(
+                    event,
+                    StoreDiagnosticsEvent::WriterAdmission { waited: true, .. }
+                ))
+                .count(),
+            1,
+            "one completed wait must produce one admission latency sample"
         );
 
         EVENTS.lock().expect("diagnostic events lock").clear();
@@ -1348,8 +1394,7 @@ mod diagnostics_hook_tests {
             let observed = wait_for_event(|event| {
                 matches!(
                     event,
-                    StoreDiagnosticsEvent::ReadAdmission {
-                        waited: true,
+                    StoreDiagnosticsEvent::ReadWaiters {
                         waiting_threads: 1,
                         peak_waiters: 1,
                         ..
@@ -1368,6 +1413,19 @@ mod diagnostics_hook_tests {
             read_wait_observed,
             "read pool queue occupancy was not published"
         );
+        assert_eq!(
+            EVENTS
+                .lock()
+                .expect("diagnostic events lock")
+                .iter()
+                .filter(|event| matches!(
+                    event,
+                    StoreDiagnosticsEvent::ReadAdmission { waited: true, .. }
+                ))
+                .count(),
+            1,
+            "one completed read wait must produce one admission latency sample"
+        );
 
         store.set_diagnostics_callback(None);
         let previous = EVENTS.lock().expect("diagnostic events lock").len();
@@ -1381,6 +1439,76 @@ mod diagnostics_hook_tests {
             EVENTS.lock().expect("diagnostic events lock").len(),
             previous
         );
+    }
+
+    #[test]
+    fn analytics_writer_publishes_queue_occupancy_before_blocking() {
+        let _test_guard = TEST_LOCK.lock().expect("serialize diagnostics hook tests");
+        let directory = tempfile::tempdir().expect("temporary state directory");
+        let store =
+            Arc::new(RuntimeStore::open(Some(directory.path())).expect("open runtime store"));
+        EVENTS.lock().expect("diagnostic events lock").clear();
+        store.set_diagnostics_callback(Some(record_event));
+        let writer_guard = store.writer.lock().expect("hold canvas writer");
+
+        std::thread::scope(|scope| {
+            let waiter = scope.spawn(|| {
+                store
+                    .analytics_transaction(|_, _| Ok::<(), StoreError>(()))
+                    .expect("analytics transaction succeeds after writer release");
+            });
+            assert!(
+                wait_for_event(|event| {
+                    matches!(
+                        event,
+                        StoreDiagnosticsEvent::WriterWaiters {
+                            waiting_threads: 1,
+                            ..
+                        }
+                    )
+                }),
+                "analytics writer must publish occupancy before waiting on the writer"
+            );
+            assert_eq!(
+                EVENTS
+                    .lock()
+                    .expect("diagnostic events lock")
+                    .iter()
+                    .filter(|event| matches!(
+                        event,
+                        StoreDiagnosticsEvent::WriterAdmission { waited: true, .. }
+                    ))
+                    .count(),
+                0,
+                "a blocked analytics admission has no completed latency sample yet"
+            );
+            drop(writer_guard);
+            waiter.join().expect("analytics waiter thread");
+        });
+
+        let events = EVENTS.lock().expect("diagnostic events lock");
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(
+                    event,
+                    StoreDiagnosticsEvent::WriterAdmission { waited: true, .. }
+                ))
+                .count(),
+            1,
+            "completed analytics wait contributes exactly one admission sample"
+        );
+        assert!(
+            events.iter().any(|event| matches!(
+                event,
+                StoreDiagnosticsEvent::WriterWaiters {
+                    waiting_threads: 0,
+                    ..
+                }
+            )),
+            "analytics waiter departure must publish the new occupancy"
+        );
+        store.set_diagnostics_callback(None);
     }
 }
 
