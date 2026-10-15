@@ -194,6 +194,88 @@ async fn installed_runtime_drives_input_and_cancel_through_http() {
 }
 
 #[tokio::test]
+async fn acknowledged_monitor_input_is_persisted_through_http() {
+    let root = fixtures::tempdir();
+    let cases = fixtures::corpus(root.path());
+    let mut case = cases
+        .iter()
+        .find(|case| case["name"] == "finish-0-None-False")
+        .expect("running monitor case")
+        .clone();
+    case["before"]["interactive"] = json!(true);
+    let store = Arc::new(fixtures::store(root.path(), "http-input-ack"));
+    fixtures::seed(&store, &case);
+    let port = Arc::new(support::Port::default());
+    let state = HttpState::new(
+        "fixture-token".into(),
+        "fixture".into(),
+        None,
+        store.root().to_string_lossy().into(),
+        49171,
+        None,
+        Some(store.clone()),
+        None,
+    );
+    let runtime = Arc::new(MonitorRuntime::new(
+        store.clone(),
+        port.clone(),
+        state.event_wake_handle(),
+    ));
+    let app = router(state).expect("router").layer(Extension(runtime));
+    let id = case["before"]["id"].as_str().expect("monitor id");
+    let (status, response) = call(
+        &app,
+        "/api/monitor/input",
+        json!({"id":id,"text":"fixture input"}),
+    )
+    .await;
+
+    assert_eq!(status, 200, "acknowledged input should succeed: {response}");
+    let entities = response["_syncEntities"].as_array().expect("sync entities");
+    assert_eq!(entities.len(), 1);
+    assert_eq!(entities[0]["id"], format!("entity:monitor:{id}"));
+    assert!(response["_syncEntitiesAfter"].is_number());
+    let submitted = port.submitted.lock().expect("submitted effects");
+    assert_eq!(
+        submitted.len(),
+        1,
+        "one HTTP input submits one native effect"
+    );
+    let studio_runtime_services::monitor_policy::Effect::Native {
+        identity,
+        method,
+        params,
+    } = &submitted[0]
+    else {
+        panic!("input must submit a native effect");
+    };
+    assert!(identity.starts_with(&format!("monitor-input:{id}:")));
+    assert_eq!(*method, "command/exec/write");
+    assert_eq!(
+        params,
+        &json!({
+            "processId": id,
+            "deltaBase64": "Zml4dHVyZSBpbnB1dA==",
+            "closeStdin": false
+        })
+    );
+    drop(submitted);
+
+    let saved = MonitorsRepository::get(&store.read().expect("read monitor"), id)
+        .expect("read monitor record")
+        .expect("monitor record")
+        .value()
+        .clone();
+    assert_eq!(saved["lastInputAttempt"]["status"], "acknowledged");
+    assert_eq!(saved["lastInputAttempt"]["method"], "command/exec/write");
+    assert_eq!(
+        saved["lastInputAttempt"]["params"]["deltaBase64"],
+        "Zml4dHVyZSBpbnB1dA=="
+    );
+    assert!(saved.get("inputAttempt").is_none());
+}
+
+#[tokio::test]
 async fn monitor_approval_routes_commit_decision_then_launch_only_accepts() {
     for decision in ["accept", "decline"] {
         let root = fixtures::tempdir();
