@@ -6,12 +6,12 @@ def is_context_window(value: object) -> bool:
     """Return whether a decoded value matches nonnegative-number-or-null."""
     if value is None:
         return True
-    return (
-        isinstance(value, (int, float))
-        and not isinstance(value, bool)
-        and math.isfinite(value)
-        and value >= 0
-    )
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        return False
+    try:
+        return math.isfinite(value) and value >= 0
+    except OverflowError:
+        return False
 
 
 def canonical_context_window(value: object) -> int | float | None:

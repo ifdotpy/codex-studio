@@ -76,6 +76,10 @@ class ParsingTests(unittest.TestCase):
             "context_window": 128000}}, context, "id", 2)
         self.assertEqual(context["window"], 128000)
 
+        rollout_actions({"type": "session_meta", "payload": {
+            "context_window": 10**400}}, context, "id", 2.5)
+        self.assertIsNone(context["window"])
+
         rollout_actions({"type": "event_msg", "payload": {
             "type": "task_started", "turn_id": "next",
             "model_context_window": {"window_id": "fixture-window"}}}, context, "id", 3)
