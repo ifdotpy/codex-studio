@@ -273,7 +273,6 @@ mod tests {
             .validate()
             .is_err()
         );
-        assert!(super::dependency_unavailable("GET", "/api/limits", &UNKNOWN).is_err());
         static TRANSFER: [Dependency; 3] = [
             Dependency::new("account-transfer/provider-history-executor"),
             Dependency::new("account-transfer/destination-settings"),
@@ -282,13 +281,18 @@ mod tests {
         static TRANSFER_SUBSET: [Dependency; 1] = [Dependency::new(
             "account-transfer/provider-history-executor",
         )];
+        let partial = OperationStatus::Partial {
+            dependencies: &TRANSFER,
+        };
+        assert!(partial.validate().is_ok());
+        assert!(partial.matches_dependencies(&TRANSFER));
+        assert!(!partial.matches_dependencies(&TRANSFER_SUBSET));
+        assert!(!partial.matches_dependencies(&UNKNOWN));
+        assert!(!OperationStatus::Implemented.matches_dependencies(&TRANSFER));
         assert!(
             super::dependency_unavailable("POST", "/api/agents/account-transfer", &TRANSFER)
-                .is_ok()
-        );
-        assert!(
-            super::dependency_unavailable("POST", "/api/agents/account-transfer", &TRANSFER_SUBSET)
-                .is_err()
+                .is_err(),
+            "implemented transfer routes cannot claim dependency unavailability"
         );
     }
 }

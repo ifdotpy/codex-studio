@@ -15,6 +15,14 @@ use studio_runtime_services::{
     linux_vm_guest::GuestRpc,
 };
 
+inventory::submit! {
+    crate::routes::manifest::RouteModuleRegistration {
+        name: "vm_native_provider",
+        routes: None,
+        dependencies: &[],
+    }
+}
+
 /// The VM guest is the provider endpoint for native actions on layr agents.
 pub(crate) struct VmNativeProvider {
     guest: Arc<dyn GuestRpc>,
