@@ -608,9 +608,14 @@ pub(super) async fn scenario_workspace_retry_wakes_after_restart() {
     state.wake(&worker).await;
     worker_barrier(&worker).await;
     assert_eq!(
-        state.record().await["preparationWake"]["reason"],
+        state.record().await["startAttempt"]["prepareError"],
         "workspace-readiness/pending"
     );
+    assert_eq!(
+        state.record().await["lastWorkspaceWait"]["attemptId"],
+        state.record().await["startAttempt"]["id"]
+    );
+    assert!(state.record().await.get("preparationWake").is_none());
     worker.task.abort();
     assert!(worker.completion().await.is_err());
     state
@@ -636,7 +641,12 @@ pub(super) async fn scenario_workspace_retry_wakes_after_restart() {
     let turn = peer.write("turn/start").await;
     peer.accepted(&turn).await;
     assert_eq!(state.event_status("input").await, "delivered");
-    assert!(state.record().await.get("preparationWake").is_none());
+    assert!(
+        state.record().await["startAttempt"]
+            .get("prepareError")
+            .is_none()
+    );
+    assert!(state.record().await.get("lastWorkspaceWait").is_none());
     replacement.shutdown().await.unwrap();
 }
 #[tokio::test(start_paused = true)]

@@ -98,12 +98,12 @@ class ToolRequest(OpenRecord):
     id: Key
     agent: Key
     tool: Key
-    epoch: Counter
+    epoch: Counter | None = None
     accountKey: Key | None = None
     connectionId: Key | None = None
     result: dict[str, JsonValue] | None = None
     stage: StrictStr
-    outcome: Literal["unknown", "applied", "not_applied"]
+    outcome: Literal["pending", "unknown", "applied", "not_applied"]
 
 
 class SourceMove(OpenRecord):

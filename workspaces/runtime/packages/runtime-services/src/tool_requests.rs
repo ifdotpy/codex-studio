@@ -14,6 +14,8 @@ pub enum ToolRequestError {
     #[error("Not implemented: requires {0}")]
     RequiresDependency(&'static str),
     #[error(transparent)]
+    Payload(#[from] crate::payload_blobs::PayloadBlobError),
+    #[error(transparent)]
     Store(#[from] StoreError),
 }
 impl From<rusqlite::Error> for ToolRequestError {
@@ -37,11 +39,29 @@ pub fn execute(
     action: Action<'_>,
     now: f64,
 ) -> Result<Value, ToolRequestError> {
-    if !records::exists(tx, TABLE)? {
-        return Err(ToolRequestError::RequiresDependency(
-            "store-bootstrap/tool-request-schema",
-        ));
-    }
+    execute_with_payload_recovery(tx, actor_id, action, now, false, None)
+}
+
+/// HTTP caller variant. Resolve the full durable payload before settling, then
+/// let the route restore references for the response after the transaction.
+pub fn execute_http(
+    tx: &Transaction<'_>,
+    actor_id: &str,
+    action: Action<'_>,
+    now: f64,
+    state_root: &std::path::Path,
+) -> Result<Value, ToolRequestError> {
+    execute_with_payload_recovery(tx, actor_id, action, now, true, Some(state_root))
+}
+
+fn execute_with_payload_recovery(
+    tx: &Transaction<'_>,
+    actor_id: &str,
+    action: Action<'_>,
+    now: f64,
+    payload_recovery: bool,
+    payload_root: Option<&std::path::Path>,
+) -> Result<Value, ToolRequestError> {
     let actor = crate::event_write::checked_agent(tx, actor_id).map_err(|e| match e {
         crate::event_write::EventWriteError::Store(e) => ToolRequestError::Store(e),
         crate::event_write::EventWriteError::InvalidStoredObject { object, id } => {
@@ -58,7 +78,15 @@ pub fn execute(
         })? {
             let (id, raw) = row?;
             let mut record = records::decode(TABLE, &id, &raw)?;
-            refresh(tx, &mut record, &actor, now, false)?;
+            refresh(
+                tx,
+                &mut record,
+                &actor,
+                now,
+                false,
+                payload_recovery,
+                payload_root,
+            )?;
             strip(&mut record, &["result", "signature", "_payloadBlobs"]);
             requests.push(record);
         }
@@ -114,14 +142,22 @@ pub fn execute(
         )
         .map_err(relocation_error)?;
     }
-    refresh(tx, &mut record, &actor, now, true)?;
+    refresh(
+        tx,
+        &mut record,
+        &actor,
+        now,
+        true,
+        payload_recovery,
+        payload_root,
+    )?;
     if cancel && lifecycle::cancel(&mut record)? {
         record["updated"] = json!(now);
         if record["stage"] == "cancelled" {
             record["finished"] = json!(now);
             record["result"] = json!({"success":false,"contentItems":[{"type":"inputText","text":json!({"requestId":record["id"],"stage":"cancelled","outcome":"not_applied","cancelRequested":true,"message":"Cancelled before execution"}).to_string()}]});
         }
-        save(tx, &record, &actor)?;
+        save(tx, &record, &actor, payload_root)?;
     }
     if !cancel {
         if !terminal(&record)
@@ -144,10 +180,10 @@ pub fn execute(
             record["registryObservedAt"] = json!(now);
         }
     }
-    if let Some(result) = record.get_mut("result") {
+    if !payload_recovery && let Some(result) = record.get_mut("result") {
         expire(result, now);
     }
-    strip(&mut record, &["signature", "_payloadBlobs"]);
+    strip(&mut record, &["signature"]);
     Ok(record)
 }
 
@@ -187,41 +223,79 @@ fn refresh(
     actor: &Value,
     now: f64,
     specific: bool,
+    payload_recovery: bool,
+    payload_root: Option<&std::path::Path>,
 ) -> Result<(), ToolRequestError> {
+    let has_record_payload = truthy(record.get("_payloadBlobs"));
     if !specific && terminal(record) {
+        if payload_recovery
+            && has_record_payload
+            && matches!(
+                text(record, "tool"),
+                "orchestration_spawn" | "orchestration_review"
+            )
+            && record
+                .get("agentIds")
+                .and_then(Value::as_array)
+                .is_none_or(Vec::is_empty)
+        {
+            let root = payload_root.ok_or(ToolRequestError::RequiresDependency(PAYLOAD))?;
+            *record = crate::payload_blobs::resolve_record(root, record)?;
+        }
         populate_spawned_agent_ids(record);
         return Ok(());
     }
-    if truthy(record.get("_payloadBlobs")) {
+    if !payload_recovery && has_record_payload {
         return Err(ToolRequestError::RequiresDependency(PAYLOAD));
     }
-    if crate::project_locations::refresh_tool_receipt(tx, record, now).map_err(relocation_error)? {
+    if payload_recovery && has_record_payload {
+        let root = payload_root.ok_or(ToolRequestError::RequiresDependency(PAYLOAD))?;
+        *record = crate::payload_blobs::resolve_record(root, record)?;
+    }
+    let saved = records::get(tx, "runtime_tool_results", text(record, "id"))?;
+    let has_saved_payload = saved
+        .as_ref()
+        .is_some_and(|result| truthy(result.get("_payloadBlobs")));
+    if !payload_recovery && has_saved_payload {
+        return Err(ToolRequestError::RequiresDependency(PAYLOAD));
+    }
+    if !has_record_payload
+        && !has_saved_payload
+        && crate::project_locations::refresh_tool_receipt(tx, record, now)
+            .map_err(relocation_error)?
+    {
         return Ok(());
     }
     if terminal(record) {
         populate_spawned_agent_ids(record);
         return Ok(());
     }
-    let saved = records::get(tx, "runtime_tool_results", text(record, "id"))?;
-    if saved
-        .as_ref()
-        .is_some_and(|r| truthy(r.get("_payloadBlobs")))
-    {
-        return Err(ToolRequestError::RequiresDependency(PAYLOAD));
-    }
-    let Some(result) = saved
-        .map(|mut result| {
-            if specific {
-                expire(&mut result, now);
-            }
-            result
-        })
-        .or_else(|| record.get("result").filter(|r| r.is_object()).cloned())
-    else {
+    let has_saved_result = saved.is_some();
+    let persisted_result =
+        saved.or_else(|| record.get("result").filter(|r| r.is_object()).cloned());
+    let Some(mut result) = persisted_result.clone() else {
         return Ok(());
     };
+    if truthy(result.get("_payloadBlobs")) {
+        if !payload_recovery {
+            return Err(ToolRequestError::RequiresDependency(PAYLOAD));
+        }
+        let root = payload_root.ok_or(ToolRequestError::RequiresDependency(PAYLOAD))?;
+        result = crate::payload_blobs::resolve_record(root, &result)?;
+    }
+    // Python's specific `tool_result` lookup expires saved results before it
+    // settles them. Inline results on the request row are settled as stored;
+    // their returned copy is expired by the HTTP route afterwards.
+    if specific && has_saved_result {
+        // Python resolves the durable payload and applies output expiry before
+        // it passes the result to finish_tool_request (codex_tool_requests.py:301-307, 512-520).
+        expire(&mut result, now);
+    }
     let committed = operation_result(tx, text(record, "id"))?.is_some();
     if lifecycle::settle(record, &result, committed)? {
+        // Store the same recovered value used for settlement. This keeps an
+        // unchanged externalized unknown result from comparing unequal on the
+        // next poll, and lets save() create a fresh reference for this value.
         record["result"] = result;
         record["updated"] = json!(now);
         if record.get("timing").is_none() {
@@ -238,7 +312,7 @@ fn refresh(
         ) {
             populate_spawned_agent_ids(record);
         }
-        save(tx, record, actor)?;
+        save(tx, record, actor, payload_root)?;
     }
     Ok(())
 }
@@ -350,13 +424,33 @@ fn relocation_error(error: crate::relocation::RelocationError) -> ToolRequestErr
 fn operation_result(tx: &Transaction<'_>, id: &str) -> Result<Option<Value>, ToolRequestError> {
     records::get(tx, "runtime_operation_receipts", id).map_err(Into::into)
 }
-fn save(tx: &Transaction<'_>, record: &Value, actor: &Value) -> Result<(), ToolRequestError> {
-    let id = text(record, "id");
-    records::validate(TABLE, id, record.clone())?;
-    reconcile_effect(tx, "tool_requests", record, actor)?;
+fn save(
+    tx: &Transaction<'_>,
+    record: &Value,
+    actor: &Value,
+    payload_root: Option<&std::path::Path>,
+) -> Result<(), ToolRequestError> {
+    let decision = payload_root
+        // decide_externalize uses logical table names; the physical SQLite
+        // table is runtime_tool_requests, but its payload contract is
+        // tool_requests.
+        .map(|root| {
+            crate::payload_blobs::decide_externalize("tool_requests", record).map(|d| (root, d))
+        })
+        .transpose()?;
+    let persisted = decision
+        .as_ref()
+        .map(|(_, decision)| &decision.record)
+        .unwrap_or(record);
+    let id = text(persisted, "id");
+    records::validate(TABLE, id, persisted.clone())?;
+    if let Some((root, decision)) = decision.as_ref() {
+        crate::payload_blobs::write_blobs(root, &decision.writes)?;
+    }
+    reconcile_effect(tx, "tool_requests", persisted, actor)?;
     tx.execute(
         "UPDATE runtime_tool_requests SET record=?1 WHERE id=?2",
-        params![record.to_string(), id],
+        params![persisted.to_string(), id],
     )?;
     Ok(())
 }
@@ -438,7 +532,7 @@ fn strip(value: &mut Value, keys: &[&str]) {
 fn text<'a>(record: &'a Value, key: &str) -> &'a str {
     record.get(key).and_then(Value::as_str).unwrap_or_default()
 }
-pub(crate) fn expire(result: &mut Value, now: f64) {
+pub fn expire(result: &mut Value, now: f64) {
     if result["serverOutputExpiresAt"]
         .as_f64()
         .is_some_and(|expiry| now >= expiry)

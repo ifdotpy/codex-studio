@@ -3,6 +3,7 @@
 use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
+use rusqlite::OptionalExtension;
 use serde_json::Value;
 use studio_runtime_services::coordination::{self, CoordinationError};
 
@@ -198,7 +199,7 @@ pub(super) async fn post_message(
                     "SELECT json_type(record,'$.remoteWorker') IS NOT NULL FROM runtime_agents WHERE id=?1",
                     [&body.room],
                     |row| row.get(0),
-                ).map_err(|_| ApiError::internal())?;
+                ).optional().map_err(|_| ApiError::internal())?.unwrap_or(false);
                 let prepared: Box<
                     dyn studio_runtime_services::message_admission::MessageAdmission + '_,
                 > = if state.message_admission.is_some() {

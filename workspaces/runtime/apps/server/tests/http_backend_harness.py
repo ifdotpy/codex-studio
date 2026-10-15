@@ -192,8 +192,11 @@ BACKGROUND_OWNED_FIELDS: dict[str, frozenset[str]] = {
         "timing.fastActorReloadedAt", "timing.fastDispatchDoneAt",
     }),
     "sync_entities": frozenset({
-        # Only preparation and activity bookkeeping is normalized. Settings,
-        # status, identity, and workspace paths remain observable.
+        # startAttempt is admitted by the asynchronous scheduler after a
+        # dispatch tick (codex_runtime.py:7188-7196); runtime_agents remains
+        # compared separately so request-visible agent state stays observable.
+        "payload.value.startAttempt",
+        # Only preparation and activity bookkeeping is otherwise normalized.
         "payload.value.lastEvent", "payload.value.activity", "payload.value.prepareAttempt",
         "payload.value.workspaceOperation", "payload.value.workspaceReservationId",
         "payload.value.worktreePreparation",
@@ -498,10 +501,10 @@ def strip_owned_json_fields(value: object, column: str, owned: frozenset[str]) -
 def assert_read_succeeds_unchanged_under_writer(test_case, backend, path, headers) -> None:
     """Prove an HTTP GET completes without taking SQLite's writer.
 
-    A direct same-thread check cannot work here: the route is reached over HTTP
-    and would block the test thread if it attempted BEGIN IMMEDIATE. The bounded
-    future wait is only a failure guard; response equality and database snapshots
-    are the success assertions.
+    The generous future timeout is only a failure guard. Response equality and
+    database snapshots are checked while the writer remains held, so a read
+    that regresses to waiting on that writer fails rather than passing after
+    the lock is released.
     """
     baseline = backend.request("GET", path, headers=headers)
     test_case.assertEqual(baseline.status, 200, baseline.body[:1000])
@@ -514,7 +517,7 @@ def assert_read_succeeds_unchanged_under_writer(test_case, backend, path, header
     pool = ThreadPoolExecutor(max_workers=1)
     future = pool.submit(backend.request, "GET", path, headers=headers)
     try:
-        response = future.result(timeout=3)
+        response = future.result(timeout=HTTP_WAIT_GUARD_SECONDS)
         test_case.assertEqual(response.status, 200, response.body[:1000])
         test_case.assertEqual(response.body, baseline.body)
         test_case.assertEqual(no_write_snapshot(backend.state), before)
@@ -749,6 +752,12 @@ class BackendProcess:
             raise RuntimeError("Backend is already running")
         if getattr(self, "_provider_executable", None) is None:
             raise RuntimeError("HTTP backend harness requires an explicit replay provider")
+        if self._provider_hold_method is not None:
+            # Gate markers belong to one provider process. A restart resets the
+            # fake provider's occurrence counter, so stale phase/release files
+            # would make waiters observe a previous RPC as the current event.
+            (self.root / "provider-gate-phase").unlink(missing_ok=True)
+            (self.root / "provider-gate-release").unlink(missing_ok=True)
         command = self._command()
         environment = self._environment()
         if os.environ.get("STUDIO_HTTP_BACKEND_COMMAND") and not (self.state / "canvas.sqlite3").is_file():

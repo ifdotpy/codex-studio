@@ -260,8 +260,6 @@ fn post_managed_message(
         }
         return Err(invalid_stored("runtime_events", input.id));
     }
-    crate::message_admission::attachments(input.assets)?;
-
     let root = if agent.root_id == agent.id {
         agent.clone()
     } else {
@@ -1130,8 +1128,8 @@ mod tests {
     use studio_runtime_store::Connection;
 
     use super::{
-        CoordinationError, PostMessage, connect_chat, create_chat, post_message,
-        require_single_team,
+        CoordinationError, PostManagedMessage, PostMessage, connect_chat, create_chat,
+        post_message, post_message_with_admission, require_single_team,
     };
 
     fn database() -> Connection {
@@ -1143,9 +1141,11 @@ mod tests {
              CREATE TABLE runtime_agents(id TEXT PRIMARY KEY,record TEXT NOT NULL);
              CREATE TABLE runtime_events(id TEXT PRIMARY KEY,agent TEXT,kind TEXT,text TEXT,status TEXT,created REAL,epoch INTEGER,turn_id TEXT,error TEXT);
              CREATE TABLE runtime_event_meta(id TEXT PRIMARY KEY,record TEXT NOT NULL);
+             CREATE TABLE runtime_operation_receipts(id TEXT PRIMARY KEY,signature TEXT NOT NULL,result TEXT NOT NULL);
+             CREATE TABLE runtime_work(id TEXT PRIMARY KEY,record TEXT NOT NULL);
              CREATE TABLE graph_agents(id TEXT PRIMARY KEY,record TEXT NOT NULL);
              CREATE TABLE sync_entities(collection TEXT NOT NULL,id TEXT NOT NULL,seq INTEGER NOT NULL,hash TEXT NOT NULL,payload TEXT,deleted INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(collection,id));
-             CREATE TABLE sync_documents(seq INTEGER PRIMARY KEY,scope TEXT NOT NULL,id TEXT NOT NULL,payload TEXT NOT NULL,deleted INTEGER NOT NULL DEFAULT 0);
+             CREATE TABLE sync_documents(seq INTEGER PRIMARY KEY AUTOINCREMENT,scope TEXT NOT NULL,id TEXT NOT NULL,payload TEXT NOT NULL,deleted INTEGER NOT NULL DEFAULT 0);
              CREATE TABLE sync_versions(seq INTEGER PRIMARY KEY,scope TEXT NOT NULL,hash TEXT NOT NULL,deleted INTEGER NOT NULL,updated REAL NOT NULL);"
         ).expect("coordination schema creates");
         for (id, root) in [("lead", "lead"), ("worker", "lead"), ("other", "other")] {
@@ -1198,6 +1198,93 @@ mod tests {
     fn mixed_teams_are_refused() {
         assert!(require_single_team(["team-a", "team-b"].into_iter()).is_err());
         assert!(require_single_team(["team-a", "team-a"].into_iter()).is_ok());
+    }
+
+    #[test]
+    fn refused_chat_validation_does_not_advance_sqlite_sequence() {
+        let mut connection = database();
+        let mut lead = studio_runtime_store::AgentRepository::get(
+            &connection,
+            &studio_runtime_store::AgentId::from("lead"),
+        )
+        .expect("lead lookup succeeds")
+        .expect("lead exists");
+        lead.extra.insert("threadId".into(), json!("thread-1"));
+        studio_runtime_store::AgentRepository::put(&connection, &lead)
+            .expect("managed thread persists");
+        connection
+            .execute(
+                "INSERT INTO graph_agents(id,record) VALUES('alias',?1)",
+                [json!({"id":"alias","threadId":"thread-1"}).to_string()],
+            )
+            .expect("registered alias inserts");
+        let before: i64 = connection
+            .query_row(
+                "SELECT COALESCE((SELECT seq FROM sqlite_sequence WHERE name='sync_documents'),0)",
+                [],
+                |row| row.get(0),
+            )
+            .expect("sequence reads");
+        let transaction = connection.transaction().expect("transaction starts");
+        let result = create_chat(&transaction, "chat", "Team", &["alias".into()]);
+        assert!(matches!(result, Err(CoordinationError::InvalidRequest(_))));
+        drop(transaction);
+        let after: i64 = connection
+            .query_row(
+                "SELECT COALESCE((SELECT seq FROM sqlite_sequence WHERE name='sync_documents'),0)",
+                [],
+                |row| row.get(0),
+            )
+            .expect("sequence reads after refusal");
+        assert_eq!(after, before);
+    }
+
+    #[test]
+    // Python creates these exact row values at codex_runtime.py:5014-5015.
+    fn managed_message_preserves_python_profile_fields_on_agent_write() {
+        let mut connection = database();
+        let mut lead = studio_runtime_store::AgentRepository::get(
+            &connection,
+            &studio_runtime_store::AgentId::from("lead"),
+        )
+        .expect("lead lookup succeeds")
+        .expect("lead exists");
+        lead.extra.insert("autoWake".into(), json!(true));
+        lead.extra.insert("profileId".into(), json!("profile-1"));
+        lead.extra.insert(
+            "profileInstructions".into(),
+            json!("Use the project profile."),
+        );
+        studio_runtime_store::AgentRepository::put(&connection, &lead)
+            .expect("profile fields persist");
+
+        let transaction = connection.transaction().expect("transaction starts");
+        let result = post_message_with_admission(
+            &transaction,
+            PostManagedMessage {
+                room: "lead",
+                id: "profile-message",
+                text: "hello",
+                delivery: "queue",
+                assets: &[],
+            },
+            &AllowAdmission,
+        )
+        .expect("managed message queues");
+        assert!(result.event_inserted);
+        transaction.commit().expect("message transaction commits");
+
+        let saved = studio_runtime_store::AgentRepository::get(
+            &connection,
+            &studio_runtime_store::AgentId::from("lead"),
+        )
+        .expect("lead lookup succeeds after write")
+        .expect("lead remains");
+        assert_eq!(saved.extra.get("profileId"), Some(&json!("profile-1")));
+        assert_eq!(
+            saved.extra.get("profileInstructions"),
+            Some(&json!("Use the project profile."))
+        );
     }
 
     struct AllowAdmission;

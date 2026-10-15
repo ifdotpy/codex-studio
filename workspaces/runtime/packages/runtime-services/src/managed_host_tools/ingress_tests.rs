@@ -2399,6 +2399,7 @@ fn dispatcher_service_bundle_calls_spawn_and_review_entry_points() {
     assert_eq!(spawned_child["model"], "gpt-6-luna");
     assert_eq!(spawned_child["effort"], Value::Null);
     assert_eq!(spawned_child["nativeEffort"], "low");
+    assert_eq!(spawned_child["profileId"], "profile-reviewer");
     assert_eq!(spawned_child["profileInstructions"], "profile instructions");
     assert_eq!(spawned.value["agents"][0]["baseRef"], "HEAD~1");
     assert_eq!(
@@ -2433,6 +2434,8 @@ fn dispatcher_service_bundle_calls_spawn_and_review_entry_points() {
     .unwrap()
     .value();
     assert_eq!(fallback_child["accountKey"], "alternate");
+    assert_eq!(fallback_child["profileId"], Value::Null);
+    assert_eq!(fallback_child["profileInstructions"], "");
     let mut expected_fallback = expected["fallback"]["child"].clone();
     let mut actual_fallback = fallback_child;
     normalize_persisted_ids_and_times(&mut expected_fallback);

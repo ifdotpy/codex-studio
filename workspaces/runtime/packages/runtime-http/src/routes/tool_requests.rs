@@ -23,10 +23,7 @@ pub(crate) fn routes() -> RouteGroup {
         ),
     ])
 }
-async fn read(
-    State(state): State<HttpState>,
-    query: QueryParams,
-) -> Result<Json<ToolRequestResponse>, ApiError> {
+async fn read(State(state): State<HttpState>, query: QueryParams) -> Result<Json<Value>, ApiError> {
     let actor = query
         .typed_value("agent")
         .and_then(Value::as_str)
@@ -42,7 +39,7 @@ async fn read(
 async fn cancel(
     State(state): State<HttpState>,
     ApiJson(body): ApiJson<crate::generated::ToolRequestCancelBody>,
-) -> Result<Json<ToolRequestResponse>, ApiError> {
+) -> Result<Json<Value>, ApiError> {
     run(state, body.agent, Some(body.request_id), true).await
 }
 async fn run(
@@ -50,38 +47,23 @@ async fn run(
     actor: String,
     id: Option<String>,
     cancel: bool,
-) -> Result<Json<ToolRequestResponse>, ApiError> {
+) -> Result<Json<Value>, ApiError> {
     let store = state.store.ok_or_else(ApiError::internal)?;
+    let state_root = store.root().to_owned();
+    let payload_root = state_root.clone();
+    let now =
+        studio_runtime_services::event_write::unix_time().map_err(|_| ApiError::internal())?;
     let value = studio_runtime_process::blocking_pool::spawn_blocking(
         "runtime-http/routes/tool_requests",
         move || {
-            let now = studio_runtime_services::event_write::unix_time()
-                .map_err(|_| ToolRequestError::InvalidRequest("The system clock is unavailable"))?;
             let operation = |tx: &studio_runtime_store::Transaction<'_>| {
                 let action = match (id.as_deref(), cancel) {
                     (Some(id), true) => Action::Cancel(id),
                     (Some(id), false) => Action::Get(id),
                     _ => Action::List,
                 };
-                let value = tool_requests::execute(tx, &actor, action, now)?;
-                let canonical = value["id"].as_str().unwrap_or("list").to_owned();
-                let response = if cancel {
-                    super::generated_json::<
-                        crate::generated::CancelToolRequestApiToolRequestsCancelPostResponse,
-                    >(value)
-                    .map(ToolRequestResponse::Cancel)
-                } else {
-                    super::generated_json::<
-                            crate::generated::ToolRequestsApiToolRequestsGetResponse,
-                        >(value)
-                        .map(ToolRequestResponse::ListOrGet)
-                };
-                response.map_err(|_| {
-                    ToolRequestError::Store(studio_runtime_store::system_reads::invalid(
-                        "runtime_tool_requests",
-                        &canonical,
-                    ))
-                })
+                let value = tool_requests::execute_http(tx, &actor, action, now, &payload_root)?;
+                Ok(value)
             };
             if cancel {
                 store.transaction_with_error(operation)
@@ -100,14 +82,63 @@ async fn run(
     .await
     .map_err(|_| ApiError::internal())?
     .map_err(error)?;
+    let mut value = resolve_payload_response(&state_root, value)?;
+    if let Some(result) = value.get_mut("result") {
+        tool_requests::expire(result, now);
+    }
+    let canonical = value["id"].as_str().unwrap_or("list").to_owned();
+    let value = if cancel {
+        let response = super::generated_json::<
+            crate::generated::CancelToolRequestApiToolRequestsCancelPostResponse,
+        >(value)
+        .map_err(|_| {
+            ApiError::stored(studio_runtime_store::system_reads::invalid(
+                "runtime_tool_requests",
+                &canonical,
+            ))
+        })?;
+        serde_json::to_value(response).map_err(|_| ApiError::internal())?
+    } else {
+        let response = super::generated_json::<
+            crate::generated::ToolRequestsApiToolRequestsGetResponse,
+        >(value)
+        .map_err(|_| {
+            ApiError::stored(studio_runtime_store::system_reads::invalid(
+                "runtime_tool_requests",
+                &canonical,
+            ))
+        })?;
+        serde_json::to_value(response).map_err(|_| ApiError::internal())?
+    };
     Ok(Json(value))
 }
 
-#[derive(serde::Serialize)]
-#[serde(untagged)]
-enum ToolRequestResponse {
-    Cancel(crate::generated::CancelToolRequestApiToolRequestsCancelPostResponse),
-    ListOrGet(crate::generated::ToolRequestsApiToolRequestsGetResponse),
+fn resolve_payload_response(state_root: &std::path::Path, value: Value) -> Result<Value, ApiError> {
+    fn resolve(state_root: &std::path::Path, value: Value) -> Result<Value, ApiError> {
+        let value = if value
+            .as_object()
+            .is_some_and(|object| object.contains_key("_payloadBlobs"))
+        {
+            studio_runtime_services::payload_blobs::resolve_record(state_root, &value)
+                .map_err(|_| ApiError::internal())?
+        } else {
+            value
+        };
+        match value {
+            Value::Array(values) => values
+                .into_iter()
+                .map(|value| resolve(state_root, value))
+                .collect::<Result<Vec<_>, _>>()
+                .map(Value::Array),
+            Value::Object(values) => values
+                .into_iter()
+                .map(|(key, value)| Ok((key, resolve(state_root, value)?)))
+                .collect::<Result<serde_json::Map<_, _>, ApiError>>()
+                .map(Value::Object),
+            value => Ok(value),
+        }
+    }
+    resolve(state_root, value)
 }
 fn error(error: ToolRequestError) -> ApiError {
     match error {
@@ -115,6 +146,7 @@ fn error(error: ToolRequestError) -> ApiError {
             ApiError::new(StatusCode::BAD_REQUEST, message)
         }
         ToolRequestError::RequiresDependency(name) => ApiError::dependency(name),
+        ToolRequestError::Payload(_) => ApiError::internal(),
         ToolRequestError::Store(error) => ApiError::stored(error),
     }
 }
@@ -122,5 +154,32 @@ fn error(error: ToolRequestError) -> ApiError {
 inventory::submit! {
     crate::routes::manifest::RouteModuleRegistration {
         name:"tool_requests", routes:Some(routes), dependencies:&["payload-store/tool-request-recovery","store-bootstrap/tool-request-schema"],
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resolve_payload_response;
+    use serde_json::json;
+
+    #[test]
+    fn tool_request_response_resolves_nested_payload_outside_the_store_transaction() {
+        let root = tempfile::tempdir().expect("isolated state directory");
+        let content = "recovered output ".repeat(5_000);
+        let externalized =
+            studio_runtime_services::payload_blobs::decide_externalize_result(&json!({
+                "success": true,
+                "contentItems": [{"type":"inputText", "text": content}],
+            }))
+            .expect("large result externalizes");
+        studio_runtime_services::payload_blobs::write_blobs(root.path(), &externalized.writes)
+            .expect("payload writes");
+        let response = json!({"id":"request","result":externalized.record});
+
+        let recovered = resolve_payload_response(root.path(), response)
+            .expect("payload is restored after the transaction");
+
+        assert_eq!(recovered["result"]["contentItems"][0]["text"], content);
+        assert!(recovered["result"].get("_payloadBlobs").is_none());
     }
 }
