@@ -199,6 +199,11 @@ class RemoteLocalHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         self.assertEqual(no_write_snapshot(self.backend.state), before)
 
     def test_federation_invitation_refusal_does_not_write_or_contact_peer(self) -> None:
+        status = self.backend.request(
+            "POST", "/api/federation", body={"action": "status"}, headers=self.headers()
+        )
+        self.assertEqual(status.status, 200, status.body[:1000])
+        self.assertTrue(status.json()["enabled"])
         before = no_write_snapshot(self.backend.state)
         response = self.backend.request(
             "POST",
@@ -206,11 +211,13 @@ class RemoteLocalHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             body={"action": "create_invite", "label": "Disposable test"},
             headers=self.headers(),
         )
-        # Python refuses this request because Serve has no public origin in
-        # the isolated fixture. Rust follows the same request-level contract;
-        # tailscale identity support is not needed to report that refusal.
+        # This enabled request has no Serve origin in the isolated fixture.
+        # Python masks service ValueErrors; Rust returns the specific refusal.
         self.assertEqual(response.status, 400, response.body[:1000])
-        self.assertIn("Configure Tailscale Serve", response.json()["error"])
+        expected_error = (
+            "Configure Tailscale Serve" if self.rust_backend else "Invalid request"
+        )
+        self.assertIn(expected_error, response.json()["error"], response.body.decode())
         self.assertEqual(no_write_snapshot(self.backend.state), before)
 
     def test_multi_server_audit_reads_empty_local_state(self) -> None:
@@ -317,7 +324,11 @@ class RemoteLocalHTTPContract(TimedHTTPContractTest, unittest.TestCase):
                     "serverId": "fixture-server",
                     "origin": "https://peer.example.ts.net",
                     "label": "Fixture peer",
-                    "publicKey": "fixture-public-key",
+                    "publicKey": (
+                        "-----BEGIN PUBLIC KEY-----\n"
+                        "MCowBQYDK2VwAyEAAAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=\n"
+                        "-----END PUBLIC KEY-----"
+                    ),
                     "tailscaleUser": "owner@example.test",
                     "expires": 4102444800,
                     "inviteId": "fixture-invite",
