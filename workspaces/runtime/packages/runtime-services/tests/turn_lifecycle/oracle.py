@@ -88,8 +88,8 @@ _SHAPES = {}
 
 class QuietRuntime(Runtime):
     @staticmethod
-    def role_guidance(_actor):
-        return ""
+    def role_guidance(actor):
+        return actor.get("nativeRoleGuidance", "")
 
     def schedule(self):
         pass
