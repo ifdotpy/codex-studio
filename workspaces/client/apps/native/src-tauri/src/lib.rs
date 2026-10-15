@@ -251,8 +251,11 @@ async fn client_request(
     }
     if matches!(
         request.method.as_str(),
-        "profile.snapshot" | "profile.chunk"
+        "profile.snapshot" | "profile.chunk" | "profile.workspace"
     ) {
+        if request.method == "profile.workspace" {
+            return Ok(Response::success(request.id, profile::workspace()?));
+        }
         let owner = request.params["owner"]
             .as_str()
             .ok_or("Missing profile owner.")?;
@@ -562,22 +565,6 @@ pub fn run() {
                     id:'fixture-remote', label:'Fixture remote', origin:'https://fixture.invalid.ts.net',
                     credentialId:'fixture-missing-credential'
                   }]));
-                }
-                if (window !== window.parent && location.hostname === 'studio-nrxwgylm.localhost') {
-                  addEventListener('DOMContentLoaded', () => {
-                    addEventListener('message', event => {
-                      if (event.source !== parent || event.origin !== 'tauri://localhost' || event.data?.correlation !== 'native-shell-probe') return;
-                      const result = event.data.result;
-                      parent.postMessage({ kind:'native-shell-http-result', error:event.data.error,
-                        status:result?.status, bytes:result?.body ? Array.from(new Uint8Array(result.body)) : null }, 'tauri://localhost');
-                    });
-                    const origin = new URLSearchParams(location.search).get('studio-origin');
-                    parent.postMessage({ kind:'studio-server-transport', correlation:'native-shell-probe', value:{
-                      action:'request', serverId:'local', streamId:'native-shell-probe', method:'POST',
-                      url:origin+'/api/native-check', headers:[['X-Studio-Request-Id','frame-http-command']],
-                      body:new TextEncoder().encode('null').buffer
-                    }}, 'tauri://localhost');
-                  }, { once:true });
                 }
                 "#)
             } else { window };

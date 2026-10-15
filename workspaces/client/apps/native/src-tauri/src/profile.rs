@@ -73,6 +73,38 @@ pub fn snapshot(owner: &str) -> Result<Value, String> {
     }
 }
 
+fn select_workspace(archive: &Value) -> Result<Value, String> {
+    let owners = archive["owners"]
+        .as_object()
+        .ok_or("Missing profile owners.")?;
+    if !owners.contains_key("root") {
+        return Err("The profile archive needs a root owner.".into());
+    }
+    let mut profiles = Vec::new();
+    for owner in owners.keys() {
+        if owner != "root"
+            && !owner.strip_prefix("server:").is_some_and(|id| {
+                !id.is_empty()
+                    && id
+                        .bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+            })
+        {
+            return Err("Invalid profile owner.".into());
+        }
+        let selected = select(archive, owner)?;
+        profiles.push(json!({"owner":owner,"snapshot":selected["snapshot"]}));
+    }
+    Ok(json!({"id":archive["id"],"profiles":profiles}))
+}
+
+pub fn workspace() -> Result<Value, String> {
+    match archive()? {
+        Some((value, _)) => select_workspace(value),
+        None => Ok(Value::Null),
+    }
+}
+
 fn read_chunk(archive: &Value, path: &Path, owner: &str, digest: &str) -> Result<Value, String> {
     use sha2::{Digest, Sha256};
     if archive["version"] != 2
@@ -150,6 +182,25 @@ pub fn chunk(owner: &str, digest: &str) -> Result<Value, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn workspace_requires_explicit_complete_owner_mappings() {
+        let mut archive = json!({"version":1,"id":"all-owners",
+            "owners":{"root":"local","server:remote":"remote"},
+            "snapshots":[{"origin":"local","version":1},{"origin":"remote","version":1}]});
+        let workspace = select_workspace(&archive).unwrap();
+        assert_eq!(workspace["profiles"].as_array().unwrap().len(), 2);
+        assert_eq!(workspace["id"], "all-owners");
+        archive["owners"]["server:missing"] = json!("absent");
+        assert!(select_workspace(&archive).is_err());
+        archive["owners"]
+            .as_object_mut()
+            .unwrap()
+            .remove("server:missing");
+        archive["owners"]["server:../other"] = json!("remote");
+        assert!(select_workspace(&archive).is_err());
+        archive["owners"].as_object_mut().unwrap().remove("root");
+        assert!(select_workspace(&archive).is_err());
+    }
     #[test]
     fn chunks_require_the_owner_exact_bytes_and_a_regular_file() {
         use sha2::{Digest, Sha256};

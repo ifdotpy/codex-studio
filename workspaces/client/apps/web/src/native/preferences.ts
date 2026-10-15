@@ -1,4 +1,5 @@
 import { importBrowserProfile } from "./importBrowserProfile.mjs";
+import { combineBrowserProfiles } from "./combineBrowserProfiles.mjs";
 import { setNativeJournalStorage } from "./draftJournal";
 import { hasNativeClient, nativeRequest } from "./client";
 import { isNativeFrame } from "./frame";
@@ -8,20 +9,32 @@ import { NativePreferenceStorage, preferenceScope } from "./preferenceState";
 
 export async function initializeNativePreferences() {
   if (!hasNativeClient()) return;
-  const archive = await nativeRequest<{ id: string; snapshot: unknown } | null>(
-    isNativeFrame() ? "browser.profile" : "profile.snapshot",
-    isNativeFrame() ? {} : { owner: "root" },
-  );
+  const frame = isNativeFrame();
+  const archive = frame
+    ? await nativeRequest<{ id: string; snapshot: unknown } | null>(
+        "browser.profile",
+        {},
+      )
+    : await nativeRequest<{
+        id: string;
+        profiles: { owner: string; snapshot: unknown }[];
+      } | null>("profile.workspace", {}).then(
+        (workspace) =>
+          workspace && {
+            id: workspace.id,
+            snapshot: combineBrowserProfiles(workspace.profiles),
+          },
+      );
   if (archive)
     await importBrowserProfile(
       archive.snapshot,
       archive.id,
-      (chunk: { sha256: string }) =>
+      (chunk: { sha256: string; owner?: string }) =>
         nativeRequest(
           isNativeFrame() ? "browser.profileChunk" : "profile.chunk",
           isNativeFrame()
             ? { sha256: chunk.sha256 }
-            : { owner: "root", sha256: chunk.sha256 },
+            : { owner: chunk.owner || "root", sha256: chunk.sha256 },
         ),
     );
   setNativeJournalStorage(window.localStorage);

@@ -14,6 +14,7 @@ import path from "node:path";
 import electron from "electron";
 import { exportBrowserProfile } from "./export-browser-profile.mjs";
 import { importBrowserProfile } from "../web/src/native/importBrowserProfile.mjs";
+import { combineBrowserProfiles } from "../web/src/native/combineBrowserProfiles.mjs";
 
 const run = promisify(execFile);
 const fixture = await mkdtemp(path.join(tmpdir(), "studio-profile-export-"));
@@ -104,7 +105,12 @@ assert.equal(archive.snapshots[1].databases[0].stores[0].chunks[0].records, 1);
 assert.deepEqual(archive.snapshots[1].preferences, {
   "frame-only": "partitioned",
 });
-const snapshot = archive.snapshots[0];
+const snapshot = combineBrowserProfiles(
+  archive.snapshots.map((snapshot, index) => ({
+    owner: index === 0 ? "root" : "server:remote",
+    snapshot,
+  })),
+);
 assert.equal(snapshot.preferences["unexpected-app-run"], undefined);
 assert.equal(
   JSON.parse(snapshot.preferences["codex-drafts:workspace"]).room,
@@ -114,12 +120,15 @@ const store = snapshot.databases
   .find((db) => db.name === "studio-fixture")
   .stores.find((store) => store.name === "records");
 assert.equal(
-  snapshot.databases[0].stores.find((store) => store.name === "changes")
-    .nextKey,
+  snapshot.databases
+    .find((db) => db.name === "studio-fixture")
+    .stores.find((store) => store.name === "changes").nextKey,
   101,
 );
 assert.equal(
-  snapshot.databases[0].stores.find((store) => store.name === "nested").nextKey,
+  snapshot.databases
+    .find((db) => db.name === "studio-fixture")
+    .stores.find((store) => store.name === "nested").nextKey,
   51,
 );
 assert.equal(store.keyPath, "id");

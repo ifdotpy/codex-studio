@@ -90,6 +90,11 @@ rust-http-conformance-ledger:
 test-browser:
     @node {{quote(facade)}} test-browser
 
+[doc("Manual heavy check: combined multi-server browser routing and offline recovery.")]
+test-browser-multi-server:
+    @pnpm --filter codex-agents-web run build
+    @pnpm --filter codex-agents-web exec node scripts/run-browser-tests.mjs --config playwright.config.ts --project=client tests/servers/multi-server-ui.spec.mjs --workers=1
+
 [doc("Run the browser smoke subset included in the fast tier.")]
 test-browser-smoke:
     @node {{quote(facade)}} test-browser-smoke

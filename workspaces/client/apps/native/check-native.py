@@ -53,6 +53,16 @@ with tempfile.TemporaryDirectory(prefix="studio-native-webview-") as temporary:
             ]}, {"name": "changes", "keyPath": None, "autoIncrement": True, "nextKey": 101, "indexes": [], "records": []}]
         }]
     }]}))
+    combined = json.loads(archive.read_text())
+    combined["owners"]["server:remote"] = "http://studio-remote.localhost:4623"
+    combined["snapshots"].append({
+        "version": 1, "origin": "http://studio-remote.localhost:4623",
+        "preferences": {":server:remote:draft": "remote draft survives"},
+        "databases": [{"name": "migration-fixture:server:remote", "version": 1,
+                       "stores": [{"name": "records", "keyPath": None, "autoIncrement": False,
+                                   "indexes": [], "records": [[["value", "voice"], ["value", "remote bytes"]]]}]}],
+    })
+    archive.write_text(json.dumps(combined))
     store_id = uuid.uuid4().hex
     print(f"Isolated WebKit profile store: {store_id}", flush=True)
     run(directory / "profile-client", "profile-import", {"CODEX_NATIVE_PROFILE_IMPORT": str(archive), "STUDIO_NATIVE_CHECK_STORE_ID": store_id})
@@ -142,7 +152,7 @@ with tempfile.TemporaryDirectory(prefix="studio-native-webview-") as temporary:
         run(directory, "drafts-offline-read")
         assert len(commands) == 2, f"Expected two distinct commands, got {len(commands)}"
         assert commands[1][1] == b"null"
-        assert commands[1][0]["x-studio-request-id"] == "frame-http-command"
+        assert commands[1][0]["x-studio-request-id"] == "shell-http-command"
         headers, body = commands[0]
         assert body == b"null", body
         assert headers["x-canvas-token"] == "fixture-native-token"

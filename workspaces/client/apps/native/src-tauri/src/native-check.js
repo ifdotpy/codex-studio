@@ -16,25 +16,6 @@
   const assert = (condition, message) => {
     if (!condition) throw new Error(message);
   };
-  const shellResult =
-    window.__studioCheckMode === "network-shell"
-      ? new Promise((resolve) => {
-          const receive = (event) => {
-            const frame = [...document.querySelectorAll("iframe")].find(
-              (frame) => frame.contentWindow === event.source,
-            );
-            if (
-              !frame ||
-              event.origin !== "studio-view://studio-nrxwgylm.localhost" ||
-              event.data?.kind !== "native-shell-http-result"
-            )
-              return;
-            window.removeEventListener("message", receive);
-            resolve(event.data);
-          };
-          window.addEventListener("message", receive);
-        })
-      : null;
   try {
     if (window.__studioCheckMode === "profile-census") {
       const deadline = Date.now() + 540000;
@@ -150,13 +131,36 @@
       });
       return;
     }
-    if (shellResult) {
-      const result = await shellResult;
+    if (window.__studioCheckMode === "network-shell") {
+      const deadline = Date.now() + 15000;
+      while (
+        !document.querySelector('[data-navigation="combined"]') &&
+        Date.now() < deadline
+      )
+        await new Promise((resolve) => setTimeout(resolve, 50));
       assert(
-        !result.error &&
-          result.status === 409 &&
-          JSON.stringify(result.bytes) === "[97,0,255]",
-        "Actual server frame HTTP round trip failed: " + JSON.stringify(result),
+        document.querySelector('[data-navigation="combined"]'),
+        "Combined shell did not mount",
+      );
+      assert(
+        document.querySelectorAll("iframe").length === 0,
+        "Combined shell created a server iframe",
+      );
+      const response = await call("shell-http-command", "api.request", {
+        path: "/api/native-check",
+        method: "POST",
+        body: null,
+        requestId: "shell-http-command",
+        httpResponse: true,
+      });
+      const result = response.result;
+      assert(
+        !response.error &&
+          result?.status === 409 &&
+          JSON.stringify(
+            Array.from(atob(result.base64), (byte) => byte.charCodeAt(0)),
+          ) === "[97,0,255]",
+        "Direct shell HTTP round trip failed: " + JSON.stringify(response),
       );
       await window.__TAURI__.event.emit("studio-native-check-result", {
         passed: true,
@@ -206,6 +210,26 @@
         window.localStorage.getItem("migrated") === "saved Ж🦀",
         "Imported preference was lost",
       );
+      assert(
+        window.localStorage.getItem(":server:remote:draft") ===
+          "remote draft survives",
+        "Remote owner preference was lost",
+      );
+      const remoteDb = await new Promise((resolve, reject) => {
+        const request = indexedDB.open("migration-fixture:server:remote", 1);
+        request.onsuccess = () => resolve(request.result);
+        request.onerror = () => reject(request.error);
+      });
+      const remoteValue = await new Promise((resolve, reject) => {
+        const request = remoteDb
+          .transaction("records")
+          .objectStore("records")
+          .get("voice");
+        request.onsuccess = () => resolve(request.result);
+        request.onerror = () => reject(request.error);
+      });
+      remoteDb.close();
+      assert(remoteValue === "remote bytes", "Remote owner database was lost");
       await window.localStorage.flush();
       const stored = await call(
         "profile-preferences",
