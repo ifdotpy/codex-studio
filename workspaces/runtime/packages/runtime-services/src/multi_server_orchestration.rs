@@ -9,9 +9,9 @@ use studio_runtime_store::RuntimeStore;
 
 use crate::multi_server_auth::{AccessError, digest, refused, schema, stored, text};
 use crate::remote_transport::{
-    MAX_REQUEST_BYTES, MAX_RESPONSE_BYTES, MultiServerRequest, SignedHttpClient, canonical_json,
-    load_multi_server_identity, multi_server_signed_headers, new_nonce,
-    verify_multi_server_response,
+    MAX_REQUEST_BYTES, MAX_RESPONSE_BYTES, MultiServerRequest, canonical_json,
+    exchange_paired_request, learn_paired_request_link, load_multi_server_identity,
+    multi_server_signed_headers, new_nonce, verify_multi_server_response,
 };
 
 #[derive(Clone, Debug, PartialEq)]
@@ -88,9 +88,9 @@ pub trait PairedTransport: Send + Sync {
     ) -> Result<Value, AccessError>;
 }
 
-/// Production HTTPS adapter for the existing paired-server credential rows.
-/// It performs exactly one signed exchange; retry scheduling remains owned by
-/// the durable outbox driver.
+/// Production adapter for existing paired-server credential rows. The shared
+/// signed-request exchange owns QUIC-first transport and safe HTTPS fallback;
+/// retry scheduling remains owned by the durable outbox driver.
 pub struct HttpsPairedTransport {
     store: Arc<RuntimeStore>,
 }
@@ -173,33 +173,54 @@ impl PairedTransport for HttpsPairedTransport {
                 "The paired request could not be signed",
             )
         })?;
-        let headers = headers
+        let mut headers = headers
             .iter()
             .map(|(name, value)| (name.as_str(), value.as_str()))
             .collect::<Vec<_>>();
-        let response =
-            SignedHttpClient::exchange("POST", &url, &headers, &body, timeout, MAX_RESPONSE_BYTES)
-                .map_err(|_| {
-                    refused(
-                        503,
-                        "exchange_unknown",
-                        "The paired delivery outcome is unknown",
-                    )
-                })?;
-        if response.status != 200 {
-            return Err(refused(
+        headers.push(("Accept-Encoding", "identity"));
+        if !body.is_empty() {
+            headers.push(("Content-Type", "application/json"));
+        }
+        let response = exchange_paired_request(
+            &self.store,
+            server,
+            &public_key,
+            "POST",
+            &url,
+            &headers,
+            &body,
+            timeout,
+            MAX_RESPONSE_BYTES,
+        )
+        .map_err(|_| {
+            refused(
                 503,
                 "exchange_unknown",
                 "The paired delivery outcome is unknown",
+            )
+        })?;
+        if !(200..300).contains(&response.status) {
+            return Err(refused(
+                response.status,
+                "peer_rejected",
+                "The paired server refused the request",
             ));
         }
-        verify_multi_server_response(&response.body, server, &public_key).map_err(|_| {
-            refused(
-                503,
-                "invalid_receipt",
-                "The paired server returned an invalid receipt",
-            )
-        })
+        let value =
+            verify_multi_server_response(&response.body, server, &public_key).map_err(|_| {
+                refused(
+                    503,
+                    "invalid_receipt",
+                    "The paired server returned an invalid receipt",
+                )
+            })?;
+        let advert = response
+            .headers
+            .iter()
+            .find(|(name, _)| name.eq_ignore_ascii_case("x-studio-link"))
+            .map(|(_, value)| value.as_str());
+        learn_paired_request_link(&self.store, server, advert);
+        Ok(value)
     }
 }
 /// Missing effects are refused before claiming a receipt. Implementations must
@@ -219,6 +240,8 @@ pub trait BrowserCallbackEffect: Send + Sync {
 pub struct RuntimeOrchestrationEffects {
     store: Arc<RuntimeStore>,
     browser_callback: Arc<dyn BrowserCallbackEffect>,
+    default_account: String,
+    known_accounts: Vec<Value>,
 }
 
 impl RuntimeOrchestrationEffects {
@@ -229,6 +252,8 @@ impl RuntimeOrchestrationEffects {
         Self {
             store,
             browser_callback,
+            default_account: "default".to_owned(),
+            known_accounts: Vec::new(),
         }
     }
 
@@ -239,7 +264,136 @@ impl RuntimeOrchestrationEffects {
         Self {
             store,
             browser_callback,
+            default_account: "default".to_owned(),
+            known_accounts: Vec::new(),
         }
+    }
+
+    pub fn with_project_accounts(
+        store: Arc<RuntimeStore>,
+        browser_callback: Arc<dyn BrowserCallbackEffect>,
+        default_account: String,
+        known_accounts: Vec<Value>,
+    ) -> Self {
+        Self {
+            store,
+            browser_callback,
+            default_account,
+            known_accounts,
+        }
+    }
+
+    fn project_location(
+        &self,
+        principal: &str,
+        envelope: &Value,
+    ) -> Result<ExchangeOutcome, AccessError> {
+        let action = text(envelope, "action");
+        let payload = &envelope["payload"];
+        let home_project = text(payload, "project");
+        let request_id = text(envelope, "requestId");
+        if home_project.is_empty() || request_id.is_empty() {
+            return Err(refused(400, "invalid_request", "Invalid project location"));
+        }
+        if action == "add_location" {
+            let path = text(payload, "path");
+            let name = text(payload, "name");
+            if path.is_empty() || path.len() > 4096 || name.is_empty() || name.len() > 255 {
+                return Err(refused(400, "invalid_request", "Invalid project location"));
+            }
+            let registered = crate::projects::write(
+                &self.store,
+                &json!({"action":"register","path":path,"name":name}),
+                &self.default_account,
+                &self.known_accounts,
+            )
+            .map_err(|_| {
+                refused(
+                    400,
+                    "location_unavailable",
+                    "The project folder is unavailable",
+                )
+            })?;
+            let project_id = text(&registered, "id");
+            let canonical_path = text(&registered, "path");
+            if project_id.is_empty() || canonical_path.is_empty() {
+                return Err(refused(
+                    503,
+                    "invalid_project",
+                    "The project folder is unavailable",
+                ));
+            }
+            let local_server = self.store.local_server_id()?.ok_or_else(|| {
+                refused(
+                    503,
+                    "identity_unavailable",
+                    "The server identity is unavailable",
+                )
+            })?;
+            let git_origin = crate::projects::peer_location_info(canonical_path)
+                .ok()
+                .and_then(|value| value.get("gitOrigin").cloned())
+                .unwrap_or(Value::Null);
+            self.store.transaction_with(|tx| {
+                let (_, mut project) = studio_runtime_store::ProjectsRepository::get(
+                    tx, project_id,
+                )?
+                .ok_or_else(|| refused(503, "project_unavailable", "The project is unavailable"))?;
+                let aliases = project
+                    .get("projectAliases")
+                    .and_then(Value::as_array)
+                    .cloned()
+                    .unwrap_or_default();
+                let mut aliases = aliases
+                    .into_iter()
+                    .filter(|alias| {
+                        alias.get("serverId").and_then(Value::as_str) != Some(principal)
+                            || alias.get("projectId").and_then(Value::as_str) != Some(home_project)
+                    })
+                    .collect::<Vec<_>>();
+                if principal != local_server || home_project != project_id {
+                    aliases
+                        .push(json!({"serverId":principal,"projectId":home_project,"name":name}));
+                }
+                project["projectAliases"] = Value::Array(aliases);
+                studio_runtime_store::ProjectsRepository::put_project(tx, &project)?;
+                Ok::<_, AccessError>(())
+            })?;
+            return Ok(ExchangeOutcome::Applied(json!({
+                "serverId":local_server,"path":path,"canonicalPath":canonical_path,
+                "projectId":project_id,"gitOrigin":git_origin,
+                "homeProjectId":home_project,"requestId":request_id
+            })));
+        }
+        let location = &payload["location"];
+        let project_id = text(location, "projectId");
+        if !project_id.is_empty() {
+            self.store.transaction_with(|tx| {
+                if let Some((_, mut project)) =
+                    studio_runtime_store::ProjectsRepository::get(tx, project_id)?
+                {
+                    let aliases = project
+                        .get("projectAliases")
+                        .and_then(Value::as_array)
+                        .cloned()
+                        .unwrap_or_default()
+                        .into_iter()
+                        .filter(|alias| {
+                            alias.get("serverId").and_then(Value::as_str) != Some(principal)
+                                || alias.get("projectId").and_then(Value::as_str)
+                                    != Some(home_project)
+                        })
+                        .collect::<Vec<_>>();
+                    project["projectAliases"] = Value::Array(aliases);
+                    studio_runtime_store::ProjectsRepository::put_project(tx, &project)?;
+                }
+                Ok::<_, AccessError>(())
+            })?;
+        }
+        let local_server = self.store.local_server_id()?.unwrap_or_default();
+        Ok(ExchangeOutcome::Applied(
+            json!({"removed":true,"serverId":local_server}),
+        ))
     }
 
     fn worker_call(
@@ -426,6 +580,201 @@ impl RuntimeOrchestrationEffects {
     }
 }
 
+fn receive_remote_input(
+    store: &RuntimeStore,
+    principal: &str,
+    envelope: &Value,
+) -> Result<ExchangeOutcome, AccessError> {
+    let payload = &envelope["payload"];
+    let key = text(envelope, "requestId");
+    let link_id = text(payload, "link");
+    let worker_id = text(payload, "worker");
+    let kind = text(payload, "kind");
+    let event_text = text(payload, "text");
+    let parent_epoch = payload
+        .get("parentEpoch")
+        .and_then(Value::as_i64)
+        .ok_or_else(|| refused(400, "invalid_request", "Invalid remote input"))?;
+    let control_epoch = payload
+        .get("controlEpoch")
+        .and_then(Value::as_i64)
+        .ok_or_else(|| refused(400, "invalid_request", "Invalid remote input"))?;
+    let remote_epoch = payload
+        .get("epoch")
+        .and_then(Value::as_i64)
+        .ok_or_else(|| refused(400, "invalid_request", "Invalid remote input"))?;
+    let delivery = payload
+        .get("delivery")
+        .and_then(Value::as_str)
+        .unwrap_or("queue");
+    if key.is_empty()
+        || link_id.is_empty()
+        || worker_id.is_empty()
+        || event_text.len() > 32_000
+        || !matches!(
+            kind,
+            "user"
+                | "followup"
+                | "child_result"
+                | "child_stopped"
+                | "agent_message"
+                | "work_review"
+        )
+    {
+        return Err(refused(400, "invalid_request", "Invalid remote input"));
+    }
+    let connection = store.read()?;
+    let raw: Option<String> = connection
+        .query_row(
+            "SELECT record FROM runtime_server_links WHERE id=?1",
+            [link_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let link: Value = raw
+        .as_deref()
+        .and_then(|raw| serde_json::from_str(raw).ok())
+        .ok_or_else(|| {
+            refused(
+                404,
+                "link_unavailable",
+                "The remote-parent link is unavailable",
+            )
+        })?;
+    if link["side"] != "remote"
+        || link["server"] != principal
+        || link["parentEpoch"].as_i64() != Some(parent_epoch)
+        || !link["workers"].as_array().is_some_and(|workers| {
+            workers
+                .iter()
+                .any(|worker| worker.as_str() == Some(worker_id))
+        })
+    {
+        return Err(refused(
+            403,
+            "link_owner",
+            "The remote-parent link is invalid",
+        ));
+    }
+    let worker = studio_runtime_store::AgentRepository::get(
+        &connection,
+        &studio_runtime_store::AgentId::from(worker_id),
+    )?
+    .ok_or_else(|| {
+        refused(
+            404,
+            "worker_unavailable",
+            "The remote worker is unavailable",
+        )
+    })?;
+    let observed_control = worker
+        .extra
+        .get("remoteControlEpoch")
+        .and_then(Value::as_i64)
+        .unwrap_or(0);
+    if observed_control < control_epoch {
+        return Ok(ExchangeOutcome::Unknown);
+    }
+    if observed_control != control_epoch
+        || worker
+            .extra
+            .get("remoteEpoch")
+            .and_then(Value::as_i64)
+            .unwrap_or(0)
+            > remote_epoch
+    {
+        return Ok(ExchangeOutcome::NotApplied(
+            "The remote worker epoch changed".to_owned(),
+        ));
+    }
+    let admission = if matches!(kind, "user" | "followup") {
+        Some(
+            crate::message_admission::MessageIngressAdmission::load(store, &connection, worker_id)
+                .map_err(|_| refused(400, "input_rejected", "The remote input was not admitted"))?,
+        )
+    } else {
+        None
+    };
+    drop(connection);
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|_| refused(503, "clock_unavailable", "The system clock is unavailable"))?
+        .as_secs_f64();
+    let result = store.transaction_with(|tx| {
+        let current = studio_runtime_store::AgentRepository::get(
+            tx,
+            &studio_runtime_store::AgentId::from(worker_id),
+        )?
+        .ok_or_else(|| {
+            refused(
+                404,
+                "worker_unavailable",
+                "The remote worker is unavailable",
+            )
+        })?;
+        if current.epoch != worker.epoch
+            || current
+                .extra
+                .get("remoteControlEpoch")
+                .and_then(Value::as_i64)
+                .unwrap_or(0)
+                != control_epoch
+        {
+            return Err(refused(409, "worker_changed", "The remote worker changed"));
+        }
+        if studio_runtime_store::truthy(current.extra.get("moveImportPending"))
+            || studio_runtime_store::truthy(current.extra.get("movedTo"))
+        {
+            crate::event_write::enqueue_recovery_event(
+                tx,
+                &current,
+                key.to_owned(),
+                kind,
+                event_text.to_owned(),
+                now,
+            )
+            .map_err(|_| refused(400, "input_rejected", "The remote input was not admitted"))?;
+            return Ok::<Value, AccessError>(json!({"eventId":key}));
+        }
+        if matches!(kind, "user" | "followup") {
+            if !matches!(delivery, "queue" | "steer" | "after_tool" | "after_turn") {
+                return Err(refused(
+                    400,
+                    "invalid_request",
+                    "Invalid remote input delivery",
+                ));
+            }
+            let admission = admission.as_ref().ok_or_else(|| {
+                refused(400, "input_rejected", "The remote input was not admitted")
+            })?;
+            let posted = crate::coordination::post_message_with_admission(
+                tx,
+                crate::coordination::PostManagedMessage {
+                    room: worker_id,
+                    id: key,
+                    text: event_text,
+                    delivery,
+                    assets: &[],
+                },
+                admission,
+            )
+            .map_err(|_| refused(400, "input_rejected", "The remote input was not admitted"))?;
+            return Ok(posted.receipt);
+        }
+        crate::event_write::enqueue_recovery_event(
+            tx,
+            &current,
+            key.to_owned(),
+            kind,
+            event_text.to_owned(),
+            now,
+        )
+        .map_err(|_| refused(400, "input_rejected", "The remote input was not admitted"))?;
+        Ok(json!({"eventId":key}))
+    })?;
+    Ok(ExchangeOutcome::Applied(result))
+}
+
 fn callback_error(error: crate::provider_callbacks::CallbackError) -> AccessError {
     use crate::provider_callbacks::CallbackError as Callback;
     match error {
@@ -477,7 +826,16 @@ impl OrchestrationEffects for RuntimeOrchestrationEffects {
     fn supports(&self, action: &str) -> bool {
         matches!(
             action,
-            "event" | "message" | "move_send" | "browser_callback"
+            "event"
+                | "message"
+                | "move_send"
+                | "input"
+                | "browser_callback"
+                | "folders"
+                | "add_location"
+                | "remove_location"
+                | "location_info"
+                | "location_matches"
         )
     }
 
@@ -488,6 +846,48 @@ impl OrchestrationEffects for RuntimeOrchestrationEffects {
                 .browser_callback
                 .receive(envelope)
                 .map(ExchangeOutcome::Applied);
+        }
+        if action == "folders" {
+            let path = envelope["payload"].get("cwd").and_then(Value::as_str);
+            let result = crate::system_reads::directories(path)
+                .map_err(|_| refused(400, "folder_unavailable", "This directory is unavailable"))?;
+            return serde_json::to_value(result)
+                .map(ExchangeOutcome::Applied)
+                .map_err(|_| {
+                    refused(503, "folder_unavailable", "The directory could not be read")
+                });
+        }
+        if matches!(action, "add_location" | "remove_location") {
+            return self.project_location(principal, envelope);
+        }
+        if action == "location_info" {
+            let path = text(&envelope["payload"], "cwd");
+            return crate::projects::peer_location_info(path)
+                .map(ExchangeOutcome::Applied)
+                .map_err(|_| {
+                    refused(
+                        400,
+                        "location_unavailable",
+                        "The project folder is unavailable",
+                    )
+                });
+        }
+        if action == "location_matches" {
+            let payload = &envelope["payload"];
+            let origin = text(payload, "origin");
+            let cwd = payload.get("cwd").and_then(Value::as_str);
+            return crate::projects::peer_location_matches(&self.store, origin, cwd)
+                .map(ExchangeOutcome::Applied)
+                .map_err(|_| {
+                    refused(
+                        400,
+                        "location_unavailable",
+                        "Project location matches are unavailable",
+                    )
+                });
+        }
+        if action == "input" {
+            return receive_remote_input(&self.store, principal, envelope);
         }
         if matches!(action, "message" | "move_send") {
             return self.worker_call(principal, envelope);
@@ -784,7 +1184,10 @@ pub enum DeliveryDecision {
     Return(ExchangeOutcome),
 }
 fn peer_replay_safe(action: &str) -> bool {
-    matches!(action, "event" | "message" | "move_send")
+    matches!(
+        action,
+        "event" | "message" | "move_send" | "location_info" | "location_matches"
+    )
 }
 
 fn peer_retry_delay(attempts: i64) -> i64 {

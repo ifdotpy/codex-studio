@@ -398,7 +398,6 @@ pub fn cancel_in_transaction(
 ) -> Result<Value, MonitorError> {
     let (snapshot, actor) = snapshot(tx, id)?;
     let decision = policy::cancel(&snapshot, owner, now)?;
-    refuse_unavailable(&decision)?;
     apply(tx, &snapshot, &actor, &decision, now)?;
     Ok(decision.response)
 }

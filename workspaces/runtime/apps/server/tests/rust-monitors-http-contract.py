@@ -533,17 +533,25 @@ class MonitorsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
                 db.execute("UPDATE runtime_agents SET record=? WHERE id='monitor-contract-agent'", (actor,))
 
     @unittest.skipUnless(os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"), "Rust backend only")
-    def test_running_monitor_cancel_refuses_native_dependency_without_writes(self) -> None:
+    def test_running_monitor_cancel_persists_local_request_without_a_live_session(self) -> None:
         backend = self.backend
         with sqlite3.connect(backend.state / "canvas.sqlite3") as db:
             old = db.execute("SELECT record FROM runtime_monitors WHERE id='contract-monitor'").fetchone()[0]
             db.execute("UPDATE runtime_monitors SET record=json_set(record,'$.status','running') WHERE id='contract-monitor'")
         try:
-            before = no_write_snapshot(backend.state)
             response = backend.request("POST", "/api/monitor/cancel", headers=self.headers(), body={"id":"contract-monitor"})
-            self.assertEqual(response.status, 501, response.body[:1000])
-            self.assertEqual(response.json()["error"], "Not implemented: requires provider-session/monitor-commands")
-            self.assertEqual(no_write_snapshot(backend.state), before)
+            self.assertEqual(response.status, 200, response.body[:1000])
+            value = response.json()
+            self.assertEqual(value["id"], "contract-monitor")
+            self.assertEqual(value["status"], "running")
+            self.assertTrue(value["cancelRequested"])
+            self.assertIn("Process termination was not confirmed", value["error"])
+            with sqlite3.connect(backend.state / "canvas.sqlite3") as db:
+                monitor = json.loads(db.execute(
+                    "SELECT record FROM runtime_monitors WHERE id='contract-monitor'"
+                ).fetchone()[0])
+            self.assertTrue(monitor["cancelRequested"])
+            self.assertIn("Process termination was not confirmed", monitor["error"])
         finally:
             with sqlite3.connect(backend.state / "canvas.sqlite3") as db:
                 db.execute("UPDATE runtime_monitors SET record=? WHERE id='contract-monitor'", (old,))

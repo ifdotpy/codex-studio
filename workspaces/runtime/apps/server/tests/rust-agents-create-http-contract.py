@@ -1299,24 +1299,99 @@ class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         self.post("/api/configure", {"id": body["id"], "maxAgents": 17})
         self.assertEqual(self.projection(child["id"])["overview"]["resultFile"], "/fixture/result.txt")
 
-    def test_every_declared_creation_settings_boundary_refuses_without_writes(self):
+    def test_creation_boundaries_and_paired_remote_project_binding(self):
         self.rust_only()
+        self.await_background_quiescence()
+        self.quiesce_fixture_agent(self.agent_id)
+        fixture_agent_ids = {self.agent_id}
+
+        def stable_snapshot():
+            snapshot = no_write_snapshot(self.backend.state)
+            stable_databases = []
+            for database, tables in snapshot:
+                stable_tables = []
+                for table, columns, rows in tables:
+                    if table == "runtime_agents" and "id" in columns:
+                        rows = tuple(row for row in rows if row[columns.index("id")] not in fixture_agent_ids)
+                    elif table == "sync_entities" and {"collection", "id"}.issubset(columns):
+                        collection, entity_id = columns.index("collection"), columns.index("id")
+                        rows = tuple(
+                            row for row in rows
+                            if (row[collection], row[entity_id]) not in {
+                                ("agent", agent_id) for agent_id in fixture_agent_ids
+                            }
+                        )
+                    stable_tables.append((table, columns, rows))
+                stable_databases.append((database, tuple(stable_tables)))
+            return tuple(stable_databases)
+
         for path, preferences, dependency in REVIEW_CORPUS["boundaries"]:
             with self.subTest(path=path, preferences=preferences):
                 body = {"id": self.agent_id} if path in ("/api/configure", "/api/conversation") else {"id": str(uuid.uuid4()), "cwd": str(self.backend.cwd)}
                 if path == "/api/agents":
                     body["prompt"] = "Task"
+                if dependency == "cross-server-driver/project-binding":
+                    identity = self.backend.request(
+                        "GET", "/api/multi-server/v1/identity", headers=self.headers()
+                    ).json()
+                    local_server = identity["serverId"]
+                    peer_server = "paired-project-server"
+                    with database_connection(self.backend.state / "canvas.sqlite3") as database:
+                        row = database.execute(
+                            "SELECT id,record FROM runtime_projects WHERE json_extract(record,'$.path')=?",
+                            (str(self.backend.cwd),),
+                        ).fetchone()
+                        self.assertIsNotNone(row, "the local fixture project must be registered")
+                        project = json.loads(row[1])
+                        project["projectAliases"] = [{
+                            "serverId": peer_server,
+                            "projectId": "remote-project",
+                            "name": "Remote project",
+                        }]
+                        database.execute(
+                            "UPDATE runtime_projects SET record=? WHERE id=?",
+                            (json.dumps(project), row[0]),
+                        )
+                        database.execute(
+                            "INSERT INTO runtime_access_clients(id,record) VALUES(?,?)",
+                            (peer_server, json.dumps({"id": peer_server, "kind": "server", "status": "paired", "publicKey": "fixture-public-key"})),
+                        )
+                    response = self.post(path, {
+                        **body,
+                        "project_id": "remote-project",
+                        "project_server_id": peer_server,
+                    }, 200)
+                    self.assertEqual(response["projectId"], "remote-project")
+                    self.assertEqual(response["projectServerId"], peer_server)
+                    self.assertEqual(self.stored(body["id"])["projectServerId"], peer_server)
+                    self.assertNotEqual(local_server, peer_server)
+                    with database_connection(self.backend.state / "canvas.sqlite3") as database:
+                        self.assertIsNotNone(database.execute(
+                            "SELECT 1 FROM runtime_agents WHERE id=?", (body["id"],)
+                        ).fetchone())
+                    fixture_agent_ids.add(body["id"])
+                    self.quiesce_fixture_agent(body["id"])
+                    continue
                 if preferences == {"effort": None}:
                     self.post(path, {**body, **preferences}, 200)
+                    fixture_agent_ids.add(body["id"])
+                    self.await_background_quiescence(body["id"])
+                    self.quiesce_fixture_agent(body["id"])
                 elif preferences.get("model") == "gpt-6-astra":
-                    before = self.snapshot_no_write()
+                    self.await_background_quiescence()
+                    self.quiesce_fixture_agent(self.agent_id)
+                    before = stable_snapshot()
                     response = self.post(path, {**body, **preferences}, 400)
                     self.assertNotIn("Not implemented: requires", response["error"])
-                    self.assertEqual(self.snapshot_no_write(before=before), before)
+                    after = stable_snapshot()
+                    self.assertEqual(after, before, describe_snapshot_delta(before, after))
                 else:
-                    before = self.snapshot_no_write()
+                    self.await_background_quiescence()
+                    self.quiesce_fixture_agent(self.agent_id)
+                    before = stable_snapshot()
                     self.assertEqual(self.post(path, {**body, **preferences}, 501)["error"], "Not implemented: requires " + dependency)
-                    self.assertEqual(self.snapshot_no_write(before=before), before)
+                    after = stable_snapshot()
+                    self.assertEqual(after, before, describe_snapshot_delta(before, after))
 
     def test_probe_refusal_configure_response_failure_rolls_back_every_write(self):
         self.rust_only()

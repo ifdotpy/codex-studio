@@ -95,6 +95,10 @@ pub mod multi_server_orchestration;
 pub mod multi_server_pairing;
 pub mod multi_server_protocol_generated;
 pub mod multi_server_transport_limits;
+/// Shared signed server-to-server transport API. Production callers use the
+/// durable HTTPS adapter; tests and transport alternatives implement
+/// `PairedTransport` with a local fake peer.
+pub mod multi_server_transport;
 pub mod native_actions;
 pub mod native_review;
 pub mod native_runtime;

@@ -2,7 +2,7 @@
 
 use super::{
     extractors::ApiJson,
-    manifest::{Dependency, OperationStatus, RouteGroup, post},
+    manifest::{OperationStatus, RouteGroup, post},
 };
 use crate::{error::ApiError, router::HttpState};
 use axum::{Extension, Json, extract::State, http::StatusCode};
@@ -15,15 +15,9 @@ use studio_runtime_services::{
     monitor_runtime,
 };
 
-const CANCEL_DEPENDENCIES: [Dependency; 1] = [Dependency::new("cross-server/remote-events")];
-
 pub(crate) fn routes() -> RouteGroup {
     RouteGroup::new(vec![
-        post(
-            "/api/monitor/cancel",
-            OperationStatus::partial(&CANCEL_DEPENDENCIES),
-            cancel,
-        ),
+        post("/api/monitor/cancel", OperationStatus::Implemented, cancel),
         post("/api/monitor/input", OperationStatus::Implemented, input),
     ])
 }
@@ -137,6 +131,6 @@ fn error(error: MonitorError) -> ApiError {
 inventory::submit! {
     crate::routes::manifest::RouteModuleRegistration {
         name: "monitor_runtime", routes: Some(routes),
-        dependencies: &["provider-session/monitor-commands", "cross-server/remote-events"],
+        dependencies: &["provider-session/monitor-commands"],
     }
 }

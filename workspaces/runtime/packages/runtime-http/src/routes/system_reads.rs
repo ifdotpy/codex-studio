@@ -7,14 +7,10 @@ use serde_json::Value;
 use studio_runtime_services::system_reads::{self, SystemReadError};
 
 use super::extractors::QueryParams;
-use super::manifest::{Dependency, OperationStatus, RouteGroup, dependency_unavailable, get};
+use super::manifest::{Dependency, OperationStatus, RouteGroup, get};
 use crate::error::ApiError;
 use crate::router::HttpState;
 
-const REMOTE_BROWSE_DEPENDENCY: [Dependency; 2] = [
-    Dependency::new("multi-server/discovery-pairing"),
-    Dependency::new("multi-server/folder-browse"),
-];
 const DIAGNOSTICS_DEPENDENCIES: [Dependency; 3] = [
     Dependency::new("runtime-process/studio-loaded-threads"),
     Dependency::new("runtime-process/supervisor-status"),
@@ -25,7 +21,7 @@ pub(crate) fn routes() -> RouteGroup {
     RouteGroup::new(vec![
         get(
             "/api/directories",
-            OperationStatus::partial(&REMOTE_BROWSE_DEPENDENCY),
+            OperationStatus::Implemented,
             directories,
         ),
         get(
@@ -57,14 +53,14 @@ async fn directories(
     };
     if !local {
         let store = state.store.clone().ok_or_else(ApiError::internal)?;
-        let server = server.to_owned();
+        let server_id = server.to_owned();
         let paired = studio_runtime_process::blocking_pool::spawn_blocking(
             "runtime-http/routes/system_reads",
             move || {
                 let mut connection = store.read().map_err(|_| ApiError::internal())?;
                 let tx = connection.transaction().map_err(|_| ApiError::internal())?;
                 use studio_runtime_store::system_reads as records;
-                let client = records::get(&tx, "runtime_access_clients", &server)
+                let client = records::get(&tx, "runtime_access_clients", &server_id)
                     .map_err(ApiError::stored)?;
                 if let Some(client) = client {
                     // The table schema has checked the complete access record;
@@ -76,7 +72,7 @@ async fn directories(
                         revoked: Option<f64>,
                     }
                     let client: AccessSelection = serde_json::from_value(client).map_err(|_| {
-                        ApiError::stored(records::invalid("runtime_access_clients", &server))
+                        ApiError::stored(records::invalid("runtime_access_clients", &server_id))
                     })?;
                     return Ok::<bool, ApiError>(
                         client.kind == "server"
@@ -84,13 +80,13 @@ async fn directories(
                             && client.revoked.unwrap_or(0.0) == 0.0,
                     );
                 }
-                if records::get(&tx, "runtime_access_discovered", &server)
+                if records::get(&tx, "runtime_access_discovered", &server_id)
                     .map_err(ApiError::stored)?
                     .is_some()
                 {
                     return Err(ApiError::new(
-                        StatusCode::NOT_IMPLEMENTED,
-                        "Not implemented: requires multi-server/discovery-pairing",
+                        StatusCode::FORBIDDEN,
+                        "The server is not paired or is revoked",
                     ));
                 }
                 Ok(false)
@@ -104,11 +100,61 @@ async fn directories(
                 "The server is not paired or is revoked",
             ));
         }
-        return Err(dependency_error(
-            "GET",
-            "/api/directories",
-            &REMOTE_BROWSE_DEPENDENCY,
-        ));
+        let driver = state.orchestration_driver.ok_or_else(|| {
+            ApiError::new(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "The remote server transport is unavailable",
+            )
+        })?;
+        let path = query
+            .typed_value("path")
+            .and_then(Value::as_str)
+            .map(str::to_owned);
+        let request_id = match query.typed_value("request_id").and_then(Value::as_str) {
+            Some(id) => id.to_owned(),
+            None => studio_runtime_services::remote_transport::new_nonce()
+                .map_err(|_| ApiError::internal())?,
+        };
+        let server = server.to_owned();
+        let now = studio_runtime_services::event_write::unix_time()
+            .map_err(|_| ApiError::internal())? as i64;
+        let result = studio_runtime_process::blocking_pool::spawn_blocking(
+            "runtime-http/routes/system_reads/remote-directories",
+            move || {
+                driver
+                    .exchange(
+                        &server,
+                        "folders",
+                        &serde_json::json!({"cwd":path}),
+                        &request_id,
+                        now,
+                    )
+                    .map_err(|error| {
+                        ApiError::new(
+                            StatusCode::from_u16(error.status())
+                                .unwrap_or(StatusCode::SERVICE_UNAVAILABLE),
+                            error.to_string(),
+                        )
+                    })
+            },
+        )
+        .await
+        .map_err(|_| ApiError::internal())??;
+        let value = match result {
+            studio_runtime_services::multi_server_orchestration::ExchangeOutcome::Applied(
+                value,
+            ) => value,
+            studio_runtime_services::multi_server_orchestration::ExchangeOutcome::NotApplied(
+                message,
+            ) => return Err(ApiError::new(StatusCode::BAD_REQUEST, message)),
+            studio_runtime_services::multi_server_orchestration::ExchangeOutcome::Unknown => {
+                return Err(ApiError::new(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "The remote folder browse outcome is unknown",
+                ));
+            }
+        };
+        return super::generated_json::<crate::generated::DirectoriesResponse>(value).map(Json);
     }
     let path = query
         .typed_value("path")
@@ -298,16 +344,13 @@ fn directory_error(error: SystemReadError) -> ApiError {
     ApiError::new(StatusCode::BAD_REQUEST, error.to_string())
 }
 
-fn dependency_error(method: &str, path: &str, deps: &[Dependency]) -> ApiError {
-    dependency_unavailable(method, path, deps).unwrap_or_else(|_| ApiError::internal())
-}
-
-fn named_dependency_error(deps: &[Dependency]) -> ApiError {
+fn named_dependency_error(dependencies: &[Dependency]) -> ApiError {
     ApiError::new(
         StatusCode::NOT_IMPLEMENTED,
         format!(
             "Not implemented: requires {}",
-            deps.iter()
+            dependencies
+                .iter()
                 .map(|dependency| dependency.name())
                 .collect::<Vec<_>>()
                 .join(", ")
@@ -747,7 +790,6 @@ mod diagnostics_http_tests {
 inventory::submit! {
     crate::routes::manifest::RouteModuleRegistration {
         name:"system_reads", routes:Some(routes), dependencies:&[
-            "multi-server/discovery-pairing","multi-server/folder-browse",
             "runtime-process/process-tree","provider-session/native-accounts","runtime-process/studio-loaded-threads","runtime-process/supervisor-status",
         ],
     }

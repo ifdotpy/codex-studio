@@ -6,7 +6,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde_json::{Value, json};
 use studio_runtime_store::{
     AgentId, AgentRecord, AgentRepository, AgentStatus, EventWriteRepository, QueueEvent,
-    QueueEventId, RulesRepository, Transaction,
+    QueueEventId, QueueWriteRepository, RulesRepository, Transaction,
 };
 use thiserror::Error;
 
@@ -318,7 +318,74 @@ fn enqueue(
         // server. Match Python's stable `event` envelope; remote workers use a
         // separate input protocol and are not converted into local events.
         if !is_anchor {
-            return Err(EventWriteError::RemoteEventsUnavailable);
+            if !matches!(kind, "user" | "followup") {
+                return Err(EventWriteError::RemoteEventsUnavailable);
+            }
+            let link_raw: Option<String> = transaction
+                .query_row(
+                    "SELECT record FROM runtime_server_links WHERE id=?1",
+                    [&link],
+                    |row| row.get(0),
+                )
+                .map_err(studio_runtime_store::StoreError::from)?;
+            let link_record: Value = link_raw
+                .as_deref()
+                .and_then(|raw| serde_json::from_str(raw).ok())
+                .ok_or(EventWriteError::Conflict("Remote event link is invalid"))?;
+            if link_record.get("side").and_then(Value::as_str) != Some("remote")
+                || link_record.get("server").and_then(Value::as_str) != Some(server.as_str())
+                || !link_record
+                    .get("workers")
+                    .and_then(Value::as_array)
+                    .is_some_and(|workers| {
+                        workers
+                            .iter()
+                            .any(|worker| worker.as_str() == Some(agent.id.0.as_str()))
+                    })
+            {
+                return Err(EventWriteError::Conflict("Remote event link is invalid"));
+            }
+            let metadata = QueueWriteRepository::metadata(transaction, &id)?
+                .unwrap_or_else(|| json!({"assets":[],"delivery":"queue"}));
+            if metadata
+                .get("assets")
+                .and_then(Value::as_array)
+                .is_some_and(|assets| !assets.is_empty())
+            {
+                return Err(EventWriteError::InvalidRequest(
+                    "Remote worker input does not support attachments",
+                ));
+            }
+            let parent_epoch = link_record
+                .get("parentEpoch")
+                .and_then(Value::as_i64)
+                .ok_or(EventWriteError::Conflict("Remote event link is invalid"))?;
+            let remote_epoch = agent
+                .extra
+                .get("remoteEpoch")
+                .and_then(Value::as_i64)
+                .unwrap_or(0);
+            let request_id = crate::relocation::identity(&["input", &id]);
+            let payload = json!({
+                "link":link,
+                "worker":agent.id.0,
+                "kind":kind,
+                "text":event.text,
+                "delivery":metadata.get("delivery").and_then(Value::as_str).unwrap_or("queue"),
+                "parentEpoch":parent_epoch,
+                "epoch":remote_epoch,
+                "controlEpoch":agent.epoch,
+            });
+            crate::multi_server_orchestration::enqueue_in_transaction(
+                transaction,
+                &server,
+                "input",
+                &payload,
+                &request_id,
+                created as i64,
+            )
+            .map_err(|_| EventWriteError::Conflict("Remote input could not be queued"))?;
+            return Ok(true);
         }
         let request_id = uuid::Uuid::new_v5(
             &uuid::Uuid::NAMESPACE_URL,
@@ -567,12 +634,14 @@ pub(crate) fn monotonic_ns() -> u128 {
 #[cfg(test)]
 mod tests {
     use super::{
-        AnnotationWrite, EventWriteError, PlanWrite, annotate, enqueue_recovery_event, save_plan,
+        AnnotationWrite, EventWriteError, PlanWrite, annotate, enqueue_event,
+        enqueue_recovery_event, save_plan,
     };
-    use serde_json::json;
+    use serde_json::{Value, json};
     use std::collections::BTreeMap;
     use studio_runtime_store::{
-        AgentId, AgentRecord, AgentRepository, AgentStatus, Connection, Transaction,
+        AgentId, AgentRecord, AgentRepository, AgentStatus, Connection, QueueWriteRepository,
+        Transaction,
     };
 
     fn database() -> Connection {
@@ -585,6 +654,9 @@ mod tests {
                  CREATE TABLE runtime_work(id TEXT PRIMARY KEY,record TEXT NOT NULL);
                  CREATE TABLE runtime_operation_receipts(id TEXT PRIMARY KEY,signature TEXT NOT NULL,result TEXT NOT NULL);
                  CREATE TABLE runtime_event_meta(id TEXT PRIMARY KEY,record TEXT NOT NULL);
+                 CREATE TABLE runtime_access_clients(id TEXT PRIMARY KEY,record TEXT NOT NULL);
+                 CREATE TABLE runtime_server_links(id TEXT PRIMARY KEY,record TEXT NOT NULL);
+                 CREATE TABLE runtime_server_outbox(id TEXT PRIMARY KEY,server TEXT NOT NULL,body TEXT NOT NULL,state TEXT NOT NULL,result TEXT,attempts INTEGER NOT NULL DEFAULT 0,next_at REAL NOT NULL DEFAULT 0,error TEXT,created_at REAL NOT NULL DEFAULT 0,completed_at REAL NOT NULL DEFAULT 0,fingerprint TEXT);
                  CREATE TABLE runtime_rules(id TEXT PRIMARY KEY,record TEXT NOT NULL);
                  CREATE TABLE runtime_events(id TEXT PRIMARY KEY,agent TEXT,kind TEXT,text TEXT,status TEXT,created REAL,epoch INTEGER,turn_id TEXT,error TEXT);
                  CREATE TABLE sync_entities(collection TEXT,id TEXT,seq INTEGER,hash TEXT,payload TEXT,deleted INTEGER,PRIMARY KEY(collection,id));
@@ -870,6 +942,59 @@ mod tests {
             Err(EventWriteError::RemoteEventsUnavailable)
         ));
         assert_eq!(counts(&connection), before);
+    }
+
+    #[test]
+    fn remote_worker_user_input_is_saved_as_stable_paired_intent() {
+        let mut connection = database();
+        let mut agent = AgentRepository::get(&connection, &AgentId::from("a"))
+            .expect("agent read")
+            .expect("fixture");
+        agent.extra.insert(
+            "remoteWorker".into(),
+            json!({"server":"remote","link":"remote-link"}),
+        );
+        agent.extra.insert("remoteEpoch".into(), json!(3));
+        AgentRepository::put(&connection, &agent).expect("remote fixture writes");
+        connection.execute(
+            "INSERT INTO runtime_server_links(id,record) VALUES(?1,?2)",
+            ("remote-link", json!({"id":"remote-link","side":"remote","server":"remote","parentEpoch":4,"workers":["a"]}).to_string()),
+        ).expect("remote link writes");
+        connection.execute(
+            "INSERT INTO runtime_access_clients(id,record) VALUES(?1,?2)",
+            ("remote", json!({"id":"remote","clientId":"client","kind":"server","label":"Remote","created":1,"publicKey":"public","status":"paired"}).to_string()),
+        ).expect("paired peer writes");
+        let result = with_transaction(&mut connection, |tx| {
+            QueueWriteRepository::put_metadata(
+                tx,
+                "message-1",
+                &json!({"assets":[],"delivery":"steer"}),
+            )?;
+            enqueue_event(
+                tx,
+                &agent,
+                "message-1".into(),
+                "user",
+                "hello".into(),
+                100.0,
+            )
+        })
+        .expect("paired input queues");
+        assert!(result);
+        let (server, body): (String, String) = connection
+            .query_row(
+                "SELECT server,body FROM runtime_server_outbox WHERE id=?1",
+                [crate::relocation::identity(&["input", "message-1"])],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("stable outbox row");
+        let body: Value = serde_json::from_str(&body).expect("outbox envelope JSON");
+        assert_eq!(server, "remote");
+        assert_eq!(body["action"], "input");
+        assert_eq!(body["payload"]["worker"], "a");
+        assert_eq!(body["payload"]["delivery"], "steer");
+        assert_eq!(body["payload"]["parentEpoch"], 4);
+        assert_eq!(body["payload"]["epoch"], 3);
     }
 
     fn annotation(id: &str) -> AnnotationWrite {

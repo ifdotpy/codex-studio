@@ -165,6 +165,7 @@ auth_case("foreign-target",target_server="foreign")
 auth_case("bad-signature",tamper=lambda h:[(k,"A"*88 if k=="X-Studio-Signature" else v) for k,v in h])
 auth_case("bad-auto-signature",path="/api/multi-server/v1/auto-pair",body=body,tamper=lambda h:[(k,"A"*88 if k=="X-Studio-Signature" else v) for k,v in h])
 auth_case("auto-pair",path="/api/multi-server/v1/auto-pair",body=body)
+auth_case("auto-wrong-owner",path="/api/multi-server/v1/auto-pair",body=body,owner="foreign@example.test")
 auth_case("auto-revoked",path="/api/multi-server/v1/auto-pair",body=body,client={**json.loads(client_raw),"id":"auto-server","clientId":"auto-server","status":"revoked"})
 auth_case("auto-key-change",path="/api/multi-server/v1/auto-pair",body=body,client={**json.loads(client_raw),"id":"auto-server","clientId":"auto-server","publicKey":"different"})
 for case in cases:

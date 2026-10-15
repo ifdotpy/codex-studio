@@ -836,8 +836,8 @@ fn permanent_cancel_refusal_settles_and_is_not_retried() {
         (
             "cancel-session-missing",
             NotSentReason::SessionMissing,
-            "failed",
-            "failed",
+            "running",
+            "unknown",
         ),
     ] {
         let store = Arc::new(fixtures::store(root.path(), name));
@@ -861,6 +861,15 @@ fn permanent_cancel_refusal_settles_and_is_not_retried() {
             record(&store, id)["cancelDispatch"]["error"],
             "injected not sent"
         );
+        if reason == NotSentReason::SessionMissing {
+            let record = record(&store, id);
+            assert_eq!(record["status"], "running");
+            assert_eq!(record["error"], "injected not sent");
+            let view =
+                studio_runtime_services::sync_views::project_persisted_record("monitor", &record)
+                    .expect("monitor DTO projection");
+            assert_eq!(view["error"], "injected not sent");
+        }
         runtime
             .tick(2100.0)
             .expect("permanent refusal remains settled");

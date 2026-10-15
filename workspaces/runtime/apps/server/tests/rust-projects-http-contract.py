@@ -188,10 +188,7 @@ class ProjectsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         before = no_write_snapshot(self.backend.state)
         query = urlencode({"project": str(self.backend.cwd), "server": "remote-server"})
         response = self.backend.request("GET", f"/api/project-locations?{query}", headers=self.headers())
-        expected = 501 if os.environ.get("STUDIO_HTTP_BACKEND_COMMAND") else 403
-        self.assertEqual(response.status, expected, response.body[:1000])
-        if expected == 501:
-            self.assertIn("cross-server-driver/project-location-read", response.json()["error"])
+        self.assertEqual(response.status, 403, response.body[:1000])
         self.assertEqual(no_write_snapshot(self.backend.state), before)
 
     def test_register_and_remove_project_updates_storage_and_sync_projection(self) -> None:
@@ -236,15 +233,12 @@ class ProjectsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         self.assertIn(response.status, (400, 500), response.body[:1000])
         self.assertEqual(self._project_count(), before)
 
-    def test_remote_registration_returns_named_501_without_writing(self) -> None:
+    def test_unpaired_remote_registration_is_forbidden_without_writing(self) -> None:
         before = self._project_count()
         response = self.backend.request("POST", "/api/projects", body={
             "action": "register", "path": str(self.backend.cwd), "server": "remote-server", "request_id": "remote-registration",
         }, headers=self.headers())
-        expected = 501 if os.environ.get("STUDIO_HTTP_BACKEND_COMMAND") else 403
-        self.assertEqual(response.status, expected, response.body[:1000])
-        if expected == 501:
-            self.assertIn("cross-server-driver/project-registration", response.json()["error"])
+        self.assertEqual(response.status, 403, response.body[:1000])
         self.assertEqual(self._project_count(), before)
 
     def test_sidebar_order_commit_and_exact_retry(self) -> None:
