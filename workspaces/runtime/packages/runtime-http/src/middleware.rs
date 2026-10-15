@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet};
+use std::io::Write;
 use std::net::{IpAddr, SocketAddr};
 use std::panic::AssertUnwindSafe;
 use std::time::Duration;
@@ -13,7 +14,7 @@ use futures_util::FutureExt;
 use studio_runtime_services::federation_limits::FEDERATION_PATHS;
 use subtle::ConstantTimeEq;
 
-use crate::error::{ApiError, error_response, with_api_headers};
+use crate::error::{ApiError, InternalErrorCause, error_response, with_api_headers};
 use crate::http_body_limits_generated::{REQUEST_BODY_READ_TIMEOUT_SECONDS, request_limit};
 use crate::router::HttpState;
 use crate::schema::{API_SCHEMA_HASH_HEADER, API_SCHEMA_MISMATCH_HEADER, api_schema_hash};
@@ -320,9 +321,28 @@ pub(crate) async fn response_safety(
     next: Next,
 ) -> Response {
     let api = request.uri().path().starts_with("/api/");
-    let request_id = request.headers().get("x-studio-request-id").cloned();
+    let response_request_id = request.headers().get("x-studio-request-id").cloned();
     let method = request.method().as_str().to_owned();
     let path = request.uri().path().to_owned();
+    let route = crate::schema::operations()
+        .ok()
+        .and_then(|operations| {
+            crate::schema::matching_template(
+                operations.iter().map(|(operation_method, template)| {
+                    (operation_method.as_str(), template.as_str())
+                }),
+                Some(&method),
+                &path,
+            )
+        })
+        .map(|template| format!("{method} {template}"))
+        .unwrap_or_else(|| format!("{method} unmatched"));
+    let request_id = request
+        .headers()
+        .get("x-studio-request-id")
+        .and_then(|value| value.to_str().ok())
+        .filter(|value| safe_request_id(value))
+        .map(str::to_owned);
     let if_none_match = request
         .headers()
         .get_all(header::IF_NONE_MATCH)
@@ -340,14 +360,25 @@ pub(crate) async fn response_safety(
             &path,
         )
         .is_some();
-    let mut response = AssertUnwindSafe(next.run(request))
-        .catch_unwind()
-        .await
-        .unwrap_or_else(|_| {
-            error_response(StatusCode::INTERNAL_SERVER_ERROR, "Internal server error")
-        });
+    let (mut response, panic_cause) = match AssertUnwindSafe(next.run(request)).catch_unwind().await
+    {
+        Ok(response) => (response, None),
+        Err(_) => (
+            error_response(StatusCode::INTERNAL_SERVER_ERROR, "Internal server error"),
+            Some("request handler panicked".to_owned()),
+        ),
+    };
     if api {
-        response = with_api_headers(response, request_id.as_ref());
+        response = with_api_headers(response, response_request_id.as_ref());
+    }
+    if response.status() == StatusCode::INTERNAL_SERVER_ERROR {
+        let cause = response
+            .extensions()
+            .get::<InternalErrorCause>()
+            .map(|cause| cause.0.as_str())
+            .or(panic_cause.as_deref())
+            .unwrap_or("internal cause unavailable");
+        log_internal_error(&route, request_id.as_deref(), cause);
     }
     if etag_route
         && response.status() == StatusCode::OK
@@ -361,10 +392,11 @@ pub(crate) async fn response_safety(
         let body = match to_bytes(body, usize::MAX).await {
             Ok(body) => body,
             Err(_) => {
+                log_internal_error(&route, request_id.as_deref(), "response body read failed");
                 let response =
                     error_response(StatusCode::INTERNAL_SERVER_ERROR, "Internal server error");
                 return if api {
-                    with_api_headers(response, request_id.as_ref())
+                    with_api_headers(response, response_request_id.as_ref())
                 } else {
                     response
                 };
@@ -394,6 +426,48 @@ pub(crate) async fn response_safety(
     response
 }
 
+fn safe_request_id(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 128
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"-_.:".contains(&byte))
+}
+
+fn write_internal_error_log(
+    writer: &mut impl Write,
+    route: &str,
+    request_id: Option<&str>,
+    cause: &str,
+) -> std::io::Result<()> {
+    let cause = cause
+        .chars()
+        .map(|character| {
+            if character.is_control() {
+                ' '
+            } else {
+                character
+            }
+        })
+        .collect::<String>();
+    writeln!(
+        writer,
+        "ERROR internal HTTP error route={} request_id={} cause={}",
+        route,
+        request_id.unwrap_or("unavailable"),
+        cause
+    )
+}
+
+fn log_internal_error(route: &str, request_id: Option<&str>, cause: &str) {
+    let stderr = std::io::stderr();
+    let mut stderr = stderr.lock();
+    if let Err(error) = write_internal_error_log(&mut stderr, route, request_id, cause) {
+        // The response must remain generic even if the diagnostic sink is unavailable.
+        drop(error);
+    }
+}
+
 #[cfg(test)]
 mod response_safety_tests {
     use axum::Json;
@@ -413,6 +487,23 @@ mod response_safety_tests {
 
     async fn untagged() -> Json<Value> {
         Json(json!({"value": 1}))
+    }
+
+    #[test]
+    fn forced_internal_error_log_includes_route_request_id_and_cause() {
+        let mut output = Vec::new();
+        super::write_internal_error_log(
+            &mut output,
+            "POST /api/agents",
+            Some("request-123"),
+            "forced internal failure: nested read checkout",
+        )
+        .expect("diagnostic log writes");
+        let output = String::from_utf8(output).expect("log is UTF-8");
+        assert!(output.starts_with("ERROR "));
+        assert!(output.contains("route=POST /api/agents"));
+        assert!(output.contains("request_id=request-123"));
+        assert!(output.contains("cause=forced internal failure: nested read checkout"));
     }
 
     fn state() -> (HttpState, tempfile::TempDir) {

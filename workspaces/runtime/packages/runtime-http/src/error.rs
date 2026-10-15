@@ -14,7 +14,11 @@ pub struct ApiError {
     message: String,
     location: Option<serde_json::Value>,
     content_type: Option<&'static str>,
+    internal_cause: Option<String>,
 }
+
+#[derive(Clone, Debug)]
+pub(crate) struct InternalErrorCause(pub String);
 
 impl ApiError {
     pub fn new(status: StatusCode, message: impl Into<String>) -> Self {
@@ -23,6 +27,7 @@ impl ApiError {
             message: message.into(),
             location: None,
             content_type: None,
+            internal_cause: None,
         }
     }
 
@@ -49,6 +54,12 @@ impl ApiError {
         Self::new(StatusCode::INTERNAL_SERVER_ERROR, "Internal server error")
     }
 
+    pub(crate) fn internal_with_cause(cause: impl Into<String>) -> Self {
+        let mut error = Self::internal();
+        error.internal_cause = Some(cause.into());
+        error
+    }
+
     pub(crate) fn dependency(name: &str) -> Self {
         Self::new(
             StatusCode::NOT_IMPLEMENTED,
@@ -60,6 +71,7 @@ impl ApiError {
 impl ApiError {
     pub(crate) fn stored(error: studio_runtime_store::StoreError) -> Self {
         use studio_runtime_store::StoreError;
+        let cause = error_chain(&error);
         match error {
             StoreError::InvalidSyncObject { scope, id } => Self::new(
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -69,9 +81,19 @@ impl ApiError {
                 StatusCode::INTERNAL_SERVER_ERROR,
                 format!("Invalid stored object {table}/{id}"),
             ),
-            _ => Self::internal(),
+            _ => Self::internal_with_cause(cause),
         }
     }
+}
+
+fn error_chain(error: &(dyn std::error::Error + 'static)) -> String {
+    let mut parts = Vec::new();
+    let mut current = Some(error);
+    while let Some(error) = current {
+        parts.push(error.to_string());
+        current = error.source();
+    }
+    parts.join(": ")
 }
 
 impl IntoResponse for ApiError {
@@ -81,6 +103,11 @@ impl IntoResponse for ApiError {
             body["location"] = location;
         }
         let mut response = (self.status, Json(body)).into_response();
+        if self.status == StatusCode::INTERNAL_SERVER_ERROR
+            && let Some(cause) = self.internal_cause
+        {
+            response.extensions_mut().insert(InternalErrorCause(cause));
+        }
         if let Some(content_type) = self.content_type
             && let Ok(value) = HeaderValue::from_str(content_type)
         {
