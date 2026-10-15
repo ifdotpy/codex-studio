@@ -606,12 +606,13 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
     ("POST", "/api/terminals/input"): {"primary": {"body": {"id": "$liveTerminal", "text": "x", "request_id": "ledger-input"}, "expected": "2xx"}},
     ("POST", "/api/terminals/rename"): {"primary": {"body": {"id": "$liveTerminal", "title": "Ledger"}, "expected": "2xx"}},
     ("POST", "/api/terminals/resize"): {"primary": {"body": {"id": "$liveTerminal", "cols": 80, "rows": 24}, "expected": "2xx"}},
+    # Python implements native command input for a seeded running command
+    # (codex_workspace.py:2183-2217), and Rust now queues the same durable
+    # message through the implemented route.
     ("POST", "/api/native-command"): {
         "primary": {
             "body": {"id": "$activeCommand", "action": "input", "text": "ledger input"},
-            "expected": "501",
-            "expected_error": "Not implemented: requires turn-path/native-command-input",
-            "assert_no_write": True,
+            "expected": "2xx",
         },
     },
     ("POST", "/api/sync/notify"): {
@@ -904,6 +905,7 @@ def seed_python_probe_state(backend: Any) -> dict[str, str]:
     agent_id = "ledger-probe-agent"
     image_agent_id = "ledger-probe-image-agent"
     task_id = "ledger-probe-task"
+    active_command_id = "ledger-probe-active-command"
     work_id = "ledger-probe-work"
     complaint_id = "ledger-probe-complaint"
     room_id = "ledger-probe-room"
@@ -980,6 +982,11 @@ try:
             "id": {task_id!r}, "agent": {agent_id!r}, "kind": "command",
             "status": "completed",
             "created": 1.0, "finished": 2.0,
+        }}, sync_rooms=False)
+        runtime.put(db, "tasks", {{
+            "id": {active_command_id!r}, "agent": {agent_id!r}, "kind": "command",
+            "status": "running", "processId": "44", "itemId": "ledger-probe-command-item",
+            "created": 1.0,
         }}, sync_rooms=False)
         runtime.put(db, "work", {{
             "id": {work_id!r}, "rootId": {agent_id!r}, "owner": {agent_id!r},
@@ -1142,6 +1149,7 @@ finally:
         "agent": agent_id,
         "imageAgent": image_agent_id,
         "task": task_id,
+        "activeCommand": active_command_id,
         "complaint": complaint_id,
         "room": room_id,
         "checkpoint": terminal_identifiers["checkpoint"],

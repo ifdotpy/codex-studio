@@ -240,6 +240,14 @@ Server suites: 0 passed, 1 failed, 0 skipped (opt-in), 0 skipped (environment), 
         self.assertEqual(defer_body["id"], "ledger-probe-question")
         self.assertNotEqual(answer_body["id"], defer_body["id"])
 
+    def test_native_command_probe_uses_a_distinct_seeded_running_task(self) -> None:
+        probe = ledger.PROBE_CASES[("POST", "/api/native-command")]["primary"]
+        identifiers = {"activeCommand": "ledger-probe-active-command"}
+        _, body, _ = ledger.valid_probe("POST", "/api/native-command", identifiers, probe)
+        self.assertEqual(probe["expected"], "2xx")
+        self.assertEqual(body["id"], "ledger-probe-active-command")
+        self.assertNotEqual(body["id"], "ledger-probe-task")
+
     def test_changes_and_models_probes_use_slice_contract_request_shapes(self) -> None:
         identifiers = {"agent": "lead-agent", "claudeAccount": "claude-account"}
         changes = ledger.PROBE_CASES[("GET", "/api/changes")]["additional"][0]
