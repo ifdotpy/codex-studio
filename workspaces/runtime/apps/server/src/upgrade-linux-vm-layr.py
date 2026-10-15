@@ -15,6 +15,8 @@ import uuid
 from codex_layout import REPOSITORY_ROOT, VM_GUEST_ROOT
 from codex_linux_vm import Client, LinuxVMError, _atomic_json
 
+BACKUP_RESERVE_BYTES = 20 * 1024**3
+
 
 def upgrade(state: Path, helper: Path, payload: Path, operation: str,
             allowed_orphans: set[str] | None = None) -> dict[str, Any]:
@@ -48,10 +50,11 @@ def _upgrade(client: Client, helper: Path, payload: Path, operation: str,
     active = [row for row in providers if active_provider(row)]
     if active:
         raise LinuxVMError('Active or unproven guest providers prevent a VM restart.')
-    backup_bytes = sum((client.state_dir / name).stat().st_blocks * 512
-                       for name in ('system.raw', 'data.raw'))
-    if shutil.disk_usage(client.state_dir).free < 20 * 1024**3 + backup_bytes:
-        raise LinuxVMError('Free host space must exceed 20 GiB plus the allocated disk backup size.')
+    # The backup is an APFS clone: it shares every block with the disks when it is
+    # made. It grows only by the blocks that the guest rewrites while the backup
+    # exists, so the reserve covers that growth, not the allocated disk size.
+    if shutil.disk_usage(client.state_dir).free < BACKUP_RESERVE_BYTES:
+        raise LinuxVMError('Free host space must exceed 20 GiB for the disk backup clones.')
     evidence: dict[str, Any] = {'operationId': operation, 'stateDir': str(client.state_dir),
         'helper': str(helper), 'payload': str(payload), 'providers': providers,
         'approvedOrphanHandles': sorted(allowed_orphans), 'stage': 'backup'}
