@@ -977,6 +977,16 @@ def _suite_environment(root, temp_root, audit_home=False, relative=None):
     if not node:
         node = shutil.which("node", path=safe_path)
     path_entries = [str(Path(sys.executable).parent), os.defpath]
+    if relative == f"{TESTS_REL}/wave7-p20-host-cutover-contract.py":
+        # The P20 census invokes Cargo to read the Rust HTTP route manifest.
+        # Preserve only the caller's Cargo/Rust compiler directories; suites
+        # otherwise use the restricted PATH below so provider tools stay hidden.
+        for tool in ("cargo", "rustc"):
+            executable = shutil.which(tool, path=safe_path)
+            if executable:
+                directory = str(Path(executable).absolute().parent)
+                if directory not in path_entries:
+                    path_entries.insert(0, directory)
     if node:
         environment["CODEX_NODE"] = node
         # JS suites and bridge probes launch "node" by name. Expose only that
