@@ -1,5 +1,6 @@
 {
   "source": "Hand-authored reset-credit HTTP contract replies; no live account or provider.",
+  "boundaryOnly": true,
   "rpcReplies": {
     "account/rateLimits/read": {
       "direction": "in",

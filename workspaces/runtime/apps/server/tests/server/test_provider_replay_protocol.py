@@ -24,6 +24,21 @@ PROVIDER_RUNNER_SPEC.loader.exec_module(PROVIDER_RUNNER)
 
 
 class ReplayProtocol(unittest.TestCase):
+    def test_reset_credit_replies_are_boundary_only_for_the_http_contract(self):
+        name = "reset-credit-redemption"
+        path = SERVER_TESTS_ROOT / "fixtures" / "provider-replay" / f"{name}.json"
+        fixture = json.loads(path.read_text(encoding="utf-8"))
+
+        self.assertIs(fixture.get("boundaryOnly"), True)
+        self.assertEqual(
+            set(fixture["rpcReplies"]),
+            {
+                "account/rateLimits/read",
+                "account/rateLimitResetCredit/consume",
+            },
+        )
+        self.assertNotIn(name, PROVIDER_RUNNER.replayable_fixture_names())
+
     def test_malformed_checkpoint_reply_is_boundary_only(self):
         name = "checkpoint-restore-malformed-thread-start"
         path = (SERVER_TESTS_ROOT / "fixtures" / "provider-replay" / f"{name}.json")
