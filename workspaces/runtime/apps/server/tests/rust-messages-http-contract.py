@@ -700,7 +700,7 @@ class MessagesHTTPContract(TimedHTTPContractTest, unittest.TestCase):
 
         pending_id = "aeaeaeae-aeae-4eae-8eae-aeaeaeaeaeae"
         pending = self.backend.request("POST", "/api/messages", body={
-            **body, "id": pending_id, "assets": [{"name": "pending"}], "text": "",
+            **body, "id": pending_id, "assets": [asset_id], "text": "",
         }, headers=self.headers())
         self.assertEqual(pending.status, 200, pending.body[:1000])
         self.assertEqual(pending.json()["status"], "queued")
@@ -709,7 +709,7 @@ class MessagesHTTPContract(TimedHTTPContractTest, unittest.TestCase):
                 raw = database.execute(
                     "SELECT record FROM runtime_event_meta WHERE id=?", (pending_id,),
                 ).fetchone()[0]
-            self.assertEqual(json.loads(raw)["assets"], [{"name": "pending"}])
+            self.assertEqual(json.loads(raw)["assets"], [asset_id])
 
     def test_managed_send_matches_python_for_stopped_paused_and_busy_agents(self):
         cases = (
