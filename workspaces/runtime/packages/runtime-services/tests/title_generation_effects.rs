@@ -271,6 +271,106 @@ fn admitted_title_catalog_failure_settles_python_receipt_without_renaming() {
 }
 
 #[tokio::test]
+async fn catalog_failure_settlement_preserves_a_durable_written_title_for_recovery() {
+    let (_root, store) = fixture();
+    store
+        .transaction(|tx| {
+            tx.execute_batch(
+                "CREATE TRIGGER title_apply_fail BEFORE UPDATE ON runtime_agents
+                 BEGIN SELECT RAISE(ABORT,'title apply failpoint'); END",
+            )?;
+            Ok(())
+        })
+        .expect("install deterministic final-apply failure");
+    let provider = FixedPort::new(vec![TitleReceipt {
+        request_id: "written-before-catalog-failure".into(),
+        agent_id: "title-agent".into(),
+        epoch: 1,
+        account_key: "default".into(),
+        outcome: WriteOutcome::Written,
+        title: Some("Durable generated title".into()),
+    }]);
+    assert!(
+        generate(
+            &store,
+            &provider,
+            "title-agent",
+            &catalog(),
+            "written-before-catalog-failure",
+            deadline()
+        )
+        .await
+        .is_err(),
+        "the final title-application transaction fails"
+    );
+
+    let written_effect: Value = {
+        let connection = store.read().expect("read durable provider effect");
+        let raw: String = connection
+            .query_row(
+                "SELECT result FROM runtime_operation_receipts WHERE id LIKE 'title-generation:%'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("written effect receipt");
+        serde_json::from_str(&raw).expect("effect JSON")
+    };
+    assert_eq!(written_effect["state"], "written");
+    assert_eq!(written_effect["title"], "Durable generated title");
+    assert!(written_effect["fingerprint"].as_str().is_some());
+
+    settle_catalog_failure(&store, "title-agent", "written-before-catalog-failure")
+        .expect("settle catalog failure without losing written result");
+    let (public_result, effect_after_settlement) = {
+        let connection = store.read().expect("read title receipts after settlement");
+        let public_raw: String = connection
+            .query_row(
+                "SELECT result FROM runtime_operation_receipts WHERE id='written-before-catalog-failure'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("public receipt");
+        let effect_raw: String = connection
+            .query_row(
+                "SELECT result FROM runtime_operation_receipts WHERE id LIKE 'title-generation:%'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("written effect receipt");
+        (
+            serde_json::from_str::<Value>(&public_raw).expect("public JSON"),
+            serde_json::from_str::<Value>(&effect_raw).expect("effect JSON"),
+        )
+    };
+    assert_eq!(public_result["status"], "pending");
+    assert_eq!(effect_after_settlement, written_effect);
+
+    store
+        .transaction(|tx| {
+            tx.execute_batch("DROP TRIGGER title_apply_fail")?;
+            Ok(())
+        })
+        .expect("remove deterministic failure");
+    let no_provider = FixedPort::new(Vec::new());
+    assert_eq!(
+        generate_admitted(
+            &store,
+            &no_provider,
+            "title-agent",
+            &catalog(),
+            "written-before-catalog-failure",
+            deadline()
+        )
+        .await
+        .expect("recover durable written title"),
+        TitleResult::Applied {
+            title: "Durable generated title".into()
+        }
+    );
+    assert_eq!(no_provider.calls.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
 async fn admitted_title_receipt_replays_in_python_shape_without_second_provider_call() {
     let (_root, store) = fixture();
     let port = FixedPort::new(vec![TitleReceipt {

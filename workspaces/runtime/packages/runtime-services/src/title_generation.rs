@@ -285,6 +285,14 @@ pub fn settle_catalog_failure(
             && saved.get("request_id").and_then(Value::as_str) == Some(request_id)
             && saved.get("status").and_then(Value::as_str) == Some("pending")
         {
+            // A catalog failure can race recovery after the provider result was
+            // durably written. Keep that result intact so the title finisher
+            // can apply it instead of turning a known write into a failure.
+            if read_effect(tx, request_id, agent_id)?
+                .is_some_and(|effect| effect.state == "written")
+            {
+                return Ok(());
+            }
             tx.execute(
                 "UPDATE runtime_operation_receipts SET result=?1 WHERE id=?2 AND signature=?3",
                 params![failed.to_string(), request_id, signature],
