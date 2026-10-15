@@ -1021,11 +1021,26 @@ class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         )
 
     def test_smart_title_returns_pending_then_settles_failure_without_rename(self):
-        # The Rust model catalog is cached per server process. Earlier tests can
-        # populate it, which would turn this no-catalog fixture into a provider
-        # request whose outcome is intentionally held unknown.
+        # Make catalog failure explicit and hold its response until after the
+        # HTTP request proves it returned a pending receipt. This keeps the
+        # terminal failure assertion independent of catalog-cache state and
+        # scheduler timing.
         self.backend.stop()
+        self.backend.hold_provider("model/list")
+        self.backend.create_codex_replay(
+            "smart-title-model-list-error.json", fake_version_output="codex-cli 999.0.0",
+        )
         self.backend.start()
+        catalog_response = self.backend.request(
+            "GET", "/api/models?account_key=default", headers=self.headers(),
+        )
+        self.assertEqual(catalog_response.status, 400, catalog_response.body[:1000])
+        self.assertTrue(
+            catalog_response.json().get("catalogPending"), catalog_response.body[:1000],
+        )
+        self.backend.wait_until(
+            self.backend.provider_gate_started, "smart-title model/list response gate",
+        )
         before = rename_state(self.backend.state, self.agent_id, "smart-title-id")
         response = self.backend.request(
             "POST",
@@ -1036,15 +1051,24 @@ class AgentsCreateHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         self.assertEqual(response.status, 200, response.body[:1000])
         self.assertEqual(response.json()["status"], "pending")
         self.assertEqual(response.json()["request_id"], "smart-title-id")
-        deadline = time.monotonic() + 5
+        self.backend.release_provider_gate()
+
+        def failure_settled():
+            receipt = rename_state(
+                self.backend.state, self.agent_id, "smart-title-id",
+            )["receipt"]
+            if receipt is None:
+                return False
+            result = json.loads(receipt[1])
+            return result.get("status", result.get("state")) in {
+                "failed", "invalid", "not_sent",
+            }
+
+        self.backend.wait_until(
+            failure_settled,
+            "smart-title failure receipt",
+        )
         after = rename_state(self.backend.state, self.agent_id, "smart-title-id")
-        while time.monotonic() < deadline:
-            if after["receipt"] is not None:
-                result = json.loads(after["receipt"][1])
-                if result.get("status") == "failed" or result.get("state") in {"invalid", "not_sent"}:
-                    break
-            time.sleep(0.01)
-            after = rename_state(self.backend.state, self.agent_id, "smart-title-id")
         self.assertIsNotNone(after["receipt"])
         result = json.loads(after["receipt"][1])
         self.assertIn(result.get("status", result.get("state")), {"failed", "invalid", "not_sent"})
