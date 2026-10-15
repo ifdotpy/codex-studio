@@ -58,13 +58,13 @@ class NativeHTTPContract(TimedHTTPContractTest, unittest.TestCase):
                 self.assertEqual(response.json(), {"id": self.ids[name], "repair": None})
             self.assertEqual(no_write_snapshot(self.backend.state), before)
 
-    def test_branch_validation_and_restore_dependency_refuse_without_writes(self):
+    def test_branch_and_restore_validation_refuse_without_writes(self):
         # /api/branch has a Rust provider-session consumer now, and Python
         # implements branch_conversation; a missing transcript item is 400.
-        # Restore still requires the unported thread-fork consumer on Rust.
+        # The restore endpoint validates the selected checkpoint before forking.
         cases = [
             ("/api/branch", {"agent": self.ids["empty"], "message_id": "missing", "id": "branch-request"}, 400),
-            ("/api/checkpoint/restore", {"agent": self.ids["empty"], "checkpoint": "missing", "expectedTree": "tree"}, 501),
+            ("/api/checkpoint/restore", {"agent": self.ids["empty"], "checkpoint": "missing", "expectedTree": "tree"}, 400),
         ]
         for path, body, expected_status in cases:
             with self.subTest(path=path, action=body.get("action")):
@@ -72,8 +72,6 @@ class NativeHTTPContract(TimedHTTPContractTest, unittest.TestCase):
                 response = self.post(path, body)
                 if os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"):
                     self.assertEqual(response.status, expected_status, response.body)
-                    if expected_status == 501:
-                        self.assertEqual(response.json(), {"error": "Not implemented: requires provider-session/thread-fork"})
                 else:
                     self.assertEqual(response.status, 400, response.body)
                 self.assertEqual(no_write_snapshot(self.backend.state), before)
@@ -85,8 +83,7 @@ class NativeHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         self.assertEqual(no_write_snapshot(self.backend.state), before)
 
     def test_command_lookup_is_scoped_and_writes_nothing(self):
-        # P18 owns the route's stable-request-identity gate. This frozen base
-        # checks missing tasks before its input/cancel branches.
+        # Native-command input and cancel have per-invocation Python semantics.
         for action in ("input", "cancel"):
             before = no_write_snapshot(self.backend.state)
             response = self.post("/api/native-command", {"id": "missing-task", "action": action, "text": "input"})

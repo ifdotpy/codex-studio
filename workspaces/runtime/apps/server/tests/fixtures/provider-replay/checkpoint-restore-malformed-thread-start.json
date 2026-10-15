@@ -1,0 +1,10 @@
+{
+  "rpcReplies": {
+    "thread/start": {
+      "direction": "in",
+      "responseFor": "thread/start",
+      "timestamp": 0,
+      "message": { "result": {} }
+    }
+  }
+}
