@@ -675,6 +675,7 @@ fn write_json(path: &Path, value: &Value) -> Result<(), VaultError> {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::{
         VaultError, require_python_tool, resolve_desk_program, run_desk_with_environment,

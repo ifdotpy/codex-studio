@@ -95,15 +95,15 @@ fn read_attempts(
         for row in rows {
             attempts.push(from_record(serde_json::from_str(&row?)?)?);
         }
-        if let Some(alias) = alias {
-            if let Some(attempt) = attempts.iter().find(|attempt| attempt.id == alias) {
-                if attempt.account_id != account || attempt.credit_id != credit {
-                    return Err(ResetError::Invalid(
-                        "This reset request belongs to a different account or credit",
-                    ));
-                }
-                return Ok(Some(attempt.clone()));
+        if let Some(alias) = alias
+            && let Some(attempt) = attempts.iter().find(|attempt| attempt.id == alias)
+        {
+            if attempt.account_id != account || attempt.credit_id != credit {
+                return Err(ResetError::Invalid(
+                    "This reset request belongs to a different account or credit",
+                ));
             }
+            return Ok(Some(attempt.clone()));
         }
         let attempt = attempts.into_iter().rev().find(|attempt| {
             attempt.account_id == account
@@ -418,6 +418,7 @@ pub fn consume_reset(
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::{
         Attempt, RESET_OPERATION_PREFIX, RESET_REQUEST_LOCK, consume_reset, read_attempts,

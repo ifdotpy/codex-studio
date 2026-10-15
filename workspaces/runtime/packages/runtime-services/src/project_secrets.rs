@@ -174,6 +174,7 @@ fn names_reply(
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::{
         GUEST_CALL_TIMEOUT, GuestCallError, GuestRpc, MAX_PROJECT_SECRET_VALUE_BYTES,
@@ -183,9 +184,11 @@ mod tests {
     use std::sync::Mutex;
     use std::time::Duration;
 
+    type GuestCall = (String, Value, Option<String>, Duration);
+
     #[derive(Default)]
     struct FakeGuest {
-        calls: Mutex<Vec<(String, Value, Option<String>, Duration)>>,
+        calls: Mutex<Vec<GuestCall>>,
         reply: Mutex<Value>,
         error: Mutex<Option<GuestCallError>>,
     }
