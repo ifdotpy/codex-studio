@@ -199,6 +199,18 @@ Server suites: 0 passed, 1 failed, 0 skipped (opt-in), 0 skipped (environment), 
                     self.assertTrue(all(case["expected"] == "501" for case in refusals))
                     self.assertTrue(all(case.get("expected_error") for case in refusals))
 
+    def test_disabled_signed_federation_probes_expect_python_gate_before_headers(self) -> None:
+        for path in (
+            "/api/federation/v1/message",
+            "/api/federation/v1/pair",
+            "/api/federation/v1/pull",
+            "/api/federation/v1/status",
+        ):
+            with self.subTest(path=path):
+                probe = ledger.PROBE_CASES[("POST", path)]["primary"]
+                self.assertEqual(probe["expected"], "403")
+                self.assertNotIn("headers", probe)
+
     def test_changes_and_models_probes_use_slice_contract_request_shapes(self) -> None:
         identifiers = {"agent": "lead-agent", "claudeAccount": "claude-account"}
         changes = ledger.PROBE_CASES[("GET", "/api/changes")]["additional"][0]

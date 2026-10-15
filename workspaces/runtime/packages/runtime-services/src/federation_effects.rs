@@ -65,6 +65,26 @@ pub enum FederationAction {
     Pull,
     Status,
 }
+
+/// Check the local feature gate before parsing signed federation headers.
+/// Python's FederationService.route performs this check before reading those headers.
+pub fn ensure_enabled(store: &RuntimeStore) -> Result<()> {
+    let enabled = store.read_transaction(|tx| {
+        let enabled = tx
+            .query_row(
+                "SELECT COALESCE(json_extract(record,'$.enabled'),0) FROM runtime_federation_settings WHERE id='global'",
+                [],
+                |row| row.get::<_, bool>(0),
+            )
+            .optional()?;
+        Ok::<_, StoreError>(enabled.unwrap_or(false))
+    })?;
+    if !enabled {
+        return Err(Error::Forbidden("federation is disabled"));
+    }
+    Ok(())
+}
+
 impl FederationAction {
     pub fn path(self) -> &'static str {
         match self {

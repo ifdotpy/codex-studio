@@ -582,8 +582,9 @@ PROBE_CASES: dict[tuple[str, str], dict[str, Any]] = {
     ("POST", "/api/action"): {"primary": {"body": {"id": "$agent", "action": "review", "request_id": "ledger-native-action"}, "replace_body": True, "expected": "501", "expected_error": "Not implemented: requires account-worker/native-action", "assert_no_write": True}},
     ("POST", "/api/stop"): {"primary": {"body": {"id": "$agent"}, "expected": "501", "expected_error": "Not implemented: requires account-worker/agent-interrupt", "assert_no_write": True}},
     ("POST", "/api/conversation/delete"): {"primary": {"body": {"id": "$agent"}, "expected": "2xx"}},
-    # The fixture leaves federation disabled (codex_federation.py:528-529); the
-    # signed route maps PermissionError to 403 (federation/router.py:200-201).
+    # Python checks FederationService.enabled() at the start of route() before
+    # reading signed headers (codex_federation.py:527-529); the router maps its
+    # PermissionError to 403 (studio_api/federation/router.py:200-201).
     ("POST", "/api/federation/v1/message"): {"primary": {"body": {"protocol": 1, "envelope": {"protocol": 1, "senderServer": "ledger-server", "id": "ledger-message", "kind": "chat-message", "room": "ledger-room", "payload": {}, "created": 1, "timestamp": 1, "nonce": "ledger-probe-nonce", "signature": "ledger-signature"}}, "expected": "403", "assert_no_write": True}},
     ("POST", "/api/federation/v1/pair"): {"primary": {"body": {"protocol": 1, "inviteId": "fixture-invite", "token": "fixture-token", "stateId": "fixture-state", "label": "Ledger", "origin": "https://ledger.example", "publicKey": "fixture-key"}, "expected": "403", "assert_no_write": True}},
     ("POST", "/api/federation/v1/pull"): {"primary": {"body": {"protocol": 1, "acks": []}, "expected": "403", "assert_no_write": True}},
@@ -1515,6 +1516,7 @@ def probe_operations(
                         or (implementation == "unimplemented" and result.status == 501 and standard_501)
                         or (expected == "404" and result.status == 404 and response_body == {"error": "Not found"})
                         or (expected == "400" and result.status == 400)
+                        or (expected == "403" and result.status == 403)
                         or (expected == "4xx" and 400 <= result.status < 500)
                         or (expected == "2xx" and 200 <= result.status < 300)
                     )
