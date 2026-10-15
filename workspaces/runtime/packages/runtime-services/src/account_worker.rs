@@ -46,7 +46,8 @@ impl From<rusqlite::Error> for WorkerError {
 }
 
 pub const COMMAND_CAPACITY: usize = 16;
-const JOURNAL_BATCH_MAX: usize = 32;
+// Maximum provider events per journal transaction; bounds transaction work and ACK delay.
+const JOURNAL_BATCH_MAX_EVENTS: usize = 32;
 const STREAM_CADENCE: std::time::Duration = std::time::Duration::from_millis(750);
 const PREPARATION_RETRY: std::time::Duration = std::time::Duration::from_secs(1);
 const PUBLICATION_RETRY_DELAY: std::time::Duration = std::time::Duration::from_secs(1);
@@ -778,9 +779,17 @@ impl Worker {
                 },
                 changed = self.session.status.changed() => { if changed.is_err() { return Ok(()); } },
             }
-            // One ready event after a command prevents a command flood starving evidence.
-            if let Ok(event) = self.events.try_recv() {
-                self.event(event).await?;
+            // A queued command bounds provider-lane work to the transaction in flight.
+            if self.queued_commands.is_empty() {
+                match self.inbox.try_recv() {
+                    Ok(command) => self.queued_commands.push_back(command),
+                    Err(mpsc::error::TryRecvError::Disconnected) => return Ok(()),
+                    Err(mpsc::error::TryRecvError::Empty) => {
+                        if let Ok(event) = self.events.try_recv() {
+                            self.event(event).await?;
+                        }
+                    }
+                }
             }
         }
     }
@@ -1304,7 +1313,18 @@ impl Worker {
         while let Some(event) = ready.pop_front() {
             if event.outcomes.is_empty() && event.journal.is_some() {
                 let mut entries = vec![event.journal.expect("checked journal")];
-                while entries.len() < JOURNAL_BATCH_MAX {
+                while entries.len() < JOURNAL_BATCH_MAX_EVENTS {
+                    if !self.queued_commands.is_empty() {
+                        break;
+                    }
+                    match self.inbox.try_recv() {
+                        Ok(command) => {
+                            self.queued_commands.push_back(command);
+                            break;
+                        }
+                        Err(mpsc::error::TryRecvError::Disconnected) => return Ok(()),
+                        Err(mpsc::error::TryRecvError::Empty) => {}
+                    }
                     let next = ready.pop_front().or_else(|| self.events.try_recv().ok());
                     let Some(next) = next else { break };
                     if next.outcomes.is_empty() {
@@ -1469,7 +1489,20 @@ impl Worker {
         self.arm_flush();
         self.schedule_publication_drain();
         self.drain_publications().await?;
-        for (entry, effect) in committed {
+        for (_index, (entry, effect)) in committed.into_iter().enumerate() {
+            #[cfg(test)]
+            if self
+                .bridge
+                .faults
+                .fail_journal_ack_at
+                .lock()
+                .unwrap()
+                .take_if(|fail_at| *fail_at == _index)
+                .is_some()
+            {
+                // The transaction has committed; simulate losing the worker before this ACK.
+                return Err(WorkerError::TaskFailed);
+            }
             self.journal_committed(entry, effect).await?;
         }
         Ok(())

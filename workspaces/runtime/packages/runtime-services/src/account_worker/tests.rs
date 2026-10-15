@@ -70,6 +70,7 @@ pub(super) struct Faults {
     pub(super) hold_journal_batch: std::sync::atomic::AtomicBool,
     pub(super) journal_batch_ready: tokio::sync::Notify,
     pub(super) release_journal_batch: tokio::sync::Notify,
+    pub(super) fail_journal_ack_at: std::sync::Mutex<Option<usize>>,
     cycles: std::sync::atomic::AtomicUsize,
     cycled: tokio::sync::Notify,
     pause_at: std::sync::Mutex<Option<usize>>,
@@ -1910,6 +1911,113 @@ async fn consecutive_journal_events_share_one_store_transaction() {
         Err(tokio::sync::mpsc::error::TryRecvError::Empty)
     );
     worker.shutdown().await.unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn committed_batch_replay_after_mid_batch_ack_loss_is_exactly_once() {
+    async fn start(state: &State, peer: &mut Peer) -> AccountHandle {
+        let worker = peer.worker(state.bridge.clone()).await;
+        let request = state.start(peer, &worker).await;
+        peer.accepted(&request).await;
+        worker
+    }
+    fn delta(index: usize) -> Value {
+        json!({
+            "method":"item/agentMessage/delta",
+            "params":{
+                "threadId":"fake-thread-0",
+                "turnId":"turn",
+                "itemId":"batch-replay",
+                "delta":format!("part-{index};")
+            }
+        })
+    }
+    async fn streams(state: &State) -> Value {
+        state
+            .bridge
+            .run(|store| {
+                store.transaction_with(|tx| {
+                    let metadata = store::receipt(tx, "streams:default", "metadata")?
+                        .unwrap_or_else(|| json!({"entries": [], "closed": []}));
+                    Ok(json!({
+                        "entries": metadata["entries"],
+                        "closed": metadata["closed"],
+                        "pending": store::receipt(tx, "streams:default", "pending")?,
+                        "delta": metadata["post_commit"][0]["AnalyticsStream"]["observation"]["params"]["delta"],
+                    }))
+                })
+            })
+            .await
+            .unwrap()
+    }
+
+    let recovered_state = State::new().await;
+    let mut first_peer = Peer::new();
+    let mut worker = start(&recovered_state, &mut first_peer).await;
+    let first_batch_cursor = first_peer.cursor + 1;
+    recovered_state
+        .bridge
+        .faults
+        .hold_journal_batch
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    *recovered_state
+        .bridge
+        .faults
+        .fail_journal_ack_at
+        .lock()
+        .unwrap() = Some(2);
+    let first = first_peer.frame(delta(0)).await;
+    tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        recovered_state.bridge.faults.journal_batch_ready.notified(),
+    )
+    .await
+    .expect("batch pauses before collecting events");
+    for index in 1..4 {
+        first_peer.frame(delta(index)).await;
+    }
+    recovered_state
+        .bridge
+        .faults
+        .hold_journal_batch
+        .store(false, std::sync::atomic::Ordering::SeqCst);
+    recovered_state
+        .bridge
+        .faults
+        .release_journal_batch
+        .notify_one();
+    first_peer.acknowledged(first + 1).await;
+    assert!(matches!(
+        worker.completion().await,
+        Err(WorkerError::TaskFailed)
+    ));
+    let committed_snapshot = streams(&recovered_state).await;
+    assert_eq!(committed_snapshot["delta"], "part-0;part-1;part-2;part-3;");
+    assert_eq!(committed_snapshot["closed"].as_array().unwrap().len(), 1);
+
+    let mut replay_peer = Peer::new();
+    replay_peer.cursor = first_batch_cursor - 1;
+    let mut replay_worker = replay_peer.worker(recovered_state.bridge.clone()).await;
+    for index in 0..4 {
+        replay_peer.frame(delta(index)).await;
+    }
+    replay_peer.acknowledged(first_batch_cursor + 3).await;
+    assert!(
+        replay_peer.acks.try_recv().is_err(),
+        "each replayed event ACKs once"
+    );
+    assert_eq!(streams(&recovered_state).await, committed_snapshot);
+    replay_worker.shutdown().await.unwrap();
+
+    let baseline_state = State::new().await;
+    let mut baseline_peer = Peer::new();
+    let mut baseline_worker = start(&baseline_state, &mut baseline_peer).await;
+    for index in 0..4 {
+        let cursor = baseline_peer.frame(delta(index)).await;
+        baseline_peer.acknowledged(cursor).await;
+    }
+    baseline_worker.shutdown().await.unwrap();
+    assert_eq!(streams(&baseline_state).await, committed_snapshot);
 }
 
 #[tokio::test(start_paused = true)]
