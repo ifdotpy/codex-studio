@@ -258,6 +258,121 @@ fn git_origin(directory: &std::path::Path) -> Option<String> {
         .then(|| format!("{}/{repository}", host.to_ascii_lowercase()))
 }
 
+/// Read-only paired-server project-location actions. They expose only bounded
+/// directory metadata and visible project names, matching the Python peer API.
+pub fn peer_location_info(path: &str) -> Result<Value, ProjectsError> {
+    if path.is_empty() || path.chars().count() > 4096 {
+        return Err(ProjectsError::BadRequest("a folder path is invalid"));
+    }
+    let directory = expand_home(path)
+        .canonicalize()
+        .map_err(|_| ProjectsError::BadRequest("This directory is unavailable"))?;
+    if !directory.is_dir() {
+        return Err(ProjectsError::BadRequest("This directory is unavailable"));
+    }
+    let head = git_read(&directory, &["rev-parse", "--verify", "HEAD"])
+        .filter(|value| value.len() == 40 || value.len() == 64)
+        .map(|value| value[..8].to_owned());
+    Ok(json!({"gitHead":head,"gitOrigin":git_origin(&directory),"matches":[]}))
+}
+
+pub fn peer_location_matches(
+    store: &RuntimeStore,
+    origin: &str,
+    cwd: Option<&str>,
+) -> Result<Value, ProjectsError> {
+    if origin.is_empty() || origin.chars().count() > 4096 {
+        return Err(ProjectsError::BadRequest("A Git origin is invalid"));
+    }
+    let connection = store.read()?;
+    let mut candidates = BTreeSet::new();
+    let mut matches = Vec::new();
+    for (id, project) in ProjectsRepository::list(&connection)? {
+        let Some(path) = project
+            .get("path")
+            .and_then(Value::as_str)
+            .filter(|path| !path.starts_with("project:"))
+        else {
+            continue;
+        };
+        if candidates.insert(path.to_owned())
+            && git_origin(Path::new(path)).as_deref() == Some(origin)
+        {
+            matches.push(json!({"projectId":id,"path":path,"name":project.get("name")}));
+        }
+    }
+    drop(connection);
+    if let Some(cwd) = cwd.filter(|path| !path.is_empty()) {
+        let directory = expand_home(cwd)
+            .canonicalize()
+            .map_err(|_| ProjectsError::BadRequest("This directory is unavailable"))?;
+        if !directory.is_dir() {
+            return Err(ProjectsError::BadRequest("This directory is unavailable"));
+        }
+        let mut children = std::fs::read_dir(&directory)
+            .map_err(|_| ProjectsError::BadRequest("This directory is unavailable"))?
+            .filter_map(Result::ok)
+            .filter_map(|entry| {
+                let path = entry.path();
+                (path.is_dir() && path.join(".git").exists()).then_some(path)
+            })
+            .collect::<Vec<_>>();
+        children.sort_by_key(|path| {
+            path.file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .case_fold()
+                .collect::<String>()
+        });
+        children.truncate(50);
+        if directory.join(".git").exists() {
+            children.insert(0, directory.clone());
+        }
+        for path in children {
+            let path_text = path.to_string_lossy().into_owned();
+            if candidates.insert(path_text.clone()) && git_origin(&path).as_deref() == Some(origin)
+            {
+                matches.push(json!({"projectId":path_text,"path":path_text,"name":path.file_name().map(|name|name.to_string_lossy().into_owned()).unwrap_or_default()}));
+            }
+        }
+    }
+    Ok(json!({"matches":matches}))
+}
+
+#[cfg(test)]
+mod peer_location_tests {
+    use super::*;
+
+    #[test]
+    fn peer_location_reads_return_only_bounded_metadata_and_matches() {
+        let root = tempfile::tempdir().expect("temporary project root");
+        let repo = root.path().join("repo");
+        std::fs::create_dir_all(repo.join(".git")).expect("fake git metadata");
+        std::fs::write(
+            repo.join(".git/config"),
+            "[remote \"origin\"]\n\turl = https://example.invalid/team/repo.git\n",
+        )
+        .expect("fake origin");
+        let store_dir = tempfile::tempdir().expect("temporary store root");
+        let store = RuntimeStore::open(Some(store_dir.path())).expect("open isolated store");
+        let info = peer_location_info(repo.to_str().expect("UTF-8 temp path"))
+            .expect("read peer location");
+        assert_eq!(info["gitOrigin"], "example.invalid/team/repo");
+        assert_eq!(info["matches"], json!([]));
+        let matches = peer_location_matches(
+            &store,
+            "example.invalid/team/repo",
+            Some(root.path().to_str().expect("UTF-8 temp path")),
+        )
+        .expect("read peer matches");
+        assert_eq!(matches["matches"].as_array().expect("match array").len(), 1);
+        assert_eq!(
+            matches["matches"][0]["path"],
+            repo.to_str().expect("UTF-8 temp path")
+        );
+    }
+}
+
 pub fn write_dependency(body: &Value) -> Option<&'static str> {
     let action = body
         .get("action")

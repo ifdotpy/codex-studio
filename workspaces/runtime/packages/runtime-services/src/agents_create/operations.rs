@@ -23,6 +23,8 @@ pub struct Context<'a> {
 pub enum OperationError {
     #[error("{0}")]
     Invalid(&'static str),
+    #[error("{0}")]
+    Forbidden(&'static str),
     #[error("Not implemented: requires {0}")]
     Unavailable(&'static str),
     #[error(transparent)]
@@ -226,15 +228,6 @@ fn create(
         },
         Ok,
     )?;
-    if request
-        .intent
-        .get("project_folder")
-        .is_some_and(|value| !value.is_null())
-    {
-        return Err(OperationError::Unavailable(
-            "project-driver/folder-selection",
-        ));
-    }
     let binding = if request.project_binding {
         Some(resolve_project_binding(
             context,
@@ -244,6 +237,7 @@ fn create(
                 .intent
                 .get("project_server_id")
                 .and_then(Value::as_str),
+            request.intent.get("project_folder"),
         )?)
     } else {
         None
@@ -418,6 +412,7 @@ fn create(
     if let Some(binding) = &binding {
         record["projectId"] = binding["projectId"].clone();
         record["projectServerId"] = binding["projectServerId"].clone();
+        record["projectFolder"] = binding["projectFolder"].clone();
     }
     let reuse_execution_fields = [
         "effort",
@@ -479,9 +474,11 @@ fn create(
             if let Some(binding) = &binding {
                 reused["projectId"] = binding["projectId"].clone();
                 reused["projectServerId"] = binding["projectServerId"].clone();
+                reused["projectFolder"] = binding["projectFolder"].clone();
             } else if let Some(fields) = reused.as_object_mut() {
                 fields.remove("projectId");
                 fields.remove("projectServerId");
+                fields.remove("projectFolder");
             }
             if previous_account != account {
                 reused["daybreakEnabled"] = json!(false);
@@ -513,6 +510,7 @@ fn create(
                 binding["localServerId"]
                     .as_str()
                     .ok_or(OperationError::Internal)?,
+                Some(&binding["projectFolder"]),
             )?;
             if current != *binding {
                 return Err(CreateError::IdentityChanged.into());
@@ -1611,12 +1609,13 @@ fn resolve_project_binding(
     cwd: &str,
     project_id: Option<&str>,
     home_server: Option<&str>,
+    folder: Option<&Value>,
 ) -> Result<Value, OperationError> {
     let local = local_server_id(context)?.ok_or(OperationError::Unavailable(
         "cross-server-driver/local-identity",
     ))?;
     let connection = context.store.read()?;
-    resolve_project_binding_from(&connection, cwd, project_id, home_server, &local)
+    resolve_project_binding_from(&connection, cwd, project_id, home_server, &local, folder)
 }
 
 fn resolve_worker_defaults(
@@ -1771,6 +1770,7 @@ fn resolve_project_binding_from(
     project_id: Option<&str>,
     home_server: Option<&str>,
     local: &str,
+    folder: Option<&Value>,
 ) -> Result<Value, OperationError> {
     let project_id = project_id
         .filter(|value| !value.is_empty())
@@ -1779,9 +1779,16 @@ fn resolve_project_binding_from(
         .filter(|value| !value.is_empty())
         .unwrap_or(local);
     if home_server != local {
-        return Err(OperationError::Unavailable(
-            "cross-server-driver/project-binding",
-        ));
+        let paired: bool = connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM runtime_access_clients WHERE id=?1 AND json_extract(record,'$.kind')='server' AND json_extract(record,'$.status')='paired')",
+            [home_server],
+            |row| row.get(0),
+        ).map_err(StoreError::from)?;
+        if !paired {
+            return Err(OperationError::Forbidden(
+                "The project server is not paired or is revoked",
+            ));
+        }
     }
     let projects = studio_runtime_store::ProjectsRepository::list(connection)?;
     for (_, project) in projects {
@@ -1807,8 +1814,28 @@ fn resolve_project_binding_from(
                     })
                 });
         if direct || alias {
+            let folder_id = match folder {
+                None | Some(Value::Null) => Value::Null,
+                Some(Value::String(id)) => {
+                    if !project
+                        .get("folders")
+                        .and_then(Value::as_array)
+                        .is_some_and(|folders| {
+                            folders
+                                .iter()
+                                .any(|item| item.get("id").and_then(Value::as_str) == Some(id))
+                        })
+                    {
+                        return Err(OperationError::Invalid(
+                            "This folder is not in the selected project",
+                        ));
+                    }
+                    json!(id)
+                }
+                Some(_) => return Err(OperationError::Invalid("Select a project folder")),
+            };
             return Ok(
-                json!({"cwd":cwd,"projectId":project_id,"projectServerId":home_server,"localServerId":local}),
+                json!({"cwd":cwd,"projectId":project_id,"projectServerId":home_server,"localServerId":local,"projectFolder":folder_id}),
             );
         }
     }
@@ -1948,6 +1975,107 @@ fn local_server_id(context: &Context<'_>) -> Result<Option<String>, OperationErr
 mod tests {
     use super::*;
     use std::cell::{Cell, RefCell};
+
+    #[test]
+    fn lead_project_folder_must_belong_to_selected_project() {
+        let connection = rusqlite::Connection::open_in_memory().expect("open project fixture");
+        connection
+            .execute(
+                "CREATE TABLE runtime_projects(id TEXT PRIMARY KEY,record TEXT NOT NULL)",
+                [],
+            )
+            .expect("project table");
+        connection
+            .execute(
+                "CREATE TABLE runtime_access_clients(id TEXT PRIMARY KEY,record TEXT NOT NULL)",
+                [],
+            )
+            .expect("paired clients table");
+        let project = json!({
+            "id":"project:example",
+            "path":"project:example",
+            "name":"Example",
+            "homeServerId":"local-server",
+            "locations":[{"serverId":"local-server","path":"/work/example"}],
+            "folders":[{"id":"folder-a","name":"Nested","parentId":null}]
+        });
+        connection
+            .execute(
+                "INSERT INTO runtime_projects(id,record) VALUES(?1,?2)",
+                ("project:example", project.to_string()),
+            )
+            .expect("save local project");
+        let alias = json!({
+            "id":"/work/alias",
+            "path":"/work/alias",
+            "name":"Alias",
+            "homeServerId":"local-server",
+            "locations":[{"serverId":"local-server","path":"/work/alias"}],
+            "projectAliases":[{"serverId":"home-server","projectId":"project:remote","name":"Remote"}],
+            "folders":[{"id":"remote-folder","name":"Nested","parentId":null}]
+        });
+        connection
+            .execute(
+                "INSERT INTO runtime_projects(id,record) VALUES(?1,?2)",
+                ("/work/alias", alias.to_string()),
+            )
+            .expect("save remote project alias");
+        connection
+            .execute(
+                "INSERT INTO runtime_access_clients(id,record) VALUES(?1,?2)",
+                (
+                    "home-server",
+                    json!({"id":"home-server","kind":"server","status":"paired"}).to_string(),
+                ),
+            )
+            .expect("paired home server");
+        let valid = resolve_project_binding_from(
+            &connection,
+            "/work/example",
+            Some("project:example"),
+            Some("local-server"),
+            "local-server",
+            Some(&json!("folder-a")),
+        )
+        .expect("accept folder in selected project");
+        assert_eq!(valid["projectFolder"], "folder-a");
+        let remote = resolve_project_binding_from(
+            &connection,
+            "/work/alias",
+            Some("project:remote"),
+            Some("home-server"),
+            "local-server",
+            Some(&json!("remote-folder")),
+        )
+        .expect("accept registered remote project alias");
+        assert_eq!(remote["projectServerId"], "home-server");
+        assert!(matches!(
+            resolve_project_binding_from(
+                &connection,
+                "/work/alias",
+                Some("project:remote"),
+                Some("revoked-server"),
+                "local-server",
+                None,
+            ),
+            Err(OperationError::Forbidden(
+                "The project server is not paired or is revoked"
+            ))
+        ));
+        assert!(matches!(
+            resolve_project_binding_from(
+                &connection,
+                "/work/example",
+                Some("project:example"),
+                Some("local-server"),
+                "local-server",
+                Some(&json!("another-project-folder")),
+            ),
+            Err(OperationError::Invalid(
+                "This folder is not in the selected project"
+            ))
+        ));
+    }
 
     #[test]
     fn reviewer_child_defaults_to_shared_workspace() {

@@ -11,9 +11,8 @@ use super::manifest::{Dependency, OperationStatus, RouteGroup, get, post};
 use crate::error::ApiError;
 use crate::router::HttpState;
 
-const MESSAGE_SEND_DEPENDENCIES: [Dependency; 5] = [
+const MESSAGE_SEND_DEPENDENCIES: [Dependency; 4] = [
     Dependency::new("capacity-retry/store"),
-    Dependency::new("cross-server/remote-events"),
     Dependency::new("federation-driver/rooms"),
     Dependency::new("payload-store/uploads"),
     Dependency::new("workspace-policy/message-admission"),
@@ -138,6 +137,7 @@ pub(super) async fn post_message(
 ) -> Result<Json<crate::generated::StudioApiWorkModelsMessageReceipt>, ApiError> {
     let store = state.store.ok_or_else(ApiError::internal)?;
     let wake = state.event_wake;
+    let orchestration_driver = state.orchestration_driver.clone();
     let assets = body
         .assets
         .unwrap_or_default()
@@ -158,6 +158,11 @@ pub(super) async fn post_message(
             "runtime-http/routes/messages",
             move || {
                 let connection = store.read().map_err(|_| ApiError::internal())?;
+                let remote_worker: bool = connection.query_row(
+                    "SELECT json_type(record,'$.remoteWorker') IS NOT NULL FROM runtime_agents WHERE id=?1",
+                    [&body.room],
+                    |row| row.get(0),
+                ).map_err(|_| ApiError::internal())?;
                 let prepared: Box<
                     dyn studio_runtime_services::message_admission::MessageAdmission + '_,
                 > = if state.message_admission.is_some() {
@@ -203,6 +208,11 @@ pub(super) async fn post_message(
                     crate::generated::StudioApiWorkModelsMessageReceipt,
                 >(posted.receipt.clone())?;
                 posted.notify_committed(|| wake.notify_one());
+                if remote_worker && let Some(driver) = &orchestration_driver {
+                    let now = studio_runtime_services::event_write::unix_time()
+                        .map_err(|_| ApiError::internal())? as i64;
+                    driver.pump_due(now).map_err(|_| ApiError::internal())?;
+                }
                 Ok::<crate::generated::StudioApiWorkModelsMessageReceipt, ApiError>(value)
             },
         )
@@ -343,7 +353,6 @@ inventory::submit! {
         routes: Some(routes),
         dependencies: &[
             "capacity-retry/store",
-            "cross-server/remote-events",
             "event-driver/message-send",
             "federation-driver/rooms",
             "payload-store/uploads",

@@ -194,7 +194,9 @@ fn post_managed_message(
     }
     let mut agent =
         crate::event_write::checked_agent(transaction, input.room).map_err(event_write_error)?;
-    crate::event_write::refuse_remote(&agent).map_err(event_write_error)?;
+    if crate::event_write::truthy(agent.extra.get("remoteAnchor")) {
+        crate::event_write::refuse_remote(&agent).map_err(event_write_error)?;
+    }
     if safety_retry_active(&agent) {
         return Err(CoordinationError::InvalidRequest(
             "Wait for the model change before sending another message",
@@ -240,7 +242,7 @@ fn post_managed_message(
 
     // An orphan receipt cannot prove that this event is still durable.
     let receipt_id = input.id.to_owned();
-    if crate::event_write::read_receipt(
+    if let Some(receipt) = crate::event_write::read_receipt(
         transaction,
         Some(&receipt_id),
         &signature,
@@ -249,8 +251,13 @@ fn post_managed_message(
         |value| valid_message_receipt(value, input.id),
     )
     .map_err(event_write_error)?
-    .is_some()
     {
+        if crate::event_write::truthy(agent.extra.get("remoteWorker")) {
+            return Ok(PostMessageResult {
+                receipt,
+                event_inserted: false,
+            });
+        }
         return Err(invalid_stored("runtime_events", input.id));
     }
     crate::message_admission::attachments(input.assets)?;

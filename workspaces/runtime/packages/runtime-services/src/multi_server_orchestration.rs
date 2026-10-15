@@ -499,6 +499,201 @@ impl RuntimeOrchestrationEffects {
     }
 }
 
+fn receive_remote_input(
+    store: &RuntimeStore,
+    principal: &str,
+    envelope: &Value,
+) -> Result<ExchangeOutcome, AccessError> {
+    let payload = &envelope["payload"];
+    let key = text(envelope, "requestId");
+    let link_id = text(payload, "link");
+    let worker_id = text(payload, "worker");
+    let kind = text(payload, "kind");
+    let event_text = text(payload, "text");
+    let parent_epoch = payload
+        .get("parentEpoch")
+        .and_then(Value::as_i64)
+        .ok_or_else(|| refused(400, "invalid_request", "Invalid remote input"))?;
+    let control_epoch = payload
+        .get("controlEpoch")
+        .and_then(Value::as_i64)
+        .ok_or_else(|| refused(400, "invalid_request", "Invalid remote input"))?;
+    let remote_epoch = payload
+        .get("epoch")
+        .and_then(Value::as_i64)
+        .ok_or_else(|| refused(400, "invalid_request", "Invalid remote input"))?;
+    let delivery = payload
+        .get("delivery")
+        .and_then(Value::as_str)
+        .unwrap_or("queue");
+    if key.is_empty()
+        || link_id.is_empty()
+        || worker_id.is_empty()
+        || event_text.len() > 32_000
+        || !matches!(
+            kind,
+            "user"
+                | "followup"
+                | "child_result"
+                | "child_stopped"
+                | "agent_message"
+                | "work_review"
+        )
+    {
+        return Err(refused(400, "invalid_request", "Invalid remote input"));
+    }
+    let connection = store.read()?;
+    let raw: Option<String> = connection
+        .query_row(
+            "SELECT record FROM runtime_server_links WHERE id=?1",
+            [link_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let link: Value = raw
+        .as_deref()
+        .and_then(|raw| serde_json::from_str(raw).ok())
+        .ok_or_else(|| {
+            refused(
+                404,
+                "link_unavailable",
+                "The remote-parent link is unavailable",
+            )
+        })?;
+    if link["side"] != "remote"
+        || link["server"] != principal
+        || link["parentEpoch"].as_i64() != Some(parent_epoch)
+        || !link["workers"].as_array().is_some_and(|workers| {
+            workers
+                .iter()
+                .any(|worker| worker.as_str() == Some(worker_id))
+        })
+    {
+        return Err(refused(
+            403,
+            "link_owner",
+            "The remote-parent link is invalid",
+        ));
+    }
+    let worker = studio_runtime_store::AgentRepository::get(
+        &connection,
+        &studio_runtime_store::AgentId::from(worker_id),
+    )?
+    .ok_or_else(|| {
+        refused(
+            404,
+            "worker_unavailable",
+            "The remote worker is unavailable",
+        )
+    })?;
+    let observed_control = worker
+        .extra
+        .get("remoteControlEpoch")
+        .and_then(Value::as_i64)
+        .unwrap_or(0);
+    if observed_control < control_epoch {
+        return Ok(ExchangeOutcome::Unknown);
+    }
+    if observed_control != control_epoch
+        || worker
+            .extra
+            .get("remoteEpoch")
+            .and_then(Value::as_i64)
+            .unwrap_or(0)
+            > remote_epoch
+    {
+        return Ok(ExchangeOutcome::NotApplied(
+            "The remote worker epoch changed".to_owned(),
+        ));
+    }
+    let admission = if matches!(kind, "user" | "followup") {
+        Some(
+            crate::message_admission::MessageIngressAdmission::load(store, &connection, worker_id)
+                .map_err(|_| refused(400, "input_rejected", "The remote input was not admitted"))?,
+        )
+    } else {
+        None
+    };
+    drop(connection);
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|_| refused(503, "clock_unavailable", "The system clock is unavailable"))?
+        .as_secs_f64();
+    let result = store.transaction_with(|tx| {
+        let current = studio_runtime_store::AgentRepository::get(
+            tx,
+            &studio_runtime_store::AgentId::from(worker_id),
+        )?
+        .ok_or_else(|| {
+            refused(
+                404,
+                "worker_unavailable",
+                "The remote worker is unavailable",
+            )
+        })?;
+        if current.epoch != worker.epoch
+            || current
+                .extra
+                .get("remoteControlEpoch")
+                .and_then(Value::as_i64)
+                .unwrap_or(0)
+                != control_epoch
+        {
+            return Err(refused(409, "worker_changed", "The remote worker changed"));
+        }
+        if studio_runtime_store::truthy(current.extra.get("moveImportPending"))
+            || studio_runtime_store::truthy(current.extra.get("movedTo"))
+        {
+            crate::event_write::enqueue_recovery_event(
+                tx,
+                &current,
+                key.to_owned(),
+                kind,
+                event_text.to_owned(),
+                now,
+            )
+            .map_err(|_| refused(400, "input_rejected", "The remote input was not admitted"))?;
+            return Ok::<Value, AccessError>(json!({"eventId":key}));
+        }
+        if matches!(kind, "user" | "followup") {
+            if !matches!(delivery, "queue" | "steer" | "after_tool" | "after_turn") {
+                return Err(refused(
+                    400,
+                    "invalid_request",
+                    "Invalid remote input delivery",
+                ));
+            }
+            let admission = admission.as_ref().ok_or_else(|| {
+                refused(400, "input_rejected", "The remote input was not admitted")
+            })?;
+            let posted = crate::coordination::post_message_with_admission(
+                tx,
+                crate::coordination::PostManagedMessage {
+                    room: worker_id,
+                    id: key,
+                    text: event_text,
+                    delivery,
+                    assets: &[],
+                },
+                admission,
+            )
+            .map_err(|_| refused(400, "input_rejected", "The remote input was not admitted"))?;
+            return Ok(posted.receipt);
+        }
+        crate::event_write::enqueue_recovery_event(
+            tx,
+            &current,
+            key.to_owned(),
+            kind,
+            event_text.to_owned(),
+            now,
+        )
+        .map_err(|_| refused(400, "input_rejected", "The remote input was not admitted"))?;
+        Ok(json!({"eventId":key}))
+    })?;
+    Ok(ExchangeOutcome::Applied(result))
+}
+
 fn callback_error(error: crate::provider_callbacks::CallbackError) -> AccessError {
     use crate::provider_callbacks::CallbackError as Callback;
     match error {
@@ -550,7 +745,13 @@ impl OrchestrationEffects for RuntimeOrchestrationEffects {
     fn supports(&self, action: &str) -> bool {
         matches!(
             action,
-            "event" | "message" | "move_send" | "browser_callback"
+            "event"
+                | "message"
+                | "move_send"
+                | "input"
+                | "browser_callback"
+                | "location_info"
+                | "location_matches"
         )
     }
 
@@ -561,6 +762,35 @@ impl OrchestrationEffects for RuntimeOrchestrationEffects {
                 .browser_callback
                 .receive(envelope)
                 .map(ExchangeOutcome::Applied);
+        }
+        if action == "location_info" {
+            let path = text(&envelope["payload"], "cwd");
+            return crate::projects::peer_location_info(path)
+                .map(ExchangeOutcome::Applied)
+                .map_err(|_| {
+                    refused(
+                        400,
+                        "location_unavailable",
+                        "The project folder is unavailable",
+                    )
+                });
+        }
+        if action == "location_matches" {
+            let payload = &envelope["payload"];
+            let origin = text(payload, "origin");
+            let cwd = payload.get("cwd").and_then(Value::as_str);
+            return crate::projects::peer_location_matches(&self.store, origin, cwd)
+                .map(ExchangeOutcome::Applied)
+                .map_err(|_| {
+                    refused(
+                        400,
+                        "location_unavailable",
+                        "Project location matches are unavailable",
+                    )
+                });
+        }
+        if action == "input" {
+            return receive_remote_input(&self.store, principal, envelope);
         }
         if matches!(action, "message" | "move_send") {
             return self.worker_call(principal, envelope);
@@ -857,7 +1087,10 @@ pub enum DeliveryDecision {
     Return(ExchangeOutcome),
 }
 fn peer_replay_safe(action: &str) -> bool {
-    matches!(action, "event" | "message" | "move_send")
+    matches!(
+        action,
+        "event" | "message" | "move_send" | "input" | "location_info" | "location_matches"
+    )
 }
 
 fn peer_retry_delay(attempts: i64) -> i64 {
