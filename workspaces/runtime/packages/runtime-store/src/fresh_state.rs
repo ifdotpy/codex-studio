@@ -197,6 +197,7 @@ fn build_staging(staging: &Path, final_root: &Path) -> StoreResult<()> {
 
     let mut canvas = Connection::open(staging.join("canvas.sqlite3"))?;
     crate::schema::register_python_trigger_functions(&canvas)?;
+    crate::repositories::sync_documents::reset_sequence_high_water(&canvas)?;
     let transaction = canvas.transaction_with_behavior(TransactionBehavior::Immediate)?;
     crate::bootstrap::prepare_sync_schema(&transaction)?;
     seed_python_lazy_markers(&transaction, staging, final_root)?;

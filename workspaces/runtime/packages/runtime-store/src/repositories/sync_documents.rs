@@ -1,6 +1,6 @@
 //! Synchronous access to the durable sync document and entity tables.
 
-use rusqlite::{Connection, OptionalExtension, Transaction, params};
+use rusqlite::{Connection, Error, ErrorCode, OptionalExtension, Transaction, params};
 use serde_json::{Value, json};
 use studio_runtime_schema::shared_values::{SYNC_BATCH_LIMIT, SYNC_ENTITY_PAGE_LIMIT};
 
@@ -524,13 +524,27 @@ pub(crate) fn reset_sequence_high_water(connection: &Connection) -> StoreResult<
 }
 
 pub(crate) fn next_sequence(connection: &Connection) -> StoreResult<i64> {
-    let high_water = connection
+    let high_water = match connection
         .query_row(
             "SELECT value FROM temp.sync_sequence_high_water WHERE singleton=1",
             [],
             |row| row.get::<_, i64>(0),
         )
-        .optional()?;
+        .optional()
+    {
+        Ok(high_water) => high_water,
+        Err(Error::SqliteFailure(error, Some(message)))
+            if error.code == ErrorCode::Unknown
+                && message == "no such table: temp.sync_sequence_high_water" =>
+        {
+            // Some repository callers own a raw transaction instead of using
+            // RuntimeStore::transaction; initialize the connection-local cache
+            // only on this uncommon first-allocation path.
+            reset_sequence_high_water(connection)?;
+            None
+        }
+        Err(error) => return Err(error.into()),
+    };
     if let Some(high_water) = high_water {
         let next = high_water
             .checked_add(1)

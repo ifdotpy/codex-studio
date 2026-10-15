@@ -426,6 +426,7 @@ impl EventWriteRepository {
 #[cfg(test)]
 mod tests {
     use super::EventWriteRepository;
+    use crate::repositories::sync_documents::reset_sequence_high_water;
     use crate::StoreError;
     use rusqlite::Connection;
     use serde_json::json;
@@ -441,6 +442,7 @@ mod tests {
                  INSERT INTO sync_entities VALUES('agent','a',1,'old', '{\"collection\":\"agent\",\"id\":\"a\",\"value\":{\"id\":\"a\",\"status\":\"idle\",\"overview\":{\"result\":\"stale\",\"resultTruncated\":true,\"resultTurnId\":\"turn-old\",\"task\":\"keep\"}}}',0);",
             )
             .expect("projection fixture creates");
+        reset_sequence_high_water(&connection).expect("sequence high-water initializes");
         let transaction = connection.transaction().expect("transaction begins");
         EventWriteRepository::set_agent_sync_status(&transaction, "a", "queued")
             .expect("agent projection updates");
@@ -488,6 +490,7 @@ mod tests {
                 ],
             )
             .expect("runtime lifecycle receipt persists");
+        reset_sequence_high_water(&connection).expect("sequence high-water initializes");
         let transaction = connection.transaction().expect("transaction begins");
         EventWriteRepository::set_agent_sync_lifecycle(
             &transaction,
@@ -536,6 +539,7 @@ mod tests {
                  INSERT INTO sync_entities VALUES('agent','a',1,'old','{\"collection\":\"agent\",\"id\":\"a\",\"value\":{\"id\":\"a\",\"name\":\"Old\",\"manualName\":false,\"needsTitle\":true,\"role\":\"orchestrator\"}}',0);",
             )
             .expect("projection fixture creates");
+        reset_sequence_high_water(&connection).expect("sequence high-water initializes");
         let transaction = connection.transaction().expect("transaction begins");
         EventWriteRepository::set_agent_sync_name(&transaction, "a", "New")
             .expect("agent title projection updates");
