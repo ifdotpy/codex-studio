@@ -16,11 +16,13 @@ import os
 from pathlib import Path
 import platform
 import shlex
+import socket
 import subprocess
 import sys
 import tempfile
 import threading
 from typing import Any, Awaitable, Callable
+import uuid
 
 from codex_layout import VM_GUEST_ROOT
 from codex_linux_vm import LinuxVMError
@@ -154,11 +156,43 @@ class HostGuest:
 
     def call(self, method: str, params: dict[str, Any] | None = None, *,
              request_id: str | None = None, timeout: float = 60) -> Any:
-        future = asyncio.run_coroutine_threadsafe(self.bridge.call(method, params or {}), self.loop)
+        identity = request_id or str(uuid.uuid4())
+        payload = json.dumps({
+            "id": identity,
+            "method": method,
+            "params": params or {},
+        }, separators=(",", ":")).encode() + b"\n"
+        if len(payload) > 64 * 1024:
+            raise LinuxVMError("The browser request is too large", code="invalid_request")
         try:
-            return future.result(timeout)
-        except BridgeError as error:
-            raise LinuxVMError(str(error), code=error.code) from None
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+                client.settimeout(timeout)
+                client.connect(str(self.control_socket))
+                client.sendall(payload)
+                response = bytearray()
+                while len(response) <= 64 * 1024:
+                    chunk = client.recv(min(4096, 64 * 1024 + 1 - len(response)))
+                    if not chunk:
+                        break
+                    response.extend(chunk)
+                    if b"\n" in chunk:
+                        break
+            if len(response) > 64 * 1024 or not response.endswith(b"\n"):
+                raise LinuxVMError("The browser control response is invalid", code="invalid_response")
+            value = json.loads(response[:-1])
+            if not isinstance(value, dict) or value.get("id") != identity:
+                raise LinuxVMError("The browser control response is invalid", code="invalid_response")
+            error = value.get("error")
+            if isinstance(error, dict):
+                raise LinuxVMError(
+                    str(error.get("message") or "The browser request failed"),
+                    code=str(error.get("code") or "unavailable"),
+                )
+            if "result" not in value:
+                raise LinuxVMError("The browser control response is invalid", code="invalid_response")
+            return value["result"]
+        except (OSError, TimeoutError) as error:
+            raise LinuxVMError("The host browser control socket is unavailable", code="unavailable") from error
 
     async def control_client(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         identity = ""
