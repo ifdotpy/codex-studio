@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+import shlex
 import socket
 import socketserver
 import sys
@@ -47,10 +48,17 @@ class HostSecretsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         cls.rust_backend = bool(os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"))
         cls.fake_tools = tempfile.TemporaryDirectory(dir=os.environ.get("TMPDIR"))
         cls.fake_desk = Path(cls.fake_tools.name) / "layr-desk"
+        cls.fake_desk_calls = Path(cls.fake_tools.name) / "layr-desk-calls.txt"
         cls.fake_desk.write_text(
             "#!/bin/sh\n"
+            f"printf '%s\\n' \"$*\" >> {shlex.quote(str(cls.fake_desk_calls))}\n"
             "case \"$1\" in\n"
             "  unlock) [ \"$(cat)\" = 'fixture words' ] || exit 31 ;;\n"
+            "  aws-login)\n"
+            "    [ \"$#\" -eq 4 ] && [ \"$2\" = --profile ] && \\\n"
+            "      [ \"$3\" = fixture-profile ] && [ \"$4\" = --json ] || exit 33\n"
+            "    printf '%s\\n' '{\"page\":\"https://signin.example.invalid/authorize\",\"code\":\"fixture-device-code\"}'\n"
+            "    ;;\n"
             "  service) printf '%s\\n' '{\"installed\":false}' ;;\n"
             "  status) printf '%s\\n' '{\"projects\":[{\"name\":\"project-one\",\"unlocked\":true}]}' ;;\n"
             "  pull) printf '%s\\n' '{\"seq\":7,\"files\":2,\"bytes\":1024}' ;;\n"
@@ -93,6 +101,48 @@ class HostSecretsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
 
     def request(self, path: str, body: dict):
         return self.backend.request("POST", path, body=body, headers=self.headers())
+
+    @unittest.skipUnless(os.environ.get("STUDIO_HTTP_BACKEND_COMMAND"), "Rust backend only")
+    def test_aws_login_returns_fake_signin_and_replays_completed_job(self):
+        body = {"profile": "fixture-profile", "requestId": "vault-aws-login-fixture"}
+        previous_calls = (
+            self.fake_desk_calls.read_text(encoding="utf-8").splitlines()
+            if self.fake_desk_calls.exists()
+            else []
+        )
+
+        first = self.request("/api/vault/aws-login", body)
+        self.assertEqual(first.status, 200, first.body[:1000])
+
+        def completed_login():
+            response = self.request("/api/vault/aws-login", body)
+            self.assertEqual(response.status, 200, response.body[:1000])
+            result = response.json()
+            return result if result.get("state") != "running" else None
+
+        result = self.backend.wait_until(completed_login, "fake AWS profile login completion")
+        expected = {
+            "requestId": body["requestId"],
+            "state": "done",
+            "page": "https://signin.example.invalid/authorize",
+            "code": "fixture-device-code",
+        }
+        self.assertEqual(result, expected)
+        replay = self.request("/api/vault/aws-login", body)
+        self.assertEqual(replay.status, 200, replay.body[:1000])
+        self.assertEqual(replay.json(), expected)
+
+        calls = self.fake_desk_calls.read_text(encoding="utf-8").splitlines()
+        self.assertEqual(
+            calls[len(previous_calls):],
+            ["aws-login --profile fixture-profile --json"],
+            "the Rust route invokes only fake Desk and reuses its job receipt",
+        )
+        self.assertEqual(
+            list(self.backend.vm_state.rglob("vault-mac.json")),
+            [],
+            "AWS profile login does not change or refresh project vault state",
+        )
 
     def test_project_secret_routes_use_guest_and_never_return_values(self):
         listed = self.request("/api/project-secrets/list", {"projectId": "project-1"})
