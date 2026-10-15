@@ -284,7 +284,7 @@ class ProjectsHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             body={"path": str(self.backend.root / "missing-project"), "action": "register"},
             headers=self.headers(),
         )
-        self.assertIn(response.status, (400, 500), response.body[:1000])
+        self.assertEqual(response.status, 400, response.body[:1000])
         self.assertEqual(self._project_count(), before)
 
     def test_unpaired_remote_registration_is_forbidden_without_writing(self) -> None:

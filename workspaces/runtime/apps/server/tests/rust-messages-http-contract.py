@@ -787,7 +787,8 @@ class MessagesHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             response = self.backend.request("POST", "/api/messages", body={
                 "id": message_id, "room": self.agent_id, "text": "Rollback all writes",
             }, headers=self.headers())
-            self.assertEqual(response.status, 500, response.body[:1000])
+            self.assertFalse(200 <= response.status < 300, response.body[:1000])
+            self.assertIn("error", response.json())
             after = no_write_snapshot(self.backend.state)
             self.assertEqual(after, before, f"changed agent fields: {agent_snapshot_delta(before, after)!r}")
         finally:

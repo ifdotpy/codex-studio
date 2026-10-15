@@ -191,7 +191,7 @@ async fn failed_intent_write_cannot_reach_native_session() {
     std::fs::rename(&session.path, &saved).expect("hold registry");
     std::fs::create_dir(&session.path).expect("fail atomic replace");
     let (status, _) = post(&app, "/api/accounts/login", json!({"login_id":ID})).await;
-    assert_eq!(status, 500);
+    assert_eq!(status, 503);
     assert_eq!(session.calls.load(Ordering::SeqCst), 0);
     std::fs::remove_dir(&session.path).expect("remove failure");
     std::fs::rename(saved, &session.path).expect("restore");
@@ -251,7 +251,7 @@ async fn login_refuses_preexisting_symlink_that_escapes_accounts_root() {
 
     let (status, _) = post(&app, "/api/accounts/login", json!({"login_id":ID})).await;
 
-    assert_eq!(status, 500);
+    assert_eq!(status, 400);
     assert_eq!(session.calls.load(Ordering::SeqCst), 0);
     assert!(
         std::fs::read_dir(outside.path())

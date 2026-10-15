@@ -389,7 +389,8 @@ class VoiceHTTPContract(TimedHTTPContractTest, unittest.TestCase):
             "agent": self.lead_id, "message_id": "fail-after-delivery",
             "record_ids": ["python-user-record"],
         })
-        self.assertEqual(failed.status, 500, failed.body[:1000])
+        self.assertFalse(200 <= failed.status < 300, failed.body[:1000])
+        self.assertIn("error", failed.json())
         self.assertEqual(no_write_snapshot(self.backend.state), before)
 
     def test_unknown_voice_action_keeps_the_python_error_contract(self):

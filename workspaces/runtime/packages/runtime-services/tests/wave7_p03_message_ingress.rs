@@ -559,6 +559,38 @@ fn each_write_occurrence_and_commit_wake_crash_recovers_exactly_once(oracle: &mu
     );
 }
 
+#[test]
+fn event_projection_failure_returns_error_and_rolls_back_message_admission() {
+    let mut oracle = Oracle::new();
+    let (root, _) = oracle.seed("projection-failure", &json!({"steps":[]}));
+    let store = RuntimeStore::open(Some(&root)).expect("store");
+    store
+        .transaction(|tx| {
+            tx.execute_batch(
+                "CREATE TRIGGER fail_event_projection BEFORE INSERT ON sync_entities
+                 WHEN NEW.collection='event'
+                 BEGIN SELECT RAISE(ABORT,'injected event projection failure'); END;",
+            )?;
+            Ok(())
+        })
+        .expect("arm projection failure");
+    let before = snapshot(&store);
+    let prepared =
+        PreparedAdmission::load(&store.read().expect("read"), "agent").expect("prepare admission");
+    let result = store.transaction_with_error(|tx| {
+        post(
+            tx,
+            &json!({"id":"projection-failure-message","room":"agent","text":"rollback"}),
+            &prepared,
+        )
+    });
+    assert!(matches!(
+        result,
+        Err(coordination::CoordinationError::Store(_))
+    ));
+    assert_eq!(snapshot(&store), before);
+}
+
 fn injected_policy_denials_and_changed_workspace_snapshot_write_nothing(oracle: &mut Oracle) {
     use studio_runtime_services::coordination::CoordinationError;
     use studio_runtime_services::message_admission::MessageAdmission;

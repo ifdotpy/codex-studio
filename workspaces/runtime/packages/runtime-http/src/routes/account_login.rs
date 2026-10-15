@@ -163,7 +163,7 @@ async fn run_mutation(
     + 'static,
 ) -> Result<Json<crate::generated::AccountsResponse>, ApiError> {
     let Some(driver) = state.account_driver.clone() else {
-        return Err(ApiError::internal());
+        return Err(runtime_availability("account-driver/runtime"));
     };
     accounts_response(run_account_operation(&state, driver, mutation).await?)
 }
@@ -255,7 +255,7 @@ async fn discover(
             .map_err(|_| ApiError::internal());
     }
     let Some(driver) = state.account_driver.clone() else {
-        return Err(ApiError::internal());
+        return Err(runtime_availability("account-driver/runtime"));
     };
     let snapshot = run_account_operation(&state, driver, |driver| {
         driver.discover_codex()?;
@@ -323,7 +323,7 @@ async fn codex_login_cancel(
             .map_err(|_| ApiError::internal());
     }
     let Some(driver) = state.account_driver.clone() else {
-        return Err(ApiError::internal());
+        return Err(runtime_availability("account-driver/runtime"));
     };
     let receipt = run_account_operation(&state, driver, move |driver| {
         driver.terminal_login_receipt(&body.login_id)
@@ -397,15 +397,23 @@ pub(super) fn session_error(error: AccountSessionError) -> ApiError {
     let status = match error {
         AccountSessionError::Requires(_) => StatusCode::NOT_IMPLEMENTED,
         AccountSessionError::Refused(_) => StatusCode::BAD_REQUEST,
-        AccountSessionError::InvalidResponse(_)
-        | AccountSessionError::Persistence
-        | AccountSessionError::Unknown => StatusCode::INTERNAL_SERVER_ERROR,
+        AccountSessionError::Persistence => StatusCode::SERVICE_UNAVAILABLE,
+        AccountSessionError::InvalidResponse(_) | AccountSessionError::Unknown => {
+            StatusCode::INTERNAL_SERVER_ERROR
+        }
     };
     ApiError::new(status, error.to_string())
 }
 
 fn unavailable(dependency: Dependency) -> ApiError {
     ApiError::dependency(dependency.name())
+}
+
+fn runtime_availability(name: &str) -> ApiError {
+    ApiError::new(
+        StatusCode::SERVICE_UNAVAILABLE,
+        format!("Runtime unavailable: {name}"),
+    )
 }
 
 #[cfg(test)]
@@ -443,7 +451,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn missing_account_driver_is_a_composition_error() {
+    async fn missing_account_driver_is_named_runtime_unavailability() {
         let state_dir = tempfile::tempdir().expect("isolated state directory");
         let state = HttpState::new(
             String::new(),
@@ -459,13 +467,13 @@ mod tests {
             .await
             .expect_err("missing driver is a composition error");
         let response = error.into_response();
-        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
         let body = to_bytes(response.into_body(), 4096)
             .await
             .expect("error body");
         assert_eq!(
             serde_json::from_slice::<serde_json::Value>(&body).expect("JSON error")["error"],
-            "Internal server error"
+            "Runtime unavailable: account-driver/runtime"
         );
     }
 

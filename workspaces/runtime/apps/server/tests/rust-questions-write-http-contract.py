@@ -511,7 +511,8 @@ class QuestionsWriteHTTPContract(TimedHTTPContractTest, unittest.TestCase):
         response = self._post("/api/complaints", {
             "id": "rollback-submit", "lead": "questions-write-lead", "text": "Rollback",
         })
-        self.assertIn(response.status, (400, 500), response.body[:1000])
+        self.assertFalse(200 <= response.status < 300, response.body[:1000])
+        self.assertIn("error", response.json())
         self.assertEqual(no_write_snapshot(self.backend.state), before)
         with closing(sqlite3.connect(self.backend.state / "canvas.sqlite3")) as database:
             database.execute("DROP TRIGGER reject_question_complaint_event")

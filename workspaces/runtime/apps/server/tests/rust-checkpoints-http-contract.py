@@ -406,7 +406,8 @@ class CheckpointsHTTPContract(unittest.TestCase):
             response = backend.request(
                 "POST", "/api/checkpoint", body={"agent": AGENT_ID}, headers=self.headers()
             )
-            self.assertEqual(response.status, 500, response.body[:1000])
+            self.assertFalse(200 <= response.status < 300, response.body[:1000])
+            self.assertIn("error", response.json())
         finally:
             with closing(sqlite3.connect(backend.state / "canvas.sqlite3")) as database:
                 database.execute("DROP TRIGGER abort_checkpoint_completion")

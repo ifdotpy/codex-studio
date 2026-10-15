@@ -635,7 +635,9 @@ impl AccountSessionRuntime {
                 let metadata = std::fs::symlink_metadata(&home)
                     .map_err(|_| AccountSessionError::Persistence)?;
                 if !metadata.file_type().is_dir() {
-                    return Err(AccountSessionError::Persistence);
+                    return Err(AccountSessionError::Refused(
+                        "Login home must be a real directory under the accounts root",
+                    ));
                 }
             }
             Err(_) => return Err(AccountSessionError::Persistence),
