@@ -9,10 +9,11 @@ mod host_runtime;
 #[cfg(unix)]
 mod io_runtime;
 mod monitor_port;
+mod multi_server_discovery;
 mod multi_server_owner;
+mod native_probe;
 #[cfg(unix)]
 mod peer_link;
-mod native_probe;
 mod provider_ports;
 #[cfg(unix)]
 mod runtime_shutdown;
@@ -348,6 +349,11 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
     .with_account_driver(account_driver.clone())
     .with_provider_versions(provider_versions)
     .with_credentials(credentials);
+    {
+        state = state.with_server_discovery(Arc::new(
+            multi_server_discovery::TailscaleServerDiscovery::new(PathBuf::from(&state_dir)),
+        ));
+    }
     if let Some(boundary) = multi_server_boundary {
         state = state.with_multi_server_boundary(Arc::new(boundary));
     }

@@ -9,9 +9,9 @@ use studio_runtime_store::RuntimeStore;
 
 use crate::multi_server_auth::{AccessError, digest, refused, schema, stored, text};
 use crate::remote_transport::{
-    MAX_REQUEST_BYTES, MAX_RESPONSE_BYTES, MultiServerRequest, SignedHttpClient, canonical_json,
-    load_multi_server_identity, multi_server_signed_headers, new_nonce,
-    verify_multi_server_response,
+    MAX_REQUEST_BYTES, MAX_RESPONSE_BYTES, MultiServerRequest, canonical_json,
+    exchange_paired_request, learn_paired_request_link, load_multi_server_identity,
+    multi_server_signed_headers, new_nonce, verify_multi_server_response,
 };
 
 #[derive(Clone, Debug, PartialEq)]
@@ -88,24 +88,16 @@ pub trait PairedTransport: Send + Sync {
     ) -> Result<Value, AccessError>;
 }
 
-/// Production HTTPS adapter for the existing paired-server credential rows.
-/// It performs exactly one signed exchange; retry scheduling remains owned by
-/// the durable outbox driver.
+/// Production adapter for existing paired-server credential rows. The shared
+/// signed-request exchange owns QUIC-first transport and safe HTTPS fallback;
+/// retry scheduling remains owned by the durable outbox driver.
 pub struct HttpsPairedTransport {
     store: Arc<RuntimeStore>,
-    #[cfg(unix)]
-    peer_link: crate::remote_transport::PeerLinkClient,
 }
 
 impl HttpsPairedTransport {
     pub fn new(store: Arc<RuntimeStore>) -> Self {
-        #[cfg(unix)]
-        let peer_link = crate::remote_transport::PeerLinkClient::new(store.root());
-        Self {
-            store,
-            #[cfg(unix)]
-            peer_link,
-        }
+        Self { store }
     }
 }
 
@@ -189,66 +181,24 @@ impl PairedTransport for HttpsPairedTransport {
         if !body.is_empty() {
             headers.push(("Content-Type", "application/json"));
         }
-        let path = "/api/servers/orchestration";
-        let response = {
-            #[cfg(unix)]
-            {
-                let link = self.peer_link.exchange(
-                    server,
-                    &public_key,
-                    "POST",
-                    path,
-                    &headers,
-                    &body,
-                    timeout,
-                );
-                match link {
-                    Ok(Some(response)) => response,
-                    Ok(None) | Err(crate::remote_transport::PeerLinkFailure { sent: false }) => {
-                        SignedHttpClient::exchange(
-                            "POST",
-                            &url,
-                            &headers,
-                            &body,
-                            timeout,
-                            MAX_RESPONSE_BYTES,
-                        )
-                        .map_err(|_| {
-                            refused(
-                                503,
-                                "exchange_unknown",
-                                "The paired delivery outcome is unknown",
-                            )
-                        })?
-                    }
-                    Err(crate::remote_transport::PeerLinkFailure { sent: true }) => {
-                        return Err(refused(
-                            503,
-                            "exchange_unknown",
-                            "The paired delivery outcome is unknown",
-                        ));
-                    }
-                }
-            }
-            #[cfg(not(unix))]
-            {
-                SignedHttpClient::exchange(
-                    "POST",
-                    &url,
-                    &headers,
-                    &body,
-                    timeout,
-                    MAX_RESPONSE_BYTES,
-                )
-                .map_err(|_| {
-                    refused(
-                        503,
-                        "exchange_unknown",
-                        "The paired delivery outcome is unknown",
-                    )
-                })?
-            }
-        };
+        let response = exchange_paired_request(
+            &self.store,
+            server,
+            &public_key,
+            "POST",
+            &url,
+            &headers,
+            &body,
+            timeout,
+            MAX_RESPONSE_BYTES,
+        )
+        .map_err(|_| {
+            refused(
+                503,
+                "exchange_unknown",
+                "The paired delivery outcome is unknown",
+            )
+        })?;
         if !(200..300).contains(&response.status) {
             return Err(refused(
                 response.status,
@@ -264,15 +214,12 @@ impl PairedTransport for HttpsPairedTransport {
                     "The paired server returned an invalid receipt",
                 )
             })?;
-        #[cfg(unix)]
-        {
-            let advert = response
-                .headers
-                .iter()
-                .find(|(name, _)| name.eq_ignore_ascii_case("x-studio-link"))
-                .map(|(_, value)| value.as_str());
-            self.peer_link.learn(server, advert);
-        }
+        let advert = response
+            .headers
+            .iter()
+            .find(|(name, _)| name.eq_ignore_ascii_case("x-studio-link"))
+            .map(|(_, value)| value.as_str());
+        learn_paired_request_link(&self.store, server, advert);
         Ok(value)
     }
 }

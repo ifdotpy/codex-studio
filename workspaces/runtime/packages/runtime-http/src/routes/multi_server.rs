@@ -19,7 +19,6 @@ const MANAGEMENT_DEPENDENCIES: &[Dependency] = &[
     Dependency::new("multi-server-runtime/pairing"),
     Dependency::new("remote-transport/owner-lookup"),
     Dependency::new("remote-transport/signed-server-requests"),
-    Dependency::new("remote-transport/tailscale-discovery"),
     #[cfg(not(unix))]
     Dependency::new("server-credentials/platform-support"),
 ];
@@ -144,6 +143,31 @@ async fn manage(
         .get("action")
         .and_then(Value::as_str)
         .unwrap_or_default();
+    if action == "discover"
+        && let Some(origin) = state.public_origin.clone()
+    {
+        let store = state.store.ok_or_else(ApiError::internal)?;
+        let credentials = state.credentials;
+        let discovery = state
+            .server_discovery
+            .ok_or_else(|| unavailable_for("POST", "/api/multi-server", MANAGEMENT_DEPENDENCIES))?;
+        let result = studio_runtime_process::blocking_pool::spawn_blocking(
+            "runtime-http/routes/multi_server",
+            move || {
+                let identity = credentials
+                    .identity(&store, Some(&origin))
+                    .map_err(map_credential_error)?;
+                discovery
+                    .discover(&store, &identity, &origin)
+                    .map_err(map_discovery_error)
+            },
+        )
+        .await
+        .map_err(|_| ApiError::internal())??;
+        return Ok(Json(super::generated_json::<
+            crate::generated::AccessSnapshot,
+        >(result)?));
+    }
     if matches!(
         action,
         "settings" | "alias" | "revoke" | "unrevoke" | "name"
@@ -305,10 +329,40 @@ fn map_service_error(error: MultiServerError) -> ApiError {
     }
 }
 
+fn map_discovery_error(error: studio_runtime_services::multi_server_auth::AccessError) -> ApiError {
+    let status = StatusCode::from_u16(error.status()).unwrap_or(StatusCode::SERVICE_UNAVAILABLE);
+    ApiError::new(status, "The Tailscale server discovery operation failed")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use axum::response::IntoResponse;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+
+    struct FakeDiscovery(Arc<AtomicUsize>);
+    impl studio_runtime_services::multi_server_discovery::ServerDiscoveryPort for FakeDiscovery {
+        fn discover(
+            &self,
+            _store: &studio_runtime_store::RuntimeStore,
+            identity: &Value,
+            public_origin: &str,
+        ) -> Result<Value, studio_runtime_services::multi_server_auth::AccessError> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            assert_eq!(identity["origin"], public_origin);
+            Ok(serde_json::json!({
+                "protocol": 1,
+                "identity": identity,
+                "clients": [],
+                "servers": [],
+                "invites": [],
+                "settings": {"autoPair": true, "aliases": {}}
+            }))
+        }
+    }
 
     #[tokio::test]
     async fn unsupported_credentials_have_a_named_501_refusal() {
@@ -321,6 +375,35 @@ mod tests {
             serde_json::from_slice::<Value>(&body).expect("error envelope"),
             serde_json::json!({"error":"Not implemented: requires server-credentials/platform-support"})
         );
+    }
+
+    #[tokio::test]
+    async fn discover_action_calls_the_injected_host_driver() {
+        let root = tempfile::tempdir().expect("isolated discovery state");
+        let store = Arc::new(
+            studio_runtime_store::RuntimeStore::open(Some(root.path()))
+                .expect("runtime store opens"),
+        );
+        let calls = Arc::new(AtomicUsize::new(0));
+        let state = HttpState::new(
+            "token".into(),
+            "workspace".into(),
+            None,
+            root.path().display().to_string(),
+            12345,
+            Some("https://local.example".into()),
+            Some(store),
+            None,
+        )
+        .with_server_discovery(Arc::new(FakeDiscovery(Arc::clone(&calls))));
+        let response = manage(
+            State(state),
+            ApiJson(serde_json::json!({"action":"discover"})),
+        )
+        .await
+        .expect("fake discovery succeeds");
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert_eq!(response.0.settings.auto_pair, true);
     }
 }
 

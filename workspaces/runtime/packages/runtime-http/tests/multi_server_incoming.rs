@@ -99,6 +99,73 @@ async fn signed_requests_cross_the_http_boundary_and_missing_owner_is_no_write()
         StatusCode::NO_CONTENT
     );
     assert_eq!(common::rows(&store), before);
+    let auto_case = data["auth"]
+        .as_array()
+        .expect("auth cases")
+        .iter()
+        .find(|case| case["name"] == "auto-pair")
+        .expect("valid auto-pair fixture")
+        .clone();
+    let (auto_root, auto_store) = common::store();
+    let auto_lookup = common::CountingOwner::new(auto_case.clone());
+    let auto_boundary = studio_runtime_services::multi_server_pairing::MultiServerBoundary::new(
+        data["identity"].clone(),
+        auto_lookup.clone(),
+    )
+    .expect("auto-pair boundary");
+    let auto_state = HttpState::new(
+        "token".into(),
+        "workspace".into(),
+        None,
+        auto_root.path().to_string_lossy().into_owned(),
+        4000,
+        Some("https://local.fixture.ts.net".into()),
+        Some(auto_store.clone()),
+        None,
+    );
+    let auto_app = router(
+        auto_state
+            .clone()
+            .with_multi_server_boundary(Arc::new(auto_boundary)),
+    )
+    .expect("auto-pair router");
+    let auto_response = auto_app
+        .clone()
+        .oneshot(incoming(&auto_case))
+        .await
+        .expect("signed auto-pair response");
+    assert_eq!(auto_response.status(), StatusCode::OK);
+    let auto_value: Value = serde_json::from_slice(
+        &to_bytes(auto_response.into_body(), 4096)
+            .await
+            .expect("auto-pair body"),
+    )
+    .expect("auto-pair JSON");
+    assert_eq!(auto_value["clientId"], "auto-server");
+    assert_eq!(auto_value["paired"], true);
+    let wrong_owner = data["auth"]
+        .as_array()
+        .expect("auth cases")
+        .iter()
+        .find(|case| case["name"] == "auto-wrong-owner")
+        .expect("wrong-owner fixture");
+    let wrong_owner_lookup = common::CountingOwner::new(wrong_owner.clone());
+    let wrong_owner_boundary =
+        studio_runtime_services::multi_server_pairing::MultiServerBoundary::new(
+            data["identity"].clone(),
+            wrong_owner_lookup,
+        )
+        .expect("wrong-owner boundary");
+    let wrong_owner_app =
+        router(auto_state.with_multi_server_boundary(Arc::new(wrong_owner_boundary)))
+            .expect("wrong-owner auto-pair router");
+    let before_owner_refusal = common::rows(&auto_store);
+    let owner_response = wrong_owner_app
+        .oneshot(incoming(wrong_owner))
+        .await
+        .expect("owner-proof refusal");
+    assert_eq!(owner_response.status(), StatusCode::FORBIDDEN);
+    assert_eq!(common::rows(&auto_store), before_owner_refusal);
     let mut spoof = incoming(case);
     spoof.headers_mut().insert(
         "x-forwarded-host",

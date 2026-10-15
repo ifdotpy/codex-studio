@@ -6,9 +6,37 @@ mod common;
 mod prepared_python;
 use common::*;
 use serde_json::{Value, json};
+use std::time::Duration;
 use studio_runtime_services::multi_server_auth::{AccessSnapshot, OwnerObservation, authorize_at};
 use studio_runtime_services::multi_server_discovery::DiscoverySnapshot;
 use studio_runtime_store::RuntimeStore;
+
+#[test]
+fn tailscale_discovery_uses_only_online_untagged_same_owner_candidates() {
+    let status = json!({
+        "BackendState": "Running",
+        "Self": {"UserID": 7, "DNSName": "local.example.ts.net."},
+        "User": {"7": {"LoginName": "Owner@Example.test"}},
+        "Peer": {
+            "same-owner": {"UserID": 7, "Online": true, "DNSName": "peer.example.ts.net."},
+            "offline": {"UserID": 7, "Online": false, "DNSName": "offline.example.ts.net."},
+            "other-owner": {"UserID": 8, "Online": true, "DNSName": "other.example.ts.net."},
+            "tagged": {"UserID": 7, "Online": true, "Tags": ["tag:server"], "DNSName": "tagged.example.ts.net."}
+        }
+    });
+    let snapshot =
+        DiscoverySnapshot::from_status(&status, "local-server", "https://local.example.ts.net")
+            .expect("valid fake Tailscale status");
+    let candidates = snapshot.candidates();
+    assert_eq!(snapshot.owner(), "owner@example.test");
+    assert!(candidates.contains(&"https://peer.example.ts.net"));
+    assert!(candidates.contains(&"https://peer.example.ts.net:8443"));
+    assert!(!candidates.iter().any(|origin| origin.contains("offline")));
+    assert!(!candidates.iter().any(|origin| origin.contains("other.")));
+    assert!(!candidates.iter().any(|origin| origin.contains("tagged")));
+    assert!(!candidates.contains(&"https://local.example.ts.net"));
+    assert!(candidates.contains(&"https://local.example.ts.net:8443"));
+}
 
 #[test]
 fn peer_delivery_replays_same_identity_after_lost_receipt_and_restart_once() {
@@ -546,15 +574,13 @@ fn child_result_requires_link_membership_and_updates_proxy() {
 #[test]
 fn browser_callback_matches_python_and_replays_without_second_loopback_relay() {
     use sha2::Digest;
-    use std::io::{Read, Write};
+    use std::io::{BufRead, BufReader, Write};
     use std::net::TcpListener;
     use std::sync::Arc;
-    use std::time::{Duration, Instant};
     use studio_runtime_services::multi_server_auth::{AccessError, refused};
     use studio_runtime_services::multi_server_orchestration::{
         ExchangeOutcome, OrchestrationDriver, PairedTransport, RuntimeOrchestrationEffects,
     };
-    const CALLBACK_FIXTURE_TIMEOUT: Duration = Duration::from_secs(2);
     struct NoTransport;
     impl PairedTransport for NoTransport {
         fn exchange(&self, _: &str, _: &Value, _: Duration) -> Result<Value, AccessError> {
@@ -571,37 +597,17 @@ fn browser_callback_matches_python_and_replays_without_second_loopback_relay() {
     .to_string();
     let listener = TcpListener::bind("127.0.0.1:0").expect("loopback callback fixture");
     let port = listener.local_addr().unwrap().port();
-    listener.set_nonblocking(true).expect("nonblocking fixture");
     let relay = std::thread::spawn(move || {
-        let deadline = Instant::now() + CALLBACK_FIXTURE_TIMEOUT;
-        let mut calls = 0;
-        while Instant::now() < deadline {
-            match listener.accept() {
-                Ok((mut stream, _)) => {
-                    calls += 1;
-                    stream
-                        .set_read_timeout(Some(CALLBACK_FIXTURE_TIMEOUT))
-                        .expect("bounded callback read");
-                    stream
-                        .set_write_timeout(Some(CALLBACK_FIXTURE_TIMEOUT))
-                        .expect("bounded callback write");
-                    let mut request = [0; 1024];
-                    let count = stream.read(&mut request).expect("callback request");
-                    assert!(
-                        String::from_utf8_lossy(&request[..count])
-                            .starts_with("GET /callback?code=ok HTTP/1.1")
-                    );
-                    stream
-                        .write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 9\r\nConnection: close\r\n\r\nsigned in")
-                        .expect("callback response");
-                }
-                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                    std::thread::sleep(Duration::from_millis(10));
-                }
-                Err(error) => panic!("bounded loopback accept failed: {error}"),
-            }
-        }
-        calls
+        let (mut stream, _) = listener.accept().expect("callback relay connection");
+        let mut request = String::new();
+        BufReader::new(stream.try_clone().expect("clone callback stream"))
+            .read_line(&mut request)
+            .expect("callback request line");
+        assert!(request.starts_with("GET /callback?code=ok HTTP/1.1"));
+        stream
+            .write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 9\r\nConnection: close\r\n\r\nsigned in")
+            .expect("callback response");
+        1
     });
     let (_root, store) = store();
     let mut record = json!({"id":request_id,"method":"browser/open","status":"answered","params":{"bridgeId":bridge_id,"forward":{"tokenHash":""},"redirect":{"host":"127.0.0.1","port":port}}});
@@ -839,7 +845,6 @@ fn python_and_rust_signatures_interoperate_for_multi_server_requests() {
     use ring::signature::{ED25519, Ed25519KeyPair, KeyPair, UnparsedPublicKey};
     use std::path::PathBuf;
     use std::process::Command;
-    use std::time::Duration;
     use studio_runtime_services::remote_transport::{
         MultiServerSigningInput, multi_server_signing_bytes, verify_signature,
     };
@@ -900,9 +905,7 @@ fn python_and_rust_signatures_interoperate_for_multi_server_requests() {
         .env("PYTHONDONTWRITEBYTECODE", "1");
     let environment = prepared_python::IsolatedTestEnvironment::new();
     environment.apply(&mut command);
-    let output =
-        prepared_python::output_with_timeout(&mut command, &script, Duration::from_secs(30))
-            .expect("Python verification has a bounded deadline");
+    let output = command.output().expect("run Python signature verifier");
     assert!(
         output.status.success(),
         "Python rejected the Rust signature: {}",

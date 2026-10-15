@@ -33,6 +33,8 @@ pub struct HttpState {
     pub(crate) browser_forwarder: Option<Arc<studio_runtime_services::browser::BrowserForwarder>>,
     pub(crate) orchestration_driver:
         Option<Arc<studio_runtime_services::multi_server_orchestration::OrchestrationDriver>>,
+    pub(crate) server_discovery:
+        Option<Arc<dyn studio_runtime_services::multi_server_discovery::ServerDiscoveryPort>>,
     pub(crate) project_secrets_guest:
         Option<Arc<dyn studio_runtime_services::project_secrets::GuestRpc>>,
     pub(crate) vault_job_client: Option<crate::routes::VaultJobClient>,
@@ -151,6 +153,7 @@ impl HttpState {
             callback_runtime: None,
             browser_forwarder,
             orchestration_driver,
+            server_discovery: None,
             project_secrets_guest: None,
             vault_job_client: None,
             vault_host_command: None,
@@ -201,6 +204,15 @@ impl HttpState {
         boundary: Arc<studio_runtime_services::multi_server_pairing::MultiServerBoundary>,
     ) -> Self {
         self.multi_server_boundary = Some(boundary);
+        self
+    }
+
+    /// Attach the host Tailscale status and discovery probe adapter.
+    pub fn with_server_discovery(
+        mut self,
+        discovery: Arc<dyn studio_runtime_services::multi_server_discovery::ServerDiscoveryPort>,
+    ) -> Self {
+        self.server_discovery = Some(discovery);
         self
     }
 

@@ -788,18 +788,6 @@
           "owner": "R1"
         }
       ],
-      "dependency": "remote-transport/tailscale-discovery",
-      "operation_count": 1,
-      "operations": ["POST /api/multi-server"]
-    },
-    {
-      "closures": [
-        {
-          "closes": "R1",
-          "kind": "external_or_scope",
-          "owner": "R1"
-        }
-      ],
       "dependency": "remote-transport/tailscale-identity",
       "operation_count": 1,
       "operations": ["POST /api/federation"]
@@ -942,7 +930,7 @@
   ],
   "counts": {
     "implemented": 116,
-    "named_dependencies": 65,
+    "named_dependencies": 64,
     "not_registered": 0,
     "partial": 44,
     "total": 160
@@ -1584,8 +1572,7 @@
         "multi-server-runtime/orchestration",
         "multi-server-runtime/pairing",
         "remote-transport/owner-lookup",
-        "remote-transport/signed-server-requests",
-        "remote-transport/tailscale-discovery"
+        "remote-transport/signed-server-requests"
       ],
       "operation": "POST /api/multi-server",
       "status": "partial"
