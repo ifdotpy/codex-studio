@@ -44,6 +44,10 @@ macro_rules! record_newtype {
                 &self.value
             }
 
+            pub fn into_value(self) -> Value {
+                self.value
+            }
+
             pub fn get(&self, key: &str) -> Option<&Value> {
                 self.value.get(key)
             }
@@ -220,6 +224,16 @@ impl AgentRecord {
         let mut value = Value::Object(self.extra.clone().into_iter().collect());
         value["id"] = Value::String(self.id.0.clone());
         value["rootId"] = Value::String(self.root_id.0.clone());
+        value["epoch"] = Value::from(self.epoch);
+        value["status"] = Value::String(self.status.as_str().to_owned());
+        value
+    }
+
+    /// Consume the typed record while moving its fields into a JSON object.
+    pub fn into_value(self) -> Value {
+        let mut value = Value::Object(self.extra.into_iter().collect());
+        value["id"] = Value::String(self.id.0);
+        value["rootId"] = Value::String(self.root_id.0);
         value["epoch"] = Value::from(self.epoch);
         value["status"] = Value::String(self.status.as_str().to_owned());
         value
@@ -1032,6 +1046,60 @@ mod tests {
 
     fn agent(value: Value) -> AgentRecord {
         AgentRecord::from_value(value).expect("agent record has a string id")
+    }
+
+    #[test]
+    fn consuming_agent_projection_moves_extra_json() {
+        let record = agent(json!({
+            "id":"agent-1", "rootId":"root-1", "epoch":3, "status":"running",
+            "futureField":[{"nested":"retained"}]
+        }));
+        let source_ptr = record.extra["futureField"]
+            .as_array()
+            .expect("extra field is an array")
+            .as_ptr();
+
+        let projected = record.into_value();
+
+        assert_eq!(
+            projected,
+            json!({
+                "id":"agent-1", "rootId":"root-1", "epoch":3, "status":"running",
+                "futureField":[{"nested":"retained"}]
+            })
+        );
+        assert_eq!(
+            projected["futureField"]
+                .as_array()
+                .expect("projected extra field is an array")
+                .as_ptr(),
+            source_ptr,
+            "the consuming projection must move, not clone, the nested JSON tree"
+        );
+    }
+
+    #[test]
+    fn consuming_json_record_projection_moves_value_tree() {
+        let record = TranscriptItemRecord::from_value(json!({
+            "id":"item-1", "agent":"agent-1", "nested":[{"retained":true}]
+        }))
+        .expect("transcript item has an id");
+        let source_ptr = record.value()["nested"]
+            .as_array()
+            .expect("nested value is an array")
+            .as_ptr();
+
+        let projected = record.into_value();
+
+        assert_eq!(projected["nested"][0]["retained"], Value::Bool(true));
+        assert_eq!(
+            projected["nested"]
+                .as_array()
+                .expect("projected nested value is an array")
+                .as_ptr(),
+            source_ptr,
+            "the consuming projection must move, not clone, the record tree"
+        );
     }
 
     fn task(value: Value) -> TaskRecord {

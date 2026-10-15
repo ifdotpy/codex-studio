@@ -95,6 +95,58 @@ fn generation_start_stages_token_rate_observation_with_its_agent() {
 }
 
 #[test]
+fn failed_notification_transaction_discards_staged_stream_changes() {
+    let mut db = super::tests::database();
+    let tx = db.transaction().expect("test transaction");
+    tx.execute_batch(
+        "CREATE TEMP TRIGGER fail_notification_receipt BEFORE INSERT ON runtime_operation_receipts
+         BEGIN SELECT RAISE(ABORT, 'receipt failpoint'); END;",
+    )
+    .expect("receipt failpoint installs");
+    let key = StreamKey {
+        agent_id: "agent".into(),
+        account: "default".into(),
+        generation: 7,
+        thread: "thread".into(),
+        turn: Some("turn".into()),
+        item: "answer".into(),
+        method: "item/agentMessage/delta".into(),
+    };
+    let mut streams = NotificationStreamBuffer::default();
+    let original_params =
+        json!({"threadId":"thread","turnId":"turn","itemId":"answer","delta":"old"});
+    assert!(matches!(
+        streams.enqueue_delta(key, "old", &original_params),
+        EnqueueResult::Buffered
+    ));
+    let frame = super::tests::frame(&json!({
+        "method":"item/agentMessage/delta",
+        "params":{"threadId":"thread","turnId":"turn","itemId":"answer","delta":"new"}
+    }));
+
+    assert!(
+        dispatch_notification(
+            &tx,
+            "agent",
+            &PublicationContext::default(),
+            &streams,
+            &ProviderDeliveryIdentity {
+                provider_handle: "account:default".into(),
+                generation: 7,
+                cursor: 41,
+            },
+            &frame,
+            1234.5,
+        )
+        .is_err()
+    );
+    tx.rollback()
+        .expect("failed notification transaction rolls back");
+
+    assert_eq!(streams.pending_bytes(), "old".len());
+}
+
+#[test]
 fn p06_recovery_message_retains_buffered_text_questions_and_atomicity() {
     let mut db = super::tests::database();
     db.execute_batch("CREATE TABLE runtime_requests(id TEXT PRIMARY KEY,record TEXT NOT NULL); UPDATE runtime_agents SET record=json_set(record,'$.isLead',json('true')) WHERE id='agent';").expect("test invariant");

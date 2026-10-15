@@ -1,9 +1,13 @@
-//! Pure, bounded connection stream state. SQLite commit controls when updates apply.
+//! Pure, bounded connection stream state. Cloned buffers share immutable entries;
+//! staged writes detach only the touched entry, and SQLite commit controls apply.
 use super::{
     NotificationDispatchError, NotificationHourMetrics, NotificationObservation,
     NotificationPostCommit, NotificationPublicationBatch, NotificationStreamMetrics,
 };
-use serde::{Deserialize, Serialize};
+use std::ops::{Deref, DerefMut};
+use std::sync::Arc;
+
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
 
 const MAX_STREAMS: usize = 8_192;
@@ -46,24 +50,99 @@ struct Entry {
     params: Value,
 }
 
+/// Clone-shared state detaches only when the staged transaction mutates it.
+/// Serialization stays transparent so persisted stream bytes keep their shape.
+#[derive(Clone, Debug, PartialEq)]
+struct Shared<T>(Arc<T>);
+
+impl<T> Shared<T> {
+    fn new(value: T) -> Self {
+        Self(Arc::new(value))
+    }
+
+    fn into_owned(self) -> T
+    where
+        T: Clone,
+    {
+        Arc::try_unwrap(self.0).unwrap_or_else(|value| (*value).clone())
+    }
+
+    fn value(&self) -> &T {
+        self.0.as_ref()
+    }
+
+    fn shares_allocation_with(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+
+    fn value_mut(&mut self) -> &mut T
+    where
+        T: Clone,
+    {
+        Arc::make_mut(&mut self.0)
+    }
+}
+
+fn shared_entries_changed<T>(current: &[Shared<T>], previous: &[Shared<T>]) -> bool {
+    current.len() != previous.len()
+        || current
+            .iter()
+            .zip(previous)
+            .any(|(current, previous)| !current.shares_allocation_with(previous))
+}
+
+impl<T> Deref for Shared<T> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        self.0.as_ref()
+    }
+}
+
+impl<T: Clone> DerefMut for Shared<T> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.value_mut()
+    }
+}
+
+impl<T: Serialize> Serialize for Shared<T> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        self.0.serialize(serializer)
+    }
+}
+
+impl<'de, T: Deserialize<'de>> Deserialize<'de> for Shared<T> {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        T::deserialize(deserializer).map(Self::new)
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct NotificationStreamBuffer {
-    entries: Vec<Entry>,
-    closed: Vec<StreamKey>,
+    entries: Vec<Shared<Entry>>,
+    closed: Vec<Shared<StreamKey>>,
     #[serde(default)]
-    analytics: Vec<(
-        StreamKey,
-        NotificationObservation,
-        NotificationStreamMetrics,
-    )>,
+    analytics: Vec<
+        Shared<(
+            StreamKey,
+            NotificationObservation,
+            NotificationStreamMetrics,
+        )>,
+    >,
     #[serde(default)]
-    post_commit: Vec<NotificationPostCommit>,
+    post_commit: Vec<Shared<NotificationPostCommit>>,
     #[serde(default)]
     publication_sequence: u64,
     #[serde(default)]
     analytics_overflow: u64,
     #[serde(default)]
-    analytics_skipped: Vec<StreamKey>,
+    analytics_skipped: Vec<Shared<StreamKey>>,
 }
 
 pub(super) enum EnqueueResult {
@@ -109,9 +188,21 @@ impl NotificationStreamBuffer {
             .ok_or(NotificationDispatchError::InvalidNotification)?;
         Ok(NotificationPublicationBatch {
             sequence: self.publication_sequence,
-            effects: std::mem::take(&mut self.post_commit),
+            effects: std::mem::take(&mut self.post_commit)
+                .into_iter()
+                .map(Shared::into_owned)
+                .collect(),
             analytics_overflow: std::mem::take(&mut self.analytics_overflow),
         })
+    }
+    pub(super) fn changed_from(&self, previous: &Self) -> bool {
+        self.publication_sequence != previous.publication_sequence
+            || self.analytics_overflow != previous.analytics_overflow
+            || shared_entries_changed(&self.entries, &previous.entries)
+            || shared_entries_changed(&self.closed, &previous.closed)
+            || shared_entries_changed(&self.analytics, &previous.analytics)
+            || shared_entries_changed(&self.post_commit, &previous.post_commit)
+            || shared_entries_changed(&self.analytics_skipped, &previous.analytics_skipped)
     }
     pub(super) fn queue_effect(&mut self, effect: NotificationPostCommit) {
         // As in Python, excess analytics captures are dropped, counted and never
@@ -128,7 +219,7 @@ impl NotificationStreamBuffer {
                 .iter()
                 .filter(|effect| {
                     matches!(
-                        effect,
+                        &***effect,
                         NotificationPostCommit::Analytics { .. }
                             | NotificationPostCommit::AnalyticsStream { .. }
                     )
@@ -139,7 +230,7 @@ impl NotificationStreamBuffer {
                 .iter()
                 .filter(|effect| {
                     matches!(
-                        effect,
+                        &***effect,
                         NotificationPostCommit::Analytics { .. }
                             | NotificationPostCommit::AnalyticsStream { .. }
                     )
@@ -152,7 +243,7 @@ impl NotificationStreamBuffer {
                 return;
             }
         }
-        self.post_commit.push(effect);
+        self.post_commit.push(Shared::new(effect));
     }
 
     pub(crate) fn queue_effects(&mut self, effects: Vec<NotificationPostCommit>) {
@@ -175,7 +266,12 @@ impl NotificationStreamBuffer {
         key: StreamKey,
         mut observation: NotificationObservation,
     ) -> Result<(), NotificationDispatchError> {
-        if self.closed.contains(&key) || self.analytics_skipped.contains(&key) {
+        if self.closed.iter().any(|closed| **closed == key)
+            || self
+                .analytics_skipped
+                .iter()
+                .any(|skipped| **skipped == key)
+        {
             return Ok(());
         }
         let delta = observation.params["delta"]
@@ -186,8 +282,12 @@ impl NotificationStreamBuffer {
             studio_runtime_store::python_json_compact(&observation.params).len() as u64;
         let hour = ((observation.observed_at / 3600.0).floor() * 3600.0) as u64;
         observation.agent = None;
-        if let Some((_, saved, metrics)) = self.analytics.iter_mut().find(|(old, _, _)| old == &key)
+        if let Some(capture) = self
+            .analytics
+            .iter_mut()
+            .find(|capture| capture.value().0 == key)
         {
+            let (_, saved, metrics) = capture.value_mut();
             let mut text = saved.params["delta"]
                 .as_str()
                 .unwrap_or_default()
@@ -224,7 +324,7 @@ impl NotificationStreamBuffer {
             if key.method == "item/commandExecution/outputDelta" {
                 observation.params["delta"] = Value::String(super::suffix(&delta, 12_000));
             }
-            self.analytics.push((
+            self.analytics.push(Shared::new((
                 key.clone(),
                 observation,
                 NotificationStreamMetrics {
@@ -237,12 +337,13 @@ impl NotificationStreamBuffer {
                     characters: delta.chars().count() as u64,
                     lines: delta.bytes().filter(|byte| *byte == b'\n').count() as u64,
                 },
-            ));
+            )));
         }
         let retained_bytes = self
             .analytics
             .iter()
-            .map(|(_, observation, metrics)| {
+            .map(|capture| {
+                let (_, observation, metrics) = capture.value();
                 observation.params.to_string().len().saturating_add(
                     metrics
                         .hours
@@ -255,18 +356,18 @@ impl NotificationStreamBuffer {
             // Drop this whole analytics capture, never its transcript or receipt.
             // Suppress its later samples until flush instead of counting each as
             // a separate overflowed capture.
-            self.analytics
-                .retain(|(sample_key, _, _)| sample_key != &key);
-            self.analytics_skipped.push(key);
+            self.analytics.retain(|capture| capture.value().0 != key);
+            self.analytics_skipped.push(Shared::new(key));
             self.analytics_overflow = self.analytics_overflow.saturating_add(1);
         }
         Ok(())
     }
     pub(super) fn flush_analytics(&mut self, key: &StreamKey, agent: &Value) {
         self.analytics_skipped
-            .retain(|sample_key| sample_key != key);
+            .retain(|sample_key| **sample_key != *key);
         let mut pending = Vec::new();
-        for (sample_key, mut observation, metrics) in std::mem::take(&mut self.analytics) {
+        for capture in std::mem::take(&mut self.analytics) {
+            let (sample_key, mut observation, metrics) = capture.into_owned();
             if &sample_key == key {
                 observation.agent = Some(agent.clone());
                 self.queue_effect(NotificationPostCommit::AnalyticsStream {
@@ -274,7 +375,7 @@ impl NotificationStreamBuffer {
                     metrics,
                 });
             } else {
-                pending.push((sample_key, observation, metrics));
+                pending.push(Shared::new((sample_key, observation, metrics)));
             }
         }
         self.analytics = pending;
@@ -342,7 +443,7 @@ impl NotificationStreamBuffer {
         delta: &str,
         params: &Value,
     ) -> EnqueueResult {
-        if self.closed.contains(&key) {
+        if self.closed.iter().any(|closed| **closed == key) {
             return EnqueueResult::Closed;
         }
         let index = if let Some(index) = self.entries.iter().position(|entry| entry.key == key) {
@@ -351,7 +452,7 @@ impl NotificationStreamBuffer {
             if self.entries.len() == MAX_STREAMS {
                 return EnqueueResult::Full;
             }
-            self.entries.push(Entry {
+            self.entries.push(Shared::new(Entry {
                 key,
                 flushed: false,
                 base: None,
@@ -359,7 +460,7 @@ impl NotificationStreamBuffer {
                 count: 0,
                 characters: 0,
                 params: params.clone(),
-            });
+            }));
             self.entries.len() - 1
         };
         let entry = &mut self.entries[index];
@@ -441,13 +542,12 @@ impl NotificationStreamBuffer {
     }
 
     pub(super) fn close(&mut self, key: &StreamKey) {
-        self.analytics
-            .retain(|(sample_key, _, _)| sample_key != key);
+        self.analytics.retain(|capture| capture.value().0 != *key);
         self.analytics_skipped
-            .retain(|sample_key| sample_key != key);
+            .retain(|sample_key| **sample_key != *key);
         self.entries.retain(|entry| &entry.key != key);
-        if !self.closed.contains(key) {
-            self.closed.push(key.clone());
+        if !self.closed.iter().any(|closed| **closed == *key) {
+            self.closed.push(Shared::new(key.clone()));
         }
         if self.closed.len() > MAX_STREAMS {
             self.closed.remove(0);
@@ -455,10 +555,9 @@ impl NotificationStreamBuffer {
     }
 
     pub(super) fn discard(&mut self, key: &StreamKey) {
-        self.analytics
-            .retain(|(sample_key, _, _)| sample_key != key);
+        self.analytics.retain(|capture| capture.value().0 != *key);
         self.analytics_skipped
-            .retain(|sample_key| sample_key != key);
+            .retain(|sample_key| **sample_key != *key);
         self.entries.retain(|entry| &entry.key != key);
     }
 }
@@ -466,6 +565,87 @@ impl NotificationStreamBuffer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn staged_mutation_detaches_only_the_affected_entry() {
+        let first = StreamKey {
+            agent_id: "agent".into(),
+            account: "default".into(),
+            generation: 1,
+            thread: "thread".into(),
+            turn: Some("turn".into()),
+            item: "first".into(),
+            method: "item/agentMessage/delta".into(),
+        };
+        let second = StreamKey {
+            item: "second".into(),
+            ..first.clone()
+        };
+        let first_params =
+            json!({"threadId":"thread","turnId":"turn","itemId":"first","delta":"old"});
+        let second_params =
+            json!({"threadId":"thread","turnId":"turn","itemId":"second","delta":"other"});
+        let mut original = NotificationStreamBuffer::default();
+        assert!(matches!(
+            original.enqueue_delta(first.clone(), "old", &first_params),
+            EnqueueResult::Buffered
+        ));
+        assert!(matches!(
+            original.enqueue_delta(second.clone(), "other", &second_params),
+            EnqueueResult::Buffered
+        ));
+
+        let mut staged = original.clone();
+        assert!(Arc::ptr_eq(&original.entries[0].0, &staged.entries[0].0));
+        assert!(Arc::ptr_eq(&original.entries[1].0, &staged.entries[1].0));
+        let next_params =
+            json!({"threadId":"thread","turnId":"turn","itemId":"first","delta":"new"});
+        assert!(matches!(
+            staged.enqueue_delta(first, "new", &next_params),
+            EnqueueResult::Buffered
+        ));
+
+        assert!(!Arc::ptr_eq(&original.entries[0].0, &staged.entries[0].0));
+        assert!(Arc::ptr_eq(&original.entries[1].0, &staged.entries[1].0));
+        assert_eq!(original.entries[0].pending, "old");
+        assert_eq!(staged.entries[0].pending, "oldnew");
+        // For N retained entries and one changed entry: N deep Entry clones
+        // become one; the other N-1 entries remain pointer-shared.
+    }
+
+    #[test]
+    fn flush_then_close_keeps_flush_result_and_closes_future_deltas() {
+        let key = StreamKey {
+            agent_id: "agent".into(),
+            account: "default".into(),
+            generation: 1,
+            thread: "thread".into(),
+            turn: Some("turn".into()),
+            item: "answer".into(),
+            method: "item/agentMessage/delta".into(),
+        };
+        let params =
+            json!({"threadId":"thread","turnId":"turn","itemId":"answer","delta":"pending"});
+        let mut streams = NotificationStreamBuffer::default();
+        assert!(matches!(
+            streams.enqueue_delta(key.clone(), "pending", &params),
+            EnqueueResult::Buffered
+        ));
+
+        let flushed = streams
+            .flush_with_delta(&key, "base", Some("terminal"))
+            .expect("pending stream flushes before close");
+        streams.close(&key);
+
+        assert_eq!(flushed.0, "basependingterminal");
+        assert_eq!(flushed.1, 1);
+        assert!(!streams.has_pending(&key));
+        assert!(matches!(
+            streams.enqueue_delta(key, "late", &params),
+            EnqueueResult::Closed
+        ));
+    }
 
     #[test]
     fn legacy_closed_stream_matches_owner_enriched_key() {
