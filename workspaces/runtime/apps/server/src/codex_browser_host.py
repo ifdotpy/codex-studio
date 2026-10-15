@@ -132,6 +132,8 @@ class HostGuest:
         environment = session_environment(Path(runtime.root))
         self.socket = Path(environment["STUDIO_BROWSER_SOCKET"])
         self.control_socket = self.socket.parent / HOST_BROWSER_CONTROL_SOCKET_NAME
+        self.control_tasks: set[asyncio.Task[Any]] = set()
+        self.closing = threading.Event()
         self.loop = asyncio.new_event_loop()
         self.thread = threading.Thread(target=self.loop.run_forever, name="studio-browser-host", daemon=True)
         self.thread.start()
@@ -195,6 +197,9 @@ class HostGuest:
             raise LinuxVMError("The host browser control socket is unavailable", code="unavailable") from error
 
     async def control_client(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        task = asyncio.current_task()
+        if task is not None:
+            self.control_tasks.add(task)
         identity = ""
         try:
             line = await asyncio.wait_for(reader.readline(), 5)
@@ -220,6 +225,8 @@ class HostGuest:
         except (asyncio.TimeoutError, OSError):
             pass
         finally:
+            if task is not None:
+                self.control_tasks.discard(task)
             writer.close()
             try:
                 await writer.wait_closed()
@@ -227,10 +234,25 @@ class HostGuest:
                 pass
 
     def close(self) -> None:
+        if self.closing.is_set():
+            return
+        self.closing.set()
         try:
-            self.control_server.close()
-            asyncio.run_coroutine_threadsafe(self.control_server.wait_closed(), self.loop).result(10)
+            async def shutdown() -> None:
+                self.control_server.close()
+                # A browser.wait RPC may be waiting on the bridge's long poll. Stop
+                # accepted control calls before waiting for the Unix server to drain.
+                clients = [task for task in self.control_tasks if task is not asyncio.current_task()]
+                for task in clients:
+                    task.cancel()
+                if clients:
+                    await asyncio.gather(*clients, return_exceptions=True)
+                await self.control_server.wait_closed()
+                await self.bridge.close()
+
+            asyncio.run_coroutine_threadsafe(shutdown(), self.loop).result(10)
             self.control_socket.unlink(missing_ok=True)
-            asyncio.run_coroutine_threadsafe(self.bridge.close(), self.loop).result(10)
         finally:
             self.loop.call_soon_threadsafe(self.loop.stop)
+            if threading.current_thread() is not self.thread:
+                self.thread.join(timeout=2)
