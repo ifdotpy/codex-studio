@@ -555,8 +555,9 @@ mod replay_identity_tests {
 
     #[test]
     fn concurrent_submissions_with_different_call_identity_are_refused_without_replacing_intent() {
-        let state = tempfile::tempdir().unwrap();
-        let store = RuntimeStore::open(Some(state.path())).unwrap();
+        let state = tempfile::tempdir().expect("retained receipt test state directory");
+        let store =
+            RuntimeStore::open(Some(state.path())).expect("open retained receipt test store");
         let first = Call {
             scope: ConnectionScope {
                 account: "default".into(),
@@ -594,30 +595,38 @@ mod replay_identity_tests {
         // Model the valid interleaving: both reads finish before either
         // transaction commits the submitted intent.
         assert!(matches!(
-            replay(&store, &first).unwrap().unwrap(),
+            replay(&store, &first)
+                .expect("read first replay state")
+                .expect("first replay should miss"),
             Replay::Miss
         ));
         assert!(matches!(
-            replay(&store, &conflicting).unwrap().unwrap(),
+            replay(&store, &conflicting)
+                .expect("read conflicting replay state")
+                .expect("conflicting replay should miss before admission"),
             Replay::Miss
         ));
         assert_eq!(
-            submitted(&store, &first, &recovered(&first), None).unwrap(),
+            submitted(&store, &first, &recovered(&first), None)
+                .expect("persist first submitted intent"),
             Ok(())
         );
         assert_eq!(
-            submitted(&store, &conflicting, &recovered(&conflicting), None).unwrap(),
+            submitted(&store, &conflicting, &recovered(&conflicting), None)
+                .expect("inspect conflicting submitted intent"),
             Err(PortError::Identity)
         );
 
         // The first durable identity remains replayable; the losing identity
         // cannot replace it or advance into a provider submission.
         assert!(matches!(
-            replay(&store, &first).unwrap().unwrap(),
+            replay(&store, &first)
+                .expect("read first durable intent")
+                .expect("first durable intent should be replayable"),
             Replay::Return(_)
         ));
         assert!(matches!(
-            replay(&store, &conflicting).unwrap(),
+            replay(&store, &conflicting).expect("read changed identity outcome"),
             Err(PortError::Identity)
         ));
 
@@ -627,23 +636,31 @@ mod replay_identity_tests {
         };
         let exact_retry = exact.clone();
         assert!(matches!(
-            replay(&store, &exact).unwrap().unwrap(),
+            replay(&store, &exact)
+                .expect("read exact operation replay state")
+                .expect("first exact operation replay should miss"),
             Replay::Miss
         ));
         assert!(matches!(
-            replay(&store, &exact_retry).unwrap().unwrap(),
+            replay(&store, &exact_retry)
+                .expect("read exact retry replay state")
+                .expect("concurrent exact retry should miss before admission"),
             Replay::Miss
         ));
         assert_eq!(
-            submitted(&store, &exact, &recovered(&exact), None).unwrap(),
+            submitted(&store, &exact, &recovered(&exact), None)
+                .expect("persist exact submitted intent"),
             Ok(())
         );
         assert_eq!(
-            submitted(&store, &exact_retry, &recovered(&exact_retry), None).unwrap(),
+            submitted(&store, &exact_retry, &recovered(&exact_retry), None)
+                .expect("inspect exact concurrent submitted intent"),
             Err(PortError::Unknown)
         );
         assert!(matches!(
-            replay(&store, &exact_retry).unwrap().unwrap(),
+            replay(&store, &exact_retry)
+                .expect("read durable exact retry outcome")
+                .expect("durable exact retry should replay"),
             Replay::Return(SessionReceipt {
                 result: RequestResult::Unknown,
                 replayed: true,
