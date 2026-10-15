@@ -643,6 +643,11 @@ impl RuleSnapshot {
         if self.rule.in_flight {
             return self.finish(now, result);
         }
+        // Python records a canceled monitor's result after the owning rule has
+        // already been paused. Keep that receipt while leaving the rule paused.
+        if self.rule.status == Status::Paused && result.error == Some("Monitor cancelled") {
+            return self.finish(now, result);
+        }
         let marker =
             json!({"epoch":check.epoch,"checks":check.check_number,"monitorId":check.monitor_id});
         if self.raw.get("restartCheck") != Some(&marker)

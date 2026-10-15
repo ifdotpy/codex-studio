@@ -374,8 +374,8 @@ class RouteCensusContract(unittest.TestCase):
         expected = json.loads(CORPUS.read_text(encoding="utf-8"))
         self.assertEqual(actual, expected)
         self.assertEqual(actual["counts"]["total"], 160)
-        self.assertEqual(actual["counts"]["implemented"], 107)
-        self.assertEqual(actual["counts"]["partial"], 53)
+        self.assertEqual(actual["counts"]["implemented"], 108)
+        self.assertEqual(actual["counts"]["partial"], 52)
         self.assertEqual(actual["counts"]["not_registered"], 0)
 
     def test_every_partial_and_unregistered_route_has_a_named_closure(self) -> None:
