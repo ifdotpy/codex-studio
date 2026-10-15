@@ -496,14 +496,28 @@ mod tests {
         assert!(!state.signatures.contains_key(&agent));
         assert!(state.agent_references.contains_key(&other_agent));
         drop(state);
-        drop(third);
+        let third_directory = other_root.path().join("progress/agent-a");
+        let (cleanup_complete, cleanup_finished) = mpsc::channel();
+        let cleanup = std::thread::spawn(move || {
+            drop(third);
+            cleanup_complete
+                .send(())
+                .expect("cleanup waiter is still listening");
+        });
+        cleanup_finished
+            .recv()
+            .expect("watcher cleanup completes before the subscription is dropped");
+        cleanup
+            .join()
+            .expect("watcher cleanup thread exits cleanly");
         assert!(
-            first_service
+            !first_service
                 .state
                 .lock()
                 .expect("watcher state")
                 .directories
-                .is_empty()
+                .contains_key(&third_directory),
+            "dropping the last subscription removes its watched directory"
         );
     }
 

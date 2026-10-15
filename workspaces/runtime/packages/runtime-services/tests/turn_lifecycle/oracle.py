@@ -94,9 +94,11 @@ class QuietRuntime(Runtime):
     def schedule(self):
         pass
 
-    def model_turn_context(self, _db, _actor, _event_id):
-        # These lifecycle witnesses compare durable transaction behavior. Never
-        # consult the checkout's live role skills, prompt, or progress files.
+    def model_turn_context(self, db, actor, event_id):
+        # Exercise the production metadata writer while keeping fixture guidance
+        # out of captured provider input. The role/progress readers are stubbed
+        # above, so this cannot consult the live checkout or agent context.
+        Runtime.model_turn_context(self, db, actor, event_id)
         return ""
 
     def interrupt(self, agent):
