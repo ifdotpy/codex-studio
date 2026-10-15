@@ -45,49 +45,13 @@
       "dependency": "federation-driver/rooms",
       "operation_count": 1,
       "operations": ["POST /api/messages"]
-    },
-    {
-      "closures": [
-        {
-          "closes": "origin/feat/wave7-p03-message-ingress",
-          "kind": "accepted_branch",
-          "owner": "P03"
-        }
-      ],
-      "dependency": "payload-store/uploads",
-      "operation_count": 1,
-      "operations": ["POST /api/messages"]
-    },
-    {
-      "closures": [
-        {
-          "closes": "R4",
-          "kind": "external_or_scope",
-          "owner": "R4"
-        }
-      ],
-      "dependency": "provider-session/title-generation",
-      "operation_count": 1,
-      "operations": ["POST /api/rename"]
-    },
-    {
-      "closures": [
-        {
-          "closes": "origin/feat/wave7-p03-message-ingress",
-          "kind": "accepted_branch",
-          "owner": "P03"
-        }
-      ],
-      "dependency": "workspace-policy/message-admission",
-      "operation_count": 1,
-      "operations": ["POST /api/messages"]
     }
   ],
   "counts": {
-    "implemented": 158,
-    "named_dependencies": 6,
+    "implemented": 159,
+    "named_dependencies": 3,
     "not_registered": 0,
-    "partial": 2,
+    "partial": 1,
     "total": 160
   },
   "lifecycle_dependencies": {
@@ -642,9 +606,7 @@
       "dependencies": [
         "capacity-retry/store",
         "cross-server/remote-events",
-        "federation-driver/rooms",
-        "payload-store/uploads",
-        "workspace-policy/message-admission"
+        "federation-driver/rooms"
       ],
       "operation": "POST /api/messages",
       "status": "partial"
@@ -745,9 +707,9 @@
       "status": "implemented"
     },
     {
-      "dependencies": ["provider-session/title-generation"],
+      "dependencies": [],
       "operation": "POST /api/rename",
-      "status": "partial"
+      "status": "implemented"
     },
     {
       "dependencies": [],
