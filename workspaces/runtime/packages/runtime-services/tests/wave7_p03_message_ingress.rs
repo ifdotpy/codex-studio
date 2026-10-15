@@ -640,12 +640,10 @@ fn injected_policy_denials_and_changed_workspace_snapshot_write_nothing(oracle: 
             &prepared,
         )
     });
-    assert!(matches!(
-        result,
-        Err(CoordinationError::RequiresDependency(
-            "workspace-policy/message-admission"
-        ))
-    ));
+    assert!(
+        matches!(result, Err(CoordinationError::AdmissionDenied(_))),
+        "a changed cwd missing from the prepared snapshot must fail closed: {result:?}"
+    );
     assert_eq!(snapshot(&store), before);
 }
 
@@ -775,12 +773,13 @@ fn late_operation_paths_use_the_prepared_canonical_relation(oracle: &mut Oracle)
             // A new cwd may alias this workspace: raw string inequality cannot
             // establish independence. Python resolves it under its runtime lock;
             // this adapter requires a fresh host snapshot outside the writer.
-            assert!(matches!(
-                result,
-                Err(coordination::CoordinationError::RequiresDependency(
-                    "workspace-policy/message-admission"
-                ))
-            ));
+            assert!(
+                matches!(
+                    result,
+                    Err(coordination::CoordinationError::AdmissionDenied(_))
+                ),
+                "a late, previously unseen workspace alias must fail closed: {result:?}"
+            );
             assert_eq!(snapshot(&store), before);
         } else {
             let receipt = result.expect("known relation permits admission").receipt;
