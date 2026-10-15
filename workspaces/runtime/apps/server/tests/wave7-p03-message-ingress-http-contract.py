@@ -29,26 +29,14 @@ class MessageIngressHTTP(TimedHTTPContractTest, unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.backend = start_contract_backend(cls, hold_provider_method="thread/start")
-        # Rust's test host does not use the provider gate as Python's dispatcher
-        # does. Keep this Rust-only fixture recipient busy so background claims
-        # cannot race the suite's whole-store no-write snapshots.
-        held_review = ({
-            "status": "running",
-            "inFlight": True,
-            # Rust repairs orphaned preparation state asynchronously. A held
-            # submitted review must retain its provider thread identity so
-            # recovery does not mutate autoWake during these HTTP snapshots.
-            "threadId": "p03-held-review-thread",
-            "startAttempt": {
-                "id": "p03-held-review-attempt",
-                "epoch": 0,
-                "threadId": "p03-held-review-thread",
-                "events": [],
-                "action": "review",
-                "submitted": True,
-            },
-        } if os.environ.get("STUDIO_HTTP_BACKEND_COMMAND") else None)
-        cls.agent = _fixture.seed_agent(cls.backend, held_review)
+        # Rust startup clears synthetic inFlight claims, and accepted messages
+        # could then be dispatched during whole-store no-write snapshots. Keep
+        # its recipient in the durable approval state; queue_agent explicitly
+        # leaves Approval actors unqueued. Python still uses its provider gate.
+        rust_agent_state = (
+            {"status": "approval"} if os.environ.get("STUDIO_HTTP_BACKEND_COMMAND") else None
+        )
+        cls.agent = _fixture.seed_agent(cls.backend, rust_agent_state)
         cls.foreign = _fixture.seed_agent(cls.backend)
         class QuietRuntime(_fixture._fixture.Runtime):
             def schedule(self):
