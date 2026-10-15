@@ -169,6 +169,7 @@ pub fn creation_account_key(
         },
         Ok,
     )?;
+    drop(read);
     account_key(context, request.account.as_deref(), &cwd)
 }
 
@@ -188,6 +189,7 @@ pub fn conversation_account_key(
     if expected_account.is_some_and(|expected| expected != old_account) {
         return Err(MutationError::Stale.into());
     }
+    drop(read);
     // Python's conversation update uses the requested project account when cwd
     // changes and otherwise keeps this conversation's account; settings then
     // resolve their catalogs separately (`codex_runtime.py:5484-5491`).
@@ -2506,6 +2508,68 @@ mod tests {
             "conversation-account"
         );
     }
+
+    #[test]
+    fn account_admission_releases_snapshot_before_project_account_lookup() {
+        let state = tempfile::tempdir().expect("temporary state");
+        let project = tempfile::tempdir().expect("existing project directory");
+        let project_path = project.path().to_string_lossy().into_owned();
+        let store = RuntimeStore::open(Some(state.path())).expect("runtime store");
+        store
+            .transaction(|tx| {
+                tx.execute(
+                    "INSERT INTO runtime_projects(id,record) VALUES(?1,?2)",
+                    rusqlite::params![
+                        project_path,
+                        json!({
+                            "id": project_path,
+                            "path": project_path,
+                            "accountKey": "project-account"
+                        })
+                        .to_string()
+                    ],
+                )?;
+                tx.execute(
+                    "INSERT INTO runtime_agents(id,record) VALUES(?1,?2)",
+                    rusqlite::params![
+                        "conversation",
+                        json!({"id":"conversation","accountKey":"old-account"}).to_string()
+                    ],
+                )?;
+                Ok(())
+            })
+            .expect("seed project and conversation");
+        let accounts = AccountPolicyState::from_startup(
+            Some(
+                br#"{"version":1,"defaultAccountKey":"default","accounts":{"default":{"id":"default","home":"/default","label":"Default","source":"Codex CLI","status":"signedOut"}},"logins":{},"deleteReceipts":{}}"#,
+            ),
+            [],
+        )
+        .expect("valid account policy");
+        let validate = |_: &str, _: &Value| true;
+        let context = Context {
+            store: &store,
+            accounts: Some(&accounts),
+            driver: None,
+            catalog: None,
+            validate: &validate,
+        };
+
+        let creation = Creation {
+            cwd: Some(project_path.clone()),
+            ..Creation::default()
+        };
+        assert_eq!(
+            creation_account_key(&context, &creation).expect("creation account"),
+            "project-account"
+        );
+        assert_eq!(
+            conversation_account_key(&context, "conversation", None, Some(&project_path))
+                .expect("conversation account"),
+            "project-account"
+        );
+    }
+
     #[test]
     fn reviewer_child_defaults_to_shared_workspace() {
         assert_eq!(
